@@ -1,14 +1,66 @@
-import { spawn, ChildProcess } from 'child_process';
-import { SDKMessage, SDKUserMessage } from './types';
+import { query, Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { EventEmitter } from 'events';
 
+/**
+ * Async message queue that bridges imperative sendMessage() calls
+ * to an async iterable for the SDK's streaming input mode.
+ */
+class MessageQueue {
+  private queue: SDKUserMessage[] = [];
+  private resolveNext: ((value: IteratorResult<SDKUserMessage>) => void) | null = null;
+  private closed = false;
+
+  push(message: SDKUserMessage): void {
+    if (this.closed) {
+      throw new Error('MessageQueue is closed');
+    }
+
+    if (this.resolveNext) {
+      // Someone is waiting for a message
+      this.resolveNext({ value: message, done: false });
+      this.resolveNext = null;
+    } else {
+      // Queue it for later
+      this.queue.push(message);
+    }
+  }
+
+  close(): void {
+    this.closed = true;
+    if (this.resolveNext) {
+      this.resolveNext({ value: undefined as any, done: true });
+      this.resolveNext = null;
+    }
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
+    return {
+      next: (): Promise<IteratorResult<SDKUserMessage>> => {
+        return new Promise((resolve) => {
+          if (this.queue.length > 0) {
+            // Return queued message immediately
+            resolve({ value: this.queue.shift()!, done: false });
+          } else if (this.closed) {
+            resolve({ value: undefined as any, done: true });
+          } else {
+            // Wait for next message
+            this.resolveNext = resolve;
+          }
+        });
+      },
+    };
+  }
+}
+
 export class ClaudeCodeProcess extends EventEmitter {
-  private process: ChildProcess | null = null;
+  private queryInstance: Query | null = null;
+  private messageQueue: MessageQueue | null = null;
+  private abortController: AbortController | null = null;
   private sessionId: string;
   private workingDirectory: string;
   private claudeSessionId: string | null;
-  private buffer: string = '';
   private isReady: boolean = false;
+  private isProcessing: boolean = false;
 
   constructor(
     sessionId: string,
@@ -22,137 +74,86 @@ export class ClaudeCodeProcess extends EventEmitter {
   }
 
   async start(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      try {
-        // Spawn Claude Code process in non-interactive mode with JSON I/O
-        // Inherit environment naturally from parent process
-        const isResuming = !!this.claudeSessionId;
-        console.log(`[Session ${this.sessionId}] ANTHROPIC_API_KEY set:`, !!process.env.ANTHROPIC_API_KEY);
-        console.log(`[Session ${this.sessionId}] Working directory:`, this.workingDirectory);
-        console.log(`[Session ${this.sessionId}] Resuming:`, isResuming, this.claudeSessionId);
+    const isResuming = !!this.claudeSessionId;
+    console.log(`[Session ${this.sessionId}] Starting SDK-based session`);
+    console.log(`[Session ${this.sessionId}] ANTHROPIC_API_KEY set:`, !!process.env.ANTHROPIC_API_KEY);
+    console.log(`[Session ${this.sessionId}] Working directory:`, this.workingDirectory);
+    console.log(`[Session ${this.sessionId}] Resuming:`, isResuming, this.claudeSessionId);
 
-        // Build args - add --resume if we have a Claude session ID
-        const args = [
-          '--print',
-          '--verbose',
-          '--output-format', 'stream-json',
-          '--input-format', 'stream-json',
-          '--include-partial-messages',
-          '--replay-user-messages',
-          '--dangerously-skip-permissions',
-        ];
+    // Create abort controller for cancellation
+    this.abortController = new AbortController();
 
-        if (isResuming) {
-          args.push('--resume', this.claudeSessionId!);
-        }
+    // Create message queue for streaming input
+    this.messageQueue = new MessageQueue();
 
-        this.process = spawn('claude', args, {
-          cwd: this.workingDirectory,
-          stdio: ['pipe', 'pipe', 'pipe'],
-          // No env option - inherit naturally from parent process
-        });
-
-        // Handle stdout - parse JSON responses
-        this.process.stdout?.on('data', (data: Buffer) => {
-          const output = data.toString();
-          console.log(`[Session ${this.sessionId}] stdout:`, output);
-          this.handleOutput(output);
-        });
-
-        // Handle stderr
-        this.process.stderr?.on('data', (data: Buffer) => {
-          const error = data.toString();
-          console.error(`[Session ${this.sessionId}] stderr:`, error);
-          this.emit('stderr', error);
-        });
-
-        // Also log stdout for debugging
-        console.log(`[Session ${this.sessionId}] Spawning Claude with command:`, 'claude', [
-          '--print',
-          '--verbose',
-          '--output-format', 'stream-json',
-          '--input-format', 'stream-json',
-          '--include-partial-messages',
-          '--replay-user-messages',
-          '--dangerously-skip-permissions',
-        ].join(' '));
-
-        let startupComplete = false;
-
-        // Handle process exit
-        this.process.on('exit', (code: number | null) => {
-          console.log(`[Session ${this.sessionId}] Process exited with code ${code}`);
-          this.emit('exit', code);
-          this.isReady = false;
-
-          // If process exits during startup with error, reject
-          if (!startupComplete && code !== 0) {
-            reject(new Error(`Claude Code exited with code ${code} during startup`));
-          }
-        });
-
-        // Handle process errors
-        this.process.on('error', (error: Error) => {
-          console.error(`[Session ${this.sessionId}] Process error:`, error);
-          reject(error);
-        });
-
-        // Wait a moment for the process to initialize
-        setTimeout(() => {
-          // Check if process is still running
-          if (this.process && this.process.exitCode === null) {
-            startupComplete = true;
-            this.isReady = true;
-            this.emit('ready');
-            resolve();
-          } else {
-            reject(new Error(`Claude Code process terminated during startup`));
-          }
-        }, 1000);
-      } catch (error) {
-        reject(error);
-      }
+    // Start the query with streaming input mode
+    this.queryInstance = query({
+      prompt: this.messageQueue,
+      options: {
+        cwd: this.workingDirectory,
+        abortController: this.abortController,
+        resume: this.claudeSessionId || undefined,
+        permissionMode: 'bypassPermissions',
+        includePartialMessages: true,
+        systemPrompt: {
+          type: 'preset',
+          preset: 'claude_code',
+        },
+      },
     });
+
+    this.isReady = true;
+    this.emit('ready');
+
+    // Start processing messages in the background
+    this.processMessages();
   }
 
-  private handleOutput(data: string): void {
-    // Add new data to buffer
-    this.buffer += data;
+  private async processMessages(): Promise<void> {
+    if (!this.queryInstance) return;
 
-    // Try to extract complete JSON objects
-    let newlineIndex: number;
-    while ((newlineIndex = this.buffer.indexOf('\n')) !== -1) {
-      const line = this.buffer.slice(0, newlineIndex).trim();
-      this.buffer = this.buffer.slice(newlineIndex + 1);
+    this.isProcessing = true;
 
-      if (line) {
-        try {
-          const parsed: SDKMessage = JSON.parse(line);
+    try {
+      for await (const message of this.queryInstance) {
+        // Capture Claude session ID from init message
+        if (message.type === 'system' && message.subtype === 'init' && message.session_id) {
+          this.claudeSessionId = message.session_id;
+          console.log(`[Session ${this.sessionId}] Captured Claude session ID:`, this.claudeSessionId);
+          this.emit('claude-session-id', this.claudeSessionId);
+        }
 
-          // Capture Claude session ID from init message
-          if (parsed.type === 'system' && parsed.subtype === 'init' && parsed.session_id) {
-            this.claudeSessionId = parsed.session_id;
-            console.log(`[Session ${this.sessionId}] Captured Claude session ID:`, this.claudeSessionId);
-            this.emit('claude-session-id', this.claudeSessionId);
-          }
+        // Emit the SDK message
+        console.log(`[Session ${this.sessionId}] SDK message:`, message.type,
+          'subtype' in message ? (message as any).subtype : '');
+        this.emit('message', message);
 
-          // Emit the SDK message directly
-          this.emit('message', parsed);
-        } catch (error) {
-          // If it's not valid JSON, log and skip
-          console.warn(`[Session ${this.sessionId}] Non-JSON output:`, line);
+        // Check for result message to know when processing is complete
+        if (message.type === 'result') {
+          console.log(`[Session ${this.sessionId}] Query completed`);
         }
       }
+    } catch (error: any) {
+      if (error.name === 'AbortError') {
+        console.log(`[Session ${this.sessionId}] Query aborted`);
+      } else {
+        console.error(`[Session ${this.sessionId}] Query error:`, error);
+        this.emit('error', error);
+      }
+    } finally {
+      this.isProcessing = false;
+      this.isReady = false;
+      this.emit('exit', 0);
     }
   }
 
   async sendMessage(content: string): Promise<void> {
-    if (!this.process || !this.isReady) {
-      throw new Error('Claude Code process is not running');
+    if (!this.messageQueue || !this.isReady) {
+      throw new Error('Claude Code session is not running');
     }
 
-    // Convert to the format expected by Claude Code streaming JSON input
-    const input: SDKUserMessage = {
+    // Create SDK user message format
+    const message: SDKUserMessage = {
       type: 'user',
       session_id: this.claudeSessionId || this.sessionId,
       message: {
@@ -167,37 +168,33 @@ export class ClaudeCodeProcess extends EventEmitter {
       parent_tool_use_id: null,
     };
 
-    const inputStr = JSON.stringify(input);
-    console.log(`[Session ${this.sessionId}] Sending to stdin:`, inputStr);
-
-    // Write to stdin with newline
-    this.process.stdin?.write(inputStr + '\n');
+    console.log(`[Session ${this.sessionId}] Sending message:`, content.substring(0, 100));
+    this.messageQueue.push(message);
   }
 
   async stop(): Promise<void> {
-    return new Promise((resolve) => {
-      if (!this.process) {
-        resolve();
-        return;
-      }
+    console.log(`[Session ${this.sessionId}] Stopping session`);
 
-      this.process.once('exit', () => {
-        resolve();
-      });
+    // Close the message queue to signal end of input
+    if (this.messageQueue) {
+      this.messageQueue.close();
+    }
 
-      // Try graceful shutdown first
-      this.process.kill('SIGTERM');
+    // Abort the query if still running
+    if (this.abortController) {
+      this.abortController.abort();
+    }
 
-      // Force kill after 5 seconds if still running
-      setTimeout(() => {
-        if (this.process) {
-          this.process.kill('SIGKILL');
-        }
-      }, 5000);
-    });
+    // Wait a moment for cleanup
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    this.isReady = false;
+    this.queryInstance = null;
+    this.messageQueue = null;
+    this.abortController = null;
   }
 
   isRunning(): boolean {
-    return this.process !== null && this.isReady;
+    return this.isReady && this.isProcessing;
   }
 }

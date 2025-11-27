@@ -8,6 +8,8 @@ export type {
   SDKSystemMessage,
   SDKPartialAssistantMessage,
   SDKCompactBoundaryMessage,
+  Query,
+  Options,
 } from '@anthropic-ai/claude-agent-sdk';
 
 // Custom types for our container
