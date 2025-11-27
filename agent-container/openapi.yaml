@@ -1,0 +1,612 @@
+openapi: 3.0.0
+info:
+  title: Superagent Container API
+  description: Docker container running Claude Code with HTTP/WebSocket API for managing AI agent sessions
+  version: 1.0.0
+  contact:
+    name: Superagent
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:3000
+    description: Local development server
+  - url: http://container:3000
+    description: Docker container
+
+tags:
+  - name: Health
+    description: Health check endpoints
+  - name: Sessions
+    description: Session management endpoints
+  - name: Messages
+    description: Message handling endpoints
+  - name: Files
+    description: File system operations
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check
+      description: Check if the server is running and healthy
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  timestamp:
+                    type: string
+                    format: date-time
+
+  /sessions:
+    post:
+      tags:
+        - Sessions
+      summary: Create a new session
+      description: Creates a new Claude Code session with optional configuration
+      operationId: createSession
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSessionRequest'
+      responses:
+        '201':
+          description: Session created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '500':
+          description: Failed to create session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    get:
+      tags:
+        - Sessions
+      summary: List all sessions
+      description: Get a list of all active sessions
+      operationId: listSessions
+      responses:
+        '200':
+          description: List of sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Session'
+
+  /sessions/{sessionId}:
+    get:
+      tags:
+        - Sessions
+      summary: Get session details
+      description: Get information about a specific session
+      operationId: getSession
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      responses:
+        '200':
+          description: Session details
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Session'
+                  - type: object
+                    properties:
+                      isRunning:
+                        type: boolean
+                        description: Whether the session is currently running
+        '404':
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags:
+        - Sessions
+      summary: Delete a session
+      description: Stop and delete a session
+      operationId: deleteSession
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      responses:
+        '200':
+          description: Session deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+        '404':
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /sessions/{sessionId}/messages:
+    get:
+      tags:
+        - Messages
+      summary: Get session messages
+      description: Get all messages from a session
+      operationId: getMessages
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      responses:
+        '200':
+          description: List of messages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Message'
+        '404':
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      tags:
+        - Messages
+      summary: Send a message
+      description: Send a message to a session
+      operationId: sendMessage
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+      responses:
+        '201':
+          description: Message sent successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '404':
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Failed to send message
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /sessions/{sessionId}/stream:
+    get:
+      tags:
+        - Messages
+      summary: WebSocket stream
+      description: |
+        WebSocket endpoint for real-time streaming of session events.
+
+        **Connection URL**: `ws://localhost:3000/sessions/{sessionId}/stream`
+
+        **Incoming Events** (from server):
+        - `message` - Assistant response or message
+        - `status` - Status update
+        - `error` - Error occurred
+
+        **Outgoing Messages** (to server):
+        Send JSON messages with `type` and `content` fields.
+      operationId: streamSession
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      responses:
+        '101':
+          description: WebSocket connection established
+        '404':
+          description: Session not found
+
+  /files/{path}:
+    get:
+      tags:
+        - Files
+      summary: Browse directory or get file info
+      description: Get information about a file or list contents of a directory
+      operationId: getFileInfo
+      parameters:
+        - name: path
+          in: path
+          required: true
+          description: Path to file or directory (relative to /workspace)
+          schema:
+            type: string
+          example: myproject/src
+      responses:
+        '200':
+          description: File or directory information
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/FileInfo'
+                  - type: array
+                    items:
+                      $ref: '#/components/schemas/FileInfo'
+        '404':
+          description: File or directory not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags:
+        - Files
+      summary: Delete file or directory
+      description: Delete a file or directory (recursively)
+      operationId: deleteFile
+      parameters:
+        - name: path
+          in: path
+          required: true
+          description: Path to file or directory (relative to /workspace)
+          schema:
+            type: string
+      responses:
+        '200':
+          description: File or directory deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+        '404':
+          description: File or directory not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /files/{path}/content:
+    get:
+      tags:
+        - Files
+      summary: Get file content
+      description: Download the content of a file
+      operationId: getFileContent
+      parameters:
+        - name: path
+          in: path
+          required: true
+          description: Path to file (relative to /workspace)
+          schema:
+            type: string
+          example: myproject/src/index.js
+      responses:
+        '200':
+          description: File content
+          content:
+            text/plain:
+              schema:
+                type: string
+        '404':
+          description: File not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /files/{path}/upload:
+    post:
+      tags:
+        - Files
+      summary: Upload file
+      description: Upload or create a file at the specified path
+      operationId: uploadFile
+      parameters:
+        - name: path
+          in: path
+          required: true
+          description: Path where file should be created (relative to /workspace)
+          schema:
+            type: string
+          example: myproject/src/newfile.js
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema:
+              type: string
+      responses:
+        '200':
+          description: File uploaded successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  path:
+                    type: string
+                    example: myproject/src/newfile.js
+        '500':
+          description: Failed to upload file
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /files/{path}/mkdir:
+    post:
+      tags:
+        - Files
+      summary: Create directory
+      description: Create a directory at the specified path
+      operationId: createDirectory
+      parameters:
+        - name: path
+          in: path
+          required: true
+          description: Path where directory should be created (relative to /workspace)
+          schema:
+            type: string
+          example: myproject/src/components
+      responses:
+        '200':
+          description: Directory created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  path:
+                    type: string
+                    example: myproject/src/components
+        '500':
+          description: Failed to create directory
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /files/tree:
+    get:
+      tags:
+        - Files
+      summary: Get file tree
+      description: Get a hierarchical tree structure of files and directories
+      operationId: getFileTree
+      parameters:
+        - name: depth
+          in: query
+          description: Maximum depth to traverse
+          schema:
+            type: integer
+            default: 3
+            minimum: 1
+            maximum: 10
+        - name: path
+          in: query
+          description: Starting path (relative to /workspace)
+          schema:
+            type: string
+            default: ""
+      responses:
+        '200':
+          description: File tree structure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileTree'
+        '500':
+          description: Failed to build file tree
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  parameters:
+    SessionId:
+      name: sessionId
+      in: path
+      required: true
+      description: Unique session identifier (UUID)
+      schema:
+        type: string
+        format: uuid
+      example: "550e8400-e29b-41d4-a716-446655440000"
+
+  schemas:
+    CreateSessionRequest:
+      type: object
+      properties:
+        metadata:
+          type: object
+          description: Custom metadata to attach to the session
+          additionalProperties: true
+          example:
+            name: "My Agent"
+            description: "Development assistant"
+        workingDirectory:
+          type: string
+          description: Custom working directory (defaults to /workspace)
+          example: /workspace
+        envVars:
+          type: object
+          description: Environment variables to pass to the Claude Code process
+          additionalProperties:
+            type: string
+          example:
+            ANTHROPIC_API_KEY: "sk-ant-..."
+            ANTHROPIC_BASE_URL: "https://api.anthropic.com"
+
+    Session:
+      type: object
+      required:
+        - id
+        - createdAt
+        - lastActivity
+        - workingDirectory
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique session identifier
+        createdAt:
+          type: string
+          format: date-time
+          description: When the session was created
+        lastActivity:
+          type: string
+          format: date-time
+          description: Last activity timestamp
+        metadata:
+          type: object
+          description: Custom metadata
+          additionalProperties: true
+        workingDirectory:
+          type: string
+          description: Session working directory
+        envVars:
+          type: object
+          description: Environment variables
+          additionalProperties:
+            type: string
+
+    SendMessageRequest:
+      type: object
+      required:
+        - content
+      properties:
+        content:
+          description: Message content (string or structured object)
+          oneOf:
+            - type: string
+            - type: object
+          example: "Write a hello world function"
+        type:
+          type: string
+          enum: [user, system]
+          default: user
+          description: Message type
+
+    Message:
+      type: object
+      required:
+        - type
+        - content
+        - timestamp
+        - sessionId
+      properties:
+        type:
+          type: string
+          enum: [user, assistant, system, init, result, error]
+          description: Type of message
+        content:
+          description: Message content
+          oneOf:
+            - type: string
+            - type: object
+        timestamp:
+          type: string
+          format: date-time
+          description: When the message was created
+        sessionId:
+          type: string
+          format: uuid
+          description: Associated session ID
+
+    FileInfo:
+      type: object
+      required:
+        - name
+        - path
+        - type
+      properties:
+        name:
+          type: string
+          description: File or directory name
+          example: index.js
+        path:
+          type: string
+          description: Relative path from /workspace
+          example: myproject/src/index.js
+        type:
+          type: string
+          enum: [file, directory]
+          description: Whether this is a file or directory
+        size:
+          type: integer
+          description: File size in bytes (only for files)
+          example: 1024
+        modifiedAt:
+          type: string
+          format: date-time
+          description: Last modification time
+
+    FileTree:
+      type: object
+      required:
+        - name
+        - path
+        - type
+      properties:
+        name:
+          type: string
+          description: File or directory name
+        path:
+          type: string
+          description: Relative path from /workspace
+        type:
+          type: string
+          enum: [file, directory]
+        size:
+          type: integer
+          description: File size in bytes (only for files)
+        children:
+          type: array
+          description: Child files and directories (only for directories)
+          items:
+            $ref: '#/components/schemas/FileTree'
+
+    Error:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Error message
+          example: Session not found

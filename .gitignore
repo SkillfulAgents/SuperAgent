@@ -1,0 +1,23 @@
+# Dependencies
+agent-container/node_modules/
+
+# Build output
+agent-container/dist/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

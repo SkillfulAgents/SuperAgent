@@ -1,0 +1,47 @@
+// Re-export types from Claude Agent SDK
+export type {
+  SDKMessage,
+  SDKAssistantMessage,
+  SDKUserMessage,
+  SDKUserMessageReplay,
+  SDKResultMessage,
+  SDKSystemMessage,
+  SDKPartialAssistantMessage,
+  SDKCompactBoundaryMessage,
+} from '@anthropic-ai/claude-agent-sdk';
+
+// Custom types for our container
+export interface Session {
+  id: string;
+  createdAt: Date;
+  lastActivity: Date;
+  metadata?: Record<string, any>;
+  workingDirectory: string;
+  envVars?: Record<string, string>;
+}
+
+export interface FileInfo {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+  size?: number;
+  modifiedAt?: Date;
+}
+
+export interface FileTree {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+  children?: FileTree[];
+}
+
+export interface CreateSessionRequest {
+  metadata?: Record<string, any>;
+  workingDirectory?: string;
+  envVars?: Record<string, string>;
+}
+
+export interface SendMessageRequest {
+  content: any;
+  type?: 'user' | 'system';
+}
