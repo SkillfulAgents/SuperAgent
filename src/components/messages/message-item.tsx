@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils/cn'
 import type { Message, ToolCall } from '@/lib/db/schema'
 import { User, Bot, Info, AlertCircle } from 'lucide-react'
 import { ToolCallItem } from './tool-call-item'
+import ReactMarkdown from 'react-markdown'
 
 interface MessageItemProps {
   message: (Message & { toolCalls?: ToolCall[] }) | {
@@ -28,7 +29,6 @@ export function MessageItem({ message, isStreaming }: MessageItemProps) {
   const isResult = message.type === 'result'
 
   const hasText = content.text && content.text.length > 0
-  const hasToolCalls = message.toolCalls && message.toolCalls.length > 0
 
   // Skip rendering empty assistant messages (only tool calls, no text)
   // The tool calls will still be rendered below
@@ -77,12 +77,57 @@ export function MessageItem({ message, isStreaming }: MessageItemProps) {
           >
             {/* Text content */}
             {hasText && (
-              <p className="whitespace-pre-wrap break-words">
-                {content.text}
+              <div className={cn(
+                'prose prose-sm max-w-none break-words',
+                // Use inverted (light) text for user messages (dark bg) and dark mode
+                isUser ? 'prose-invert' : 'dark:prose-invert'
+              )}>
+                <ReactMarkdown
+                  components={{
+                    // Style code blocks
+                    pre: ({ children }) => (
+                      <pre className={cn(
+                        'rounded p-2 overflow-x-auto text-xs',
+                        isUser ? 'bg-white/20' : 'bg-background/50'
+                      )}>
+                        {children}
+                      </pre>
+                    ),
+                    code: ({ children, className }) => {
+                      const isInline = !className
+                      return isInline ? (
+                        <code className={cn(
+                          'rounded px-1 py-0.5 text-xs',
+                          isUser ? 'bg-white/20' : 'bg-background/50'
+                        )}>
+                          {children}
+                        </code>
+                      ) : (
+                        <code className={className}>{children}</code>
+                      )
+                    },
+                    // Ensure links open in new tab
+                    a: ({ children, href }) => (
+                      <a
+                        href={href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className={cn(
+                          'hover:underline',
+                          isUser ? 'text-blue-200' : 'text-blue-500'
+                        )}
+                      >
+                        {children}
+                      </a>
+                    ),
+                  }}
+                >
+                  {content.text}
+                </ReactMarkdown>
                 {isStreaming && (
                   <span className="inline-block w-2 h-4 bg-current ml-0.5 animate-pulse" />
                 )}
-              </p>
+              </div>
             )}
 
             {/* Streaming indicator when no text yet */}
