@@ -1,16 +1,18 @@
 'use client'
 
 import { cn } from '@/lib/utils/cn'
-import type { Message } from '@/lib/db/schema'
+import type { Message, ToolCall } from '@/lib/db/schema'
 import { User, Bot, Info, AlertCircle } from 'lucide-react'
+import { ToolCallItem } from './tool-call-item'
 
 interface MessageItemProps {
-  message: Message | {
+  message: (Message & { toolCalls?: ToolCall[] }) | {
     id: string
     sessionId: string
     type: 'user' | 'assistant' | 'system' | 'result'
     content: any
     createdAt: Date
+    toolCalls?: ToolCall[]
   }
   isStreaming?: boolean
 }
@@ -24,6 +26,13 @@ export function MessageItem({ message, isStreaming }: MessageItemProps) {
   const isAssistant = message.type === 'assistant'
   const isSystem = message.type === 'system'
   const isResult = message.type === 'result'
+
+  const hasText = content.text && content.text.length > 0
+  const hasToolCalls = message.toolCalls && message.toolCalls.length > 0
+
+  // Skip rendering empty assistant messages (only tool calls, no text)
+  // The tool calls will still be rendered below
+  const showMessageBubble = !isAssistant || hasText || isStreaming
 
   return (
     <div
@@ -51,54 +60,60 @@ export function MessageItem({ message, isStreaming }: MessageItemProps) {
       {/* Message content */}
       <div
         className={cn(
-          'flex-1 max-w-[80%]',
-          isUser && 'flex justify-end'
+          'flex-1 max-w-[80%] flex flex-col gap-2',
+          isUser && 'items-end'
         )}
       >
-        <div
-          className={cn(
-            'rounded-lg px-4 py-2',
-            isUser && 'bg-primary text-primary-foreground',
-            isAssistant && 'bg-muted',
-            isSystem && 'bg-blue-50 text-blue-800 text-sm',
-            isResult && 'bg-green-50 text-green-800 text-sm'
-          )}
-        >
-          {/* Text content */}
-          {content.text && (
-            <p className="whitespace-pre-wrap break-words">
-              {content.text}
-              {isStreaming && (
-                <span className="inline-block w-2 h-4 bg-current ml-0.5 animate-pulse" />
-              )}
-            </p>
-          )}
+        {/* Message bubble - only show if there's text content */}
+        {showMessageBubble && (
+          <div
+            className={cn(
+              'rounded-lg px-4 py-2',
+              isUser && 'bg-primary text-primary-foreground',
+              isAssistant && 'bg-muted',
+              isSystem && 'bg-blue-50 text-blue-800 text-sm',
+              isResult && 'bg-green-50 text-green-800 text-sm'
+            )}
+          >
+            {/* Text content */}
+            {hasText && (
+              <p className="whitespace-pre-wrap break-words">
+                {content.text}
+                {isStreaming && (
+                  <span className="inline-block w-2 h-4 bg-current ml-0.5 animate-pulse" />
+                )}
+              </p>
+            )}
 
-          {/* Tool calls */}
-          {content.toolCalls && content.toolCalls.length > 0 && (
-            <div className="mt-2 text-xs opacity-70">
-              {content.toolCalls.map((tool: any, i: number) => (
-                <div key={i} className="font-mono">
-                  {tool.name}()
-                </div>
-              ))}
-            </div>
-          )}
+            {/* Streaming indicator when no text yet */}
+            {!hasText && isStreaming && (
+              <span className="inline-block w-2 h-4 bg-current animate-pulse" />
+            )}
 
-          {/* System message info */}
-          {isSystem && content.subtype && (
-            <div className="font-mono text-xs">
-              [{content.subtype}]
-            </div>
-          )}
+            {/* System message info */}
+            {isSystem && content.subtype && (
+              <div className="font-mono text-xs">
+                [{content.subtype}]
+              </div>
+            )}
 
-          {/* Result message */}
-          {isResult && (
-            <div className="font-mono text-xs">
-              {content.is_error ? 'Error' : 'Completed'}
-            </div>
-          )}
-        </div>
+            {/* Result message */}
+            {isResult && (
+              <div className="font-mono text-xs">
+                {content.is_error ? 'Error' : 'Completed'}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Tool calls - shown below assistant message */}
+        {isAssistant && message.toolCalls && message.toolCalls.length > 0 && (
+          <div className="w-full space-y-2">
+            {message.toolCalls.map((toolCall) => (
+              <ToolCallItem key={toolCall.id} toolCall={toolCall} />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )

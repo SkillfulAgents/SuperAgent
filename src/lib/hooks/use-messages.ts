@@ -1,8 +1,13 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import type { Message } from '@/lib/db/schema'
+import type { Message, ToolCall } from '@/lib/db/schema'
+
+// API response type includes tool calls for each message
+export interface MessageWithToolCalls extends Message {
+  toolCalls: ToolCall[]
+}
 
 export function useMessages(sessionId: string | null) {
-  return useQuery<Message[]>({
+  return useQuery<MessageWithToolCalls[]>({
     queryKey: ['messages', sessionId],
     queryFn: async () => {
       const res = await fetch(`/api/sessions/${sessionId}/messages`)
