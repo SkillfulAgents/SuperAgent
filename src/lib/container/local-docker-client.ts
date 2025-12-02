@@ -52,13 +52,38 @@ export class LocalDockerContainerClient extends EventEmitter implements Containe
     }
   }
 
-  // Find an available port
+  // Find an available port by checking both Docker containers and local processes
   private async findAvailablePort(): Promise<number> {
+    // Get all ports currently used by Docker containers
+    const usedPorts = await this.getDockerUsedPorts()
+
     let port = BASE_PORT
-    while (!(await this.isPortAvailable(port))) {
+    while (usedPorts.has(port) || !(await this.isPortAvailable(port))) {
       port++
     }
     return port
+  }
+
+  // Get all host ports currently mapped by Docker containers
+  private async getDockerUsedPorts(): Promise<Set<number>> {
+    const usedPorts = new Set<number>()
+    try {
+      // Get all container port mappings (format: "0.0.0.0:4000->3000/tcp")
+      const { stdout } = await execAsync(
+        `docker ps --format '{{.Ports}}' 2>/dev/null`
+      )
+
+      // Parse port mappings - match the host port before "->"
+      // Examples: "0.0.0.0:4000->3000/tcp", ":::4000->3000/tcp", "127.0.0.1:4001->3000/tcp"
+      const portRegex = /:(\d+)->/g
+      let match
+      while ((match = portRegex.exec(stdout)) !== null) {
+        usedPorts.add(parseInt(match[1], 10))
+      }
+    } catch {
+      // If docker command fails, continue with empty set
+    }
+    return usedPorts
   }
 
   private isPortAvailable(port: number): Promise<boolean> {
