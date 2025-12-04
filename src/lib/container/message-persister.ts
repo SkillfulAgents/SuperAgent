@@ -8,6 +8,7 @@ import type { ContainerClient, StreamMessage } from './types'
 interface StreamingState {
   currentText: string
   isStreaming: boolean
+  currentToolUse: { id: string; name: string } | null
 }
 
 class MessagePersister {
@@ -28,6 +29,7 @@ class MessagePersister {
     this.streamingStates.set(sessionId, {
       currentText: '',
       isStreaming: false,
+      currentToolUse: null,
     })
 
     // Subscribe to the container's message stream
@@ -151,7 +153,23 @@ class MessagePersister {
       case 'message_start':
         state.currentText = ''
         state.isStreaming = true
+        state.currentToolUse = null
         this.broadcastToSSE(sessionId, { type: 'stream_start' })
+        break
+
+      case 'content_block_start':
+        // Track when a tool use block starts
+        if (event.content_block?.type === 'tool_use') {
+          state.currentToolUse = {
+            id: event.content_block.id,
+            name: event.content_block.name,
+          }
+          this.broadcastToSSE(sessionId, {
+            type: 'tool_use_start',
+            toolId: event.content_block.id,
+            toolName: event.content_block.name,
+          })
+        }
         break
 
       case 'content_block_delta':
@@ -161,12 +179,32 @@ class MessagePersister {
             type: 'stream_delta',
             text: event.delta.text,
           })
+        } else if (event.delta?.type === 'input_json_delta') {
+          // Tool input is being streamed - broadcast to keep UI alive
+          this.broadcastToSSE(sessionId, {
+            type: 'tool_use_streaming',
+            toolId: state.currentToolUse?.id,
+            toolName: state.currentToolUse?.name,
+          })
+        }
+        break
+
+      case 'content_block_stop':
+        // Tool use block finished streaming
+        if (state.currentToolUse) {
+          this.broadcastToSSE(sessionId, {
+            type: 'tool_use_ready',
+            toolId: state.currentToolUse.id,
+            toolName: state.currentToolUse.name,
+          })
+          state.currentToolUse = null
         }
         break
 
       case 'message_stop':
         // Don't save here - wait for the complete 'assistant' message
         state.isStreaming = false
+        state.currentToolUse = null
         break
     }
   }

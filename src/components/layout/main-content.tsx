@@ -4,6 +4,7 @@ import { SessionList } from '@/components/sessions/session-list'
 import { MessageList } from '@/components/messages/message-list'
 import { MessageInput } from '@/components/messages/message-input'
 import { CreateSessionDialog } from '@/components/sessions/create-session-dialog'
+import { AgentLanding } from '@/components/agents/agent-landing'
 import { Button } from '@/components/ui/button'
 import { Plus, Play, Square } from 'lucide-react'
 import { useState } from 'react'
@@ -75,23 +76,27 @@ export function MainContent({
         </div>
       </div>
 
-      {/* Sessions tabs */}
+      {/* Sessions tabs - always visible */}
       <SessionList
         agentId={agentId}
         selectedSessionId={sessionId}
         onSelectSession={onSelectSession}
       />
 
-      {/* Messages area */}
+      {/* Show messages when a session is selected, otherwise show landing page */}
       {sessionId ? (
         <div className="flex-1 flex flex-col min-h-0">
           <MessageList sessionId={sessionId} />
           <MessageInput sessionId={sessionId} agentId={agentId} />
         </div>
       ) : (
-        <div className="flex-1 flex items-center justify-center text-muted-foreground">
-          Select or create a session to start chatting
-        </div>
+        /* Show landing page with large input when no session is selected */
+        agent && (
+          <AgentLanding
+            agent={agent}
+            onSessionCreated={onSelectSession}
+          />
+        )
       )}
 
       <CreateSessionDialog

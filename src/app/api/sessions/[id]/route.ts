@@ -38,6 +38,49 @@ export async function GET(
   }
 }
 
+// PATCH /api/sessions/[id] - Update a session (e.g., rename)
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await params
+    const body = await request.json()
+    const { name } = body
+
+    const session = await db
+      .select()
+      .from(sessions)
+      .where(eq(sessions.id, id))
+      .limit(1)
+
+    if (session.length === 0) {
+      return NextResponse.json({ error: 'Session not found' }, { status: 404 })
+    }
+
+    if (name?.trim()) {
+      await db
+        .update(sessions)
+        .set({ name: name.trim() })
+        .where(eq(sessions.id, id))
+    }
+
+    const updated = await db
+      .select()
+      .from(sessions)
+      .where(eq(sessions.id, id))
+      .limit(1)
+
+    return NextResponse.json(updated[0])
+  } catch (error: any) {
+    console.error('Failed to update session:', error)
+    return NextResponse.json(
+      { error: 'Failed to update session' },
+      { status: 500 }
+    )
+  }
+}
+
 // DELETE /api/sessions/[id] - Delete a session
 export async function DELETE(
   request: NextRequest,

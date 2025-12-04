@@ -9,7 +9,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { useState } from 'react'
 import { useCreateSession } from '@/lib/hooks/use-sessions'
 
@@ -26,19 +26,19 @@ export function CreateSessionDialog({
   onOpenChange,
   onCreated,
 }: CreateSessionDialogProps) {
-  const [name, setName] = useState('')
+  const [message, setMessage] = useState('')
   const createSession = useCreateSession()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!name.trim()) return
+    if (!message.trim()) return
 
     try {
       const session = await createSession.mutateAsync({
         agentId,
-        name: name.trim(),
+        message: message.trim(),
       })
-      setName('')
+      setMessage('')
       onOpenChange(false)
       onCreated?.(session.id)
     } catch (error) {
@@ -58,10 +58,11 @@ export function CreateSessionDialog({
           </DialogHeader>
 
           <div className="py-4">
-            <Input
-              placeholder="Session name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
+            <Textarea
+              placeholder="Type your first message..."
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              className="min-h-[100px] resize-none"
               autoFocus
             />
           </div>
@@ -74,8 +75,8 @@ export function CreateSessionDialog({
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={!name.trim() || createSession.isPending}>
-              {createSession.isPending ? 'Creating...' : 'Create'}
+            <Button type="submit" disabled={!message.trim() || createSession.isPending}>
+              {createSession.isPending ? 'Creating...' : 'Start Session'}
             </Button>
           </DialogFooter>
         </form>

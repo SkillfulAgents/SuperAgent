@@ -4,7 +4,7 @@ import { useMessages } from '@/lib/hooks/use-messages'
 import { useMessageStream } from '@/lib/hooks/use-message-stream'
 import { MessageItem } from './message-item'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Loader2 } from 'lucide-react'
+import { Loader2, Wrench } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 
 interface MessageListProps {
@@ -13,7 +13,7 @@ interface MessageListProps {
 
 export function MessageList({ sessionId }: MessageListProps) {
   const { data: messages, isLoading } = useMessages(sessionId)
-  const { streamingMessage, isStreaming } = useMessageStream(sessionId)
+  const { streamingMessage, isStreaming, streamingToolUse } = useMessageStream(sessionId)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   // Auto-scroll to bottom when new messages arrive
@@ -21,7 +21,7 @@ export function MessageList({ sessionId }: MessageListProps) {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [messages, streamingMessage])
+  }, [messages, streamingMessage, streamingToolUse])
 
   if (isLoading) {
     return (
@@ -38,7 +38,7 @@ export function MessageList({ sessionId }: MessageListProps) {
           <MessageItem key={message.id} message={message} />
         ))}
 
-        {/* Streaming message */}
+        {/* Streaming text message */}
         {isStreaming && streamingMessage && (
           <MessageItem
             message={{
@@ -50,6 +50,23 @@ export function MessageList({ sessionId }: MessageListProps) {
             }}
             isStreaming
           />
+        )}
+
+        {/* Tool use streaming indicator */}
+        {isStreaming && streamingToolUse && !streamingMessage && (
+          <div className="flex gap-3">
+            <div className="h-8 w-8 rounded-full flex items-center justify-center shrink-0 bg-muted">
+              <Wrench className="h-4 w-4" />
+            </div>
+            <div className="flex-1 max-w-[80%]">
+              <div className="rounded-lg px-4 py-2 bg-muted flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span className="text-sm text-muted-foreground">
+                  Preparing {streamingToolUse.name}...
+                </span>
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </ScrollArea>

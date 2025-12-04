@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { agents, sessions } from '@/lib/db/schema'
+import { agents, sessions, messages } from '@/lib/db/schema'
 import { eq, desc } from 'drizzle-orm'
 import { v4 as uuidv4 } from 'uuid'
 import { containerManager } from '@/lib/container/container-manager'
 import { messagePersister } from '@/lib/container/message-persister'
+import Anthropic from '@anthropic-ai/sdk'
+
+const anthropic = new Anthropic()
 
 // GET /api/agents/[id]/sessions - List sessions for an agent
 export async function GET(
@@ -47,7 +50,44 @@ export async function GET(
   }
 }
 
-// POST /api/agents/[id]/sessions - Create a new session
+// Generate session name using AI (fire and forget)
+async function generateAndUpdateSessionName(
+  sessionId: string,
+  message: string,
+  agentName: string
+): Promise<void> {
+  try {
+    const response = await anthropic.messages.create({
+      model: 'claude-haiku-4-5',
+      max_tokens: 50,
+      messages: [
+        {
+          role: 'user',
+          content: `Generate a short, descriptive session name (3-6 words max) for a conversation with an AI agent named "${agentName}". The first message in the conversation is:
+
+"${message}"
+
+Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
+        },
+      ],
+    })
+
+    const textBlock = response.content.find((block) => block.type === 'text')
+    const sessionName = textBlock?.type === 'text' ? textBlock.text.trim() : null
+
+    if (sessionName) {
+      await db
+        .update(sessions)
+        .set({ name: sessionName })
+        .where(eq(sessions.id, sessionId))
+    }
+  } catch (error) {
+    console.error('Failed to generate session name:', error)
+    // Non-critical error, session will keep its default name
+  }
+}
+
+// POST /api/agents/[id]/sessions - Create a new session with initial message
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -55,10 +95,10 @@ export async function POST(
   try {
     const { id } = await params
     const body = await request.json()
-    const { name } = body
+    const { message } = body
 
-    if (!name?.trim()) {
-      return NextResponse.json({ error: 'Name is required' }, { status: 400 })
+    if (!message?.trim()) {
+      return NextResponse.json({ error: 'Message is required' }, { status: 400 })
     }
 
     // Get agent
@@ -72,32 +112,55 @@ export async function POST(
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
+    const agentData = agent[0]
     const sessionId = uuidv4()
-    let containerSessionId: string | null = null
 
-    // Check if agent is running via Docker
+    // Get container client
     const client = containerManager.getClient(id)
-    const info = await client.getInfo()
 
-    if (info.status === 'running') {
-      const containerSession = await client.createSession()
-      containerSessionId = containerSession.id
-
-      // Subscribe to messages for this session
-      messagePersister.subscribeToSession(sessionId, client, containerSessionId)
+    // Check if container is running, start if not
+    let info = await client.getInfo()
+    if (info.status !== 'running') {
+      await client.start()
+      info = await client.getInfo()
     }
 
+    // Create container session
+    const containerSession = await client.createSession()
+    const containerSessionId = containerSession.id
+
+    // Subscribe to messages for this session
+    messagePersister.subscribeToSession(sessionId, client, containerSessionId)
+
+    // Create session in database with temporary name
     const now = new Date()
     const newSession = {
       id: sessionId,
       agentId: id,
-      name: name.trim(),
+      name: 'New Session',
       containerSessionId,
       createdAt: now,
       lastActivityAt: now,
     }
 
     await db.insert(sessions).values(newSession)
+
+    // Save user message to database
+    await db.insert(messages).values({
+      id: uuidv4(),
+      sessionId,
+      type: 'user',
+      content: { text: message.trim() },
+      createdAt: now,
+    })
+
+    // Send message to container
+    await client.sendMessage(containerSessionId, message.trim())
+
+    // Generate session name in background (fire and forget)
+    generateAndUpdateSessionName(sessionId, message.trim(), agentData.name).catch(
+      console.error
+    )
 
     return NextResponse.json(newSession, { status: 201 })
   } catch (error: any) {

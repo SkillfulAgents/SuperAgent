@@ -34,11 +34,11 @@ export function useCreateSession() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async (data: { agentId: string; name: string }) => {
+    mutationFn: async (data: { agentId: string; message: string }) => {
       const res = await fetch(`/api/agents/${data.agentId}/sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: data.name }),
+        body: JSON.stringify({ message: data.message }),
       })
       if (!res.ok) throw new Error('Failed to create session')
       return res.json()
@@ -56,6 +56,25 @@ export function useDeleteSession() {
     mutationFn: async (id: string) => {
       const res = await fetch(`/api/sessions/${id}`, { method: 'DELETE' })
       if (!res.ok) throw new Error('Failed to delete session')
+      return res.json()
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['sessions'] })
+    },
+  })
+}
+
+export function useUpdateSessionName() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ sessionId, name }: { sessionId: string; name: string }) => {
+      const res = await fetch(`/api/sessions/${sessionId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      })
+      if (!res.ok) throw new Error('Failed to update session name')
       return res.json()
     },
     onSuccess: () => {
