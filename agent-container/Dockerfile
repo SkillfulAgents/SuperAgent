@@ -11,6 +11,22 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     ca-certificates \
     gnupg \
+    # Network/DNS utilities
+    dnsutils \
+    iputils-ping \
+    net-tools \
+    iproute2 \
+    traceroute \
+    netcat-openbsd \
+    whois \
+    # Common tools
+    jq \
+    less \
+    vim-tiny \
+    zip \
+    unzip \
+    file \
+    tree \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 20.x
