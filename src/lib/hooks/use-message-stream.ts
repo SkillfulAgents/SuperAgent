@@ -71,7 +71,7 @@ function getOrCreateEventSource(
             streamingToolUse: null,
           })
         }
-      } else if (data.type === 'stream_end') {
+      } else if (data.type === 'stream_end' || data.type === 'stream_interrupted') {
         streamStates.set(sessionId, {
           isStreaming: false,
           streamingMessage: null,

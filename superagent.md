@@ -27,7 +27,7 @@ The main screen of the application will be split in two:
 
 Each agent will have a seperate docker container running Claude Code, which the NextJS application will communicate with via HTTP and Websockets. So when a new agent is created, the NextJS application will spin up a new docker container instance for that agent. 
 
-We should have a common interface for communicating with the docker container. There'll be multiple implementations of this interface (the first one we'll create runs the docker container locally, but in the future we could have implementations that run the container in the cloud, or on a remote server). So we should have a `ContainerClient` interface that defines methods for sending messages to the container, receiving responses, subscribing to streams and managing the container's lifecycle. It should also maintain the current state of the container (running, stopped, error, etc). When a user sends a message to a stopped container, the application should automatically start the container before sending the message.
+We should have a common interface for communicating with the docker engine. There'll be multiple implementations of this interface (the first one we'll create runs the docker container locally, but in the future we could have implementations that run the container in the cloud, or on a remote server). So we should have a `ContainerClient` interface that defines methods for sending messages to the container, receiving responses, subscribing to streams and managing the containers' lifecycle. It should also maintain the current state of the container (running, stopped, error, etc). When a user sends a message to a stopped container, the application should automatically start the container before sending the message. Down the roadm we can implement sleep and wake functionality to save resources.
 
 When initializing the container, we should also be able to pass in some initial env variable - like Anthropic Base URL and API Keys.
 
@@ -37,7 +37,7 @@ Whereather the container is running, the app will initialize sessions, send mess
 
 For the datalayer - we will use an embedded SQLite database to store all agent configurations, message histories, and other data. We can use an ORM like Prisma or TypeORM to interact with the database in a type-safe manner. We will have a `migrations` folder to store database migration scripts, and we will set up a simple migration system to apply migrations when the application starts. There should be a mechanism to remember which migrations have already been applied, so we don't apply the same migration multiple times.
 
-Agents and Session - each agent will have a unique ID and will corrospond to a running docker container instance. Within each agent, we can have multiple sessions - each session represents a conversation with the agent. Each session will have its own message history, and the user can switch between sessions for the same agent.
+Agents and Session - each agent will have a unique ID and will corrospond to a docker container instance. Within each agent, we can have multiple sessions - each session represents a conversation with the agent. Each session will have its own message history, and the user can switch between sessions for the same agent.
 
 #### Tech Stack
 - NextJS with TypeScript
@@ -46,8 +46,6 @@ Agents and Session - each agent will have a unique ID and will corrospond to a r
 - Shadcn/ui for UI components
 - Tailwind CSS for styling
 - Tanstack Query for data fetching and state management
-
-
 
 ### The Docker Container
 The docker container will run Claude Code in headless mode, exposing an HTTP API and a Websocket API for communication. We will create a `ContainerClient` class in the NextJS application that implements the interface mentioned earlier, handling all interactions with the docker container.

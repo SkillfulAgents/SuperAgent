@@ -134,11 +134,21 @@ export class ClaudeCodeProcess extends EventEmitter {
         }
       }
     } catch (error: any) {
-      if (error.name === 'AbortError') {
+      // Check for abort error in multiple ways (SDK may use different error types)
+      const isAbortError =
+        error.name === 'AbortError' ||
+        error.constructor?.name === 'AbortError' ||
+        error.message?.includes('aborted') ||
+        error.message?.includes('abort');
+
+      if (isAbortError) {
         console.log(`[Session ${this.sessionId}] Query aborted`);
       } else {
         console.error(`[Session ${this.sessionId}] Query error:`, error);
-        this.emit('error', error);
+        // Only emit if there are listeners to prevent crash
+        if (this.listenerCount('error') > 0) {
+          this.emit('error', error);
+        }
       }
     } finally {
       this.isProcessing = false;
@@ -196,5 +206,60 @@ export class ClaudeCodeProcess extends EventEmitter {
 
   isRunning(): boolean {
     return this.isReady && this.isProcessing;
+  }
+
+  async interrupt(): Promise<void> {
+    console.log(`[Session ${this.sessionId}] Interrupting current query`);
+
+    if (!this.abortController || !this.isProcessing) {
+      console.log(`[Session ${this.sessionId}] Nothing to interrupt`);
+      return;
+    }
+
+    // Abort the current query
+    this.abortController.abort();
+
+    // Wait for the current processing to stop
+    await new Promise<void>((resolve) => {
+      const checkInterval = setInterval(() => {
+        if (!this.isProcessing) {
+          clearInterval(checkInterval);
+          resolve();
+        }
+      }, 50);
+      // Timeout after 5 seconds
+      setTimeout(() => {
+        clearInterval(checkInterval);
+        resolve();
+      }, 5000);
+    });
+
+    // Restart the query with resume to continue the session
+    console.log(`[Session ${this.sessionId}] Restarting query after interrupt`);
+
+    // Create new abort controller and message queue
+    this.abortController = new AbortController();
+    this.messageQueue = new MessageQueue();
+
+    // Start a new query with resume
+    this.queryInstance = query({
+      prompt: this.messageQueue,
+      options: {
+        cwd: this.workingDirectory,
+        abortController: this.abortController,
+        resume: this.claudeSessionId || undefined,
+        permissionMode: 'bypassPermissions',
+        includePartialMessages: true,
+        systemPrompt: {
+          type: 'preset',
+          preset: 'claude_code',
+        },
+      },
+    });
+
+    this.isReady = true;
+
+    // Start processing messages again
+    this.processMessages();
   }
 }

@@ -300,6 +300,17 @@ export class LocalDockerContainerClient extends EventEmitter implements Containe
     }
   }
 
+  async interruptSession(sessionId: string): Promise<boolean> {
+    const port = await this.getPortOrThrow()
+
+    const response = await fetch(
+      `http://localhost:${port}/sessions/${sessionId}/interrupt`,
+      { method: 'POST' }
+    )
+
+    return response.ok
+  }
+
   async getMessages(sessionId: string): Promise<any[]> {
     const port = await this.getPortOrThrow()
 

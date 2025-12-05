@@ -46,6 +46,7 @@ export interface ContainerClient {
   // Message operations
   sendMessage(sessionId: string, content: string): Promise<void>
   getMessages(sessionId: string): Promise<any[]>
+  interruptSession(sessionId: string): Promise<boolean>
 
   // Streaming - returns unsubscribe function
   subscribeToStream(

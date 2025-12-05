@@ -253,4 +253,14 @@ export class SessionManager extends EventEmitter {
     if (!sessionData) return false;
     return sessionData.process.isRunning();
   }
+
+  async interruptSession(sessionId: string): Promise<boolean> {
+    const sessionData = this.sessions.get(sessionId);
+    if (!sessionData) {
+      return false;
+    }
+
+    await sessionData.process.interrupt();
+    return true;
+  }
 }

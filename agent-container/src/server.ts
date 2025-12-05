@@ -57,6 +57,23 @@ app.delete('/sessions/:id', async (c) => {
   return c.json({ success: true });
 });
 
+app.post('/sessions/:id/interrupt', async (c) => {
+  const sessionId = c.req.param('id');
+
+  try {
+    const interrupted = await sessionManager.interruptSession(sessionId);
+
+    if (!interrupted) {
+      return c.json({ error: 'Session not found' }, 404);
+    }
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    console.error('Error interrupting session:', error);
+    return c.json({ error: error.message || 'Failed to interrupt session' }, 500);
+  }
+});
+
 // Message endpoints
 app.get('/sessions/:id/messages', async (c) => {
   const sessionId = c.req.param('id');
@@ -340,6 +357,7 @@ console.log('  POST   /sessions');
 console.log('  GET    /sessions/:id');
 console.log('  GET    /sessions');
 console.log('  DELETE /sessions/:id');
+console.log('  POST   /sessions/:id/interrupt');
 console.log('  GET    /sessions/:id/messages');
 console.log('  POST   /sessions/:id/messages');
 console.log('  WS     /sessions/:id/stream');

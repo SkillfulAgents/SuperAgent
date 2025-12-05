@@ -62,6 +62,17 @@ class MessagePersister {
     return this.subscriptions.has(sessionId)
   }
 
+  // Mark a session as interrupted (not streaming)
+  markSessionInterrupted(sessionId: string): void {
+    const state = this.streamingStates.get(sessionId)
+    if (state) {
+      state.isStreaming = false
+      state.currentText = ''
+      state.currentToolUse = null
+    }
+    this.broadcastToSSE(sessionId, { type: 'stream_interrupted' })
+  }
+
   // Add SSE client for real-time updates
   addSSEClient(sessionId: string, callback: (data: any) => void): () => void {
     let clients = this.sseClients.get(sessionId)

@@ -39,3 +39,21 @@ export function useSendMessage() {
     },
   })
 }
+
+export function useInterruptSession() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (sessionId: string) => {
+      const res = await fetch(`/api/sessions/${sessionId}/interrupt`, {
+        method: 'POST',
+      })
+      if (!res.ok) throw new Error('Failed to interrupt session')
+      return res.json()
+    },
+    onSuccess: (_, sessionId) => {
+      // Invalidate messages to refresh state
+      queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+    },
+  })
+}
