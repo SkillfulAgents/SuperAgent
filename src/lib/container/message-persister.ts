@@ -9,6 +9,7 @@ interface StreamingState {
   currentText: string
   isStreaming: boolean
   currentToolUse: { id: string; name: string } | null
+  isActive: boolean // True from user message until result received
 }
 
 class MessagePersister {
@@ -30,6 +31,7 @@ class MessagePersister {
       currentText: '',
       isStreaming: false,
       currentToolUse: null,
+      isActive: false,
     })
 
     // Subscribe to the container's message stream
@@ -51,10 +53,10 @@ class MessagePersister {
     this.streamingStates.delete(sessionId)
   }
 
-  // Check if a session is currently streaming/processing
+  // Check if a session is currently active (processing user request)
   isSessionActive(sessionId: string): boolean {
     const state = this.streamingStates.get(sessionId)
-    return state?.isStreaming ?? false
+    return state?.isActive ?? false
   }
 
   // Check if a session has an active subscription
@@ -62,15 +64,16 @@ class MessagePersister {
     return this.subscriptions.has(sessionId)
   }
 
-  // Mark a session as interrupted (not streaming)
+  // Mark a session as interrupted (not active)
   markSessionInterrupted(sessionId: string): void {
     const state = this.streamingStates.get(sessionId)
     if (state) {
       state.isStreaming = false
+      state.isActive = false
       state.currentText = ''
       state.currentToolUse = null
     }
-    this.broadcastToSSE(sessionId, { type: 'stream_interrupted' })
+    this.broadcastToSSE(sessionId, { type: 'session_idle' })
   }
 
   // Add SSE client for real-time updates
@@ -81,9 +84,11 @@ class MessagePersister {
       this.sseClients.set(sessionId, clients)
     }
     clients.add(callback)
+    console.log(`[SSE] Client added for session ${sessionId}, total: ${clients.size}`)
 
     return () => {
       clients?.delete(callback)
+      console.log(`[SSE] Client removed for session ${sessionId}, remaining: ${clients?.size ?? 0}`)
       if (clients?.size === 0) {
         this.sseClients.delete(sessionId)
       }
@@ -93,6 +98,7 @@ class MessagePersister {
   // Broadcast to SSE clients
   private broadcastToSSE(sessionId: string, data: any): void {
     const clients = this.sseClients.get(sessionId)
+    console.log(`[SSE] Broadcasting to session ${sessionId}:`, data.type, `(${clients?.size ?? 0} clients)`)
     if (clients) {
       clients.forEach((callback) => {
         try {
@@ -133,10 +139,11 @@ class MessagePersister {
         break
 
       case 'result':
-        // Query completed
+        // Query completed - session is no longer active
         state.isStreaming = false
+        state.isActive = false
         state.currentText = ''
-        this.broadcastToSSE(sessionId, { type: 'stream_end' })
+        this.broadcastToSSE(sessionId, { type: 'session_idle' })
         break
 
       case 'stream_event':
@@ -348,17 +355,14 @@ class MessagePersister {
         .set({ lastActivityAt: new Date() })
         .where(eq(sessions.id, sessionId))
 
-      // Only broadcast stream end if there are no tool calls waiting to execute
-      // If there are tool calls, streaming will end when the result message comes
-      if (newToolCalls.length === 0) {
-        this.broadcastToSSE(sessionId, { type: 'stream_end' })
-      }
+      // Note: We no longer broadcast stream_end here.
+      // Session activity is tracked via session_active/session_idle events.
     } catch (error) {
       console.error('Failed to upsert assistant message:', error)
     }
   }
 
-  // Save user message to database
+  // Save user message to database and mark session as active
   async saveUserMessage(sessionId: string, text: string): Promise<void> {
     try {
       await db.insert(messages).values({
@@ -374,6 +378,20 @@ class MessagePersister {
         .update(sessions)
         .set({ lastActivityAt: new Date() })
         .where(eq(sessions.id, sessionId))
+
+      // Mark session as active - user sent a message, agent will respond
+      let state = this.streamingStates.get(sessionId)
+      if (!state) {
+        state = {
+          currentText: '',
+          isStreaming: false,
+          currentToolUse: null,
+          isActive: false,
+        }
+        this.streamingStates.set(sessionId, state)
+      }
+      state.isActive = true
+      this.broadcastToSSE(sessionId, { type: 'session_active' })
     } catch (error) {
       console.error('Failed to save user message:', error)
     }

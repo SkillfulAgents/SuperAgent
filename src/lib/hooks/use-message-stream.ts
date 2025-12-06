@@ -4,10 +4,10 @@ import { useState, useEffect, useCallback } from 'react'
 import { useQueryClient, QueryClient } from '@tanstack/react-query'
 
 interface StreamState {
-  isStreaming: boolean
+  isActive: boolean // True from user message until query result
+  isStreaming: boolean // True while actively receiving tokens
   streamingMessage: string | null
   streamingToolUse: { id: string; name: string } | null
-  pendingToolCalls: Set<string>
 }
 
 // Global state to track streaming per session
@@ -37,28 +37,54 @@ function getOrCreateEventSource(
   es.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data)
+      const current = streamStates.get(sessionId)
 
-      if (data.type === 'stream_start') {
-        const current = streamStates.get(sessionId)
+      // Connection event with initial state
+      if (data.type === 'connected') {
         streamStates.set(sessionId, {
+          isActive: data.isActive ?? false,
+          isStreaming: false,
+          streamingMessage: null,
+          streamingToolUse: null,
+        })
+      }
+      // Session-level activity events
+      else if (data.type === 'session_active') {
+        streamStates.set(sessionId, {
+          isActive: true,
+          isStreaming: current?.isStreaming ?? false,
+          streamingMessage: current?.streamingMessage ?? null,
+          streamingToolUse: current?.streamingToolUse ?? null,
+        })
+        queryClient.invalidateQueries({ queryKey: ['sessions'] })
+      } else if (data.type === 'session_idle') {
+        streamStates.set(sessionId, {
+          isActive: false,
+          isStreaming: false,
+          streamingMessage: null,
+          streamingToolUse: null,
+        })
+        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+        queryClient.invalidateQueries({ queryKey: ['sessions'] })
+      }
+      // Streaming events (for granular UI updates)
+      else if (data.type === 'stream_start') {
+        streamStates.set(sessionId, {
+          isActive: current?.isActive ?? true,
           isStreaming: true,
           streamingMessage: '',
           streamingToolUse: null,
-          pendingToolCalls: current?.pendingToolCalls || new Set(),
         })
-        queryClient.invalidateQueries({ queryKey: ['sessions'] })
       } else if (data.type === 'stream_delta') {
-        const current = streamStates.get(sessionId)
         if (current) {
           streamStates.set(sessionId, {
             ...current,
             isStreaming: true,
             streamingMessage: (current.streamingMessage || '') + data.text,
-            streamingToolUse: null, // Clear tool use when we get text
+            streamingToolUse: null,
           })
         }
       } else if (data.type === 'tool_use_start' || data.type === 'tool_use_streaming') {
-        const current = streamStates.get(sessionId)
         if (current) {
           streamStates.set(sessionId, {
             ...current,
@@ -67,38 +93,25 @@ function getOrCreateEventSource(
           })
         }
       } else if (data.type === 'tool_use_ready') {
-        const current = streamStates.get(sessionId)
         if (current) {
           streamStates.set(sessionId, {
             ...current,
+            isStreaming: false,
             streamingToolUse: null,
           })
         }
-      } else if (data.type === 'stream_end' || data.type === 'stream_interrupted') {
-        const current = streamStates.get(sessionId)
-        streamStates.set(sessionId, {
-          isStreaming: false,
-          streamingMessage: null,
-          streamingToolUse: null,
-          pendingToolCalls: current?.pendingToolCalls || new Set(),
-        })
-        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
-        queryClient.invalidateQueries({ queryKey: ['sessions'] })
-      } else if (data.type === 'tool_call') {
-        // Track pending tool call
-        const current = streamStates.get(sessionId)
-        if (current && data.toolCall?.id) {
-          current.pendingToolCalls.add(data.toolCall.id)
-          streamStates.set(sessionId, { ...current })
+      } else if (data.type === 'stream_end') {
+        if (current) {
+          streamStates.set(sessionId, {
+            ...current,
+            isStreaming: false,
+            streamingMessage: null,
+            streamingToolUse: null,
+          })
         }
-        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
-      } else if (data.type === 'tool_result') {
-        // Remove from pending tool calls
-        const current = streamStates.get(sessionId)
-        if (current && data.toolUseId) {
-          current.pendingToolCalls.delete(data.toolUseId)
-          streamStates.set(sessionId, { ...current })
-        }
+      }
+      // Data events (refresh messages)
+      else if (data.type === 'tool_call' || data.type === 'tool_result') {
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
       }
 
@@ -111,10 +124,10 @@ function getOrCreateEventSource(
 
   es.onerror = () => {
     streamStates.set(sessionId, {
+      isActive: false,
       isStreaming: false,
       streamingMessage: null,
       streamingToolUse: null,
-      pendingToolCalls: new Set(),
     })
     streamListeners.get(sessionId)?.forEach((listener) => listener())
   }
@@ -138,10 +151,10 @@ function releaseEventSource(sessionId: string): void {
 
 export function useMessageStream(sessionId: string | null) {
   const [state, setState] = useState<StreamState>({
+    isActive: false,
     isStreaming: false,
     streamingMessage: null,
     streamingToolUse: null,
-    pendingToolCalls: new Set(),
   })
   const queryClient = useQueryClient()
 
@@ -169,10 +182,10 @@ export function useMessageStream(sessionId: string | null) {
     // Initialize state
     if (!streamStates.has(sessionId)) {
       streamStates.set(sessionId, {
+        isActive: false,
         isStreaming: false,
         streamingMessage: null,
         streamingToolUse: null,
-        pendingToolCalls: new Set(),
       })
     }
     updateState()
@@ -189,11 +202,5 @@ export function useMessageStream(sessionId: string | null) {
     }
   }, [sessionId, updateState, queryClient])
 
-  // Session is "active" if streaming OR waiting for tool results
-  const isActive = state.isStreaming || state.pendingToolCalls.size > 0
-
-  return {
-    ...state,
-    isActive,
-  }
+  return state
 }

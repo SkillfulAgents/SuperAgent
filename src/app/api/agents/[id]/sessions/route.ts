@@ -145,14 +145,8 @@ export async function POST(
 
     await db.insert(sessions).values(newSession)
 
-    // Save user message to database
-    await db.insert(messages).values({
-      id: uuidv4(),
-      sessionId,
-      type: 'user',
-      content: { text: message.trim() },
-      createdAt: now,
-    })
+    // Save user message to database and mark session as active
+    await messagePersister.saveUserMessage(sessionId, message.trim())
 
     // Send message to container
     await client.sendMessage(containerSessionId, message.trim())

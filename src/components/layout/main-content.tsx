@@ -3,6 +3,7 @@
 import { SessionList } from '@/components/sessions/session-list'
 import { MessageList } from '@/components/messages/message-list'
 import { MessageInput } from '@/components/messages/message-input'
+import { AgentActivityIndicator } from '@/components/messages/agent-activity-indicator'
 import { CreateSessionDialog } from '@/components/sessions/create-session-dialog'
 import { AgentLanding } from '@/components/agents/agent-landing'
 import { Button } from '@/components/ui/button'
@@ -87,6 +88,7 @@ export function MainContent({
       {sessionId ? (
         <div className="flex-1 flex flex-col min-h-0">
           <MessageList sessionId={sessionId} />
+          <AgentActivityIndicator sessionId={sessionId} />
           <MessageInput sessionId={sessionId} agentId={agentId} />
         </div>
       ) : (

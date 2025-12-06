@@ -1,0 +1,1 @@
+- do not run npm build on changes as it ruins the dev server. Instead, run typecheck + lint

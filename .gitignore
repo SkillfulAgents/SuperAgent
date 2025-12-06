@@ -33,3 +33,5 @@ npm-debug.log*
 .vscode/
 *.swp
 *.swo
+
+tsconfig.tsbuildinfo

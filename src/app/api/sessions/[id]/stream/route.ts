@@ -13,9 +13,13 @@ export async function GET(
     start(controller) {
       const encoder = new TextEncoder()
 
-      // Send initial connection message
+      // Send initial connection message with current state
+      const isActive = messagePersister.isSessionActive(id)
       controller.enqueue(
-        encoder.encode(`data: ${JSON.stringify({ type: 'connected' })}\n\n`)
+        encoder.encode(`data: ${JSON.stringify({
+          type: 'connected',
+          isActive
+        })}\n\n`)
       )
 
       // Subscribe to message updates
