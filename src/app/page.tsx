@@ -13,10 +13,12 @@ export default function Home() {
     <SidebarProvider>
       <AppSidebar
         selectedAgentId={selectedAgentId}
+        selectedSessionId={selectedSessionId}
         onSelectAgent={(agentId) => {
           setSelectedAgentId(agentId)
           setSelectedSessionId(null)
         }}
+        onSelectSession={setSelectedSessionId}
       />
       <SidebarInset>
         <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
@@ -25,7 +27,7 @@ export default function Home() {
         <MainContent
           agentId={selectedAgentId}
           sessionId={selectedSessionId}
-          onSelectSession={setSelectedSessionId}
+          onSessionCreated={setSelectedSessionId}
         />
       </SidebarInset>
     </SidebarProvider>

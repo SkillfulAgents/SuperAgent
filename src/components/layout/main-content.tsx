@@ -1,6 +1,5 @@
 'use client'
 
-import { SessionList } from '@/components/sessions/session-list'
 import { MessageList } from '@/components/messages/message-list'
 import { MessageInput } from '@/components/messages/message-input'
 import { AgentActivityIndicator } from '@/components/messages/agent-activity-indicator'
@@ -15,13 +14,13 @@ import { AgentStatus } from '@/components/agents/agent-status'
 interface MainContentProps {
   agentId: string | null
   sessionId: string | null
-  onSelectSession: (sessionId: string | null) => void
+  onSessionCreated: (sessionId: string) => void
 }
 
 export function MainContent({
   agentId,
   sessionId,
-  onSelectSession,
+  onSessionCreated,
 }: MainContentProps) {
   const [createSessionOpen, setCreateSessionOpen] = useState(false)
   const { data: agent } = useAgent(agentId)
@@ -77,13 +76,6 @@ export function MainContent({
         </div>
       </div>
 
-      {/* Sessions tabs - always visible */}
-      <SessionList
-        agentId={agentId}
-        selectedSessionId={sessionId}
-        onSelectSession={onSelectSession}
-      />
-
       {/* Show messages when a session is selected, otherwise show landing page */}
       {sessionId ? (
         <div className="flex-1 flex flex-col min-h-0">
@@ -96,7 +88,7 @@ export function MainContent({
         agent && (
           <AgentLanding
             agent={agent}
-            onSessionCreated={onSelectSession}
+            onSessionCreated={onSessionCreated}
           />
         )
       )}
@@ -105,7 +97,7 @@ export function MainContent({
         agentId={agentId}
         open={createSessionOpen}
         onOpenChange={setCreateSessionOpen}
-        onCreated={(id) => onSelectSession(id)}
+        onCreated={onSessionCreated}
       />
     </div>
   )
