@@ -163,8 +163,8 @@ export function AppSidebar({
 
   return (
     <Sidebar>
-      <SidebarHeader className="border-b">
-        <div className="flex items-center px-2 py-1">
+      <SidebarHeader className="h-12 border-b">
+        <div className="flex items-center h-full px-2">
           <span className="text-lg font-bold">Super Agent</span>
         </div>
       </SidebarHeader>
