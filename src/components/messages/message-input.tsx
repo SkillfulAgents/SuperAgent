@@ -16,7 +16,7 @@ export function MessageInput({ sessionId, agentId }: MessageInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const sendMessage = useSendMessage()
   const interruptSession = useInterruptSession()
-  const { isStreaming } = useMessageStream(sessionId)
+  const { isStreaming, isActive } = useMessageStream(sessionId)
 
   const handleInterrupt = async () => {
     if (interruptSession.isPending) return
@@ -38,7 +38,7 @@ export function MessageInput({ sessionId, agentId }: MessageInputProps) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!message.trim() || sendMessage.isPending || isStreaming) return
+    if (!message.trim() || sendMessage.isPending || isActive) return
 
     try {
       await sendMessage.mutateAsync({
@@ -59,7 +59,7 @@ export function MessageInput({ sessionId, agentId }: MessageInputProps) {
     }
   }
 
-  const isDisabled = sendMessage.isPending || isStreaming
+  const isDisabled = sendMessage.isPending || isActive
 
   return (
     <form onSubmit={handleSubmit} className="p-4 border-t">
@@ -69,12 +69,12 @@ export function MessageInput({ sessionId, agentId }: MessageInputProps) {
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={isStreaming ? 'Agent is responding...' : 'Type a message...'}
+          placeholder={isActive ? 'Agent is responding...' : 'Type a message...'}
           disabled={isDisabled}
           className="flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 min-h-[40px] max-h-[200px]"
           rows={1}
         />
-        {isStreaming ? (
+        {isActive ? (
           <Button
             type="button"
             size="icon"

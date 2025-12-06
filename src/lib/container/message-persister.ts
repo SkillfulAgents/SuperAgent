@@ -348,8 +348,11 @@ class MessagePersister {
         .set({ lastActivityAt: new Date() })
         .where(eq(sessions.id, sessionId))
 
-      // Broadcast stream end
-      this.broadcastToSSE(sessionId, { type: 'stream_end' })
+      // Only broadcast stream end if there are no tool calls waiting to execute
+      // If there are tool calls, streaming will end when the result message comes
+      if (newToolCalls.length === 0) {
+        this.broadcastToSSE(sessionId, { type: 'stream_end' })
+      }
     } catch (error) {
       console.error('Failed to upsert assistant message:', error)
     }
