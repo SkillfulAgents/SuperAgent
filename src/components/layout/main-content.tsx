@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Plus, Play, Square } from 'lucide-react'
 import { useState } from 'react'
 import { useAgent, useStartAgent, useStopAgent } from '@/lib/hooks/use-agents'
+import { useSessions } from '@/lib/hooks/use-sessions'
 import { AgentStatus } from '@/components/agents/agent-status'
 
 interface MainContentProps {
@@ -24,8 +25,10 @@ export function MainContent({
 }: MainContentProps) {
   const [createSessionOpen, setCreateSessionOpen] = useState(false)
   const { data: agent } = useAgent(agentId)
+  const { data: sessions } = useSessions(agentId)
   const startAgent = useStartAgent()
   const stopAgent = useStopAgent()
+  const hasActiveSessions = sessions?.some((s) => s.isActive) ?? false
 
   if (!agentId) {
     return (
@@ -41,7 +44,7 @@ export function MainContent({
       <div className="p-4 border-b flex items-center justify-between">
         <div className="flex items-center gap-3">
           <h2 className="text-lg font-semibold">{agent?.name || 'Loading...'}</h2>
-          {agent && <AgentStatus status={agent.status} />}
+          {agent && <AgentStatus status={agent.status} hasActiveSessions={hasActiveSessions} />}
         </div>
         <div className="flex items-center gap-2">
           {agent?.status === 'running' ? (

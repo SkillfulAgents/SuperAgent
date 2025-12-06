@@ -2,6 +2,7 @@
 
 import { cn } from '@/lib/utils/cn'
 import { AgentStatus } from './agent-status'
+import { useSessions } from '@/lib/hooks/use-sessions'
 import type { AgentWithStatus } from '@/lib/hooks/use-agents'
 
 interface AgentListItemProps {
@@ -11,6 +12,9 @@ interface AgentListItemProps {
 }
 
 export function AgentListItem({ agent, selected, onClick }: AgentListItemProps) {
+  const { data: sessions } = useSessions(agent.id)
+  const hasActiveSessions = sessions?.some((s) => s.isActive) ?? false
+
   return (
     <button
       onClick={onClick}
@@ -22,7 +26,7 @@ export function AgentListItem({ agent, selected, onClick }: AgentListItemProps) 
       )}
     >
       <span className="font-medium truncate">{agent.name}</span>
-      <AgentStatus status={agent.status} />
+      <AgentStatus status={agent.status} hasActiveSessions={hasActiveSessions} />
     </button>
   )
 }

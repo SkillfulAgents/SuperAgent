@@ -103,7 +103,10 @@ function AgentMenuItem({
           className="justify-between"
         >
           <span className="truncate">{agent.name}</span>
-          <AgentStatus status={agent.status} />
+          <AgentStatus
+            status={agent.status}
+            hasActiveSessions={sessions?.some((s) => s.isActive) ?? false}
+          />
         </SidebarMenuButton>
         {sessions?.length ? (
           <>
