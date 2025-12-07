@@ -2,6 +2,53 @@ import { query, Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { EventEmitter } from 'events';
 
 /**
+ * Generates the system prompt to append to the Claude Code preset.
+ * Includes platform-specific instructions and available environment variables.
+ */
+function generateSystemPromptAppend(
+  availableEnvVars?: string[],
+  userSystemPrompt?: string
+): string | undefined {
+  const sections: string[] = [];
+
+  // Platform instructions
+  sections.push(`# Super Agent Platform
+You are running inside a Super Agent container. This is a managed environment for autonomous AI agents. Some guidance:
+- Your job is to solve the user's requests as best as you can using code, not to build an app.
+- Users may make similar requests multiple times, so as you build code, consider making reusable components.
+    - Place reusable code in the /tools directory.
+    - Give tools reasonable names that reflect their functionality. Names can be long - they are not user facing.
+    - When you get a new request, first check /tools for existing code you can reuse.
+- You have access to a filesystem and can read/write files.
+- Use UV (\`uv run \`) to run code snippets. You can use the --with flag to include additional packages.
+`);
+
+  // Available environment variables
+  if (availableEnvVars && availableEnvVars.length > 0) {
+    sections.push(`## Available Environment Variables
+
+The following environment variables have been configured for this agent and are available in your environment:
+
+${availableEnvVars.map(name => `- \`${name}\``).join('\n')}
+
+You can access these using standard environment variable methods (e.g., \`process.env.VAR_NAME\` in Node.js, \`os.environ['VAR_NAME']\` in Python, \`$VAR_NAME\` in shell scripts).`);
+  }
+
+  // User's custom system prompt
+  if (userSystemPrompt?.trim()) {
+    sections.push(`## Agent-Specific Instructions
+
+${userSystemPrompt.trim()}`);
+  }
+
+  if (sections.length === 0) {
+    return undefined;
+  }
+
+  return sections.join('\n\n');
+}
+
+/**
  * Async message queue that bridges imperative sendMessage() calls
  * to an async iterable for the SDK's streaming input mode.
  */
@@ -52,6 +99,14 @@ class MessageQueue {
   }
 }
 
+export interface ClaudeCodeProcessOptions {
+  sessionId: string;
+  workingDirectory: string;
+  claudeSessionId?: string;
+  userSystemPrompt?: string;
+  availableEnvVars?: string[];
+}
+
 export class ClaudeCodeProcess extends EventEmitter {
   private queryInstance: Query | null = null;
   private messageQueue: MessageQueue | null = null;
@@ -59,21 +114,19 @@ export class ClaudeCodeProcess extends EventEmitter {
   private sessionId: string;
   private workingDirectory: string;
   private claudeSessionId: string | null;
-  private systemPrompt: string | undefined;
+  private systemPromptAppend: string | undefined;
   private isReady: boolean = false;
   private isProcessing: boolean = false;
 
-  constructor(
-    sessionId: string,
-    workingDirectory: string,
-    claudeSessionId?: string,
-    systemPrompt?: string
-  ) {
+  constructor(options: ClaudeCodeProcessOptions) {
     super();
-    this.sessionId = sessionId;
-    this.workingDirectory = workingDirectory;
-    this.claudeSessionId = claudeSessionId || null;
-    this.systemPrompt = systemPrompt;
+    this.sessionId = options.sessionId;
+    this.workingDirectory = options.workingDirectory;
+    this.claudeSessionId = options.claudeSessionId || null;
+    this.systemPromptAppend = generateSystemPromptAppend(
+      options.availableEnvVars,
+      options.userSystemPrompt
+    );
   }
 
   async start(): Promise<void> {
@@ -98,11 +151,11 @@ export class ClaudeCodeProcess extends EventEmitter {
         resume: this.claudeSessionId || undefined,
         permissionMode: 'bypassPermissions',
         includePartialMessages: true,
-        systemPrompt: this.systemPrompt
+        systemPrompt: this.systemPromptAppend
           ? {
               type: 'preset',
               preset: 'claude_code',
-              append: this.systemPrompt,
+              append: this.systemPromptAppend,
             }
           : {
               type: 'preset',
@@ -259,11 +312,11 @@ export class ClaudeCodeProcess extends EventEmitter {
         resume: this.claudeSessionId || undefined,
         permissionMode: 'bypassPermissions',
         includePartialMessages: true,
-        systemPrompt: this.systemPrompt
+        systemPrompt: this.systemPromptAppend
           ? {
               type: 'preset',
               preset: 'claude_code',
-              append: this.systemPrompt,
+              append: this.systemPromptAppend,
             }
           : {
               type: 'preset',

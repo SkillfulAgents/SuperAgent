@@ -46,14 +46,15 @@ export class SessionManager extends EventEmitter {
       workingDirectory,
       envVars: request.envVars,
       systemPrompt: request.systemPrompt,
+      availableEnvVars: request.availableEnvVars,
     };
 
-    const process = new ClaudeCodeProcess(
+    const process = new ClaudeCodeProcess({
       sessionId,
       workingDirectory,
-      undefined, // claudeSessionId (not resuming)
-      request.systemPrompt
-    );
+      userSystemPrompt: request.systemPrompt,
+      availableEnvVars: request.availableEnvVars,
+    });
 
     const sessionData: SessionData = {
       session,
@@ -84,6 +85,7 @@ export class SessionManager extends EventEmitter {
         createdAt: session.createdAt.toISOString(),
         lastActivity: session.lastActivity.toISOString(),
         systemPrompt: request.systemPrompt,
+        availableEnvVars: request.availableEnvVars,
       });
       console.log(`Persisted session ${sessionId} with Claude session ID ${claudeSessionId}`);
     });
@@ -108,12 +110,13 @@ export class SessionManager extends EventEmitter {
 
     try {
       // Create a new Claude Code process with resume
-      const process = new ClaudeCodeProcess(
+      const process = new ClaudeCodeProcess({
         sessionId,
-        persisted.workingDirectory,
-        persisted.claudeSessionId,
-        persisted.systemPrompt
-      );
+        workingDirectory: persisted.workingDirectory,
+        claudeSessionId: persisted.claudeSessionId,
+        userSystemPrompt: persisted.systemPrompt,
+        availableEnvVars: persisted.availableEnvVars,
+      });
 
       const session: Session = {
         id: sessionId,
@@ -121,6 +124,7 @@ export class SessionManager extends EventEmitter {
         lastActivity: new Date(),
         workingDirectory: persisted.workingDirectory,
         systemPrompt: persisted.systemPrompt,
+        availableEnvVars: persisted.availableEnvVars,
       };
 
       const sessionData: SessionData = {

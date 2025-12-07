@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { agents, sessions, messages } from '@/lib/db/schema'
+import { agents, sessions, messages, agentSecrets } from '@/lib/db/schema'
 import { eq, desc } from 'drizzle-orm'
 import { v4 as uuidv4 } from 'uuid'
 import { containerManager } from '@/lib/container/container-manager'
@@ -115,19 +115,21 @@ export async function POST(
     const agentData = agent[0]
     const sessionId = uuidv4()
 
-    // Get container client
-    const client = containerManager.getClient(id)
+    // Ensure container is running (fetches secrets and starts if needed)
+    const client = await containerManager.ensureRunning(id)
 
-    // Check if container is running, start if not
-    let info = await client.getInfo()
-    if (info.status !== 'running') {
-      await client.start()
-      info = await client.getInfo()
-    }
+    // Fetch secret env var names to pass to the agent
+    const secrets = await db
+      .select({ envVar: agentSecrets.envVar })
+      .from(agentSecrets)
+      .where(eq(agentSecrets.agentId, id))
 
-    // Create container session with agent's system prompt
+    const availableEnvVars = secrets.map((s) => s.envVar)
+
+    // Create container session with agent's system prompt and available env vars
     const containerSession = await client.createSession({
       systemPrompt: agentData.systemPrompt || undefined,
+      availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
     })
     const containerSessionId = containerSession.id
 

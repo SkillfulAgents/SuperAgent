@@ -21,6 +21,7 @@ export interface Session {
   workingDirectory: string;
   envVars?: Record<string, string>;
   systemPrompt?: string;
+  availableEnvVars?: string[];
 }
 
 export interface FileInfo {
@@ -43,6 +44,7 @@ export interface CreateSessionRequest {
   workingDirectory?: string;
   envVars?: Record<string, string>;
   systemPrompt?: string; // Custom system prompt to append to default
+  availableEnvVars?: string[]; // List of env var names available to the agent
 }
 
 export interface SendMessageRequest {

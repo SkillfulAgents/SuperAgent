@@ -6,7 +6,7 @@ import { containerManager } from '@/lib/container/container-manager'
 
 // POST /api/agents/[id]/start - Start an agent's container
 export async function POST(
-  request: NextRequest,
+  _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
@@ -23,22 +23,8 @@ export async function POST(
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
-    // Get or create container client
-    const client = containerManager.getClient(id)
-
-    // Check if already running via Docker
-    const info = await client.getInfo()
-    if (info.status === 'running') {
-      return NextResponse.json({
-        ...agent[0],
-        status: info.status,
-        containerPort: info.port,
-        message: 'Agent is already running',
-      })
-    }
-
-    // Start the container
-    await client.start()
+    // Ensure container is running (fetches secrets and starts if needed)
+    const client = await containerManager.ensureRunning(id)
 
     // Get updated status from Docker
     const newInfo = await client.getInfo()

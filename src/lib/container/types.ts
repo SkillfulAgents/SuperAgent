@@ -28,11 +28,16 @@ export interface StreamMessage {
 export interface CreateSessionOptions {
   metadata?: Record<string, any>
   systemPrompt?: string
+  availableEnvVars?: string[]
+}
+
+export interface StartOptions {
+  envVars?: Record<string, string>
 }
 
 export interface ContainerClient {
   // Lifecycle management
-  start(): Promise<void>
+  start(options?: StartOptions): Promise<void>
   stop(): Promise<void>
   stopSync(): void // Synchronous stop for exit handlers
 

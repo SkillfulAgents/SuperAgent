@@ -1,5 +1,8 @@
 import { LocalDockerContainerClient } from './local-docker-client'
 import type { ContainerClient, ContainerConfig } from './types'
+import { db } from '@/lib/db'
+import { agentSecrets } from '@/lib/db/schema'
+import { eq } from 'drizzle-orm'
 
 // Singleton to manage all container clients
 class ContainerManager {
@@ -16,6 +19,32 @@ class ContainerManager {
 
       client = new LocalDockerContainerClient(config)
       this.clients.set(agentId, client)
+    }
+
+    return client
+  }
+
+  // Ensure container is running, starting it with secrets if needed
+  // Returns the container client
+  async ensureRunning(agentId: string): Promise<ContainerClient> {
+    const client = this.getClient(agentId)
+    const info = await client.getInfo()
+
+    if (info.status !== 'running') {
+      // Fetch secrets for this agent
+      const secrets = await db
+        .select()
+        .from(agentSecrets)
+        .where(eq(agentSecrets.agentId, agentId))
+
+      // Convert to env vars
+      const envVars: Record<string, string> = {}
+      for (const secret of secrets) {
+        envVars[secret.envVar] = secret.value
+      }
+
+      // Start with secrets as env vars
+      await client.start({ envVars })
     }
 
     return client

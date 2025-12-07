@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { Settings, FileText } from 'lucide-react'
+import { Settings, FileText, KeyRound } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -9,9 +9,6 @@ import {
   DialogDescription,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Textarea } from '@/components/ui/textarea'
 import {
   Sidebar,
   SidebarContent,
@@ -23,12 +20,16 @@ import {
   SidebarProvider,
 } from '@/components/ui/sidebar'
 import { useUpdateAgent, type AgentWithStatus } from '@/lib/hooks/use-agents'
+import { GeneralTab } from './settings/general-tab'
+import { SystemPromptTab } from './settings/system-prompt-tab'
+import { SecretsTab } from './settings/secrets-tab'
 
-type SettingsSection = 'general' | 'system-prompt'
+type SettingsSection = 'general' | 'system-prompt' | 'secrets'
 
 const navItems = [
   { id: 'general' as const, name: 'General', icon: Settings },
   { id: 'system-prompt' as const, name: 'System Prompt', icon: FileText },
+  { id: 'secrets' as const, name: 'Secrets', icon: KeyRound },
 ]
 
 interface AgentSettingsDialogProps {
@@ -106,47 +107,31 @@ export function AgentSettingsDialog({
             </header>
             <div className="flex flex-1 flex-col gap-4 overflow-y-auto p-4">
               {activeSection === 'general' && (
-                <div className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="agent-name">Agent Name</Label>
-                    <Input
-                      id="agent-name"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      placeholder="Enter agent name"
-                    />
-                  </div>
-                </div>
+                <GeneralTab name={name} onNameChange={setName} />
               )}
               {activeSection === 'system-prompt' && (
-                <div className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="system-prompt">System Prompt</Label>
-                    <p className="text-sm text-muted-foreground">
-                      Custom instructions that will be appended to the default Claude Code system prompt.
-                    </p>
-                    <Textarea
-                      id="system-prompt"
-                      value={systemPrompt}
-                      onChange={(e) => setSystemPrompt(e.target.value)}
-                      placeholder="Enter custom instructions for this agent..."
-                      className="min-h-[300px] font-mono text-sm"
-                    />
-                  </div>
-                </div>
+                <SystemPromptTab
+                  systemPrompt={systemPrompt}
+                  onSystemPromptChange={setSystemPrompt}
+                />
+              )}
+              {activeSection === 'secrets' && (
+                <SecretsTab agentId={agent.id} isOpen={open} />
               )}
             </div>
-            <div className="flex items-center justify-end gap-2 border-t p-4">
-              <Button variant="outline" onClick={() => onOpenChange(false)}>
-                Cancel
-              </Button>
-              <Button
-                onClick={handleSave}
-                disabled={!hasChanges || updateAgent.isPending}
-              >
-                {updateAgent.isPending ? 'Saving...' : 'Save'}
-              </Button>
-            </div>
+            {activeSection !== 'secrets' && (
+              <div className="flex items-center justify-end gap-2 border-t p-4">
+                <Button variant="outline" onClick={() => onOpenChange(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleSave}
+                  disabled={!hasChanges || updateAgent.isPending}
+                >
+                  {updateAgent.isPending ? 'Saving...' : 'Save'}
+                </Button>
+              </div>
+            )}
           </main>
         </SidebarProvider>
       </DialogContent>

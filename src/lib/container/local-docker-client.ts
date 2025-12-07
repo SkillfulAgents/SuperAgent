@@ -11,6 +11,7 @@ import type {
   ContainerInfo,
   ContainerSession,
   CreateSessionOptions,
+  StartOptions,
   StreamMessage,
 } from './types'
 
@@ -99,7 +100,7 @@ export class LocalDockerContainerClient extends EventEmitter implements Containe
     })
   }
 
-  async start(): Promise<void> {
+  async start(options?: StartOptions): Promise<void> {
     const info = await this.getInfo()
     if (info.status === 'running') {
       console.log(`Container ${this.getContainerName()} is already running on port ${info.port}`)
@@ -117,8 +118,8 @@ export class LocalDockerContainerClient extends EventEmitter implements Containe
       // Find an available port
       const port = await this.findAvailablePort()
 
-      // Build docker run command
-      const envFlags = this.buildEnvFlags()
+      // Build docker run command with additional env vars from options
+      const envFlags = this.buildEnvFlags(options?.envVars)
       const containerName = this.getContainerName()
 
       // Remove existing container if exists (might be stopped)
@@ -244,6 +245,7 @@ export class LocalDockerContainerClient extends EventEmitter implements Containe
       body: JSON.stringify({
         metadata: options?.metadata,
         systemPrompt: options?.systemPrompt,
+        availableEnvVars: options?.availableEnvVars,
       }),
     })
 
@@ -429,12 +431,13 @@ export class LocalDockerContainerClient extends EventEmitter implements Containe
     }
   }
 
-  private buildEnvFlags(): string {
+  private buildEnvFlags(additionalEnvVars?: Record<string, string>): string {
     const envVars: Record<string, string | undefined> = {
       ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
       // Store Claude session data in /workspace so it persists with the volume mount
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
       ...this.config.envVars,
+      ...additionalEnvVars,
     }
 
     return Object.entries(envVars)

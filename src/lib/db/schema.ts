@@ -48,6 +48,19 @@ export const toolCalls = sqliteTable('tool_calls', {
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
 })
 
+// Agent secrets - environment variables passed to the container
+export const agentSecrets = sqliteTable('agent_secrets', {
+  id: text('id').primaryKey(),
+  agentId: text('agent_id')
+    .notNull()
+    .references(() => agents.id, { onDelete: 'cascade' }),
+  key: text('key').notNull(), // Display name (e.g., "My API Key")
+  envVar: text('env_var').notNull(), // Computed env var name (e.g., "MY_API_KEY")
+  value: text('value').notNull(), // The secret value
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+})
+
 // Type exports for convenience
 export type Agent = typeof agents.$inferSelect
 export type NewAgent = typeof agents.$inferInsert
@@ -57,3 +70,5 @@ export type Message = typeof messages.$inferSelect
 export type NewMessage = typeof messages.$inferInsert
 export type ToolCall = typeof toolCalls.$inferSelect
 export type NewToolCall = typeof toolCalls.$inferInsert
+export type AgentSecret = typeof agentSecrets.$inferSelect
+export type NewAgentSecret = typeof agentSecrets.$inferInsert
