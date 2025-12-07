@@ -7,6 +7,7 @@ interface SessionMetadata {
   workingDirectory: string;
   createdAt: string;
   lastActivity: string;
+  systemPrompt?: string;
 }
 
 const SESSIONS_FILE = '/workspace/.superagent-sessions.json';

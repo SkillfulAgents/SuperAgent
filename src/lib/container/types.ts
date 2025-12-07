@@ -25,6 +25,11 @@ export interface StreamMessage {
   sessionId: string
 }
 
+export interface CreateSessionOptions {
+  metadata?: Record<string, any>
+  systemPrompt?: string
+}
+
 export interface ContainerClient {
   // Lifecycle management
   start(): Promise<void>
@@ -39,7 +44,7 @@ export interface ContainerClient {
   isHealthy(): Promise<boolean>
 
   // Session management (proxied to container API)
-  createSession(metadata?: Record<string, any>): Promise<ContainerSession>
+  createSession(options?: CreateSessionOptions): Promise<ContainerSession>
   getSession(sessionId: string): Promise<ContainerSession | null>
   deleteSession(sessionId: string): Promise<boolean>
 

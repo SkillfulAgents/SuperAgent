@@ -67,6 +67,34 @@ export function useDeleteAgent() {
   })
 }
 
+export function useUpdateAgent() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({
+      id,
+      name,
+      systemPrompt,
+    }: {
+      id: string
+      name?: string
+      systemPrompt?: string | null
+    }) => {
+      const res = await fetch(`/api/agents/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, systemPrompt }),
+      })
+      if (!res.ok) throw new Error('Failed to update agent')
+      return res.json()
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
+      queryClient.invalidateQueries({ queryKey: ['agents', variables.id] })
+    },
+  })
+}
+
 export function useStartAgent() {
   const queryClient = useQueryClient()
 

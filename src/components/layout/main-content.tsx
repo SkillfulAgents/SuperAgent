@@ -4,10 +4,11 @@ import { MessageList } from '@/components/messages/message-list'
 import { MessageInput } from '@/components/messages/message-input'
 import { AgentActivityIndicator } from '@/components/messages/agent-activity-indicator'
 import { CreateSessionDialog } from '@/components/sessions/create-session-dialog'
+import { AgentSettingsDialog } from '@/components/agents/agent-settings-dialog'
 import { AgentLanding } from '@/components/agents/agent-landing'
 import { Button } from '@/components/ui/button'
 import { SidebarTrigger } from '@/components/ui/sidebar'
-import { Plus, Play, Square, ChevronRight } from 'lucide-react'
+import { Plus, Play, Square, ChevronRight, Settings } from 'lucide-react'
 import { useState } from 'react'
 import { useAgent, useStartAgent, useStopAgent } from '@/lib/hooks/use-agents'
 import { useSessions, useSession } from '@/lib/hooks/use-sessions'
@@ -25,6 +26,7 @@ export function MainContent({
   onSessionCreated,
 }: MainContentProps) {
   const [createSessionOpen, setCreateSessionOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const { data: agent } = useAgent(agentId)
   const { data: sessions } = useSessions(agentId)
   const { data: session } = useSession(sessionId)
@@ -90,6 +92,14 @@ export function MainContent({
             <Plus className="mr-2 h-4 w-4" />
             New Session
           </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <Settings className="h-4 w-4" />
+            <span className="sr-only">Agent Settings</span>
+          </Button>
         </div>
       </header>
 
@@ -116,6 +126,14 @@ export function MainContent({
         onOpenChange={setCreateSessionOpen}
         onCreated={onSessionCreated}
       />
+
+      {agent && (
+        <AgentSettingsDialog
+          agent={agent}
+          open={settingsOpen}
+          onOpenChange={setSettingsOpen}
+        />
+      )}
     </div>
   )
 }

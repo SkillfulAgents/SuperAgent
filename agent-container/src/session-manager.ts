@@ -45,11 +45,14 @@ export class SessionManager extends EventEmitter {
       metadata: request.metadata,
       workingDirectory,
       envVars: request.envVars,
+      systemPrompt: request.systemPrompt,
     };
 
     const process = new ClaudeCodeProcess(
       sessionId,
-      workingDirectory
+      workingDirectory,
+      undefined, // claudeSessionId (not resuming)
+      request.systemPrompt
     );
 
     const sessionData: SessionData = {
@@ -80,6 +83,7 @@ export class SessionManager extends EventEmitter {
         workingDirectory,
         createdAt: session.createdAt.toISOString(),
         lastActivity: session.lastActivity.toISOString(),
+        systemPrompt: request.systemPrompt,
       });
       console.log(`Persisted session ${sessionId} with Claude session ID ${claudeSessionId}`);
     });
@@ -107,7 +111,8 @@ export class SessionManager extends EventEmitter {
       const process = new ClaudeCodeProcess(
         sessionId,
         persisted.workingDirectory,
-        persisted.claudeSessionId
+        persisted.claudeSessionId,
+        persisted.systemPrompt
       );
 
       const session: Session = {
@@ -115,6 +120,7 @@ export class SessionManager extends EventEmitter {
         createdAt: new Date(persisted.createdAt),
         lastActivity: new Date(),
         workingDirectory: persisted.workingDirectory,
+        systemPrompt: persisted.systemPrompt,
       };
 
       const sessionData: SessionData = {

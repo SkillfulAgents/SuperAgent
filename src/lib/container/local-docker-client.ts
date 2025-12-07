@@ -10,6 +10,7 @@ import type {
   ContainerConfig,
   ContainerInfo,
   ContainerSession,
+  CreateSessionOptions,
   StreamMessage,
 } from './types'
 
@@ -234,13 +235,16 @@ export class LocalDockerContainerClient extends EventEmitter implements Containe
     return info.port
   }
 
-  async createSession(metadata?: Record<string, any>): Promise<ContainerSession> {
+  async createSession(options?: CreateSessionOptions): Promise<ContainerSession> {
     const port = await this.getPortOrThrow()
 
     const response = await fetch(`http://localhost:${port}/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ metadata }),
+      body: JSON.stringify({
+        metadata: options?.metadata,
+        systemPrompt: options?.systemPrompt,
+      }),
     })
 
     if (!response.ok) {

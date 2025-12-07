@@ -125,8 +125,10 @@ export async function POST(
       info = await client.getInfo()
     }
 
-    // Create container session
-    const containerSession = await client.createSession()
+    // Create container session with agent's system prompt
+    const containerSession = await client.createSession({
+      systemPrompt: agentData.systemPrompt || undefined,
+    })
     const containerSessionId = containerSession.id
 
     // Subscribe to messages for this session

@@ -59,18 +59,21 @@ export class ClaudeCodeProcess extends EventEmitter {
   private sessionId: string;
   private workingDirectory: string;
   private claudeSessionId: string | null;
+  private systemPrompt: string | undefined;
   private isReady: boolean = false;
   private isProcessing: boolean = false;
 
   constructor(
     sessionId: string,
     workingDirectory: string,
-    claudeSessionId?: string
+    claudeSessionId?: string,
+    systemPrompt?: string
   ) {
     super();
     this.sessionId = sessionId;
     this.workingDirectory = workingDirectory;
     this.claudeSessionId = claudeSessionId || null;
+    this.systemPrompt = systemPrompt;
   }
 
   async start(): Promise<void> {
@@ -95,10 +98,16 @@ export class ClaudeCodeProcess extends EventEmitter {
         resume: this.claudeSessionId || undefined,
         permissionMode: 'bypassPermissions',
         includePartialMessages: true,
-        systemPrompt: {
-          type: 'preset',
-          preset: 'claude_code',
-        },
+        systemPrompt: this.systemPrompt
+          ? {
+              type: 'preset',
+              preset: 'claude_code',
+              append: this.systemPrompt,
+            }
+          : {
+              type: 'preset',
+              preset: 'claude_code',
+            },
       },
     });
 
@@ -250,10 +259,16 @@ export class ClaudeCodeProcess extends EventEmitter {
         resume: this.claudeSessionId || undefined,
         permissionMode: 'bypassPermissions',
         includePartialMessages: true,
-        systemPrompt: {
-          type: 'preset',
-          preset: 'claude_code',
-        },
+        systemPrompt: this.systemPrompt
+          ? {
+              type: 'preset',
+              preset: 'claude_code',
+              append: this.systemPrompt,
+            }
+          : {
+              type: 'preset',
+              preset: 'claude_code',
+            },
       },
     });
 

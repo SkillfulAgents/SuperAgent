@@ -1,0 +1,1 @@
+ALTER TABLE `agents` ADD `system_prompt` text;

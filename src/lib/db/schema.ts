@@ -5,6 +5,7 @@ import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core'
 export const agents = sqliteTable('agents', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
+  systemPrompt: text('system_prompt'), // Optional custom system prompt to append
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
 })

@@ -47,7 +47,7 @@ export async function PUT(
   try {
     const { id } = await params
     const body = await request.json()
-    const { name } = body
+    const { name, systemPrompt } = body
 
     const agent = await db
       .select()
@@ -65,6 +65,11 @@ export async function PUT(
 
     if (name?.trim()) {
       updates.name = name.trim()
+    }
+
+    // Allow setting systemPrompt to null/empty to clear it
+    if (systemPrompt !== undefined) {
+      updates.systemPrompt = systemPrompt?.trim() || null
     }
 
     await db.update(agents).set(updates).where(eq(agents.id, id))

@@ -20,6 +20,7 @@ export interface Session {
   metadata?: Record<string, any>;
   workingDirectory: string;
   envVars?: Record<string, string>;
+  systemPrompt?: string;
 }
 
 export interface FileInfo {
@@ -41,6 +42,7 @@ export interface CreateSessionRequest {
   metadata?: Record<string, any>;
   workingDirectory?: string;
   envVars?: Record<string, string>;
+  systemPrompt?: string; // Custom system prompt to append to default
 }
 
 export interface SendMessageRequest {
