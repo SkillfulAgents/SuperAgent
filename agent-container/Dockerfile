@@ -43,6 +43,9 @@ RUN apt-get update && apt-get install -y \
     && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
     && ln -sf /usr/bin/python3 /usr/bin/python
 
+# Install UV (Universal Virtualenv)
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
 # Install Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
 
