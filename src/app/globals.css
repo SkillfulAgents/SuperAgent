@@ -79,7 +79,18 @@
   * {
     @apply border-border;
   }
-  body {
-    @apply bg-background text-foreground;
+  html, body {
+    @apply bg-background text-foreground overflow-x-hidden;
   }
+}
+
+/* Fix Radix ScrollArea viewport using display: table which causes content to expand */
+[data-radix-scroll-area-viewport] {
+  display: block !important;
+  min-width: 0 !important;
+}
+
+[data-radix-scroll-area-viewport] > div {
+  display: block !important;
+  min-width: 0 !important;
 }

@@ -20,7 +20,7 @@ export default function Home() {
         }}
         onSelectSession={setSelectedSessionId}
       />
-      <SidebarInset>
+      <SidebarInset className="min-w-0 overflow-hidden">
         <MainContent
           agentId={selectedAgentId}
           sessionId={selectedSessionId}

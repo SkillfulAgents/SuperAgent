@@ -55,7 +55,7 @@ export function MainContent({
         <div className="flex items-center gap-2 min-w-0 flex-1">
           <span className="font-semibold truncate">{agent?.name || 'Loading...'}</span>
           {agent && <AgentStatus status={agent.status} hasActiveSessions={hasActiveSessions} />}
-          {sessionId && (
+          {sessionId && session?.agentId === agentId && (
             <>
               <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
               <span className="text-muted-foreground truncate">{session?.name || 'Loading...'}</span>
