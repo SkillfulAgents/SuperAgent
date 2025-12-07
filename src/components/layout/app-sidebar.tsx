@@ -123,7 +123,10 @@ function AgentMenuItem({
                     key={session.id}
                     session={session}
                     isSelected={session.id === selectedSessionId}
-                    onClick={() => onSelectSession(session.id)}
+                    onClick={() => {
+                      onSelectAgent(agent.id)
+                      onSelectSession(session.id)
+                    }}
                   />
                 ))}
                 {hasMore && (
