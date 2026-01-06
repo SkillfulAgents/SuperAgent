@@ -11,6 +11,7 @@ interface StreamingState {
   currentToolUse: { id: string; name: string } | null
   currentToolInput: string // Accumulated partial JSON input for current tool
   isActive: boolean // True from user message until result received
+  isInterrupted: boolean // True after user interrupts, prevents race conditions
 }
 
 class MessagePersister {
@@ -34,6 +35,7 @@ class MessagePersister {
       currentToolUse: null,
       currentToolInput: '',
       isActive: false,
+      isInterrupted: false,
     })
 
     // Subscribe to the container's message stream
@@ -67,16 +69,57 @@ class MessagePersister {
   }
 
   // Mark a session as interrupted (not active)
-  markSessionInterrupted(sessionId: string): void {
+  // Saves any partial message and adds an interrupted meta message
+  async markSessionInterrupted(sessionId: string): Promise<void> {
     const state = this.streamingStates.get(sessionId)
+
+    // Set interrupted flag FIRST to prevent race conditions with incoming events
     if (state) {
+      state.isInterrupted = true
       state.isStreaming = false
       state.isActive = false
-      state.currentText = ''
-      state.currentToolUse = null
-      state.currentToolInput = ''
     }
+
+    // Always broadcast immediately to update UI
     this.broadcastToSSE(sessionId, { type: 'session_idle' })
+
+    // Then persist to database (errors here shouldn't block UI update)
+    try {
+      if (state) {
+        // Save partial message if there's accumulated text
+        if (state.currentText && state.currentText.length > 0) {
+          await db.insert(messages).values({
+            id: uuidv4(),
+            sessionId,
+            type: 'assistant',
+            content: { text: state.currentText },
+            createdAt: new Date(),
+          })
+        }
+
+        // Insert interrupted meta message
+        await db.insert(messages).values({
+          id: uuidv4(),
+          sessionId,
+          type: 'system',
+          content: { subtype: 'interrupted' },
+          createdAt: new Date(),
+        })
+
+        // Update session activity
+        await db
+          .update(sessions)
+          .set({ lastActivityAt: new Date() })
+          .where(eq(sessions.id, sessionId))
+
+        // Clear accumulated state
+        state.currentText = ''
+        state.currentToolUse = null
+        state.currentToolInput = ''
+      }
+    } catch (error) {
+      console.error('Failed to persist interrupted state:', error)
+    }
   }
 
   // Add SSE client for real-time updates
@@ -124,12 +167,21 @@ class MessagePersister {
     const state = this.streamingStates.get(sessionId)
     if (!state) return
 
+    // Skip processing if session was interrupted (prevents race conditions)
+    // Allow 'result' through as it indicates the container actually stopped
+    if (state.isInterrupted && message.content?.type !== 'result') {
+      return
+    }
+
     const content = message.content
 
     switch (content.type) {
       case 'assistant':
         // Complete assistant message - save/update in DB
         await this.upsertAssistantMessage(sessionId, content)
+        // Clear currentText since the message is now persisted
+        // This prevents duplicate messages on interrupt
+        state.currentText = ''
         break
 
       case 'user':
@@ -401,10 +453,12 @@ class MessagePersister {
           currentToolUse: null,
           currentToolInput: '',
           isActive: false,
+          isInterrupted: false,
         }
         this.streamingStates.set(sessionId, state)
       }
       state.isActive = true
+      state.isInterrupted = false // Reset interrupted flag on new message
       this.broadcastToSSE(sessionId, { type: 'session_active' })
     } catch (error) {
       console.error('Failed to save user message:', error)

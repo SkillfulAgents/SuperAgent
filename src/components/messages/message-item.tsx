@@ -2,7 +2,7 @@
 
 import { cn } from '@/lib/utils/cn'
 import type { Message, ToolCall } from '@/lib/db/schema'
-import { User, Bot, Info, AlertCircle } from 'lucide-react'
+import { User, Bot, Info, AlertCircle, StopCircle } from 'lucide-react'
 import { ToolCallItem } from './tool-call-item'
 import ReactMarkdown from 'react-markdown'
 
@@ -27,6 +27,7 @@ export function MessageItem({ message, isStreaming }: MessageItemProps) {
   const isAssistant = message.type === 'assistant'
   const isSystem = message.type === 'system'
   const isResult = message.type === 'result'
+  const isInterrupted = isSystem && content.subtype === 'interrupted'
 
   const hasText = content.text && content.text.length > 0
 
@@ -47,13 +48,15 @@ export function MessageItem({ message, isStreaming }: MessageItemProps) {
           'h-8 w-8 rounded-full flex items-center justify-center shrink-0',
           isUser && 'bg-primary text-primary-foreground',
           isAssistant && 'bg-muted',
-          isSystem && 'bg-blue-100 text-blue-600',
+          isInterrupted && 'bg-amber-100 text-amber-600',
+          isSystem && !isInterrupted && 'bg-blue-100 text-blue-600',
           isResult && 'bg-green-100 text-green-600'
         )}
       >
         {isUser && <User className="h-4 w-4" />}
         {isAssistant && <Bot className="h-4 w-4" />}
-        {isSystem && <Info className="h-4 w-4" />}
+        {isInterrupted && <StopCircle className="h-4 w-4" />}
+        {isSystem && !isInterrupted && <Info className="h-4 w-4" />}
         {isResult && <AlertCircle className="h-4 w-4" />}
       </div>
 
@@ -71,7 +74,8 @@ export function MessageItem({ message, isStreaming }: MessageItemProps) {
               'rounded-lg px-4 py-2',
               isUser && 'bg-primary text-primary-foreground',
               isAssistant && 'bg-muted',
-              isSystem && 'bg-blue-50 text-blue-800 text-sm',
+              isInterrupted && 'bg-amber-50 text-amber-800 text-sm',
+              isSystem && !isInterrupted && 'bg-blue-50 text-blue-800 text-sm',
               isResult && 'bg-green-50 text-green-800 text-sm'
             )}
           >
@@ -135,8 +139,15 @@ export function MessageItem({ message, isStreaming }: MessageItemProps) {
               <span className="inline-block w-2 h-4 bg-current animate-pulse" />
             )}
 
+            {/* Interrupted message */}
+            {isInterrupted && (
+              <div className="font-mono text-xs">
+                Stopped by user
+              </div>
+            )}
+
             {/* System message info */}
-            {isSystem && content.subtype && (
+            {isSystem && !isInterrupted && content.subtype && (
               <div className="font-mono text-xs">
                 [{content.subtype}]
               </div>

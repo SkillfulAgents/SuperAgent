@@ -8,6 +8,7 @@ interface StreamState {
   isStreaming: boolean // True while actively receiving tokens
   streamingMessage: string | null
   streamingToolUse: { id: string; name: string; partialInput: string } | null
+  isIdle: boolean // True after session_idle, prevents stale events from reactivating
 }
 
 // Global state to track streaming per session
@@ -40,7 +41,12 @@ function getOrCreateEventSource(
       const current = streamStates.get(sessionId)
 
       // Every event includes isActive, so we always use it to self-correct state
-      const isActive = data.isActive ?? current?.isActive ?? false
+      // BUT if we're idle, ignore stale events trying to set isActive=true (except session_active)
+      let isActive = data.isActive ?? current?.isActive ?? false
+      if (current?.isIdle && isActive && data.type !== 'session_active') {
+        // Stale event arrived after session_idle - ignore its isActive
+        isActive = false
+      }
 
       // Connection event with initial state
       if (data.type === 'connected') {
@@ -49,34 +55,40 @@ function getOrCreateEventSource(
           isStreaming: false,
           streamingMessage: null,
           streamingToolUse: null,
+          isIdle: false, // Don't assume idle on connect - wait for explicit session_idle
         })
       }
       // Session-level activity events
       else if (data.type === 'session_active') {
+        // New user message - clear idle flag, allow events
         streamStates.set(sessionId, {
           isActive, // Will be true from server
           isStreaming: current?.isStreaming ?? false,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUse: current?.streamingToolUse ?? null,
+          isIdle: false,
         })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
       } else if (data.type === 'session_idle') {
+        // Session stopped - set idle flag to ignore stale events
         streamStates.set(sessionId, {
-          isActive, // Will be false from server
+          isActive: false, // Force false, don't trust payload for idle
           isStreaming: false,
           streamingMessage: null,
           streamingToolUse: null,
+          isIdle: true,
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
       }
-      // Streaming events - always update isActive from payload
+      // Streaming events - update state, preserve isIdle
       else if (data.type === 'stream_start') {
         streamStates.set(sessionId, {
           isActive,
           isStreaming: true,
           streamingMessage: '',
           streamingToolUse: null,
+          isIdle: current?.isIdle ?? false,
         })
       } else if (data.type === 'stream_delta') {
         streamStates.set(sessionId, {
@@ -84,6 +96,7 @@ function getOrCreateEventSource(
           isStreaming: true,
           streamingMessage: (current?.streamingMessage || '') + data.text,
           streamingToolUse: null,
+          isIdle: current?.isIdle ?? false,
         })
       } else if (data.type === 'tool_use_start' || data.type === 'tool_use_streaming') {
         streamStates.set(sessionId, {
@@ -95,6 +108,7 @@ function getOrCreateEventSource(
             name: data.toolName,
             partialInput: data.partialInput ?? '',
           },
+          isIdle: current?.isIdle ?? false,
         })
       } else if (data.type === 'tool_use_ready') {
         streamStates.set(sessionId, {
@@ -102,6 +116,7 @@ function getOrCreateEventSource(
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUse: null,
+          isIdle: current?.isIdle ?? false,
         })
       } else if (data.type === 'stream_end') {
         streamStates.set(sessionId, {
@@ -109,6 +124,7 @@ function getOrCreateEventSource(
           isStreaming: false,
           streamingMessage: null,
           streamingToolUse: null,
+          isIdle: current?.isIdle ?? false,
         })
       }
       // Data events (refresh messages) - still update isActive
@@ -171,6 +187,7 @@ export function useMessageStream(sessionId: string | null) {
     isStreaming: false,
     streamingMessage: null,
     streamingToolUse: null,
+    isIdle: false, // Only true AFTER receiving session_idle
   })
   const queryClient = useQueryClient()
 
@@ -202,6 +219,7 @@ export function useMessageStream(sessionId: string | null) {
         isStreaming: false,
         streamingMessage: null,
         streamingToolUse: null,
+        isIdle: false, // Only true AFTER receiving session_idle
       })
     }
     updateState()

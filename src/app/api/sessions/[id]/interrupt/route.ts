@@ -69,7 +69,7 @@ export async function POST(
     }
 
     // Mark the session as interrupted in the message persister
-    messagePersister.markSessionInterrupted(id)
+    await messagePersister.markSessionInterrupted(id)
 
     return NextResponse.json({ success: true })
   } catch (error: any) {
