@@ -2,11 +2,16 @@
 
 import { cn } from '@/lib/utils/cn'
 import type { ToolCall } from '@/lib/db/schema'
-import { Circle, CheckCircle, XCircle, ChevronDown, ChevronRight } from 'lucide-react'
+import { Circle, CheckCircle, XCircle, ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
 import { useState } from 'react'
 
 interface ToolCallItemProps {
   toolCall: ToolCall
+}
+
+interface StreamingToolCallItemProps {
+  name: string
+  partialInput: string
 }
 
 type ToolCallStatus = 'running' | 'success' | 'error'
@@ -105,6 +110,53 @@ export function ToolCallItem({ toolCall }: ToolCallItemProps) {
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+// Component for displaying a tool call while its input is being streamed
+export function StreamingToolCallItem({ name, partialInput }: StreamingToolCallItemProps) {
+  // Try to pretty-print the partial JSON if it's valid, otherwise show raw
+  let displayInput = partialInput
+  if (partialInput) {
+    try {
+      // Attempt to parse and format - will fail for incomplete JSON
+      const parsed = JSON.parse(partialInput)
+      displayInput = JSON.stringify(parsed, null, 2)
+    } catch {
+      // Show raw partial input as-is
+      displayInput = partialInput
+    }
+  }
+
+  return (
+    <div className="border rounded-md bg-muted/30 text-sm">
+      {/* Header row - always expanded during streaming */}
+      <div className="w-full flex items-center gap-2 px-3 py-2">
+        {/* Status indicator - streaming */}
+        <Loader2 className="h-4 w-4 shrink-0 text-gray-400 animate-spin" />
+
+        {/* Tool name */}
+        <span className="font-mono font-medium truncate">
+          {name}
+        </span>
+
+        {/* Streaming indicator */}
+        <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+          streaming...
+        </span>
+      </div>
+
+      {/* Always show input during streaming */}
+      <div className="px-3 pb-3 space-y-2">
+        <div>
+          <div className="text-xs font-medium text-muted-foreground mb-1">Input</div>
+          <pre className="bg-background rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto whitespace-pre-wrap break-all">
+            {displayInput || <span className="text-muted-foreground italic">Waiting for input...</span>}
+            <span className="animate-pulse">|</span>
+          </pre>
+        </div>
+      </div>
     </div>
   )
 }

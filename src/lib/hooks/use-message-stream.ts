@@ -7,7 +7,7 @@ interface StreamState {
   isActive: boolean // True from user message until query result
   isStreaming: boolean // True while actively receiving tokens
   streamingMessage: string | null
-  streamingToolUse: { id: string; name: string } | null
+  streamingToolUse: { id: string; name: string; partialInput: string } | null
 }
 
 // Global state to track streaming per session
@@ -39,10 +39,13 @@ function getOrCreateEventSource(
       const data = JSON.parse(event.data)
       const current = streamStates.get(sessionId)
 
+      // Every event includes isActive, so we always use it to self-correct state
+      const isActive = data.isActive ?? current?.isActive ?? false
+
       // Connection event with initial state
       if (data.type === 'connected') {
         streamStates.set(sessionId, {
-          isActive: data.isActive ?? false,
+          isActive,
           isStreaming: false,
           streamingMessage: null,
           streamingToolUse: null,
@@ -51,7 +54,7 @@ function getOrCreateEventSource(
       // Session-level activity events
       else if (data.type === 'session_active') {
         streamStates.set(sessionId, {
-          isActive: true,
+          isActive, // Will be true from server
           isStreaming: current?.isStreaming ?? false,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUse: current?.streamingToolUse ?? null,
@@ -59,7 +62,7 @@ function getOrCreateEventSource(
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
       } else if (data.type === 'session_idle') {
         streamStates.set(sessionId, {
-          isActive: false,
+          isActive, // Will be false from server
           isStreaming: false,
           streamingMessage: null,
           streamingToolUse: null,
@@ -67,52 +70,57 @@ function getOrCreateEventSource(
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
       }
-      // Streaming events (for granular UI updates)
+      // Streaming events - always update isActive from payload
       else if (data.type === 'stream_start') {
         streamStates.set(sessionId, {
-          isActive: current?.isActive ?? true,
+          isActive,
           isStreaming: true,
           streamingMessage: '',
           streamingToolUse: null,
         })
       } else if (data.type === 'stream_delta') {
-        if (current) {
-          streamStates.set(sessionId, {
-            ...current,
-            isStreaming: true,
-            streamingMessage: (current.streamingMessage || '') + data.text,
-            streamingToolUse: null,
-          })
-        }
+        streamStates.set(sessionId, {
+          isActive,
+          isStreaming: true,
+          streamingMessage: (current?.streamingMessage || '') + data.text,
+          streamingToolUse: null,
+        })
       } else if (data.type === 'tool_use_start' || data.type === 'tool_use_streaming') {
-        if (current) {
-          streamStates.set(sessionId, {
-            ...current,
-            isStreaming: true,
-            streamingToolUse: { id: data.toolId, name: data.toolName },
-          })
-        }
+        streamStates.set(sessionId, {
+          isActive,
+          isStreaming: true,
+          streamingMessage: current?.streamingMessage ?? null,
+          streamingToolUse: {
+            id: data.toolId,
+            name: data.toolName,
+            partialInput: data.partialInput ?? '',
+          },
+        })
       } else if (data.type === 'tool_use_ready') {
-        if (current) {
-          streamStates.set(sessionId, {
-            ...current,
-            isStreaming: false,
-            streamingToolUse: null,
-          })
-        }
+        streamStates.set(sessionId, {
+          isActive,
+          isStreaming: false,
+          streamingMessage: current?.streamingMessage ?? null,
+          streamingToolUse: null,
+        })
       } else if (data.type === 'stream_end') {
-        if (current) {
-          streamStates.set(sessionId, {
-            ...current,
-            isStreaming: false,
-            streamingMessage: null,
-            streamingToolUse: null,
-          })
-        }
+        streamStates.set(sessionId, {
+          isActive,
+          isStreaming: false,
+          streamingMessage: null,
+          streamingToolUse: null,
+        })
       }
-      // Data events (refresh messages)
+      // Data events (refresh messages) - still update isActive
       else if (data.type === 'tool_call' || data.type === 'tool_result') {
+        if (current) {
+          streamStates.set(sessionId, { ...current, isActive })
+        }
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+      }
+      // Handle ping or unknown events - still update isActive if we have state
+      else if (current && data.isActive !== undefined) {
+        streamStates.set(sessionId, { ...current, isActive })
       }
 
       // Notify all listeners
@@ -123,13 +131,21 @@ function getOrCreateEventSource(
   }
 
   es.onerror = () => {
-    streamStates.set(sessionId, {
-      isActive: false,
-      isStreaming: false,
-      streamingMessage: null,
-      streamingToolUse: null,
-    })
+    // Don't reset isActive on error - EventSource will auto-reconnect
+    // and we'll get the correct state from the 'connected' event.
+    // Only reset streaming state since that's definitely interrupted.
+    const current = streamStates.get(sessionId)
+    if (current) {
+      streamStates.set(sessionId, {
+        ...current,
+        isStreaming: false,
+        streamingMessage: null,
+        streamingToolUse: null,
+      })
+    }
     streamListeners.get(sessionId)?.forEach((listener) => listener())
+    // Refetch messages to ensure we have latest data
+    queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
   }
 
   return es

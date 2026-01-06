@@ -9,6 +9,7 @@ interface StreamingState {
   currentText: string
   isStreaming: boolean
   currentToolUse: { id: string; name: string } | null
+  currentToolInput: string // Accumulated partial JSON input for current tool
   isActive: boolean // True from user message until result received
 }
 
@@ -31,6 +32,7 @@ class MessagePersister {
       currentText: '',
       isStreaming: false,
       currentToolUse: null,
+      currentToolInput: '',
       isActive: false,
     })
 
@@ -72,6 +74,7 @@ class MessagePersister {
       state.isActive = false
       state.currentText = ''
       state.currentToolUse = null
+      state.currentToolInput = ''
     }
     this.broadcastToSSE(sessionId, { type: 'session_idle' })
   }
@@ -96,13 +99,16 @@ class MessagePersister {
   }
 
   // Broadcast to SSE clients
+  // Always includes isActive so every event self-corrects client state
   private broadcastToSSE(sessionId: string, data: any): void {
     const clients = this.sseClients.get(sessionId)
-    console.log(`[SSE] Broadcasting to session ${sessionId}:`, data.type, `(${clients?.size ?? 0} clients)`)
+    const state = this.streamingStates.get(sessionId)
+    const payload = { ...data, isActive: state?.isActive ?? false }
+    console.log(`[SSE] Broadcasting to session ${sessionId}:`, data.type, `isActive=${payload.isActive}`, `(${clients?.size ?? 0} clients)`)
     if (clients) {
       clients.forEach((callback) => {
         try {
-          callback(data)
+          callback(payload)
         } catch (error) {
           console.error('Error broadcasting to SSE client:', error)
         }
@@ -182,10 +188,12 @@ class MessagePersister {
             id: event.content_block.id,
             name: event.content_block.name,
           }
+          state.currentToolInput = '' // Reset input accumulator
           this.broadcastToSSE(sessionId, {
             type: 'tool_use_start',
             toolId: event.content_block.id,
             toolName: event.content_block.name,
+            partialInput: '',
           })
         }
         break
@@ -198,11 +206,14 @@ class MessagePersister {
             text: event.delta.text,
           })
         } else if (event.delta?.type === 'input_json_delta') {
-          // Tool input is being streamed - broadcast to keep UI alive
+          // Tool input is being streamed - accumulate and broadcast
+          const partialJson = event.delta.partial_json || ''
+          state.currentToolInput += partialJson
           this.broadcastToSSE(sessionId, {
             type: 'tool_use_streaming',
             toolId: state.currentToolUse?.id,
             toolName: state.currentToolUse?.name,
+            partialInput: state.currentToolInput,
           })
         }
         break
@@ -216,6 +227,7 @@ class MessagePersister {
             toolName: state.currentToolUse.name,
           })
           state.currentToolUse = null
+          state.currentToolInput = ''
         }
         break
 
@@ -223,6 +235,7 @@ class MessagePersister {
         // Don't save here - wait for the complete 'assistant' message
         state.isStreaming = false
         state.currentToolUse = null
+        state.currentToolInput = ''
         break
     }
   }
@@ -386,6 +399,7 @@ class MessagePersister {
           currentText: '',
           isStreaming: false,
           currentToolUse: null,
+          currentToolInput: '',
           isActive: false,
         }
         this.streamingStates.set(sessionId, state)

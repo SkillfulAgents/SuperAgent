@@ -13,16 +13,12 @@ export async function GET(
     start(controller) {
       const encoder = new TextEncoder()
 
-      // Send initial connection message with current state
-      const isActive = messagePersister.isSessionActive(id)
-      controller.enqueue(
-        encoder.encode(`data: ${JSON.stringify({
-          type: 'connected',
-          isActive
-        })}\n\n`)
-      )
-
-      // Subscribe to message updates
+      // Subscribe FIRST to avoid missing any broadcasts
+      // This prevents a race condition where:
+      // 1. We check isSessionActive() → returns false
+      // 2. Another request sets isActive = true and broadcasts session_active
+      // 3. We miss the broadcast because we haven't subscribed yet
+      // 4. We send connected with stale isActive: false
       const unsubscribe = messagePersister.addSSEClient(id, (data) => {
         try {
           controller.enqueue(
@@ -34,6 +30,16 @@ export async function GET(
         }
       })
 
+      // Now send the initial connection message with current state
+      // Any broadcasts that happened after subscription will also be received
+      const isActive = messagePersister.isSessionActive(id)
+      controller.enqueue(
+        encoder.encode(`data: ${JSON.stringify({
+          type: 'connected',
+          isActive
+        })}\n\n`)
+      )
+
       // Handle client disconnect
       request.signal.addEventListener('abort', () => {
         unsubscribe()
@@ -44,11 +50,12 @@ export async function GET(
         }
       })
 
-      // Keep-alive ping every 30 seconds
+      // Keep-alive ping every 30 seconds - includes isActive for state sync
       const pingInterval = setInterval(() => {
         try {
+          const currentIsActive = messagePersister.isSessionActive(id)
           controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({ type: 'ping' })}\n\n`)
+            encoder.encode(`data: ${JSON.stringify({ type: 'ping', isActive: currentIsActive })}\n\n`)
           )
         } catch {
           clearInterval(pingInterval)

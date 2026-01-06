@@ -3,6 +3,7 @@
 import { useMessages } from '@/lib/hooks/use-messages'
 import { useMessageStream } from '@/lib/hooks/use-message-stream'
 import { MessageItem } from './message-item'
+import { StreamingToolCallItem } from './tool-call-item'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Loader2, Wrench } from 'lucide-react'
 import { useEffect, useRef } from 'react'
@@ -52,19 +53,17 @@ export function MessageList({ sessionId }: MessageListProps) {
           />
         )}
 
-        {/* Tool use streaming indicator */}
+        {/* Tool use streaming - show partial input as it streams */}
         {isStreaming && streamingToolUse && !streamingMessage && (
           <div className="flex gap-3">
             <div className="h-8 w-8 rounded-full flex items-center justify-center shrink-0 bg-muted">
               <Wrench className="h-4 w-4" />
             </div>
             <div className="flex-1 max-w-[80%]">
-              <div className="rounded-lg px-4 py-2 bg-muted flex items-center gap-2">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                <span className="text-sm text-muted-foreground">
-                  Preparing {streamingToolUse.name}...
-                </span>
-              </div>
+              <StreamingToolCallItem
+                name={streamingToolUse.name}
+                partialInput={streamingToolUse.partialInput}
+              />
             </div>
           </div>
         )}
