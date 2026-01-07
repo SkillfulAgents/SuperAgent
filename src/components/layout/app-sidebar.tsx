@@ -29,76 +29,73 @@ import { useSessions } from '@/lib/hooks/use-sessions'
 import { useMessageStream } from '@/lib/hooks/use-message-stream'
 import { CreateAgentDialog } from '@/components/agents/create-agent-dialog'
 import { AgentStatus } from '@/components/agents/agent-status'
-
-interface AppSidebarProps {
-  selectedAgentId: string | null
-  selectedSessionId: string | null
-  onSelectAgent: (agentId: string) => void
-  onSelectSession: (sessionId: string) => void
-}
+import { SessionContextMenu } from '@/components/sessions/session-context-menu'
+import { useSelection } from '@/lib/context/selection-context'
 
 // Session sub-item that tracks its streaming state
 function SessionSubItem({
   session,
-  isSelected,
-  onClick,
+  agentId,
 }: {
   session: { id: string; name: string; isActive: boolean }
-  isSelected: boolean
-  onClick: () => void
+  agentId: string
 }) {
+  const { selectedSessionId, selectAgent, selectSession } = useSelection()
+  const isSelected = session.id === selectedSessionId
   const { isStreaming } = useMessageStream(isSelected ? session.id : null)
   const showActive = session.isActive || isStreaming
 
+  const handleClick = () => {
+    selectAgent(agentId)
+    selectSession(session.id)
+  }
+
   return (
     <SidebarMenuSubItem>
-      <SidebarMenuSubButton
-        asChild
-        isActive={isSelected}
+      <SessionContextMenu
+        sessionId={session.id}
+        sessionName={session.name}
       >
-        <button onClick={onClick} className="flex items-center gap-2 w-full">
-          {showActive && (
-            <span className="relative flex h-2 w-2 shrink-0">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-current opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-current"></span>
-            </span>
-          )}
-          <span className="truncate">{session.name}</span>
-        </button>
-      </SidebarMenuSubButton>
+        <SidebarMenuSubButton
+          asChild
+          isActive={isSelected}
+        >
+          <button onClick={handleClick} className="flex items-center gap-2 w-full">
+            {showActive && (
+              <span className="relative flex h-2 w-2 shrink-0">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-current opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-current"></span>
+              </span>
+            )}
+            <span className="truncate">{session.name}</span>
+          </button>
+        </SidebarMenuSubButton>
+      </SessionContextMenu>
     </SidebarMenuSubItem>
   )
 }
 
 // Agent menu item with expandable sessions
-function AgentMenuItem({
-  agent,
-  isSelected,
-  selectedSessionId,
-  onSelectAgent,
-  onSelectSession,
-}: {
-  agent: AgentWithStatus
-  isSelected: boolean
-  selectedSessionId: string | null
-  onSelectAgent: (agentId: string) => void
-  onSelectSession: (sessionId: string) => void
-}) {
+function AgentMenuItem({ agent }: { agent: AgentWithStatus }) {
+  const { selectedAgentId, selectAgent } = useSelection()
   const { data: sessions } = useSessions(agent.id)
+  const isSelected = agent.id === selectedAgentId
   const [isOpen, setIsOpen] = useState(isSelected)
   const [showAll, setShowAll] = useState(false)
 
   const visibleSessions = showAll ? sessions : sessions?.slice(0, 5)
   const hasMore = (sessions?.length ?? 0) > 5
 
+  const handleClick = () => {
+    selectAgent(agent.id)
+    setIsOpen((prev) => !prev)
+  }
+
   return (
     <Collapsible asChild open={isOpen} onOpenChange={setIsOpen}>
       <SidebarMenuItem>
         <SidebarMenuButton
-          onClick={() => {
-            onSelectAgent(agent.id)
-            setIsOpen((prev) => !prev)
-          }}
+          onClick={handleClick}
           isActive={isSelected}
           className="justify-between"
         >
@@ -122,11 +119,7 @@ function AgentMenuItem({
                   <SessionSubItem
                     key={session.id}
                     session={session}
-                    isSelected={session.id === selectedSessionId}
-                    onClick={() => {
-                      onSelectAgent(agent.id)
-                      onSelectSession(session.id)
-                    }}
+                    agentId={agent.id}
                   />
                 ))}
                 {hasMore && (
@@ -155,12 +148,7 @@ function AgentMenuItem({
   )
 }
 
-export function AppSidebar({
-  selectedAgentId,
-  selectedSessionId,
-  onSelectAgent,
-  onSelectSession,
-}: AppSidebarProps) {
+export function AppSidebar() {
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const { data: agents, isLoading, error } = useAgents()
 
@@ -199,14 +187,7 @@ export function AppSidebar({
                 </div>
               ) : (
                 agents.map((agent) => (
-                  <AgentMenuItem
-                    key={agent.id}
-                    agent={agent}
-                    isSelected={agent.id === selectedAgentId}
-                    selectedSessionId={selectedSessionId}
-                    onSelectAgent={onSelectAgent}
-                    onSelectSession={onSelectSession}
-                  />
+                  <AgentMenuItem key={agent.id} agent={agent} />
                 ))
               )}
             </SidebarMenu>

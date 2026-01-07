@@ -5,6 +5,7 @@ import { MessageInput } from '@/components/messages/message-input'
 import { AgentActivityIndicator } from '@/components/messages/agent-activity-indicator'
 import { CreateSessionDialog } from '@/components/sessions/create-session-dialog'
 import { AgentSettingsDialog } from '@/components/agents/agent-settings-dialog'
+import { SessionContextMenu } from '@/components/sessions/session-context-menu'
 import { AgentLanding } from '@/components/agents/agent-landing'
 import { Button } from '@/components/ui/button'
 import { SidebarTrigger } from '@/components/ui/sidebar'
@@ -13,18 +14,10 @@ import { useState } from 'react'
 import { useAgent, useStartAgent, useStopAgent } from '@/lib/hooks/use-agents'
 import { useSessions, useSession } from '@/lib/hooks/use-sessions'
 import { AgentStatus } from '@/components/agents/agent-status'
+import { useSelection } from '@/lib/context/selection-context'
 
-interface MainContentProps {
-  agentId: string | null
-  sessionId: string | null
-  onSessionCreated: (sessionId: string) => void
-}
-
-export function MainContent({
-  agentId,
-  sessionId,
-  onSessionCreated,
-}: MainContentProps) {
+export function MainContent() {
+  const { selectedAgentId: agentId, selectedSessionId: sessionId, selectSession } = useSelection()
   const [createSessionOpen, setCreateSessionOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const { data: agent } = useAgent(agentId)
@@ -58,7 +51,14 @@ export function MainContent({
           {sessionId && session?.agentId === agentId && (
             <>
               <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
-              <span className="text-muted-foreground truncate">{session?.name || 'Loading...'}</span>
+              <SessionContextMenu
+                sessionId={sessionId}
+                sessionName={session?.name || 'Session'}
+              >
+                <span className="text-muted-foreground truncate cursor-context-menu">
+                  {session?.name || 'Loading...'}
+                </span>
+              </SessionContextMenu>
             </>
           )}
         </div>
@@ -115,7 +115,7 @@ export function MainContent({
         agent && (
           <AgentLanding
             agent={agent}
-            onSessionCreated={onSessionCreated}
+            onSessionCreated={selectSession}
           />
         )
       )}
@@ -124,7 +124,7 @@ export function MainContent({
         agentId={agentId}
         open={createSessionOpen}
         onOpenChange={setCreateSessionOpen}
-        onCreated={onSessionCreated}
+        onCreated={selectSession}
       />
 
       {agent && (

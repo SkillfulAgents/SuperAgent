@@ -107,7 +107,12 @@ export function AgentSettingsDialog({
             </header>
             <div className="flex flex-1 flex-col gap-4 overflow-y-auto p-4">
               {activeSection === 'general' && (
-                <GeneralTab name={name} onNameChange={setName} />
+                <GeneralTab
+                  name={name}
+                  agentId={agent.id}
+                  onNameChange={setName}
+                  onDialogClose={() => onOpenChange(false)}
+                />
               )}
               {activeSection === 'system-prompt' && (
                 <SystemPromptTab
