@@ -81,7 +81,7 @@ class MessagePersister {
     }
 
     // Always broadcast immediately to update UI
-    this.broadcastToSSE(sessionId, { type: 'session_idle' })
+    this.broadcastToSSE(sessionId, { type: 'session_idle', isActive: false })
 
     // Then persist to database (errors here shouldn't block UI update)
     try {
@@ -142,16 +142,14 @@ class MessagePersister {
   }
 
   // Broadcast to SSE clients
-  // Always includes isActive so every event self-corrects client state
+  // Only session_active and session_idle events include isActive - not every event
   private broadcastToSSE(sessionId: string, data: any): void {
     const clients = this.sseClients.get(sessionId)
-    const state = this.streamingStates.get(sessionId)
-    const payload = { ...data, isActive: state?.isActive ?? false }
-    console.log(`[SSE] Broadcasting to session ${sessionId}:`, data.type, `isActive=${payload.isActive}`, `(${clients?.size ?? 0} clients)`)
+    console.log(`[SSE] Broadcasting to session ${sessionId}:`, data.type, `(${clients?.size ?? 0} clients)`)
     if (clients) {
       clients.forEach((callback) => {
         try {
-          callback(payload)
+          callback(data)
         } catch (error) {
           console.error('Error broadcasting to SSE client:', error)
         }
@@ -201,7 +199,7 @@ class MessagePersister {
         state.isStreaming = false
         state.isActive = false
         state.currentText = ''
-        this.broadcastToSSE(sessionId, { type: 'session_idle' })
+        this.broadcastToSSE(sessionId, { type: 'session_idle', isActive: false })
         break
 
       case 'stream_event':
@@ -459,7 +457,7 @@ class MessagePersister {
       }
       state.isActive = true
       state.isInterrupted = false // Reset interrupted flag on new message
-      this.broadcastToSSE(sessionId, { type: 'session_active' })
+      this.broadcastToSSE(sessionId, { type: 'session_active', isActive: true })
     } catch (error) {
       console.error('Failed to save user message:', error)
     }
@@ -467,4 +465,14 @@ class MessagePersister {
 }
 
 // Export singleton instance
-export const messagePersister = new MessagePersister()
+// Use globalThis to persist across Next.js hot reloads in development
+const globalForPersister = globalThis as unknown as {
+  messagePersister: MessagePersister | undefined
+}
+
+export const messagePersister =
+  globalForPersister.messagePersister ?? new MessagePersister()
+
+if (process.env.NODE_ENV !== 'production') {
+  globalForPersister.messagePersister = messagePersister
+}

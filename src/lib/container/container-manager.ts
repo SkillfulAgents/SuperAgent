@@ -84,7 +84,17 @@ class ContainerManager {
 }
 
 // Export singleton instance
-export const containerManager = new ContainerManager()
+// Use globalThis to persist across Next.js hot reloads in development
+const globalForManager = globalThis as unknown as {
+  containerManager: ContainerManager | undefined
+}
+
+export const containerManager =
+  globalForManager.containerManager ?? new ContainerManager()
+
+if (process.env.NODE_ENV !== 'production') {
+  globalForManager.containerManager = containerManager
+}
 
 // Graceful shutdown handling
 let isShuttingDown = false
