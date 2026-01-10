@@ -1,5 +1,13 @@
 import { query, Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { EventEmitter } from 'events';
+import * as fs from 'fs';
+import * as path from 'path';
+
+// Load platform system prompt from file
+const PLATFORM_SYSTEM_PROMPT = fs.readFileSync(
+  path.join(__dirname, 'system-prompt.md'),
+  'utf-8'
+);
 
 /**
  * Generates the system prompt to append to the Claude Code preset.
@@ -12,16 +20,7 @@ function generateSystemPromptAppend(
   const sections: string[] = [];
 
   // Platform instructions
-  sections.push(`# Super Agent Platform
-You are running inside a Super Agent container. This is a managed environment for autonomous AI agents. Some guidance:
-- Your job is to solve the user's requests as best as you can using code, not to build an app.
-- Users may make similar requests multiple times, so as you build code, consider making reusable components.
-    - Place reusable code in the /tools directory.
-    - Give tools reasonable names that reflect their functionality. Names can be long - they are not user facing.
-    - When you get a new request, first check /tools for existing code you can reuse.
-- You have access to a filesystem and can read/write files.
-- Use UV (\`uv run \`) to run code snippets. You can use the --with flag to include additional packages.
-`);
+  sections.push(PLATFORM_SYSTEM_PROMPT);
 
   // Available environment variables
   if (availableEnvVars && availableEnvVars.length > 0) {
@@ -151,6 +150,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         resume: this.claudeSessionId || undefined,
         permissionMode: 'bypassPermissions',
         includePartialMessages: true,
+        settingSources: ['project'], // Enable Skills from .claude/skills/
         systemPrompt: this.systemPromptAppend
           ? {
               type: 'preset',
@@ -312,6 +312,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         resume: this.claudeSessionId || undefined,
         permissionMode: 'bypassPermissions',
         includePartialMessages: true,
+        settingSources: ['project'], // Enable Skills from .claude/skills/
         systemPrompt: this.systemPromptAppend
           ? {
               type: 'preset',

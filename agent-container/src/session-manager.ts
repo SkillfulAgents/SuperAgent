@@ -26,6 +26,12 @@ export class SessionManager extends EventEmitter {
     if (!fs.existsSync(this.baseWorkingDirectory)) {
       fs.mkdirSync(this.baseWorkingDirectory, { recursive: true });
     }
+
+    // Ensure .claude/skills directory exists for Skills support
+    const skillsDir = `${this.baseWorkingDirectory}/.claude/skills`;
+    if (!fs.existsSync(skillsDir)) {
+      fs.mkdirSync(skillsDir, { recursive: true });
+    }
   }
 
   async createSession(request: CreateSessionRequest = {}): Promise<Session> {
