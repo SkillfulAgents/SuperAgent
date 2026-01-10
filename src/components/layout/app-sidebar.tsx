@@ -1,7 +1,7 @@
 'use client'
 
-import { ChevronRight, Plus } from 'lucide-react'
-import { useState } from 'react'
+import { ChevronRight, Plus, Settings, AlertTriangle } from 'lucide-react'
+import { useState, useMemo } from 'react'
 import {
   Collapsible,
   CollapsibleContent,
@@ -10,6 +10,7 @@ import {
 import {
   Sidebar,
   SidebarContent,
+  SidebarFooter,
   SidebarGroup,
   SidebarGroupAction,
   SidebarGroupContent,
@@ -24,13 +25,16 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
 } from '@/components/ui/sidebar'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { useAgents, type AgentWithStatus } from '@/lib/hooks/use-agents'
 import { useSessions } from '@/lib/hooks/use-sessions'
 import { useMessageStream } from '@/lib/hooks/use-message-stream'
+import { useSettings } from '@/lib/hooks/use-settings'
 import { CreateAgentDialog } from '@/components/agents/create-agent-dialog'
 import { AgentStatus } from '@/components/agents/agent-status'
 import { SessionContextMenu } from '@/components/sessions/session-context-menu'
 import { useSelection } from '@/lib/context/selection-context'
+import { GlobalSettingsDialog } from '@/components/settings/global-settings-dialog'
 
 // Session sub-item that tracks its streaming state
 function SessionSubItem({
@@ -150,7 +154,14 @@ function AgentMenuItem({ agent }: { agent: AgentWithStatus }) {
 
 export function AppSidebar() {
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
+  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
   const { data: agents, isLoading, error } = useAgents()
+  const { data: settings } = useSettings()
+
+  const noRunnersAvailable = useMemo(() => {
+    if (!settings?.runnerAvailability) return false
+    return settings.runnerAvailability.every((r) => !r.available)
+  }, [settings?.runnerAvailability])
 
   return (
     <Sidebar>
@@ -159,6 +170,17 @@ export function AppSidebar() {
           <span className="text-lg font-bold">Super Agent</span>
         </div>
       </SidebarHeader>
+
+      {noRunnersAvailable && (
+        <div className="px-2 pt-2">
+          <Alert variant="destructive" className="py-2">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertDescription className="text-xs">
+              No container runtime found. Install Docker or Podman.
+            </AlertDescription>
+          </Alert>
+        </div>
+      )}
 
       <SidebarContent>
         <SidebarGroup>
@@ -195,9 +217,25 @@ export function AppSidebar() {
         </SidebarGroup>
       </SidebarContent>
 
+      <SidebarFooter className="border-t">
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton onClick={() => setSettingsDialogOpen(true)}>
+              <Settings className="h-4 w-4" />
+              <span>Settings</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarFooter>
+
       <CreateAgentDialog
         open={createDialogOpen}
         onOpenChange={setCreateDialogOpen}
+      />
+
+      <GlobalSettingsDialog
+        open={settingsDialogOpen}
+        onOpenChange={setSettingsDialogOpen}
       />
     </Sidebar>
   )

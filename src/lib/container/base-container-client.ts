@@ -3,7 +3,6 @@ import { promisify } from 'util'
 import { EventEmitter } from 'events'
 import WebSocket from 'ws'
 import * as fs from 'fs'
-import * as path from 'path'
 import net from 'net'
 import type {
   ContainerClient,
@@ -14,17 +13,33 @@ import type {
   StartOptions,
   StreamMessage,
 } from './types'
+import { getAgentWorkspaceDir } from '@/lib/config/data-dir'
+import { getSettings } from '@/lib/config/settings'
 
 const execAsync = promisify(exec)
 
-const DOCKER_IMAGE = 'superagent-container:latest'
+/**
+ * Check if a command is available on the system.
+ */
+export async function checkCommandAvailable(command: string): Promise<boolean> {
+  try {
+    await execAsync(`${command} --version`)
+    return true
+  } catch {
+    return false
+  }
+}
+
 const AGENT_CONTAINER_PATH = './agent-container'
 const CONTAINER_INTERNAL_PORT = 3000
-const DATA_DIR = './data/agents'
 const BASE_PORT = 4000
 
-export class LocalDockerContainerClient extends EventEmitter implements ContainerClient {
-  private config: ContainerConfig
+/**
+ * Base class for OCI-compatible container runtimes (Docker, Podman, etc.)
+ * Subclasses should override getRunnerCommand() to specify the CLI command.
+ */
+export abstract class BaseContainerClient extends EventEmitter implements ContainerClient {
+  protected config: ContainerConfig
   private wsConnections: Map<string, WebSocket> = new Map()
 
   constructor(config: ContainerConfig) {
@@ -32,16 +47,37 @@ export class LocalDockerContainerClient extends EventEmitter implements Containe
     this.config = config
   }
 
+  /**
+   * Returns the CLI command for this container runtime (e.g., 'docker', 'podman')
+   */
+  protected abstract getRunnerCommand(): string
+
+  /**
+   * Returns any additional flags needed for the run command.
+   * Subclasses can override this to add runtime-specific flags.
+   */
+  protected getAdditionalRunFlags(): string {
+    return ''
+  }
+
+  /**
+   * Returns resource limit flags for the container.
+   * Subclasses can override if the runtime uses different flag syntax.
+   */
+  protected getResourceFlags(cpu: number, memory: string): string {
+    return `--cpus=${cpu} --memory=${memory}`
+  }
+
   private getContainerName(): string {
     return `superagent-${this.config.agentId}`
   }
 
-  // Query Docker for container status and port (single source of truth)
   async getInfo(): Promise<ContainerInfo> {
     const containerName = this.getContainerName()
+    const runner = this.getRunnerCommand()
     try {
       const { stdout } = await execAsync(
-        `docker inspect --format='{{.State.Running}}|{{range $p, $conf := .NetworkSettings.Ports}}{{if eq $p "${CONTAINER_INTERNAL_PORT}/tcp"}}{{(index $conf 0).HostPort}}{{end}}{{end}}' ${containerName} 2>/dev/null`
+        `${runner} inspect --format='{{.State.Running}}|{{range $p, $conf := .NetworkSettings.Ports}}{{if eq $p "${CONTAINER_INTERNAL_PORT}/tcp"}}{{(index $conf 0).HostPort}}{{end}}{{end}}' ${containerName} 2>/dev/null`
       )
       const [running, port] = stdout.trim().split('|')
       return {
@@ -49,15 +85,12 @@ export class LocalDockerContainerClient extends EventEmitter implements Containe
         port: port ? parseInt(port, 10) : null,
       }
     } catch {
-      // Container doesn't exist
       return { status: 'stopped', port: null }
     }
   }
 
-  // Find an available port by checking both Docker containers and local processes
   private async findAvailablePort(): Promise<number> {
-    // Get all ports currently used by Docker containers
-    const usedPorts = await this.getDockerUsedPorts()
+    const usedPorts = await this.getUsedPorts()
 
     let port = BASE_PORT
     while (usedPorts.has(port) || !(await this.isPortAvailable(port))) {
@@ -66,24 +99,21 @@ export class LocalDockerContainerClient extends EventEmitter implements Containe
     return port
   }
 
-  // Get all host ports currently mapped by Docker containers
-  private async getDockerUsedPorts(): Promise<Set<number>> {
+  private async getUsedPorts(): Promise<Set<number>> {
     const usedPorts = new Set<number>()
+    const runner = this.getRunnerCommand()
     try {
-      // Get all container port mappings (format: "0.0.0.0:4000->3000/tcp")
       const { stdout } = await execAsync(
-        `docker ps --format '{{.Ports}}' 2>/dev/null`
+        `${runner} ps --format '{{.Ports}}' 2>/dev/null`
       )
 
-      // Parse port mappings - match the host port before "->"
-      // Examples: "0.0.0.0:4000->3000/tcp", ":::4000->3000/tcp", "127.0.0.1:4001->3000/tcp"
       const portRegex = /:(\d+)->/g
       let match
       while ((match = portRegex.exec(stdout)) !== null) {
         usedPorts.add(parseInt(match[1], 10))
       }
     } catch {
-      // If docker command fails, continue with empty set
+      // If command fails, continue with empty set
     }
     return usedPorts
   }
@@ -108,31 +138,42 @@ export class LocalDockerContainerClient extends EventEmitter implements Containe
     }
 
     try {
+      const settings = getSettings()
+      const runner = this.getRunnerCommand()
+      const image = settings.container.agentImage
+      const { cpu, memory } = settings.container.resourceLimits
+
       // Ensure image exists (build if not)
       await this.ensureImageExists()
 
       // Ensure workspace directory exists for persistent storage
-      const workspaceDir = path.resolve(DATA_DIR, this.config.agentId, 'workspace')
+      const workspaceDir = getAgentWorkspaceDir(this.config.agentId)
       fs.mkdirSync(workspaceDir, { recursive: true })
 
       // Find an available port
       const port = await this.findAvailablePort()
 
-      // Build docker run command with additional env vars from options
+      // Build run command with additional env vars from options
       const envFlags = this.buildEnvFlags(options?.envVars)
       const containerName = this.getContainerName()
 
       // Remove existing container if exists (might be stopped)
-      await execAsync(`docker rm -f ${containerName} 2>/dev/null || true`)
+      await execAsync(`${runner} rm -f ${containerName} 2>/dev/null || true`)
+
+      // Build resource limit flags
+      const resourceFlags = this.getResourceFlags(cpu, memory)
+      const additionalFlags = this.getAdditionalRunFlags()
 
       // Start container with volume mount for persistent workspace
       const { stdout } = await execAsync(
-        `docker run -d \
+        `${runner} run -d \
           --name ${containerName} \
           -p ${port}:${CONTAINER_INTERNAL_PORT} \
           -v "${workspaceDir}:/workspace" \
+          ${resourceFlags} \
+          ${additionalFlags} \
           ${envFlags} \
-          ${DOCKER_IMAGE}`
+          ${image}`
       )
 
       console.log(`Started container ${stdout.trim()} on port ${port}`)
@@ -160,9 +201,10 @@ export class LocalDockerContainerClient extends EventEmitter implements Containe
       this.wsConnections.clear()
 
       // Stop and remove container by name
+      const runner = this.getRunnerCommand()
       const containerName = this.getContainerName()
-      await execAsync(`docker stop ${containerName} 2>/dev/null || true`)
-      await execAsync(`docker rm ${containerName} 2>/dev/null || true`)
+      await execAsync(`${runner} stop ${containerName} 2>/dev/null || true`)
+      await execAsync(`${runner} rm ${containerName} 2>/dev/null || true`)
 
       console.log(`Stopped container ${containerName}`)
     } catch (error: any) {
@@ -172,7 +214,6 @@ export class LocalDockerContainerClient extends EventEmitter implements Containe
     }
   }
 
-  // Synchronous stop for exit handlers where async isn't available
   stopSync(): void {
     try {
       // Close all WebSocket connections
@@ -182,21 +223,21 @@ export class LocalDockerContainerClient extends EventEmitter implements Containe
       this.wsConnections.clear()
 
       // Stop and remove container by name synchronously
+      const runner = this.getRunnerCommand()
       const containerName = this.getContainerName()
       try {
-        execSync(`docker stop ${containerName}`, { stdio: 'pipe', timeout: 10000 })
+        execSync(`${runner} stop ${containerName}`, { stdio: 'pipe', timeout: 10000 })
       } catch {
         // Container might not exist, ignore
       }
       try {
-        execSync(`docker rm ${containerName}`, { stdio: 'pipe', timeout: 5000 })
+        execSync(`${runner} rm ${containerName}`, { stdio: 'pipe', timeout: 5000 })
       } catch {
         // Container might not exist, ignore
       }
 
       console.log(`Stopped container ${containerName} (sync)`)
     } catch (error) {
-      // Best effort - ignore errors during sync cleanup
       console.error('Failed to stop container (sync):', error)
     }
   }
@@ -335,12 +376,9 @@ export class LocalDockerContainerClient extends EventEmitter implements Containe
     sessionId: string,
     callback: (message: StreamMessage) => void
   ): () => void {
-    // We need the port synchronously for WebSocket, so we'll get it and set up
-    // the connection. If the container isn't running, this will fail.
     const setupWebSocket = async () => {
       const port = await this.getPortOrThrow()
 
-      // Close existing connection for this session
       const existing = this.wsConnections.get(sessionId)
       if (existing) {
         existing.close()
@@ -364,7 +402,6 @@ export class LocalDockerContainerClient extends EventEmitter implements Containe
             sessionId,
           }
           callback(streamMessage)
-          // Also emit for the message persister
           this.emit('message', sessionId, message)
         } catch (error) {
           console.error('Failed to parse WebSocket message:', error)
@@ -384,13 +421,11 @@ export class LocalDockerContainerClient extends EventEmitter implements Containe
       this.wsConnections.set(sessionId, ws)
     }
 
-    // Start the WebSocket setup
     setupWebSocket().catch((error) => {
       console.error('Failed to set up WebSocket:', error)
       this.emit('error', error)
     })
 
-    // Return unsubscribe function
     return () => {
       const ws = this.wsConnections.get(sessionId)
       if (ws) {
@@ -400,30 +435,30 @@ export class LocalDockerContainerClient extends EventEmitter implements Containe
     }
   }
 
-  // Private methods
-
   private async ensureImageExists(): Promise<void> {
+    const settings = getSettings()
+    const runner = this.getRunnerCommand()
+    const image = settings.container.agentImage
+
     try {
-      // Check if image exists
-      await execAsync(`docker image inspect ${DOCKER_IMAGE}`)
-      console.log(`Docker image ${DOCKER_IMAGE} found`)
+      await execAsync(`${runner} image inspect ${image}`)
+      console.log(`Container image ${image} found`)
     } catch {
-      // Image doesn't exist, build it
-      console.log(`Building Docker image ${DOCKER_IMAGE}...`)
+      console.log(`Building container image ${image}...`)
 
       const buildProcess = spawn(
-        'docker',
-        ['build', '-t', DOCKER_IMAGE, AGENT_CONTAINER_PATH],
+        runner,
+        ['build', '-t', image, AGENT_CONTAINER_PATH],
         { stdio: 'inherit' }
       )
 
       await new Promise<void>((resolve, reject) => {
         buildProcess.on('close', (code) => {
           if (code === 0) {
-            console.log(`Docker image ${DOCKER_IMAGE} built successfully`)
+            console.log(`Container image ${image} built successfully`)
             resolve()
           } else {
-            reject(new Error(`Docker build failed with code ${code}`))
+            reject(new Error(`Container build failed with code ${code}`))
           }
         })
         buildProcess.on('error', reject)
@@ -434,7 +469,6 @@ export class LocalDockerContainerClient extends EventEmitter implements Containe
   private buildEnvFlags(additionalEnvVars?: Record<string, string>): string {
     const envVars: Record<string, string | undefined> = {
       ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-      // Store Claude session data in /workspace so it persists with the volume mount
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
       ...this.config.envVars,
       ...additionalEnvVars,

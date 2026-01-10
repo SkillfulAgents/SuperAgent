@@ -1,4 +1,4 @@
-import { LocalDockerContainerClient } from './local-docker-client'
+import { createContainerClient } from './client-factory'
 import type { ContainerClient, ContainerConfig } from './types'
 import { db } from '@/lib/db'
 import { agentSecrets } from '@/lib/db/schema'
@@ -17,7 +17,7 @@ class ContainerManager {
         agentId,
       }
 
-      client = new LocalDockerContainerClient(config)
+      client = createContainerClient(config)
       this.clients.set(agentId, client)
     }
 
@@ -80,6 +80,29 @@ class ContainerManager {
       }
     }
     this.clients.clear()
+  }
+
+  // Check if any agents have running containers
+  async hasRunningAgents(): Promise<boolean> {
+    for (const client of this.clients.values()) {
+      const info = await client.getInfo()
+      if (info.status === 'running') {
+        return true
+      }
+    }
+    return false
+  }
+
+  // Get list of running agent IDs
+  async getRunningAgentIds(): Promise<string[]> {
+    const running: string[] = []
+    for (const [agentId, client] of this.clients.entries()) {
+      const info = await client.getInfo()
+      if (info.status === 'running') {
+        running.push(agentId)
+      }
+    }
+    return running
   }
 }
 
