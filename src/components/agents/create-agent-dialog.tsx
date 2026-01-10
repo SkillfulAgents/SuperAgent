@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useState } from 'react'
 import { useCreateAgent } from '@/lib/hooks/use-agents'
+import { useSelection } from '@/lib/context/selection-context'
 
 interface CreateAgentDialogProps {
   open: boolean
@@ -21,15 +22,18 @@ interface CreateAgentDialogProps {
 export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps) {
   const [name, setName] = useState('')
   const createAgent = useCreateAgent()
+  const { selectAgent } = useSelection()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!name.trim()) return
 
     try {
-      await createAgent.mutateAsync({ name: name.trim() })
+      const newAgent = await createAgent.mutateAsync({ name: name.trim() })
       setName('')
       onOpenChange(false)
+      // Select the newly created agent
+      selectAgent(newAgent.id)
     } catch (error) {
       console.error('Failed to create agent:', error)
     }
