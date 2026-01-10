@@ -130,6 +130,11 @@ function getOrCreateEventSource(
         }
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
       }
+      else if (data.type === 'session_updated') {
+        // Session metadata changed (e.g., name) - invalidate session caches
+        queryClient.invalidateQueries({ queryKey: ['sessions'] })
+        queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
+      }
       // Ignore ping and other events - they don't change state
 
       // Notify all listeners

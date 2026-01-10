@@ -80,6 +80,9 @@ Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
         .update(sessions)
         .set({ name: sessionName })
         .where(eq(sessions.id, sessionId))
+
+      // Notify connected clients that session metadata has changed
+      messagePersister.broadcastSessionUpdate(sessionId)
     }
   } catch (error) {
     console.error('Failed to generate session name:', error)

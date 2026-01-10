@@ -141,6 +141,11 @@ class MessagePersister {
     }
   }
 
+  // Public method to broadcast session metadata updates (e.g., name change)
+  broadcastSessionUpdate(sessionId: string): void {
+    this.broadcastToSSE(sessionId, { type: 'session_updated' })
+  }
+
   // Broadcast to SSE clients
   // Only session_active and session_idle events include isActive - not every event
   private broadcastToSSE(sessionId: string, data: any): void {
