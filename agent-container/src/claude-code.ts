@@ -154,7 +154,8 @@ export class ClaudeCodeProcess extends EventEmitter {
         resume: this.claudeSessionId || undefined,
         permissionMode: 'bypassPermissions',
         includePartialMessages: true,
-        settingSources: ['project'], // Enable Skills from .claude/skills/
+        settingSources: ['user', 'project'], // Enable Skills auto-discovery from .claude/skills/
+        allowedTools: ['Skill'], // Enable the Skill tool for invoking skills
         mcpServers: {
           'user-input': userInputMcpServer,
         },
@@ -335,7 +336,8 @@ export class ClaudeCodeProcess extends EventEmitter {
         resume: this.claudeSessionId || undefined,
         permissionMode: 'bypassPermissions',
         includePartialMessages: true,
-        settingSources: ['project'], // Enable Skills from .claude/skills/
+        settingSources: ['user', 'project'], // Enable Skills auto-discovery from .claude/skills/
+        allowedTools: ['Skill'], // Enable the Skill tool for invoking skills
         mcpServers: {
           'user-input': userInputMcpServer,
         },
