@@ -13,7 +13,7 @@ import {
 } from '@/components/ui/select'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { useSettings, useUpdateSettings } from '@/lib/hooks/use-settings'
-import { AlertCircle, AlertTriangle } from 'lucide-react'
+import { AlertCircle, AlertTriangle, Eye, EyeOff } from 'lucide-react'
 
 const CONTAINER_RUNNERS = [
   { value: 'docker', label: 'Docker' },
@@ -29,6 +29,11 @@ export function GeneralTab() {
   const [agentImage, setAgentImage] = useState('')
   const [cpuLimit, setCpuLimit] = useState('')
   const [memoryLimit, setMemoryLimit] = useState('')
+
+  // API key state
+  const [apiKeyInput, setApiKeyInput] = useState('')
+  const [showApiKey, setShowApiKey] = useState(false)
+  const [isSavingApiKey, setIsSavingApiKey] = useState(false)
 
   // Track if form has unsaved changes
   const [hasChanges, setHasChanges] = useState(false)
@@ -98,7 +103,37 @@ export function GeneralTab() {
     }
   }
 
+  const handleSaveApiKey = async () => {
+    if (!apiKeyInput.trim()) return
+    setIsSavingApiKey(true)
+    try {
+      await updateSettings.mutateAsync({
+        apiKeys: { anthropicApiKey: apiKeyInput.trim() },
+      })
+      setApiKeyInput('')
+      setShowApiKey(false)
+    } catch (error) {
+      console.error('Failed to save API key:', error)
+    } finally {
+      setIsSavingApiKey(false)
+    }
+  }
+
+  const handleRemoveApiKey = async () => {
+    setIsSavingApiKey(true)
+    try {
+      await updateSettings.mutateAsync({
+        apiKeys: { anthropicApiKey: '' },
+      })
+    } catch (error) {
+      console.error('Failed to remove API key:', error)
+    } finally {
+      setIsSavingApiKey(false)
+    }
+  }
+
   const hasRunningAgents = settings?.hasRunningAgents ?? false
+  const apiKeyStatus = settings?.apiKeyStatus?.anthropic
 
   // Check if restricted fields have changed
   const restrictedFieldsChanged =
@@ -227,6 +262,89 @@ export function GeneralTab() {
             <p className="text-xs text-muted-foreground">
               Memory limit (e.g., 512m, 1g).
             </p>
+          </div>
+        </div>
+      </div>
+
+      {/* API Keys Section */}
+      <div className="pt-4 border-t space-y-4">
+        <h3 className="text-sm font-medium">API Keys</h3>
+
+        <div className="space-y-2">
+          <Label htmlFor="anthropic-api-key">Anthropic API Key</Label>
+
+          {/* Source indicator */}
+          {apiKeyStatus?.isConfigured && (
+            <div className="flex items-center gap-2">
+              <span
+                className={`text-xs px-2 py-0.5 rounded-full ${
+                  apiKeyStatus.source === 'settings'
+                    ? 'bg-green-500/10 text-green-700 dark:text-green-400'
+                    : 'bg-blue-500/10 text-blue-700 dark:text-blue-400'
+                }`}
+              >
+                {apiKeyStatus.source === 'settings'
+                  ? 'Using saved setting'
+                  : 'Using environment variable'}
+              </span>
+            </div>
+          )}
+
+          {!apiKeyStatus?.isConfigured && (
+            <Alert variant="destructive">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertDescription>
+                No API key configured. Set <code className="bg-muted px-1 rounded">ANTHROPIC_API_KEY</code> environment variable or enter below.
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {/* Input with show/hide toggle */}
+          <div className="relative">
+            <Input
+              id="anthropic-api-key"
+              type={showApiKey ? 'text' : 'password'}
+              value={apiKeyInput}
+              onChange={(e) => setApiKeyInput(e.target.value)}
+              placeholder={apiKeyStatus?.isConfigured ? '••••••••••••••••' : 'sk-ant-...'}
+              className="pr-10"
+              disabled={isLoading}
+            />
+            <button
+              type="button"
+              onClick={() => setShowApiKey(!showApiKey)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              disabled={isLoading}
+            >
+              {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </div>
+
+          <p className="text-xs text-muted-foreground">
+            {apiKeyStatus?.source === 'settings'
+              ? 'Your API key is saved locally. Enter a new key to replace it.'
+              : apiKeyStatus?.source === 'env'
+                ? 'Save a key here to override the environment variable.'
+                : 'Your API key will be saved locally in ~/.superagent/settings.json'}
+          </p>
+
+          {/* Save/Remove buttons */}
+          <div className="flex gap-2">
+            {apiKeyInput.trim() && (
+              <Button size="sm" onClick={handleSaveApiKey} disabled={isSavingApiKey}>
+                {isSavingApiKey ? 'Saving...' : 'Save API Key'}
+              </Button>
+            )}
+            {apiKeyStatus?.source === 'settings' && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleRemoveApiKey}
+                disabled={isSavingApiKey}
+              >
+                {isSavingApiKey ? 'Removing...' : 'Remove Saved Key'}
+              </Button>
+            )}
           </div>
         </div>
       </div>

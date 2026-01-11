@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getDataDir } from '@/lib/config/data-dir'
-import { getSettings, updateSettings, type AppSettings, type ContainerSettings } from '@/lib/config/settings'
+import {
+  getSettings,
+  updateSettings,
+  getAnthropicApiKeyStatus,
+  type AppSettings,
+  type ContainerSettings,
+  type ApiKeyStatus,
+} from '@/lib/config/settings'
 import { containerManager } from '@/lib/container/container-manager'
 import { checkAllRunnersAvailability, type RunnerAvailability } from '@/lib/container/client-factory'
 
@@ -9,6 +16,9 @@ export interface GlobalSettingsResponse {
   container: ContainerSettings
   hasRunningAgents: boolean
   runnerAvailability: RunnerAvailability[]
+  apiKeyStatus: {
+    anthropic: ApiKeyStatus
+  }
 }
 
 // GET /api/settings - Get global settings
@@ -25,6 +35,9 @@ export async function GET() {
       container: settings.container,
       hasRunningAgents,
       runnerAvailability,
+      apiKeyStatus: {
+        anthropic: getAnthropicApiKeyStatus(),
+      },
     }
 
     return NextResponse.json(response)
@@ -74,6 +87,26 @@ export async function PUT(request: NextRequest) {
           ? { ...currentSettings.container.resourceLimits, ...body.container.resourceLimits }
           : currentSettings.container.resourceLimits,
       },
+      apiKeys: currentSettings.apiKeys,
+    }
+
+    // Handle API key updates
+    if (body.apiKeys !== undefined) {
+      if (body.apiKeys.anthropicApiKey === '') {
+        // Empty string means delete the saved key
+        newSettings.apiKeys = { ...newSettings.apiKeys }
+        delete newSettings.apiKeys.anthropicApiKey
+        // Clean up empty object
+        if (Object.keys(newSettings.apiKeys).length === 0) {
+          delete newSettings.apiKeys
+        }
+      } else if (body.apiKeys.anthropicApiKey) {
+        // Save the new key
+        newSettings.apiKeys = {
+          ...newSettings.apiKeys,
+          anthropicApiKey: body.apiKeys.anthropicApiKey,
+        }
+      }
     }
 
     updateSettings(newSettings)
@@ -85,6 +118,9 @@ export async function PUT(request: NextRequest) {
       container: newSettings.container,
       hasRunningAgents,
       runnerAvailability,
+      apiKeyStatus: {
+        anthropic: getAnthropicApiKeyStatus(),
+      },
     })
   } catch (error: any) {
     console.error('Failed to update settings:', error)

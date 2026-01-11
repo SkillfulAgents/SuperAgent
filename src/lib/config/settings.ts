@@ -11,8 +11,21 @@ export interface ContainerSettings {
   }
 }
 
+export interface ApiKeySettings {
+  anthropicApiKey?: string
+}
+
 export interface AppSettings {
   container: ContainerSettings
+  apiKeys?: ApiKeySettings
+}
+
+// API key source types
+export type ApiKeySource = 'env' | 'settings' | 'none'
+
+export interface ApiKeyStatus {
+  isConfigured: boolean
+  source: ApiKeySource
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -51,6 +64,7 @@ export function loadSettings(): AppSettings {
             ...loaded.container?.resourceLimits,
           },
         },
+        apiKeys: loaded.apiKeys,
       }
     }
   } catch (error) {
@@ -72,7 +86,8 @@ export function saveSettings(settings: AppSettings): void {
     fs.mkdirSync(dataDir, { recursive: true })
   }
 
-  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8')
+  // Use mode 0o600 for security (owner read/write only) since file may contain API keys
+  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), { encoding: 'utf-8', mode: 0o600 })
 }
 
 /**
@@ -100,6 +115,35 @@ export function updateSettings(settings: AppSettings): void {
  */
 export function clearSettingsCache(): void {
   cachedSettings = null
+}
+
+/**
+ * Get the status of the Anthropic API key configuration.
+ * Saved settings take precedence over environment variable.
+ */
+export function getAnthropicApiKeyStatus(): ApiKeyStatus {
+  const settings = getSettings()
+  if (settings.apiKeys?.anthropicApiKey) {
+    return { isConfigured: true, source: 'settings' }
+  }
+  if (process.env.ANTHROPIC_API_KEY) {
+    return { isConfigured: true, source: 'env' }
+  }
+  return { isConfigured: false, source: 'none' }
+}
+
+/**
+ * Get the effective Anthropic API key to use.
+ * Saved settings take precedence over environment variable.
+ */
+export function getEffectiveAnthropicApiKey(): string | undefined {
+  const settings = getSettings()
+  // Saved settings take precedence
+  if (settings.apiKeys?.anthropicApiKey) {
+    return settings.apiKeys.anthropicApiKey
+  }
+  // Fall back to environment variable
+  return process.env.ANTHROPIC_API_KEY
 }
 
 export { DEFAULT_SETTINGS }

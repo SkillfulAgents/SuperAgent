@@ -14,7 +14,7 @@ import type {
   StreamMessage,
 } from './types'
 import { getAgentWorkspaceDir } from '@/lib/config/data-dir'
-import { getSettings } from '@/lib/config/settings'
+import { getSettings, getEffectiveAnthropicApiKey } from '@/lib/config/settings'
 
 const execAsync = promisify(exec)
 
@@ -468,7 +468,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
   private buildEnvFlags(additionalEnvVars?: Record<string, string>): string {
     const envVars: Record<string, string | undefined> = {
-      ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+      ANTHROPIC_API_KEY: getEffectiveAnthropicApiKey(),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
       ...this.config.envVars,
       ...additionalEnvVars,
