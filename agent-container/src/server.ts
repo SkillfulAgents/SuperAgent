@@ -6,6 +6,7 @@ import * as http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import * as fs from 'fs';
 import * as path from 'path';
+import { inputManager } from './input-manager';
 
 const app = new Hono();
 const sessionManager = new SessionManager();
@@ -229,6 +230,136 @@ app.get('/files/tree', async (c) => {
   }
 });
 
+// Input resolution endpoints - used by the server to resolve pending user input requests
+// Requests are keyed by toolUseId (captured via PreToolUse hook)
+
+// POST /inputs/:toolUseId/resolve - Resolve a pending input request with a value
+app.post('/inputs/:toolUseId/resolve', async (c) => {
+  const toolUseId = c.req.param('toolUseId');
+
+  try {
+    const body = await c.req.json<{ value: string }>();
+
+    if (!body.value) {
+      return c.json({ error: 'value is required' }, 400);
+    }
+
+    if (inputManager.resolve(toolUseId, body.value)) {
+      return c.json({ success: true });
+    }
+
+    return c.json({ error: 'No pending request found for this toolUseId' }, 404);
+  } catch (error: any) {
+    console.error('Error resolving input:', error);
+    return c.json({ error: error.message || 'Failed to resolve input' }, 500);
+  }
+});
+
+// POST /inputs/:toolUseId/reject - Reject a pending input request
+app.post('/inputs/:toolUseId/reject', async (c) => {
+  const toolUseId = c.req.param('toolUseId');
+
+  try {
+    const body = await c.req.json<{ reason?: string }>();
+    const reason = body.reason || 'User declined';
+
+    if (inputManager.reject(toolUseId, reason)) {
+      return c.json({ success: true });
+    }
+
+    return c.json({ error: 'No pending request found for this toolUseId' }, 404);
+  } catch (error: any) {
+    console.error('Error rejecting input:', error);
+    return c.json({ error: error.message || 'Failed to reject input' }, 500);
+  }
+});
+
+// GET /inputs/pending - List all pending input requests (useful for debugging)
+app.get('/inputs/pending', (c) => {
+  return c.json(inputManager.getAllPending());
+});
+
+// Helper to update the .env file with a key-value pair
+async function updateEnvFile(key: string, value: string): Promise<void> {
+  const envFilePath = '/workspace/.env';
+
+  try {
+    // Read existing .env file or start fresh
+    let envContent = '';
+    try {
+      envContent = await fs.promises.readFile(envFilePath, 'utf-8');
+    } catch {
+      // File doesn't exist yet, start fresh
+    }
+
+    // Parse existing entries
+    const lines = envContent.split('\n');
+    const entries = new Map<string, string>();
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith('#')) {
+        const eqIndex = trimmed.indexOf('=');
+        if (eqIndex > 0) {
+          const k = trimmed.substring(0, eqIndex);
+          const v = trimmed.substring(eqIndex + 1);
+          entries.set(k, v);
+        }
+      }
+    }
+
+    // Update or add the new entry (quote the value to handle special chars)
+    entries.set(key, `"${value.replace(/"/g, '\\"')}"`);
+
+    // Write back
+    const newContent = Array.from(entries.entries())
+      .map(([k, v]) => `${k}=${v}`)
+      .join('\n') + '\n';
+
+    await fs.promises.writeFile(envFilePath, newContent, { mode: 0o600 });
+    console.log(`[ENV] Updated .env file with ${key}`);
+  } catch (error) {
+    console.error(`[ENV] Failed to update .env file:`, error);
+    throw error;
+  }
+}
+
+// POST /env - Set an environment variable at runtime
+app.post('/env', async (c) => {
+  try {
+    const body = await c.req.json<{ key: string; value: string }>();
+
+    if (!body.key || body.value === undefined) {
+      console.error('[ENV] Missing key or value in request');
+      return c.json({ error: 'key and value are required' }, 400);
+    }
+
+    // Validate the key is a valid environment variable name
+    if (!/^[A-Z_][A-Z0-9_]*$/i.test(body.key)) {
+      console.error(`[ENV] Invalid env var name: ${body.key}`);
+      return c.json({ error: 'Invalid environment variable name' }, 400);
+    }
+
+    // Set the environment variable in process.env (for Node.js code)
+    process.env[body.key] = body.value;
+    console.log(`[ENV] Set environment variable: ${body.key} (${body.value.length} chars)`);
+
+    // Also write to .env file (for uv/python scripts)
+    await updateEnvFile(body.key, body.value);
+
+    // Verify it was set in process.env
+    if (process.env[body.key] !== body.value) {
+      console.error(`[ENV] Failed to verify env var was set: ${body.key}`);
+      return c.json({ error: 'Failed to verify environment variable was set' }, 500);
+    }
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    console.error('[ENV] Error setting env var:', error);
+    return c.json({ error: error.message || 'Failed to set environment variable' }, 500);
+  }
+});
+
 async function buildFileTree(
   dirPath: string,
   maxDepth: number,
@@ -367,3 +498,7 @@ console.log('  POST   /files/*/upload');
 console.log('  DELETE /files/*');
 console.log('  POST   /files/*/mkdir');
 console.log('  GET    /files/tree');
+console.log('  POST   /inputs/:toolUseId/resolve');
+console.log('  POST   /inputs/:toolUseId/reject');
+console.log('  GET    /inputs/pending');
+console.log('  POST   /env');

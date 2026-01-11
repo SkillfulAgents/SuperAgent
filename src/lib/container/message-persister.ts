@@ -276,6 +276,15 @@ class MessagePersister {
       case 'content_block_stop':
         // Tool use block finished streaming
         if (state.currentToolUse) {
+          // Check if this is a secret request tool
+          if (state.currentToolUse.name === 'mcp__user-input__request_secret') {
+            this.handleSecretRequestTool(
+              sessionId,
+              state.currentToolUse.id,
+              state.currentToolInput
+            )
+          }
+
           this.broadcastToSSE(sessionId, {
             type: 'tool_use_ready',
             toolId: state.currentToolUse.id,
@@ -295,6 +304,62 @@ class MessagePersister {
     }
   }
 
+  // Handle secret request tool - broadcast to SSE clients so they can show the UI
+  private async handleSecretRequestTool(
+    sessionId: string,
+    toolUseId: string,
+    toolInput: string
+  ): Promise<void> {
+    try {
+      // Parse the tool input to get secretName and reason
+      let input: { secretName: string; reason?: string } = { secretName: '' }
+      try {
+        input = JSON.parse(toolInput)
+      } catch {
+        console.error('[MessagePersister] Failed to parse secret request input:', toolInput)
+        return
+      }
+
+      if (!input.secretName) {
+        console.error('[MessagePersister] Secret request missing secretName')
+        return
+      }
+
+      // Get the session to find the agentId
+      const session = await db
+        .select()
+        .from(sessions)
+        .where(eq(sessions.id, sessionId))
+        .limit(1)
+
+      if (session.length === 0) {
+        console.error('[MessagePersister] Session not found for secret request:', sessionId)
+        return
+      }
+
+      const agentId = session[0].agentId
+
+      console.log(
+        '[MessagePersister] Broadcasting secret_request:',
+        toolUseId,
+        input.secretName,
+        'for agent:',
+        agentId
+      )
+
+      // Broadcast the secret request event to SSE clients
+      this.broadcastToSSE(sessionId, {
+        type: 'secret_request',
+        toolUseId,
+        secretName: input.secretName,
+        reason: input.reason,
+        agentId,
+      })
+    } catch (error) {
+      console.error('[MessagePersister] Error handling secret request:', error)
+    }
+  }
+
   // Handle tool results - update the corresponding tool call with its result
   private async handleToolResults(
     sessionId: string,
@@ -305,11 +370,17 @@ class MessagePersister {
 
       for (const block of messageContent) {
         if (block.type === 'tool_result' && block.tool_use_id) {
+          // Serialize the result to JSON string for SQLite storage
+          const resultString =
+            typeof block.content === 'string'
+              ? block.content
+              : JSON.stringify(block.content)
+
           // Update the tool call record with the result
           await db
             .update(toolCalls)
             .set({
-              result: block.content,
+              result: resultString,
               isError: block.is_error || false,
             })
             .where(eq(toolCalls.id, block.tool_use_id))

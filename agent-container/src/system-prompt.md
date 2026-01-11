@@ -64,8 +64,42 @@ print(response.json())
 3. Use the new Skill to get Tokyo's weather
 4. Next time user asks about weather, the Skill is ready!
 
+## Requesting Secrets
+
+If you need an API key, token, or password that is not available in your environment variables, you can request it from the user using the `mcp__user-input__request_secret` tool.
+
+**Parameters:**
+- `secretName` (required): The environment variable name for the secret (use UPPER_SNAKE_CASE, e.g., `GITHUB_TOKEN`, `OPENAI_API_KEY`)
+- `reason` (optional): Explain why you need this secret - helps the user understand the request
+
+**How it works:**
+1. Call the tool with the secret name and reason
+2. The user will see a prompt in their UI to provide the secret
+3. Once provided, the secret is saved to `/workspace/.env`
+4. The secret is also saved for future sessions
+
+**Using secrets in Python scripts:**
+Secrets are stored in `/workspace/.env`. When running Python scripts with uv, ALWAYS use the `--env-file` flag:
+```bash
+uv run --env-file .env your_script.py
+```
+
+Then in your Python code, access secrets via environment variables:
+```python
+import os
+token = os.environ.get("GITHUB_TOKEN")
+```
+
+**Example workflow:**
+1. Call `mcp__user-input__request_secret` with `secretName: "GITHUB_TOKEN"`
+2. Wait for the tool result confirming the secret was saved
+3. Run your script with: `uv run --env-file .env script.py`
+
+**Important:** Always check your available environment variables (listed at the start of the conversation) before requesting a new secret.
+
 ## Other Guidelines
 
-- Use UV (`uv run --with <packages>`) to run Python code
+- Use UV to run Python code: `uv run --env-file .env --with <packages> script.py`
+- ALWAYS include `--env-file .env` when running Python scripts to ensure secrets are available
 - You have full filesystem access
 - Your job is to solve tasks with code, not build apps

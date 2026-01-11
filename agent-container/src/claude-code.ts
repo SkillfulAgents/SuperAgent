@@ -2,6 +2,8 @@ import { query, Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
+import { userInputMcpServer } from './mcp-server';
+import { inputManager } from './input-manager';
 
 // Load platform system prompt from file
 const PLATFORM_SYSTEM_PROMPT = fs.readFileSync(
@@ -142,6 +144,8 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.messageQueue = new MessageQueue();
 
     // Start the query with streaming input mode
+    // Note: We don't set `env` option - the SDK should use process.env by default
+    // and any changes to process.env should be visible to spawned processes
     this.queryInstance = query({
       prompt: this.messageQueue,
       options: {
@@ -151,6 +155,25 @@ export class ClaudeCodeProcess extends EventEmitter {
         permissionMode: 'bypassPermissions',
         includePartialMessages: true,
         settingSources: ['project'], // Enable Skills from .claude/skills/
+        mcpServers: {
+          'user-input': userInputMcpServer,
+        },
+        hooks: {
+          // Capture toolUseId before request_secret tool executes
+          PreToolUse: [
+            {
+              matcher: 'mcp__user-input__request_secret',
+              hooks: [
+                async (_input, toolUseId) => {
+                  if (toolUseId) {
+                    inputManager.setCurrentToolUseId(toolUseId);
+                  }
+                  return {};
+                },
+              ],
+            },
+          ],
+        },
         systemPrompt: this.systemPromptAppend
           ? {
               type: 'preset',
@@ -313,6 +336,25 @@ export class ClaudeCodeProcess extends EventEmitter {
         permissionMode: 'bypassPermissions',
         includePartialMessages: true,
         settingSources: ['project'], // Enable Skills from .claude/skills/
+        mcpServers: {
+          'user-input': userInputMcpServer,
+        },
+        hooks: {
+          // Capture toolUseId before request_secret tool executes
+          PreToolUse: [
+            {
+              matcher: 'mcp__user-input__request_secret',
+              hooks: [
+                async (_input, toolUseId) => {
+                  if (toolUseId) {
+                    inputManager.setCurrentToolUseId(toolUseId);
+                  }
+                  return {};
+                },
+              ],
+            },
+          ],
+        },
         systemPrompt: this.systemPromptAppend
           ? {
               type: 'preset',

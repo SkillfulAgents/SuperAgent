@@ -1,12 +1,13 @@
 'use client'
 
 import { useMessages } from '@/lib/hooks/use-messages'
-import { useMessageStream } from '@/lib/hooks/use-message-stream'
+import { useMessageStream, removeSecretRequest } from '@/lib/hooks/use-message-stream'
 import { MessageItem } from './message-item'
 import { StreamingToolCallItem } from './tool-call-item'
+import { SecretRequestItem } from './secret-request-item'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Loader2, Wrench } from 'lucide-react'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useCallback } from 'react'
 
 interface MessageListProps {
   sessionId: string
@@ -14,15 +15,24 @@ interface MessageListProps {
 
 export function MessageList({ sessionId }: MessageListProps) {
   const { data: messages, isLoading } = useMessages(sessionId)
-  const { streamingMessage, isStreaming, streamingToolUse } = useMessageStream(sessionId)
+  const { streamingMessage, isStreaming, streamingToolUse, pendingSecretRequests } =
+    useMessageStream(sessionId)
   const scrollRef = useRef<HTMLDivElement>(null)
 
-  // Auto-scroll to bottom when new messages arrive
+  // Handler to remove a completed secret request
+  const handleSecretRequestComplete = useCallback(
+    (toolUseId: string) => {
+      removeSecretRequest(sessionId, toolUseId)
+    },
+    [sessionId]
+  )
+
+  // Auto-scroll to bottom when new messages arrive or secret requests appear
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [messages, streamingMessage, streamingToolUse])
+  }, [messages, streamingMessage, streamingToolUse, pendingSecretRequests])
 
   if (isLoading) {
     return (
@@ -67,6 +77,18 @@ export function MessageList({ sessionId }: MessageListProps) {
             </div>
           </div>
         )}
+
+        {/* Pending secret requests from the agent */}
+        {pendingSecretRequests.map((request) => (
+          <SecretRequestItem
+            key={request.toolUseId}
+            toolUseId={request.toolUseId}
+            secretName={request.secretName}
+            reason={request.reason}
+            sessionId={sessionId}
+            onComplete={() => handleSecretRequestComplete(request.toolUseId)}
+          />
+        ))}
       </div>
     </ScrollArea>
   )

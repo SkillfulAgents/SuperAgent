@@ -3,11 +3,18 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useQueryClient, QueryClient } from '@tanstack/react-query'
 
+interface SecretRequest {
+  toolUseId: string
+  secretName: string
+  reason?: string
+}
+
 interface StreamState {
   isActive: boolean // True from user message until query result
   isStreaming: boolean // True while actively receiving tokens
   streamingMessage: string | null
   streamingToolUse: { id: string; name: string; partialInput: string } | null
+  pendingSecretRequests: SecretRequest[]
 }
 
 // Global state to track streaming per session
@@ -49,6 +56,7 @@ function getOrCreateEventSource(
           isStreaming: false,
           streamingMessage: null,
           streamingToolUse: null,
+          pendingSecretRequests: current?.pendingSecretRequests ?? [],
         })
       }
       else if (data.type === 'session_active') {
@@ -58,16 +66,19 @@ function getOrCreateEventSource(
           isStreaming: current?.isStreaming ?? false,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUse: current?.streamingToolUse ?? null,
+          pendingSecretRequests: current?.pendingSecretRequests ?? [],
         })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
       }
       else if (data.type === 'session_idle') {
         // Session became idle - query completed or interrupted
+        // Clear pending secret requests as the query is done
         streamStates.set(sessionId, {
           isActive: false,
           isStreaming: false,
           streamingMessage: null,
           streamingToolUse: null,
+          pendingSecretRequests: [],
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -79,6 +90,7 @@ function getOrCreateEventSource(
           isStreaming: true,
           streamingMessage: '',
           streamingToolUse: null,
+          pendingSecretRequests: current?.pendingSecretRequests ?? [],
         })
       }
       else if (data.type === 'stream_delta') {
@@ -87,6 +99,7 @@ function getOrCreateEventSource(
           isStreaming: true,
           streamingMessage: (current?.streamingMessage || '') + data.text,
           streamingToolUse: null,
+          pendingSecretRequests: current?.pendingSecretRequests ?? [],
         })
       }
       else if (data.type === 'tool_use_start' || data.type === 'tool_use_streaming') {
@@ -99,6 +112,7 @@ function getOrCreateEventSource(
             name: data.toolName,
             partialInput: data.partialInput ?? '',
           },
+          pendingSecretRequests: current?.pendingSecretRequests ?? [],
         })
       }
       else if (data.type === 'tool_use_ready') {
@@ -108,6 +122,7 @@ function getOrCreateEventSource(
           isStreaming: true,
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUse: null,
+          pendingSecretRequests: current?.pendingSecretRequests ?? [],
         })
       }
       else if (data.type === 'stream_end') {
@@ -116,6 +131,7 @@ function getOrCreateEventSource(
           isStreaming: false,
           streamingMessage: null,
           streamingToolUse: null,
+          pendingSecretRequests: current?.pendingSecretRequests ?? [],
         })
       }
       else if (data.type === 'tool_call' || data.type === 'tool_result') {
@@ -126,9 +142,28 @@ function getOrCreateEventSource(
             isStreaming: false,
             streamingMessage: null,
             streamingToolUse: null,
+            pendingSecretRequests: current.pendingSecretRequests ?? [],
           })
         }
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+      }
+      else if (data.type === 'secret_request') {
+        // Agent is requesting a secret from the user
+        const newRequest: SecretRequest = {
+          toolUseId: data.toolUseId,
+          secretName: data.secretName,
+          reason: data.reason,
+        }
+        streamStates.set(sessionId, {
+          isActive: current?.isActive ?? false,
+          isStreaming: current?.isStreaming ?? false,
+          streamingMessage: current?.streamingMessage ?? null,
+          streamingToolUse: current?.streamingToolUse ?? null,
+          pendingSecretRequests: [
+            ...(current?.pendingSecretRequests ?? []),
+            newRequest,
+          ],
+        })
       }
       else if (data.type === 'session_updated') {
         // Session metadata changed (e.g., name) - invalidate session caches
@@ -148,6 +183,7 @@ function getOrCreateEventSource(
     // Don't reset isActive on error - EventSource will auto-reconnect
     // and we'll get the correct state from the 'connected' event.
     // Only reset streaming state since that's definitely interrupted.
+    // Preserve pending secret requests as they may still be valid.
     const current = streamStates.get(sessionId)
     if (current) {
       streamStates.set(sessionId, {
@@ -179,12 +215,28 @@ function releaseEventSource(sessionId: string): void {
   }
 }
 
+// Helper function to remove a secret request from a session
+export function removeSecretRequest(sessionId: string, toolUseId: string): void {
+  const current = streamStates.get(sessionId)
+  if (current) {
+    streamStates.set(sessionId, {
+      ...current,
+      pendingSecretRequests: current.pendingSecretRequests.filter(
+        (r) => r.toolUseId !== toolUseId
+      ),
+    })
+    // Notify listeners
+    streamListeners.get(sessionId)?.forEach((listener) => listener())
+  }
+}
+
 export function useMessageStream(sessionId: string | null) {
   const [state, setState] = useState<StreamState>({
     isActive: false,
     isStreaming: false,
     streamingMessage: null,
     streamingToolUse: null,
+    pendingSecretRequests: [],
   })
   const queryClient = useQueryClient()
 
@@ -216,6 +268,7 @@ export function useMessageStream(sessionId: string | null) {
         isStreaming: false,
         streamingMessage: null,
         streamingToolUse: null,
+        pendingSecretRequests: [],
       })
     }
     updateState()
