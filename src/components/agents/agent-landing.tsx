@@ -3,8 +3,9 @@
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
-import { Send, Loader2 } from 'lucide-react'
+import { Send, Loader2, Sparkles } from 'lucide-react'
 import { useCreateSession } from '@/lib/hooks/use-sessions'
+import { useAgentSkills } from '@/lib/hooks/use-agent-skills'
 import type { AgentWithStatus } from '@/lib/hooks/use-agents'
 
 interface AgentLandingProps {
@@ -15,6 +16,7 @@ interface AgentLandingProps {
 export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
   const [message, setMessage] = useState('')
   const createSession = useCreateSession()
+  const { data: skills } = useAgentSkills(agent.id)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -81,6 +83,33 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
             Press Enter to send, Shift+Enter for new line
           </p>
         </form>
+
+        {/* Skills Section */}
+        {skills && skills.length > 0 && (
+          <div className="pt-6 border-t">
+            <div className="flex items-center gap-2 mb-3">
+              <Sparkles className="h-4 w-4 text-muted-foreground" />
+              <h2 className="text-sm font-medium text-muted-foreground">
+                Available Skills
+              </h2>
+            </div>
+            <div className="grid gap-2">
+              {skills.map((skill) => (
+                <div
+                  key={skill.path}
+                  className="flex items-start gap-3 p-3 rounded-lg bg-muted/50 hover:bg-muted transition-colors"
+                >
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">{skill.name}</p>
+                    <p className="text-xs text-muted-foreground line-clamp-2">
+                      {skill.description}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

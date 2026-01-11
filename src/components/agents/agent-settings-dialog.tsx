@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { Settings, FileText, KeyRound } from 'lucide-react'
+import { Settings, FileText, KeyRound, Sparkles } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -23,13 +23,15 @@ import { useUpdateAgent, type AgentWithStatus } from '@/lib/hooks/use-agents'
 import { GeneralTab } from './settings/general-tab'
 import { SystemPromptTab } from './settings/system-prompt-tab'
 import { SecretsTab } from './settings/secrets-tab'
+import { SkillsTab } from './settings/skills-tab'
 
-type SettingsSection = 'general' | 'system-prompt' | 'secrets'
+type SettingsSection = 'general' | 'system-prompt' | 'secrets' | 'skills'
 
 const navItems = [
   { id: 'general' as const, name: 'General', icon: Settings },
   { id: 'system-prompt' as const, name: 'System Prompt', icon: FileText },
   { id: 'secrets' as const, name: 'Secrets', icon: KeyRound },
+  { id: 'skills' as const, name: 'Skills', icon: Sparkles },
 ]
 
 interface AgentSettingsDialogProps {
@@ -123,8 +125,11 @@ export function AgentSettingsDialog({
               {activeSection === 'secrets' && (
                 <SecretsTab agentId={agent.id} isOpen={open} />
               )}
+              {activeSection === 'skills' && (
+                <SkillsTab agentId={agent.id} />
+              )}
             </div>
-            {activeSection !== 'secrets' && (
+            {activeSection !== 'secrets' && activeSection !== 'skills' && (
               <div className="flex items-center justify-end gap-2 border-t p-4">
                 <Button variant="outline" onClick={() => onOpenChange(false)}>
                   Cancel

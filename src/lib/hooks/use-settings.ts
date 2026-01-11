@@ -19,6 +19,9 @@ export function useSettings() {
 
 export interface UpdateSettingsParams {
   container?: Partial<ContainerSettings>
+  apiKeys?: {
+    anthropicApiKey?: string
+  }
 }
 
 export interface UpdateSettingsError {
