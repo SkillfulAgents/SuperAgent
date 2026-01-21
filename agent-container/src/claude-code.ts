@@ -188,37 +188,25 @@ export class ClaudeCodeProcess extends EventEmitter {
     );
   }
 
-  async start(): Promise<void> {
-    const isResuming = !!this.claudeSessionId;
-    console.log(`[Session ${this.sessionId}] Starting SDK-based session`);
-    console.log(`[Session ${this.sessionId}] ANTHROPIC_API_KEY set:`, !!process.env.ANTHROPIC_API_KEY);
-    console.log(`[Session ${this.sessionId}] Working directory:`, this.workingDirectory);
-    console.log(`[Session ${this.sessionId}] Resuming:`, isResuming, this.claudeSessionId);
-
-    // Create abort controller for cancellation
-    this.abortController = new AbortController();
-
-    // Create message queue for streaming input
-    this.messageQueue = new MessageQueue();
-
-    // Start the query with streaming input mode
-    // Note: We don't set `env` option - the SDK should use process.env by default
-    // and any changes to process.env should be visible to spawned processes
-    this.queryInstance = query({
-      prompt: this.messageQueue,
+  /**
+   * Creates a new query instance with the standard configuration.
+   * Used by start(), restart(), and interrupt() to avoid duplication.
+   */
+  private createQuery(): Query {
+    return query({
+      prompt: this.messageQueue!,
       options: {
         cwd: this.workingDirectory,
-        abortController: this.abortController,
+        abortController: this.abortController!,
         resume: this.claudeSessionId || undefined,
         permissionMode: 'bypassPermissions',
         includePartialMessages: true,
-        settingSources: ['user', 'project'], // Enable Skills auto-discovery from .claude/skills/
-        allowedTools: ['Skill'], // Enable the Skill tool for invoking skills
+        settingSources: ['user', 'project'],
+        allowedTools: ['Skill'],
         mcpServers: {
           'user-input': userInputMcpServer,
         },
         hooks: {
-          // Capture toolUseId before any user-input MCP tools execute
           PreToolUse: [
             {
               matcher: 'mcp__user-input__.*',
@@ -245,8 +233,26 @@ export class ClaudeCodeProcess extends EventEmitter {
             },
       },
     });
+  }
 
+  /**
+   * Initializes the abort controller and message queue, then creates a new query.
+   */
+  private initializeQuery(): void {
+    this.abortController = new AbortController();
+    this.messageQueue = new MessageQueue();
+    this.queryInstance = this.createQuery();
     this.isReady = true;
+  }
+
+  async start(): Promise<void> {
+    const isResuming = !!this.claudeSessionId;
+    console.log(`[Session ${this.sessionId}] Starting SDK-based session`);
+    console.log(`[Session ${this.sessionId}] ANTHROPIC_API_KEY set:`, !!process.env.ANTHROPIC_API_KEY);
+    console.log(`[Session ${this.sessionId}] Working directory:`, this.workingDirectory);
+    console.log(`[Session ${this.sessionId}] Resuming:`, isResuming, this.claudeSessionId);
+
+    this.initializeQuery();
     this.emit('ready');
 
     // Start processing messages in the background
@@ -302,8 +308,10 @@ export class ClaudeCodeProcess extends EventEmitter {
   }
 
   async sendMessage(content: string): Promise<void> {
+    // Auto-restart session if not running
     if (!this.messageQueue || !this.isReady) {
-      throw new Error('Claude Code session is not running');
+      console.log(`[Session ${this.sessionId}] Session not running, restarting...`);
+      await this.restart();
     }
 
     // Create SDK user message format
@@ -323,7 +331,14 @@ export class ClaudeCodeProcess extends EventEmitter {
     };
 
     console.log(`[Session ${this.sessionId}] Sending message:`, content.substring(0, 100));
-    this.messageQueue.push(message);
+    this.messageQueue!.push(message);
+  }
+
+  // Restart the session (used when session exits and user sends a new message)
+  private async restart(): Promise<void> {
+    console.log(`[Session ${this.sessionId}] Restarting session`);
+    this.initializeQuery();
+    this.processMessages();
   }
 
   async stop(): Promise<void> {
@@ -380,57 +395,7 @@ export class ClaudeCodeProcess extends EventEmitter {
 
     // Restart the query with resume to continue the session
     console.log(`[Session ${this.sessionId}] Restarting query after interrupt`);
-
-    // Create new abort controller and message queue
-    this.abortController = new AbortController();
-    this.messageQueue = new MessageQueue();
-
-    // Start a new query with resume
-    this.queryInstance = query({
-      prompt: this.messageQueue,
-      options: {
-        cwd: this.workingDirectory,
-        abortController: this.abortController,
-        resume: this.claudeSessionId || undefined,
-        permissionMode: 'bypassPermissions',
-        includePartialMessages: true,
-        settingSources: ['user', 'project'], // Enable Skills auto-discovery from .claude/skills/
-        allowedTools: ['Skill'], // Enable the Skill tool for invoking skills
-        mcpServers: {
-          'user-input': userInputMcpServer,
-        },
-        hooks: {
-          // Capture toolUseId before any user-input MCP tools execute
-          PreToolUse: [
-            {
-              matcher: 'mcp__user-input__.*',
-              hooks: [
-                async (_input, toolUseId) => {
-                  if (toolUseId) {
-                    inputManager.setCurrentToolUseId(toolUseId);
-                  }
-                  return {};
-                },
-              ],
-            },
-          ],
-        },
-        systemPrompt: this.systemPromptAppend
-          ? {
-              type: 'preset',
-              preset: 'claude_code',
-              append: this.systemPromptAppend,
-            }
-          : {
-              type: 'preset',
-              preset: 'claude_code',
-            },
-      },
-    });
-
-    this.isReady = true;
-
-    // Start processing messages again
+    this.initializeQuery();
     this.processMessages();
   }
 }

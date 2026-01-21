@@ -204,7 +204,19 @@ class MessagePersister {
         state.isStreaming = false
         state.isActive = false
         state.currentText = ''
-        this.broadcastToSSE(sessionId, { type: 'session_idle', isActive: false })
+
+        // Check if this is an error result
+        if (content.subtype === 'error_during_execution' || content.subtype === 'error') {
+          const errorMessage = content.error || content.message || 'An error occurred during execution'
+          console.error(`[MessagePersister] Session ${sessionId} error:`, errorMessage)
+          this.broadcastToSSE(sessionId, {
+            type: 'session_error',
+            error: errorMessage,
+            isActive: false
+          })
+        } else {
+          this.broadcastToSSE(sessionId, { type: 'session_idle', isActive: false })
+        }
         break
 
       case 'stream_event':

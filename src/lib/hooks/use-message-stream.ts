@@ -22,6 +22,7 @@ interface StreamState {
   streamingToolUse: { id: string; name: string; partialInput: string } | null
   pendingSecretRequests: SecretRequest[]
   pendingConnectedAccountRequests: ConnectedAccountRequest[]
+  error: string | null // Error message if session encountered an error
 }
 
 // Global state to track streaming per session
@@ -65,6 +66,7 @@ function getOrCreateEventSource(
           streamingToolUse: null,
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
+          error: null,
         })
       }
       else if (data.type === 'session_active') {
@@ -76,6 +78,7 @@ function getOrCreateEventSource(
           streamingToolUse: current?.streamingToolUse ?? null,
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
+          error: null, // Clear any previous error when starting new request
         })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
       }
@@ -89,6 +92,21 @@ function getOrCreateEventSource(
           streamingToolUse: null,
           pendingSecretRequests: [],
           pendingConnectedAccountRequests: [],
+          error: null,
+        })
+        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+        queryClient.invalidateQueries({ queryKey: ['sessions'] })
+      }
+      else if (data.type === 'session_error') {
+        // Session encountered an error
+        streamStates.set(sessionId, {
+          isActive: false,
+          isStreaming: false,
+          streamingMessage: null,
+          streamingToolUse: null,
+          pendingSecretRequests: [],
+          pendingConnectedAccountRequests: [],
+          error: data.error || 'An unknown error occurred',
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -102,6 +120,7 @@ function getOrCreateEventSource(
           streamingToolUse: null,
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
+          error: null,
         })
       }
       else if (data.type === 'stream_delta') {
@@ -112,6 +131,7 @@ function getOrCreateEventSource(
           streamingToolUse: null,
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
+          error: current?.error ?? null,
         })
       }
       else if (data.type === 'tool_use_start' || data.type === 'tool_use_streaming') {
@@ -126,6 +146,7 @@ function getOrCreateEventSource(
           },
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
+          error: current?.error ?? null,
         })
       }
       else if (data.type === 'tool_use_ready') {
@@ -137,6 +158,7 @@ function getOrCreateEventSource(
           streamingToolUse: null,
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
+          error: current?.error ?? null,
         })
       }
       else if (data.type === 'stream_end') {
@@ -147,6 +169,7 @@ function getOrCreateEventSource(
           streamingToolUse: null,
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
+          error: current?.error ?? null,
         })
       }
       else if (data.type === 'tool_call' || data.type === 'tool_result') {
@@ -159,6 +182,7 @@ function getOrCreateEventSource(
             streamingToolUse: null,
             pendingSecretRequests: current.pendingSecretRequests ?? [],
             pendingConnectedAccountRequests: current.pendingConnectedAccountRequests ?? [],
+            error: current.error ?? null,
           })
         }
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
@@ -180,6 +204,7 @@ function getOrCreateEventSource(
             newRequest,
           ],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
+          error: current?.error ?? null,
         })
       }
       else if (data.type === 'connected_account_request') {
@@ -199,6 +224,7 @@ function getOrCreateEventSource(
             ...(current?.pendingConnectedAccountRequests ?? []),
             newRequest,
           ],
+          error: current?.error ?? null,
         })
       }
       else if (data.type === 'session_updated') {
@@ -219,7 +245,7 @@ function getOrCreateEventSource(
     // Don't reset isActive on error - EventSource will auto-reconnect
     // and we'll get the correct state from the 'connected' event.
     // Only reset streaming state since that's definitely interrupted.
-    // Preserve pending secret requests as they may still be valid.
+    // Preserve pending secret requests and error as they may still be valid.
     const current = streamStates.get(sessionId)
     if (current) {
       streamStates.set(sessionId, {
@@ -289,6 +315,7 @@ export function useMessageStream(sessionId: string | null) {
     streamingToolUse: null,
     pendingSecretRequests: [],
     pendingConnectedAccountRequests: [],
+    error: null,
   })
   const queryClient = useQueryClient()
 
@@ -322,6 +349,7 @@ export function useMessageStream(sessionId: string | null) {
         streamingToolUse: null,
         pendingSecretRequests: [],
         pendingConnectedAccountRequests: [],
+        error: null,
       })
     }
     updateState()

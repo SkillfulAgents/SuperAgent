@@ -3,6 +3,7 @@
 import { useMessages } from '@/lib/hooks/use-messages'
 import { useMessageStream } from '@/lib/hooks/use-message-stream'
 import { cn } from '@/lib/utils'
+import { AlertTriangle } from 'lucide-react'
 
 interface Todo {
   content: string
@@ -15,8 +16,24 @@ interface AgentActivityIndicatorProps {
 }
 
 export function AgentActivityIndicator({ sessionId }: AgentActivityIndicatorProps) {
-  const { isActive } = useMessageStream(sessionId)
+  const { isActive, error } = useMessageStream(sessionId)
   const { data: messages } = useMessages(sessionId)
+
+  // Show error if present
+  if (error) {
+    return (
+      <div className="mx-4 mb-2 rounded-lg border border-destructive/50 bg-destructive/10 p-3">
+        <div className="flex items-center gap-2">
+          <AlertTriangle className="h-4 w-4 text-destructive" />
+          <span className="text-sm font-medium text-destructive">Error</span>
+        </div>
+        <p className="mt-1 text-sm text-destructive/90">{error}</p>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Send another message to retry.
+        </p>
+      </div>
+    )
+  }
 
   // Don't render if not active
   if (!isActive) {
