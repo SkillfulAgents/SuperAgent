@@ -4,6 +4,8 @@ import {
   getSettings,
   updateSettings,
   getAnthropicApiKeyStatus,
+  getComposioApiKeyStatus,
+  getComposioUserId,
   type AppSettings,
   type ContainerSettings,
   type ApiKeyStatus,
@@ -18,7 +20,9 @@ export interface GlobalSettingsResponse {
   runnerAvailability: RunnerAvailability[]
   apiKeyStatus: {
     anthropic: ApiKeyStatus
+    composio: ApiKeyStatus
   }
+  composioUserId?: string
 }
 
 // GET /api/settings - Get global settings
@@ -37,7 +41,9 @@ export async function GET() {
       runnerAvailability,
       apiKeyStatus: {
         anthropic: getAnthropicApiKeyStatus(),
+        composio: getComposioApiKeyStatus(),
       },
+      composioUserId: getComposioUserId(),
     }
 
     return NextResponse.json(response)
@@ -92,20 +98,44 @@ export async function PUT(request: NextRequest) {
 
     // Handle API key updates
     if (body.apiKeys !== undefined) {
+      // Handle Anthropic API key
       if (body.apiKeys.anthropicApiKey === '') {
         // Empty string means delete the saved key
         newSettings.apiKeys = { ...newSettings.apiKeys }
         delete newSettings.apiKeys.anthropicApiKey
-        // Clean up empty object
-        if (Object.keys(newSettings.apiKeys).length === 0) {
-          delete newSettings.apiKeys
-        }
       } else if (body.apiKeys.anthropicApiKey) {
         // Save the new key
         newSettings.apiKeys = {
           ...newSettings.apiKeys,
           anthropicApiKey: body.apiKeys.anthropicApiKey,
         }
+      }
+
+      // Handle Composio API key
+      if (body.apiKeys.composioApiKey === '') {
+        newSettings.apiKeys = { ...newSettings.apiKeys }
+        delete newSettings.apiKeys.composioApiKey
+      } else if (body.apiKeys.composioApiKey) {
+        newSettings.apiKeys = {
+          ...newSettings.apiKeys,
+          composioApiKey: body.apiKeys.composioApiKey,
+        }
+      }
+
+      // Handle Composio User ID
+      if (body.apiKeys.composioUserId === '') {
+        newSettings.apiKeys = { ...newSettings.apiKeys }
+        delete newSettings.apiKeys.composioUserId
+      } else if (body.apiKeys.composioUserId) {
+        newSettings.apiKeys = {
+          ...newSettings.apiKeys,
+          composioUserId: body.apiKeys.composioUserId,
+        }
+      }
+
+      // Clean up empty object
+      if (newSettings.apiKeys && Object.keys(newSettings.apiKeys).length === 0) {
+        delete newSettings.apiKeys
       }
     }
 
@@ -120,7 +150,9 @@ export async function PUT(request: NextRequest) {
       runnerAvailability,
       apiKeyStatus: {
         anthropic: getAnthropicApiKeyStatus(),
+        composio: getComposioApiKeyStatus(),
       },
+      composioUserId: getComposioUserId(),
     })
   } catch (error: any) {
     console.error('Failed to update settings:', error)

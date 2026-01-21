@@ -285,6 +285,15 @@ class MessagePersister {
             )
           }
 
+          // Check if this is a connected account request tool
+          if (state.currentToolUse.name === 'mcp__user-input__request_connected_account') {
+            this.handleConnectedAccountRequestTool(
+              sessionId,
+              state.currentToolUse.id,
+              state.currentToolInput
+            )
+          }
+
           this.broadcastToSSE(sessionId, {
             type: 'tool_use_ready',
             toolId: state.currentToolUse.id,
@@ -357,6 +366,62 @@ class MessagePersister {
       })
     } catch (error) {
       console.error('[MessagePersister] Error handling secret request:', error)
+    }
+  }
+
+  // Handle connected account request tool - broadcast to SSE clients so they can show the UI
+  private async handleConnectedAccountRequestTool(
+    sessionId: string,
+    toolUseId: string,
+    toolInput: string
+  ): Promise<void> {
+    try {
+      // Parse the tool input to get toolkit and reason
+      let input: { toolkit: string; reason?: string } = { toolkit: '' }
+      try {
+        input = JSON.parse(toolInput)
+      } catch {
+        console.error('[MessagePersister] Failed to parse connected account request input:', toolInput)
+        return
+      }
+
+      if (!input.toolkit) {
+        console.error('[MessagePersister] Connected account request missing toolkit')
+        return
+      }
+
+      // Get the session to find the agentId
+      const session = await db
+        .select()
+        .from(sessions)
+        .where(eq(sessions.id, sessionId))
+        .limit(1)
+
+      if (session.length === 0) {
+        console.error('[MessagePersister] Session not found for connected account request:', sessionId)
+        return
+      }
+
+      const agentId = session[0].agentId
+
+      console.log(
+        '[MessagePersister] Broadcasting connected_account_request:',
+        toolUseId,
+        input.toolkit,
+        'for agent:',
+        agentId
+      )
+
+      // Broadcast the connected account request event to SSE clients
+      this.broadcastToSSE(sessionId, {
+        type: 'connected_account_request',
+        toolUseId,
+        toolkit: input.toolkit.toLowerCase(),
+        reason: input.reason,
+        agentId,
+      })
+    } catch (error) {
+      console.error('[MessagePersister] Error handling connected account request:', error)
     }
   }
 

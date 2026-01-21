@@ -21,6 +21,8 @@ export interface UpdateSettingsParams {
   container?: Partial<ContainerSettings>
   apiKeys?: {
     anthropicApiKey?: string
+    composioApiKey?: string
+    composioUserId?: string
   }
 }
 

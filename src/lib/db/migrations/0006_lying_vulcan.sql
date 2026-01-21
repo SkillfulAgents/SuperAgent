@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `agent_connected_accounts_unique` ON `agent_connected_accounts` (`agent_id`,`connected_account_id`);

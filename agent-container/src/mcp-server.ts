@@ -7,6 +7,7 @@
 
 import { createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
 import { requestSecretTool } from './tools/request-secret'
+import { requestConnectedAccountTool } from './tools/request-connected-account'
 
 /**
  * MCP server for user input tools.
@@ -15,5 +16,5 @@ import { requestSecretTool } from './tools/request-secret'
 export const userInputMcpServer = createSdkMcpServer({
   name: 'user-input',
   version: '1.0.0',
-  tools: [requestSecretTool],
+  tools: [requestSecretTool, requestConnectedAccountTool],
 })

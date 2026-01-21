@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { Settings, FileText, KeyRound, Sparkles } from 'lucide-react'
+import { Settings, FileText, KeyRound, Sparkles, Link2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -24,14 +24,16 @@ import { GeneralTab } from './settings/general-tab'
 import { SystemPromptTab } from './settings/system-prompt-tab'
 import { SecretsTab } from './settings/secrets-tab'
 import { SkillsTab } from './settings/skills-tab'
+import { ConnectedAccountsTab } from './settings/connected-accounts-tab'
 
-type SettingsSection = 'general' | 'system-prompt' | 'secrets' | 'skills'
+type SettingsSection = 'general' | 'system-prompt' | 'secrets' | 'skills' | 'connected-accounts'
 
 const navItems = [
   { id: 'general' as const, name: 'General', icon: Settings },
   { id: 'system-prompt' as const, name: 'System Prompt', icon: FileText },
   { id: 'secrets' as const, name: 'Secrets', icon: KeyRound },
   { id: 'skills' as const, name: 'Skills', icon: Sparkles },
+  { id: 'connected-accounts' as const, name: 'Accounts', icon: Link2 },
 ]
 
 interface AgentSettingsDialogProps {
@@ -128,8 +130,11 @@ export function AgentSettingsDialog({
               {activeSection === 'skills' && (
                 <SkillsTab agentId={agent.id} />
               )}
+              {activeSection === 'connected-accounts' && (
+                <ConnectedAccountsTab agentId={agent.id} />
+              )}
             </div>
-            {activeSection !== 'secrets' && activeSection !== 'skills' && (
+            {activeSection !== 'secrets' && activeSection !== 'skills' && activeSection !== 'connected-accounts' && (
               <div className="flex items-center justify-end gap-2 border-t p-4">
                 <Button variant="outline" onClick={() => onOpenChange(false)}>
                   Cancel

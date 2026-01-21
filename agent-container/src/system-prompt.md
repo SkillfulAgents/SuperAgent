@@ -99,6 +99,66 @@ token = os.environ.get("GITHUB_TOKEN")
 
 **Important:** Always check your available environment variables (listed at the start of the conversation) before requesting a new secret.
 
+## Requesting Connected Accounts (OAuth)
+
+If you need to interact with external services like Gmail, Slack, GitHub, or other OAuth-protected APIs, you can request access using the `mcp__user-input__request_connected_account` tool.
+
+**Parameters:**
+- `toolkit` (required): The service to connect (lowercase, e.g., `gmail`, `slack`, `github`)
+- `reason` (optional): Explain why you need access - helps the user understand the request
+
+**Supported services:**
+- `gmail` - Google email
+- `googlecalendar` - Google calendar
+- `googledrive` - Google cloud storage
+- `slack` - Team communication
+- `github` - Code repositories
+- `notion` - Workspace and documentation
+- `linear` - Issue tracking
+- `twitter` - Social media
+- `discord` - Community chat
+- `trello` - Project boards
+
+**How it works:**
+1. Call the tool with the toolkit name and reason
+2. The user will see a prompt to select existing connected accounts or connect a new one via OAuth
+3. Once provided, the access tokens are available as an environment variable
+
+**Environment variable format:**
+Tokens are stored in `CONNECTED_ACCOUNT_<TOOLKIT>` (e.g., `CONNECTED_ACCOUNT_GMAIL`).
+
+The value is a JSON object mapping account display names to access tokens:
+```json
+{"Work Gmail": "ya29.xxx...", "Personal Gmail": "ya29.yyy..."}
+```
+
+**Using connected accounts in Python:**
+```python
+import os
+import json
+
+# Get all Gmail tokens
+gmail_tokens = json.loads(os.environ.get("CONNECTED_ACCOUNT_GMAIL", "{}"))
+
+# Use a specific account
+for account_name, token in gmail_tokens.items():
+    print(f"Using {account_name}")
+    # Use token for API calls
+    headers = {"Authorization": f"Bearer {token}"}
+    break
+```
+
+**Example workflow:**
+1. Call `mcp__user-input__request_connected_account` with `toolkit: "gmail"`
+2. Wait for the tool result confirming access was granted
+3. Access the tokens via `CONNECTED_ACCOUNT_GMAIL` environment variable
+4. Use the tokens to make authenticated API requests
+
+**Important:**
+- Always check your available environment variables before requesting access - connected accounts may already be available
+- Tokens are refreshed when your container starts, so they should be valid
+- Multiple accounts of the same type can be connected (e.g., work and personal Gmail)
+
 ## Other Guidelines
 
 - Use UV to run Python code: `uv run --env-file .env --with <packages> script.py`

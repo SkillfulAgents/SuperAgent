@@ -13,6 +13,8 @@ export interface ContainerSettings {
 
 export interface ApiKeySettings {
   anthropicApiKey?: string
+  composioApiKey?: string
+  composioUserId?: string
 }
 
 export interface AppSettings {
@@ -144,6 +146,44 @@ export function getEffectiveAnthropicApiKey(): string | undefined {
   }
   // Fall back to environment variable
   return process.env.ANTHROPIC_API_KEY
+}
+
+/**
+ * Get the status of the Composio API key configuration.
+ */
+export function getComposioApiKeyStatus(): ApiKeyStatus {
+  const settings = getSettings()
+  if (settings.apiKeys?.composioApiKey) {
+    return { isConfigured: true, source: 'settings' }
+  }
+  if (process.env.COMPOSIO_API_KEY) {
+    return { isConfigured: true, source: 'env' }
+  }
+  return { isConfigured: false, source: 'none' }
+}
+
+/**
+ * Get the effective Composio API key to use.
+ * Saved settings take precedence over environment variable.
+ */
+export function getEffectiveComposioApiKey(): string | undefined {
+  const settings = getSettings()
+  if (settings.apiKeys?.composioApiKey) {
+    return settings.apiKeys.composioApiKey
+  }
+  return process.env.COMPOSIO_API_KEY
+}
+
+/**
+ * Get the Composio user ID.
+ * Saved settings take precedence over environment variable.
+ */
+export function getComposioUserId(): string | undefined {
+  const settings = getSettings()
+  if (settings.apiKeys?.composioUserId) {
+    return settings.apiKeys.composioUserId
+  }
+  return process.env.COMPOSIO_USER_ID
 }
 
 export { DEFAULT_SETTINGS }

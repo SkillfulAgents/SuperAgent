@@ -1,10 +1,15 @@
 'use client'
 
 import { useMessages } from '@/lib/hooks/use-messages'
-import { useMessageStream, removeSecretRequest } from '@/lib/hooks/use-message-stream'
+import {
+  useMessageStream,
+  removeSecretRequest,
+  removeConnectedAccountRequest,
+} from '@/lib/hooks/use-message-stream'
 import { MessageItem } from './message-item'
 import { StreamingToolCallItem } from './tool-call-item'
 import { SecretRequestItem } from './secret-request-item'
+import { ConnectedAccountRequestItem } from './connected-account-request-item'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Loader2, Wrench } from 'lucide-react'
 import { useEffect, useRef, useCallback } from 'react'
@@ -15,8 +20,13 @@ interface MessageListProps {
 
 export function MessageList({ sessionId }: MessageListProps) {
   const { data: messages, isLoading } = useMessages(sessionId)
-  const { streamingMessage, isStreaming, streamingToolUse, pendingSecretRequests } =
-    useMessageStream(sessionId)
+  const {
+    streamingMessage,
+    isStreaming,
+    streamingToolUse,
+    pendingSecretRequests,
+    pendingConnectedAccountRequests,
+  } = useMessageStream(sessionId)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   // Handler to remove a completed secret request
@@ -27,12 +37,20 @@ export function MessageList({ sessionId }: MessageListProps) {
     [sessionId]
   )
 
-  // Auto-scroll to bottom when new messages arrive or secret requests appear
+  // Handler to remove a completed connected account request
+  const handleConnectedAccountRequestComplete = useCallback(
+    (toolUseId: string) => {
+      removeConnectedAccountRequest(sessionId, toolUseId)
+    },
+    [sessionId]
+  )
+
+  // Auto-scroll to bottom when new messages arrive or requests appear
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [messages, streamingMessage, streamingToolUse, pendingSecretRequests])
+  }, [messages, streamingMessage, streamingToolUse, pendingSecretRequests, pendingConnectedAccountRequests])
 
   if (isLoading) {
     return (
@@ -87,6 +105,18 @@ export function MessageList({ sessionId }: MessageListProps) {
             reason={request.reason}
             sessionId={sessionId}
             onComplete={() => handleSecretRequestComplete(request.toolUseId)}
+          />
+        ))}
+
+        {/* Pending connected account requests from the agent */}
+        {pendingConnectedAccountRequests.map((request) => (
+          <ConnectedAccountRequestItem
+            key={request.toolUseId}
+            toolUseId={request.toolUseId}
+            toolkit={request.toolkit}
+            reason={request.reason}
+            sessionId={sessionId}
+            onComplete={() => handleConnectedAccountRequestComplete(request.toolUseId)}
           />
         ))}
       </div>

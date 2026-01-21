@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { Settings } from 'lucide-react'
+import { Settings, Link2 } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -19,11 +19,13 @@ import {
   SidebarProvider,
 } from '@/components/ui/sidebar'
 import { GeneralTab } from './general-tab'
+import { ComposioTab } from './composio-tab'
 
-type SettingsSection = 'general'
+type SettingsSection = 'general' | 'composio'
 
 const navItems = [
   { id: 'general' as const, name: 'General', icon: Settings },
+  { id: 'composio' as const, name: 'Composio', icon: Link2 },
 ]
 
 interface GlobalSettingsDialogProps {
@@ -83,6 +85,7 @@ export function GlobalSettingsDialog({
             </header>
             <div className="flex flex-1 flex-col gap-4 overflow-y-auto p-4">
               {activeSection === 'general' && <GeneralTab />}
+              {activeSection === 'composio' && <ComposioTab />}
             </div>
           </main>
         </SidebarProvider>

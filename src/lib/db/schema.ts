@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core'
+import { sqliteTable, text, integer, uniqueIndex } from 'drizzle-orm/sqlite-core'
 
 // Agents - each agent corresponds to a Docker container
 // Container status/port are queried from Docker directly (single source of truth)
@@ -61,6 +61,40 @@ export const agentSecrets = sqliteTable('agent_secrets', {
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
 })
 
+// Connected accounts - app-level OAuth connections managed by Composio
+export const connectedAccounts = sqliteTable('connected_accounts', {
+  id: text('id').primaryKey(),
+  composioConnectionId: text('composio_connection_id').notNull().unique(),
+  toolkitSlug: text('toolkit_slug').notNull(), // e.g., 'gmail', 'slack', 'github'
+  displayName: text('display_name').notNull(), // User-friendly label
+  status: text('status', { enum: ['active', 'revoked', 'expired'] })
+    .notNull()
+    .default('active'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+})
+
+// Agent connected accounts - junction table for agent-to-account mappings
+export const agentConnectedAccounts = sqliteTable(
+  'agent_connected_accounts',
+  {
+    id: text('id').primaryKey(),
+    agentId: text('agent_id')
+      .notNull()
+      .references(() => agents.id, { onDelete: 'cascade' }),
+    connectedAccountId: text('connected_account_id')
+      .notNull()
+      .references(() => connectedAccounts.id, { onDelete: 'cascade' }),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  },
+  (table) => ({
+    agentAccountUnique: uniqueIndex('agent_connected_accounts_unique').on(
+      table.agentId,
+      table.connectedAccountId
+    ),
+  })
+)
+
 // Type exports for convenience
 export type Agent = typeof agents.$inferSelect
 export type NewAgent = typeof agents.$inferInsert
@@ -72,3 +106,7 @@ export type ToolCall = typeof toolCalls.$inferSelect
 export type NewToolCall = typeof toolCalls.$inferInsert
 export type AgentSecret = typeof agentSecrets.$inferSelect
 export type NewAgentSecret = typeof agentSecrets.$inferInsert
+export type ConnectedAccount = typeof connectedAccounts.$inferSelect
+export type NewConnectedAccount = typeof connectedAccounts.$inferInsert
+export type AgentConnectedAccount = typeof agentConnectedAccounts.$inferSelect
+export type NewAgentConnectedAccount = typeof agentConnectedAccounts.$inferInsert

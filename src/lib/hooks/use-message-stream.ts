@@ -9,12 +9,19 @@ interface SecretRequest {
   reason?: string
 }
 
+interface ConnectedAccountRequest {
+  toolUseId: string
+  toolkit: string
+  reason?: string
+}
+
 interface StreamState {
   isActive: boolean // True from user message until query result
   isStreaming: boolean // True while actively receiving tokens
   streamingMessage: string | null
   streamingToolUse: { id: string; name: string; partialInput: string } | null
   pendingSecretRequests: SecretRequest[]
+  pendingConnectedAccountRequests: ConnectedAccountRequest[]
 }
 
 // Global state to track streaming per session
@@ -57,6 +64,7 @@ function getOrCreateEventSource(
           streamingMessage: null,
           streamingToolUse: null,
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
+          pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
         })
       }
       else if (data.type === 'session_active') {
@@ -67,18 +75,20 @@ function getOrCreateEventSource(
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUse: current?.streamingToolUse ?? null,
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
+          pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
         })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
       }
       else if (data.type === 'session_idle') {
         // Session became idle - query completed or interrupted
-        // Clear pending secret requests as the query is done
+        // Clear pending requests as the query is done
         streamStates.set(sessionId, {
           isActive: false,
           isStreaming: false,
           streamingMessage: null,
           streamingToolUse: null,
           pendingSecretRequests: [],
+          pendingConnectedAccountRequests: [],
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -91,6 +101,7 @@ function getOrCreateEventSource(
           streamingMessage: '',
           streamingToolUse: null,
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
+          pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
         })
       }
       else if (data.type === 'stream_delta') {
@@ -100,6 +111,7 @@ function getOrCreateEventSource(
           streamingMessage: (current?.streamingMessage || '') + data.text,
           streamingToolUse: null,
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
+          pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
         })
       }
       else if (data.type === 'tool_use_start' || data.type === 'tool_use_streaming') {
@@ -113,6 +125,7 @@ function getOrCreateEventSource(
             partialInput: data.partialInput ?? '',
           },
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
+          pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
         })
       }
       else if (data.type === 'tool_use_ready') {
@@ -123,6 +136,7 @@ function getOrCreateEventSource(
           streamingMessage: current?.streamingMessage ?? null,
           streamingToolUse: null,
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
+          pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
         })
       }
       else if (data.type === 'stream_end') {
@@ -132,6 +146,7 @@ function getOrCreateEventSource(
           streamingMessage: null,
           streamingToolUse: null,
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
+          pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
         })
       }
       else if (data.type === 'tool_call' || data.type === 'tool_result') {
@@ -143,6 +158,7 @@ function getOrCreateEventSource(
             streamingMessage: null,
             streamingToolUse: null,
             pendingSecretRequests: current.pendingSecretRequests ?? [],
+            pendingConnectedAccountRequests: current.pendingConnectedAccountRequests ?? [],
           })
         }
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
@@ -161,6 +177,26 @@ function getOrCreateEventSource(
           streamingToolUse: current?.streamingToolUse ?? null,
           pendingSecretRequests: [
             ...(current?.pendingSecretRequests ?? []),
+            newRequest,
+          ],
+          pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
+        })
+      }
+      else if (data.type === 'connected_account_request') {
+        // Agent is requesting access to a connected account
+        const newRequest: ConnectedAccountRequest = {
+          toolUseId: data.toolUseId,
+          toolkit: data.toolkit,
+          reason: data.reason,
+        }
+        streamStates.set(sessionId, {
+          isActive: current?.isActive ?? false,
+          isStreaming: current?.isStreaming ?? false,
+          streamingMessage: current?.streamingMessage ?? null,
+          streamingToolUse: current?.streamingToolUse ?? null,
+          pendingSecretRequests: current?.pendingSecretRequests ?? [],
+          pendingConnectedAccountRequests: [
+            ...(current?.pendingConnectedAccountRequests ?? []),
             newRequest,
           ],
         })
@@ -230,6 +266,21 @@ export function removeSecretRequest(sessionId: string, toolUseId: string): void 
   }
 }
 
+// Helper function to remove a connected account request from a session
+export function removeConnectedAccountRequest(sessionId: string, toolUseId: string): void {
+  const current = streamStates.get(sessionId)
+  if (current) {
+    streamStates.set(sessionId, {
+      ...current,
+      pendingConnectedAccountRequests: current.pendingConnectedAccountRequests.filter(
+        (r) => r.toolUseId !== toolUseId
+      ),
+    })
+    // Notify listeners
+    streamListeners.get(sessionId)?.forEach((listener) => listener())
+  }
+}
+
 export function useMessageStream(sessionId: string | null) {
   const [state, setState] = useState<StreamState>({
     isActive: false,
@@ -237,6 +288,7 @@ export function useMessageStream(sessionId: string | null) {
     streamingMessage: null,
     streamingToolUse: null,
     pendingSecretRequests: [],
+    pendingConnectedAccountRequests: [],
   })
   const queryClient = useQueryClient()
 
@@ -269,6 +321,7 @@ export function useMessageStream(sessionId: string | null) {
         streamingMessage: null,
         streamingToolUse: null,
         pendingSecretRequests: [],
+        pendingConnectedAccountRequests: [],
       })
     }
     updateState()

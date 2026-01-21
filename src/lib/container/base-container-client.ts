@@ -476,7 +476,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
     return Object.entries(envVars)
       .filter(([_, value]) => value !== undefined)
-      .map(([key, value]) => `-e ${key}="${value}"`)
+      .map(([key, value]) => {
+        // Escape single quotes for shell safety, then wrap in single quotes
+        const escaped = value!.replace(/'/g, "'\\''")
+        return `-e ${key}='${escaped}'`
+      })
       .join(' ')
   }
 }

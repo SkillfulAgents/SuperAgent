@@ -12,6 +12,38 @@ const PLATFORM_SYSTEM_PROMPT = fs.readFileSync(
 );
 
 /**
+ * Parses connected account environment variables to extract account information.
+ * Connected account env vars are named CONNECTED_ACCOUNT_<TOOLKIT> and contain
+ * JSON objects mapping account names to tokens.
+ */
+function parseConnectedAccounts(envVars?: string[]): Map<string, string[]> {
+  const accounts = new Map<string, string[]>();
+
+  if (!envVars) return accounts;
+
+  for (const envVar of envVars) {
+    if (envVar.startsWith('CONNECTED_ACCOUNT_')) {
+      const toolkit = envVar.replace('CONNECTED_ACCOUNT_', '').toLowerCase();
+      const value = process.env[envVar];
+
+      if (value) {
+        try {
+          const parsed = JSON.parse(value);
+          const accountNames = Object.keys(parsed);
+          if (accountNames.length > 0) {
+            accounts.set(toolkit, accountNames);
+          }
+        } catch {
+          // Skip malformed JSON
+        }
+      }
+    }
+  }
+
+  return accounts;
+}
+
+/**
  * Generates the system prompt to append to the Claude Code preset.
  * Includes platform-specific instructions and available environment variables.
  */
@@ -24,13 +56,39 @@ function generateSystemPromptAppend(
   // Platform instructions
   sections.push(PLATFORM_SYSTEM_PROMPT);
 
-  // Available environment variables
-  if (availableEnvVars && availableEnvVars.length > 0) {
+  // Parse connected accounts for explicit listing
+  const connectedAccounts = parseConnectedAccounts(availableEnvVars);
+
+  // Separate connected account env vars from regular secrets
+  const regularEnvVars = (availableEnvVars || []).filter(
+    name => !name.startsWith('CONNECTED_ACCOUNT_')
+  );
+
+  // Connected accounts section (explicit listing of what's already available)
+  if (connectedAccounts.size > 0) {
+    const accountSections: string[] = [];
+
+    for (const [toolkit, accountNames] of connectedAccounts) {
+      const displayName = toolkit.charAt(0).toUpperCase() + toolkit.slice(1);
+      accountSections.push(`### ${displayName}\n${accountNames.map(name => `- ${name}`).join('\n')}`);
+    }
+
+    sections.push(`## Connected Accounts (Already Available)
+
+**IMPORTANT: You already have access to the following connected accounts. Do NOT request access to these - you already have it!**
+
+${accountSections.join('\n\n')}
+
+Access tokens are available in environment variables named \`CONNECTED_ACCOUNT_<TOOLKIT>\` (e.g., \`CONNECTED_ACCOUNT_GMAIL\`).`);
+  }
+
+  // Available environment variables (regular secrets)
+  if (regularEnvVars.length > 0) {
     sections.push(`## Available Environment Variables
 
 The following environment variables have been configured for this agent and are available in your environment:
 
-${availableEnvVars.map(name => `- \`${name}\``).join('\n')}
+${regularEnvVars.map(name => `- \`${name}\``).join('\n')}
 
 You can access these using standard environment variable methods (e.g., \`process.env.VAR_NAME\` in Node.js, \`os.environ['VAR_NAME']\` in Python, \`$VAR_NAME\` in shell scripts).`);
   }
@@ -160,10 +218,10 @@ export class ClaudeCodeProcess extends EventEmitter {
           'user-input': userInputMcpServer,
         },
         hooks: {
-          // Capture toolUseId before request_secret tool executes
+          // Capture toolUseId before any user-input MCP tools execute
           PreToolUse: [
             {
-              matcher: 'mcp__user-input__request_secret',
+              matcher: 'mcp__user-input__.*',
               hooks: [
                 async (_input, toolUseId) => {
                   if (toolUseId) {
@@ -342,10 +400,10 @@ export class ClaudeCodeProcess extends EventEmitter {
           'user-input': userInputMcpServer,
         },
         hooks: {
-          // Capture toolUseId before request_secret tool executes
+          // Capture toolUseId before any user-input MCP tools execute
           PreToolUse: [
             {
-              matcher: 'mcp__user-input__request_secret',
+              matcher: 'mcp__user-input__.*',
               hooks: [
                 async (_input, toolUseId) => {
                   if (toolUseId) {
