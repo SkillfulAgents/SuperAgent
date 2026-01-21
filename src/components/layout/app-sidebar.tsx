@@ -226,6 +226,9 @@ export function AppSidebar() {
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
+        <div className="px-2 text-xs text-muted-foreground">
+          Version: {process.env.NEXT_PUBLIC_VERSION || '0.0.1'}
+        </div>
       </SidebarFooter>
 
       <CreateAgentDialog

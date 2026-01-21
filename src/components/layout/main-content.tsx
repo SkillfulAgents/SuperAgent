@@ -29,8 +29,8 @@ export function MainContent() {
 
   if (!agentId) {
     return (
-      <div className="flex-1 flex flex-col">
-        <header className="sticky top-0 z-10 flex h-12 shrink-0 items-center gap-2 border-b bg-background px-4">
+      <div className="h-full flex flex-col">
+        <header className="shrink-0 flex h-12 items-center gap-2 border-b bg-background px-4">
           <SidebarTrigger className="-ml-1" />
         </header>
         <div className="flex-1 flex items-center justify-center text-muted-foreground">
@@ -41,9 +41,9 @@ export function MainContent() {
   }
 
   return (
-    <div className="flex-1 flex flex-col">
-      {/* Unified header */}
-      <header className="sticky top-0 z-10 flex h-12 shrink-0 items-center gap-2 border-b bg-background px-4">
+    <div className="h-full flex flex-col">
+      {/* Fixed header */}
+      <header className="shrink-0 flex h-12 items-center gap-2 border-b bg-background px-4">
         <SidebarTrigger className="-ml-1" />
         <div className="flex items-center gap-2 min-w-0 flex-1">
           <span className="font-semibold truncate">{agent?.name || 'Loading...'}</span>
@@ -105,10 +105,12 @@ export function MainContent() {
 
       {/* Show messages when a session is selected, otherwise show landing page */}
       {sessionId ? (
-        <div className="flex-1 flex flex-col min-h-0">
+        <div className="flex-1 grid grid-rows-[1fr_auto] min-h-0">
           <MessageList sessionId={sessionId} />
-          <AgentActivityIndicator sessionId={sessionId} />
-          <MessageInput sessionId={sessionId} agentId={agentId} />
+          <div className="bg-background">
+            <AgentActivityIndicator sessionId={sessionId} />
+            <MessageInput sessionId={sessionId} agentId={agentId} />
+          </div>
         </div>
       ) : (
         /* Show landing page with large input when no session is selected */

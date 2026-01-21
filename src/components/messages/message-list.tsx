@@ -10,7 +10,6 @@ import { MessageItem } from './message-item'
 import { StreamingToolCallItem } from './tool-call-item'
 import { SecretRequestItem } from './secret-request-item'
 import { ConnectedAccountRequestItem } from './connected-account-request-item'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { Loader2, Wrench } from 'lucide-react'
 import { useEffect, useRef, useCallback } from 'react'
 
@@ -61,7 +60,7 @@ export function MessageList({ sessionId }: MessageListProps) {
   }
 
   return (
-    <ScrollArea className="flex-1" ref={scrollRef}>
+    <div className="overflow-y-auto" ref={scrollRef}>
       <div className="p-4 space-y-4">
         {messages?.map((message) => (
           <MessageItem key={message.id} message={message} />
@@ -120,6 +119,6 @@ export function MessageList({ sessionId }: MessageListProps) {
           />
         ))}
       </div>
-    </ScrollArea>
+    </div>
   )
 }

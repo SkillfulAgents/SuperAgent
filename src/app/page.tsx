@@ -8,9 +8,9 @@ import { SelectionProvider } from '@/lib/context/selection-context'
 export default function Home() {
   return (
     <SelectionProvider>
-      <SidebarProvider>
+      <SidebarProvider className="h-screen">
         <AppSidebar />
-        <SidebarInset className="min-w-0 overflow-hidden">
+        <SidebarInset className="min-w-0 h-full">
           <MainContent />
         </SidebarInset>
       </SidebarProvider>
