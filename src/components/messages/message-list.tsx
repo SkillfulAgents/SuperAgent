@@ -11,7 +11,7 @@ import { StreamingToolCallItem } from './tool-call-item'
 import { SecretRequestItem } from './secret-request-item'
 import { ConnectedAccountRequestItem } from './connected-account-request-item'
 import { Loader2, Wrench } from 'lucide-react'
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useMemo } from 'react'
 
 interface MessageListProps {
   sessionId: string
@@ -44,6 +44,24 @@ export function MessageList({ sessionId }: MessageListProps) {
     [sessionId]
   )
 
+  // Check if streaming message is already in persisted messages (prevents double-render)
+  const isStreamingMessagePersisted = useMemo(() => {
+    if (!streamingMessage || !messages?.length) return false
+
+    // Find the last assistant message
+    const lastAssistantMessage = [...messages].reverse().find(m => m.type === 'assistant')
+    if (!lastAssistantMessage) return false
+
+    // Check if the persisted message text contains the streaming content
+    const content = lastAssistantMessage.content as { text?: string } | undefined
+    const persistedText = content?.text || ''
+    const streamingText = streamingMessage.trim()
+
+    // If streaming text is a prefix of (or equal to) persisted text, it's already persisted
+    // Also check if persisted text starts with streaming text (streaming may be slightly behind)
+    return persistedText.startsWith(streamingText) || streamingText.startsWith(persistedText.trim())
+  }, [messages, streamingMessage])
+
   // Auto-scroll to bottom when new messages arrive or requests appear
   useEffect(() => {
     if (scrollRef.current) {
@@ -66,8 +84,8 @@ export function MessageList({ sessionId }: MessageListProps) {
           <MessageItem key={message.id} message={message} />
         ))}
 
-        {/* Streaming text message */}
-        {isStreaming && streamingMessage && (
+        {/* Streaming text message - only show if not already persisted */}
+        {isStreaming && streamingMessage && !isStreamingMessagePersisted && (
           <MessageItem
             message={{
               id: 'streaming',
