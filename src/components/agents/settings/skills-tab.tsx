@@ -4,11 +4,11 @@ import { useAgentSkills } from '@/lib/hooks/use-agent-skills'
 import { Loader2, Sparkles } from 'lucide-react'
 
 interface SkillsTabProps {
-  agentId: string
+  agentSlug: string
 }
 
-export function SkillsTab({ agentId }: SkillsTabProps) {
-  const { data: skills, isLoading } = useAgentSkills(agentId)
+export function SkillsTab({ agentSlug }: SkillsTabProps) {
+  const { data: skills, isLoading } = useAgentSkills(agentSlug)
 
   if (isLoading) {
     return (

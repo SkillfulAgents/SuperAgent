@@ -1,13 +1,13 @@
 'use client'
 
 import { cn } from '@/lib/utils/cn'
-import type { ToolCall } from '@/lib/db/schema'
 import { Circle, CheckCircle, XCircle, ChevronDown, ChevronRight, Loader2, Wrench } from 'lucide-react'
 import { useState } from 'react'
 import { getToolRenderer } from './tool-renderers'
+import type { ApiToolCall } from '@/lib/types/api'
 
 interface ToolCallItemProps {
-  toolCall: ToolCall
+  toolCall: ApiToolCall
 }
 
 interface StreamingToolCallItemProps {
@@ -17,8 +17,8 @@ interface StreamingToolCallItemProps {
 
 type ToolCallStatus = 'running' | 'success' | 'error'
 
-function getStatus(toolCall: ToolCall): ToolCallStatus {
-  if (toolCall.result === null) return 'running'
+function getStatus(toolCall: ApiToolCall): ToolCallStatus {
+  if (toolCall.result === null || toolCall.result === undefined) return 'running'
   if (toolCall.isError) return 'error'
   return 'success'
 }

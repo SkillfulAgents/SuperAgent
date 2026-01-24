@@ -1,13 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
-import { agents, sessions, messages, agentSecrets } from '@/lib/db/schema'
-import { eq, desc } from 'drizzle-orm'
-import { v4 as uuidv4 } from 'uuid'
 import { containerManager } from '@/lib/container/container-manager'
 import { messagePersister } from '@/lib/container/message-persister'
+import { getAgent, agentExists } from '@/lib/services/agent-service'
+import { listSessions, updateSessionName, registerSession } from '@/lib/services/session-service'
+import { getSecretEnvVars } from '@/lib/services/secrets-service'
+import { withRetry } from '@/lib/utils/retry'
 import Anthropic from '@anthropic-ai/sdk'
 
 const anthropic = new Anthropic()
+
+// Model used for generating session names (lightweight task)
+const SUMMARIZER_MODEL = process.env.SUMMARIZER_MODEL || 'claude-haiku-4-5'
 
 // GET /api/agents/[id]/sessions - List sessions for an agent
 export async function GET(
@@ -15,33 +18,23 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params
+    const { id: slug } = await params
 
     // Verify agent exists
-    const agent = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, id))
-      .limit(1)
-
-    if (agent.length === 0) {
+    if (!(await agentExists(slug))) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
-    const agentSessions = await db
-      .select()
-      .from(sessions)
-      .where(eq(sessions.agentId, id))
-      .orderBy(desc(sessions.createdAt))
+    const sessions = await listSessions(slug)
 
     // Include isActive status for each session
-    const sessionsWithStatus = agentSessions.map((session) => ({
+    const sessionsWithStatus = sessions.map((session) => ({
       ...session,
       isActive: messagePersister.isSessionActive(session.id),
     }))
 
     return NextResponse.json(sessionsWithStatus)
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Failed to fetch sessions:', error)
     return NextResponse.json(
       { error: 'Failed to fetch sessions' },
@@ -51,41 +44,42 @@ export async function GET(
 }
 
 // Generate session name using AI (fire and forget)
-async function generateAndUpdateSessionName(
+async function generateAndUpdateSessionNameAsync(
+  agentSlug: string,
   sessionId: string,
   message: string,
   agentName: string
 ): Promise<void> {
   try {
-    const response = await anthropic.messages.create({
-      model: 'claude-haiku-4-5',
-      max_tokens: 50,
-      messages: [
-        {
-          role: 'user',
-          content: `Generate a short, descriptive session name (3-6 words max) for a conversation with an AI agent named "${agentName}". The first message in the conversation is:
+    const response = await withRetry(() =>
+      anthropic.messages.create({
+        model: SUMMARIZER_MODEL,
+        max_tokens: 50,
+        messages: [
+          {
+            role: 'user',
+            content: `Generate a short, descriptive session name (3-6 words max) for a conversation with an AI agent named "${agentName}". The first message in the conversation is:
 
 "${message}"
 
 Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
-        },
-      ],
-    })
+          },
+        ],
+      })
+    )
 
     const textBlock = response.content.find((block) => block.type === 'text')
     const sessionName = textBlock?.type === 'text' ? textBlock.text.trim() : null
 
     if (sessionName) {
-      await db
-        .update(sessions)
-        .set({ name: sessionName })
-        .where(eq(sessions.id, sessionId))
+      // Update session name in session-metadata.json
+      await updateSessionName(agentSlug, sessionId, sessionName)
 
       // Notify connected clients that session metadata has changed
       messagePersister.broadcastSessionUpdate(sessionId)
     }
   } catch (error) {
-    console.error('Failed to generate session name:', error)
+    console.error('Failed to generate session name after retries:', error)
     // Non-critical error, session will keep its default name
   }
 }
@@ -96,7 +90,7 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params
+    const { id: slug } = await params
     const body = await request.json()
     const { message } = body
 
@@ -105,66 +99,60 @@ export async function POST(
     }
 
     // Get agent
-    const agent = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, id))
-      .limit(1)
-
-    if (agent.length === 0) {
+    const agent = await getAgent(slug)
+    if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
-    const agentData = agent[0]
-    const sessionId = uuidv4()
+    // Ensure container is running
+    const client = await containerManager.ensureRunning(slug)
 
-    // Ensure container is running (fetches secrets and starts if needed)
-    const client = await containerManager.ensureRunning(id)
+    // Get secret env var names to pass to the agent
+    const availableEnvVars = await getSecretEnvVars(slug)
 
-    // Fetch secret env var names to pass to the agent
-    const secrets = await db
-      .select({ envVar: agentSecrets.envVar })
-      .from(agentSecrets)
-      .where(eq(agentSecrets.agentId, id))
-
-    const availableEnvVars = secrets.map((s) => s.envVar)
-
-    // Create container session with agent's system prompt and available env vars
+    // Create container session with initial message
+    // Note: System prompt now comes from CLAUDE.md via settingSources: ['project']
+    // We only pass availableEnvVars so the agent knows what secrets are available
+    // The session creation is atomic - it sends the first message and waits for Claude's session ID
     const containerSession = await client.createSession({
-      systemPrompt: agentData.systemPrompt || undefined,
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
+      initialMessage: message.trim(),
     })
-    const containerSessionId = containerSession.id
+    const sessionId = containerSession.id
 
-    // Subscribe to messages for this session
-    messagePersister.subscribeToSession(sessionId, client, containerSessionId)
+    // Register session immediately so it appears in listings
+    // The sessionId is now Claude's canonical session ID (matches JSONL filename)
+    await registerSession(slug, sessionId, 'New Session')
 
-    // Create session in database with temporary name
-    const now = new Date()
-    const newSession = {
-      id: sessionId,
-      agentId: id,
-      name: 'New Session',
-      containerSessionId,
-      createdAt: now,
-      lastActivityAt: now,
-    }
+    // Subscribe to messages for this session (for SSE broadcasting)
+    messagePersister.subscribeToSession(sessionId, client, sessionId, slug)
 
-    await db.insert(sessions).values(newSession)
-
-    // Save user message to database and mark session as active
-    await messagePersister.saveUserMessage(sessionId, message.trim())
-
-    // Send message to container
-    await client.sendMessage(containerSessionId, message.trim())
+    // Mark session as active since we just sent the initial message
+    messagePersister.markSessionActive(sessionId, slug)
 
     // Generate session name in background (fire and forget)
-    generateAndUpdateSessionName(sessionId, message.trim(), agentData.name).catch(
-      console.error
-    )
+    generateAndUpdateSessionNameAsync(
+      slug,
+      sessionId,
+      message.trim(),
+      agent.frontmatter.name
+    ).catch(console.error)
 
-    return NextResponse.json(newSession, { status: 201 })
-  } catch (error: any) {
+    // Return session info
+    // Note: The JSONL file will be created by Claude SDK
+    return NextResponse.json(
+      {
+        id: sessionId,
+        agentSlug: slug,
+        name: 'New Session',
+        createdAt: new Date(),
+        lastActivityAt: new Date(),
+        messageCount: 0,
+        isActive: true,
+      },
+      { status: 201 }
+    )
+  } catch (error: unknown) {
     console.error('Failed to create session:', error)
     return NextResponse.json(
       { error: 'Failed to create session' },

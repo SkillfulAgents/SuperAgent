@@ -33,7 +33,7 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
       setName('')
       onOpenChange(false)
       // Select the newly created agent
-      selectAgent(newAgent.id)
+      selectAgent(newAgent.slug)
     } catch (error) {
       console.error('Failed to create agent:', error)
     }

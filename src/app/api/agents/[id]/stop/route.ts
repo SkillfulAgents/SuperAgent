@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
-import { agents } from '@/lib/db/schema'
-import { eq } from 'drizzle-orm'
 import { containerManager } from '@/lib/container/container-manager'
+import { getAgent, agentExists } from '@/lib/services/agent-service'
 
 // POST /api/agents/[id]/stop - Stop an agent's container
 export async function POST(
@@ -10,27 +8,25 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params
+    const { id: slug } = await params
 
-    // Get agent from database
-    const agent = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, id))
-      .limit(1)
-
-    if (agent.length === 0) {
+    // Verify agent exists
+    const agent = await getAgent(slug)
+    if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
     // Get container client
-    const client = containerManager.getClient(id)
+    const client = containerManager.getClient(slug)
 
     // Check if already stopped via Docker
     const info = await client.getInfo()
     if (info.status === 'stopped') {
       return NextResponse.json({
-        ...agent[0],
+        slug: agent.slug,
+        name: agent.frontmatter.name,
+        description: agent.frontmatter.description,
+        createdAt: agent.frontmatter.createdAt,
         status: 'stopped',
         containerPort: null,
         message: 'Agent is already stopped',
@@ -40,27 +36,18 @@ export async function POST(
     // Stop the container
     await client.stop()
 
-    // Update timestamp
-    await db
-      .update(agents)
-      .set({ updatedAt: new Date() })
-      .where(eq(agents.id, id))
-
-    const updated = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, id))
-      .limit(1)
-
     return NextResponse.json({
-      ...updated[0],
+      slug: agent.slug,
+      name: agent.frontmatter.name,
+      description: agent.frontmatter.description,
+      createdAt: agent.frontmatter.createdAt,
       status: 'stopped',
       containerPort: null,
     })
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Failed to stop agent:', error)
     return NextResponse.json(
-      { error: 'Failed to stop agent', details: error.message },
+      { error: 'Failed to stop agent' },
       { status: 500 }
     )
   }

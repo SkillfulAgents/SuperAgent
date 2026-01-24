@@ -1,31 +1,27 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import type { Message, ToolCall } from '@/lib/db/schema'
+import type { ApiMessage } from '@/lib/types/api'
 
-// API response type includes tool calls for each message
-export interface MessageWithToolCalls extends Message {
-  toolCalls: ToolCall[]
-}
+// Re-export for convenience
+export type { ApiMessage }
 
-export function useMessages(sessionId: string | null) {
-  return useQuery<MessageWithToolCalls[]>({
-    queryKey: ['messages', sessionId],
+export function useMessages(sessionId: string | null, agentSlug: string | null) {
+  return useQuery<ApiMessage[]>({
+    queryKey: ['messages', sessionId, agentSlug],
     queryFn: async () => {
-      const res = await fetch(`/api/sessions/${sessionId}/messages`)
+      const res = await fetch(`/api/agents/${agentSlug}/sessions/${sessionId}/messages`)
       if (!res.ok) throw new Error('Failed to fetch messages')
       return res.json()
     },
-    enabled: !!sessionId,
+    enabled: !!sessionId && !!agentSlug,
     // Refetch periodically to catch any messages we might have missed
     refetchInterval: 5000,
   })
 }
 
 export function useSendMessage() {
-  const queryClient = useQueryClient()
-
   return useMutation({
-    mutationFn: async (data: { sessionId: string; agentId: string; content: string }) => {
-      const res = await fetch(`/api/sessions/${data.sessionId}/messages`, {
+    mutationFn: async (data: { sessionId: string; agentSlug: string; content: string }) => {
+      const res = await fetch(`/api/agents/${data.agentSlug}/sessions/${data.sessionId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: data.content }),
@@ -33,10 +29,7 @@ export function useSendMessage() {
       if (!res.ok) throw new Error('Failed to send message')
       return res.json()
     },
-    onSuccess: (_, variables) => {
-      // Invalidate messages to show the user's message immediately
-      queryClient.invalidateQueries({ queryKey: ['messages', variables.sessionId] })
-    },
+    // No onSuccess - we'll handle the pending message via props
   })
 }
 

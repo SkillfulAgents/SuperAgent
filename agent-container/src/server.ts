@@ -19,7 +19,12 @@ app.get('/health', (c) => {
 // Session endpoints
 app.post('/sessions', async (c) => {
   try {
-    const body = await c.req.json<CreateSessionRequest>().catch(() => ({}));
+    const body = await c.req.json<CreateSessionRequest>();
+
+    if (!body.initialMessage) {
+      return c.json({ error: 'initialMessage is required' }, 400);
+    }
+
     const session = await sessionManager.createSession(body);
     return c.json(session, 201);
   } catch (error: any) {

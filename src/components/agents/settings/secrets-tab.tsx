@@ -10,7 +10,7 @@ import {
   useCreateSecret,
   useUpdateSecret,
   useDeleteSecret,
-  type AgentSecretDisplay,
+  type ApiSecretDisplay,
 } from '@/lib/hooks/use-secrets'
 
 // Convert a display key to an environment variable name (preview)
@@ -23,12 +23,12 @@ function keyToEnvVar(key: string): string {
 }
 
 interface SecretRowProps {
-  secret: AgentSecretDisplay
-  agentId: string
+  secret: ApiSecretDisplay
+  agentSlug: string
   onDelete: () => void
 }
 
-function SecretRow({ secret, agentId, onDelete }: SecretRowProps) {
+function SecretRow({ secret, agentSlug, onDelete }: SecretRowProps) {
   const [isEditing, setIsEditing] = React.useState(false)
   const [newValue, setNewValue] = React.useState('')
   const [showValue, setShowValue] = React.useState(false)
@@ -38,7 +38,7 @@ function SecretRow({ secret, agentId, onDelete }: SecretRowProps) {
   const handleSaveValue = async () => {
     if (!newValue) return
     await updateSecret.mutateAsync({
-      agentId,
+      agentSlug,
       secretId: secret.id,
       value: newValue,
     })
@@ -47,7 +47,7 @@ function SecretRow({ secret, agentId, onDelete }: SecretRowProps) {
   }
 
   const handleDelete = async () => {
-    await deleteSecret.mutateAsync({ agentId, secretId: secret.id })
+    await deleteSecret.mutateAsync({ agentSlug, secretId: secret.id })
     onDelete()
   }
 
@@ -120,12 +120,12 @@ function SecretRow({ secret, agentId, onDelete }: SecretRowProps) {
 }
 
 interface AddSecretFormProps {
-  agentId: string
+  agentSlug: string
   existingEnvVars: string[]
   onAdd: () => void
 }
 
-function AddSecretForm({ agentId, existingEnvVars, onAdd }: AddSecretFormProps) {
+function AddSecretForm({ agentSlug, existingEnvVars, onAdd }: AddSecretFormProps) {
   const [key, setKey] = React.useState('')
   const [value, setValue] = React.useState('')
   const [showValue, setShowValue] = React.useState(false)
@@ -150,7 +150,7 @@ function AddSecretForm({ agentId, existingEnvVars, onAdd }: AddSecretFormProps) 
     }
 
     try {
-      await createSecret.mutateAsync({ agentId, key: key.trim(), value })
+      await createSecret.mutateAsync({ agentSlug, key: key.trim(), value })
       setKey('')
       setValue('')
       onAdd()
@@ -221,12 +221,12 @@ function AddSecretForm({ agentId, existingEnvVars, onAdd }: AddSecretFormProps) 
 }
 
 interface SecretsTabProps {
-  agentId: string
+  agentSlug: string
   isOpen: boolean
 }
 
-export function SecretsTab({ agentId, isOpen }: SecretsTabProps) {
-  const { data: secrets = [], refetch: refetchSecrets } = useAgentSecrets(isOpen ? agentId : null)
+export function SecretsTab({ agentSlug, isOpen }: SecretsTabProps) {
+  const { data: secrets = [], refetch: refetchSecrets } = useAgentSecrets(isOpen ? agentSlug : null)
   const existingEnvVars = secrets.map((s) => s.envVar)
 
   return (
@@ -236,7 +236,7 @@ export function SecretsTab({ agentId, isOpen }: SecretsTabProps) {
         Keys are converted to uppercase with underscores (e.g., &quot;My API Key&quot; becomes &quot;MY_API_KEY&quot;).
       </p>
       <AddSecretForm
-        agentId={agentId}
+        agentSlug={agentSlug}
         existingEnvVars={existingEnvVars}
         onAdd={() => refetchSecrets()}
       />
@@ -247,7 +247,7 @@ export function SecretsTab({ agentId, isOpen }: SecretsTabProps) {
             <SecretRow
               key={secret.id}
               secret={secret}
-              agentId={agentId}
+              agentSlug={agentSlug}
               onDelete={() => refetchSecrets()}
             />
           ))}

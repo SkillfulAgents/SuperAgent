@@ -26,8 +26,8 @@ import {
   SidebarMenuSubItem,
 } from '@/components/ui/sidebar'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { useAgents, type AgentWithStatus } from '@/lib/hooks/use-agents'
-import { useSessions } from '@/lib/hooks/use-sessions'
+import { useAgents, type ApiAgent } from '@/lib/hooks/use-agents'
+import { useSessions, type ApiSession } from '@/lib/hooks/use-sessions'
 import { useMessageStream } from '@/lib/hooks/use-message-stream'
 import { useSettings } from '@/lib/hooks/use-settings'
 import { CreateAgentDialog } from '@/components/agents/create-agent-dialog'
@@ -39,10 +39,10 @@ import { GlobalSettingsDialog } from '@/components/settings/global-settings-dial
 // Session sub-item that tracks its streaming state
 function SessionSubItem({
   session,
-  agentId,
+  agentSlug,
 }: {
-  session: { id: string; name: string; isActive: boolean }
-  agentId: string
+  session: ApiSession
+  agentSlug: string
 }) {
   const { selectedSessionId, selectAgent, selectSession } = useSelection()
   const isSelected = session.id === selectedSessionId
@@ -50,7 +50,7 @@ function SessionSubItem({
   const showActive = session.isActive || isStreaming
 
   const handleClick = () => {
-    selectAgent(agentId)
+    selectAgent(agentSlug)
     selectSession(session.id)
   }
 
@@ -80,10 +80,10 @@ function SessionSubItem({
 }
 
 // Agent menu item with expandable sessions
-function AgentMenuItem({ agent }: { agent: AgentWithStatus }) {
-  const { selectedAgentId, selectAgent } = useSelection()
-  const { data: sessions } = useSessions(agent.id)
-  const isSelected = agent.id === selectedAgentId
+function AgentMenuItem({ agent }: { agent: ApiAgent }) {
+  const { selectedAgentSlug, selectAgent } = useSelection()
+  const { data: sessions } = useSessions(agent.slug)
+  const isSelected = agent.slug === selectedAgentSlug
   const [isOpen, setIsOpen] = useState(isSelected)
   const [showAll, setShowAll] = useState(false)
 
@@ -91,7 +91,7 @@ function AgentMenuItem({ agent }: { agent: AgentWithStatus }) {
   const hasMore = (sessions?.length ?? 0) > 5
 
   const handleClick = () => {
-    selectAgent(agent.id)
+    selectAgent(agent.slug)
     setIsOpen((prev) => !prev)
   }
 
@@ -123,7 +123,7 @@ function AgentMenuItem({ agent }: { agent: AgentWithStatus }) {
                   <SessionSubItem
                     key={session.id}
                     session={session}
-                    agentId={agent.id}
+                    agentSlug={agent.slug}
                   />
                 ))}
                 {hasMore && (
@@ -209,7 +209,7 @@ export function AppSidebar() {
                 </div>
               ) : (
                 agents.map((agent) => (
-                  <AgentMenuItem key={agent.id} agent={agent} />
+                  <AgentMenuItem key={agent.slug} agent={agent} />
                 ))
               )}
             </SidebarMenu>

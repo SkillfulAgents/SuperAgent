@@ -19,7 +19,7 @@ import {
   SidebarMenuItem,
   SidebarProvider,
 } from '@/components/ui/sidebar'
-import { useUpdateAgent, type AgentWithStatus } from '@/lib/hooks/use-agents'
+import { useUpdateAgent, type ApiAgent } from '@/lib/hooks/use-agents'
 import { GeneralTab } from './settings/general-tab'
 import { SystemPromptTab } from './settings/system-prompt-tab'
 import { SecretsTab } from './settings/secrets-tab'
@@ -37,7 +37,7 @@ const navItems = [
 ]
 
 interface AgentSettingsDialogProps {
-  agent: AgentWithStatus
+  agent: ApiAgent
   open: boolean
   onOpenChange: (open: boolean) => void
 }
@@ -49,28 +49,28 @@ export function AgentSettingsDialog({
 }: AgentSettingsDialogProps) {
   const [activeSection, setActiveSection] = React.useState<SettingsSection>('general')
   const [name, setName] = React.useState(agent.name)
-  const [systemPrompt, setSystemPrompt] = React.useState(agent.systemPrompt || '')
+  const [instructions, setInstructions] = React.useState(agent.instructions || '')
   const updateAgent = useUpdateAgent()
 
   // Reset form when dialog opens with new agent data
   React.useEffect(() => {
     if (open) {
       setName(agent.name)
-      setSystemPrompt(agent.systemPrompt || '')
+      setInstructions(agent.instructions || '')
       setActiveSection('general')
     }
-  }, [open, agent.name, agent.systemPrompt])
+  }, [open, agent.name, agent.instructions])
 
   const handleSave = async () => {
     await updateAgent.mutateAsync({
-      id: agent.id,
+      slug: agent.slug,
       name: name.trim() || agent.name,
-      systemPrompt: systemPrompt.trim() || null,
+      instructions: instructions.trim() || undefined,
     })
     onOpenChange(false)
   }
 
-  const hasChanges = name !== agent.name || systemPrompt !== (agent.systemPrompt || '')
+  const hasChanges = name !== agent.name || instructions !== (agent.instructions || '')
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -113,25 +113,25 @@ export function AgentSettingsDialog({
               {activeSection === 'general' && (
                 <GeneralTab
                   name={name}
-                  agentId={agent.id}
+                  agentSlug={agent.slug}
                   onNameChange={setName}
                   onDialogClose={() => onOpenChange(false)}
                 />
               )}
               {activeSection === 'system-prompt' && (
                 <SystemPromptTab
-                  systemPrompt={systemPrompt}
-                  onSystemPromptChange={setSystemPrompt}
+                  systemPrompt={instructions}
+                  onSystemPromptChange={setInstructions}
                 />
               )}
               {activeSection === 'secrets' && (
-                <SecretsTab agentId={agent.id} isOpen={open} />
+                <SecretsTab agentSlug={agent.slug} isOpen={open} />
               )}
               {activeSection === 'skills' && (
-                <SkillsTab agentId={agent.id} />
+                <SkillsTab agentSlug={agent.slug} />
               )}
               {activeSection === 'connected-accounts' && (
-                <ConnectedAccountsTab agentId={agent.id} />
+                <ConnectedAccountsTab agentSlug={agent.slug} />
               )}
             </div>
             {activeSection !== 'secrets' && activeSection !== 'skills' && activeSection !== 'connected-accounts' && (

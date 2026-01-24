@@ -1,7 +1,7 @@
 import { createContainerClient } from './client-factory'
 import type { ContainerClient, ContainerConfig } from './types'
 import { db } from '@/lib/db'
-import { agentSecrets, agentConnectedAccounts, connectedAccounts } from '@/lib/db/schema'
+import { agentConnectedAccounts, connectedAccounts } from '@/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { getConnectionToken } from '@/lib/composio/client'
 
@@ -25,24 +25,21 @@ class ContainerManager {
     return client
   }
 
-  // Ensure container is running, starting it with secrets and connected accounts if needed
+  // Ensure container is running, starting it with connected accounts if needed
   // Returns the container client
+  //
+  // Note: User secrets are now stored in .env file in the workspace,
+  // not passed as env vars. Only connected account tokens are injected.
+  //
+  // Parameter is agentId for backwards compatibility, but will be slug after migration
   async ensureRunning(agentId: string): Promise<ContainerClient> {
     const client = this.getClient(agentId)
     const info = await client.getInfo()
 
     if (info.status !== 'running') {
-      // Fetch secrets for this agent
-      const secrets = await db
-        .select()
-        .from(agentSecrets)
-        .where(eq(agentSecrets.agentId, agentId))
-
-      // Convert secrets to env vars
+      // Connected account tokens are still injected as env vars
+      // (they're OAuth tokens that may refresh, managed by Composio)
       const envVars: Record<string, string> = {}
-      for (const secret of secrets) {
-        envVars[secret.envVar] = secret.value
-      }
 
       // Fetch connected accounts for this agent
       const accountMappings = await db
@@ -54,7 +51,7 @@ class ContainerManager {
           connectedAccounts,
           eq(agentConnectedAccounts.connectedAccountId, connectedAccounts.id)
         )
-        .where(eq(agentConnectedAccounts.agentId, agentId))
+        .where(eq(agentConnectedAccounts.agentSlug, agentId))
 
       // Group accounts by toolkit and fetch tokens
       const tokensByToolkit: Record<string, Record<string, string>> = {}
@@ -85,7 +82,7 @@ class ContainerManager {
         envVars[envVarName] = JSON.stringify(tokens)
       }
 
-      // Start with secrets and connected accounts as env vars
+      // Start container (user secrets are in .env file in workspace)
       await client.start({ envVars })
     }
 

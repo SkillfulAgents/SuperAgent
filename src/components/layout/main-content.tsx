@@ -10,24 +10,42 @@ import { AgentLanding } from '@/components/agents/agent-landing'
 import { Button } from '@/components/ui/button'
 import { SidebarTrigger } from '@/components/ui/sidebar'
 import { Plus, Play, Square, ChevronRight, Settings } from 'lucide-react'
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
 import { useAgent, useStartAgent, useStopAgent } from '@/lib/hooks/use-agents'
 import { useSessions, useSession } from '@/lib/hooks/use-sessions'
 import { AgentStatus } from '@/components/agents/agent-status'
 import { useSelection } from '@/lib/context/selection-context'
 
 export function MainContent() {
-  const { selectedAgentId: agentId, selectedSessionId: sessionId, selectSession } = useSelection()
+  const { selectedAgentSlug: agentSlug, selectedSessionId: sessionId, selectSession } = useSelection()
   const [createSessionOpen, setCreateSessionOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const { data: agent } = useAgent(agentId)
-  const { data: sessions } = useSessions(agentId)
+  // Track pending user message that hasn't appeared in real data yet
+  const [pendingUserMessage, setPendingUserMessage] = useState<string | null>(null)
+  const { data: agent } = useAgent(agentSlug)
+  const { data: sessions } = useSessions(agentSlug)
   const { data: session } = useSession(sessionId)
   const startAgent = useStartAgent()
   const stopAgent = useStopAgent()
   const hasActiveSessions = sessions?.some((s) => s.isActive) ?? false
 
-  if (!agentId) {
+  // Callback for MessageInput to set pending message
+  const handleMessageSent = useCallback((content: string) => {
+    setPendingUserMessage(content)
+  }, [])
+
+  // Callback for MessageList to clear pending message when it appears in real data
+  const handlePendingMessageAppeared = useCallback(() => {
+    setPendingUserMessage(null)
+  }, [])
+
+  // Callback for AgentLanding when a new session is created with initial message
+  const handleSessionCreated = useCallback((sessionId: string, initialMessage: string) => {
+    setPendingUserMessage(initialMessage)
+    selectSession(sessionId)
+  }, [selectSession])
+
+  if (!agentSlug) {
     return (
       <div className="h-full flex flex-col">
         <header className="shrink-0 flex h-12 items-center gap-2 border-b bg-background px-4">
@@ -48,7 +66,7 @@ export function MainContent() {
         <div className="flex items-center gap-2 min-w-0 flex-1">
           <span className="font-semibold truncate">{agent?.name || 'Loading...'}</span>
           {agent && <AgentStatus status={agent.status} hasActiveSessions={hasActiveSessions} />}
-          {sessionId && session?.agentId === agentId && (
+          {sessionId && session?.agentSlug === agentSlug && (
             <>
               <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
               <SessionContextMenu
@@ -67,7 +85,7 @@ export function MainContent() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => stopAgent.mutate(agentId)}
+              onClick={() => stopAgent.mutate(agentSlug)}
               disabled={stopAgent.isPending}
             >
               <Square className="mr-2 h-4 w-4" />
@@ -77,7 +95,7 @@ export function MainContent() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => startAgent.mutate(agentId)}
+              onClick={() => startAgent.mutate(agentSlug)}
               disabled={startAgent.isPending}
             >
               <Play className="mr-2 h-4 w-4" />
@@ -106,10 +124,19 @@ export function MainContent() {
       {/* Show messages when a session is selected, otherwise show landing page */}
       {sessionId ? (
         <div className="flex-1 grid grid-rows-[1fr_auto] min-h-0">
-          <MessageList sessionId={sessionId} />
+          <MessageList
+            sessionId={sessionId}
+            agentSlug={agentSlug}
+            pendingUserMessage={pendingUserMessage}
+            onPendingMessageAppeared={handlePendingMessageAppeared}
+          />
           <div className="bg-background">
-            <AgentActivityIndicator sessionId={sessionId} />
-            <MessageInput sessionId={sessionId} agentId={agentId} />
+            <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
+            <MessageInput
+              sessionId={sessionId}
+              agentSlug={agentSlug}
+              onMessageSent={handleMessageSent}
+            />
           </div>
         </div>
       ) : (
@@ -117,13 +144,13 @@ export function MainContent() {
         agent && (
           <AgentLanding
             agent={agent}
-            onSessionCreated={selectSession}
+            onSessionCreated={handleSessionCreated}
           />
         )
       )}
 
       <CreateSessionDialog
-        agentId={agentId}
+        agentSlug={agentSlug}
         open={createSessionOpen}
         onOpenChange={setCreateSessionOpen}
         onCreated={selectSession}

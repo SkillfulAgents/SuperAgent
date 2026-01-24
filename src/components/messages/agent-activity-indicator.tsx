@@ -4,6 +4,7 @@ import { useMessages } from '@/lib/hooks/use-messages'
 import { useMessageStream } from '@/lib/hooks/use-message-stream'
 import { cn } from '@/lib/utils'
 import { AlertTriangle } from 'lucide-react'
+import type { ApiMessage } from '@/lib/types/api'
 
 interface Todo {
   content: string
@@ -13,11 +14,12 @@ interface Todo {
 
 interface AgentActivityIndicatorProps {
   sessionId: string
+  agentSlug: string
 }
 
-export function AgentActivityIndicator({ sessionId }: AgentActivityIndicatorProps) {
+export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIndicatorProps) {
   const { isActive, error } = useMessageStream(sessionId)
-  const { data: messages } = useMessages(sessionId)
+  const { data: messages } = useMessages(sessionId, agentSlug)
 
   // Show error if present
   if (error) {
@@ -48,24 +50,24 @@ export function AgentActivityIndicator({ sessionId }: AgentActivityIndicatorProp
     // Iterate through messages in reverse to find the most recent TodoWrite
     for (let i = messages.length - 1; i >= 0; i--) {
       const message = messages[i]
-      if (message.toolCalls) {
-        for (let j = message.toolCalls.length - 1; j >= 0; j--) {
-          const toolCall = message.toolCalls[j]
-          if (toolCall.name === 'TodoWrite') {
-            try {
-              const input = toolCall.input as { todos?: Todo[] }
-              if (input?.todos && Array.isArray(input.todos)) {
-                todos = input.todos
-                activeItem = todos.find((t) => t.status === 'in_progress') || null
-                break
-              }
-            } catch {
-              // Invalid input format, skip
+      // Use the toolCalls array from the API message
+      const toolCalls = message.toolCalls || []
+      for (let j = toolCalls.length - 1; j >= 0; j--) {
+        const toolCall = toolCalls[j]
+        if (toolCall.name === 'TodoWrite') {
+          try {
+            const input = toolCall.input as { todos?: Todo[] }
+            if (input?.todos && Array.isArray(input.todos)) {
+              todos = input.todos
+              activeItem = todos.find((t) => t.status === 'in_progress') || null
+              break
             }
+          } catch {
+            // Invalid input format, skip
           }
         }
-        if (todos) break
       }
+      if (todos) break
     }
   }
 

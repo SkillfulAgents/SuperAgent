@@ -29,6 +29,7 @@ export interface CreateSessionOptions {
   metadata?: Record<string, any>
   systemPrompt?: string
   availableEnvVars?: string[]
+  initialMessage: string // Required: first message to send (triggers session ID generation)
 }
 
 export interface StartOptions {
@@ -44,12 +45,16 @@ export interface ContainerClient {
   // Query Docker for current state (single source of truth)
   getInfo(): Promise<ContainerInfo>
 
+  // Make HTTP request to container (abstracts away host/port details)
+  // Throws if container is not running
+  fetch(path: string, init?: RequestInit): Promise<Response>
+
   // Health checks
   waitForHealthy(timeoutMs?: number): Promise<boolean>
   isHealthy(): Promise<boolean>
 
   // Session management (proxied to container API)
-  createSession(options?: CreateSessionOptions): Promise<ContainerSession>
+  createSession(options: CreateSessionOptions): Promise<ContainerSession>
   getSession(sessionId: string): Promise<ContainerSession | null>
   deleteSession(sessionId: string): Promise<boolean>
 

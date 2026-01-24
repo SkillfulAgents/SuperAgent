@@ -21,12 +21,12 @@ import { Trash2 } from 'lucide-react'
 
 interface GeneralTabProps {
   name: string
-  agentId: string
+  agentSlug: string
   onNameChange: (name: string) => void
   onDialogClose: () => void
 }
 
-export function GeneralTab({ name, agentId, onNameChange, onDialogClose }: GeneralTabProps) {
+export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: GeneralTabProps) {
   const [isDeleting, setIsDeleting] = useState(false)
   const deleteAgent = useDeleteAgent()
   const { handleAgentDeleted } = useSelection()
@@ -34,9 +34,9 @@ export function GeneralTab({ name, agentId, onNameChange, onDialogClose }: Gener
   const handleDelete = async () => {
     setIsDeleting(true)
     try {
-      await deleteAgent.mutateAsync(agentId)
+      await deleteAgent.mutateAsync(agentSlug)
       onDialogClose()
-      handleAgentDeleted(agentId)
+      handleAgentDeleted(agentSlug)
     } catch (error) {
       console.error('Failed to delete agent:', error)
     } finally {

@@ -34,8 +34,22 @@ export class SessionManager extends EventEmitter {
     }
   }
 
-  async createSession(request: CreateSessionRequest = {}): Promise<Session> {
-    const sessionId = uuidv4();
+  /**
+   * Creates a new session with an initial message.
+   * This is an atomic operation that:
+   * 1. Starts the Claude process
+   * 2. Sends the first message
+   * 3. Waits for Claude's session ID (emitted after first message)
+   * 4. Returns the session with Claude's canonical ID
+   *
+   * This ensures the session ID matches Claude's JSONL file name.
+   */
+  async createSession(request: CreateSessionRequest): Promise<Session> {
+    if (!request.initialMessage) {
+      throw new Error('initialMessage is required for createSession');
+    }
+
+    const tempSessionId = uuidv4();
     // All sessions share the same working directory
     const workingDirectory = request.workingDirectory || this.baseWorkingDirectory;
 
@@ -43,6 +57,43 @@ export class SessionManager extends EventEmitter {
     if (!fs.existsSync(workingDirectory)) {
       fs.mkdirSync(workingDirectory, { recursive: true });
     }
+
+    const process = new ClaudeCodeProcess({
+      sessionId: tempSessionId,
+      workingDirectory,
+      userSystemPrompt: request.systemPrompt,
+      availableEnvVars: request.availableEnvVars,
+    });
+
+    // Promise to capture Claude's session ID (emitted after first message is sent)
+    const claudeSessionIdPromise = new Promise<string>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Timeout waiting for Claude session ID'));
+      }, 30000); // 30 second timeout
+
+      process.once('claude-session-id', (claudeSessionId: string) => {
+        clearTimeout(timeout);
+        resolve(claudeSessionId);
+      });
+
+      process.once('error', (error: Error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+    });
+
+    // Start the Claude Code process
+    await process.start();
+
+    // Send the initial message - this triggers Claude to emit the session ID
+    await process.sendMessage(request.initialMessage);
+
+    // Wait for Claude's session ID
+    const claudeSessionId = await claudeSessionIdPromise;
+    console.log(`Got Claude session ID: ${claudeSessionId}`);
+
+    // Use Claude's session ID as the canonical session ID
+    const sessionId = claudeSessionId;
 
     const session: Session = {
       id: sessionId,
@@ -54,13 +105,6 @@ export class SessionManager extends EventEmitter {
       systemPrompt: request.systemPrompt,
       availableEnvVars: request.availableEnvVars,
     };
-
-    const process = new ClaudeCodeProcess({
-      sessionId,
-      workingDirectory,
-      userSystemPrompt: request.systemPrompt,
-      availableEnvVars: request.availableEnvVars,
-    });
 
     const sessionData: SessionData = {
       session,
@@ -82,24 +126,18 @@ export class SessionManager extends EventEmitter {
       console.log(`Session ${sessionId} exited with code ${code}`);
     });
 
-    // Listen for Claude session ID and persist it
-    process.on('claude-session-id', (claudeSessionId: string) => {
-      this.persistence.saveSession({
-        sessionId,
-        claudeSessionId,
-        workingDirectory,
-        createdAt: session.createdAt.toISOString(),
-        lastActivity: session.lastActivity.toISOString(),
-        systemPrompt: request.systemPrompt,
-        availableEnvVars: request.availableEnvVars,
-      });
-      console.log(`Persisted session ${sessionId} with Claude session ID ${claudeSessionId}`);
+    // Persist the session
+    this.persistence.saveSession({
+      sessionId,
+      claudeSessionId,
+      workingDirectory,
+      createdAt: session.createdAt.toISOString(),
+      lastActivity: session.lastActivity.toISOString(),
+      systemPrompt: request.systemPrompt,
+      availableEnvVars: request.availableEnvVars,
     });
 
     this.sessions.set(sessionId, sessionData);
-
-    // Start the Claude Code process
-    await process.start();
 
     console.log(`Created session ${sessionId} with working directory ${workingDirectory}`);
     return session;

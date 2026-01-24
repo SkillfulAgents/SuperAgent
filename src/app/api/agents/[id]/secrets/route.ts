@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
-import { agents, agentSecrets } from '@/lib/db/schema'
-import { eq, and } from 'drizzle-orm'
-import { v4 as uuidv4 } from 'uuid'
-import { keyToEnvVar } from '@/lib/utils/secrets'
+import {
+  listSecrets,
+  getSecret,
+  setSecret,
+  keyToEnvVar,
+} from '@/lib/services/secrets-service'
+import { agentExists } from '@/lib/services/agent-service'
 
 // GET /api/agents/[id]/secrets - List secrets for an agent
 export async function GET(
@@ -11,33 +13,25 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params
+    const { id: slug } = await params
 
     // Verify agent exists
-    const agent = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, id))
-      .limit(1)
-
-    if (agent.length === 0) {
+    if (!(await agentExists(slug))) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
-    const secrets = await db
-      .select({
-        id: agentSecrets.id,
-        key: agentSecrets.key,
-        envVar: agentSecrets.envVar,
-        // Don't return the actual value for security - return masked version
-        createdAt: agentSecrets.createdAt,
-        updatedAt: agentSecrets.updatedAt,
-      })
-      .from(agentSecrets)
-      .where(eq(agentSecrets.agentId, id))
+    const secrets = await listSecrets(slug)
 
-    return NextResponse.json(secrets)
-  } catch (error: any) {
+    // Return without actual values for security
+    const response = secrets.map((secret) => ({
+      key: secret.key,
+      envVar: secret.envVar,
+      // Mask the value - just show that it exists
+      hasValue: true,
+    }))
+
+    return NextResponse.json(response)
+  } catch (error: unknown) {
     console.error('Failed to fetch secrets:', error)
     return NextResponse.json(
       { error: 'Failed to fetch secrets' },
@@ -46,13 +40,13 @@ export async function GET(
   }
 }
 
-// POST /api/agents/[id]/secrets - Create a new secret
+// POST /api/agents/[id]/secrets - Create or update a secret
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params
+    const { id: slug } = await params
     const body = await request.json()
     const { key, value } = body
 
@@ -60,62 +54,33 @@ export async function POST(
       return NextResponse.json({ error: 'Key is required' }, { status: 400 })
     }
 
-    if (!value) {
+    if (value === undefined || value === null) {
       return NextResponse.json({ error: 'Value is required' }, { status: 400 })
     }
 
     // Verify agent exists
-    const agent = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, id))
-      .limit(1)
-
-    if (agent.length === 0) {
+    if (!(await agentExists(slug))) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
     const envVar = keyToEnvVar(key.trim())
 
-    // Check if envVar already exists for this agent
-    const existing = await db
-      .select()
-      .from(agentSecrets)
-      .where(and(eq(agentSecrets.agentId, id), eq(agentSecrets.envVar, envVar)))
-      .limit(1)
-
-    if (existing.length > 0) {
-      return NextResponse.json(
-        { error: `A secret with env var name "${envVar}" already exists` },
-        { status: 409 }
-      )
-    }
-
-    const now = new Date()
-    const secret = {
-      id: uuidv4(),
-      agentId: id,
+    // Set the secret (creates or updates)
+    await setSecret(slug, {
       key: key.trim(),
       envVar,
       value,
-      createdAt: now,
-      updatedAt: now,
-    }
+    })
 
-    await db.insert(agentSecrets).values(secret)
-
-    // Return without the actual value
     return NextResponse.json(
       {
-        id: secret.id,
-        key: secret.key,
-        envVar: secret.envVar,
-        createdAt: secret.createdAt,
-        updatedAt: secret.updatedAt,
+        key: key.trim(),
+        envVar,
+        hasValue: true,
       },
       { status: 201 }
     )
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Failed to create secret:', error)
     return NextResponse.json(
       { error: 'Failed to create secret' },

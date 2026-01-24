@@ -277,16 +277,32 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return info.port
   }
 
-  async createSession(options?: CreateSessionOptions): Promise<ContainerSession> {
+  /**
+   * Returns the base URL for HTTP requests to the container.
+   * Subclasses can override for different networking (e.g., cloud containers).
+   */
+  protected getBaseUrl(port: number): string {
+    return `http://localhost:${port}`
+  }
+
+  async fetch(path: string, init?: RequestInit): Promise<Response> {
+    const port = await this.getPortOrThrow()
+    const baseUrl = this.getBaseUrl(port)
+    const url = `${baseUrl}${path.startsWith('/') ? path : '/' + path}`
+    return fetch(url, init)
+  }
+
+  async createSession(options: CreateSessionOptions): Promise<ContainerSession> {
     const port = await this.getPortOrThrow()
 
     const response = await fetch(`http://localhost:${port}/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        metadata: options?.metadata,
-        systemPrompt: options?.systemPrompt,
-        availableEnvVars: options?.availableEnvVars,
+        metadata: options.metadata,
+        systemPrompt: options.systemPrompt,
+        availableEnvVars: options.availableEnvVars,
+        initialMessage: options.initialMessage,
       }),
     })
 

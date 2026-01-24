@@ -8,10 +8,11 @@ import { Send, Loader2, StopCircle } from 'lucide-react'
 
 interface MessageInputProps {
   sessionId: string
-  agentId: string
+  agentSlug: string
+  onMessageSent?: (content: string) => void
 }
 
-export function MessageInput({ sessionId, agentId }: MessageInputProps) {
+export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInputProps) {
   const [message, setMessage] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const sendMessage = useSendMessage()
@@ -40,13 +41,17 @@ export function MessageInput({ sessionId, agentId }: MessageInputProps) {
     e.preventDefault()
     if (!message.trim() || sendMessage.isPending || isActive) return
 
+    const content = message.trim()
+    // Immediately notify parent so message appears in UI
+    onMessageSent?.(content)
+    setMessage('')
+
     try {
       await sendMessage.mutateAsync({
         sessionId,
-        agentId,
-        content: message.trim(),
+        agentSlug,
+        content,
       })
-      setMessage('')
     } catch (error) {
       console.error('Failed to send message:', error)
     }

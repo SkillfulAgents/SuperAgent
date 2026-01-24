@@ -14,14 +14,14 @@ import { useState } from 'react'
 import { useCreateSession } from '@/lib/hooks/use-sessions'
 
 interface CreateSessionDialogProps {
-  agentId: string
+  agentSlug: string
   open: boolean
   onOpenChange: (open: boolean) => void
   onCreated?: (sessionId: string) => void
 }
 
 export function CreateSessionDialog({
-  agentId,
+  agentSlug,
   open,
   onOpenChange,
   onCreated,
@@ -35,7 +35,7 @@ export function CreateSessionDialog({
 
     try {
       const session = await createSession.mutateAsync({
-        agentId,
+        agentSlug,
         message: message.trim(),
       })
       setMessage('')

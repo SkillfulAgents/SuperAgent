@@ -1,33 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
-import { agents } from '@/lib/db/schema'
-import { v4 as uuidv4 } from 'uuid'
-import { desc } from 'drizzle-orm'
-import { containerManager } from '@/lib/container/container-manager'
+import {
+  listAgentsWithStatus,
+  createAgent,
+} from '@/lib/services/agent-service'
 
 // GET /api/agents - List all agents with status from Docker
 export async function GET() {
   try {
-    const allAgents = await db
-      .select()
-      .from(agents)
-      .orderBy(desc(agents.createdAt))
-
-    // Get status for each agent from Docker
-    const agentsWithStatus = await Promise.all(
-      allAgents.map(async (agent) => {
-        const client = containerManager.getClient(agent.id)
-        const info = await client.getInfo()
-        return {
-          ...agent,
-          status: info.status,
-          containerPort: info.port,
-        }
-      })
-    )
-
-    return NextResponse.json(agentsWithStatus)
-  } catch (error: any) {
+    const agents = await listAgentsWithStatus()
+    return NextResponse.json(agents)
+  } catch (error: unknown) {
     console.error('Failed to fetch agents:', error)
     return NextResponse.json(
       { error: 'Failed to fetch agents' },
@@ -40,7 +22,7 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { name } = body
+    const { name, description } = body
 
     if (!name?.trim()) {
       return NextResponse.json(
@@ -49,22 +31,13 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const now = new Date()
-    const newAgent = {
-      id: uuidv4(),
+    const agent = await createAgent({
       name: name.trim(),
-      createdAt: now,
-      updatedAt: now,
-    }
+      description: description?.trim(),
+    })
 
-    await db.insert(agents).values(newAgent)
-
-    // Return with status from Docker (will be 'stopped' for new agent)
-    return NextResponse.json(
-      { ...newAgent, status: 'stopped', containerPort: null },
-      { status: 201 }
-    )
-  } catch (error: any) {
+    return NextResponse.json(agent, { status: 201 })
+  } catch (error: unknown) {
     console.error('Failed to create agent:', error)
     return NextResponse.json(
       { error: 'Failed to create agent' },

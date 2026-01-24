@@ -1,12 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import {
-  agents,
-  connectedAccounts,
-  agentConnectedAccounts,
-} from '@/lib/db/schema'
+import { connectedAccounts, agentConnectedAccounts } from '@/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { getProvider } from '@/lib/composio/providers'
+import { agentExists } from '@/lib/services/agent-service'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -15,16 +12,10 @@ interface RouteParams {
 // GET /api/agents/[id]/connected-accounts - List agent's connected accounts
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
-    const { id: agentId } = await params
+    const { id: slug } = await params
 
     // Verify agent exists
-    const [agent] = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, agentId))
-      .limit(1)
-
-    if (!agent) {
+    if (!(await agentExists(slug))) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
@@ -39,7 +30,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
         connectedAccounts,
         eq(agentConnectedAccounts.connectedAccountId, connectedAccounts.id)
       )
-      .where(eq(agentConnectedAccounts.agentId, agentId))
+      .where(eq(agentConnectedAccounts.agentSlug, slug))
 
     const accounts = mappings.map(({ mapping, account }) => ({
       ...account,
@@ -61,7 +52,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
 // POST /api/agents/[id]/connected-accounts - Map account(s) to agent
 export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
-    const { id: agentId } = await params
+    const { id: slug } = await params
     const body = await request.json()
     const { accountIds } = body as { accountIds: string[] }
 
@@ -73,13 +64,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     }
 
     // Verify agent exists
-    const [agent] = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, agentId))
-      .limit(1)
-
-    if (!agent) {
+    if (!(await agentExists(slug))) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
@@ -87,7 +72,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const now = new Date()
     const mappings = accountIds.map((accountId) => ({
       id: crypto.randomUUID(),
-      agentId,
+      agentSlug: slug,
       connectedAccountId: accountId,
       createdAt: now,
     }))
@@ -96,9 +81,10 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     for (const mapping of mappings) {
       try {
         await db.insert(agentConnectedAccounts).values(mapping)
-      } catch (error: any) {
+      } catch (error: unknown) {
         // Ignore duplicate mapping errors
-        if (!error.message?.includes('UNIQUE constraint failed')) {
+        const message = error instanceof Error ? error.message : ''
+        if (!message.includes('UNIQUE constraint failed')) {
           throw error
         }
       }
@@ -115,7 +101,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         connectedAccounts,
         eq(agentConnectedAccounts.connectedAccountId, connectedAccounts.id)
       )
-      .where(eq(agentConnectedAccounts.agentId, agentId))
+      .where(eq(agentConnectedAccounts.agentSlug, slug))
 
     const accounts = updatedMappings.map(({ mapping, account }) => ({
       ...account,

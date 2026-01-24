@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
-import { agents, agentSecrets } from '@/lib/db/schema'
-import { eq, and } from 'drizzle-orm'
-import { keyToEnvVar } from '@/lib/utils/secrets'
+import {
+  getSecret,
+  setSecret,
+  deleteSecret,
+  keyToEnvVar,
+} from '@/lib/services/secrets-service'
+import { agentExists } from '@/lib/services/agent-service'
+
+// Note: secretId parameter is now the envVar name (e.g., "MY_API_KEY")
 
 // PUT /api/agents/[id]/secrets/[secretId] - Update a secret
 export async function PUT(
@@ -10,89 +15,43 @@ export async function PUT(
   { params }: { params: Promise<{ id: string; secretId: string }> }
 ) {
   try {
-    const { id, secretId } = await params
+    const { id: slug, secretId: envVar } = await params
     const body = await request.json()
     const { key, value } = body
 
     // Verify agent exists
-    const agent = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, id))
-      .limit(1)
-
-    if (agent.length === 0) {
+    if (!(await agentExists(slug))) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
-    // Verify secret exists and belongs to this agent
-    const secret = await db
-      .select()
-      .from(agentSecrets)
-      .where(and(eq(agentSecrets.id, secretId), eq(agentSecrets.agentId, id)))
-      .limit(1)
-
-    if (secret.length === 0) {
+    // Get existing secret
+    const existing = await getSecret(slug, envVar)
+    if (!existing) {
       return NextResponse.json({ error: 'Secret not found' }, { status: 404 })
     }
 
-    const updates: Partial<{
-      key: string
-      envVar: string
-      value: string
-      updatedAt: Date
-    }> = {
-      updatedAt: new Date(),
+    // If key is being changed, we need to delete old and create new
+    const newKey = key?.trim() || existing.key
+    const newEnvVar = keyToEnvVar(newKey)
+    const newValue = value !== undefined ? value : existing.value
+
+    if (newEnvVar !== envVar) {
+      // Key changed - delete old, create new
+      await deleteSecret(slug, envVar)
     }
 
-    if (key?.trim()) {
-      const newEnvVar = keyToEnvVar(key.trim())
+    await setSecret(slug, {
+      key: newKey,
+      envVar: newEnvVar,
+      value: newValue,
+    })
 
-      // Check if new envVar conflicts with another secret
-      if (newEnvVar !== secret[0].envVar) {
-        const existing = await db
-          .select()
-          .from(agentSecrets)
-          .where(
-            and(eq(agentSecrets.agentId, id), eq(agentSecrets.envVar, newEnvVar))
-          )
-          .limit(1)
-
-        if (existing.length > 0) {
-          return NextResponse.json(
-            { error: `A secret with env var name "${newEnvVar}" already exists` },
-            { status: 409 }
-          )
-        }
-      }
-
-      updates.key = key.trim()
-      updates.envVar = newEnvVar
-    }
-
-    if (value !== undefined) {
-      updates.value = value
-    }
-
-    await db
-      .update(agentSecrets)
-      .set(updates)
-      .where(eq(agentSecrets.id, secretId))
-
-    const updated = await db
-      .select({
-        id: agentSecrets.id,
-        key: agentSecrets.key,
-        envVar: agentSecrets.envVar,
-        createdAt: agentSecrets.createdAt,
-        updatedAt: agentSecrets.updatedAt,
-      })
-      .from(agentSecrets)
-      .where(eq(agentSecrets.id, secretId))
-      .limit(1)
-
-    return NextResponse.json(updated[0])
-  } catch (error: any) {
+    return NextResponse.json({
+      key: newKey,
+      envVar: newEnvVar,
+      hasValue: true,
+    })
+  } catch (error: unknown) {
     console.error('Failed to update secret:', error)
     return NextResponse.json(
       { error: 'Failed to update secret' },
@@ -107,34 +66,21 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string; secretId: string }> }
 ) {
   try {
-    const { id, secretId } = await params
+    const { id: slug, secretId: envVar } = await params
 
     // Verify agent exists
-    const agent = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, id))
-      .limit(1)
-
-    if (agent.length === 0) {
+    if (!(await agentExists(slug))) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
-    // Verify secret exists and belongs to this agent
-    const secret = await db
-      .select()
-      .from(agentSecrets)
-      .where(and(eq(agentSecrets.id, secretId), eq(agentSecrets.agentId, id)))
-      .limit(1)
+    const deleted = await deleteSecret(slug, envVar)
 
-    if (secret.length === 0) {
+    if (!deleted) {
       return NextResponse.json({ error: 'Secret not found' }, { status: 404 })
     }
 
-    await db.delete(agentSecrets).where(eq(agentSecrets.id, secretId))
-
     return NextResponse.json({ success: true })
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Failed to delete secret:', error)
     return NextResponse.json(
       { error: 'Failed to delete secret' },

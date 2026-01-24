@@ -3,16 +3,16 @@
 import { cn } from '@/lib/utils/cn'
 import { AgentStatus } from './agent-status'
 import { useSessions } from '@/lib/hooks/use-sessions'
-import type { AgentWithStatus } from '@/lib/hooks/use-agents'
+import type { ApiAgent } from '@/lib/hooks/use-agents'
 
 interface AgentListItemProps {
-  agent: AgentWithStatus
+  agent: ApiAgent
   selected: boolean
   onClick: () => void
 }
 
 export function AgentListItem({ agent, selected, onClick }: AgentListItemProps) {
-  const { data: sessions } = useSessions(agent.id)
+  const { data: sessions } = useSessions(agent.slug)
   const hasActiveSessions = sessions?.some((s) => s.isActive) ?? false
 
   return (

@@ -1,10 +1,8 @@
-import { db } from '@/lib/db'
-import { messages, sessions, toolCalls } from '@/lib/db/schema'
-import { eq } from 'drizzle-orm'
-import { v4 as uuidv4 } from 'uuid'
 import type { ContainerClient, StreamMessage } from './types'
 
 // Tracks streaming state for SSE broadcasts
+// In the file-based model, messages are stored in JSONL files by the Claude SDK.
+// This class only handles SSE streaming updates to the frontend, not persistence.
 interface StreamingState {
   currentText: string
   isStreaming: boolean
@@ -12,18 +10,20 @@ interface StreamingState {
   currentToolInput: string // Accumulated partial JSON input for current tool
   isActive: boolean // True from user message until result received
   isInterrupted: boolean // True after user interrupts, prevents race conditions
+  agentSlug?: string // The agent slug for this session
 }
 
 class MessagePersister {
   private streamingStates: Map<string, StreamingState> = new Map()
   private subscriptions: Map<string, () => void> = new Map()
-  private sseClients: Map<string, Set<(data: any) => void>> = new Map()
+  private sseClients: Map<string, Set<(data: unknown) => void>> = new Map()
 
-  // Subscribe to a session's messages and persist them
+  // Subscribe to a session's messages for SSE streaming
   subscribeToSession(
     sessionId: string,
     client: ContainerClient,
-    containerSessionId: string
+    containerSessionId: string,
+    agentSlug?: string
   ): void {
     // Unsubscribe if already subscribed
     this.unsubscribeFromSession(sessionId)
@@ -36,6 +36,7 @@ class MessagePersister {
       currentToolInput: '',
       isActive: false,
       isInterrupted: false,
+      agentSlug,
     })
 
     // Subscribe to the container's message stream
@@ -69,7 +70,6 @@ class MessagePersister {
   }
 
   // Mark a session as interrupted (not active)
-  // Saves any partial message and adds an interrupted meta message
   async markSessionInterrupted(sessionId: string): Promise<void> {
     const state = this.streamingStates.get(sessionId)
 
@@ -78,52 +78,17 @@ class MessagePersister {
       state.isInterrupted = true
       state.isStreaming = false
       state.isActive = false
+      state.currentText = ''
+      state.currentToolUse = null
+      state.currentToolInput = ''
     }
 
-    // Always broadcast immediately to update UI
+    // Broadcast immediately to update UI
     this.broadcastToSSE(sessionId, { type: 'session_idle', isActive: false })
-
-    // Then persist to database (errors here shouldn't block UI update)
-    try {
-      if (state) {
-        // Save partial message if there's accumulated text
-        if (state.currentText && state.currentText.length > 0) {
-          await db.insert(messages).values({
-            id: uuidv4(),
-            sessionId,
-            type: 'assistant',
-            content: { text: state.currentText },
-            createdAt: new Date(),
-          })
-        }
-
-        // Insert interrupted meta message
-        await db.insert(messages).values({
-          id: uuidv4(),
-          sessionId,
-          type: 'system',
-          content: { subtype: 'interrupted' },
-          createdAt: new Date(),
-        })
-
-        // Update session activity
-        await db
-          .update(sessions)
-          .set({ lastActivityAt: new Date() })
-          .where(eq(sessions.id, sessionId))
-
-        // Clear accumulated state
-        state.currentText = ''
-        state.currentToolUse = null
-        state.currentToolInput = ''
-      }
-    } catch (error) {
-      console.error('Failed to persist interrupted state:', error)
-    }
   }
 
   // Add SSE client for real-time updates
-  addSSEClient(sessionId: string, callback: (data: any) => void): () => void {
+  addSSEClient(sessionId: string, callback: (data: unknown) => void): () => void {
     let clients = this.sseClients.get(sessionId)
     if (!clients) {
       clients = new Set()
@@ -146,11 +111,33 @@ class MessagePersister {
     this.broadcastToSSE(sessionId, { type: 'session_updated' })
   }
 
+  // Mark session as active (when user sends a message)
+  markSessionActive(sessionId: string, agentSlug?: string): void {
+    let state = this.streamingStates.get(sessionId)
+    if (!state) {
+      state = {
+        currentText: '',
+        isStreaming: false,
+        currentToolUse: null,
+        currentToolInput: '',
+        isActive: false,
+        isInterrupted: false,
+        agentSlug,
+      }
+      this.streamingStates.set(sessionId, state)
+    }
+    state.isActive = true
+    state.isInterrupted = false // Reset interrupted flag on new message
+    if (agentSlug) {
+      state.agentSlug = agentSlug
+    }
+    this.broadcastToSSE(sessionId, { type: 'session_active', isActive: true })
+  }
+
   // Broadcast to SSE clients
-  // Only session_active and session_idle events include isActive - not every event
-  private broadcastToSSE(sessionId: string, data: any): void {
+  private broadcastToSSE(sessionId: string, data: unknown): void {
     const clients = this.sseClients.get(sessionId)
-    console.log(`[SSE] Broadcasting to session ${sessionId}:`, data.type, `(${clients?.size ?? 0} clients)`)
+    console.log(`[SSE] Broadcasting to session ${sessionId}:`, (data as { type?: string }).type, `(${clients?.size ?? 0} clients)`)
     if (clients) {
       clients.forEach((callback) => {
         try {
@@ -163,10 +150,10 @@ class MessagePersister {
   }
 
   // Handle incoming message from container
-  private async handleMessage(
+  private handleMessage(
     sessionId: string,
     message: StreamMessage
-  ): Promise<void> {
+  ): void {
     const state = this.streamingStates.get(sessionId)
     if (!state) return
 
@@ -180,16 +167,16 @@ class MessagePersister {
 
     switch (content.type) {
       case 'assistant':
-        // Complete assistant message - save/update in DB
-        await this.upsertAssistantMessage(sessionId, content)
+        // Complete assistant message - JSONL is the source of truth
         // Clear currentText since the message is now persisted
-        // This prevents duplicate messages on interrupt
         state.currentText = ''
+        // Broadcast refresh event so frontend can refetch
+        this.broadcastToSSE(sessionId, { type: 'messages_updated' })
         break
 
       case 'user':
         // Tool results come as 'user' type messages
-        await this.handleToolResults(sessionId, content)
+        this.handleToolResults(sessionId, content)
         break
 
       case 'system':
@@ -237,7 +224,7 @@ class MessagePersister {
   // Handle stream events for SSE broadcasting (not for persistence)
   private handleStreamEvent(
     sessionId: string,
-    event: any,
+    event: { type: string; content_block?: { type: string; id?: string; name?: string }; delta?: { type: string; text?: string; partial_json?: string } },
     state: StreamingState
   ): void {
     switch (event.type) {
@@ -252,8 +239,8 @@ class MessagePersister {
         // Track when a tool use block starts
         if (event.content_block?.type === 'tool_use') {
           state.currentToolUse = {
-            id: event.content_block.id,
-            name: event.content_block.name,
+            id: event.content_block.id!,
+            name: event.content_block.name!,
           }
           state.currentToolInput = '' // Reset input accumulator
           this.broadcastToSSE(sessionId, {
@@ -293,7 +280,8 @@ class MessagePersister {
             this.handleSecretRequestTool(
               sessionId,
               state.currentToolUse.id,
-              state.currentToolInput
+              state.currentToolInput,
+              state.agentSlug
             )
           }
 
@@ -302,7 +290,8 @@ class MessagePersister {
             this.handleConnectedAccountRequestTool(
               sessionId,
               state.currentToolUse.id,
-              state.currentToolInput
+              state.currentToolInput,
+              state.agentSlug
             )
           }
 
@@ -317,7 +306,7 @@ class MessagePersister {
         break
 
       case 'message_stop':
-        // Don't save here - wait for the complete 'assistant' message
+        // Don't save here - JSONL is the source of truth
         state.isStreaming = false
         state.currentToolUse = null
         state.currentToolInput = ''
@@ -326,11 +315,12 @@ class MessagePersister {
   }
 
   // Handle secret request tool - broadcast to SSE clients so they can show the UI
-  private async handleSecretRequestTool(
+  private handleSecretRequestTool(
     sessionId: string,
     toolUseId: string,
-    toolInput: string
-  ): Promise<void> {
+    toolInput: string,
+    agentSlug?: string
+  ): void {
     try {
       // Parse the tool input to get secretName and reason
       let input: { secretName: string; reason?: string } = { secretName: '' }
@@ -346,26 +336,12 @@ class MessagePersister {
         return
       }
 
-      // Get the session to find the agentId
-      const session = await db
-        .select()
-        .from(sessions)
-        .where(eq(sessions.id, sessionId))
-        .limit(1)
-
-      if (session.length === 0) {
-        console.error('[MessagePersister] Session not found for secret request:', sessionId)
-        return
-      }
-
-      const agentId = session[0].agentId
-
       console.log(
         '[MessagePersister] Broadcasting secret_request:',
         toolUseId,
         input.secretName,
         'for agent:',
-        agentId
+        agentSlug
       )
 
       // Broadcast the secret request event to SSE clients
@@ -374,7 +350,7 @@ class MessagePersister {
         toolUseId,
         secretName: input.secretName,
         reason: input.reason,
-        agentId,
+        agentSlug,
       })
     } catch (error) {
       console.error('[MessagePersister] Error handling secret request:', error)
@@ -382,11 +358,12 @@ class MessagePersister {
   }
 
   // Handle connected account request tool - broadcast to SSE clients so they can show the UI
-  private async handleConnectedAccountRequestTool(
+  private handleConnectedAccountRequestTool(
     sessionId: string,
     toolUseId: string,
-    toolInput: string
-  ): Promise<void> {
+    toolInput: string,
+    agentSlug?: string
+  ): void {
     try {
       // Parse the tool input to get toolkit and reason
       let input: { toolkit: string; reason?: string } = { toolkit: '' }
@@ -402,26 +379,12 @@ class MessagePersister {
         return
       }
 
-      // Get the session to find the agentId
-      const session = await db
-        .select()
-        .from(sessions)
-        .where(eq(sessions.id, sessionId))
-        .limit(1)
-
-      if (session.length === 0) {
-        console.error('[MessagePersister] Session not found for connected account request:', sessionId)
-        return
-      }
-
-      const agentId = session[0].agentId
-
       console.log(
         '[MessagePersister] Broadcasting connected_account_request:',
         toolUseId,
         input.toolkit,
         'for agent:',
-        agentId
+        agentSlug
       )
 
       // Broadcast the connected account request event to SSE clients
@@ -430,38 +393,23 @@ class MessagePersister {
         toolUseId,
         toolkit: input.toolkit.toLowerCase(),
         reason: input.reason,
-        agentId,
+        agentSlug,
       })
     } catch (error) {
       console.error('[MessagePersister] Error handling connected account request:', error)
     }
   }
 
-  // Handle tool results - update the corresponding tool call with its result
-  private async handleToolResults(
+  // Handle tool results - broadcast to SSE clients
+  private handleToolResults(
     sessionId: string,
-    content: any
-  ): Promise<void> {
+    content: { message?: { content?: Array<{ type: string; tool_use_id?: string; content?: unknown; is_error?: boolean }> } }
+  ): void {
     try {
       const messageContent = content.message?.content || []
 
       for (const block of messageContent) {
         if (block.type === 'tool_result' && block.tool_use_id) {
-          // Serialize the result to JSON string for SQLite storage
-          const resultString =
-            typeof block.content === 'string'
-              ? block.content
-              : JSON.stringify(block.content)
-
-          // Update the tool call record with the result
-          await db
-            .update(toolCalls)
-            .set({
-              result: resultString,
-              isError: block.is_error || false,
-            })
-            .where(eq(toolCalls.id, block.tool_use_id))
-
           // Broadcast update to SSE clients
           this.broadcastToSSE(sessionId, {
             type: 'tool_result',
@@ -473,146 +421,6 @@ class MessagePersister {
       }
     } catch (error) {
       console.error('Failed to handle tool results:', error)
-    }
-  }
-
-  // Upsert assistant message - insert if new, merge if exists
-  private async upsertAssistantMessage(
-    sessionId: string,
-    content: any
-  ): Promise<void> {
-    try {
-      const claudeMessageId = content.message?.id
-      if (!claudeMessageId) {
-        console.warn('Assistant message without ID, skipping')
-        return
-      }
-
-      // Extract content from this message
-      const messageContent = content.message?.content || []
-      let newText = ''
-      const newToolCalls: { id: string; name: string; input: any }[] = []
-
-      for (const block of messageContent) {
-        if (block.type === 'text' && block.text) {
-          newText = block.text
-        } else if (block.type === 'tool_use') {
-          newToolCalls.push({
-            id: block.id,
-            name: block.name,
-            input: block.input,
-          })
-        }
-      }
-
-      // Check if message already exists
-      const existing = await db
-        .select()
-        .from(messages)
-        .where(eq(messages.id, claudeMessageId))
-        .limit(1)
-
-      if (existing.length > 0) {
-        // Update existing message - merge text if needed
-        const existingContent = existing[0].content as { text: string }
-        const mergedText = existingContent.text || newText
-
-        if (mergedText !== existingContent.text) {
-          await db
-            .update(messages)
-            .set({ content: { text: mergedText } })
-            .where(eq(messages.id, claudeMessageId))
-        }
-      } else {
-        // Insert new message using Claude's message ID
-        await db.insert(messages).values({
-          id: claudeMessageId,
-          sessionId,
-          type: 'assistant',
-          content: { text: newText },
-          createdAt: new Date(),
-        })
-      }
-
-      // Insert tool calls into separate table (if any)
-      for (const tc of newToolCalls) {
-        // Check if tool call already exists
-        const existingTc = await db
-          .select()
-          .from(toolCalls)
-          .where(eq(toolCalls.id, tc.id))
-          .limit(1)
-
-        if (existingTc.length === 0) {
-          await db.insert(toolCalls).values({
-            id: tc.id,
-            messageId: claudeMessageId,
-            name: tc.name,
-            input: tc.input,
-            createdAt: new Date(),
-          })
-
-          // Broadcast new tool call to SSE clients
-          this.broadcastToSSE(sessionId, {
-            type: 'tool_call',
-            toolCall: {
-              id: tc.id,
-              messageId: claudeMessageId,
-              name: tc.name,
-              input: tc.input,
-            },
-          })
-        }
-      }
-
-      // Update session last activity
-      await db
-        .update(sessions)
-        .set({ lastActivityAt: new Date() })
-        .where(eq(sessions.id, sessionId))
-
-      // Note: We no longer broadcast stream_end here.
-      // Session activity is tracked via session_active/session_idle events.
-    } catch (error) {
-      console.error('Failed to upsert assistant message:', error)
-    }
-  }
-
-  // Save user message to database and mark session as active
-  async saveUserMessage(sessionId: string, text: string): Promise<void> {
-    try {
-      await db.insert(messages).values({
-        id: uuidv4(), // User messages still use UUID since they don't have a Claude ID
-        sessionId,
-        type: 'user',
-        content: { text },
-        createdAt: new Date(),
-      })
-
-      // Update session last activity
-      await db
-        .update(sessions)
-        .set({ lastActivityAt: new Date() })
-        .where(eq(sessions.id, sessionId))
-
-      // Mark session as active - user sent a message, agent will respond
-      let state = this.streamingStates.get(sessionId)
-      if (!state) {
-        state = {
-          currentText: '',
-          isStreaming: false,
-          currentToolUse: null,
-          currentToolInput: '',
-          isActive: false,
-          isInterrupted: false,
-        }
-        this.streamingStates.set(sessionId, state)
-      }
-      state.isActive = true
-      state.isInterrupted = false // Reset interrupted flag on new message
-      this.broadcastToSSE(sessionId, { type: 'session_active', isActive: true })
-    } catch (error) {
-      console.error('Failed to save user message:', error)
     }
   }
 }

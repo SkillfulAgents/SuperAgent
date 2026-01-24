@@ -7,6 +7,9 @@ agent-container/node_modules/
 out/
 agent-container/dist/
 
+# Test coverage
+coverage/
+
 # Database
 *.db
 *.db-journal

@@ -15,10 +15,25 @@ import { useEffect, useRef, useCallback, useMemo } from 'react'
 
 interface MessageListProps {
   sessionId: string
+  agentSlug: string
+  pendingUserMessage?: string | null
+  onPendingMessageAppeared?: () => void
 }
 
-export function MessageList({ sessionId }: MessageListProps) {
-  const { data: messages, isLoading } = useMessages(sessionId)
+export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendingMessageAppeared }: MessageListProps) {
+  const { data: messages, isLoading } = useMessages(sessionId, agentSlug)
+
+  // Check if pending message has appeared in real messages
+  useEffect(() => {
+    if (pendingUserMessage && messages?.length) {
+      const found = messages.some(
+        (m) => m.type === 'user' && m.content.text === pendingUserMessage
+      )
+      if (found) {
+        onPendingMessageAppeared?.()
+      }
+    }
+  }, [messages, pendingUserMessage, onPendingMessageAppeared])
   const {
     streamingMessage,
     isStreaming,
@@ -54,12 +69,15 @@ export function MessageList({ sessionId }: MessageListProps) {
 
     // Check if the persisted message text contains the streaming content
     const content = lastAssistantMessage.content as { text?: string } | undefined
-    const persistedText = content?.text || ''
+    const persistedText = content?.text?.trim() || ''
     const streamingText = streamingMessage.trim()
+
+    // Both texts must be non-empty for comparison
+    if (!persistedText || !streamingText) return false
 
     // If streaming text is a prefix of (or equal to) persisted text, it's already persisted
     // Also check if persisted text starts with streaming text (streaming may be slightly behind)
-    return persistedText.startsWith(streamingText) || streamingText.startsWith(persistedText.trim())
+    return persistedText.startsWith(streamingText) || streamingText.startsWith(persistedText)
   }, [messages, streamingMessage])
 
   // Auto-scroll to bottom when new messages arrive or requests appear
@@ -67,7 +85,7 @@ export function MessageList({ sessionId }: MessageListProps) {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [messages, streamingMessage, streamingToolUse, pendingSecretRequests, pendingConnectedAccountRequests])
+  }, [messages, pendingUserMessage, streamingMessage, streamingToolUse, pendingSecretRequests, pendingConnectedAccountRequests])
 
   if (isLoading) {
     return (
@@ -84,14 +102,27 @@ export function MessageList({ sessionId }: MessageListProps) {
           <MessageItem key={message.id} message={message} />
         ))}
 
+        {/* Pending user message - shown immediately after sending */}
+        {pendingUserMessage && (
+          <MessageItem
+            message={{
+              id: 'pending-user-message',
+              type: 'user',
+              content: { text: pendingUserMessage },
+              toolCalls: [],
+              createdAt: new Date(),
+            }}
+          />
+        )}
+
         {/* Streaming text message - only show if not already persisted */}
         {isStreaming && streamingMessage && !isStreamingMessagePersisted && (
           <MessageItem
             message={{
               id: 'streaming',
-              sessionId,
               type: 'assistant',
               content: { text: streamingMessage },
+              toolCalls: [],
               createdAt: new Date(),
             }}
             isStreaming

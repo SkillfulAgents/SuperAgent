@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
-import { agents } from '@/lib/db/schema'
-import { eq } from 'drizzle-orm'
+import {
+  getAgentWithStatus,
+  updateAgent,
+  deleteAgent,
+} from '@/lib/services/agent-service'
 import { containerManager } from '@/lib/container/container-manager'
+
+// Note: Route param is still called 'id' but is now the agent slug
 
 // GET /api/agents/[id] - Get a single agent
 export async function GET(
@@ -10,27 +14,15 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params
-    const agent = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, id))
-      .limit(1)
+    const { id: slug } = await params
+    const agent = await getAgentWithStatus(slug)
 
-    if (agent.length === 0) {
+    if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
-    // Query Docker for status
-    const client = containerManager.getClient(id)
-    const info = await client.getInfo()
-
-    return NextResponse.json({
-      ...agent[0],
-      status: info.status,
-      containerPort: info.port,
-    })
-  } catch (error: any) {
+    return NextResponse.json(agent)
+  } catch (error: unknown) {
     console.error('Failed to fetch agent:', error)
     return NextResponse.json(
       { error: 'Failed to fetch agent' },
@@ -45,51 +37,22 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params
+    const { id: slug } = await params
     const body = await request.json()
-    const { name, systemPrompt } = body
+    const { name, description, instructions } = body
 
-    const agent = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, id))
-      .limit(1)
+    const agent = await updateAgent(slug, {
+      name: name?.trim(),
+      description: description?.trim(),
+      instructions: instructions,
+    })
 
-    if (agent.length === 0) {
+    if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
-    const updates: Partial<typeof agents.$inferInsert> = {
-      updatedAt: new Date(),
-    }
-
-    if (name?.trim()) {
-      updates.name = name.trim()
-    }
-
-    // Allow setting systemPrompt to null/empty to clear it
-    if (systemPrompt !== undefined) {
-      updates.systemPrompt = systemPrompt?.trim() || null
-    }
-
-    await db.update(agents).set(updates).where(eq(agents.id, id))
-
-    const updated = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, id))
-      .limit(1)
-
-    // Query Docker for status
-    const client = containerManager.getClient(id)
-    const info = await client.getInfo()
-
-    return NextResponse.json({
-      ...updated[0],
-      status: info.status,
-      containerPort: info.port,
-    })
-  } catch (error: any) {
+    return NextResponse.json(agent)
+  } catch (error: unknown) {
     console.error('Failed to update agent:', error)
     return NextResponse.json(
       { error: 'Failed to update agent' },
@@ -104,27 +67,20 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params
-    const agent = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, id))
-      .limit(1)
+    const { id: slug } = await params
 
-    if (agent.length === 0) {
+    // deleteAgent handles stopping container and removing directory
+    const deleted = await deleteAgent(slug)
+
+    if (!deleted) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
-    // Stop and remove the container if running
-    const client = containerManager.getClient(id)
-    await client.stop()
-    containerManager.removeClient(id)
-
-    // Delete from database (sessions and messages will cascade)
-    await db.delete(agents).where(eq(agents.id, id))
+    // Remove from container manager cache
+    containerManager.removeClient(slug)
 
     return NextResponse.json({ success: true })
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Failed to delete agent:', error)
     return NextResponse.json(
       { error: 'Failed to delete agent' },

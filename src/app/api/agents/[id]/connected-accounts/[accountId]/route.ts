@@ -10,7 +10,7 @@ interface RouteParams {
 // DELETE /api/agents/[id]/connected-accounts/[accountId] - Remove account mapping from agent
 export async function DELETE(request: NextRequest, { params }: RouteParams) {
   try {
-    const { id: agentId, accountId } = await params
+    const { id: slug, accountId } = await params
 
     // Find and delete the mapping
     const [existing] = await db
@@ -18,7 +18,7 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       .from(agentConnectedAccounts)
       .where(
         and(
-          eq(agentConnectedAccounts.agentId, agentId),
+          eq(agentConnectedAccounts.agentSlug, slug),
           eq(agentConnectedAccounts.connectedAccountId, accountId)
         )
       )

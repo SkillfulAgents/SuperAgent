@@ -1,13 +1,13 @@
 'use client'
 
-import { useSessions } from '@/lib/hooks/use-sessions'
+import { useSessions, type ApiSession } from '@/lib/hooks/use-sessions'
 import { useMessageStream } from '@/lib/hooks/use-message-stream'
 import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils/cn'
 import { Loader2 } from 'lucide-react'
 
 interface SessionListProps {
-  agentId: string
+  agentSlug: string
   selectedSessionId: string | null
   onSelectSession: (sessionId: string | null) => void
 }
@@ -18,7 +18,7 @@ function SessionTab({
   isSelected,
   onClick,
 }: {
-  session: { id: string; name: string; isActive: boolean }
+  session: ApiSession
   isSelected: boolean
   onClick: () => void
 }) {
@@ -50,11 +50,11 @@ function SessionTab({
 }
 
 export function SessionList({
-  agentId,
+  agentSlug,
   selectedSessionId,
   onSelectSession,
 }: SessionListProps) {
-  const { data: sessions, isLoading } = useSessions(agentId)
+  const { data: sessions, isLoading } = useSessions(agentSlug)
 
   if (isLoading) {
     return (

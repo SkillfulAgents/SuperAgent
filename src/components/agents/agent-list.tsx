@@ -5,11 +5,11 @@ import { AgentListItem } from './agent-list-item'
 import { Loader2 } from 'lucide-react'
 
 interface AgentListProps {
-  selectedAgentId: string | null
-  onSelectAgent: (agentId: string) => void
+  selectedAgentSlug: string | null
+  onSelectAgent: (agentSlug: string) => void
 }
 
-export function AgentList({ selectedAgentId, onSelectAgent }: AgentListProps) {
+export function AgentList({ selectedAgentSlug, onSelectAgent }: AgentListProps) {
   const { data: agents, isLoading, error } = useAgents()
 
   if (isLoading) {
@@ -40,10 +40,10 @@ export function AgentList({ selectedAgentId, onSelectAgent }: AgentListProps) {
     <div className="p-2 space-y-1">
       {agents.map((agent) => (
         <AgentListItem
-          key={agent.id}
+          key={agent.slug}
           agent={agent}
-          selected={agent.id === selectedAgentId}
-          onClick={() => onSelectAgent(agent.id)}
+          selected={agent.slug === selectedAgentSlug}
+          onClick={() => onSelectAgent(agent.slug)}
         />
       ))}
     </div>

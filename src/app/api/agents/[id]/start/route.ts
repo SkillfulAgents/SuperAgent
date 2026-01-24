@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
-import { agents } from '@/lib/db/schema'
-import { eq } from 'drizzle-orm'
 import { containerManager } from '@/lib/container/container-manager'
+import { getAgentWithStatus, agentExists } from '@/lib/services/agent-service'
 
 // POST /api/agents/[id]/start - Start an agent's container
 export async function POST(
@@ -10,46 +8,24 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params
+    const { id: slug } = await params
 
-    // Get agent from database
-    const agent = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, id))
-      .limit(1)
-
-    if (agent.length === 0) {
+    // Verify agent exists
+    if (!(await agentExists(slug))) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
-    // Ensure container is running (fetches secrets and starts if needed)
-    const client = await containerManager.ensureRunning(id)
+    // Ensure container is running
+    await containerManager.ensureRunning(slug)
 
-    // Get updated status from Docker
-    const newInfo = await client.getInfo()
+    // Get agent with updated status
+    const agent = await getAgentWithStatus(slug)
 
-    // Update timestamp
-    await db
-      .update(agents)
-      .set({ updatedAt: new Date() })
-      .where(eq(agents.id, id))
-
-    const updated = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, id))
-      .limit(1)
-
-    return NextResponse.json({
-      ...updated[0],
-      status: newInfo.status,
-      containerPort: newInfo.port,
-    })
-  } catch (error: any) {
+    return NextResponse.json(agent)
+  } catch (error: unknown) {
     console.error('Failed to start agent:', error)
     return NextResponse.json(
-      { error: 'Failed to start agent', details: error.message },
+      { error: 'Failed to start agent' },
       { status: 500 }
     )
   }

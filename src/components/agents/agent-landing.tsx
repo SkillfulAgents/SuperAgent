@@ -6,31 +6,32 @@ import { Textarea } from '@/components/ui/textarea'
 import { Send, Loader2, Sparkles } from 'lucide-react'
 import { useCreateSession } from '@/lib/hooks/use-sessions'
 import { useAgentSkills } from '@/lib/hooks/use-agent-skills'
-import type { AgentWithStatus } from '@/lib/hooks/use-agents'
+import type { ApiAgent } from '@/lib/hooks/use-agents'
 
 interface AgentLandingProps {
-  agent: AgentWithStatus
-  onSessionCreated: (sessionId: string) => void
+  agent: ApiAgent
+  onSessionCreated: (sessionId: string, initialMessage: string) => void
 }
 
 export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
   const [message, setMessage] = useState('')
   const createSession = useCreateSession()
-  const { data: skills } = useAgentSkills(agent.id)
+  const { data: skills } = useAgentSkills(agent.slug)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!message.trim() || createSession.isPending) return
 
     try {
+      const content = message.trim()
       // Single API call: creates session, sends message, generates name in background
       const session = await createSession.mutateAsync({
-        agentId: agent.id,
-        message: message.trim(),
+        agentSlug: agent.slug,
+        message: content,
       })
 
       setMessage('')
-      onSessionCreated(session.id)
+      onSessionCreated(session.id, content)
     } catch (error) {
       console.error('Failed to start session:', error)
     }

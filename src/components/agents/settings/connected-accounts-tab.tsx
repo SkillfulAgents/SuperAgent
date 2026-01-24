@@ -20,19 +20,19 @@ interface AgentConnectedAccountsResponse {
 }
 
 interface ConnectedAccountsTabProps {
-  agentId: string
+  agentSlug: string
 }
 
-export function ConnectedAccountsTab({ agentId }: ConnectedAccountsTabProps) {
+export function ConnectedAccountsTab({ agentSlug }: ConnectedAccountsTabProps) {
   const queryClient = useQueryClient()
   const [selectedAccounts, setSelectedAccounts] = useState<Set<string>>(new Set())
   const [isAdding, setIsAdding] = useState(false)
 
   // Fetch agent's connected accounts
   const { data: agentAccountsData, isLoading: isLoadingAgentAccounts } = useQuery<AgentConnectedAccountsResponse>({
-    queryKey: ['agent-connected-accounts', agentId],
+    queryKey: ['agent-connected-accounts', agentSlug],
     queryFn: async () => {
-      const res = await fetch(`/api/agents/${agentId}/connected-accounts`)
+      const res = await fetch(`/api/agents/${agentSlug}/connected-accounts`)
       if (!res.ok) throw new Error('Failed to fetch agent connected accounts')
       return res.json()
     },
@@ -51,7 +51,7 @@ export function ConnectedAccountsTab({ agentId }: ConnectedAccountsTabProps) {
   // Add accounts to agent
   const addAccounts = useMutation({
     mutationFn: async (accountIds: string[]) => {
-      const res = await fetch(`/api/agents/${agentId}/connected-accounts`, {
+      const res = await fetch(`/api/agents/${agentSlug}/connected-accounts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ accountIds }),
@@ -60,7 +60,7 @@ export function ConnectedAccountsTab({ agentId }: ConnectedAccountsTabProps) {
       return res.json()
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts', agentId] })
+      queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts', agentSlug] })
       setSelectedAccounts(new Set())
       setIsAdding(false)
     },
@@ -69,13 +69,13 @@ export function ConnectedAccountsTab({ agentId }: ConnectedAccountsTabProps) {
   // Remove account from agent
   const removeAccount = useMutation({
     mutationFn: async (accountId: string) => {
-      const res = await fetch(`/api/agents/${agentId}/connected-accounts/${accountId}`, {
+      const res = await fetch(`/api/agents/${agentSlug}/connected-accounts/${accountId}`, {
         method: 'DELETE',
       })
       if (!res.ok) throw new Error('Failed to remove account')
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts', agentId] })
+      queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts', agentSlug] })
     },
   })
 

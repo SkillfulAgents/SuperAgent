@@ -1,25 +1,23 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import type { Session } from '@/lib/db/schema'
+import type { ApiSession } from '@/lib/types/api'
 
-// Extended session type that includes runtime status
-export interface SessionWithStatus extends Session {
-  isActive: boolean
-}
+// Re-export for convenience
+export type { ApiSession }
 
-export function useSessions(agentId: string | null) {
-  return useQuery<SessionWithStatus[]>({
-    queryKey: ['sessions', agentId],
+export function useSessions(agentSlug: string | null) {
+  return useQuery<ApiSession[]>({
+    queryKey: ['sessions', agentSlug],
     queryFn: async () => {
-      const res = await fetch(`/api/agents/${agentId}/sessions`)
+      const res = await fetch(`/api/agents/${agentSlug}/sessions`)
       if (!res.ok) throw new Error('Failed to fetch sessions')
       return res.json()
     },
-    enabled: !!agentId,
+    enabled: !!agentSlug,
   })
 }
 
 export function useSession(id: string | null) {
-  return useQuery<SessionWithStatus>({
+  return useQuery<ApiSession>({
     queryKey: ['session', id],
     queryFn: async () => {
       const res = await fetch(`/api/sessions/${id}`)
@@ -34,17 +32,17 @@ export function useCreateSession() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async (data: { agentId: string; message: string }) => {
-      const res = await fetch(`/api/agents/${data.agentId}/sessions`, {
+    mutationFn: async (data: { agentSlug: string; message: string }) => {
+      const res = await fetch(`/api/agents/${data.agentSlug}/sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: data.message }),
       })
       if (!res.ok) throw new Error('Failed to create session')
-      return res.json()
+      return res.json() as Promise<ApiSession>
     },
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['sessions', variables.agentId] })
+      queryClient.invalidateQueries({ queryKey: ['sessions', variables.agentSlug] })
     },
   })
 }
@@ -75,7 +73,7 @@ export function useUpdateSessionName() {
         body: JSON.stringify({ name }),
       })
       if (!res.ok) throw new Error('Failed to update session name')
-      return res.json()
+      return res.json() as Promise<ApiSession>
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] })

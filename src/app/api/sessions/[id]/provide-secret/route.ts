@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
-import { sessions, agentSecrets } from '@/lib/db/schema'
-import { eq, and } from 'drizzle-orm'
-import { v4 as uuidv4 } from 'uuid'
 import { containerManager } from '@/lib/container/container-manager'
+import { findSessionAcrossAgents } from '@/lib/services/session-service'
+import { setSecret } from '@/lib/services/secrets-service'
 
 interface ProvideSecretRequest {
   toolUseId: string // Used for container resolution (keyed by toolUseId)
@@ -38,39 +36,24 @@ export async function POST(
       )
     }
 
-    // Get session to find agentId
-    const session = await db
-      .select()
-      .from(sessions)
-      .where(eq(sessions.id, sessionId))
-      .limit(1)
+    // Find which agent this session belongs to
+    const result = await findSessionAcrossAgents(sessionId)
 
-    if (session.length === 0) {
+    if (!result) {
       return NextResponse.json({ error: 'Session not found' }, { status: 404 })
     }
 
-    const sessionData = session[0]
-    const agentId = sessionData.agentId
+    const { agentSlug } = result
 
-    // Get container client and verify it's running
-    const client = containerManager.getClient(agentId)
-    const info = await client.getInfo()
-
-    if (info.status !== 'running' || !info.port) {
-      return NextResponse.json(
-        { error: 'Agent container is not running' },
-        { status: 503 }
-      )
-    }
-
-    const containerPort = info.port
+    // Get container client
+    const client = containerManager.getClient(agentSlug)
 
     // Handle decline
     if (decline) {
       const reason = declineReason || 'User declined to provide the secret'
 
-      const rejectResponse = await fetch(
-        `http://localhost:${containerPort}/inputs/${encodeURIComponent(toolUseId)}/reject`,
+      const rejectResponse = await client.fetch(
+        `/inputs/${encodeURIComponent(toolUseId)}/reject`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -98,40 +81,17 @@ export async function POST(
       )
     }
 
-    // Upsert the secret to database
-    const existing = await db
-      .select()
-      .from(agentSecrets)
-      .where(
-        and(eq(agentSecrets.agentId, agentId), eq(agentSecrets.envVar, secretName))
-      )
-      .limit(1)
-
-    const now = new Date()
-
-    if (existing.length > 0) {
-      // Update existing secret
-      await db
-        .update(agentSecrets)
-        .set({ value, updatedAt: now })
-        .where(eq(agentSecrets.id, existing[0].id))
-    } else {
-      // Create new secret
-      await db.insert(agentSecrets).values({
-        id: uuidv4(),
-        agentId,
-        key: secretName, // Use secretName as both key and envVar
-        envVar: secretName,
-        value,
-        createdAt: now,
-        updatedAt: now,
-      })
-    }
+    // Save the secret to .env file
+    await setSecret(agentSlug, {
+      key: secretName, // Use secretName as both key and envVar
+      envVar: secretName,
+      value,
+    })
 
     // Set environment variable in container FIRST (before resolving)
     // This ensures the env var is available when the tool returns
     console.log(`[provide-secret] Setting env var ${secretName} in container`)
-    const envResponse = await fetch(`http://localhost:${containerPort}/env`, {
+    const envResponse = await client.fetch('/env', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ key: secretName, value }),
@@ -155,8 +115,8 @@ export async function POST(
 
     // NOW resolve the pending input request (keyed by toolUseId in container)
     console.log(`[provide-secret] Resolving pending request ${toolUseId}`)
-    const resolveResponse = await fetch(
-      `http://localhost:${containerPort}/inputs/${encodeURIComponent(toolUseId)}/resolve`,
+    const resolveResponse = await client.fetch(
+      `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -181,10 +141,10 @@ export async function POST(
     console.log(`[provide-secret] Request ${toolUseId} resolved successfully`)
 
     return NextResponse.json({ success: true, saved: true })
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Failed to provide secret:', error)
     return NextResponse.json(
-      { error: 'Failed to provide secret', details: error.message },
+      { error: 'Failed to provide secret' },
       { status: 500 }
     )
   }

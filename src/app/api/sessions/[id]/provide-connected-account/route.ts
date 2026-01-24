@@ -1,13 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import {
-  sessions,
-  connectedAccounts,
-  agentConnectedAccounts,
-} from '@/lib/db/schema'
+import { connectedAccounts, agentConnectedAccounts } from '@/lib/db/schema'
 import { eq, inArray } from 'drizzle-orm'
 import { containerManager } from '@/lib/container/container-manager'
 import { getConnectionToken } from '@/lib/composio/client'
+import { findSessionAcrossAgents } from '@/lib/services/session-service'
 
 interface ProvideConnectedAccountRequest {
   toolUseId: string // Used for container resolution
@@ -42,38 +39,24 @@ export async function POST(
       )
     }
 
-    // Get session to find agentId
-    const [sessionData] = await db
-      .select()
-      .from(sessions)
-      .where(eq(sessions.id, sessionId))
-      .limit(1)
+    // Find which agent this session belongs to
+    const result = await findSessionAcrossAgents(sessionId)
 
-    if (!sessionData) {
+    if (!result) {
       return NextResponse.json({ error: 'Session not found' }, { status: 404 })
     }
 
-    const agentId = sessionData.agentId
+    const { agentSlug } = result
 
-    // Get container client and verify it's running
-    const client = containerManager.getClient(agentId)
-    const info = await client.getInfo()
-
-    if (info.status !== 'running' || !info.port) {
-      return NextResponse.json(
-        { error: 'Agent container is not running' },
-        { status: 503 }
-      )
-    }
-
-    const containerPort = info.port
+    // Get container client
+    const client = containerManager.getClient(agentSlug)
 
     // Handle decline
     if (decline) {
       const reason = declineReason || 'User declined to provide access'
 
-      const rejectResponse = await fetch(
-        `http://localhost:${containerPort}/inputs/${encodeURIComponent(toolUseId)}/reject`,
+      const rejectResponse = await client.fetch(
+        `/inputs/${encodeURIComponent(toolUseId)}/reject`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -129,7 +112,7 @@ export async function POST(
       try {
         await db.insert(agentConnectedAccounts).values({
           id: crypto.randomUUID(),
-          agentId,
+          agentSlug,
           connectedAccountId: account.id,
           createdAt: now,
         })
@@ -171,7 +154,7 @@ export async function POST(
     console.log(
       `[provide-connected-account] Setting env var ${envVarName} in container`
     )
-    const envResponse = await fetch(`http://localhost:${containerPort}/env`, {
+    const envResponse = await client.fetch('/env', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ key: envVarName, value: envVarValue }),
@@ -201,8 +184,8 @@ export async function POST(
     console.log(
       `[provide-connected-account] Resolving pending request ${toolUseId}`
     )
-    const resolveResponse = await fetch(
-      `http://localhost:${containerPort}/inputs/${encodeURIComponent(toolUseId)}/resolve`,
+    const resolveResponse = await client.fetch(
+      `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -236,10 +219,11 @@ export async function POST(
       success: true,
       accountsProvided: Object.keys(tokens).length,
     })
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Failed to provide connected account:', error)
+    const message = error instanceof Error ? error.message : 'Unknown error'
     return NextResponse.json(
-      { error: 'Failed to provide connected account', details: error.message },
+      { error: 'Failed to provide connected account', details: message },
       { status: 500 }
     )
   }

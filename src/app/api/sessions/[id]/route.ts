@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
-import { sessions } from '@/lib/db/schema'
-import { eq } from 'drizzle-orm'
 import { messagePersister } from '@/lib/container/message-persister'
+import {
+  findSessionAcrossAgents,
+  getSession,
+  updateSessionName,
+  deleteSession,
+} from '@/lib/services/session-service'
 
 // GET /api/sessions/[id] - Get a single session
 export async function GET(
@@ -10,26 +13,30 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params
+    const { id: sessionId } = await params
 
-    const session = await db
-      .select()
-      .from(sessions)
-      .where(eq(sessions.id, id))
-      .limit(1)
+    // Find which agent this session belongs to
+    const result = await findSessionAcrossAgents(sessionId)
 
-    if (session.length === 0) {
+    if (!result) {
       return NextResponse.json({ error: 'Session not found' }, { status: 404 })
     }
 
+    const { session } = result
+
     // Include whether the session is currently processing
-    const isActive = messagePersister.isSessionActive(id)
+    const isActive = messagePersister.isSessionActive(sessionId)
 
     return NextResponse.json({
-      ...session[0],
+      id: session.id,
+      agentSlug: session.agentSlug,
+      name: session.name,
+      createdAt: session.createdAt,
+      lastActivityAt: session.lastActivityAt,
+      messageCount: session.messageCount,
       isActive,
     })
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Failed to fetch session:', error)
     return NextResponse.json(
       { error: 'Failed to fetch session' },
@@ -44,35 +51,35 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params
+    const { id: sessionId } = await params
     const body = await request.json()
     const { name } = body
 
-    const session = await db
-      .select()
-      .from(sessions)
-      .where(eq(sessions.id, id))
-      .limit(1)
+    // Find which agent this session belongs to
+    const result = await findSessionAcrossAgents(sessionId)
 
-    if (session.length === 0) {
+    if (!result) {
       return NextResponse.json({ error: 'Session not found' }, { status: 404 })
     }
 
+    const { agentSlug, session } = result
+
     if (name?.trim()) {
-      await db
-        .update(sessions)
-        .set({ name: name.trim() })
-        .where(eq(sessions.id, id))
+      await updateSessionName(agentSlug, sessionId, name.trim())
     }
 
-    const updated = await db
-      .select()
-      .from(sessions)
-      .where(eq(sessions.id, id))
-      .limit(1)
+    // Fetch updated session
+    const updated = await getSession(agentSlug, sessionId)
 
-    return NextResponse.json(updated[0])
-  } catch (error: any) {
+    return NextResponse.json({
+      id: updated?.id || sessionId,
+      agentSlug: updated?.agentSlug || agentSlug,
+      name: updated?.name || name?.trim() || session.name,
+      createdAt: updated?.createdAt || session.createdAt,
+      lastActivityAt: updated?.lastActivityAt || session.lastActivityAt,
+      messageCount: updated?.messageCount || session.messageCount,
+    })
+  } catch (error: unknown) {
     console.error('Failed to update session:', error)
     return NextResponse.json(
       { error: 'Failed to update session' },
@@ -87,26 +94,25 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params
+    const { id: sessionId } = await params
 
-    const session = await db
-      .select()
-      .from(sessions)
-      .where(eq(sessions.id, id))
-      .limit(1)
+    // Find which agent this session belongs to
+    const result = await findSessionAcrossAgents(sessionId)
 
-    if (session.length === 0) {
+    if (!result) {
       return NextResponse.json({ error: 'Session not found' }, { status: 404 })
     }
 
-    // Unsubscribe from message stream
-    messagePersister.unsubscribeFromSession(id)
+    const { agentSlug } = result
 
-    // Delete from database (messages will cascade)
-    await db.delete(sessions).where(eq(sessions.id, id))
+    // Unsubscribe from message stream
+    messagePersister.unsubscribeFromSession(sessionId)
+
+    // Delete session files
+    await deleteSession(agentSlug, sessionId)
 
     return NextResponse.json({ success: true })
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Failed to delete session:', error)
     return NextResponse.json(
       { error: 'Failed to delete session' },
