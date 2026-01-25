@@ -33,6 +33,7 @@ import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { CreateAgentDialog } from '@renderer/components/agents/create-agent-dialog'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
+import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { useSelection } from '@renderer/context/selection-context'
 import { GlobalSettingsDialog } from '@renderer/components/settings/global-settings-dialog'
@@ -100,18 +101,20 @@ function AgentMenuItem({ agent }: { agent: ApiAgent }) {
   return (
     <Collapsible asChild open={isOpen} onOpenChange={setIsOpen}>
       <SidebarMenuItem>
-        <SidebarMenuButton
-          onClick={handleClick}
-          isActive={isSelected}
-          className="justify-between"
-          data-testid={`agent-item-${agent.slug}`}
-        >
-          <span className="truncate">{agent.name}</span>
-          <AgentStatus
-            status={agent.status}
-            hasActiveSessions={sessions?.some((s) => s.isActive) ?? false}
-          />
-        </SidebarMenuButton>
+        <AgentContextMenu agent={agent}>
+          <SidebarMenuButton
+            onClick={handleClick}
+            isActive={isSelected}
+            className="justify-between"
+            data-testid={`agent-item-${agent.slug}`}
+          >
+            <span className="truncate">{agent.name}</span>
+            <AgentStatus
+              status={agent.status}
+              hasActiveSessions={sessions?.some((s) => s.isActive) ?? false}
+            />
+          </SidebarMenuButton>
+        </AgentContextMenu>
         {sessions?.length ? (
           <>
             <CollapsibleTrigger asChild>
