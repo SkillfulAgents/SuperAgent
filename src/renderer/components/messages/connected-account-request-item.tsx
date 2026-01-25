@@ -498,8 +498,11 @@ function AccountOption({
     >
       <Checkbox
         checked={selected}
-        onCheckedChange={() => !disabled && onToggle()}
         disabled={disabled}
+        onCheckedChange={() => {
+          if (!disabled) onToggle()
+        }}
+        onClick={(e) => e.stopPropagation()}
       />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1">
