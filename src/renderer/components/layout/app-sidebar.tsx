@@ -1,6 +1,6 @@
 
 import { ChevronRight, Plus, Settings, AlertTriangle } from 'lucide-react'
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { isElectron, getPlatform } from '@renderer/lib/env'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import {
@@ -37,6 +37,7 @@ import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { useSelection } from '@renderer/context/selection-context'
 import { GlobalSettingsDialog } from '@renderer/components/settings/global-settings-dialog'
+import { ContainerSetupDialog } from '@renderer/components/settings/container-setup-dialog'
 
 // Session sub-item that tracks its streaming state
 function SessionSubItem({
@@ -161,6 +162,7 @@ function AgentMenuItem({ agent }: { agent: ApiAgent }) {
 export function AppSidebar() {
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
+  const [containerSetupOpen, setContainerSetupOpen] = useState(false)
   const { data: agents, isLoading, error } = useAgents()
   const { data: settings } = useSettings()
   const isFullScreen = useFullScreen()
@@ -169,6 +171,17 @@ export function AppSidebar() {
     if (!settings?.runnerAvailability) return false
     return settings.runnerAvailability.every((r) => !r.available)
   }, [settings?.runnerAvailability])
+
+  // Track if we've shown the initial container setup dialog
+  const hasShownInitialSetup = useRef(false)
+
+  // Automatically show the container setup dialog on first load if no runners are available
+  useEffect(() => {
+    if (noRunnersAvailable && settings?.runnerAvailability && !hasShownInitialSetup.current) {
+      hasShownInitialSetup.current = true
+      setContainerSetupOpen(true)
+    }
+  }, [noRunnersAvailable, settings?.runnerAvailability])
 
   // Add left padding for macOS traffic lights in Electron (not in full screen)
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && !isFullScreen
@@ -188,10 +201,15 @@ export function AppSidebar() {
 
       {noRunnersAvailable && (
         <div className="px-2 pt-2">
-          <Alert variant="destructive" className="py-2">
+          <Alert
+            variant="destructive"
+            className="py-2 cursor-pointer hover:bg-destructive/20 transition-colors"
+            onClick={() => setContainerSetupOpen(true)}
+          >
             <AlertTriangle className="h-4 w-4" />
             <AlertDescription className="text-xs">
-              No container runtime found. Install Docker or Podman.
+              Container runtime not detected.{' '}
+              <span className="underline">Click to fix</span>
             </AlertDescription>
           </Alert>
         </div>
@@ -254,6 +272,11 @@ export function AppSidebar() {
       <GlobalSettingsDialog
         open={settingsDialogOpen}
         onOpenChange={setSettingsDialogOpen}
+      />
+
+      <ContainerSetupDialog
+        open={containerSetupOpen}
+        onOpenChange={setContainerSetupOpen}
       />
     </Sidebar>
   )

@@ -11,7 +11,7 @@ import {
   type GlobalSettingsResponse,
 } from '@shared/lib/config/settings'
 import { containerManager } from '@shared/lib/container/container-manager'
-import { checkAllRunnersAvailability } from '@shared/lib/container/client-factory'
+import { checkAllRunnersAvailability, startRunner, type ContainerRunner } from '@shared/lib/container/client-factory'
 
 const settings = new Hono()
 
@@ -150,6 +150,36 @@ settings.put('/', async (c) => {
   } catch (error) {
     console.error('Failed to update settings:', error)
     return c.json({ error: 'Failed to update settings' }, 500)
+  }
+})
+
+// POST /api/settings/start-runner - Start a container runtime
+settings.post('/start-runner', async (c) => {
+  try {
+    const body = await c.req.json()
+    const runner = body.runner as ContainerRunner
+
+    if (!runner || !['docker', 'podman'].includes(runner)) {
+      return c.json({ error: 'Invalid runner. Must be "docker" or "podman".' }, 400)
+    }
+
+    const result = await startRunner(runner)
+
+    if (result.success) {
+      // Wait a bit for the runtime to start, then check availability
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+      const runnerAvailability = await checkAllRunnersAvailability()
+
+      return c.json({
+        ...result,
+        runnerAvailability,
+      })
+    }
+
+    return c.json(result, 400)
+  } catch (error) {
+    console.error('Failed to start runner:', error)
+    return c.json({ error: 'Failed to start runner' }, 500)
   }
 })
 

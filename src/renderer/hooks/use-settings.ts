@@ -57,3 +57,35 @@ export function useUpdateSettings() {
     },
   })
 }
+
+export interface StartRunnerResponse {
+  success: boolean
+  message: string
+  runnerAvailability?: RunnerAvailability[]
+}
+
+export function useStartRunner() {
+  const queryClient = useQueryClient()
+
+  return useMutation<StartRunnerResponse, Error, 'docker' | 'podman'>({
+    mutationFn: async (runner) => {
+      const res = await apiFetch('/api/settings/start-runner', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runner }),
+      })
+
+      const data = await res.json()
+
+      if (!res.ok) {
+        throw new Error(data.message || data.error || 'Failed to start runner')
+      }
+
+      return data
+    },
+    onSuccess: () => {
+      // Invalidate settings to refresh runner availability
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+    },
+  })
+}

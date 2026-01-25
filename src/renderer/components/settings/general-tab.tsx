@@ -11,8 +11,8 @@ import {
   SelectValue,
 } from '@renderer/components/ui/select'
 import { Alert, AlertDescription, AlertTitle } from '@renderer/components/ui/alert'
-import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
-import { AlertCircle, AlertTriangle, Eye, EyeOff } from 'lucide-react'
+import { useSettings, useUpdateSettings, useStartRunner } from '@renderer/hooks/use-settings'
+import { AlertCircle, AlertTriangle, Eye, EyeOff, Play, Loader2 } from 'lucide-react'
 
 const CONTAINER_RUNNERS = [
   { value: 'docker', label: 'Docker' },
@@ -22,6 +22,7 @@ const CONTAINER_RUNNERS = [
 export function GeneralTab() {
   const { data: settings, isLoading } = useSettings()
   const updateSettings = useUpdateSettings()
+  const startRunner = useStartRunner()
 
   // Local form state
   const [containerRunner, setContainerRunner] = useState('')
@@ -37,11 +38,16 @@ export function GeneralTab() {
   // Track if form has unsaved changes
   const [hasChanges, setHasChanges] = useState(false)
 
-  // Compute runner availability map
-  const runnerAvailability = useMemo(() => {
-    const map = new Map<string, boolean>()
+  // Compute runner availability map with detailed status
+  const runnerAvailabilityMap = useMemo(() => {
+    const map = new Map<string, { installed: boolean; running: boolean; available: boolean; canStart: boolean }>()
     settings?.runnerAvailability?.forEach((r) => {
-      map.set(r.runner, r.available)
+      map.set(r.runner, {
+        installed: r.installed,
+        running: r.running,
+        available: r.available,
+        canStart: r.canStart,
+      })
     })
     return map
   }, [settings?.runnerAvailability])
@@ -50,6 +56,21 @@ export function GeneralTab() {
     if (!settings?.runnerAvailability) return false
     return settings.runnerAvailability.every((r) => !r.available)
   }, [settings?.runnerAvailability])
+
+  // Check if any runner is installed but not running
+  const hasStartableRunner = useMemo(() => {
+    if (!settings?.runnerAvailability) return false
+    return settings.runnerAvailability.some((r) => r.installed && !r.running && r.canStart)
+  }, [settings?.runnerAvailability])
+
+  const handleStartRunner = async (runner: 'docker' | 'podman') => {
+    try {
+      await startRunner.mutateAsync(runner)
+    } catch (error) {
+      // Error is handled by the mutation
+      console.error('Failed to start runner:', error)
+    }
+  }
 
   // Initialize form values when settings load
   useEffect(() => {
@@ -150,8 +171,33 @@ export function GeneralTab() {
         <Alert variant="destructive">
           <AlertTriangle className="h-4 w-4" />
           <AlertTitle>No Container Runtime Available</AlertTitle>
-          <AlertDescription>
-            Neither Docker nor Podman was detected on your system. Please install a container runtime to use Superagent.
+          <AlertDescription className="space-y-2">
+            <p>Neither Docker nor Podman was detected as running on your system.</p>
+            {hasStartableRunner && (
+              <div className="flex gap-2 mt-2">
+                {settings?.runnerAvailability
+                  ?.filter((r) => r.installed && !r.running && r.canStart)
+                  .map((r) => (
+                    <Button
+                      key={r.runner}
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleStartRunner(r.runner as 'docker' | 'podman')}
+                      disabled={startRunner.isPending}
+                    >
+                      {startRunner.isPending ? (
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      ) : (
+                        <Play className="h-4 w-4 mr-2" />
+                      )}
+                      Start {r.runner.charAt(0).toUpperCase() + r.runner.slice(1)}
+                    </Button>
+                  ))}
+              </div>
+            )}
+            {!hasStartableRunner && (
+              <p className="text-xs">Please install Docker or Podman to use Superagent.</p>
+            )}
           </AlertDescription>
         </Alert>
       )}
@@ -185,33 +231,73 @@ export function GeneralTab() {
 
         <div className="space-y-2">
           <Label htmlFor="container-runner">Container Runner</Label>
-          <Select
-            value={containerRunner}
-            onValueChange={setContainerRunner}
-            disabled={isLoading || hasRunningAgents}
-          >
-            <SelectTrigger id="container-runner" className={hasRunningAgents ? 'bg-muted' : ''}>
-              <SelectValue placeholder="Select a container runner" />
-            </SelectTrigger>
-            <SelectContent>
-              {CONTAINER_RUNNERS.map((runner) => {
-                const isAvailable = runnerAvailability.get(runner.value) ?? true
-                return (
-                  <SelectItem
-                    key={runner.value}
-                    value={runner.value}
-                    disabled={!isAvailable}
-                    className={!isAvailable ? 'opacity-50' : ''}
-                  >
-                    {runner.label}
-                    {!isAvailable && ' (not installed)'}
-                  </SelectItem>
-                )
-              })}
-            </SelectContent>
-          </Select>
+          <div className="flex gap-2">
+            <Select
+              value={containerRunner}
+              onValueChange={setContainerRunner}
+              disabled={isLoading || hasRunningAgents}
+            >
+              <SelectTrigger id="container-runner" className={`flex-1 ${hasRunningAgents ? 'bg-muted' : ''}`}>
+                <SelectValue placeholder="Select a container runner" />
+              </SelectTrigger>
+              <SelectContent>
+                {CONTAINER_RUNNERS.map((runner) => {
+                  const status = runnerAvailabilityMap.get(runner.value)
+                  const isAvailable = status?.available ?? true
+                  const isInstalled = status?.installed ?? true
+
+                  let statusText = ''
+                  if (!isInstalled) {
+                    statusText = ' (not installed)'
+                  } else if (!isAvailable) {
+                    statusText = ' (not running)'
+                  }
+
+                  return (
+                    <SelectItem
+                      key={runner.value}
+                      value={runner.value}
+                      disabled={!isAvailable}
+                      className={!isAvailable ? 'opacity-50' : ''}
+                    >
+                      {runner.label}
+                      {statusText}
+                    </SelectItem>
+                  )
+                })}
+              </SelectContent>
+            </Select>
+            {/* Show start button if selected runner is installed but not running */}
+            {runnerAvailabilityMap.get(containerRunner)?.installed &&
+              !runnerAvailabilityMap.get(containerRunner)?.running &&
+              runnerAvailabilityMap.get(containerRunner)?.canStart && (
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => handleStartRunner(containerRunner as 'docker' | 'podman')}
+                disabled={startRunner.isPending}
+                title={`Start ${containerRunner}`}
+              >
+                {startRunner.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Play className="h-4 w-4" />
+                )}
+              </Button>
+            )}
+          </div>
           <p className="text-xs text-muted-foreground">
             The container runtime to use for running agents.
+            {startRunner.error && (
+              <span className="text-destructive block mt-1">
+                {startRunner.error.message}
+              </span>
+            )}
+            {startRunner.isSuccess && startRunner.data?.message && (
+              <span className="text-green-600 dark:text-green-400 block mt-1">
+                {startRunner.data.message}
+              </span>
+            )}
           </p>
         </div>
 
