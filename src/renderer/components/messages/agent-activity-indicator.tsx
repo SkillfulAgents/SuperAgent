@@ -73,7 +73,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
   const statusText = activeItem?.activeForm || 'Working...'
 
   return (
-    <div className="mx-4 mb-2 rounded-lg border bg-muted/50 p-3">
+    <div className="mx-4 mb-2 rounded-lg border bg-muted/50 p-3" data-testid="activity-indicator">
       {/* Header with pulsing indicator */}
       <div className="flex items-center gap-2">
         <span className="relative flex h-3 w-3">

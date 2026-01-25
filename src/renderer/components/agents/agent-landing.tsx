@@ -65,12 +65,14 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
               className="min-h-[120px] pr-12 resize-none text-base"
               disabled={createSession.isPending}
               autoFocus
+              data-testid="landing-message-input"
             />
             <Button
               type="submit"
               size="icon"
               className="absolute bottom-3 right-3"
               disabled={!message.trim() || createSession.isPending}
+              data-testid="landing-send-button"
             >
               {createSession.isPending ? (
                 <Loader2 className="h-4 w-4 animate-spin" />

@@ -38,6 +38,7 @@ function SessionTab({
           ? 'bg-primary text-primary-foreground'
           : 'bg-muted hover:bg-muted/80'
       )}
+      data-testid={`session-tab-${session.id}`}
     >
       {showActive && (
         <span className="relative flex h-2 w-2">

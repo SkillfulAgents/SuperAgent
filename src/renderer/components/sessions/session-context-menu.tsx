@@ -61,6 +61,7 @@ export function SessionContextMenu({
           <ContextMenuItem
             className="text-destructive focus:text-destructive"
             onClick={() => setShowDeleteDialog(true)}
+            data-testid="delete-session-item"
           >
             <Trash2 className="h-4 w-4 mr-2" />
             Delete Session
@@ -69,7 +70,7 @@ export function SessionContextMenu({
       </ContextMenu>
 
       <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
-        <AlertDialogContent>
+        <AlertDialogContent data-testid="confirm-dialog">
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Session</AlertDialogTitle>
             <AlertDialogDescription>
@@ -83,6 +84,7 @@ export function SessionContextMenu({
               onClick={handleDelete}
               disabled={isDeleting}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              data-testid="confirm-button"
             >
               {isDeleting ? 'Deleting...' : 'Delete'}
             </AlertDialogAction>

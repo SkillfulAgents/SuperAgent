@@ -64,7 +64,7 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
           </p>
           <AlertDialog>
             <AlertDialogTrigger asChild>
-              <Button variant="destructive" size="sm">
+              <Button variant="destructive" size="sm" data-testid="delete-agent-button">
                 <Trash2 className="h-4 w-4 mr-2" />
                 Delete Agent
               </Button>
@@ -83,6 +83,7 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
                   onClick={handleDelete}
                   disabled={isDeleting}
                   className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  data-testid="confirm-button"
                 >
                   {isDeleting ? 'Deleting...' : 'Delete'}
                 </AlertDialogAction>

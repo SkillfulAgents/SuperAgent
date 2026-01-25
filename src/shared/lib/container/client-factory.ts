@@ -75,6 +75,14 @@ export async function getEffectiveRunner(): Promise<ContainerRunner | null> {
  * Creates a ContainerClient based on the configured container runner.
  */
 export function createContainerClient(config: ContainerConfig): ContainerClient {
+  // In E2E test mode, use mock client
+  if (process.env.E2E_MOCK === 'true') {
+    console.log('[ContainerClient] E2E_MOCK=true, using MockContainerClient')
+    const { MockContainerClient } = require('./mock-container-client')
+    return new MockContainerClient(config)
+  }
+  console.log('[ContainerClient] Using real container client, E2E_MOCK:', process.env.E2E_MOCK)
+
   const settings = getSettings()
   const runner = settings.container.containerRunner as ContainerRunner
 

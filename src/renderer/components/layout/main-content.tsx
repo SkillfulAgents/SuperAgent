@@ -68,7 +68,7 @@ export function MainContent() {
   }
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col" data-testid="main-content">
       {/* Fixed header - draggable region for Electron */}
       <header
         className={`shrink-0 flex h-12 items-center gap-2 border-b bg-background px-4 ${isElectron() ? 'app-drag-region' : ''}`}
@@ -128,6 +128,7 @@ export function MainContent() {
             variant="ghost"
             size="icon"
             onClick={() => setSettingsOpen(true)}
+            data-testid="agent-settings-button"
           >
             <Settings className="h-4 w-4" />
             <span className="sr-only">Agent Settings</span>

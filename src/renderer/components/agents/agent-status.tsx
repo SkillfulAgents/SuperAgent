@@ -23,7 +23,7 @@ export function AgentStatus({ status, hasActiveSessions = false, className }: Ag
   const activityStatus = getAgentActivityStatus(status, hasActiveSessions)
 
   return (
-    <div className={cn('flex items-center gap-1.5', className)}>
+    <div className={cn('flex items-center gap-1.5', className)} data-testid="agent-status" data-status={activityStatus}>
       {activityStatus === 'sleeping' ? (
         <Moon className="h-3 w-3 text-muted-foreground" />
       ) : activityStatus === 'working' ? (

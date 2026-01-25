@@ -77,6 +77,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
           disabled={isDisabled}
           className="flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 min-h-[40px] max-h-[200px] overflow-y-auto"
           rows={1}
+          data-testid="message-input"
         />
         {isActive ? (
           <Button
@@ -85,6 +86,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
             variant="destructive"
             onClick={handleInterrupt}
             disabled={interruptSession.isPending}
+            data-testid="stop-button"
           >
             {interruptSession.isPending ? (
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -97,6 +99,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
             type="submit"
             size="icon"
             disabled={!message.trim() || sendMessage.isPending}
+            data-testid="send-button"
           >
             {sendMessage.isPending ? (
               <Loader2 className="h-4 w-4 animate-spin" />

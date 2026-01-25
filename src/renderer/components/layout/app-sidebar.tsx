@@ -104,6 +104,7 @@ function AgentMenuItem({ agent }: { agent: ApiAgent }) {
           onClick={handleClick}
           isActive={isSelected}
           className="justify-between"
+          data-testid={`agent-item-${agent.slug}`}
         >
           <span className="truncate">{agent.name}</span>
           <AgentStatus
@@ -170,7 +171,7 @@ export function AppSidebar() {
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && !isFullScreen
 
   return (
-    <Sidebar>
+    <Sidebar data-testid="app-sidebar">
       <SidebarHeader
         className="h-12 border-b app-drag-region"
         style={{
@@ -196,7 +197,7 @@ export function AppSidebar() {
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupLabel>Agents</SidebarGroupLabel>
-          <SidebarGroupAction onClick={() => setCreateDialogOpen(true)} title="New Agent">
+          <SidebarGroupAction onClick={() => setCreateDialogOpen(true)} title="New Agent" data-testid="create-agent-button">
             <Plus />
             <span className="sr-only">New Agent</span>
           </SidebarGroupAction>

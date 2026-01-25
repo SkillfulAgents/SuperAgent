@@ -95,7 +95,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
   }
 
   return (
-    <div className="overflow-y-auto" ref={scrollRef}>
+    <div className="overflow-y-auto" ref={scrollRef} data-testid="message-list">
       <div className="p-4 space-y-4">
         {messages?.map((message) => (
           <MessageItem key={message.id} message={message} />

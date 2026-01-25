@@ -40,7 +40,7 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent data-testid="create-agent-dialog">
         <form onSubmit={handleSubmit}>
           <DialogHeader>
             <DialogTitle>Create New Agent</DialogTitle>
@@ -55,6 +55,7 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
               value={name}
               onChange={(e) => setName(e.target.value)}
               autoFocus
+              data-testid="agent-name-input"
             />
           </div>
 
@@ -66,7 +67,7 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={!name.trim() || createAgent.isPending}>
+            <Button type="submit" disabled={!name.trim() || createAgent.isPending} data-testid="create-agent-submit">
               {createAgent.isPending ? 'Creating...' : 'Create'}
             </Button>
           </DialogFooter>

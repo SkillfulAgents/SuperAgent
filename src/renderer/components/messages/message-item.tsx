@@ -31,6 +31,7 @@ export function MessageItem({ message, isStreaming }: MessageItemProps) {
         'flex gap-3',
         isUser && 'flex-row-reverse'
       )}
+      data-testid={isUser ? 'message-user' : isAssistant ? 'message-assistant' : undefined}
     >
       {/* Avatar */}
       <div

@@ -61,7 +61,7 @@ export function ToolCallItem({ toolCall }: ToolCallItemProps) {
   const CustomExpandedView = renderer?.ExpandedView
 
   return (
-    <div className="border rounded-md bg-muted/30 text-sm">
+    <div className="border rounded-md bg-muted/30 text-sm" data-testid={`tool-call-${toolCall.name}`}>
       {/* Header row */}
       <button
         onClick={() => setExpanded(!expanded)}

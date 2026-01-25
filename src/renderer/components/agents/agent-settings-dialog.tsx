@@ -73,7 +73,7 @@ export function AgentSettingsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="overflow-hidden p-0 md:max-h-[500px] md:max-w-[700px] lg:max-w-[800px]">
+      <DialogContent className="overflow-hidden p-0 md:max-h-[500px] md:max-w-[700px] lg:max-w-[800px]" data-testid="agent-settings-dialog">
         <DialogTitle className="sr-only">Agent Settings</DialogTitle>
         <DialogDescription className="sr-only">
           Configure settings for {agent.name}

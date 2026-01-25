@@ -12,6 +12,11 @@ agent-container/dist/
 # Test coverage
 coverage/
 
+# Playwright E2E test artifacts
+.e2e-data/
+playwright-report/
+test-results/
+
 # Database
 *.db
 *.db-journal
