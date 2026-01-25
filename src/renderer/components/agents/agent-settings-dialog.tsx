@@ -78,7 +78,7 @@ export function AgentSettingsDialog({
         <DialogDescription className="sr-only">
           Configure settings for {agent.name}
         </DialogDescription>
-        <SidebarProvider className="items-start">
+        <SidebarProvider className="items-start min-h-0">
           <Sidebar collapsible="none" className="hidden md:flex w-48">
             <SidebarContent>
               <SidebarGroup>

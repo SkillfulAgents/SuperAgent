@@ -3,10 +3,11 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type {
   GlobalSettingsResponse,
   ContainerSettings,
+  AppPreferences,
 } from '@shared/lib/config/settings'
 import type { RunnerAvailability } from '@shared/lib/container/client-factory'
 
-export type { GlobalSettingsResponse, ContainerSettings, RunnerAvailability }
+export type { GlobalSettingsResponse, ContainerSettings, AppPreferences, RunnerAvailability }
 
 export function useSettings() {
   return useQuery<GlobalSettingsResponse>({
@@ -22,6 +23,7 @@ export function useSettings() {
 
 export interface UpdateSettingsParams {
   container?: Partial<ContainerSettings>
+  app?: Partial<AppPreferences>
   apiKeys?: {
     anthropicApiKey?: string
     composioApiKey?: string

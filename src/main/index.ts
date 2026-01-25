@@ -1,5 +1,7 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import path from 'path'
+import { createTray, destroyTray, updateTrayWindow, setTrayVisible } from './tray'
+import { getSettings } from '@shared/lib/config/settings'
 
 // Set Electron-specific data directory BEFORE importing API
 // This uses ~/Library/Application Support/Superagent on macOS
@@ -85,6 +87,11 @@ ipcMain.handle('open-external', async (_event, url: string) => {
   await shell.openExternal(url)
 })
 
+// IPC handler for tray visibility
+ipcMain.handle('set-tray-visible', (_event, visible: boolean) => {
+  setTrayVisible(visible)
+})
+
 // Handle OAuth callback URLs (macOS)
 app.on('open-url', (event, url) => {
   event.preventDefault()
@@ -128,6 +135,12 @@ async function startApp() {
   // Wait for app to be ready, then create window
   await app.whenReady()
   createWindow()
+
+  // Create system tray if enabled in settings
+  const settings = getSettings()
+  if (settings.app?.showMenuBarIcon !== false) {
+    createTray(mainWindow, actualApiPort)
+  }
 }
 
 startApp()
@@ -139,6 +152,8 @@ app.whenReady().then(() => {
     // On macOS, re-create window when dock icon is clicked
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow()
+      // Update tray with new window reference
+      updateTrayWindow(mainWindow)
     }
   })
 })
@@ -187,6 +202,9 @@ async function gracefulShutdown() {
   isShuttingDown = true
 
   console.log('Shutting down gracefully...')
+
+  // Destroy tray
+  destroyTray()
 
   // Stop all containers
   try {

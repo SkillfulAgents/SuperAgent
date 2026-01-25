@@ -17,9 +17,14 @@ export interface ApiKeySettings {
   composioUserId?: string
 }
 
+export interface AppPreferences {
+  showMenuBarIcon?: boolean
+}
+
 export interface AppSettings {
   container: ContainerSettings
   apiKeys?: ApiKeySettings
+  app?: AppPreferences
 }
 
 // API key source types
@@ -37,6 +42,7 @@ import type { RunnerAvailability } from '@shared/lib/container/client-factory'
 export interface GlobalSettingsResponse {
   dataDir: string
   container: ContainerSettings
+  app: AppPreferences
   hasRunningAgents: boolean
   runnerAvailability: RunnerAvailability[]
   apiKeyStatus: {
@@ -54,6 +60,9 @@ const DEFAULT_SETTINGS: AppSettings = {
       cpu: 1,
       memory: '512m',
     },
+  },
+  app: {
+    showMenuBarIcon: true,
   },
 }
 
@@ -81,6 +90,10 @@ export function loadSettings(): AppSettings {
             ...DEFAULT_SETTINGS.container.resourceLimits,
             ...loaded.container?.resourceLimits,
           },
+        },
+        app: {
+          ...DEFAULT_SETTINGS.app,
+          ...loaded.app,
         },
         apiKeys: loaded.apiKeys,
       }

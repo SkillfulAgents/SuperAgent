@@ -27,6 +27,7 @@ settings.get('/', async (c) => {
     const response: GlobalSettingsResponse = {
       dataDir: getDataDir(),
       container: currentSettings.container,
+      app: currentSettings.app || { showMenuBarIcon: true },
       hasRunningAgents,
       runnerAvailability,
       apiKeyStatus: {
@@ -85,6 +86,10 @@ settings.put('/', async (c) => {
             }
           : currentSettings.container.resourceLimits,
       },
+      app: {
+        ...currentSettings.app,
+        ...body.app,
+      },
       apiKeys: currentSettings.apiKeys,
     }
 
@@ -139,6 +144,7 @@ settings.put('/', async (c) => {
     return c.json({
       dataDir: getDataDir(),
       container: newSettings.container,
+      app: newSettings.app || { showMenuBarIcon: true },
       hasRunningAgents,
       runnerAvailability,
       apiKeyStatus: {

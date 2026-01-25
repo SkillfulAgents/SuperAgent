@@ -42,6 +42,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openExternal: (url: string): Promise<void> => {
     return ipcRenderer.invoke('open-external', url)
   },
+
+  // Navigation from tray menu
+  onNavigateToAgent: (callback: (agentSlug: string) => void) => {
+    ipcRenderer.on('navigate-to-agent', (_event, agentSlug) => callback(agentSlug))
+  },
+
+  removeNavigateToAgent: () => {
+    ipcRenderer.removeAllListeners('navigate-to-agent')
+  },
+
+  // Tray visibility control
+  setTrayVisible: (visible: boolean): Promise<void> => {
+    return ipcRenderer.invoke('set-tray-visible', visible)
+  },
 })
 
 // OAuth callback params from main process
@@ -64,6 +78,9 @@ declare global {
       removeFullScreenChange: () => void
       getFullScreenState: () => Promise<boolean>
       openExternal: (url: string) => Promise<void>
+      onNavigateToAgent: (callback: (agentSlug: string) => void) => void
+      removeNavigateToAgent: () => void
+      setTrayVisible: (visible: boolean) => Promise<void>
     }
   }
 }

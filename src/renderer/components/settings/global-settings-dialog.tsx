@@ -1,6 +1,6 @@
 
 import * as React from 'react'
-import { Settings, Link2 } from 'lucide-react'
+import { Settings, Link2, Container } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -18,12 +18,14 @@ import {
   SidebarProvider,
 } from '@renderer/components/ui/sidebar'
 import { GeneralTab } from './general-tab'
+import { RuntimeTab } from './runtime-tab'
 import { ComposioTab } from './composio-tab'
 
-type SettingsSection = 'general' | 'composio'
+type SettingsSection = 'general' | 'runtime' | 'composio'
 
 const navItems = [
   { id: 'general' as const, name: 'General', icon: Settings },
+  { id: 'runtime' as const, name: 'Runtime', icon: Container },
   { id: 'composio' as const, name: 'Accounts', icon: Link2 },
 ]
 
@@ -84,6 +86,7 @@ export function GlobalSettingsDialog({
             </header>
             <div className="flex flex-1 flex-col gap-4 overflow-y-auto p-4">
               {activeSection === 'general' && <GeneralTab />}
+              {activeSection === 'runtime' && <RuntimeTab />}
               {activeSection === 'composio' && <ComposioTab />}
             </div>
           </main>
