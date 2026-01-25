@@ -55,7 +55,7 @@ export interface GlobalSettingsResponse {
 const DEFAULT_SETTINGS: AppSettings = {
   container: {
     containerRunner: 'docker',
-    agentImage: 'superagent-container:latest',
+    agentImage: 'ghcr.io/skilfulagents/superagent-agent-container-base:main',
     resourceLimits: {
       cpu: 1,
       memory: '512m',
