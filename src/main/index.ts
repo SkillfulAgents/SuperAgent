@@ -1,0 +1,228 @@
+import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import path from 'path'
+
+// Set Electron-specific data directory BEFORE importing API
+// This uses ~/Library/Application Support/Superagent on macOS
+// or %APPDATA%/Superagent on Windows
+// Note: app.getPath() works synchronously before app.whenReady()
+process.env.SUPERAGENT_DATA_DIR = app.getPath('userData')
+console.log(`Data directory: ${process.env.SUPERAGENT_DATA_DIR}`)
+
+// Now safe to import API (env var is set)
+import { serve } from '@hono/node-server'
+import api from '../api'
+import { containerManager } from '@shared/lib/container/container-manager'
+import { findAvailablePort } from './find-port'
+
+// Use a more exotic default port to avoid conflicts
+const DEFAULT_API_PORT = 47891
+let actualApiPort: number = DEFAULT_API_PORT
+let mainWindow: BrowserWindow | null = null
+let apiServer: ReturnType<typeof serve> | null = null
+
+// Register custom protocol for OAuth callbacks
+if (process.defaultApp) {
+  if (process.argv.length >= 2) {
+    app.setAsDefaultProtocolClient('superagent', process.execPath, [
+      path.resolve(process.argv[1]),
+    ])
+  }
+} else {
+  app.setAsDefaultProtocolClient('superagent')
+}
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    minWidth: 800,
+    minHeight: 600,
+    webPreferences: {
+      preload: path.join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 16, y: 16 },
+  })
+
+  // Load the app
+  if (process.env.ELECTRON_RENDERER_URL) {
+    // Development: use Vite dev server
+    mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
+    mainWindow.webContents.openDevTools()
+  } else {
+    // Production: load built files
+    mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'))
+  }
+
+  mainWindow.on('closed', () => {
+    mainWindow = null
+  })
+
+  // Emit full screen state changes
+  mainWindow.on('enter-full-screen', () => {
+    mainWindow?.webContents.send('fullscreen-change', true)
+  })
+
+  mainWindow.on('leave-full-screen', () => {
+    mainWindow?.webContents.send('fullscreen-change', false)
+  })
+}
+
+// IPC handler for getting full screen state
+ipcMain.handle('get-fullscreen-state', () => {
+  return mainWindow?.isFullScreen() ?? false
+})
+
+// IPC handler for getting the API URL (port may vary)
+ipcMain.handle('get-api-url', () => {
+  return `http://localhost:${actualApiPort}`
+})
+
+// IPC handler for opening URLs in system browser
+ipcMain.handle('open-external', async (_event, url: string) => {
+  await shell.openExternal(url)
+})
+
+// Handle OAuth callback URLs (macOS)
+app.on('open-url', (event, url) => {
+  event.preventDefault()
+
+  // Parse the callback URL and extract OAuth parameters
+  if (mainWindow && url.startsWith('superagent://oauth-callback')) {
+    try {
+      const callbackUrl = new URL(url)
+      const params = {
+        connectionId: callbackUrl.searchParams.get('connectedAccountId'),
+        status: callbackUrl.searchParams.get('status'),
+        toolkit: callbackUrl.searchParams.get('toolkit'),
+        error: callbackUrl.searchParams.get('error'),
+      }
+      mainWindow.webContents.send('oauth-callback', params)
+      mainWindow.focus()
+    } catch (error) {
+      console.error('Failed to parse OAuth callback URL:', error)
+      mainWindow.webContents.send('oauth-callback', { error: 'Invalid callback URL' })
+    }
+  }
+})
+
+// Start the API server and app
+async function startApp() {
+  // Find an available port
+  try {
+    actualApiPort = await findAvailablePort(DEFAULT_API_PORT)
+    console.log(`Found available port: ${actualApiPort}`)
+  } catch (error) {
+    console.error('Failed to find available port:', error)
+    app.quit()
+    return
+  }
+
+  // Start the API server
+  apiServer = serve({ fetch: api.fetch, port: actualApiPort }, () => {
+    console.log(`API server running on http://localhost:${actualApiPort}`)
+  })
+
+  // Wait for app to be ready, then create window
+  await app.whenReady()
+  createWindow()
+}
+
+startApp()
+
+// App lifecycle - handle activate separately
+app.whenReady().then(() => {
+
+  app.on('activate', () => {
+    // On macOS, re-create window when dock icon is clicked
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow()
+    }
+  })
+})
+
+app.on('window-all-closed', () => {
+  // On macOS, keep app running until explicitly quit
+  if (process.platform !== 'darwin') {
+    app.quit()
+  }
+})
+
+// Handle second instance (Windows/Linux deep links)
+const gotTheLock = app.requestSingleInstanceLock()
+
+if (!gotTheLock) {
+  app.quit()
+} else {
+  app.on('second-instance', (event, commandLine) => {
+    // Handle protocol URL on Windows/Linux
+    const url = commandLine.find((arg) => arg.startsWith('superagent://oauth-callback'))
+    if (url && mainWindow) {
+      try {
+        const callbackUrl = new URL(url)
+        const params = {
+          connectionId: callbackUrl.searchParams.get('connectedAccountId'),
+          status: callbackUrl.searchParams.get('status'),
+          toolkit: callbackUrl.searchParams.get('toolkit'),
+          error: callbackUrl.searchParams.get('error'),
+        }
+        mainWindow.webContents.send('oauth-callback', params)
+      } catch (error) {
+        console.error('Failed to parse OAuth callback URL:', error)
+        mainWindow.webContents.send('oauth-callback', { error: 'Invalid callback URL' })
+      }
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.focus()
+    }
+  })
+}
+
+// Graceful shutdown handling
+let isShuttingDown = false
+
+async function gracefulShutdown() {
+  if (isShuttingDown) return
+  isShuttingDown = true
+
+  console.log('Shutting down gracefully...')
+
+  // Stop all containers
+  try {
+    await containerManager.stopAll()
+    console.log('All containers stopped.')
+  } catch (error) {
+    console.error('Error stopping containers:', error)
+  }
+
+  // Close the API server
+  if (apiServer) {
+    apiServer.close(() => {
+      console.log('API server closed.')
+    })
+  }
+}
+
+// Handle app quit
+app.on('before-quit', async (event) => {
+  if (!isShuttingDown) {
+    event.preventDefault()
+    await gracefulShutdown()
+    app.quit()
+  }
+})
+
+// Handle uncaught exceptions
+process.on('uncaughtException', async (error) => {
+  console.error('Uncaught exception:', error)
+  await gracefulShutdown()
+  app.quit()
+})
+
+// Handle unhandled promise rejections
+process.on('unhandledRejection', async (reason) => {
+  console.error('Unhandled rejection:', reason)
+  await gracefulShutdown()
+  app.quit()
+})

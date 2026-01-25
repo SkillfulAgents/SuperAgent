@@ -5,6 +5,8 @@ agent-container/node_modules/
 # Build output
 .next/
 out/
+dist/
+release/
 agent-container/dist/
 
 # Test coverage

@@ -8,8 +8,8 @@ const dataDir = process.env.SUPERAGENT_DATA_DIR
   : path.join(os.homedir(), '.superagent')
 
 export default {
-  schema: './src/lib/db/schema.ts',
-  out: './src/lib/db/migrations',
+  schema: './src/shared/lib/db/schema.ts',
+  out: './src/shared/lib/db/migrations',
   dialect: 'sqlite',
   dbCredentials: {
     url: path.join(dataDir, 'superagent.db'),

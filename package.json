@@ -2,12 +2,21 @@
   "name": "superagent",
   "version": "0.1.0",
   "private": true,
+  "main": "dist/main/index.js",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint",
+    "dev": "concurrently \"npm run dev:api\" \"npm run dev:web\"",
+    "dev:api": "tsx watch src/web/server.ts",
+    "dev:web": "vite",
+    "dev:electron": "electron-vite dev",
+    "build": "npm run build:web && npm run build:api",
+    "build:web": "vite build",
+    "build:api": "tsup src/web/server.ts --format esm --outDir dist/web",
+    "build:electron": "electron-vite build",
+    "preview": "npm run build && node dist/web/server.js",
+    "dist:mac": "electron-vite build && electron-builder --mac",
+    "dist:win": "electron-vite build && electron-builder --win",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts,.tsx",
     "test": "vitest",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
@@ -19,6 +28,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.0",
+    "@hono/node-server": "^1.13.7",
     "@radix-ui/react-alert-dialog": "^1.1.15",
     "@radix-ui/react-checkbox": "^1.3.3",
     "@radix-ui/react-collapsible": "^1.1.12",
@@ -36,8 +46,8 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "drizzle-orm": "^0.33.0",
+    "hono": "^4.6.14",
     "lucide-react": "^0.446.0",
-    "next": "^14.2.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-markdown": "^10.1.0",
@@ -47,6 +57,7 @@
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@electron/rebuild": "^3.7.2",
     "@tailwindcss/typography": "^0.5.19",
     "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^20.0.0",
@@ -54,14 +65,60 @@
     "@types/react-dom": "^18.2.0",
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.5.12",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "@vitejs/plugin-react": "^4.3.4",
     "@vitest/coverage-v8": "^4.0.18",
     "autoprefixer": "^10.4.0",
+    "concurrently": "^9.1.2",
     "drizzle-kit": "^0.24.0",
+    "electron": "^33.2.1",
+    "electron-builder": "^26.4.0",
+    "electron-vite": "^5.0.0",
     "eslint": "^8.0.0",
-    "eslint-config-next": "^14.2.0",
+    "eslint-plugin-react": "^7.37.3",
+    "eslint-plugin-react-hooks": "^5.1.0",
     "postcss": "^8.4.0",
     "tailwindcss": "^3.4.0",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
     "typescript": "^5.3.0",
+    "vite": "^7.0.0",
     "vitest": "^4.0.18"
+  },
+  "build": {
+    "appId": "com.superagent.app",
+    "productName": "Superagent",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "src/shared/lib/db/migrations",
+        "to": "migrations"
+      }
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.icon"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

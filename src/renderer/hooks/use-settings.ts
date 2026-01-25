@@ -1,0 +1,59 @@
+import { apiFetch } from '@renderer/lib/api'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import type {
+  GlobalSettingsResponse,
+  ContainerSettings,
+} from '@shared/lib/config/settings'
+import type { RunnerAvailability } from '@shared/lib/container/client-factory'
+
+export type { GlobalSettingsResponse, ContainerSettings, RunnerAvailability }
+
+export function useSettings() {
+  return useQuery<GlobalSettingsResponse>({
+    queryKey: ['settings'],
+    queryFn: async () => {
+      const res = await apiFetch('/api/settings')
+      if (!res.ok) throw new Error('Failed to fetch settings')
+      return res.json()
+    },
+    refetchInterval: 5000, // Poll to check for running agents status changes
+  })
+}
+
+export interface UpdateSettingsParams {
+  container?: Partial<ContainerSettings>
+  apiKeys?: {
+    anthropicApiKey?: string
+    composioApiKey?: string
+    composioUserId?: string
+  }
+}
+
+export interface UpdateSettingsError {
+  error: string
+  runningAgents?: string[]
+}
+
+export function useUpdateSettings() {
+  const queryClient = useQueryClient()
+
+  return useMutation<GlobalSettingsResponse, UpdateSettingsError, UpdateSettingsParams>({
+    mutationFn: async (data) => {
+      const res = await apiFetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      })
+
+      if (!res.ok) {
+        const error = await res.json()
+        throw error
+      }
+
+      return res.json()
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+    },
+  })
+}
