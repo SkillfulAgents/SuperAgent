@@ -114,7 +114,10 @@
         "zip"
       ],
       "category": "public.app-category.developer-tools",
-      "icon": "build/icon.icon"
+      "icon": "build/icon.icon",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "notarize": true
     },
     "win": {
       "target": [
