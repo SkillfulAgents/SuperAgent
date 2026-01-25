@@ -389,4 +389,71 @@ export async function getConnectionToken(
   }
 }
 
+// ============================================================================
+// Provider-specific User Info
+// ============================================================================
+
+interface GoogleUserInfo {
+  email: string
+  name?: string
+  picture?: string
+}
+
+/**
+ * Fetch user info from Google using an OAuth access token.
+ * Returns the user's email address and name if available.
+ */
+export async function getGoogleUserInfo(accessToken: string): Promise<GoogleUserInfo | null> {
+  try {
+    const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    })
+
+    if (!response.ok) {
+      console.warn('Failed to fetch Google user info:', response.status)
+      return null
+    }
+
+    const data = await response.json()
+    return {
+      email: data.email,
+      name: data.name,
+      picture: data.picture,
+    }
+  } catch (error) {
+    console.warn('Error fetching Google user info:', error)
+    return null
+  }
+}
+
+/**
+ * Get a display name for a newly connected account.
+ * For supported providers, fetches user-specific info (like email).
+ * Falls back to provider display name if fetch fails.
+ */
+export async function getAccountDisplayName(
+  connectionId: string,
+  toolkitSlug: string,
+  fallbackName: string
+): Promise<string> {
+  // Only fetch user info for supported providers
+  const googleToolkits = ['gmail', 'googlecalendar', 'googledrive']
+
+  if (googleToolkits.includes(toolkitSlug.toLowerCase())) {
+    try {
+      const { accessToken } = await getConnectionToken(connectionId)
+      const userInfo = await getGoogleUserInfo(accessToken)
+      if (userInfo?.email) {
+        return userInfo.email
+      }
+    } catch (error) {
+      console.warn('Could not fetch user info for display name:', error)
+    }
+  }
+
+  return fallbackName
+}
+
 export { ComposioApiError }

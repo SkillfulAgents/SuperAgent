@@ -24,7 +24,7 @@ type SettingsSection = 'general' | 'composio'
 
 const navItems = [
   { id: 'general' as const, name: 'General', icon: Settings },
-  { id: 'composio' as const, name: 'Composio', icon: Link2 },
+  { id: 'composio' as const, name: 'Accounts', icon: Link2 },
 ]
 
 interface GlobalSettingsDialogProps {

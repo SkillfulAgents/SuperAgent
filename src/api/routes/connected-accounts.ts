@@ -8,6 +8,7 @@ import {
   initiateConnection,
   getConnection,
   deleteConnection,
+  getAccountDisplayName,
 } from '@shared/lib/composio/client'
 
 const connectedAccountsRouter = new Hono()
@@ -153,7 +154,10 @@ connectedAccountsRouter.post('/complete', async (c) => {
 
     const toolkitSlug = toolkit.toLowerCase()
     const provider = getProvider(toolkitSlug)
-    const displayName = provider?.displayName || toolkit
+    const fallbackName = provider?.displayName || toolkit
+
+    // Try to get user-specific display name (e.g., email for Gmail)
+    const displayName = await getAccountDisplayName(connectionId, toolkitSlug, fallbackName)
 
     const id = crypto.randomUUID()
     const now = new Date()
@@ -220,7 +224,10 @@ connectedAccountsRouter.get('/callback', async (c) => {
 
     const toolkitSlug = toolkit.toLowerCase()
     const provider = getProvider(toolkitSlug)
-    const displayName = provider?.displayName || toolkit
+    const fallbackName = provider?.displayName || toolkit
+
+    // Try to get user-specific display name (e.g., email for Gmail)
+    const displayName = await getAccountDisplayName(connectionId, toolkitSlug, fallbackName)
 
     const id = crypto.randomUUID()
     const now = new Date()
@@ -261,6 +268,47 @@ connectedAccountsRouter.get('/callback', async (c) => {
         error: error.message || 'Failed to complete OAuth',
       })
     )
+  }
+})
+
+// PATCH /api/connected-accounts/:id - Update a connected account (rename)
+connectedAccountsRouter.patch('/:id', async (c) => {
+  try {
+    const id = c.req.param('id')
+    const body = await c.req.json()
+    const { displayName } = body
+
+    if (!displayName || typeof displayName !== 'string' || !displayName.trim()) {
+      return c.json({ error: 'Missing or invalid displayName' }, 400)
+    }
+
+    const [existing] = await db
+      .select()
+      .from(connectedAccounts)
+      .where(eq(connectedAccounts.id, id))
+      .limit(1)
+
+    if (!existing) {
+      return c.json({ error: 'Connected account not found' }, 404)
+    }
+
+    await db
+      .update(connectedAccounts)
+      .set({ displayName: displayName.trim(), updatedAt: new Date() })
+      .where(eq(connectedAccounts.id, id))
+
+    const [updated] = await db
+      .select()
+      .from(connectedAccounts)
+      .where(eq(connectedAccounts.id, id))
+      .limit(1)
+
+    return c.json({
+      account: { ...updated, provider: getProvider(updated.toolkitSlug) },
+    })
+  } catch (error) {
+    console.error('Failed to update connected account:', error)
+    return c.json({ error: 'Failed to update connected account' }, 500)
   }
 })
 

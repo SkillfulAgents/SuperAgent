@@ -102,6 +102,35 @@ export function useDeleteConnectedAccount() {
 }
 
 /**
+ * Hook to rename a connected account
+ */
+export function useRenameConnectedAccount() {
+  const queryClient = useQueryClient()
+
+  return useMutation<ConnectedAccount, Error, { accountId: string; displayName: string }>({
+    mutationFn: async ({ accountId, displayName }) => {
+      const res = await apiFetch(`/api/connected-accounts/${accountId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ displayName }),
+      })
+
+      if (!res.ok) {
+        const error = await res.json()
+        throw new Error(error.error || 'Failed to rename account')
+      }
+
+      const data = await res.json()
+      return data.account
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['connected-accounts'] })
+      queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts'] })
+    },
+  })
+}
+
+/**
  * Invalidate connected accounts cache (call after OAuth callback)
  */
 export function useInvalidateConnectedAccounts() {

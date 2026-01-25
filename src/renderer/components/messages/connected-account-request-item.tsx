@@ -1,6 +1,6 @@
 import { apiFetch } from '@renderer/lib/api'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Link2,
   Check,
@@ -8,16 +8,20 @@ import {
   Loader2,
   Plus,
   ExternalLink,
+  Pencil,
 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Checkbox } from '@renderer/components/ui/checkbox'
+import { Input } from '@renderer/components/ui/input'
 import { cn } from '@shared/lib/utils/cn'
 import {
   useConnectedAccountsByToolkit,
   useInvalidateConnectedAccounts,
+  useRenameConnectedAccount,
   type ConnectedAccount,
 } from '@renderer/hooks/use-connected-accounts'
 import { getProvider } from '@shared/lib/composio/providers'
+import { formatDistanceToNow } from 'date-fns'
 
 interface ConnectedAccountRequestItemProps {
   toolUseId: string
@@ -41,8 +45,13 @@ export function ConnectedAccountRequestItem({
   const [selectedAccountIds, setSelectedAccountIds] = useState<Set<string>>(new Set())
   const [status, setStatus] = useState<RequestStatus>('pending')
   const [error, setError] = useState<string | null>(null)
+  const [editingAccount, setEditingAccount] = useState<string | null>(null)
+  const [editName, setEditName] = useState('')
   const { data, isLoading, refetch } = useConnectedAccountsByToolkit(toolkit)
   const invalidateConnectedAccounts = useInvalidateConnectedAccounts()
+  const renameAccount = useRenameConnectedAccount()
+  // Track account IDs before OAuth to detect new accounts
+  const accountIdsBeforeOAuth = useRef<Set<string>>(new Set())
 
   const provider = getProvider(toolkit)
   const accounts = data?.accounts ?? []
@@ -50,12 +59,26 @@ export function ConnectedAccountRequestItem({
   // Listen for OAuth callback messages (both IPC in Electron and postMessage in web)
   useEffect(() => {
     // Handle OAuth completion
-    const handleOAuthComplete = (success: boolean, errorMessage?: string) => {
+    const handleOAuthComplete = async (success: boolean, errorMessage?: string, newAccountId?: string) => {
       if (success) {
         // Refresh the accounts list
         invalidateConnectedAccounts()
-        refetch()
+        const result = await refetch()
         setStatus('pending')
+
+        // Auto-select the newly added account
+        if (newAccountId) {
+          // We have the new account ID directly
+          setSelectedAccountIds((prev) => new Set(prev).add(newAccountId))
+        } else if (result.data?.accounts) {
+          // Find the new account by comparing with accounts before OAuth
+          const newAccount = result.data.accounts.find(
+            (acc) => !accountIdsBeforeOAuth.current.has(acc.id)
+          )
+          if (newAccount) {
+            setSelectedAccountIds((prev) => new Set(prev).add(newAccount.id))
+          }
+        }
       } else {
         setError(errorMessage || 'OAuth connection failed')
         setStatus('pending')
@@ -82,7 +105,8 @@ export function ConnectedAccountRequestItem({
               }),
             })
             if (res.ok) {
-              handleOAuthComplete(true)
+              const data = await res.json()
+              handleOAuthComplete(true, undefined, data.account?.id)
             } else {
               const data = await res.json()
               handleOAuthComplete(false, data.error)
@@ -102,7 +126,7 @@ export function ConnectedAccountRequestItem({
     // Web: use postMessage from OAuth popup
     const handleMessage = (event: MessageEvent) => {
       if (event.data?.type === 'oauth-callback') {
-        handleOAuthComplete(event.data.success, event.data.error)
+        handleOAuthComplete(event.data.success, event.data.error, event.data.accountId)
       }
     }
 
@@ -125,6 +149,9 @@ export function ConnectedAccountRequestItem({
   const handleConnectNew = async () => {
     setStatus('connecting')
     setError(null)
+
+    // Track current account IDs before OAuth to detect new account later
+    accountIdsBeforeOAuth.current = new Set(accounts.map((a) => a.id))
 
     try {
       // Pass electron flag to get correct callback URL
@@ -290,6 +317,31 @@ export function ConnectedAccountRequestItem({
                     selected={selectedAccountIds.has(account.id)}
                     onToggle={() => toggleAccount(account.id)}
                     disabled={status !== 'pending'}
+                    isEditing={editingAccount === account.id}
+                    editName={editName}
+                    onStartEdit={() => {
+                      setEditingAccount(account.id)
+                      setEditName(account.displayName)
+                    }}
+                    onCancelEdit={() => {
+                      setEditingAccount(null)
+                      setEditName('')
+                    }}
+                    onSaveEdit={async () => {
+                      if (!editName.trim()) return
+                      try {
+                        await renameAccount.mutateAsync({
+                          accountId: account.id,
+                          displayName: editName.trim(),
+                        })
+                        setEditingAccount(null)
+                        setEditName('')
+                      } catch (err) {
+                        console.error('Failed to rename account:', err)
+                      }
+                    }}
+                    onEditNameChange={setEditName}
+                    isSavingRename={renameAccount.isPending}
                   />
                 ))}
               </div>
@@ -365,11 +417,76 @@ interface AccountOptionProps {
   selected: boolean
   onToggle: () => void
   disabled: boolean
+  isEditing: boolean
+  editName: string
+  onStartEdit: () => void
+  onCancelEdit: () => void
+  onSaveEdit: () => void
+  onEditNameChange: (value: string) => void
+  isSavingRename: boolean
 }
 
-function AccountOption({ account, selected, onToggle, disabled }: AccountOptionProps) {
+function AccountOption({
+  account,
+  selected,
+  onToggle,
+  disabled,
+  isEditing,
+  editName,
+  onStartEdit,
+  onCancelEdit,
+  onSaveEdit,
+  onEditNameChange,
+  isSavingRename,
+}: AccountOptionProps) {
+  const connectedDate = new Date(account.createdAt)
+  const connectedAgo = formatDistanceToNow(connectedDate, { addSuffix: true })
+
+  if (isEditing) {
+    return (
+      <div
+        className={cn(
+          'flex items-center gap-2 p-2 rounded border',
+          'bg-white border-blue-200'
+        )}
+      >
+        <Input
+          value={editName}
+          onChange={(e) => onEditNameChange(e.target.value)}
+          className="h-7 text-sm flex-1"
+          autoFocus
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') onSaveEdit()
+            if (e.key === 'Escape') onCancelEdit()
+          }}
+        />
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-6 w-6 p-0"
+          onClick={onSaveEdit}
+          disabled={isSavingRename}
+        >
+          {isSavingRename ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <Check className="h-3 w-3 text-green-600" />
+          )}
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-6 w-6 p-0"
+          onClick={onCancelEdit}
+        >
+          <X className="h-3 w-3" />
+        </Button>
+      </div>
+    )
+  }
+
   return (
-    <label
+    <div
       className={cn(
         'flex items-center gap-2 p-2 rounded border cursor-pointer transition-colors',
         selected
@@ -377,16 +494,33 @@ function AccountOption({ account, selected, onToggle, disabled }: AccountOptionP
           : 'bg-white border-blue-100 hover:border-blue-200',
         disabled && 'opacity-50 cursor-not-allowed'
       )}
+      onClick={() => !disabled && onToggle()}
     >
       <Checkbox
         checked={selected}
         onCheckedChange={() => !disabled && onToggle()}
         disabled={disabled}
       />
-      <span className="flex-1 truncate">{account.displayName}</span>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1">
+          <span className="truncate text-sm">{account.displayName}</span>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-5 w-5 p-0 shrink-0"
+            onClick={(e) => {
+              e.stopPropagation()
+              onStartEdit()
+            }}
+          >
+            <Pencil className="h-3 w-3 text-blue-400" />
+          </Button>
+        </div>
+        <span className="text-xs text-blue-500">connected {connectedAgo}</span>
+      </div>
       <span
         className={cn(
-          'text-xs px-1.5 py-0.5 rounded',
+          'text-xs px-1.5 py-0.5 rounded shrink-0',
           account.status === 'active'
             ? 'bg-green-100 text-green-700'
             : 'bg-red-100 text-red-700'
@@ -394,6 +528,6 @@ function AccountOption({ account, selected, onToggle, disabled }: AccountOptionP
       >
         {account.status}
       </span>
-    </label>
+    </div>
   )
 }
