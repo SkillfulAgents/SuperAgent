@@ -1,0 +1,17 @@
+services:
+  superagent:
+    image: ${SUPERAGENT_IMAGE:-ghcr.io/iddogino/superagent:main}
+    build: .
+    ports:
+      - "47891:47891"
+    volumes:
+      # DooD - mount Docker socket for sibling container creation
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Data directory - use ~/.superagent with identical path mapping
+      - ${HOME}/.superagent:${HOME}/.superagent
+      # Agent container source for building agent image
+      - ./agent-container:/app/agent-container:ro
+    environment:
+      - SUPERAGENT_DATA_DIR=${HOME}/.superagent
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - PORT=47891

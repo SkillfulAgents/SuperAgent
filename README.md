@@ -184,6 +184,38 @@ Each agent runs in its own Docker/Podman container with Claude Code in headless 
 - **Containers**: Docker/Podman
 - **AI**: Anthropic Claude API
 
+## Running with Docker
+
+You can run Superagent in a Docker container using Docker-outside-of-Docker (DooD) to spawn agent containers.
+
+### Using the published image
+
+```bash
+# Set your API key
+export ANTHROPIC_API_KEY=your-api-key-here
+
+# Pull and run
+docker compose up
+
+# Access at http://localhost:47891
+```
+
+### Building locally
+
+```bash
+# Build and run from source
+docker compose up --build
+```
+
+### How it works
+
+The Docker setup:
+- Mounts the Docker socket for spawning sibling agent containers
+- Persists data in `~/.superagent` (same path on host and container)
+- Mounts `./agent-container` for building agent images on-demand
+
+The image is published to `ghcr.io/iddogino/superagent` on every push to main and on version tags.
+
 ## License
 
 MIT
