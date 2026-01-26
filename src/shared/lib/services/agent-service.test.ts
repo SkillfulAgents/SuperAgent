@@ -9,12 +9,20 @@ import {
 } from './__fixtures__/test-data'
 
 // Mock containerManager before importing the service
-vi.mock('@/lib/container/container-manager', () => ({
+// Use vi.hoisted to ensure mock variables are available when vi.mock is hoisted
+const { mockGetInfo, mockStop, mockGetClient } = vi.hoisted(() => {
+  const mockGetInfo = vi.fn(() => Promise.resolve({ status: 'stopped', port: null }))
+  const mockStop = vi.fn(() => Promise.resolve())
+  const mockGetClient = vi.fn(() => ({
+    getInfo: mockGetInfo,
+    stop: mockStop,
+  }))
+  return { mockGetInfo, mockStop, mockGetClient }
+})
+
+vi.mock('@shared/lib/container/container-manager', () => ({
   containerManager: {
-    getClient: vi.fn(() => ({
-      getInfo: vi.fn(() => Promise.resolve({ status: 'stopped', port: null })),
-      stop: vi.fn(() => Promise.resolve()),
-    })),
+    getClient: mockGetClient,
   },
 }))
 
@@ -154,12 +162,7 @@ Instructions
       await createTestAgent('running-agent', SAMPLE_CLAUDE_MD)
 
       // Mock container as running
-      vi.mocked(containerManager.getClient).mockReturnValue({
-        getInfo: vi.fn(() =>
-          Promise.resolve({ status: 'running', port: 3456 })
-        ),
-        stop: vi.fn(),
-      } as any)
+      mockGetInfo.mockResolvedValueOnce({ status: 'running', port: 3456 })
 
       const agent = await getAgentWithStatus('running-agent')
 
@@ -227,12 +230,7 @@ Instructions`
       await createTestAgent('agent-1', SAMPLE_CLAUDE_MD)
       await createTestAgent('agent-2', SAMPLE_CLAUDE_MD_MINIMAL)
 
-      // Ensure mock returns stopped status for this test
-      vi.mocked(containerManager.getClient).mockReturnValue({
-        getInfo: vi.fn(() => Promise.resolve({ status: 'stopped', port: null })),
-        stop: vi.fn(),
-      } as any)
-
+      // Default mock returns stopped status
       const agents = await listAgentsWithStatus()
 
       expect(agents.length).toBe(2)
@@ -371,11 +369,9 @@ Instructions`
     it('stops container before deleting', async () => {
       await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
 
-      const mockStop = vi.fn(() => Promise.resolve())
-      vi.mocked(containerManager.getClient).mockReturnValue({
-        getInfo: vi.fn(() => Promise.resolve({ status: 'running', port: 3456 })),
-        stop: mockStop,
-      } as any)
+      // Mock container as running so it will be stopped
+      mockGetInfo.mockResolvedValueOnce({ status: 'running', port: 3456 })
+      mockStop.mockClear()
 
       await deleteAgent('test-agent')
 

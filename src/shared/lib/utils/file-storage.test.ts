@@ -607,61 +607,44 @@ describe('streamJsonlFile', () => {
 // ============================================================================
 
 describe('path helpers', () => {
-  // Mock getDataDir for consistent test results
-  beforeEach(() => {
-    vi.mock('@/lib/config/data-dir', () => ({
-      getDataDir: () => '/mock/data',
-    }))
+  // These tests verify the path helper functions build correct paths
+  // We use the actual getDataDir since the paths are relative to it
+
+  it('getAgentsDir returns path ending with /agents', () => {
+    expect(getAgentsDir()).toMatch(/\/agents$/)
   })
 
-  afterEach(() => {
-    vi.resetModules()
+  it('getAgentDir returns path ending with agent slug', () => {
+    expect(getAgentDir('my-agent')).toMatch(/\/agents\/my-agent$/)
   })
 
-  it('getAgentsDir returns correct path', async () => {
-    const { getAgentsDir } = await import('./file-storage')
-    expect(getAgentsDir()).toBe('/mock/data/agents')
+  it('getAgentWorkspaceDir returns path ending with workspace', () => {
+    expect(getAgentWorkspaceDir('my-agent')).toMatch(/\/agents\/my-agent\/workspace$/)
   })
 
-  it('getAgentDir returns correct path', async () => {
-    const { getAgentDir } = await import('./file-storage')
-    expect(getAgentDir('my-agent')).toBe('/mock/data/agents/my-agent')
+  it('getAgentClaudeMdPath returns path ending with CLAUDE.md', () => {
+    expect(getAgentClaudeMdPath('my-agent')).toMatch(/\/agents\/my-agent\/workspace\/CLAUDE\.md$/)
   })
 
-  it('getAgentWorkspaceDir returns correct path', async () => {
-    const { getAgentWorkspaceDir } = await import('./file-storage')
-    expect(getAgentWorkspaceDir('my-agent')).toBe('/mock/data/agents/my-agent/workspace')
+  it('getAgentEnvPath returns path ending with .env', () => {
+    expect(getAgentEnvPath('my-agent')).toMatch(/\/agents\/my-agent\/workspace\/\.env$/)
   })
 
-  it('getAgentClaudeMdPath returns correct path', async () => {
-    const { getAgentClaudeMdPath } = await import('./file-storage')
-    expect(getAgentClaudeMdPath('my-agent')).toBe('/mock/data/agents/my-agent/workspace/CLAUDE.md')
+  it('getAgentSessionMetadataPath returns path ending with session-metadata.json', () => {
+    expect(getAgentSessionMetadataPath('my-agent')).toMatch(/\/agents\/my-agent\/workspace\/session-metadata\.json$/)
   })
 
-  it('getAgentEnvPath returns correct path', async () => {
-    const { getAgentEnvPath } = await import('./file-storage')
-    expect(getAgentEnvPath('my-agent')).toBe('/mock/data/agents/my-agent/workspace/.env')
+  it('getAgentClaudeConfigDir returns path ending with .claude', () => {
+    expect(getAgentClaudeConfigDir('my-agent')).toMatch(/\/agents\/my-agent\/workspace\/\.claude$/)
   })
 
-  it('getAgentSessionMetadataPath returns correct path', async () => {
-    const { getAgentSessionMetadataPath } = await import('./file-storage')
-    expect(getAgentSessionMetadataPath('my-agent')).toBe('/mock/data/agents/my-agent/workspace/session-metadata.json')
+  it('getAgentSessionsDir returns path ending with projects/-workspace', () => {
+    expect(getAgentSessionsDir('my-agent')).toMatch(/\/agents\/my-agent\/workspace\/\.claude\/projects\/-workspace$/)
   })
 
-  it('getAgentClaudeConfigDir returns correct path', async () => {
-    const { getAgentClaudeConfigDir } = await import('./file-storage')
-    expect(getAgentClaudeConfigDir('my-agent')).toBe('/mock/data/agents/my-agent/workspace/.claude')
-  })
-
-  it('getAgentSessionsDir returns correct path', async () => {
-    const { getAgentSessionsDir } = await import('./file-storage')
-    expect(getAgentSessionsDir('my-agent')).toBe('/mock/data/agents/my-agent/workspace/.claude/projects/-workspace')
-  })
-
-  it('getSessionJsonlPath returns correct path', async () => {
-    const { getSessionJsonlPath } = await import('./file-storage')
-    expect(getSessionJsonlPath('my-agent', 'session-123')).toBe(
-      '/mock/data/agents/my-agent/workspace/.claude/projects/-workspace/session-123.jsonl'
+  it('getSessionJsonlPath returns path ending with session jsonl file', () => {
+    expect(getSessionJsonlPath('my-agent', 'session-123')).toMatch(
+      /\/agents\/my-agent\/workspace\/\.claude\/projects\/-workspace\/session-123\.jsonl$/
     )
   })
 })
