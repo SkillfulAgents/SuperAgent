@@ -162,7 +162,7 @@ Instructions
       await createTestAgent('running-agent', SAMPLE_CLAUDE_MD)
 
       // Mock container as running
-      mockGetInfo.mockResolvedValueOnce({ status: 'running', port: 3456 })
+      mockGetInfo.mockResolvedValueOnce({ status: 'running', port: 3456 } as any)
 
       const agent = await getAgentWithStatus('running-agent')
 
@@ -370,7 +370,7 @@ Instructions`
       await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
 
       // Mock container as running so it will be stopped
-      mockGetInfo.mockResolvedValueOnce({ status: 'running', port: 3456 })
+      mockGetInfo.mockResolvedValueOnce({ status: 'running', port: 3456 } as any)
       mockStop.mockClear()
 
       await deleteAgent('test-agent')
