@@ -235,6 +235,13 @@ function getOrCreateEventSource(
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
         queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
       }
+      else if (data.type === 'scheduled_task_created') {
+        // A scheduled task was created - invalidate scheduled tasks cache
+        const taskAgentSlug = (data as { agentSlug?: string }).agentSlug
+        if (taskAgentSlug) {
+          queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', taskAgentSlug] })
+        }
+      }
       // Ignore ping and other events - they don't change state
 
       // Notify all listeners

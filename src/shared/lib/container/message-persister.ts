@@ -1,4 +1,5 @@
 import type { ContainerClient, StreamMessage } from './types'
+import { createScheduledTask } from '@shared/lib/services/scheduled-task-service'
 
 // Tracks streaming state for SSE broadcasts
 // In the file-based model, messages are stored in JSONL files by the Claude SDK.
@@ -295,6 +296,16 @@ class MessagePersister {
             )
           }
 
+          // Check if this is a schedule task tool
+          if (state.currentToolUse.name === 'mcp__user-input__schedule_task') {
+            this.handleScheduleTaskTool(
+              sessionId,
+              state.currentToolUse.id,
+              state.currentToolInput,
+              state.agentSlug
+            )
+          }
+
           this.broadcastToSSE(sessionId, {
             type: 'tool_use_ready',
             toolId: state.currentToolUse.id,
@@ -398,6 +409,76 @@ class MessagePersister {
     } catch (error) {
       console.error('[MessagePersister] Error handling connected account request:', error)
     }
+  }
+
+  // Handle schedule task tool - save to database and broadcast to SSE clients
+  private handleScheduleTaskTool(
+    sessionId: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug?: string
+  ): void {
+    // Use async IIFE since we need to await database operations
+    ;(async () => {
+      try {
+        // Parse the tool input
+        let input: {
+          scheduleType: 'at' | 'cron'
+          scheduleExpression: string
+          prompt: string
+          name?: string
+        }
+        try {
+          input = JSON.parse(toolInput)
+        } catch {
+          console.error('[MessagePersister] Failed to parse schedule task input:', toolInput)
+          return
+        }
+
+        if (!input.scheduleType || !input.scheduleExpression || !input.prompt) {
+          console.error('[MessagePersister] Schedule task missing required fields')
+          return
+        }
+
+        if (!agentSlug) {
+          console.error('[MessagePersister] Schedule task missing agentSlug')
+          return
+        }
+
+        console.log(
+          '[MessagePersister] Creating scheduled task:',
+          input.scheduleType,
+          input.scheduleExpression,
+          'for agent:',
+          agentSlug
+        )
+
+        // Create the scheduled task in the database
+        const taskId = await createScheduledTask({
+          agentSlug,
+          scheduleType: input.scheduleType,
+          scheduleExpression: input.scheduleExpression,
+          prompt: input.prompt,
+          name: input.name,
+          createdBySessionId: sessionId,
+        })
+
+        console.log('[MessagePersister] Scheduled task created:', taskId)
+
+        // Broadcast the scheduled task created event to SSE clients
+        this.broadcastToSSE(sessionId, {
+          type: 'scheduled_task_created',
+          toolUseId,
+          taskId,
+          scheduleType: input.scheduleType,
+          scheduleExpression: input.scheduleExpression,
+          name: input.name,
+          agentSlug,
+        })
+      } catch (error) {
+        console.error('[MessagePersister] Error handling schedule task:', error)
+      }
+    })()
   }
 
   // Handle tool results - broadcast to SSE clients

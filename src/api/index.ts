@@ -4,8 +4,16 @@ import agents from './routes/agents'
 import connectedAccounts from './routes/connected-accounts'
 import settings from './routes/settings'
 import providers from './routes/providers'
+import scheduledTasks from './routes/scheduled-tasks'
+import { taskScheduler } from '@shared/lib/scheduler/task-scheduler'
 
 const app = new Hono()
+
+// Start the task scheduler (singleton pattern handles HMR/multiple imports)
+// This ensures the scheduler runs in both development (Vite) and production (server.ts)
+taskScheduler.start().catch((error) => {
+  console.error('Failed to start task scheduler:', error)
+})
 
 // Enable CORS for all routes
 app.use('*', cors())
@@ -15,6 +23,7 @@ app.route('/api/agents', agents)
 app.route('/api/connected-accounts', connectedAccounts)
 app.route('/api/settings', settings)
 app.route('/api/providers', providers)
+app.route('/api/scheduled-tasks', scheduledTasks)
 
 // Global error handler
 app.onError((err, c) => {

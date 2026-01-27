@@ -56,6 +56,10 @@ export interface SessionMetadata {
   name?: string
   starred?: boolean
   createdAt?: string // ISO date string - set when session is first created
+  // Scheduled task fields - present when session was created from a scheduled task
+  isScheduledExecution?: boolean
+  scheduledTaskId?: string
+  scheduledTaskName?: string
 }
 
 /**

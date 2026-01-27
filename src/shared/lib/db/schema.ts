@@ -38,8 +38,45 @@ export const agentConnectedAccounts = sqliteTable(
   })
 )
 
+// Scheduled tasks - tasks scheduled by agents for future execution
+export const scheduledTasks = sqliteTable('scheduled_tasks', {
+  id: text('id').primaryKey(),
+  agentSlug: text('agent_slug').notNull(),
+
+  // Schedule configuration
+  scheduleType: text('schedule_type', { enum: ['at', 'cron'] }).notNull(),
+  scheduleExpression: text('schedule_expression').notNull(),
+
+  // Task details
+  prompt: text('prompt').notNull(),
+  name: text('name'),
+
+  // Status: pending, executed, cancelled, failed
+  status: text('status', { enum: ['pending', 'executed', 'cancelled', 'failed'] })
+    .notNull()
+    .default('pending'),
+
+  // Timing
+  nextExecutionAt: integer('next_execution_at', { mode: 'timestamp' }).notNull(),
+  lastExecutedAt: integer('last_executed_at', { mode: 'timestamp' }),
+
+  // Recurrence
+  isRecurring: integer('is_recurring', { mode: 'boolean' }).notNull().default(false),
+  executionCount: integer('execution_count').notNull().default(0),
+
+  // Session tracking
+  lastSessionId: text('last_session_id'),
+  createdBySessionId: text('created_by_session_id'),
+
+  // Timestamps
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  cancelledAt: integer('cancelled_at', { mode: 'timestamp' }),
+})
+
 // Type exports for convenience
 export type ConnectedAccount = typeof connectedAccounts.$inferSelect
 export type NewConnectedAccount = typeof connectedAccounts.$inferInsert
 export type AgentConnectedAccount = typeof agentConnectedAccounts.$inferSelect
 export type NewAgentConnectedAccount = typeof agentConnectedAccounts.$inferInsert
+export type ScheduledTask = typeof scheduledTasks.$inferSelect
+export type NewScheduledTask = typeof scheduledTasks.$inferInsert

@@ -366,3 +366,21 @@ export async function findSessionAcrossAgents(
 
   return null
 }
+
+/**
+ * Get all sessions created by a scheduled task
+ */
+export async function getSessionsByScheduledTask(
+  agentSlug: string,
+  scheduledTaskId: string
+): Promise<SessionInfo[]> {
+  // Get all sessions and their metadata
+  const allSessions = await listSessions(agentSlug)
+  const metadata = await readSessionMetadata(agentSlug)
+
+  // Filter sessions that were created by this scheduled task
+  return allSessions.filter((session) => {
+    const sessionMeta = metadata[session.id]
+    return sessionMeta?.scheduledTaskId === scheduledTaskId
+  })
+}

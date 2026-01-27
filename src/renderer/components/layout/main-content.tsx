@@ -5,12 +5,14 @@ import { AgentActivityIndicator } from '@renderer/components/messages/agent-acti
 import { AgentSettingsDialog } from '@renderer/components/agents/agent-settings-dialog'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { AgentLanding } from '@renderer/components/agents/agent-landing'
+import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/scheduled-task-view'
 import { Button } from '@renderer/components/ui/button'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
-import { Plus, Play, Square, ChevronRight, Settings } from 'lucide-react'
+import { Plus, Play, Square, ChevronRight, Settings, Clock } from 'lucide-react'
 import { useState, useCallback } from 'react'
 import { useAgent, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
 import { useSessions, useSession } from '@renderer/hooks/use-sessions'
+import { useScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { useSelection } from '@renderer/context/selection-context'
 import { isElectron, getPlatform } from '@renderer/lib/env'
@@ -18,13 +20,19 @@ import { useSidebar } from '@renderer/components/ui/sidebar'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 
 export function MainContent() {
-  const { selectedAgentSlug: agentSlug, selectedSessionId: sessionId, selectSession } = useSelection()
+  const {
+    selectedAgentSlug: agentSlug,
+    selectedSessionId: sessionId,
+    selectedScheduledTaskId: scheduledTaskId,
+    selectSession,
+  } = useSelection()
   const [settingsOpen, setSettingsOpen] = useState(false)
   // Track pending user message that hasn't appeared in real data yet
   const [pendingUserMessage, setPendingUserMessage] = useState<string | null>(null)
   const { data: agent } = useAgent(agentSlug)
   const { data: sessions } = useSessions(agentSlug)
   const { data: session } = useSession(sessionId, agentSlug)
+  const { data: scheduledTask } = useScheduledTask(scheduledTaskId)
   const startAgent = useStartAgent()
   const stopAgent = useStopAgent()
   const hasActiveSessions = sessions?.some((s) => s.isActive) ?? false
@@ -93,6 +101,17 @@ export function MainContent() {
               </SessionContextMenu>
             </>
           )}
+          {scheduledTaskId && scheduledTask && (
+            <>
+              <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
+              <div className="flex items-center gap-1 text-muted-foreground">
+                <Clock className="h-4 w-4" />
+                <span className="truncate">
+                  {scheduledTask.name || 'Scheduled Task'}
+                </span>
+              </div>
+            </>
+          )}
         </div>
         <div className="flex items-center gap-2 shrink-0 app-no-drag">
           {agent?.status === 'running' ? (
@@ -136,8 +155,11 @@ export function MainContent() {
         </div>
       </header>
 
-      {/* Show messages when a session is selected, otherwise show landing page */}
-      {sessionId ? (
+      {/* Show scheduled task view when a scheduled task is selected */}
+      {scheduledTaskId ? (
+        <ScheduledTaskView taskId={scheduledTaskId} agentSlug={agentSlug} />
+      ) : sessionId ? (
+        /* Show messages when a session is selected */
         <div className="flex-1 grid grid-rows-[1fr_auto] min-h-0">
           <MessageList
             sessionId={sessionId}

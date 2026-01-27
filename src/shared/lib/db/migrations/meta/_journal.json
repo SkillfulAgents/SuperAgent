@@ -8,6 +8,13 @@
       "when": 1769216154038,
       "tag": "0000_lowly_smiling_tiger",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1769481336403,
+      "tag": "0001_jazzy_power_man",
+      "breakpoints": true
     }
   ]
 }

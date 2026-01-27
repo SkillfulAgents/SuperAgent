@@ -109,6 +109,31 @@ export interface ApiSkill {
 }
 
 // ============================================================================
+// Scheduled Task API Types
+// ============================================================================
+
+/**
+ * Scheduled task response from API
+ */
+export interface ApiScheduledTask {
+  id: string
+  agentSlug: string
+  scheduleType: 'at' | 'cron'
+  scheduleExpression: string
+  prompt: string
+  name: string | null
+  status: 'pending' | 'executed' | 'cancelled' | 'failed'
+  nextExecutionAt: Date
+  lastExecutedAt: Date | null
+  isRecurring: boolean
+  executionCount: number
+  lastSessionId: string | null
+  createdBySessionId: string | null
+  createdAt: Date
+  cancelledAt: Date | null
+}
+
+// ============================================================================
 // Connected Account API Types
 // ============================================================================
 

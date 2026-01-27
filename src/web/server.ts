@@ -4,6 +4,7 @@ import { Hono } from 'hono'
 import { existsSync } from 'fs'
 import api from '../api'
 import { containerManager } from '@shared/lib/container/container-manager'
+import { taskScheduler } from '@shared/lib/scheduler/task-scheduler'
 
 const app = new Hono()
 
@@ -21,6 +22,11 @@ const port = parseInt(process.env.PORT || '47891', 10)
 
 const server = serve({ fetch: app.fetch, port }, (info) => {
   console.log(`API server running on http://localhost:${info.port}`)
+
+  // Start the task scheduler after server is ready
+  taskScheduler.start().catch((error) => {
+    console.error('Failed to start task scheduler:', error)
+  })
 })
 
 // Graceful shutdown handling
@@ -31,6 +37,9 @@ async function gracefulShutdown(signal: string) {
   isShuttingDown = true
 
   console.log(`\nReceived ${signal}, shutting down gracefully...`)
+
+  // Stop the task scheduler
+  taskScheduler.stop()
 
   // Stop all containers
   try {

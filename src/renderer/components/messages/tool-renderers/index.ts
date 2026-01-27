@@ -4,6 +4,7 @@ import { readRenderer } from './read'
 import { writeRenderer } from './write'
 import { requestSecretRenderer } from './request-secret'
 import { requestConnectedAccountRenderer } from './request-connected-account'
+import { scheduleTaskRenderer } from './schedule-task'
 
 export type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps } from './types'
 
@@ -22,6 +23,7 @@ const toolRenderers: Record<string, ToolRenderer> = {
   // MCP tools - use full name with prefix
   'mcp__user-input__request_secret': requestSecretRenderer,
   'mcp__user-input__request_connected_account': requestConnectedAccountRenderer,
+  'mcp__user-input__schedule_task': scheduleTaskRenderer,
 }
 
 /**

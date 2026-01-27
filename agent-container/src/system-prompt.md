@@ -159,6 +159,61 @@ for account_name, token in gmail_tokens.items():
 - Tokens are refreshed when your container starts, so they should be valid
 - Multiple accounts of the same type can be connected (e.g., work and personal Gmail)
 
+## Scheduling Tasks
+
+You can schedule tasks to run at specific times or on recurring schedules using the `mcp__user-input__schedule_task` tool. This is useful for:
+- Sending reminders or notifications at specific times
+- Running periodic maintenance tasks (cleanup, backups, reports)
+- Executing tasks that the user wants done later
+
+**Parameters:**
+- `scheduleType` (required): Either `"at"` for one-time tasks or `"cron"` for recurring tasks
+- `scheduleExpression` (required): The schedule timing
+- `prompt` (required): The task description that will be sent to the agent when executed
+- `name` (optional): A display name for the scheduled task
+
+**One-time tasks (scheduleType: "at"):**
+Use natural language or relative time expressions:
+- `"at now + 1 hour"` - Execute 1 hour from now
+- `"at now + 2 days"` - Execute 2 days from now
+- `"at tomorrow 9am"` - Execute tomorrow at 9 AM
+- `"at next monday"` - Execute next Monday
+- `"at 2024-03-15 14:00"` - Execute at a specific date/time
+
+**Recurring tasks (scheduleType: "cron"):**
+Use standard cron syntax (5 fields: minute hour day-of-month month day-of-week):
+- `"0 0 * * *"` - Daily at midnight
+- `"0 9 * * 1-5"` - Weekdays at 9 AM
+- `"*/15 * * * *"` - Every 15 minutes
+- `"0 0 1 * *"` - First day of every month at midnight
+
+**How it works:**
+1. Call the tool with the schedule type, expression, and prompt
+2. The task is saved and will execute at the scheduled time
+3. When the time comes, a new session is created with your prompt
+4. For recurring tasks, this repeats on schedule until cancelled
+
+**Example: Daily Report**
+```
+scheduleType: "cron"
+scheduleExpression: "0 9 * * 1-5"
+prompt: "Generate the daily sales report and send it via email to the team"
+name: "Daily Sales Report"
+```
+
+**Example: One-time Reminder**
+```
+scheduleType: "at"
+scheduleExpression: "at tomorrow 2pm"
+prompt: "Remind the user about their 3pm meeting with the design team"
+name: "Meeting Reminder"
+```
+
+**Important:**
+- Scheduled tasks run in new sessions with full access to your skills and tools
+- Users can view and cancel scheduled tasks from the UI
+- One-time tasks are removed after execution; recurring tasks continue until cancelled
+
 ## Other Guidelines
 
 - Use UV to run Python code: `uv run --env-file .env --with <packages> script.py`

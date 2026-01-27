@@ -28,6 +28,10 @@ import {
   keyToEnvVar,
   getSecretEnvVars,
 } from '@shared/lib/services/secrets-service'
+import {
+  listScheduledTasks,
+  listPendingScheduledTasks,
+} from '@shared/lib/services/scheduled-task-service'
 import { db } from '@shared/lib/db'
 import { connectedAccounts, agentConnectedAccounts } from '@shared/lib/db/schema'
 import { eq, inArray } from 'drizzle-orm'
@@ -853,6 +857,30 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', async (c) => {
       { error: 'Failed to provide connected account', details: message },
       500
     )
+  }
+})
+
+// GET /api/agents/:id/scheduled-tasks - List scheduled tasks for an agent
+agents.get('/:id/scheduled-tasks', async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const status = c.req.query('status') // Optional: filter by status (e.g., 'pending')
+
+    if (!(await agentExists(slug))) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+
+    let tasks
+    if (status === 'pending') {
+      tasks = await listPendingScheduledTasks(slug)
+    } else {
+      tasks = await listScheduledTasks(slug)
+    }
+
+    return c.json(tasks)
+  } catch (error) {
+    console.error('Failed to fetch scheduled tasks:', error)
+    return c.json({ error: 'Failed to fetch scheduled tasks' }, 500)
   }
 })
 

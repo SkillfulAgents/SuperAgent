@@ -14,6 +14,7 @@ console.log(`Data directory: ${process.env.SUPERAGENT_DATA_DIR}`)
 import { serve } from '@hono/node-server'
 import api from '../api'
 import { containerManager } from '@shared/lib/container/container-manager'
+import { taskScheduler } from '@shared/lib/scheduler/task-scheduler'
 import { findAvailablePort } from './find-port'
 
 // Use a more exotic default port to avoid conflicts
@@ -130,6 +131,11 @@ async function startApp() {
   // Start the API server
   apiServer = serve({ fetch: api.fetch, port: actualApiPort }, () => {
     console.log(`API server running on http://localhost:${actualApiPort}`)
+
+    // Start the task scheduler after API server is ready
+    taskScheduler.start().catch((error) => {
+      console.error('Failed to start task scheduler:', error)
+    })
   })
 
   // Wait for app to be ready, then create window
@@ -205,6 +211,9 @@ async function gracefulShutdown() {
 
   // Destroy tray
   destroyTray()
+
+  // Stop the task scheduler
+  taskScheduler.stop()
 
   // Stop all containers
   try {

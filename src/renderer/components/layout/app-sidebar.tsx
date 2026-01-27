@@ -1,5 +1,5 @@
 
-import { ChevronRight, Plus, Settings, AlertTriangle } from 'lucide-react'
+import { ChevronRight, Plus, Settings, AlertTriangle, Clock } from 'lucide-react'
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { isElectron, getPlatform } from '@renderer/lib/env'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
@@ -36,6 +36,7 @@ import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { useSelection } from '@renderer/context/selection-context'
+import { useScheduledTasks, type ApiScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { GlobalSettingsDialog } from '@renderer/components/settings/global-settings-dialog'
 import { ContainerSetupDialog } from '@renderer/components/settings/container-setup-dialog'
 
@@ -83,16 +84,57 @@ function SessionSubItem({
   )
 }
 
+// Scheduled task sub-item
+function ScheduledTaskSubItem({
+  task,
+  agentSlug,
+}: {
+  task: ApiScheduledTask
+  agentSlug: string
+}) {
+  const { selectedScheduledTaskId, selectAgent, selectScheduledTask } = useSelection()
+  const isSelected = task.id === selectedScheduledTaskId
+
+  const handleClick = () => {
+    selectAgent(agentSlug)
+    selectScheduledTask(task.id)
+  }
+
+  // Format next execution time for tooltip
+  const nextExecution = new Date(task.nextExecutionAt)
+  const timeString = nextExecution.toLocaleString()
+
+  return (
+    <SidebarMenuSubItem>
+      <SidebarMenuSubButton
+        asChild
+        isActive={isSelected}
+        title={`Scheduled for: ${timeString}`}
+      >
+        <button
+          onClick={handleClick}
+          className="flex items-center gap-2 w-full text-muted-foreground opacity-70"
+        >
+          <Clock className="h-3 w-3 shrink-0" />
+          <span className="truncate">{task.name || 'Scheduled Task'}</span>
+        </button>
+      </SidebarMenuSubButton>
+    </SidebarMenuSubItem>
+  )
+}
+
 // Agent menu item with expandable sessions
 function AgentMenuItem({ agent }: { agent: ApiAgent }) {
   const { selectedAgentSlug, selectAgent } = useSelection()
   const { data: sessions } = useSessions(agent.slug)
+  const { data: scheduledTasks } = useScheduledTasks(agent.slug, 'pending')
   const isSelected = agent.slug === selectedAgentSlug
   const [isOpen, setIsOpen] = useState(isSelected)
   const [showAll, setShowAll] = useState(false)
 
   const visibleSessions = showAll ? sessions : sessions?.slice(0, 5)
   const hasMore = (sessions?.length ?? 0) > 5
+  const pendingTasks = scheduledTasks || []
 
   const handleClick = () => {
     selectAgent(agent.slug)
@@ -116,7 +158,7 @@ function AgentMenuItem({ agent }: { agent: ApiAgent }) {
             />
           </SidebarMenuButton>
         </AgentContextMenu>
-        {sessions?.length ? (
+        {(sessions?.length || pendingTasks.length) ? (
           <>
             <CollapsibleTrigger asChild>
               <SidebarMenuAction className="data-[state=open]:rotate-90">
@@ -126,6 +168,15 @@ function AgentMenuItem({ agent }: { agent: ApiAgent }) {
             </CollapsibleTrigger>
             <CollapsibleContent>
               <SidebarMenuSub>
+                {/* Pending scheduled tasks at the top */}
+                {pendingTasks.map((task) => (
+                  <ScheduledTaskSubItem
+                    key={task.id}
+                    task={task}
+                    agentSlug={agent.slug}
+                  />
+                ))}
+                {/* Regular sessions */}
                 {visibleSessions?.map((session) => (
                   <SessionSubItem
                     key={session.id}
@@ -144,7 +195,7 @@ function AgentMenuItem({ agent }: { agent: ApiAgent }) {
                         className="w-full"
                       >
                         <span>
-                          {showAll ? 'Show less' : `Show all (${sessions.length})`}
+                          {showAll ? 'Show less' : `Show all (${sessions?.length})`}
                         </span>
                       </button>
                     </SidebarMenuSubButton>
