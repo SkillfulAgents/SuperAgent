@@ -15,6 +15,13 @@
       "when": 1769481336403,
       "tag": "0001_jazzy_power_man",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1769547980288,
+      "tag": "0002_smiling_harrier",
+      "breakpoints": true
     }
   ]
 }

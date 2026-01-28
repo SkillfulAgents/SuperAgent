@@ -5,6 +5,7 @@ import connectedAccounts from './routes/connected-accounts'
 import settings from './routes/settings'
 import providers from './routes/providers'
 import scheduledTasks from './routes/scheduled-tasks'
+import notifications from './routes/notifications'
 import { taskScheduler } from '@shared/lib/scheduler/task-scheduler'
 
 const app = new Hono()
@@ -24,6 +25,7 @@ app.route('/api/connected-accounts', connectedAccounts)
 app.route('/api/settings', settings)
 app.route('/api/providers', providers)
 app.route('/api/scheduled-tasks', scheduledTasks)
+app.route('/api/notifications', notifications)
 
 // Global error handler
 app.onError((err, c) => {

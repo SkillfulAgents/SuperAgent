@@ -134,6 +134,25 @@ export interface ApiScheduledTask {
 }
 
 // ============================================================================
+// Notification API Types
+// ============================================================================
+
+/**
+ * Notification response from API
+ */
+export interface ApiNotification {
+  id: string
+  type: 'session_complete' | 'session_waiting' | 'session_scheduled'
+  sessionId: string
+  agentSlug: string
+  title: string
+  body: string
+  isRead: boolean
+  createdAt: Date
+  readAt: Date | null
+}
+
+// ============================================================================
 // Connected Account API Types
 // ============================================================================
 

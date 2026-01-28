@@ -7,6 +7,7 @@
 
 import { containerManager } from '@shared/lib/container/container-manager'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import {
   getDueTasks,
   markTaskExecuted,
@@ -187,6 +188,15 @@ class TaskScheduler {
     console.log(
       `[TaskScheduler] Task ${task.id} started, session: ${sessionId}`
     )
+
+    // Trigger scheduled session started notification
+    notificationManager.triggerScheduledSessionStarted(
+      sessionId,
+      task.agentSlug,
+      task.name || undefined
+    ).catch((err) => {
+      console.error('[TaskScheduler] Failed to trigger scheduled notification:', err)
+    })
 
     // Update task status
     if (task.isRecurring) {

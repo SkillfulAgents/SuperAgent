@@ -242,6 +242,7 @@ function getOrCreateEventSource(
           queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', taskAgentSlug] })
         }
       }
+      // Note: os_notification events are handled by GlobalNotificationHandler, not here
       // Ignore ping and other events - they don't change state
 
       // Notify all listeners

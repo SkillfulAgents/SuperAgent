@@ -344,23 +344,80 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
   async createSession(options: CreateSessionOptions): Promise<ContainerSession> {
     const port = await this.getPortOrThrow()
+    const timeoutMs = 60000 // 60 second timeout
 
-    const response = await fetch(`http://localhost:${port}/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        metadata: options.metadata,
-        systemPrompt: options.systemPrompt,
-        availableEnvVars: options.availableEnvVars,
-        initialMessage: options.initialMessage,
-      }),
-    })
+    try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
 
-    if (!response.ok) {
-      throw new Error(`Failed to create session: ${response.statusText}`)
+      const response = await fetch(`http://localhost:${port}/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          metadata: options.metadata,
+          systemPrompt: options.systemPrompt,
+          availableEnvVars: options.availableEnvVars,
+          initialMessage: options.initialMessage,
+        }),
+        signal: controller.signal,
+      })
+
+      clearTimeout(timeoutId)
+
+      if (!response.ok) {
+        // Try to get more details from response body
+        let errorDetail = ''
+        try {
+          const errorBody = await response.text()
+          if (errorBody) {
+            // Parse JSON error if possible
+            try {
+              const parsed = JSON.parse(errorBody)
+              errorDetail = parsed.error || errorBody
+            } catch {
+              errorDetail = errorBody
+            }
+          }
+        } catch {
+          errorDetail = response.statusText
+        }
+
+        // Check for known error patterns and provide user-friendly messages
+        if (errorDetail.includes('Timeout waiting for Claude session')) {
+          throw new Error(
+            'Failed to start session - the AI service is taking too long to respond. This may be due to network issues or high API load. Please try again.'
+          )
+        }
+
+        throw new Error(`Failed to create session: ${errorDetail || response.statusText}`)
+      }
+
+      return response.json()
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error))
+
+      // Handle abort/timeout
+      if (err.name === 'AbortError') {
+        throw new Error(
+          'Failed to start session - request timed out. This may be due to network issues or the AI service being slow. Please try again.'
+        )
+      }
+
+      // Handle network errors with user-friendly messages
+      if (
+        err.message.includes('ECONNREFUSED') ||
+        err.message.includes('ECONNRESET') ||
+        err.message.includes('ETIMEDOUT') ||
+        err.message.includes('fetch failed')
+      ) {
+        throw new Error(
+          'Failed to start session - unable to connect to the agent. Please check that the agent is running and try again.'
+        )
+      }
+
+      // Re-throw if already a user-friendly message
+      throw err
     }
-
-    return response.json()
   }
 
   async getSession(sessionId: string): Promise<ContainerSession | null> {
@@ -398,18 +455,62 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
   async sendMessage(sessionId: string, content: string): Promise<void> {
     const port = await this.getPortOrThrow()
+    const timeoutMs = 30000 // 30 second timeout
 
-    const response = await fetch(
-      `http://localhost:${port}/sessions/${sessionId}/messages`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content }),
+    try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+
+      const response = await fetch(
+        `http://localhost:${port}/sessions/${sessionId}/messages`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content }),
+          signal: controller.signal,
+        }
+      )
+
+      clearTimeout(timeoutId)
+
+      if (!response.ok) {
+        let errorDetail = ''
+        try {
+          const errorBody = await response.text()
+          if (errorBody) {
+            try {
+              const parsed = JSON.parse(errorBody)
+              errorDetail = parsed.error || errorBody
+            } catch {
+              errorDetail = errorBody
+            }
+          }
+        } catch {
+          errorDetail = response.statusText
+        }
+        throw new Error(`Failed to send message: ${errorDetail || response.statusText}`)
       }
-    )
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error))
 
-    if (!response.ok) {
-      throw new Error(`Failed to send message: ${response.statusText}`)
+      if (err.name === 'AbortError') {
+        throw new Error(
+          'Failed to send message - request timed out. Please check your connection and try again.'
+        )
+      }
+
+      if (
+        err.message.includes('ECONNREFUSED') ||
+        err.message.includes('ECONNRESET') ||
+        err.message.includes('ETIMEDOUT') ||
+        err.message.includes('fetch failed')
+      ) {
+        throw new Error(
+          'Failed to send message - connection lost. Please check that the agent is running and try again.'
+        )
+      }
+
+      throw err
     }
   }
 

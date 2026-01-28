@@ -9,7 +9,7 @@ import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/schedule
 import { Button } from '@renderer/components/ui/button'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Plus, Play, Square, ChevronRight, Settings, Clock } from 'lucide-react'
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useAgent, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
 import { useSessions, useSession } from '@renderer/hooks/use-sessions'
 import { useScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
@@ -18,6 +18,7 @@ import { useSelection } from '@renderer/context/selection-context'
 import { isElectron, getPlatform } from '@renderer/lib/env'
 import { useSidebar } from '@renderer/components/ui/sidebar'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
+import { useMarkSessionNotificationsRead } from '@renderer/hooks/use-notifications'
 
 export function MainContent() {
   const {
@@ -38,6 +39,31 @@ export function MainContent() {
   const hasActiveSessions = sessions?.some((s) => s.isActive) ?? false
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
+  const markSessionNotificationsRead = useMarkSessionNotificationsRead()
+
+  // Auto-mark notifications as read when viewing a session
+  useEffect(() => {
+    if (sessionId) {
+      // Small delay to avoid marking as read on quick navigation
+      const timeout = setTimeout(() => {
+        markSessionNotificationsRead.mutate(sessionId)
+      }, 1000)
+      return () => clearTimeout(timeout)
+    }
+  }, [sessionId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Also mark notifications as read when tab regains focus while viewing a session
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && sessionId) {
+        // Mark notifications as read when user returns to this tab
+        markSessionNotificationsRead.mutate(sessionId)
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }, [sessionId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Add left padding for macOS traffic lights when sidebar is collapsed in Electron (not in full screen)
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && sidebarState === 'collapsed' && !isFullScreen

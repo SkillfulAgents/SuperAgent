@@ -13,20 +13,22 @@ export function useAgents() {
       if (!res.ok) throw new Error('Failed to fetch agents')
       return res.json()
     },
-    refetchInterval: 5000, // Poll for status changes
+    // Real-time updates via GlobalNotificationHandler, poll as fallback only
+    refetchInterval: 60000,
   })
 }
 
 export function useAgent(slug: string | null) {
   return useQuery<ApiAgent>({
-    queryKey: ['agents', slug],
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${slug}`)
       if (!res.ok) throw new Error('Failed to fetch agent')
       return res.json()
     },
+    queryKey: ['agents', slug],
     enabled: !!slug,
-    refetchInterval: 5000, // Poll for status changes
+    // Real-time updates via GlobalNotificationHandler, poll as fallback only
+    refetchInterval: 60000,
   })
 }
 

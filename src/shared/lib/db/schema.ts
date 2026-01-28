@@ -73,6 +73,19 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   cancelledAt: integer('cancelled_at', { mode: 'timestamp' }),
 })
 
+// Notifications - user notifications for session events
+export const notifications = sqliteTable('notifications', {
+  id: text('id').primaryKey(),
+  type: text('type', { enum: ['session_complete', 'session_waiting', 'session_scheduled'] }).notNull(),
+  sessionId: text('session_id').notNull(),
+  agentSlug: text('agent_slug').notNull(),
+  title: text('title').notNull(),
+  body: text('body').notNull(),
+  isRead: integer('is_read', { mode: 'boolean' }).notNull().default(false),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  readAt: integer('read_at', { mode: 'timestamp' }),
+})
+
 // Type exports for convenience
 export type ConnectedAccount = typeof connectedAccounts.$inferSelect
 export type NewConnectedAccount = typeof connectedAccounts.$inferInsert
@@ -80,3 +93,5 @@ export type AgentConnectedAccount = typeof agentConnectedAccounts.$inferSelect
 export type NewAgentConnectedAccount = typeof agentConnectedAccounts.$inferInsert
 export type ScheduledTask = typeof scheduledTasks.$inferSelect
 export type NewScheduledTask = typeof scheduledTasks.$inferInsert
+export type Notification = typeof notifications.$inferSelect
+export type NewNotification = typeof notifications.$inferInsert

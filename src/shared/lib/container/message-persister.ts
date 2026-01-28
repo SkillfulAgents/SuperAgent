@@ -1,5 +1,6 @@
 import type { ContainerClient, StreamMessage } from './types'
 import { createScheduledTask } from '@shared/lib/services/scheduled-task-service'
+import { notificationManager } from '@shared/lib/notifications/notification-manager'
 
 // Tracks streaming state for SSE broadcasts
 // In the file-based model, messages are stored in JSONL files by the Claude SDK.
@@ -18,6 +19,8 @@ class MessagePersister {
   private streamingStates: Map<string, StreamingState> = new Map()
   private subscriptions: Map<string, () => void> = new Map()
   private sseClients: Map<string, Set<(data: unknown) => void>> = new Map()
+  // Global notification subscribers (e.g., Electron main process)
+  private globalNotificationClients: Set<(data: unknown) => void> = new Set()
 
   // Subscribe to a session's messages for SSE streaming
   subscribeToSession(
@@ -70,6 +73,45 @@ class MessagePersister {
     return this.subscriptions.has(sessionId)
   }
 
+  // Check if a session has active SSE clients (someone is viewing it)
+  hasActiveViewers(sessionId: string): boolean {
+    const clients = this.sseClients.get(sessionId)
+    return (clients?.size ?? 0) > 0
+  }
+
+  // Broadcast to all sessions (for global notifications)
+  broadcastGlobal(data: unknown): void {
+    // Broadcast to session-specific clients
+    const sessionIds = Array.from(this.sseClients.keys())
+    for (const sessionId of sessionIds) {
+      this.broadcastToSSE(sessionId, data)
+    }
+
+    // Broadcast to global notification clients (e.g., Electron main process)
+    for (const client of this.globalNotificationClients) {
+      try {
+        client(data)
+      } catch (error) {
+        console.error('[SSE] Error sending to global notification client:', error)
+      }
+    }
+  }
+
+  // Add a global notification subscriber (receives all os_notification events)
+  addGlobalNotificationClient(callback: (data: unknown) => void): () => void {
+    this.globalNotificationClients.add(callback)
+
+    // Return unsubscribe function
+    return () => {
+      this.globalNotificationClients.delete(callback)
+    }
+  }
+
+  // Check if there are any session-specific SSE clients connected
+  hasAnySessionClients(): boolean {
+    return this.sseClients.size > 0
+  }
+
   // Mark a session as interrupted (not active)
   async markSessionInterrupted(sessionId: string): Promise<void> {
     const state = this.streamingStates.get(sessionId)
@@ -84,8 +126,17 @@ class MessagePersister {
       state.currentToolInput = ''
     }
 
-    // Broadcast immediately to update UI
+    // Broadcast to session-specific clients
     this.broadcastToSSE(sessionId, { type: 'session_idle', isActive: false })
+
+    // Also broadcast globally so sidebar updates regardless of which session is being viewed
+    const agentSlug = state?.agentSlug
+    this.broadcastGlobal({
+      type: 'session_idle',
+      sessionId,
+      agentSlug,
+      isActive: false,
+    })
   }
 
   // Add SSE client for real-time updates
@@ -96,11 +147,9 @@ class MessagePersister {
       this.sseClients.set(sessionId, clients)
     }
     clients.add(callback)
-    console.log(`[SSE] Client added for session ${sessionId}, total: ${clients.size}`)
 
     return () => {
       clients?.delete(callback)
-      console.log(`[SSE] Client removed for session ${sessionId}, remaining: ${clients?.size ?? 0}`)
       if (clients?.size === 0) {
         this.sseClients.delete(sessionId)
       }
@@ -132,13 +181,22 @@ class MessagePersister {
     if (agentSlug) {
       state.agentSlug = agentSlug
     }
+
+    // Broadcast to session-specific clients
     this.broadcastToSSE(sessionId, { type: 'session_active', isActive: true })
+
+    // Also broadcast globally so sidebar updates regardless of which session is being viewed
+    this.broadcastGlobal({
+      type: 'session_active',
+      sessionId,
+      agentSlug: state.agentSlug,
+      isActive: true,
+    })
   }
 
   // Broadcast to SSE clients
   private broadcastToSSE(sessionId: string, data: unknown): void {
     const clients = this.sseClients.get(sessionId)
-    console.log(`[SSE] Broadcasting to session ${sessionId}:`, (data as { type?: string }).type, `(${clients?.size ?? 0} clients)`)
     if (clients) {
       clients.forEach((callback) => {
         try {
@@ -202,8 +260,29 @@ class MessagePersister {
             error: errorMessage,
             isActive: false
           })
+          // Also broadcast globally
+          this.broadcastGlobal({
+            type: 'session_error',
+            sessionId,
+            agentSlug: state.agentSlug,
+            error: errorMessage,
+            isActive: false,
+          })
         } else {
           this.broadcastToSSE(sessionId, { type: 'session_idle', isActive: false })
+          // Also broadcast globally so sidebar updates
+          this.broadcastGlobal({
+            type: 'session_idle',
+            sessionId,
+            agentSlug: state.agentSlug,
+            isActive: false,
+          })
+          // Trigger session complete notification
+          if (state.agentSlug) {
+            notificationManager.triggerSessionComplete(sessionId, state.agentSlug).catch((err) => {
+              console.error('[MessagePersister] Failed to trigger session complete notification:', err)
+            })
+          }
         }
         break
 
@@ -347,14 +426,6 @@ class MessagePersister {
         return
       }
 
-      console.log(
-        '[MessagePersister] Broadcasting secret_request:',
-        toolUseId,
-        input.secretName,
-        'for agent:',
-        agentSlug
-      )
-
       // Broadcast the secret request event to SSE clients
       this.broadcastToSSE(sessionId, {
         type: 'secret_request',
@@ -363,6 +434,13 @@ class MessagePersister {
         reason: input.reason,
         agentSlug,
       })
+
+      // Trigger waiting for input notification
+      if (agentSlug) {
+        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'secret').catch((err) => {
+          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
+        })
+      }
     } catch (error) {
       console.error('[MessagePersister] Error handling secret request:', error)
     }
@@ -390,14 +468,6 @@ class MessagePersister {
         return
       }
 
-      console.log(
-        '[MessagePersister] Broadcasting connected_account_request:',
-        toolUseId,
-        input.toolkit,
-        'for agent:',
-        agentSlug
-      )
-
       // Broadcast the connected account request event to SSE clients
       this.broadcastToSSE(sessionId, {
         type: 'connected_account_request',
@@ -406,6 +476,13 @@ class MessagePersister {
         reason: input.reason,
         agentSlug,
       })
+
+      // Trigger waiting for input notification
+      if (agentSlug) {
+        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'connected_account').catch((err) => {
+          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
+        })
+      }
     } catch (error) {
       console.error('[MessagePersister] Error handling connected account request:', error)
     }
@@ -445,14 +522,6 @@ class MessagePersister {
           return
         }
 
-        console.log(
-          '[MessagePersister] Creating scheduled task:',
-          input.scheduleType,
-          input.scheduleExpression,
-          'for agent:',
-          agentSlug
-        )
-
         // Create the scheduled task in the database
         const taskId = await createScheduledTask({
           agentSlug,
@@ -463,9 +532,7 @@ class MessagePersister {
           createdBySessionId: sessionId,
         })
 
-        console.log('[MessagePersister] Scheduled task created:', taskId)
-
-        // Broadcast the scheduled task created event to SSE clients
+        // Broadcast the scheduled task created event to session-specific SSE clients
         this.broadcastToSSE(sessionId, {
           type: 'scheduled_task_created',
           toolUseId,
@@ -473,6 +540,13 @@ class MessagePersister {
           scheduleType: input.scheduleType,
           scheduleExpression: input.scheduleExpression,
           name: input.name,
+          agentSlug,
+        })
+
+        // Also broadcast globally so scheduled task list updates regardless of which session is viewed
+        this.broadcastGlobal({
+          type: 'scheduled_task_created',
+          taskId,
           agentSlug,
         })
       } catch (error) {

@@ -196,7 +196,7 @@ async function fetchAgentsWithStatus(): Promise<TrayAgentInfo[]> {
  * Navigate to a specific agent in the app
  */
 function navigateToAgent(agentSlug: string): void {
-  if (!mainWindowRef) {
+  if (!mainWindowRef || mainWindowRef.isDestroyed()) {
     // Window was closed - trigger recreation via activate
     app.emit('activate')
     // Store pending navigation to apply after window created
@@ -216,7 +216,7 @@ function navigateToAgent(agentSlug: string): void {
  * Show and focus the main window
  */
 function showWindow(): void {
-  if (!mainWindowRef) {
+  if (!mainWindowRef || mainWindowRef.isDestroyed()) {
     app.emit('activate')
     return
   }

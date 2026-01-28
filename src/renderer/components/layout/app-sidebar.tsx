@@ -39,6 +39,7 @@ import { useSelection } from '@renderer/context/selection-context'
 import { useScheduledTasks, type ApiScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { GlobalSettingsDialog } from '@renderer/components/settings/global-settings-dialog'
 import { ContainerSetupDialog } from '@renderer/components/settings/container-setup-dialog'
+import { NotificationBell } from '@renderer/components/notifications/notification-bell'
 
 // Session sub-item that tracks its streaming state
 function SessionSubItem({
@@ -304,10 +305,13 @@ export function AppSidebar() {
       <SidebarFooter className="border-t">
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton onClick={() => setSettingsDialogOpen(true)}>
-              <Settings className="h-4 w-4" />
-              <span>Settings</span>
-            </SidebarMenuButton>
+            <div className="flex items-center justify-between w-full">
+              <SidebarMenuButton onClick={() => setSettingsDialogOpen(true)} className="flex-1">
+                <Settings className="h-4 w-4" />
+                <span>Settings</span>
+              </SidebarMenuButton>
+              <NotificationBell />
+            </div>
           </SidebarMenuItem>
         </SidebarMenu>
         <div className="px-2 text-xs text-muted-foreground">

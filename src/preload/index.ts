@@ -56,6 +56,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setTrayVisible: (visible: boolean): Promise<void> => {
     return ipcRenderer.invoke('set-tray-visible', visible)
   },
+
+  // Show OS notification
+  showNotification: (title: string, body: string): Promise<void> => {
+    return ipcRenderer.invoke('show-notification', { title, body })
+  },
+
+  // Set dock badge count (macOS)
+  setBadgeCount: (count: number): Promise<void> => {
+    return ipcRenderer.invoke('set-badge-count', count)
+  },
 })
 
 // OAuth callback params from main process
@@ -81,6 +91,8 @@ declare global {
       onNavigateToAgent: (callback: (agentSlug: string) => void) => void
       removeNavigateToAgent: () => void
       setTrayVisible: (visible: boolean) => Promise<void>
+      showNotification: (title: string, body: string) => Promise<void>
+      setBadgeCount: (count: number) => Promise<void>
     }
   }
 }

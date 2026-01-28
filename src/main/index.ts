@@ -1,5 +1,6 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, Notification } from 'electron'
 import path from 'path'
+import { EventSource } from 'eventsource'
 import { createTray, destroyTray, updateTrayWindow, setTrayVisible } from './tray'
 import { getSettings } from '@shared/lib/config/settings'
 
@@ -22,6 +23,7 @@ const DEFAULT_API_PORT = 47891
 let actualApiPort: number = DEFAULT_API_PORT
 let mainWindow: BrowserWindow | null = null
 let apiServer: ReturnType<typeof serve> | null = null
+let notificationEventSource: EventSource | null = null
 
 // Register custom protocol for OAuth callbacks
 if (process.defaultApp) {
@@ -93,6 +95,27 @@ ipcMain.handle('set-tray-visible', (_event, visible: boolean) => {
   setTrayVisible(visible)
 })
 
+// IPC handler for showing OS notifications
+ipcMain.handle('show-notification', (_event, { title, body }: { title: string; body: string }) => {
+  if (Notification.isSupported()) {
+    const notification = new Notification({ title, body })
+    notification.on('click', () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.show()
+        mainWindow.focus()
+      }
+    })
+    notification.show()
+  }
+})
+
+// IPC handler for setting dock badge count (macOS)
+ipcMain.handle('set-badge-count', (_event, count: number) => {
+  if (process.platform === 'darwin') {
+    app.setBadgeCount(count)
+  }
+})
+
 // Handle OAuth callback URLs (macOS)
 app.on('open-url', (event, url) => {
   event.preventDefault()
@@ -116,6 +139,61 @@ app.on('open-url', (event, url) => {
   }
 })
 
+// Start listening for global notifications via SSE
+// This handles notifications when the window is closed
+function startNotificationListener(): void {
+  if (notificationEventSource) {
+    notificationEventSource.close()
+  }
+
+  const url = `http://localhost:${actualApiPort}/api/notifications/stream`
+  const es = new EventSource(url)
+  notificationEventSource = es
+
+  es.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data)
+
+      if (data.type === 'os_notification') {
+        // Only show notification if window is closed/destroyed
+        // If window exists, the renderer will handle it
+        if (!mainWindow || mainWindow.isDestroyed()) {
+          if (Notification.isSupported()) {
+            const notification = new Notification({
+              title: data.title,
+              body: data.body,
+            })
+            notification.on('click', () => {
+              // Recreate window and navigate to the session
+              app.emit('activate')
+            })
+            notification.show()
+          }
+        }
+      }
+    } catch {
+      // Ignore parse errors for ping messages etc
+    }
+  }
+
+  es.onerror = () => {
+    console.error('[Main] Notification stream error')
+    // EventSource will auto-reconnect
+  }
+
+  es.onopen = () => {
+    // Connected to notification stream
+  }
+}
+
+// Stop the notification listener
+function stopNotificationListener(): void {
+  if (notificationEventSource) {
+    notificationEventSource.close()
+    notificationEventSource = null
+  }
+}
+
 // Start the API server and app
 async function startApp() {
   // Find an available port
@@ -136,6 +214,9 @@ async function startApp() {
     taskScheduler.start().catch((error) => {
       console.error('Failed to start task scheduler:', error)
     })
+
+    // Start listening for notifications (for when window is closed)
+    startNotificationListener()
   })
 
   // Wait for app to be ready, then create window
@@ -208,6 +289,9 @@ async function gracefulShutdown() {
   isShuttingDown = true
 
   console.log('Shutting down gracefully...')
+
+  // Stop notification listener
+  stopNotificationListener()
 
   // Destroy tray
   destroyTray()

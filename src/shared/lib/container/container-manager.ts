@@ -4,6 +4,7 @@ import { db } from '@shared/lib/db'
 import { agentConnectedAccounts, connectedAccounts } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { getConnectionToken } from '@shared/lib/composio/client'
+import { messagePersister } from './message-persister'
 
 // Singleton to manage all container clients
 class ContainerManager {
@@ -84,6 +85,13 @@ class ContainerManager {
 
       // Start container (user secrets are in .env file in workspace)
       await client.start({ envVars })
+
+      // Broadcast agent status change globally
+      messagePersister.broadcastGlobal({
+        type: 'agent_status_changed',
+        agentSlug: agentId,
+        status: 'running',
+      })
     }
 
     return client

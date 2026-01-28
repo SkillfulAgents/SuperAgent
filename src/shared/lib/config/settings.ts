@@ -17,8 +17,16 @@ export interface ApiKeySettings {
   composioUserId?: string
 }
 
+export interface NotificationSettings {
+  enabled: boolean
+  sessionComplete: boolean
+  sessionWaiting: boolean
+  sessionScheduled: boolean
+}
+
 export interface AppPreferences {
   showMenuBarIcon?: boolean
+  notifications?: NotificationSettings
 }
 
 export interface AppSettings {
@@ -63,6 +71,12 @@ const DEFAULT_SETTINGS: AppSettings = {
   },
   app: {
     showMenuBarIcon: true,
+    notifications: {
+      enabled: true,
+      sessionComplete: true,
+      sessionWaiting: true,
+      sessionScheduled: true,
+    },
   },
 }
 
@@ -94,6 +108,10 @@ export function loadSettings(): AppSettings {
         app: {
           ...DEFAULT_SETTINGS.app,
           ...loaded.app,
+          notifications: {
+            ...DEFAULT_SETTINGS.app?.notifications,
+            ...loaded.app?.notifications,
+          },
         },
         apiKeys: loaded.apiKeys,
       }

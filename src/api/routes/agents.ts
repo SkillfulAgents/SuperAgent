@@ -198,6 +198,8 @@ agents.post('/:id/start', async (c) => {
     await containerManager.ensureRunning(slug)
     const agent = await getAgentWithStatus(slug)
 
+    // Note: agent_status_changed is broadcast by containerManager.ensureRunning()
+
     return c.json(agent)
   } catch (error) {
     console.error('Failed to start agent:', error)
@@ -231,6 +233,14 @@ agents.post('/:id/stop', async (c) => {
     }
 
     await client.stop()
+
+    // Broadcast agent status change globally
+    console.log('[Agents] Broadcasting agent_status_changed for', slug, 'status: stopped')
+    messagePersister.broadcastGlobal({
+      type: 'agent_status_changed',
+      agentSlug: slug,
+      status: 'stopped',
+    })
 
     return c.json({
       slug: agent.slug,

@@ -208,6 +208,13 @@ export async function listSessions(agentSlug: string): Promise<SessionInfo[]> {
       try {
         // Read JSONL file
         const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
+
+        // Skip empty JSONL files that aren't registered in metadata
+        // These are typically created by Claude SDK for subagent directories
+        if (entries.length === 0 && !metadata[sessionId]) {
+          continue
+        }
+
         const sessionInfo = parseSessionInfo(
           sessionId,
           agentSlug,

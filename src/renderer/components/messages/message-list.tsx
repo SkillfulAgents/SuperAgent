@@ -37,9 +37,76 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     streamingMessage,
     isStreaming,
     streamingToolUse,
-    pendingSecretRequests,
-    pendingConnectedAccountRequests,
+    pendingSecretRequests: sseSecretRequests,
+    pendingConnectedAccountRequests: sseConnectedAccountRequests,
   } = useMessageStream(sessionId, agentSlug)
+
+  // Derive pending requests from message history (for page refresh recovery)
+  // Tool calls without a result are still pending
+  const messagesBasedPendingRequests = useMemo(() => {
+    const secretRequests: { toolUseId: string; secretName: string; reason?: string }[] = []
+    const connectedAccountRequests: { toolUseId: string; toolkit: string; reason?: string }[] = []
+
+    if (!messages) return { secretRequests, connectedAccountRequests }
+
+    for (const message of messages) {
+      if (message.type !== 'assistant') continue
+
+      for (const toolCall of message.toolCalls) {
+        // Skip if already has a result
+        if (toolCall.result !== undefined) continue
+
+        if (toolCall.name === 'mcp__user-input__request_secret') {
+          const input = toolCall.input as { secretName?: string; reason?: string }
+          if (input.secretName) {
+            secretRequests.push({
+              toolUseId: toolCall.id,
+              secretName: input.secretName,
+              reason: input.reason,
+            })
+          }
+        } else if (toolCall.name === 'mcp__user-input__request_connected_account') {
+          const input = toolCall.input as { toolkit?: string; reason?: string }
+          if (input.toolkit) {
+            connectedAccountRequests.push({
+              toolUseId: toolCall.id,
+              toolkit: input.toolkit,
+              reason: input.reason,
+            })
+          }
+        }
+      }
+    }
+
+    return { secretRequests, connectedAccountRequests }
+  }, [messages])
+
+  // Merge SSE-based and message-based pending requests (dedupe by toolUseId)
+  const pendingSecretRequests = useMemo(() => {
+    const seen = new Set<string>()
+    const merged: { toolUseId: string; secretName: string; reason?: string }[] = []
+
+    for (const req of [...sseSecretRequests, ...messagesBasedPendingRequests.secretRequests]) {
+      if (!seen.has(req.toolUseId)) {
+        seen.add(req.toolUseId)
+        merged.push(req)
+      }
+    }
+    return merged
+  }, [sseSecretRequests, messagesBasedPendingRequests.secretRequests])
+
+  const pendingConnectedAccountRequests = useMemo(() => {
+    const seen = new Set<string>()
+    const merged: { toolUseId: string; toolkit: string; reason?: string }[] = []
+
+    for (const req of [...sseConnectedAccountRequests, ...messagesBasedPendingRequests.connectedAccountRequests]) {
+      if (!seen.has(req.toolUseId)) {
+        seen.add(req.toolUseId)
+        merged.push(req)
+      }
+    }
+    return merged
+  }, [sseConnectedAccountRequests, messagesBasedPendingRequests.connectedAccountRequests])
   const scrollRef = useRef<HTMLDivElement>(null)
 
   // Handler to remove a completed secret request
