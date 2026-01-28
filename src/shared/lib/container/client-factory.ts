@@ -1,6 +1,7 @@
 import type { ContainerClient, ContainerConfig } from './types'
 import { DockerContainerClient } from './docker-container-client'
 import { PodmanContainerClient } from './podman-container-client'
+import { MockContainerClient } from './mock-container-client'
 import { getSettings } from '@shared/lib/config/settings'
 import { execWithPath, checkCommandAvailable } from './base-container-client'
 import { platform } from 'os'
@@ -193,7 +194,6 @@ export function createContainerClient(config: ContainerConfig): ContainerClient 
   // In E2E test mode, use mock client
   if (process.env.E2E_MOCK === 'true') {
     console.log('[ContainerClient] E2E_MOCK=true, using MockContainerClient')
-    const { MockContainerClient } = require('./mock-container-client')
     return new MockContainerClient(config)
   }
   console.log('[ContainerClient] Using real container client, E2E_MOCK:', process.env.E2E_MOCK)
