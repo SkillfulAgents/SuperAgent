@@ -39,7 +39,7 @@ export default defineConfig({
       reuseExistingServer: false,  // Always start fresh to ensure E2E_MOCK is set
     },
     {
-      command: 'npm run dev:web',
+      command: `SUPERAGENT_DATA_DIR="${e2eDataDir}" E2E_MOCK=true npm run dev:web`,
       url: 'http://localhost:3000',
       reuseExistingServer: false,  // Always start fresh for E2E tests
     },
