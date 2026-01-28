@@ -5,6 +5,7 @@
   "main": "dist/main/index.js",
   "scripts": {
     "dev": "npm rebuild better-sqlite3 && vite",
+    "dev:web": "vite",
     "dev:api": "tsx watch src/web/server.ts",
     "dev:electron": "electron-rebuild -f && electron-vite dev",
     "build": "npm run build:web && npm run build:api",
