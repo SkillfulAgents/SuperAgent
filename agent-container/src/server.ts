@@ -243,9 +243,9 @@ app.post('/inputs/:toolUseId/resolve', async (c) => {
   const toolUseId = c.req.param('toolUseId');
 
   try {
-    const body = await c.req.json<{ value: string }>();
+    const body = await c.req.json<{ value: string | Record<string, string> }>();
 
-    if (!body.value) {
+    if (body.value === undefined || body.value === null) {
       return c.json({ error: 'value is required' }, 400);
     }
 

@@ -122,14 +122,22 @@ class NotificationManager {
   async triggerSessionWaitingInput(
     sessionId: string,
     agentSlug: string,
-    waitingFor: 'secret' | 'connected_account',
+    waitingFor: 'secret' | 'connected_account' | 'question',
     agentName?: string
   ): Promise<void> {
     const displayName = agentName || await this.getAgentDisplayName(agentSlug)
-    const waitingMessage =
-      waitingFor === 'secret'
-        ? 'needs a secret value'
-        : 'needs account access'
+    let waitingMessage: string
+    switch (waitingFor) {
+      case 'secret':
+        waitingMessage = 'needs a secret value'
+        break
+      case 'connected_account':
+        waitingMessage = 'needs account access'
+        break
+      case 'question':
+        waitingMessage = 'has a question for you'
+        break
+    }
 
     await this.triggerNotification({
       type: 'session_waiting',

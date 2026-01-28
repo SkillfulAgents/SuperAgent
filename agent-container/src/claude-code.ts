@@ -206,6 +206,58 @@ export class ClaudeCodeProcess extends EventEmitter {
         mcpServers: {
           'user-input': userInputMcpServer,
         },
+        // Handle AskUserQuestion via canUseTool callback (per SDK docs)
+        canUseTool: async (toolName: string, toolInput: Record<string, unknown>) => {
+          if (toolName === 'AskUserQuestion') {
+            console.log('[canUseTool] AskUserQuestion called');
+
+            const questions = toolInput.questions as Array<{
+              question: string;
+              header: string;
+              options: Array<{ label: string; description: string }>;
+              multiSelect: boolean;
+            }> | undefined;
+
+            if (!questions?.length) {
+              console.log('[canUseTool] No questions, allowing tool to proceed');
+              return { behavior: 'allow' as const, updatedInput: toolInput };
+            }
+
+            // Get the tool_use_id that was captured by the PreToolUse hook
+            const toolUseId = inputManager.consumeCurrentToolUseId();
+            if (!toolUseId) {
+              console.log('[canUseTool] No toolUseId available, generating one');
+            }
+            const requestId = toolUseId || `ask-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            console.log('[canUseTool] Creating pending request:', requestId);
+
+            try {
+              // Block until user answers via our UI
+              const answers = await inputManager.createPendingWithType<Record<string, string>>(
+                requestId,
+                'question',
+                questions
+              );
+
+              console.log('[canUseTool] Got answers:', JSON.stringify(answers));
+
+              // Return answers to Claude
+              return {
+                behavior: 'allow' as const,
+                updatedInput: { questions, answers },
+              };
+            } catch (error) {
+              console.log('[canUseTool] User declined:', error);
+              return {
+                behavior: 'deny' as const,
+                message: error instanceof Error ? error.message : 'User declined to answer',
+              };
+            }
+          }
+
+          // Auto-approve other tools (we're in bypassPermissions mode)
+          return { behavior: 'allow' as const, updatedInput: toolInput };
+        },
         hooks: {
           PreToolUse: [
             {
@@ -213,6 +265,19 @@ export class ClaudeCodeProcess extends EventEmitter {
               hooks: [
                 async (_input, toolUseId) => {
                   if (toolUseId) {
+                    inputManager.setCurrentToolUseId(toolUseId);
+                  }
+                  return {};
+                },
+              ],
+            },
+            {
+              // Capture tool_use_id for AskUserQuestion so canUseTool can use it
+              matcher: 'AskUserQuestion',
+              hooks: [
+                async (_input, toolUseId) => {
+                  if (toolUseId) {
+                    console.log('[AskUserQuestion PreToolUse] Capturing toolUseId:', toolUseId);
                     inputManager.setCurrentToolUseId(toolUseId);
                   }
                   return {};

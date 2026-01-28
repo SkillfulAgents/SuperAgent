@@ -870,6 +870,79 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', async (c) => {
   }
 })
 
+// POST /api/agents/:id/sessions/:sessionId/answer-question - Answer or decline a question request
+agents.post('/:id/sessions/:sessionId/answer-question', async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const body = await c.req.json()
+    const { toolUseId, answers, decline, declineReason } = body
+
+    if (!toolUseId) {
+      return c.json({ error: 'toolUseId is required' }, 400)
+    }
+
+    if (!(await agentExists(agentSlug))) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+
+    const client = containerManager.getClient(agentSlug)
+
+    if (decline) {
+      const reason = declineReason || 'User declined to answer'
+
+      const rejectResponse = await client.fetch(
+        `/inputs/${encodeURIComponent(toolUseId)}/reject`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason }),
+        }
+      )
+
+      if (!rejectResponse.ok) {
+        const error = await rejectResponse.json()
+        console.error('Failed to reject question request:', error)
+        return c.json({ error: 'Failed to reject question request' }, 500)
+      }
+
+      return c.json({ success: true, declined: true })
+    }
+
+    if (!answers || typeof answers !== 'object') {
+      return c.json({ error: 'answers is required when not declining' }, 400)
+    }
+
+    // Resolve the pending input request with the answers
+    console.log(`[answer-question] Resolving pending request ${toolUseId}`)
+    const resolveResponse = await client.fetch(
+      `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: answers }),
+      }
+    )
+
+    if (!resolveResponse.ok) {
+      let errorDetails = 'Unknown error'
+      try {
+        const error = await resolveResponse.json()
+        errorDetails = JSON.stringify(error)
+      } catch {
+        errorDetails = await resolveResponse.text()
+      }
+      console.error(`[answer-question] Failed to resolve request: ${errorDetails}`)
+      return c.json({ error: 'Failed to submit answers' }, 500)
+    }
+    console.log(`[answer-question] Request ${toolUseId} resolved successfully`)
+
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('Failed to answer question:', error)
+    return c.json({ error: 'Failed to answer question' }, 500)
+  }
+})
+
 // GET /api/agents/:id/scheduled-tasks - List scheduled tasks for an agent
 agents.get('/:id/scheduled-tasks', async (c) => {
   try {

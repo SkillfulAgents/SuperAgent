@@ -15,6 +15,16 @@ interface ConnectedAccountRequest {
   reason?: string
 }
 
+interface QuestionRequest {
+  toolUseId: string
+  questions: Array<{
+    question: string
+    header: string
+    options: Array<{ label: string; description: string }>
+    multiSelect: boolean
+  }>
+}
+
 interface StreamState {
   isActive: boolean // True from user message until query result
   isStreaming: boolean // True while actively receiving tokens
@@ -22,6 +32,7 @@ interface StreamState {
   streamingToolUse: { id: string; name: string; partialInput: string } | null
   pendingSecretRequests: SecretRequest[]
   pendingConnectedAccountRequests: ConnectedAccountRequest[]
+  pendingQuestionRequests: QuestionRequest[]
   error: string | null // Error message if session encountered an error
 }
 
@@ -69,6 +80,7 @@ function getOrCreateEventSource(
           streamingToolUse: null,
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
+          pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           error: null,
         })
       }
@@ -81,6 +93,7 @@ function getOrCreateEventSource(
           streamingToolUse: current?.streamingToolUse ?? null,
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
+          pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           error: null, // Clear any previous error when starting new request
         })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -95,6 +108,7 @@ function getOrCreateEventSource(
           streamingToolUse: null,
           pendingSecretRequests: [],
           pendingConnectedAccountRequests: [],
+          pendingQuestionRequests: [],
           error: null,
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
@@ -109,6 +123,7 @@ function getOrCreateEventSource(
           streamingToolUse: null,
           pendingSecretRequests: [],
           pendingConnectedAccountRequests: [],
+          pendingQuestionRequests: [],
           error: data.error || 'An unknown error occurred',
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
@@ -123,6 +138,7 @@ function getOrCreateEventSource(
           streamingToolUse: null,
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
+          pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           error: null,
         })
       }
@@ -134,6 +150,7 @@ function getOrCreateEventSource(
           streamingToolUse: null,
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
+          pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           error: current?.error ?? null,
         })
       }
@@ -149,6 +166,7 @@ function getOrCreateEventSource(
           },
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
+          pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           error: current?.error ?? null,
         })
       }
@@ -161,6 +179,7 @@ function getOrCreateEventSource(
           streamingToolUse: null,
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
+          pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           error: current?.error ?? null,
         })
       }
@@ -172,6 +191,7 @@ function getOrCreateEventSource(
           streamingToolUse: null,
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
+          pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           error: current?.error ?? null,
         })
       }
@@ -185,6 +205,7 @@ function getOrCreateEventSource(
             streamingToolUse: null,
             pendingSecretRequests: current.pendingSecretRequests ?? [],
             pendingConnectedAccountRequests: current.pendingConnectedAccountRequests ?? [],
+            pendingQuestionRequests: current.pendingQuestionRequests ?? [],
             error: current.error ?? null,
           })
         }
@@ -207,6 +228,7 @@ function getOrCreateEventSource(
             newRequest,
           ],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
+          pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           error: current?.error ?? null,
         })
       }
@@ -225,6 +247,27 @@ function getOrCreateEventSource(
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: [
             ...(current?.pendingConnectedAccountRequests ?? []),
+            newRequest,
+          ],
+          pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
+          error: current?.error ?? null,
+        })
+      }
+      else if (data.type === 'user_question_request') {
+        // Agent is asking the user questions
+        const newRequest: QuestionRequest = {
+          toolUseId: data.toolUseId,
+          questions: data.questions,
+        }
+        streamStates.set(sessionId, {
+          isActive: current?.isActive ?? false,
+          isStreaming: current?.isStreaming ?? false,
+          streamingMessage: current?.streamingMessage ?? null,
+          streamingToolUse: current?.streamingToolUse ?? null,
+          pendingSecretRequests: current?.pendingSecretRequests ?? [],
+          pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
+          pendingQuestionRequests: [
+            ...(current?.pendingQuestionRequests ?? []),
             newRequest,
           ],
           error: current?.error ?? null,
@@ -319,6 +362,21 @@ export function removeConnectedAccountRequest(sessionId: string, toolUseId: stri
   }
 }
 
+// Helper function to remove a question request from a session
+export function removeQuestionRequest(sessionId: string, toolUseId: string): void {
+  const current = streamStates.get(sessionId)
+  if (current) {
+    streamStates.set(sessionId, {
+      ...current,
+      pendingQuestionRequests: current.pendingQuestionRequests.filter(
+        (r) => r.toolUseId !== toolUseId
+      ),
+    })
+    // Notify listeners
+    streamListeners.get(sessionId)?.forEach((listener) => listener())
+  }
+}
+
 export function useMessageStream(sessionId: string | null, agentSlug: string | null) {
   const [state, setState] = useState<StreamState>({
     isActive: false,
@@ -327,6 +385,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     streamingToolUse: null,
     pendingSecretRequests: [],
     pendingConnectedAccountRequests: [],
+    pendingQuestionRequests: [],
     error: null,
   })
   const queryClient = useQueryClient()
@@ -361,6 +420,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
         streamingToolUse: null,
         pendingSecretRequests: [],
         pendingConnectedAccountRequests: [],
+        pendingQuestionRequests: [],
         error: null,
       })
     }

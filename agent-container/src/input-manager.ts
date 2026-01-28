@@ -1,7 +1,7 @@
 /**
  * Input Manager - Manages pending user input requests
  *
- * When a tool needs user input (like request_secret), it creates a pending
+ * When a tool needs user input (like request_secret or AskUserQuestion), it creates a pending
  * promise that blocks until the user provides or declines the input.
  * The server can then resolve or reject the promise via HTTP endpoints.
  *
@@ -9,17 +9,20 @@
  * then used by the tool handler to key the pending request.
  */
 
-interface PendingInput {
-  resolve: (value: string) => void
+// Value types supported by the input manager
+type InputValue = string | Record<string, string>
+
+interface PendingInput<T extends InputValue = string> {
+  resolve: (value: T) => void
   reject: (error: Error) => void
-  secretName: string
-  reason?: string
+  inputType: string // 'secret' | 'question' | 'connected_account'
+  metadata?: unknown // questions array, secretName, toolkit, etc.
   createdAt: Date
 }
 
 class InputManager {
   // Pending requests keyed by toolUseId
-  private pending: Map<string, PendingInput> = new Map()
+  private pending: Map<string, PendingInput<InputValue>> = new Map()
 
   // Current toolUseId captured by the PreToolUse hook
   // The hook sets this before the tool handler runs
@@ -43,7 +46,7 @@ class InputManager {
   }
 
   /**
-   * Create a pending input request that blocks until resolved or rejected.
+   * Create a pending input request that blocks until resolved or rejected (backward compatible).
    * @param toolUseId - The tool_use_id from the Claude SDK (captured via hook)
    * @param secretName - The environment variable name for the secret
    * @param reason - Optional reason why the secret is needed
@@ -56,10 +59,10 @@ class InputManager {
   ): Promise<string> {
     return new Promise((resolve, reject) => {
       this.pending.set(toolUseId, {
-        resolve,
+        resolve: resolve as (value: InputValue) => void,
         reject,
-        secretName,
-        reason,
+        inputType: 'secret',
+        metadata: { secretName, reason },
         createdAt: new Date(),
       })
 
@@ -70,12 +73,39 @@ class InputManager {
   }
 
   /**
-   * Resolve a pending request with the secret value.
+   * Create a pending input request with a specific value type.
+   * @param toolUseId - The tool_use_id from the Claude SDK (captured via hook)
+   * @param inputType - The type of input ('secret' | 'question' | 'connected_account')
+   * @param metadata - Optional metadata (questions array, secretName, toolkit, etc.)
+   * @returns Promise that resolves with the value or rejects with an error
+   */
+  createPendingWithType<T extends InputValue>(
+    toolUseId: string,
+    inputType: string,
+    metadata?: unknown
+  ): Promise<T> {
+    return new Promise((resolve, reject) => {
+      this.pending.set(toolUseId, {
+        resolve: resolve as (value: InputValue) => void,
+        reject,
+        inputType,
+        metadata,
+        createdAt: new Date(),
+      })
+
+      console.log(
+        `[InputManager] Created pending ${inputType} request ${toolUseId}`
+      )
+    })
+  }
+
+  /**
+   * Resolve a pending request with a value.
    * @param toolUseId - The tool_use_id to resolve
-   * @param value - The secret value provided by the user
+   * @param value - The value provided by the user (string or Record<string, string>)
    * @returns true if the request was found and resolved, false otherwise
    */
-  resolve(toolUseId: string, value: string): boolean {
+  resolve(toolUseId: string, value: InputValue): boolean {
     const pending = this.pending.get(toolUseId)
     if (!pending) {
       console.log(`[InputManager] No pending request found for ${toolUseId}`)
@@ -83,7 +113,7 @@ class InputManager {
     }
 
     console.log(
-      `[InputManager] Resolving request ${toolUseId} for secret ${pending.secretName}`
+      `[InputManager] Resolving ${pending.inputType} request ${toolUseId}`
     )
     this.pending.delete(toolUseId)
     pending.resolve(value)
@@ -104,7 +134,7 @@ class InputManager {
     }
 
     console.log(
-      `[InputManager] Rejecting request ${toolUseId} for secret ${pending.secretName}: ${error}`
+      `[InputManager] Rejecting ${pending.inputType} request ${toolUseId}: ${error}`
     )
     this.pending.delete(toolUseId)
     pending.reject(new Error(error))
@@ -125,14 +155,14 @@ class InputManager {
    */
   getAllPending(): Array<{
     toolUseId: string
-    secretName: string
-    reason?: string
+    inputType: string
+    metadata?: unknown
     createdAt: Date
   }> {
     return Array.from(this.pending.entries()).map(([toolUseId, pending]) => ({
       toolUseId,
-      secretName: pending.secretName,
-      reason: pending.reason,
+      inputType: pending.inputType,
+      metadata: pending.metadata,
       createdAt: pending.createdAt,
     }))
   }
@@ -146,7 +176,7 @@ class InputManager {
     for (const [toolUseId, pending] of this.pending) {
       if (now.getTime() - pending.createdAt.getTime() > maxAgeMs) {
         console.log(
-          `[InputManager] Cleaning up stale request ${toolUseId} for secret ${pending.secretName}`
+          `[InputManager] Cleaning up stale ${pending.inputType} request ${toolUseId}`
         )
         pending.reject(new Error('Input request timed out'))
         this.pending.delete(toolUseId)

@@ -4,11 +4,13 @@ import {
   useMessageStream,
   removeSecretRequest,
   removeConnectedAccountRequest,
+  removeQuestionRequest,
 } from '@renderer/hooks/use-message-stream'
 import { MessageItem } from './message-item'
 import { StreamingToolCallItem } from './tool-call-item'
 import { SecretRequestItem } from './secret-request-item'
 import { ConnectedAccountRequestItem } from './connected-account-request-item'
+import { QuestionRequestItem } from './question-request-item'
 import { Loader2, Wrench } from 'lucide-react'
 import { useEffect, useRef, useCallback, useMemo } from 'react'
 
@@ -34,23 +36,41 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     }
   }, [messages, pendingUserMessage, onPendingMessageAppeared])
   const {
+    isActive,
     streamingMessage,
     isStreaming,
     streamingToolUse,
     pendingSecretRequests: sseSecretRequests,
     pendingConnectedAccountRequests: sseConnectedAccountRequests,
+    pendingQuestionRequests: sseQuestionRequests,
   } = useMessageStream(sessionId, agentSlug)
 
   // Derive pending requests from message history (for page refresh recovery)
-  // Tool calls without a result are still pending
+  // Tool calls without a result are still pending, but only if there are no
+  // subsequent user messages (which would indicate user has moved past the request)
   const messagesBasedPendingRequests = useMemo(() => {
     const secretRequests: { toolUseId: string; secretName: string; reason?: string }[] = []
     const connectedAccountRequests: { toolUseId: string; toolkit: string; reason?: string }[] = []
+    const questionRequests: {
+      toolUseId: string
+      questions: Array<{
+        question: string
+        header: string
+        options: Array<{ label: string; description: string }>
+        multiSelect: boolean
+      }>
+    }[] = []
 
-    if (!messages) return { secretRequests, connectedAccountRequests }
+    if (!messages) return { secretRequests, connectedAccountRequests, questionRequests }
 
-    for (const message of messages) {
+    for (let i = 0; i < messages.length; i++) {
+      const message = messages[i]
       if (message.type !== 'assistant') continue
+
+      // Skip if there are any user messages after this assistant message
+      // This means the user has moved past this request (e.g., interrupted and sent new message)
+      const hasSubsequentUserMessage = messages.slice(i + 1).some((m) => m.type === 'user')
+      if (hasSubsequentUserMessage) continue
 
       for (const toolCall of message.toolCalls) {
         // Skip if already has a result
@@ -74,39 +94,81 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
               reason: input.reason,
             })
           }
+        } else if (toolCall.name === 'AskUserQuestion') {
+          const input = toolCall.input as {
+            questions?: Array<{
+              question: string
+              header: string
+              options: Array<{ label: string; description: string }>
+              multiSelect: boolean
+            }>
+          }
+          if (input.questions?.length) {
+            questionRequests.push({
+              toolUseId: toolCall.id,
+              questions: input.questions,
+            })
+          }
         }
       }
     }
 
-    return { secretRequests, connectedAccountRequests }
+    return { secretRequests, connectedAccountRequests, questionRequests }
   }, [messages])
 
   // Merge SSE-based and message-based pending requests (dedupe by toolUseId)
+  // Only include message-based requests when session is active (for page refresh recovery)
+  // When session is idle, message-based requests represent interrupted/completed work
   const pendingSecretRequests = useMemo(() => {
     const seen = new Set<string>()
     const merged: { toolUseId: string; secretName: string; reason?: string }[] = []
 
-    for (const req of [...sseSecretRequests, ...messagesBasedPendingRequests.secretRequests]) {
+    const messageBased = isActive ? messagesBasedPendingRequests.secretRequests : []
+    for (const req of [...sseSecretRequests, ...messageBased]) {
       if (!seen.has(req.toolUseId)) {
         seen.add(req.toolUseId)
         merged.push(req)
       }
     }
     return merged
-  }, [sseSecretRequests, messagesBasedPendingRequests.secretRequests])
+  }, [sseSecretRequests, messagesBasedPendingRequests.secretRequests, isActive])
 
   const pendingConnectedAccountRequests = useMemo(() => {
     const seen = new Set<string>()
     const merged: { toolUseId: string; toolkit: string; reason?: string }[] = []
 
-    for (const req of [...sseConnectedAccountRequests, ...messagesBasedPendingRequests.connectedAccountRequests]) {
+    const messageBased = isActive ? messagesBasedPendingRequests.connectedAccountRequests : []
+    for (const req of [...sseConnectedAccountRequests, ...messageBased]) {
       if (!seen.has(req.toolUseId)) {
         seen.add(req.toolUseId)
         merged.push(req)
       }
     }
     return merged
-  }, [sseConnectedAccountRequests, messagesBasedPendingRequests.connectedAccountRequests])
+  }, [sseConnectedAccountRequests, messagesBasedPendingRequests.connectedAccountRequests, isActive])
+
+  const pendingQuestionRequests = useMemo(() => {
+    const seen = new Set<string>()
+    const merged: {
+      toolUseId: string
+      questions: Array<{
+        question: string
+        header: string
+        options: Array<{ label: string; description: string }>
+        multiSelect: boolean
+      }>
+    }[] = []
+
+    const messageBased = isActive ? messagesBasedPendingRequests.questionRequests : []
+    for (const req of [...sseQuestionRequests, ...messageBased]) {
+      if (!seen.has(req.toolUseId)) {
+        seen.add(req.toolUseId)
+        merged.push(req)
+      }
+    }
+    return merged
+  }, [sseQuestionRequests, messagesBasedPendingRequests.questionRequests, isActive])
+
   const scrollRef = useRef<HTMLDivElement>(null)
 
   // Handler to remove a completed secret request
@@ -121,6 +183,14 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
   const handleConnectedAccountRequestComplete = useCallback(
     (toolUseId: string) => {
       removeConnectedAccountRequest(sessionId, toolUseId)
+    },
+    [sessionId]
+  )
+
+  // Handler to remove a completed question request
+  const handleQuestionRequestComplete = useCallback(
+    (toolUseId: string) => {
+      removeQuestionRequest(sessionId, toolUseId)
     },
     [sessionId]
   )
@@ -151,7 +221,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [messages, pendingUserMessage, streamingMessage, streamingToolUse, pendingSecretRequests, pendingConnectedAccountRequests])
+  }, [messages, pendingUserMessage, streamingMessage, streamingToolUse, pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests])
 
   if (isLoading) {
     return (
@@ -233,6 +303,18 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
             sessionId={sessionId}
             agentSlug={agentSlug}
             onComplete={() => handleConnectedAccountRequestComplete(request.toolUseId)}
+          />
+        ))}
+
+        {/* Pending question requests from the agent */}
+        {pendingQuestionRequests.map((request) => (
+          <QuestionRequestItem
+            key={request.toolUseId}
+            toolUseId={request.toolUseId}
+            questions={request.questions}
+            sessionId={sessionId}
+            agentSlug={agentSlug}
+            onComplete={() => handleQuestionRequestComplete(request.toolUseId)}
           />
         ))}
       </div>

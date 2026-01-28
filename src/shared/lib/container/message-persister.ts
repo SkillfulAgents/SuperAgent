@@ -277,8 +277,8 @@ class MessagePersister {
             agentSlug: state.agentSlug,
             isActive: false,
           })
-          // Trigger session complete notification
-          if (state.agentSlug) {
+          // Trigger session complete notification (only if no one is viewing the session)
+          if (state.agentSlug && !this.hasActiveViewers(sessionId)) {
             notificationManager.triggerSessionComplete(sessionId, state.agentSlug).catch((err) => {
               console.error('[MessagePersister] Failed to trigger session complete notification:', err)
             })
@@ -385,6 +385,16 @@ class MessagePersister {
             )
           }
 
+          // Check if this is an AskUserQuestion tool
+          if (state.currentToolUse.name === 'AskUserQuestion') {
+            this.handleAskUserQuestionTool(
+              sessionId,
+              state.currentToolUse.id,
+              state.currentToolInput,
+              state.agentSlug
+            )
+          }
+
           this.broadcastToSSE(sessionId, {
             type: 'tool_use_ready',
             toolId: state.currentToolUse.id,
@@ -435,8 +445,8 @@ class MessagePersister {
         agentSlug,
       })
 
-      // Trigger waiting for input notification
-      if (agentSlug) {
+      // Trigger waiting for input notification (only if no one is viewing the session)
+      if (agentSlug && !this.hasActiveViewers(sessionId)) {
         notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'secret').catch((err) => {
           console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
         })
@@ -477,8 +487,8 @@ class MessagePersister {
         agentSlug,
       })
 
-      // Trigger waiting for input notification
-      if (agentSlug) {
+      // Trigger waiting for input notification (only if no one is viewing the session)
+      if (agentSlug && !this.hasActiveViewers(sessionId)) {
         notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'connected_account').catch((err) => {
           console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
         })
@@ -553,6 +563,54 @@ class MessagePersister {
         console.error('[MessagePersister] Error handling schedule task:', error)
       }
     })()
+  }
+
+  // Handle AskUserQuestion tool - broadcast to SSE clients so they can show the UI
+  private handleAskUserQuestionTool(
+    sessionId: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug?: string
+  ): void {
+    try {
+      // Parse the tool input to get questions
+      let input: {
+        questions?: Array<{
+          question: string
+          header: string
+          options: Array<{ label: string; description: string }>
+          multiSelect: boolean
+        }>
+      } = {}
+      try {
+        input = JSON.parse(toolInput)
+      } catch {
+        console.error('[MessagePersister] Failed to parse AskUserQuestion input:', toolInput)
+        return
+      }
+
+      if (!input.questions?.length) {
+        console.error('[MessagePersister] AskUserQuestion missing questions')
+        return
+      }
+
+      // Broadcast the question request event to SSE clients
+      this.broadcastToSSE(sessionId, {
+        type: 'user_question_request',
+        toolUseId,
+        questions: input.questions,
+        agentSlug,
+      })
+
+      // Trigger waiting for input notification (only if no one is viewing the session)
+      if (agentSlug && !this.hasActiveViewers(sessionId)) {
+        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'question').catch((err) => {
+          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
+        })
+      }
+    } catch (error) {
+      console.error('[MessagePersister] Error handling AskUserQuestion:', error)
+    }
   }
 
   // Handle tool results - broadcast to SSE clients
