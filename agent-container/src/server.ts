@@ -507,3 +507,40 @@ console.log('  POST   /inputs/:toolUseId/resolve');
 console.log('  POST   /inputs/:toolUseId/reject');
 console.log('  GET    /inputs/pending');
 console.log('  POST   /env');
+
+// Graceful shutdown handling
+let isShuttingDown = false;
+
+async function gracefulShutdown(signal: string) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
+  console.log(`\nReceived ${signal}, shutting down gracefully...`);
+
+  // Stop all sessions (stops Claude Code processes)
+  try {
+    await sessionManager.stopAll();
+  } catch (error) {
+    console.error('Error stopping sessions:', error);
+  }
+
+  // Close WebSocket server
+  wss.close(() => {
+    console.log('WebSocket server closed.');
+  });
+
+  // Close HTTP server
+  server.close(() => {
+    console.log('HTTP server closed.');
+    process.exit(0);
+  });
+
+  // Force exit after timeout
+  setTimeout(() => {
+    console.error('Forced shutdown after timeout');
+    process.exit(1);
+  }, 5000);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));

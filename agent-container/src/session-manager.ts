@@ -317,4 +317,29 @@ export class SessionManager extends EventEmitter {
     await sessionData.process.interrupt();
     return true;
   }
+
+  /**
+   * Stop all active sessions. Used for graceful shutdown.
+   */
+  async stopAll(): Promise<void> {
+    const sessionIds = Array.from(this.sessions.keys());
+    console.log(`Stopping ${sessionIds.length} active session(s)...`);
+
+    await Promise.all(
+      sessionIds.map(async (sessionId) => {
+        try {
+          const sessionData = this.sessions.get(sessionId);
+          if (sessionData) {
+            await sessionData.process.stop();
+            sessionData.subscribers.clear();
+          }
+        } catch (error) {
+          console.error(`Error stopping session ${sessionId}:`, error);
+        }
+      })
+    );
+
+    this.sessions.clear();
+    console.log('All sessions stopped.');
+  }
 }
