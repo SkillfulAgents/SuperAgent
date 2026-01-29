@@ -9,6 +9,8 @@ import { createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
 import { requestSecretTool } from './tools/request-secret'
 import { requestConnectedAccountTool } from './tools/request-connected-account'
 import { scheduleTaskTool } from './tools/schedule-task'
+import { deliverFileTool } from './tools/deliver-file'
+import { requestFileTool } from './tools/request-file'
 
 /**
  * MCP server for user input tools.
@@ -17,5 +19,5 @@ import { scheduleTaskTool } from './tools/schedule-task'
 export const userInputMcpServer = createSdkMcpServer({
   name: 'user-input',
   version: '1.0.0',
-  tools: [requestSecretTool, requestConnectedAccountTool, scheduleTaskTool],
+  tools: [requestSecretTool, requestConnectedAccountTool, scheduleTaskTool, deliverFileTool, requestFileTool],
 })

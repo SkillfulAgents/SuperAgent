@@ -5,12 +5,14 @@ import {
   removeSecretRequest,
   removeConnectedAccountRequest,
   removeQuestionRequest,
+  removeFileRequest,
 } from '@renderer/hooks/use-message-stream'
 import { MessageItem } from './message-item'
 import { StreamingToolCallItem } from './tool-call-item'
 import { SecretRequestItem } from './secret-request-item'
 import { ConnectedAccountRequestItem } from './connected-account-request-item'
 import { QuestionRequestItem } from './question-request-item'
+import { FileRequestItem } from './file-request-item'
 import { Loader2, Wrench } from 'lucide-react'
 import { useEffect, useRef, useCallback, useMemo } from 'react'
 
@@ -43,6 +45,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     pendingSecretRequests: sseSecretRequests,
     pendingConnectedAccountRequests: sseConnectedAccountRequests,
     pendingQuestionRequests: sseQuestionRequests,
+    pendingFileRequests: sseFileRequests,
   } = useMessageStream(sessionId, agentSlug)
 
   // Derive pending requests from message history (for page refresh recovery)
@@ -60,8 +63,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
         multiSelect: boolean
       }>
     }[] = []
+    const fileRequests: { toolUseId: string; description: string; fileTypes?: string }[] = []
 
-    if (!messages) return { secretRequests, connectedAccountRequests, questionRequests }
+    if (!messages) return { secretRequests, connectedAccountRequests, questionRequests, fileRequests }
 
     for (let i = 0; i < messages.length; i++) {
       const message = messages[i]
@@ -109,11 +113,20 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
               questions: input.questions,
             })
           }
+        } else if (toolCall.name === 'mcp__user-input__request_file') {
+          const input = toolCall.input as { description?: string; fileTypes?: string }
+          if (input.description) {
+            fileRequests.push({
+              toolUseId: toolCall.id,
+              description: input.description,
+              fileTypes: input.fileTypes,
+            })
+          }
         }
       }
     }
 
-    return { secretRequests, connectedAccountRequests, questionRequests }
+    return { secretRequests, connectedAccountRequests, questionRequests, fileRequests }
   }, [messages])
 
   // Merge SSE-based and message-based pending requests (dedupe by toolUseId)
@@ -169,6 +182,20 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     return merged
   }, [sseQuestionRequests, messagesBasedPendingRequests.questionRequests, isActive])
 
+  const pendingFileRequests = useMemo(() => {
+    const seen = new Set<string>()
+    const merged: { toolUseId: string; description: string; fileTypes?: string }[] = []
+
+    const messageBased = isActive ? messagesBasedPendingRequests.fileRequests : []
+    for (const req of [...sseFileRequests, ...messageBased]) {
+      if (!seen.has(req.toolUseId)) {
+        seen.add(req.toolUseId)
+        merged.push(req)
+      }
+    }
+    return merged
+  }, [sseFileRequests, messagesBasedPendingRequests.fileRequests, isActive])
+
   const scrollRef = useRef<HTMLDivElement>(null)
 
   // Handler to remove a completed secret request
@@ -191,6 +218,14 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
   const handleQuestionRequestComplete = useCallback(
     (toolUseId: string) => {
       removeQuestionRequest(sessionId, toolUseId)
+    },
+    [sessionId]
+  )
+
+  // Handler to remove a completed file request
+  const handleFileRequestComplete = useCallback(
+    (toolUseId: string) => {
+      removeFileRequest(sessionId, toolUseId)
     },
     [sessionId]
   )
@@ -221,7 +256,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [messages, pendingUserMessage, streamingMessage, streamingToolUse, pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests])
+  }, [messages, pendingUserMessage, streamingMessage, streamingToolUse, pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests, pendingFileRequests])
 
   if (isLoading) {
     return (
@@ -235,7 +270,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     <div className="overflow-y-auto" ref={scrollRef} data-testid="message-list">
       <div className="p-4 space-y-4">
         {messages?.map((message) => (
-          <MessageItem key={message.id} message={message} />
+          <MessageItem key={message.id} message={message} agentSlug={agentSlug} />
         ))}
 
         {/* Pending user message - shown immediately after sending */}
@@ -315,6 +350,19 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
             sessionId={sessionId}
             agentSlug={agentSlug}
             onComplete={() => handleQuestionRequestComplete(request.toolUseId)}
+          />
+        ))}
+
+        {/* Pending file requests from the agent */}
+        {pendingFileRequests.map((request) => (
+          <FileRequestItem
+            key={request.toolUseId}
+            toolUseId={request.toolUseId}
+            description={request.description}
+            fileTypes={request.fileTypes}
+            sessionId={sessionId}
+            agentSlug={agentSlug}
+            onComplete={() => handleFileRequestComplete(request.toolUseId)}
           />
         ))}
       </div>

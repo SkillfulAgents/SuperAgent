@@ -7,6 +7,7 @@ import type { ApiToolCall } from '@shared/lib/types/api'
 
 interface ToolCallItemProps {
   toolCall: ApiToolCall
+  agentSlug?: string
 }
 
 interface StreamingToolCallItemProps {
@@ -22,7 +23,7 @@ function getStatus(toolCall: ApiToolCall): ToolCallStatus {
   return 'success'
 }
 
-export function ToolCallItem({ toolCall }: ToolCallItemProps) {
+export function ToolCallItem({ toolCall, agentSlug }: ToolCallItemProps) {
   const [expanded, setExpanded] = useState(false)
   const status = getStatus(toolCall)
   const renderer = getToolRenderer(toolCall.name)
@@ -109,6 +110,7 @@ export function ToolCallItem({ toolCall }: ToolCallItemProps) {
               input={toolCall.input}
               result={toolCall.result}
               isError={toolCall.isError ?? false}
+              agentSlug={agentSlug}
             />
           ) : (
             // Fallback: generic JSON display

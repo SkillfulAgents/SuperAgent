@@ -122,7 +122,7 @@ class NotificationManager {
   async triggerSessionWaitingInput(
     sessionId: string,
     agentSlug: string,
-    waitingFor: 'secret' | 'connected_account' | 'question',
+    waitingFor: 'secret' | 'connected_account' | 'question' | 'file',
     agentName?: string
   ): Promise<void> {
     const displayName = agentName || await this.getAgentDisplayName(agentSlug)
@@ -136,6 +136,9 @@ class NotificationManager {
         break
       case 'question':
         waitingMessage = 'has a question for you'
+        break
+      case 'file':
+        waitingMessage = 'needs a file from you'
         break
     }
 

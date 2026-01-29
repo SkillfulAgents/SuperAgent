@@ -34,6 +34,21 @@ export function useSendMessage() {
   })
 }
 
+export function useUploadFile() {
+  return useMutation({
+    mutationFn: async (data: { sessionId: string; agentSlug: string; file: File }) => {
+      const formData = new FormData()
+      formData.append('file', data.file)
+      const res = await apiFetch(
+        `/api/agents/${data.agentSlug}/sessions/${data.sessionId}/upload-file`,
+        { method: 'POST', body: formData }
+      )
+      if (!res.ok) throw new Error('Failed to upload file')
+      return res.json() as Promise<{ path: string; filename: string; size: number }>
+    },
+  })
+}
+
 export function useInterruptSession() {
   const queryClient = useQueryClient()
 

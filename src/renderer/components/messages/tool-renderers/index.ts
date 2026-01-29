@@ -5,6 +5,8 @@ import { writeRenderer } from './write'
 import { requestSecretRenderer } from './request-secret'
 import { requestConnectedAccountRenderer } from './request-connected-account'
 import { scheduleTaskRenderer } from './schedule-task'
+import { deliverFileRenderer } from './deliver-file'
+import { requestFileRenderer } from './request-file'
 
 export type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps } from './types'
 
@@ -24,6 +26,8 @@ const toolRenderers: Record<string, ToolRenderer> = {
   'mcp__user-input__request_secret': requestSecretRenderer,
   'mcp__user-input__request_connected_account': requestConnectedAccountRenderer,
   'mcp__user-input__schedule_task': scheduleTaskRenderer,
+  'mcp__user-input__deliver_file': deliverFileRenderer,
+  'mcp__user-input__request_file': requestFileRenderer,
 }
 
 /**

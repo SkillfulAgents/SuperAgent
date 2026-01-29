@@ -12,9 +12,10 @@ export type { ApiToolCall }
 interface MessageItemProps {
   message: ApiMessage
   isStreaming?: boolean
+  agentSlug?: string
 }
 
-export function MessageItem({ message, isStreaming }: MessageItemProps) {
+export function MessageItem({ message, isStreaming, agentSlug }: MessageItemProps) {
   const isUser = message.type === 'user'
   const isAssistant = message.type === 'assistant'
 
@@ -130,7 +131,7 @@ export function MessageItem({ message, isStreaming }: MessageItemProps) {
         {isAssistant && toolCalls.length > 0 && (
           <div className="w-full space-y-2">
             {toolCalls.map((toolCall) => (
-              <ToolCallItem key={toolCall.id} toolCall={toolCall} />
+              <ToolCallItem key={toolCall.id} toolCall={toolCall} agentSlug={agentSlug} />
             ))}
           </div>
         )}

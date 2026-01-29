@@ -41,6 +41,9 @@ import { withRetry } from '@shared/lib/utils/retry'
 import { transformMessages } from '@shared/lib/utils/message-transform'
 import { getEffectiveAnthropicApiKey } from '@shared/lib/config/settings'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
+import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
+import * as fs from 'fs'
+import * as path from 'path'
 
 const agents = new Hono()
 
@@ -1261,6 +1264,194 @@ agents.get('/:id/audit-log', async (c) => {
   } catch (error) {
     console.error('Failed to fetch audit log:', error)
     return c.json({ error: 'Failed to fetch audit log' }, 500)
+  }
+})
+
+// Shared upload logic - writes file to agent workspace
+async function handleFileUpload(agentSlug: string, file: File) {
+  const filename = file.name
+  const uploadPath = `uploads/${Date.now()}-${filename}`
+  const arrayBuffer = await file.arrayBuffer()
+  const buffer = Buffer.from(arrayBuffer)
+
+  // Write directly to host filesystem (volume-mounted into container)
+  const workspaceDir = getAgentWorkspaceDir(agentSlug)
+  const fullPath = path.join(workspaceDir, uploadPath)
+  await fs.promises.mkdir(path.dirname(fullPath), { recursive: true })
+  await fs.promises.writeFile(fullPath, buffer)
+
+  return {
+    success: true,
+    path: `/workspace/${uploadPath}`,
+    filename,
+    size: buffer.byteLength,
+  }
+}
+
+// POST /api/agents/:id/upload-file - Upload a file to the agent workspace (no session required)
+agents.post('/:id/upload-file', async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+
+    if (!(await agentExists(agentSlug))) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+
+    const formData = await c.req.formData()
+    const file = formData.get('file') as File | null
+
+    if (!file) {
+      return c.json({ error: 'No file provided' }, 400)
+    }
+
+    const result = await handleFileUpload(agentSlug, file)
+    return c.json(result)
+  } catch (error) {
+    console.error('Failed to upload file:', error)
+    return c.json({ error: 'Failed to upload file' }, 500)
+  }
+})
+
+// POST /api/agents/:id/sessions/:sessionId/upload-file - Upload a file to the agent workspace
+agents.post('/:id/sessions/:sessionId/upload-file', async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+
+    if (!(await agentExists(agentSlug))) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+
+    const formData = await c.req.formData()
+    const file = formData.get('file') as File | null
+
+    if (!file) {
+      return c.json({ error: 'No file provided' }, 400)
+    }
+
+    const result = await handleFileUpload(agentSlug, file)
+    return c.json(result)
+  } catch (error) {
+    console.error('Failed to upload file:', error)
+    return c.json({ error: 'Failed to upload file' }, 500)
+  }
+})
+
+// GET /api/agents/:id/files/* - Download a file from the agent workspace
+agents.get('/:id/files/*', async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    // Extract file path from URL - wildcard param can be unreliable in sub-routers
+    const urlPath = new URL(c.req.url).pathname
+    const filesPrefix = `/api/agents/${agentSlug}/files/`
+    const filePath = urlPath.startsWith(filesPrefix)
+      ? decodeURIComponent(urlPath.slice(filesPrefix.length))
+      : ''
+
+    if (!filePath) {
+      return c.json({ error: 'File path is required' }, 400)
+    }
+
+    if (!(await agentExists(agentSlug))) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+
+    const workspaceDir = getAgentWorkspaceDir(agentSlug)
+    const fullPath = path.resolve(workspaceDir, filePath)
+
+    // Security: ensure path doesn't escape workspace
+    if (!fullPath.startsWith(workspaceDir)) {
+      return c.json({ error: 'Invalid path' }, 400)
+    }
+
+    const stat = await fs.promises.stat(fullPath).catch(() => null)
+    if (!stat || !stat.isFile()) {
+      return c.json({ error: 'File not found' }, 404)
+    }
+
+    const buffer = await fs.promises.readFile(fullPath)
+    const filename = path.basename(filePath)
+
+    c.header('Content-Disposition', `attachment; filename="${filename}"`)
+    c.header('Content-Type', 'application/octet-stream')
+    c.header('Content-Length', buffer.byteLength.toString())
+
+    return c.body(buffer)
+  } catch (error) {
+    console.error('Failed to download file:', error)
+    return c.json({ error: 'Failed to download file' }, 500)
+  }
+})
+
+// POST /api/agents/:id/sessions/:sessionId/provide-file - Provide or decline a file request
+agents.post('/:id/sessions/:sessionId/provide-file', async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const body = await c.req.json()
+    const { toolUseId, filePath, decline, declineReason } = body
+
+    if (!toolUseId) {
+      return c.json({ error: 'toolUseId is required' }, 400)
+    }
+
+    if (!(await agentExists(agentSlug))) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+
+    const client = containerManager.getClient(agentSlug)
+
+    if (decline) {
+      const reason = declineReason || 'User declined to provide the file'
+
+      const rejectResponse = await client.fetch(
+        `/inputs/${encodeURIComponent(toolUseId)}/reject`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason }),
+        }
+      )
+
+      if (!rejectResponse.ok) {
+        const error = await rejectResponse.json()
+        console.error('Failed to reject file request:', error)
+        return c.json({ error: 'Failed to reject file request' }, 500)
+      }
+
+      return c.json({ success: true, declined: true })
+    }
+
+    if (!filePath) {
+      return c.json({ error: 'filePath is required when not declining' }, 400)
+    }
+
+    // Resolve the pending input request with the file path
+    console.log(`[provide-file] Resolving pending request ${toolUseId} with path ${filePath}`)
+    const resolveResponse = await client.fetch(
+      `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: filePath }),
+      }
+    )
+
+    if (!resolveResponse.ok) {
+      let errorDetails = 'Unknown error'
+      try {
+        const error = await resolveResponse.json()
+        errorDetails = JSON.stringify(error)
+      } catch {
+        errorDetails = await resolveResponse.text()
+      }
+      console.error(`[provide-file] Failed to resolve request: ${errorDetails}`)
+      return c.json({ error: 'Failed to notify agent of uploaded file' }, 500)
+    }
+    console.log(`[provide-file] Request ${toolUseId} resolved successfully`)
+
+    return c.json({ success: true, filePath })
+  } catch (error) {
+    console.error('Failed to provide file:', error)
+    return c.json({ error: 'Failed to provide file' }, 500)
   }
 })
 

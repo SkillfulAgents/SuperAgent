@@ -25,6 +25,12 @@ interface QuestionRequest {
   }>
 }
 
+interface FileRequest {
+  toolUseId: string
+  description: string
+  fileTypes?: string
+}
+
 interface StreamState {
   isActive: boolean // True from user message until query result
   isStreaming: boolean // True while actively receiving tokens
@@ -33,6 +39,7 @@ interface StreamState {
   pendingSecretRequests: SecretRequest[]
   pendingConnectedAccountRequests: ConnectedAccountRequest[]
   pendingQuestionRequests: QuestionRequest[]
+  pendingFileRequests: FileRequest[]
   error: string | null // Error message if session encountered an error
 }
 
@@ -81,6 +88,7 @@ function getOrCreateEventSource(
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
+          pendingFileRequests: current?.pendingFileRequests ?? [],
           error: null,
         })
       }
@@ -94,6 +102,7 @@ function getOrCreateEventSource(
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
+          pendingFileRequests: current?.pendingFileRequests ?? [],
           error: null, // Clear any previous error when starting new request
         })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -109,6 +118,7 @@ function getOrCreateEventSource(
           pendingSecretRequests: [],
           pendingConnectedAccountRequests: [],
           pendingQuestionRequests: [],
+          pendingFileRequests: [],
           error: null,
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
@@ -124,6 +134,7 @@ function getOrCreateEventSource(
           pendingSecretRequests: [],
           pendingConnectedAccountRequests: [],
           pendingQuestionRequests: [],
+          pendingFileRequests: [],
           error: data.error || 'An unknown error occurred',
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
@@ -139,6 +150,7 @@ function getOrCreateEventSource(
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
+          pendingFileRequests: current?.pendingFileRequests ?? [],
           error: null,
         })
       }
@@ -151,6 +163,7 @@ function getOrCreateEventSource(
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
+          pendingFileRequests: current?.pendingFileRequests ?? [],
           error: current?.error ?? null,
         })
       }
@@ -167,6 +180,7 @@ function getOrCreateEventSource(
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
+          pendingFileRequests: current?.pendingFileRequests ?? [],
           error: current?.error ?? null,
         })
       }
@@ -180,6 +194,7 @@ function getOrCreateEventSource(
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
+          pendingFileRequests: current?.pendingFileRequests ?? [],
           error: current?.error ?? null,
         })
       }
@@ -192,6 +207,7 @@ function getOrCreateEventSource(
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
+          pendingFileRequests: current?.pendingFileRequests ?? [],
           error: current?.error ?? null,
         })
       }
@@ -206,6 +222,7 @@ function getOrCreateEventSource(
             pendingSecretRequests: current.pendingSecretRequests ?? [],
             pendingConnectedAccountRequests: current.pendingConnectedAccountRequests ?? [],
             pendingQuestionRequests: current.pendingQuestionRequests ?? [],
+            pendingFileRequests: current.pendingFileRequests ?? [],
             error: current.error ?? null,
           })
         }
@@ -229,6 +246,7 @@ function getOrCreateEventSource(
           ],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
+          pendingFileRequests: current?.pendingFileRequests ?? [],
           error: current?.error ?? null,
         })
       }
@@ -250,6 +268,7 @@ function getOrCreateEventSource(
             newRequest,
           ],
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
+          pendingFileRequests: current?.pendingFileRequests ?? [],
           error: current?.error ?? null,
         })
       }
@@ -268,6 +287,29 @@ function getOrCreateEventSource(
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
           pendingQuestionRequests: [
             ...(current?.pendingQuestionRequests ?? []),
+            newRequest,
+          ],
+          pendingFileRequests: current?.pendingFileRequests ?? [],
+          error: current?.error ?? null,
+        })
+      }
+      else if (data.type === 'file_request') {
+        // Agent is requesting a file from the user
+        const newRequest: FileRequest = {
+          toolUseId: data.toolUseId,
+          description: data.description,
+          fileTypes: data.fileTypes,
+        }
+        streamStates.set(sessionId, {
+          isActive: current?.isActive ?? false,
+          isStreaming: current?.isStreaming ?? false,
+          streamingMessage: current?.streamingMessage ?? null,
+          streamingToolUse: current?.streamingToolUse ?? null,
+          pendingSecretRequests: current?.pendingSecretRequests ?? [],
+          pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
+          pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
+          pendingFileRequests: [
+            ...(current?.pendingFileRequests ?? []),
             newRequest,
           ],
           error: current?.error ?? null,
@@ -362,6 +404,21 @@ export function removeConnectedAccountRequest(sessionId: string, toolUseId: stri
   }
 }
 
+// Helper function to remove a file request from a session
+export function removeFileRequest(sessionId: string, toolUseId: string): void {
+  const current = streamStates.get(sessionId)
+  if (current) {
+    streamStates.set(sessionId, {
+      ...current,
+      pendingFileRequests: current.pendingFileRequests.filter(
+        (r) => r.toolUseId !== toolUseId
+      ),
+    })
+    // Notify listeners
+    streamListeners.get(sessionId)?.forEach((listener) => listener())
+  }
+}
+
 // Helper function to remove a question request from a session
 export function removeQuestionRequest(sessionId: string, toolUseId: string): void {
   const current = streamStates.get(sessionId)
@@ -386,6 +443,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     pendingSecretRequests: [],
     pendingConnectedAccountRequests: [],
     pendingQuestionRequests: [],
+    pendingFileRequests: [],
     error: null,
   })
   const queryClient = useQueryClient()
@@ -421,6 +479,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
         pendingSecretRequests: [],
         pendingConnectedAccountRequests: [],
         pendingQuestionRequests: [],
+        pendingFileRequests: [],
         error: null,
       })
     }

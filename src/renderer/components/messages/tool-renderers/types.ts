@@ -7,6 +7,7 @@ export interface ToolRendererProps {
   input: unknown
   result?: string | null
   isError?: boolean
+  agentSlug?: string
 }
 
 /**

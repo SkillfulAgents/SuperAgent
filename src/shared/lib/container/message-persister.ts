@@ -405,6 +405,16 @@ class MessagePersister {
             )
           }
 
+          // Check if this is a file request tool
+          if (state.currentToolUse.name === 'mcp__user-input__request_file') {
+            this.handleFileRequestTool(
+              sessionId,
+              state.currentToolUse.id,
+              state.currentToolInput,
+              state.agentSlug
+            )
+          }
+
           this.broadcastToSSE(sessionId, {
             type: 'tool_use_ready',
             toolId: state.currentToolUse.id,
@@ -620,6 +630,47 @@ class MessagePersister {
       }
     } catch (error) {
       console.error('[MessagePersister] Error handling AskUserQuestion:', error)
+    }
+  }
+
+  // Handle file request tool - broadcast to SSE clients so they can show the upload UI
+  private handleFileRequestTool(
+    sessionId: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug?: string
+  ): void {
+    try {
+      let input: { description: string; fileTypes?: string } = { description: '' }
+      try {
+        input = JSON.parse(toolInput)
+      } catch {
+        console.error('[MessagePersister] Failed to parse file request input:', toolInput)
+        return
+      }
+
+      if (!input.description) {
+        console.error('[MessagePersister] File request missing description')
+        return
+      }
+
+      // Broadcast the file request event to SSE clients
+      this.broadcastToSSE(sessionId, {
+        type: 'file_request',
+        toolUseId,
+        description: input.description,
+        fileTypes: input.fileTypes,
+        agentSlug,
+      })
+
+      // Trigger waiting for input notification (only if no one is viewing the session)
+      if (agentSlug && !this.hasActiveViewers(sessionId)) {
+        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'file').catch((err) => {
+          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
+        })
+      }
+    } catch (error) {
+      console.error('[MessagePersister] Error handling file request:', error)
     }
   }
 
