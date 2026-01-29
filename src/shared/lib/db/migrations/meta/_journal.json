@@ -22,6 +22,13 @@
       "when": 1769547980288,
       "tag": "0002_smiling_harrier",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1769658411861,
+      "tag": "0003_bored_thunderbolt_ross",
+      "breakpoints": true
     }
   ]
 }

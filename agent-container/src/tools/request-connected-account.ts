@@ -14,10 +14,12 @@ export const requestConnectedAccountTool = tool(
   'request_connected_account',
   `Request access to a connected account (e.g., Gmail, Slack, GitHub) from the user. The user will be prompted to select existing connected accounts or connect a new one via OAuth.
 
-After the user provides access, the account credentials will be available as an environment variable named CONNECTED_ACCOUNT_<TOOLKIT> (e.g., CONNECTED_ACCOUNT_GMAIL).
+After the user provides access, the CONNECTED_ACCOUNTS environment variable will be updated with the new account metadata. You can then make authenticated API calls through the proxy:
 
-The environment variable value is a JSON object mapping account display names to access tokens:
-{"Work Gmail": "ya29.xxx...", "Personal Gmail": "ya29.yyy..."}
+URL pattern: $PROXY_BASE_URL/<account_id>/<target_host>/<api_path>
+Authorization: Bearer $PROXY_TOKEN
+
+The CONNECTED_ACCOUNTS env var contains JSON mapping toolkit names to arrays of {name, id} objects.
 
 Supported toolkits include:
 - gmail - Google email service
@@ -81,14 +83,28 @@ Use this when you need to interact with external services on behalf of the user.
       )
 
       // If we get here, the user provided access
-      const envVarName = `CONNECTED_ACCOUNT_${toolkitLower.toUpperCase()}`
       console.log(`[request_connected_account] Access to ${toolkitLower} granted`)
+
+      // Read updated account metadata
+      const accountsRaw = process.env.CONNECTED_ACCOUNTS
+      let accountInfo = ''
+      if (accountsRaw) {
+        try {
+          const parsed = JSON.parse(accountsRaw) as Record<string, Array<{ name: string; id: string }>>
+          const toolkitAccounts = parsed[toolkitLower]
+          if (toolkitAccounts?.length) {
+            accountInfo = `\n\nAvailable ${toolkitLower} accounts:\n${toolkitAccounts.map(a => `- ${a.name} (ID: ${a.id})`).join('\n')}`
+          }
+        } catch {
+          // ignore parse errors
+        }
+      }
 
       return {
         content: [
           {
             type: 'text' as const,
-            text: `Access to ${toolkitLower} has been granted. The access tokens are available in the environment variable ${envVarName}. Parse the JSON value to get the account display names and their tokens.`,
+            text: `Access to ${toolkitLower} has been granted. Make API calls through the proxy:\n\nURL: $PROXY_BASE_URL/<account_id>/<target_host>/<api_path>\nAuthorization: Bearer $PROXY_TOKEN${accountInfo}`,
           },
         ],
       }

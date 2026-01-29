@@ -33,14 +33,14 @@ import {
   listPendingScheduledTasks,
 } from '@shared/lib/services/scheduled-task-service'
 import { db } from '@shared/lib/db'
-import { connectedAccounts, agentConnectedAccounts } from '@shared/lib/db/schema'
-import { eq, inArray } from 'drizzle-orm'
+import { connectedAccounts, agentConnectedAccounts, proxyAuditLog } from '@shared/lib/db/schema'
+import { eq, inArray, desc, count } from 'drizzle-orm'
 import { getProvider } from '@shared/lib/composio/providers'
-import { getConnectionToken } from '@shared/lib/composio/client'
 import { getAgentSkills } from '@shared/lib/skills'
 import { withRetry } from '@shared/lib/utils/retry'
 import { transformMessages } from '@shared/lib/utils/message-transform'
 import { getEffectiveAnthropicApiKey } from '@shared/lib/config/settings'
+import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 
 const agents = new Hono()
 
@@ -179,6 +179,14 @@ agents.delete('/:id', async (c) => {
     }
 
     containerManager.removeClient(slug)
+
+    // Clean up proxy token
+    try {
+      await revokeProxyToken(slug)
+    } catch (error) {
+      console.error('Failed to revoke proxy token:', error)
+    }
+
     return c.body(null, 204)
   } catch (error) {
     console.error('Failed to delete agent:', error)
@@ -768,40 +776,39 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', async (c) => {
       }
     }
 
-    // Fetch tokens from Composio
-    const tokens: Record<string, string> = {}
-    for (const account of validAccounts) {
-      try {
-        const { accessToken } = await getConnectionToken(
-          account.composioConnectionId
-        )
-        tokens[account.displayName] = accessToken
-      } catch (error) {
-        console.error(
-          `Failed to get token for account ${account.displayName}:`,
-          error
-        )
-      }
-    }
-
-    if (Object.keys(tokens).length === 0) {
-      return c.json(
-        { error: 'Failed to fetch access tokens from Composio' },
-        500
+    // Build updated account metadata for the container (no tokens, just names + IDs)
+    const allMappings = await db
+      .select({ account: connectedAccounts })
+      .from(agentConnectedAccounts)
+      .innerJoin(
+        connectedAccounts,
+        eq(agentConnectedAccounts.connectedAccountId, connectedAccounts.id)
       )
+      .where(eq(agentConnectedAccounts.agentSlug, agentSlug))
+
+    const metadata: Record<string, Array<{ name: string; id: string }>> = {}
+    for (const { account } of allMappings) {
+      if (account.status !== 'active') continue
+      if (!metadata[account.toolkitSlug]) {
+        metadata[account.toolkitSlug] = []
+      }
+      metadata[account.toolkitSlug].push({
+        name: account.displayName,
+        id: account.id,
+      })
     }
 
-    // Set environment variable in container
-    const envVarName = `CONNECTED_ACCOUNT_${toolkit.toUpperCase()}`
-    const envVarValue = JSON.stringify(tokens)
-
+    // Update CONNECTED_ACCOUNTS metadata in container (no raw tokens)
     console.log(
-      `[provide-connected-account] Setting env var ${envVarName} in container`
+      `[provide-connected-account] Updating CONNECTED_ACCOUNTS metadata in container`
     )
     const envResponse = await client.fetch('/env', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key: envVarName, value: envVarValue }),
+      body: JSON.stringify({
+        key: 'CONNECTED_ACCOUNTS',
+        value: JSON.stringify(metadata),
+      }),
     })
 
     if (!envResponse.ok) {
@@ -813,28 +820,29 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', async (c) => {
         errorDetails = await envResponse.text()
       }
       console.error(
-        `[provide-connected-account] Failed to set env var: ${errorDetails}`
+        `[provide-connected-account] Failed to update metadata: ${errorDetails}`
       )
       return c.json(
-        { error: 'Failed to set environment variable in container' },
+        { error: 'Failed to update account metadata in container' },
         500
       )
     }
     console.log(
-      `[provide-connected-account] Env var ${envVarName} set successfully`
+      `[provide-connected-account] CONNECTED_ACCOUNTS metadata updated`
     )
 
     // Resolve the pending input request
     console.log(
       `[provide-connected-account] Resolving pending request ${toolUseId}`
     )
+    const accountNames = validAccounts.map((a) => a.displayName)
     const resolveResponse = await client.fetch(
       `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          value: `Access granted to ${Object.keys(tokens).length} account(s): ${Object.keys(tokens).join(', ')}`,
+          value: `Access granted to ${accountNames.length} account(s): ${accountNames.join(', ')}`,
         }),
       }
     )
@@ -858,7 +866,7 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', async (c) => {
 
     return c.json({
       success: true,
-      accountsProvided: Object.keys(tokens).length,
+      accountsProvided: validAccounts.length,
     })
   } catch (error: unknown) {
     console.error('Failed to provide connected account:', error)
@@ -1220,6 +1228,39 @@ agents.get('/:id/skills', async (c) => {
   } catch (error) {
     console.error('Failed to fetch skills:', error)
     return c.json({ error: 'Failed to fetch skills' }, 500)
+  }
+})
+
+// GET /api/agents/:id/audit-log - Get proxy audit log for agent
+agents.get('/:id/audit-log', async (c) => {
+  try {
+    const slug = c.req.param('id')
+
+    if (!(await agentExists(slug))) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+
+    const offset = parseInt(c.req.query('offset') ?? '0', 10)
+    const limit = Math.min(parseInt(c.req.query('limit') ?? '20', 10), 100)
+
+    const [entries, totalResult] = await Promise.all([
+      db
+        .select()
+        .from(proxyAuditLog)
+        .where(eq(proxyAuditLog.agentSlug, slug))
+        .orderBy(desc(proxyAuditLog.createdAt))
+        .limit(limit)
+        .offset(offset),
+      db
+        .select({ count: count() })
+        .from(proxyAuditLog)
+        .where(eq(proxyAuditLog.agentSlug, slug)),
+    ])
+
+    return c.json({ entries, total: totalResult[0].count })
+  } catch (error) {
+    console.error('Failed to fetch audit log:', error)
+    return c.json({ error: 'Failed to fetch audit log' }, 500)
   }
 })
 

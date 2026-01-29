@@ -86,6 +86,28 @@ export const notifications = sqliteTable('notifications', {
   readAt: integer('read_at', { mode: 'timestamp' }),
 })
 
+// Proxy tokens - synthetic tokens for agent-to-proxy authentication
+export const proxyTokens = sqliteTable('proxy_tokens', {
+  id: text('id').primaryKey(),
+  agentSlug: text('agent_slug').notNull().unique(),
+  token: text('token').notNull().unique(),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
+// Proxy audit log - structured log of all proxied requests
+export const proxyAuditLog = sqliteTable('proxy_audit_log', {
+  id: text('id').primaryKey(),
+  agentSlug: text('agent_slug').notNull(),
+  accountId: text('account_id').notNull(),
+  toolkit: text('toolkit').notNull(),
+  targetHost: text('target_host').notNull(),
+  targetPath: text('target_path').notNull(),
+  method: text('method').notNull(),
+  statusCode: integer('status_code'),
+  errorMessage: text('error_message'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
 // Type exports for convenience
 export type ConnectedAccount = typeof connectedAccounts.$inferSelect
 export type NewConnectedAccount = typeof connectedAccounts.$inferInsert
@@ -95,3 +117,7 @@ export type ScheduledTask = typeof scheduledTasks.$inferSelect
 export type NewScheduledTask = typeof scheduledTasks.$inferInsert
 export type Notification = typeof notifications.$inferSelect
 export type NewNotification = typeof notifications.$inferInsert
+export type ProxyToken = typeof proxyTokens.$inferSelect
+export type NewProxyToken = typeof proxyTokens.$inferInsert
+export type ProxyAuditLogEntry = typeof proxyAuditLog.$inferSelect
+export type NewProxyAuditLogEntry = typeof proxyAuditLog.$inferInsert

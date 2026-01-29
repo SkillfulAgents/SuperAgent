@@ -3,7 +3,8 @@ import type { ContainerClient, ContainerConfig } from './types'
 import { db } from '@shared/lib/db'
 import { agentConnectedAccounts, connectedAccounts } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
-import { getConnectionToken } from '@shared/lib/composio/client'
+import { getOrCreateProxyToken } from '@shared/lib/proxy/token-store'
+import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import { messagePersister } from './message-persister'
 
 // Singleton to manage all container clients
@@ -38,9 +39,15 @@ class ContainerManager {
     const info = await client.getInfo()
 
     if (info.status !== 'running') {
-      // Connected account tokens are still injected as env vars
-      // (they're OAuth tokens that may refresh, managed by Composio)
+      // Pass proxy config and account metadata (no raw tokens)
       const envVars: Record<string, string> = {}
+
+      // Set up proxy authentication
+      const proxyToken = await getOrCreateProxyToken(agentId)
+      const hostUrl = getContainerHostUrl()
+      const appPort = getAppPort()
+      envVars['PROXY_BASE_URL'] = `http://${hostUrl}:${appPort}/api/proxy/${agentId}`
+      envVars['PROXY_TOKEN'] = proxyToken
 
       // Fetch connected accounts for this agent
       const accountMappings = await db
@@ -54,34 +61,19 @@ class ContainerManager {
         )
         .where(eq(agentConnectedAccounts.agentSlug, agentId))
 
-      // Group accounts by toolkit and fetch tokens
-      const tokensByToolkit: Record<string, Record<string, string>> = {}
-
+      // Build account metadata (names + IDs, no tokens)
+      const accountMetadata: Record<string, Array<{ name: string; id: string }>> = {}
       for (const { account } of accountMappings) {
         if (account.status !== 'active') continue
-
-        try {
-          const { accessToken } = await getConnectionToken(account.composioConnectionId)
-
-          if (!tokensByToolkit[account.toolkitSlug]) {
-            tokensByToolkit[account.toolkitSlug] = {}
-          }
-          tokensByToolkit[account.toolkitSlug][account.displayName] = accessToken
-        } catch (error) {
-          console.error(
-            `Failed to get token for connected account ${account.displayName}:`,
-            error
-          )
-          // Continue with other accounts
+        if (!accountMetadata[account.toolkitSlug]) {
+          accountMetadata[account.toolkitSlug] = []
         }
+        accountMetadata[account.toolkitSlug].push({
+          name: account.displayName,
+          id: account.id,
+        })
       }
-
-      // Add connected account tokens as env vars
-      // Format: CONNECTED_ACCOUNT_GMAIL={"Work Gmail": "token1", "Personal": "token2"}
-      for (const [toolkit, tokens] of Object.entries(tokensByToolkit)) {
-        const envVarName = `CONNECTED_ACCOUNT_${toolkit.toUpperCase()}`
-        envVars[envVarName] = JSON.stringify(tokens)
-      }
+      envVars['CONNECTED_ACCOUNTS'] = JSON.stringify(accountMetadata)
 
       // Start container (user secrets are in .env file in workspace)
       await client.start({ envVars })

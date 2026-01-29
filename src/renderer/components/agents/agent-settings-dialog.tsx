@@ -1,6 +1,6 @@
 
 import * as React from 'react'
-import { Settings, FileText, KeyRound, Sparkles, Link2 } from 'lucide-react'
+import { Settings, FileText, KeyRound, Sparkles, Link2, ScrollText } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import {
   Dialog,
@@ -24,8 +24,9 @@ import { SystemPromptTab } from './settings/system-prompt-tab'
 import { SecretsTab } from './settings/secrets-tab'
 import { SkillsTab } from './settings/skills-tab'
 import { ConnectedAccountsTab } from './settings/connected-accounts-tab'
+import { AuditLogTab } from './settings/audit-log-tab'
 
-type SettingsSection = 'general' | 'system-prompt' | 'secrets' | 'skills' | 'connected-accounts'
+type SettingsSection = 'general' | 'system-prompt' | 'secrets' | 'skills' | 'connected-accounts' | 'audit-log'
 
 const navItems = [
   { id: 'general' as const, name: 'General', icon: Settings },
@@ -33,6 +34,7 @@ const navItems = [
   { id: 'secrets' as const, name: 'Secrets', icon: KeyRound },
   { id: 'skills' as const, name: 'Skills', icon: Sparkles },
   { id: 'connected-accounts' as const, name: 'Accounts', icon: Link2 },
+  { id: 'audit-log' as const, name: 'API Log', icon: ScrollText },
 ]
 
 interface AgentSettingsDialogProps {
@@ -132,8 +134,11 @@ export function AgentSettingsDialog({
               {activeSection === 'connected-accounts' && (
                 <ConnectedAccountsTab agentSlug={agent.slug} />
               )}
+              {activeSection === 'audit-log' && (
+                <AuditLogTab agentSlug={agent.slug} />
+              )}
             </div>
-            {activeSection !== 'secrets' && activeSection !== 'skills' && activeSection !== 'connected-accounts' && (
+            {activeSection !== 'secrets' && activeSection !== 'skills' && activeSection !== 'connected-accounts' && activeSection !== 'audit-log' && (
               <div className="flex items-center justify-end gap-2 border-t p-4">
                 <Button variant="outline" onClick={() => onOpenChange(false)}>
                   Cancel

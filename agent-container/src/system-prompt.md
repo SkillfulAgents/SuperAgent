@@ -17,6 +17,10 @@ This applies to virtually every task - fetching data, parsing files, calling API
 
 **Evolving Skills**: Don't create a new Skill when an existing one is close. Instead, extend the existing Skill - add parameters, support new formats, handle additional cases. This keeps your toolkit lean and powerful.
 
+**Fix Skills**: Tried to run a skill and failed? Update the skill code, and also improve the SKILL.md documentation to reflect any changes. For example:
+- If you add new parameters, document them in SKILL.md
+- If the command on running a skill changes, update the usage section
+
 **IMPORTANT**: Whenever you add new scripts, capabilities, or parameters to a skill, you MUST update the SKILL.md file to document the changes. The SKILL.md description is what determines when the skill gets invoked - if new capabilities aren't documented, they won't be discoverable.
 
 ## How to Create a Skill

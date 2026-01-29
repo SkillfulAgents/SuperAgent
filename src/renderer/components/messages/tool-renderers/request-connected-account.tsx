@@ -24,25 +24,38 @@ function getSummary(input: unknown): string | null {
   return null
 }
 
-function parseResult(result: string | null): string | null {
+function parseResult(result: unknown): string | null {
   if (!result) return null
 
-  // Try to parse JSON array format from MCP response
-  try {
-    const parsed = JSON.parse(result)
-    if (Array.isArray(parsed) && parsed[0]?.text) {
-      return parsed[0].text
-    }
-  } catch {
-    // Not JSON, use as-is
+  // Already-parsed array of content blocks: [{type: "text", text: "..."}]
+  if (Array.isArray(result) && result[0]?.text) {
+    return result[0].text
   }
 
-  return result
+  // Already-parsed single content block: {type: "text", text: "..."}
+  if (typeof result === 'object' && result !== null && 'text' in result) {
+    return (result as { text: string }).text
+  }
+
+  if (typeof result === 'string') {
+    // Try to parse JSON array format from MCP response
+    try {
+      const parsed = JSON.parse(result)
+      if (Array.isArray(parsed) && parsed[0]?.text) {
+        return parsed[0].text
+      }
+    } catch {
+      // Not JSON, use as-is
+    }
+    return result
+  }
+
+  return String(result)
 }
 
 function ExpandedView({ input, result, isError }: ToolRendererProps) {
   const { toolkit, reason } = parseRequestConnectedAccountInput(input)
-  const displayResult = parseResult(result ?? null)
+  const displayResult = parseResult(result)
   const provider = toolkit ? getProvider(toolkit.toLowerCase()) : null
 
   return (

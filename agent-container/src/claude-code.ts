@@ -12,32 +12,23 @@ const PLATFORM_SYSTEM_PROMPT = fs.readFileSync(
 );
 
 /**
- * Parses connected account environment variables to extract account information.
- * Connected account env vars are named CONNECTED_ACCOUNT_<TOOLKIT> and contain
- * JSON objects mapping account names to tokens.
+ * Parses connected accounts metadata from the CONNECTED_ACCOUNTS env var.
+ * Format: {"toolkit": [{"name": "Display Name", "id": "uuid"}, ...]}
  */
-function parseConnectedAccounts(envVars?: string[]): Map<string, string[]> {
-  const accounts = new Map<string, string[]>();
+function parseConnectedAccounts(): Map<string, Array<{ name: string; id: string }>> {
+  const accounts = new Map<string, Array<{ name: string; id: string }>>();
+  const raw = process.env.CONNECTED_ACCOUNTS;
+  if (!raw) return accounts;
 
-  if (!envVars) return accounts;
-
-  for (const envVar of envVars) {
-    if (envVar.startsWith('CONNECTED_ACCOUNT_')) {
-      const toolkit = envVar.replace('CONNECTED_ACCOUNT_', '').toLowerCase();
-      const value = process.env[envVar];
-
-      if (value) {
-        try {
-          const parsed = JSON.parse(value);
-          const accountNames = Object.keys(parsed);
-          if (accountNames.length > 0) {
-            accounts.set(toolkit, accountNames);
-          }
-        } catch {
-          // Skip malformed JSON
-        }
+  try {
+    const parsed = JSON.parse(raw) as Record<string, Array<{ name: string; id: string }>>;
+    for (const [toolkit, entries] of Object.entries(parsed)) {
+      if (entries.length > 0) {
+        accounts.set(toolkit, entries);
       }
     }
+  } catch {
+    // Skip malformed JSON
   }
 
   return accounts;
@@ -56,30 +47,62 @@ function generateSystemPromptAppend(
   // Platform instructions
   sections.push(PLATFORM_SYSTEM_PROMPT);
 
-  // Parse connected accounts for explicit listing
-  const connectedAccounts = parseConnectedAccounts(availableEnvVars);
+  // Parse connected accounts metadata
+  const connectedAccounts = parseConnectedAccounts();
 
-  // Separate connected account env vars from regular secrets
+  // Filter out proxy/connected-account env vars from regular secrets
+  const proxyEnvVars = new Set(['PROXY_BASE_URL', 'PROXY_TOKEN', 'CONNECTED_ACCOUNTS']);
   const regularEnvVars = (availableEnvVars || []).filter(
-    name => !name.startsWith('CONNECTED_ACCOUNT_')
+    name => !name.startsWith('CONNECTED_ACCOUNT_') && !proxyEnvVars.has(name)
   );
 
-  // Connected accounts section (explicit listing of what's already available)
+  // Connected accounts section with proxy usage instructions
   if (connectedAccounts.size > 0) {
     const accountSections: string[] = [];
 
-    for (const [toolkit, accountNames] of connectedAccounts) {
+    for (const [toolkit, entries] of connectedAccounts) {
       const displayName = toolkit.charAt(0).toUpperCase() + toolkit.slice(1);
-      accountSections.push(`### ${displayName}\n${accountNames.map(name => `- ${name}`).join('\n')}`);
+      accountSections.push(
+        `### ${displayName}\n${entries.map(e => `- ${e.name} (ID: \`${e.id}\`)`).join('\n')}`
+      );
     }
 
     sections.push(`## Connected Accounts (Already Available)
 
-**IMPORTANT: You already have access to the following connected accounts. Do NOT request access to these - you already have it!**
+**IMPORTANT: You already have access to the following connected accounts via the proxy. Do NOT request access to these - you already have it!**
 
 ${accountSections.join('\n\n')}
 
-Access tokens are available in environment variables named \`CONNECTED_ACCOUNT_<TOOLKIT>\` (e.g., \`CONNECTED_ACCOUNT_GMAIL\`).`);
+### How to Make API Calls
+
+All API calls to external services go through a proxy that handles authentication automatically. Use the proxy URL with the account ID and target API host:
+
+\`\`\`
+URL: $PROXY_BASE_URL/<account_id>/<target_host>/<api_path>
+Header: Authorization: Bearer $PROXY_TOKEN
+\`\`\`
+
+**Example (curl):**
+\`\`\`bash
+curl "$PROXY_BASE_URL/<account_id>/api.gmail.com/gmail/v1/users/me/messages" \\
+  -H "Authorization: Bearer $PROXY_TOKEN"
+\`\`\`
+
+**Example (Python):**
+\`\`\`python
+import os, requests
+proxy_url = os.environ["PROXY_BASE_URL"]
+proxy_token = os.environ["PROXY_TOKEN"]
+resp = requests.get(
+    f"{proxy_url}/<account_id>/api.gmail.com/gmail/v1/users/me/messages",
+    headers={"Authorization": f"Bearer {proxy_token}"}
+)
+\`\`\`
+
+**Important notes:**
+- Replace \`<account_id>\` with the ID shown above for the account you want to use
+- The proxy handles token refresh automatically
+- The \`CONNECTED_ACCOUNTS\` env var contains the full account metadata as JSON`);
   }
 
   // Available environment variables (regular secrets)
