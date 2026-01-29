@@ -16,6 +16,7 @@ import { serve } from '@hono/node-server'
 import api from '../api'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { taskScheduler } from '@shared/lib/scheduler/task-scheduler'
+import { autoSleepMonitor } from '@shared/lib/scheduler/auto-sleep-monitor'
 import { findAvailablePort } from './find-port'
 
 // Use a more exotic default port to avoid conflicts
@@ -215,6 +216,11 @@ async function startApp() {
       console.error('Failed to start task scheduler:', error)
     })
 
+    // Start the auto-sleep monitor
+    autoSleepMonitor.start().catch((error) => {
+      console.error('Failed to start auto-sleep monitor:', error)
+    })
+
     // Start listening for notifications (for when window is closed)
     startNotificationListener()
   })
@@ -296,8 +302,9 @@ async function gracefulShutdown() {
   // Destroy tray
   destroyTray()
 
-  // Stop the task scheduler
+  // Stop the task scheduler and auto-sleep monitor
   taskScheduler.stop()
+  autoSleepMonitor.stop()
 
   // Stop all containers
   try {

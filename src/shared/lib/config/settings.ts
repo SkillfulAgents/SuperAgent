@@ -27,6 +27,7 @@ export interface NotificationSettings {
 export interface AppPreferences {
   showMenuBarIcon?: boolean
   notifications?: NotificationSettings
+  autoSleepTimeoutMinutes?: number
 }
 
 export interface AppSettings {
@@ -71,6 +72,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   },
   app: {
     showMenuBarIcon: true,
+    autoSleepTimeoutMinutes: 30,
     notifications: {
       enabled: true,
       sessionComplete: true,

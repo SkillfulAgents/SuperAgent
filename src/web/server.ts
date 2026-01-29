@@ -5,6 +5,7 @@ import { existsSync } from 'fs'
 import api from '../api'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { taskScheduler } from '@shared/lib/scheduler/task-scheduler'
+import { autoSleepMonitor } from '@shared/lib/scheduler/auto-sleep-monitor'
 
 const app = new Hono()
 
@@ -27,6 +28,11 @@ const server = serve({ fetch: app.fetch, port }, (info) => {
   taskScheduler.start().catch((error) => {
     console.error('Failed to start task scheduler:', error)
   })
+
+  // Start the auto-sleep monitor
+  autoSleepMonitor.start().catch((error) => {
+    console.error('Failed to start auto-sleep monitor:', error)
+  })
 })
 
 // Graceful shutdown handling
@@ -38,8 +44,9 @@ async function gracefulShutdown(signal: string) {
 
   console.log(`\nReceived ${signal}, shutting down gracefully...`)
 
-  // Stop the task scheduler
+  // Stop the task scheduler and auto-sleep monitor
   taskScheduler.stop()
+  autoSleepMonitor.stop()
 
   // Stop all containers
   try {

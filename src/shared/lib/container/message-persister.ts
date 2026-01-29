@@ -73,6 +73,16 @@ class MessagePersister {
     return this.subscriptions.has(sessionId)
   }
 
+  // Check if any session for a given agent is currently active (processing)
+  hasActiveSessionsForAgent(agentSlug: string): boolean {
+    for (const [, state] of this.streamingStates) {
+      if (state.agentSlug === agentSlug && state.isActive) {
+        return true
+      }
+    }
+    return false
+  }
+
   // Check if a session has active SSE clients (someone is viewing it)
   hasActiveViewers(sessionId: string): boolean {
     const clients = this.sseClients.get(sessionId)

@@ -28,6 +28,7 @@ export function RuntimeTab() {
   const [agentImage, setAgentImage] = useState('')
   const [cpuLimit, setCpuLimit] = useState('')
   const [memoryLimit, setMemoryLimit] = useState('')
+  const [autoSleepMinutes, setAutoSleepMinutes] = useState<string | null>(null)
 
   // Track if form has unsaved changes
   const [hasChanges, setHasChanges] = useState(false)
@@ -73,6 +74,7 @@ export function RuntimeTab() {
       setCpuLimit(settings.container.resourceLimits.cpu.toString())
       setMemoryLimit(settings.container.resourceLimits.memory)
       setHasChanges(false)
+      setAutoSleepMinutes(null)
     }
   }, [settings])
 
@@ -291,6 +293,34 @@ export function RuntimeTab() {
           <p className="text-xs text-muted-foreground">
             Memory limit (e.g., 512m, 1g).
           </p>
+        </div>
+      </div>
+
+      {/* Auto-Sleep Idle Containers */}
+      <div className="space-y-2">
+        <div className="space-y-0.5">
+          <Label htmlFor="auto-sleep-timeout">Idle Timeout</Label>
+          <p className="text-xs text-muted-foreground">
+            Automatically stop containers after being idle for this duration. Set to 0 to disable.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Input
+            id="auto-sleep-timeout"
+            type="number"
+            min={0}
+            step={1}
+            value={autoSleepMinutes ?? (settings?.app?.autoSleepTimeoutMinutes ?? 30).toString()}
+            onChange={(e) => setAutoSleepMinutes(e.target.value)}
+            onBlur={() => {
+              const value = Math.max(0, parseInt(autoSleepMinutes ?? '30', 10) || 0)
+              setAutoSleepMinutes(null)
+              updateSettings.mutate({ app: { autoSleepTimeoutMinutes: value } })
+            }}
+            className="w-24"
+            disabled={isLoading}
+          />
+          <span className="text-sm text-muted-foreground">minutes</span>
         </div>
       </div>
 
