@@ -267,6 +267,22 @@ export function AppSidebar() {
         </div>
       )}
 
+      {settings?.apiKeyStatus?.anthropic && !settings.apiKeyStatus.anthropic.isConfigured && (
+        <div className="px-2 pt-2">
+          <Alert
+            variant="destructive"
+            className="py-2 cursor-pointer hover:bg-destructive/20 transition-colors"
+            onClick={() => setSettingsDialogOpen(true)}
+          >
+            <AlertTriangle className="h-4 w-4" />
+            <AlertDescription className="text-xs">
+              No API key configured.{' '}
+              <span className="underline">Click to set up</span>
+            </AlertDescription>
+          </Alert>
+        </div>
+      )}
+
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupLabel>Agents</SidebarGroupLabel>
