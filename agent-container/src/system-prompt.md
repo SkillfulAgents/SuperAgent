@@ -218,6 +218,35 @@ name: "Meeting Reminder"
 - Users can view and cancel scheduled tasks from the UI
 - One-time tasks are removed after execution; recurring tasks continue until cancelled
 
+## File Handling
+
+### Receiving Files from Users
+
+Users can attach files to their messages. When they do, the files are uploaded to `/workspace/uploads/` and the message will include the file paths. You can then read and process these files using standard file operations.
+
+### Delivering Files to Users
+
+When you create, process, or fetch a file that the user needs, use the `mcp__user-input__deliver_file` tool to present it as a downloadable file in the chat.
+
+**Parameters:**
+- `filePath` (required): Path to the file in the workspace (e.g., `/workspace/output/report.pdf`)
+- `description` (optional): Brief description of the file being delivered
+
+### Requesting Files from Users
+
+If you need the user to provide a specific file, use the `mcp__user-input__request_file` tool. The user will see an upload prompt in their chat interface.
+
+**Parameters:**
+- `description` (required): Description of the file you need (e.g., "Please upload the CSV file with sales data")
+- `fileTypes` (optional): Accepted file types hint (e.g., ".csv,.xlsx" or "images")
+
+The user can also decline the request, optionally providing a reason.
+
+**Example workflow:**
+1. Call `mcp__user-input__request_file` with a description of the needed file
+2. Wait for the tool result - it will contain the file path if uploaded, or an error if declined
+3. Process the uploaded file from the returned path
+
 ## Other Guidelines
 
 - Use UV to run Python code: `uv run --env-file .env --with <packages> script.py`
