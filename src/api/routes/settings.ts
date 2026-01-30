@@ -1,8 +1,9 @@
 import { Hono } from 'hono'
-import { getDataDir } from '@shared/lib/config/data-dir'
+import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
 import {
   getSettings,
   updateSettings,
+  clearSettingsCache,
   getAnthropicApiKeyStatus,
   getComposioApiKeyStatus,
   getComposioUserId,
@@ -12,6 +13,9 @@ import {
 } from '@shared/lib/config/settings'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { checkAllRunnersAvailability, startRunner, type ContainerRunner } from '@shared/lib/container/client-factory'
+import { db } from '@shared/lib/db'
+import { proxyAuditLog, proxyTokens, agentConnectedAccounts, scheduledTasks, notifications, connectedAccounts } from '@shared/lib/db/schema'
+import fs from 'fs'
 
 const settings = new Hono()
 
@@ -186,6 +190,36 @@ settings.post('/start-runner', async (c) => {
   } catch (error) {
     console.error('Failed to start runner:', error)
     return c.json({ error: 'Failed to start runner' }, 500)
+  }
+})
+
+// POST /api/settings/factory-reset - Reset all data
+settings.post('/factory-reset', async (c) => {
+  try {
+    // Stop all running containers
+    await containerManager.stopAll()
+
+    // Delete agents directory
+    const agentsDir = getAgentsDataDir()
+    await fs.promises.rm(agentsDir, { recursive: true, force: true })
+
+    // Clear all DB tables (order matters for FK constraints)
+    db.delete(proxyAuditLog).run()
+    db.delete(proxyTokens).run()
+    db.delete(agentConnectedAccounts).run()
+    db.delete(scheduledTasks).run()
+    db.delete(notifications).run()
+    db.delete(connectedAccounts).run()
+
+    // Delete settings file
+    const settingsPath = `${getDataDir()}/settings.json`
+    await fs.promises.rm(settingsPath, { force: true })
+    clearSettingsCache()
+
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('Factory reset failed:', error)
+    return c.json({ error: 'Factory reset failed' }, 500)
   }
 })
 

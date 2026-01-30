@@ -66,6 +66,26 @@ export interface StartRunnerResponse {
   runnerAvailability?: RunnerAvailability[]
 }
 
+export function useFactoryReset() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async () => {
+      const res = await apiFetch('/api/settings/factory-reset', {
+        method: 'POST',
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || 'Factory reset failed')
+      }
+      return res.json()
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries()
+    },
+  })
+}
+
 export function useStartRunner() {
   const queryClient = useQueryClient()
 
