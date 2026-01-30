@@ -34,11 +34,13 @@ const navItems = [
 interface GlobalSettingsDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  onOpenWizard: () => void
 }
 
 export function GlobalSettingsDialog({
   open,
   onOpenChange,
+  onOpenWizard,
 }: GlobalSettingsDialogProps) {
   const [activeSection, setActiveSection] = React.useState<SettingsSection>('general')
 
@@ -87,7 +89,7 @@ export function GlobalSettingsDialog({
               </span>
             </header>
             <div className="flex flex-1 flex-col gap-4 overflow-y-auto p-4">
-              {activeSection === 'general' && <GeneralTab />}
+              {activeSection === 'general' && <GeneralTab onOpenWizard={onOpenWizard} />}
               {activeSection === 'notifications' && <NotificationsTab />}
               {activeSection === 'runtime' && <RuntimeTab />}
               {activeSection === 'composio' && <ComposioTab />}

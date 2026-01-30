@@ -14,7 +14,6 @@ async function globalSetup() {
   if (!fs.existsSync(e2eDataDir)) {
     fs.mkdirSync(e2eDataDir, { recursive: true })
     console.log('[E2E Setup] Created E2E data directory:', e2eDataDir)
-    return
   }
 
   // Remove the database file to start fresh
@@ -35,6 +34,22 @@ async function globalSetup() {
     fs.rmSync(agentsDir, { recursive: true })
     console.log('[E2E Setup] Removed agents directory')
   }
+
+  // Write settings.json with setupCompleted: true so the getting started wizard
+  // does not auto-open during existing tests
+  const settingsPath = path.join(e2eDataDir, 'settings.json')
+  const settings = {
+    container: {
+      containerRunner: 'docker',
+      agentImage: 'ghcr.io/skilfulagents/superagent-agent-container-base:main',
+      resourceLimits: { cpu: 1, memory: '512m' },
+    },
+    app: {
+      setupCompleted: true,
+    },
+  }
+  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  console.log('[E2E Setup] Wrote settings.json with setupCompleted: true')
 
   console.log('[E2E Setup] E2E test data cleaned successfully')
 }

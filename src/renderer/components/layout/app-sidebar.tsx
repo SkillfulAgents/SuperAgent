@@ -211,9 +211,14 @@ function AgentMenuItem({ agent }: { agent: ApiAgent }) {
   )
 }
 
-export function AppSidebar() {
+interface AppSidebarProps {
+  settingsDialogOpen: boolean
+  onSettingsDialogOpenChange: (open: boolean) => void
+  onOpenWizard: () => void
+}
+
+export function AppSidebar({ settingsDialogOpen, onSettingsDialogOpenChange, onOpenWizard }: AppSidebarProps) {
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
-  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
   const [containerSetupOpen, setContainerSetupOpen] = useState(false)
   const { data: agents, isLoading, error } = useAgents()
   const { data: settings } = useSettings()
@@ -272,7 +277,7 @@ export function AppSidebar() {
           <Alert
             variant="destructive"
             className="py-2 cursor-pointer hover:bg-destructive/20 transition-colors"
-            onClick={() => setSettingsDialogOpen(true)}
+            onClick={() => onSettingsDialogOpenChange(true)}
           >
             <AlertTriangle className="h-4 w-4" />
             <AlertDescription className="text-xs">
@@ -322,7 +327,7 @@ export function AppSidebar() {
         <SidebarMenu>
           <SidebarMenuItem>
             <div className="flex items-center justify-between w-full">
-              <SidebarMenuButton onClick={() => setSettingsDialogOpen(true)} className="flex-1">
+              <SidebarMenuButton onClick={() => onSettingsDialogOpenChange(true)} className="flex-1">
                 <Settings className="h-4 w-4" />
                 <span>Settings</span>
               </SidebarMenuButton>
@@ -342,7 +347,8 @@ export function AppSidebar() {
 
       <GlobalSettingsDialog
         open={settingsDialogOpen}
-        onOpenChange={setSettingsDialogOpen}
+        onOpenChange={onSettingsDialogOpenChange}
+        onOpenWizard={onOpenWizard}
       />
 
       <ContainerSetupDialog

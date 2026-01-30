@@ -21,11 +21,32 @@ export class AppPage {
   }
 
   /**
+   * Dismiss the getting started wizard if it's open.
+   * Clicks through all steps using Next/Skip/Finish to close it.
+   */
+  async dismissWizardIfVisible() {
+    const wizard = this.page.locator('[data-testid="wizard-dialog"]')
+    if (await wizard.isVisible({ timeout: 1000 }).catch(() => false)) {
+      // Click Next through required steps (Welcome, LLM, Docker)
+      for (let i = 0; i < 3; i++) {
+        await this.page.locator('[data-testid="wizard-next"]').click()
+      }
+      // Skip Composio step
+      await this.page.locator('[data-testid="wizard-skip"]').click()
+      // Finish on last step
+      await this.page.locator('[data-testid="wizard-finish"]').click()
+      await expect(wizard).not.toBeVisible()
+    }
+  }
+
+  /**
    * Wait for agents list to finish loading (no loading skeletons)
    */
   async waitForAgentsLoaded() {
     // Wait for sidebar to be visible first
     await this.waitForAppLoaded()
+    // Dismiss wizard if it auto-opened (safety net for clean test state)
+    await this.dismissWizardIfVisible()
     // Wait a moment for any loading states to resolve
     await this.page.waitForTimeout(500)
   }

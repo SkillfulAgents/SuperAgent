@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import Anthropic from '@anthropic-ai/sdk'
 import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
 import {
   getSettings,
@@ -39,6 +40,7 @@ settings.get('/', async (c) => {
         composio: getComposioApiKeyStatus(),
       },
       composioUserId: getComposioUserId(),
+      setupCompleted: !!currentSettings.app?.setupCompleted,
     }
 
     return c.json(response)
@@ -156,6 +158,7 @@ settings.put('/', async (c) => {
         composio: getComposioApiKeyStatus(),
       },
       composioUserId: getComposioUserId(),
+      setupCompleted: !!newSettings.app?.setupCompleted,
     })
   } catch (error) {
     console.error('Failed to update settings:', error)
@@ -190,6 +193,28 @@ settings.post('/start-runner', async (c) => {
   } catch (error) {
     console.error('Failed to start runner:', error)
     return c.json({ error: 'Failed to start runner' }, 500)
+  }
+})
+
+// POST /api/settings/validate-anthropic-key - Validate an Anthropic API key
+settings.post('/validate-anthropic-key', async (c) => {
+  try {
+    const { apiKey } = await c.req.json()
+    if (!apiKey || typeof apiKey !== 'string') {
+      return c.json({ valid: false, error: 'API key is required' }, 400)
+    }
+
+    const client = new Anthropic({ apiKey })
+    await client.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 1,
+      messages: [{ role: 'user', content: 'Hi' }],
+    })
+
+    return c.json({ valid: true })
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Invalid API key'
+    return c.json({ valid: false, error: message })
   }
 })
 

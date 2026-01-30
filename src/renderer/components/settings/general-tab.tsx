@@ -3,7 +3,6 @@ import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Button } from '@renderer/components/ui/button'
 import { Switch } from '@renderer/components/ui/switch'
-import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -16,16 +15,16 @@ import {
   AlertDialogTrigger,
 } from '@renderer/components/ui/alert-dialog'
 import { useSettings, useUpdateSettings, useFactoryReset } from '@renderer/hooks/use-settings'
-import { AlertTriangle, Eye, EyeOff, RotateCcw } from 'lucide-react'
+import { RotateCcw, Wand2 } from 'lucide-react'
+import { AnthropicApiKeyInput } from './anthropic-api-key-input'
 
-export function GeneralTab() {
+interface GeneralTabProps {
+  onOpenWizard: () => void
+}
+
+export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
   const { data: settings, isLoading } = useSettings()
   const updateSettings = useUpdateSettings()
-
-  // API key state
-  const [apiKeyInput, setApiKeyInput] = useState('')
-  const [showApiKey, setShowApiKey] = useState(false)
-  const [isSavingApiKey, setIsSavingApiKey] = useState(false)
 
   // Menu bar toggle state - use local state for optimistic UI
   const [menuBarEnabled, setMenuBarEnabled] = useState<boolean | null>(null)
@@ -36,35 +35,6 @@ export function GeneralTab() {
       setMenuBarEnabled(null)
     }
   }, [settings])
-
-  const handleSaveApiKey = async () => {
-    if (!apiKeyInput.trim()) return
-    setIsSavingApiKey(true)
-    try {
-      await updateSettings.mutateAsync({
-        apiKeys: { anthropicApiKey: apiKeyInput.trim() },
-      })
-      setApiKeyInput('')
-      setShowApiKey(false)
-    } catch (error) {
-      console.error('Failed to save API key:', error)
-    } finally {
-      setIsSavingApiKey(false)
-    }
-  }
-
-  const handleRemoveApiKey = async () => {
-    setIsSavingApiKey(true)
-    try {
-      await updateSettings.mutateAsync({
-        apiKeys: { anthropicApiKey: '' },
-      })
-    } catch (error) {
-      console.error('Failed to remove API key:', error)
-    } finally {
-      setIsSavingApiKey(false)
-    }
-  }
 
   const factoryReset = useFactoryReset()
   const [isResetting, setIsResetting] = useState(false)
@@ -79,8 +49,6 @@ export function GeneralTab() {
       setIsResetting(false)
     }
   }
-
-  const apiKeyStatus = settings?.apiKeyStatus?.anthropic
 
   return (
     <div className="space-y-6">
@@ -126,83 +94,22 @@ export function GeneralTab() {
       {/* API Keys Section */}
       <div className="pt-4 border-t space-y-4">
         <h3 className="text-sm font-medium">API Keys</h3>
+        <AnthropicApiKeyInput disabled={isLoading} />
+      </div>
 
-        <div className="space-y-2">
-          <Label htmlFor="anthropic-api-key">Anthropic API Key</Label>
-
-          {/* Source indicator */}
-          {apiKeyStatus?.isConfigured && (
-            <div className="flex items-center gap-2">
-              <span
-                className={`text-xs px-2 py-0.5 rounded-full ${
-                  apiKeyStatus.source === 'settings'
-                    ? 'bg-green-500/10 text-green-700 dark:text-green-400'
-                    : 'bg-blue-500/10 text-blue-700 dark:text-blue-400'
-                }`}
-              >
-                {apiKeyStatus.source === 'settings'
-                  ? 'Using saved setting'
-                  : 'Using environment variable'}
-              </span>
-            </div>
-          )}
-
-          {!apiKeyStatus?.isConfigured && (
-            <Alert variant="destructive">
-              <AlertTriangle className="h-4 w-4" />
-              <AlertDescription>
-                No API key configured. Set <code className="bg-muted px-1 rounded">ANTHROPIC_API_KEY</code> environment variable or enter below.
-              </AlertDescription>
-            </Alert>
-          )}
-
-          {/* Input with show/hide toggle */}
-          <div className="relative">
-            <Input
-              id="anthropic-api-key"
-              type={showApiKey ? 'text' : 'password'}
-              value={apiKeyInput}
-              onChange={(e) => setApiKeyInput(e.target.value)}
-              placeholder={apiKeyStatus?.isConfigured ? '••••••••••••••••' : 'sk-ant-...'}
-              className="pr-10"
-              disabled={isLoading}
-            />
-            <button
-              type="button"
-              onClick={() => setShowApiKey(!showApiKey)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              disabled={isLoading}
-            >
-              {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-            </button>
+      {/* Setup Wizard */}
+      <div className="pt-4 border-t space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="space-y-0.5">
+            <Label>Setup Wizard</Label>
+            <p className="text-xs text-muted-foreground">
+              Re-run the getting started wizard to reconfigure your setup
+            </p>
           </div>
-
-          <p className="text-xs text-muted-foreground">
-            {apiKeyStatus?.source === 'settings'
-              ? 'Your API key is saved locally. Enter a new key to replace it.'
-              : apiKeyStatus?.source === 'env'
-                ? 'Save a key here to override the environment variable.'
-                : 'Your API key will be saved locally in ~/.superagent/settings.json'}
-          </p>
-
-          {/* Save/Remove buttons */}
-          <div className="flex gap-2">
-            {apiKeyInput.trim() && (
-              <Button size="sm" onClick={handleSaveApiKey} disabled={isSavingApiKey}>
-                {isSavingApiKey ? 'Saving...' : 'Save API Key'}
-              </Button>
-            )}
-            {apiKeyStatus?.source === 'settings' && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={handleRemoveApiKey}
-                disabled={isSavingApiKey}
-              >
-                {isSavingApiKey ? 'Removing...' : 'Remove Saved Key'}
-              </Button>
-            )}
-          </div>
+          <Button variant="outline" size="sm" onClick={onOpenWizard} data-testid="rerun-wizard-button">
+            <Wand2 className="h-4 w-4 mr-2" />
+            Re-run Wizard
+          </Button>
         </div>
       </div>
 

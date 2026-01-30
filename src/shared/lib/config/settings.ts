@@ -28,6 +28,7 @@ export interface AppPreferences {
   showMenuBarIcon?: boolean
   notifications?: NotificationSettings
   autoSleepTimeoutMinutes?: number
+  setupCompleted?: boolean
 }
 
 export interface AppSettings {
@@ -59,6 +60,7 @@ export interface GlobalSettingsResponse {
     composio: ApiKeyStatus
   }
   composioUserId?: string
+  setupCompleted: boolean
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
