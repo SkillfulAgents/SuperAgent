@@ -52,6 +52,23 @@ RUN npm install -g @anthropic-ai/claude-code@2.1.4
 # Install TypeScript and ts-node globally
 RUN npm install -g typescript ts-node
 
+# Install Chromium dependencies (needed by Playwright/agent-browser)
+RUN apt-get update && apt-get install -y \
+    libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
+    libcups2 libdrm2 libdbus-1-3 libxkbcommon0 \
+    libatspi2.0-0 libxcomposite1 libxdamage1 libxfixes3 \
+    libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2 \
+    libxshmfence1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install agent-browser and download Chromium
+# Set PLAYWRIGHT_BROWSERS_PATH so browsers are installed to a shared location
+# accessible by both root (build) and claude (runtime) users
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+RUN npm install -g agent-browser && \
+    npx playwright install chromium && \
+    chmod -R o+rx /opt/playwright-browsers
+
 # Create workspace directory
 RUN mkdir -p /workspace
 WORKDIR /app
@@ -83,6 +100,10 @@ EXPOSE 3000
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOME=/home/claude
+ENV AGENT_BROWSER_STREAM_PORT=9223
+ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-blink-features=AutomationControlled,--disable-features=AutomationControlled,--disable-infobars,--disable-background-timer-throttling,--disable-popup-blocking,--disable-backgrounding-occluded-windows,--disable-renderer-backgrounding,--disable-component-update"
+ENV AGENT_BROWSER_USER_AGENT="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+ENV AGENT_BROWSER_PROFILE=/workspace/.browser-profile
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

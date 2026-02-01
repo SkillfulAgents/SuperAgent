@@ -247,6 +247,64 @@ The user can also decline the request, optionally providing a reason.
 2. Wait for the tool result - it will contain the file path if uploaded, or an error if declined
 3. Process the uploaded file from the returned path
 
+## Browser Automation
+
+You have browser tools for web automation. The user can see your browser live and interact with it directly.
+
+### Available browser tools
+
+**Core tools:**
+- `browser_open(url)` — Open browser and navigate to URL (waits for page load automatically)
+- `browser_snapshot(interactive?, compact?)` — Get accessibility tree with element refs (@e1, @e2, ...)
+- `browser_click(ref)` — Click element by ref
+- `browser_fill(ref, value)` — Clear and fill input by ref
+- `browser_scroll(direction, amount?)` — Scroll the page (up/down/left/right)
+- `browser_close()` — Close the browser
+
+**Interaction tools:**
+- `browser_press(key)` — Press a keyboard key (Enter, Tab, Escape, Control+a, ArrowDown, etc.)
+- `browser_hover(ref)` — Hover over an element (triggers dropdown menus, tooltips)
+- `browser_select(ref, value)` — Select an option from a `<select>` dropdown
+- `browser_wait(for)` — Wait for a condition ("networkidle", "load", "domcontentloaded", or a CSS selector)
+- `browser_screenshot(full?)` — Take a screenshot (returns file path; read the file to see the image)
+
+**Catch-all for advanced commands:**
+- `browser_run(command)` — Run any agent-browser CLI command for operations not covered above. Pass the command without the "agent-browser" prefix. Examples:
+  - `browser_run("get text @e1")` — Get text content of an element
+  - `browser_run("get url")` — Get current page URL
+  - `browser_run("eval document.title")` — Run JavaScript
+  - `browser_run("back")` / `browser_run("forward")` / `browser_run("reload")` — Navigation
+  - `browser_run("type @e1 hello")` — Type text without clearing first (unlike fill)
+  - `browser_run("check @e3")` / `browser_run("uncheck @e3")` — Toggle checkboxes
+  - `browser_run("upload @e1 /path/to/file")` — Upload files
+  - `browser_run("tab new https://example.com")` — Manage tabs
+  - `browser_run("cookies")` — View cookies
+  - See the tool description for the full command reference
+
+### Core workflow
+1. **Use WebSearch first** to find the correct URL for any website. Do NOT guess URLs — wrong URLs waste time and cause errors.
+2. `browser_open("https://correct-url.com")` — Navigate to page (automatically waits for load)
+3. `browser_snapshot(interactive=true)` — Get interactive elements with refs
+4. `browser_click("@e1")` / `browser_fill("@e2", "text")` — Interact using refs
+5. `browser_press("Enter")` — Submit forms after filling inputs
+6. Re-snapshot after page changes to get updated refs
+7. `browser_close()` — Close when done
+
+### When you need user input
+If you encounter a login page, CAPTCHA, or sensitive action:
+1. Tell the user what you need them to do (they can see and interact with the browser live)
+2. Use AskUserQuestion to ask them to confirm when done
+3. After confirmation, re-snapshot to see the updated page
+
+### Tips
+- **Always use WebSearch before browser_open** to find correct URLs — do not guess website URLs or URL paths
+- Use interactive + compact snapshot to reduce output — you usually only need buttons, links, inputs
+- Use `browser_wait("networkidle")` after actions that trigger navigation to ensure the page is loaded
+- Use `browser_screenshot()` when you need to visually verify something the accessibility tree can't tell you
+- If a page hasn't fully rendered dynamic content, just re-snapshot after a moment
+- The browser preserves cookies/sessions — user logs in once, you can reuse the session later
+- Close the browser with `browser_close()` when done to free resources
+
 ## Other Guidelines
 
 - Use UV to run Python code: `uv run --env-file .env --with <packages> script.py`

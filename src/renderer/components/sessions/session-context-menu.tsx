@@ -18,7 +18,8 @@ import {
 } from '@renderer/components/ui/alert-dialog'
 import { useDeleteSession } from '@renderer/hooks/use-sessions'
 import { useSelection } from '@renderer/context/selection-context'
-import { Trash2 } from 'lucide-react'
+import { Trash2, ClipboardCopy } from 'lucide-react'
+import { apiFetch } from '@renderer/lib/api'
 
 interface SessionContextMenuProps {
   sessionId: string
@@ -51,6 +52,19 @@ export function SessionContextMenu({
     }
   }
 
+  const handleCopyRawLog = async () => {
+    try {
+      const response = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/raw-log`)
+      if (!response.ok) {
+        throw new Error('Failed to fetch raw log')
+      }
+      const text = await response.text()
+      await navigator.clipboard.writeText(text)
+    } catch (error) {
+      console.error('Failed to copy raw log:', error)
+    }
+  }
+
   return (
     <>
       <ContextMenu>
@@ -58,6 +72,10 @@ export function SessionContextMenu({
           {children}
         </ContextMenuTrigger>
         <ContextMenuContent>
+          <ContextMenuItem onClick={handleCopyRawLog}>
+            <ClipboardCopy className="h-4 w-4 mr-2" />
+            Copy Raw Log
+          </ContextMenuItem>
           <ContextMenuItem
             className="text-destructive focus:text-destructive"
             onClick={() => setShowDeleteDialog(true)}

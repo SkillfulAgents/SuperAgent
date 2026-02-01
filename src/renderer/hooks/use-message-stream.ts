@@ -41,6 +41,7 @@ interface StreamState {
   pendingQuestionRequests: QuestionRequest[]
   pendingFileRequests: FileRequest[]
   error: string | null // Error message if session encountered an error
+  browserActive: boolean // Whether browser is running for this session
 }
 
 // Global state to track streaming per session
@@ -90,7 +91,19 @@ function getOrCreateEventSource(
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
           error: null,
+          browserActive: current?.browserActive ?? false,
         })
+        // Fetch current browser status to sync state (handles missed events)
+        fetch(`${baseUrl}/api/agents/${agentSlug}/browser/status`)
+          .then((res) => res.json())
+          .then((status: { active?: boolean }) => {
+            const latest = streamStates.get(sessionId)
+            if (latest && latest.browserActive !== (status.active ?? false)) {
+              streamStates.set(sessionId, { ...latest, browserActive: status.active ?? false })
+              streamListeners.get(sessionId)?.forEach((listener) => listener())
+            }
+          })
+          .catch(() => { /* ignore - agent may not be running */ })
       }
       else if (data.type === 'session_active') {
         // Session became active - user sent a message
@@ -104,6 +117,7 @@ function getOrCreateEventSource(
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
           error: null, // Clear any previous error when starting new request
+          browserActive: current?.browserActive ?? false,
         })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
       }
@@ -120,6 +134,7 @@ function getOrCreateEventSource(
           pendingQuestionRequests: [],
           pendingFileRequests: [],
           error: null,
+          browserActive: current?.browserActive ?? false,
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -136,6 +151,7 @@ function getOrCreateEventSource(
           pendingQuestionRequests: [],
           pendingFileRequests: [],
           error: data.error || 'An unknown error occurred',
+          browserActive: current?.browserActive ?? false,
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -152,6 +168,7 @@ function getOrCreateEventSource(
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
           error: null,
+          browserActive: current?.browserActive ?? false,
         })
       }
       else if (data.type === 'stream_delta') {
@@ -165,6 +182,7 @@ function getOrCreateEventSource(
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
           error: current?.error ?? null,
+          browserActive: current?.browserActive ?? false,
         })
       }
       else if (data.type === 'tool_use_start' || data.type === 'tool_use_streaming') {
@@ -182,6 +200,7 @@ function getOrCreateEventSource(
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
           error: current?.error ?? null,
+          browserActive: current?.browserActive ?? false,
         })
       }
       else if (data.type === 'tool_use_ready') {
@@ -196,6 +215,7 @@ function getOrCreateEventSource(
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
           error: current?.error ?? null,
+          browserActive: current?.browserActive ?? false,
         })
       }
       else if (data.type === 'stream_end') {
@@ -209,6 +229,7 @@ function getOrCreateEventSource(
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
           error: current?.error ?? null,
+          browserActive: current?.browserActive ?? false,
         })
       }
       else if (data.type === 'tool_call' || data.type === 'tool_result') {
@@ -224,6 +245,7 @@ function getOrCreateEventSource(
             pendingQuestionRequests: current.pendingQuestionRequests ?? [],
             pendingFileRequests: current.pendingFileRequests ?? [],
             error: current.error ?? null,
+            browserActive: current.browserActive ?? false,
           })
         }
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
@@ -248,6 +270,7 @@ function getOrCreateEventSource(
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
           error: current?.error ?? null,
+          browserActive: current?.browserActive ?? false,
         })
       }
       else if (data.type === 'connected_account_request') {
@@ -270,6 +293,7 @@ function getOrCreateEventSource(
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
           error: current?.error ?? null,
+          browserActive: current?.browserActive ?? false,
         })
       }
       else if (data.type === 'user_question_request') {
@@ -291,6 +315,7 @@ function getOrCreateEventSource(
           ],
           pendingFileRequests: current?.pendingFileRequests ?? [],
           error: current?.error ?? null,
+          browserActive: current?.browserActive ?? false,
         })
       }
       else if (data.type === 'file_request') {
@@ -313,7 +338,17 @@ function getOrCreateEventSource(
             newRequest,
           ],
           error: current?.error ?? null,
+          browserActive: current?.browserActive ?? false,
         })
+      }
+      else if (data.type === 'browser_active') {
+        // Browser state changed
+        if (current) {
+          streamStates.set(sessionId, {
+            ...current,
+            browserActive: data.active ?? false,
+          })
+        }
       }
       else if (data.type === 'session_updated') {
         // Session metadata changed (e.g., name) - invalidate session caches
@@ -434,6 +469,15 @@ export function removeQuestionRequest(sessionId: string, toolUseId: string): voi
   }
 }
 
+// Helper to clear browserActive state (used by BrowserPreview when stream disconnects)
+export function clearBrowserActive(sessionId: string): void {
+  const current = streamStates.get(sessionId)
+  if (current && current.browserActive) {
+    streamStates.set(sessionId, { ...current, browserActive: false })
+    streamListeners.get(sessionId)?.forEach((listener) => listener())
+  }
+}
+
 export function useMessageStream(sessionId: string | null, agentSlug: string | null) {
   const [state, setState] = useState<StreamState>({
     isActive: false,
@@ -445,6 +489,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     pendingQuestionRequests: [],
     pendingFileRequests: [],
     error: null,
+    browserActive: false,
   })
   const queryClient = useQueryClient()
 
@@ -481,6 +526,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
         pendingQuestionRequests: [],
         pendingFileRequests: [],
         error: null,
+        browserActive: false,
       })
     }
     updateState()

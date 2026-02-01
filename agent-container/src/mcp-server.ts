@@ -11,6 +11,7 @@ import { requestConnectedAccountTool } from './tools/request-connected-account'
 import { scheduleTaskTool } from './tools/schedule-task'
 import { deliverFileTool } from './tools/deliver-file'
 import { requestFileTool } from './tools/request-file'
+import { browserTools } from './tools/browser'
 
 /**
  * MCP server for user input tools.
@@ -20,4 +21,14 @@ export const userInputMcpServer = createSdkMcpServer({
   name: 'user-input',
   version: '1.0.0',
   tools: [requestSecretTool, requestConnectedAccountTool, scheduleTaskTool, deliverFileTool, requestFileTool],
+})
+
+/**
+ * MCP server for browser automation tools.
+ * Tools will be available as mcp__browser__<tool_name>
+ */
+export const browserMcpServer = createSdkMcpServer({
+  name: 'browser',
+  version: '1.0.0',
+  tools: browserTools,
 })

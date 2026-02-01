@@ -1,6 +1,6 @@
 
 import * as React from 'react'
-import { Settings, Link2, Container, Bell } from 'lucide-react'
+import { Settings, Link2, Container, Bell, Globe } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -21,13 +21,15 @@ import { GeneralTab } from './general-tab'
 import { RuntimeTab } from './runtime-tab'
 import { ComposioTab } from './composio-tab'
 import { NotificationsTab } from './notifications-tab'
+import { BrowserTab } from './browser-tab'
 
-type SettingsSection = 'general' | 'notifications' | 'runtime' | 'composio'
+type SettingsSection = 'general' | 'notifications' | 'runtime' | 'browser' | 'composio'
 
 const navItems = [
   { id: 'general' as const, name: 'General', icon: Settings },
   { id: 'notifications' as const, name: 'Notifications', icon: Bell },
   { id: 'runtime' as const, name: 'Runtime', icon: Container },
+  { id: 'browser' as const, name: 'Browser Use', icon: Globe },
   { id: 'composio' as const, name: 'Accounts', icon: Link2 },
 ]
 
@@ -92,6 +94,7 @@ export function GlobalSettingsDialog({
               {activeSection === 'general' && <GeneralTab onOpenWizard={onOpenWizard} />}
               {activeSection === 'notifications' && <NotificationsTab />}
               {activeSection === 'runtime' && <RuntimeTab />}
+              {activeSection === 'browser' && <BrowserTab />}
               {activeSection === 'composio' && <ComposioTab />}
             </div>
           </main>

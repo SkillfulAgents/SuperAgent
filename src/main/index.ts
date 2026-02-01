@@ -3,6 +3,7 @@ import path from 'path'
 import { EventSource } from 'eventsource'
 import { createTray, destroyTray, updateTrayWindow, setTrayVisible } from './tray'
 import { getSettings } from '@shared/lib/config/settings'
+import { hostBrowserManager } from './host-browser-manager'
 
 // Set Electron-specific data directory BEFORE importing API
 // This uses ~/Library/Application Support/Superagent on macOS
@@ -18,6 +19,7 @@ import { containerManager } from '@shared/lib/container/container-manager'
 import { taskScheduler } from '@shared/lib/scheduler/task-scheduler'
 import { autoSleepMonitor } from '@shared/lib/scheduler/auto-sleep-monitor'
 import { findAvailablePort } from './find-port'
+import { setupBrowserStreamProxy } from './browser-stream-proxy'
 
 // Use a more exotic default port to avoid conflicts
 const DEFAULT_API_PORT = 47891
@@ -115,6 +117,11 @@ ipcMain.handle('set-badge-count', (_event, count: number) => {
   if (process.platform === 'darwin') {
     app.setBadgeCount(count)
   }
+})
+
+// IPC handler for detecting host browser availability
+ipcMain.handle('detect-host-browser', () => {
+  return hostBrowserManager.detect()
 })
 
 // Handle OAuth callback URLs (macOS)
@@ -225,6 +232,9 @@ async function startApp() {
     startNotificationListener()
   })
 
+  // Set up WebSocket upgrade handler for browser stream proxy
+  setupBrowserStreamProxy(apiServer)
+
   // Wait for app to be ready, then create window
   await app.whenReady()
   createWindow()
@@ -301,6 +311,9 @@ async function gracefulShutdown() {
 
   // Destroy tray
   destroyTray()
+
+  // Stop host browser if we launched it
+  hostBrowserManager.stop()
 
   // Stop the task scheduler and auto-sleep monitor
   taskScheduler.stop()

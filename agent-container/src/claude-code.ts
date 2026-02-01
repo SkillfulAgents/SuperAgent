@@ -2,8 +2,9 @@ import { query, Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
-import { userInputMcpServer } from './mcp-server';
+import { userInputMcpServer, browserMcpServer } from './mcp-server';
 import { inputManager } from './input-manager';
+import { setCurrentBrowserSessionId } from './tools/browser';
 
 // Load platform system prompt from file
 const PLATFORM_SYSTEM_PROMPT = fs.readFileSync(
@@ -209,6 +210,8 @@ export class ClaudeCodeProcess extends EventEmitter {
       options.availableEnvVars,
       options.userSystemPrompt
     );
+    // Set the session ID for browser tools so they can identify the owning session
+    setCurrentBrowserSessionId(this.sessionId);
   }
 
   /**
@@ -228,6 +231,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         allowedTools: ['Skill'],
         mcpServers: {
           'user-input': userInputMcpServer,
+          'browser': browserMcpServer,
         },
         // Handle AskUserQuestion via canUseTool callback (per SDK docs)
         canUseTool: async (toolName: string, toolInput: Record<string, unknown>) => {
@@ -357,6 +361,10 @@ export class ClaudeCodeProcess extends EventEmitter {
         // Capture Claude session ID from init message
         if (message.type === 'system' && message.subtype === 'init' && message.session_id) {
           this.claudeSessionId = message.session_id;
+          // Update sessionId to the canonical Claude session ID so browser tools
+          // broadcast to the correct session in the session manager
+          this.sessionId = message.session_id;
+          setCurrentBrowserSessionId(this.sessionId);
           console.log(`[Session ${this.sessionId}] Captured Claude session ID:`, this.claudeSessionId);
           this.emit('claude-session-id', this.claudeSessionId);
         }

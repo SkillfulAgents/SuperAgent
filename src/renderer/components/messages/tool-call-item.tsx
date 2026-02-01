@@ -3,6 +3,7 @@ import { cn } from '@shared/lib/utils/cn'
 import { Circle, CheckCircle, XCircle, ChevronDown, ChevronRight, Loader2, Wrench } from 'lucide-react'
 import { useState } from 'react'
 import { getToolRenderer } from './tool-renderers'
+import { parseToolResult } from '@renderer/lib/parse-tool-result'
 import type { ApiToolCall } from '@shared/lib/types/api'
 
 interface ToolCallItemProps {
@@ -51,12 +52,10 @@ export function ToolCallItem({ toolCall, agentSlug }: ToolCallItemProps) {
     ? toolCall.input
     : JSON.stringify(toolCall.input, null, 2)
 
-  // Format result for display (fallback)
-  const resultStr = toolCall.result
-    ? (typeof toolCall.result === 'string'
-        ? toolCall.result
-        : JSON.stringify(toolCall.result, null, 2))
-    : null
+  // Parse result into text + images
+  const parsed = parseToolResult(toolCall.result)
+  const resultStr = parsed.text
+  const resultImages = parsed.images
 
   // Get custom expanded view if available
   const CustomExpandedView = renderer?.ExpandedView
@@ -108,7 +107,7 @@ export function ToolCallItem({ toolCall, agentSlug }: ToolCallItemProps) {
           {CustomExpandedView ? (
             <CustomExpandedView
               input={toolCall.input}
-              result={toolCall.result}
+              result={resultStr}
               isError={toolCall.isError ?? false}
               agentSlug={agentSlug}
             />
@@ -139,6 +138,19 @@ export function ToolCallItem({ toolCall, agentSlug }: ToolCallItemProps) {
                   </pre>
                 </div>
               )}
+            </div>
+          )}
+          {/* Render images from tool results */}
+          {resultImages.length > 0 && (
+            <div className="mt-2 space-y-2">
+              {resultImages.map((img, i) => (
+                <img
+                  key={i}
+                  src={`data:${img.mimeType};base64,${img.data}`}
+                  alt="Tool result"
+                  className="max-w-full rounded border"
+                />
+              ))}
             </div>
           )}
         </div>

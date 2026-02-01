@@ -50,7 +50,7 @@ export interface ApiToolCall {
   id: string
   name: string
   input: Record<string, unknown>
-  result?: string
+  result?: unknown
   isError?: boolean
 }
 

@@ -29,6 +29,8 @@ export interface AppPreferences {
   notifications?: NotificationSettings
   autoSleepTimeoutMinutes?: number
   setupCompleted?: boolean
+  useHostBrowser?: boolean
+  chromeProfileId?: string
 }
 
 export interface AppSettings {
@@ -49,6 +51,13 @@ export interface ApiKeyStatus {
 // Note: This creates a type-only dependency, avoiding circular imports
 import type { RunnerAvailability } from '@shared/lib/container/client-factory'
 
+export interface HostBrowserStatus {
+  available: boolean
+  browser: string | null
+  path: string | null
+  profiles?: Array<{ id: string; name: string }>
+}
+
 export interface GlobalSettingsResponse {
   dataDir: string
   container: ContainerSettings
@@ -61,6 +70,7 @@ export interface GlobalSettingsResponse {
   }
   composioUserId?: string
   setupCompleted: boolean
+  hostBrowserStatus?: HostBrowserStatus
 }
 
 const DEFAULT_SETTINGS: AppSettings = {

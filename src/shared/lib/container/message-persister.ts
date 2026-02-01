@@ -296,6 +296,14 @@ class MessagePersister {
         }
         break
 
+      case 'browser_active':
+        // Browser state changed — forward to SSE clients
+        this.broadcastToSSE(sessionId, {
+          type: 'browser_active',
+          active: content.active,
+        })
+        break
+
       case 'stream_event':
         // Handle stream events for SSE broadcasting
         if (content.event) {

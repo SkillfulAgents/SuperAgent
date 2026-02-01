@@ -6,7 +6,12 @@ import * as http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import * as fs from 'fs';
 import * as path from 'path';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import * as dns from 'dns';
 import { inputManager } from './input-manager';
+
+
 
 const app = new Hono();
 const sessionManager = new SessionManager();
@@ -365,6 +370,566 @@ app.post('/env', async (c) => {
   }
 });
 
+// ============================================================
+// Browser automation endpoints (agent-browser tool proxy)
+// ============================================================
+
+interface BrowserState {
+  active: boolean;
+  sessionId: string | null;
+  cdpUrl: string | null;
+}
+
+let browserState: BrowserState = { active: false, sessionId: null, cdpUrl: null };
+
+const execFileAsync = promisify(execFile);
+
+// Split a command string into arguments, respecting quoted strings.
+// e.g. 'get text "hello world"' -> ['get', 'text', 'hello world']
+function splitCommandArgs(command: string): string[] {
+  const args: string[] = [];
+  let current = '';
+  let inQuote: string | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (inQuote) {
+      if (ch === inQuote) {
+        inQuote = null;
+      } else {
+        current += ch;
+      }
+    } else if (ch === '"' || ch === "'") {
+      inQuote = ch;
+    } else if (ch === ' ' || ch === '\t') {
+      if (current) {
+        args.push(current);
+        current = '';
+      }
+    } else {
+      current += ch;
+    }
+  }
+  if (current) args.push(current);
+  return args;
+}
+
+// Execute an agent-browser CLI command and return the result.
+// Uses execFile (no shell) to prevent command injection.
+async function execBrowser(args: string[], cdpUrl?: string): Promise<{ stdout: string; exitCode: number }> {
+  try {
+    const fullArgs = cdpUrl ? ['--cdp', cdpUrl, ...args] : args;
+    const { stdout } = await execFileAsync('agent-browser', fullArgs, {
+      timeout: 30000,
+      env: {
+        ...process.env,
+        AGENT_BROWSER_STREAM_PORT: process.env.AGENT_BROWSER_STREAM_PORT || '9223',
+        AGENT_BROWSER_ARGS: process.env.AGENT_BROWSER_ARGS || '--no-sandbox,--disable-blink-features=AutomationControlled',
+      },
+    });
+    return { stdout: stdout.trim(), exitCode: 0 };
+  } catch (error: any) {
+    return {
+      stdout: error.stdout?.trim() || error.message || 'Command failed',
+      exitCode: error.code || 1,
+    };
+  }
+}
+
+// Launch the host browser via CDP if AGENT_BROWSER_USE_HOST is set.
+// Returns the CDP WebSocket URL or undefined if not using host browser.
+// Throws if host browser mode is enabled but the browser fails to launch.
+async function launchHostBrowserIfNeeded(): Promise<string | undefined> {
+  if (!process.env.AGENT_BROWSER_USE_HOST) {
+    return undefined;
+  }
+
+  const hostAppUrl = process.env.HOST_APP_URL;
+  if (!hostAppUrl) {
+    throw new Error('Host browser mode is enabled but HOST_APP_URL is not configured');
+  }
+
+  const response = await fetch(`${hostAppUrl}/api/browser/launch-host-browser`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Failed to launch host browser: ${body}`);
+  }
+
+  const data = await response.json() as { port: number };
+
+  // Resolve host.docker.internal to its IP address. Chrome's CDP server
+  // validates the Host header and only accepts "localhost" or IP addresses,
+  // rejecting hostnames like "host.docker.internal". Using the resolved IP
+  // ensures the Host header passes Chrome's check for both HTTP requests
+  // and WebSocket connections from agent-browser.
+  const hostDockerInternal = 'host.docker.internal';
+  let cdpIp: string;
+  try {
+    const { address } = await dns.promises.lookup(hostDockerInternal);
+    cdpIp = address;
+  } catch {
+    throw new Error(`Failed to resolve ${hostDockerInternal}`);
+  }
+
+  // Chrome's CDP requires connecting to the full debugger WebSocket URL
+  // (ws://host:port/devtools/browser/<id>), not just ws://host:port.
+  // Query Chrome's /json/version endpoint to discover it.
+  const cdpHost = `${cdpIp}:${data.port}`;
+  const versionRes = await fetch(`http://${cdpHost}/json/version`);
+  if (!versionRes.ok) {
+    throw new Error(`Failed to query CDP /json/version: ${versionRes.status}`);
+  }
+  const versionData = await versionRes.json() as { webSocketDebuggerUrl: string };
+
+  // The URL returned by Chrome uses the IP we connected with, so it's
+  // already usable. Replace the host portion just in case Chrome returns
+  // localhost or a different address.
+  const debuggerUrl = versionData.webSocketDebuggerUrl.replace(
+    /^ws:\/\/[^/]+/,
+    `ws://${cdpHost}`
+  );
+  return debuggerUrl;
+}
+
+// Tell the host to stop the Chrome process.
+async function stopHostBrowserIfNeeded(): Promise<void> {
+  if (!process.env.AGENT_BROWSER_USE_HOST) return;
+
+  const hostAppUrl = process.env.HOST_APP_URL;
+  if (!hostAppUrl) return;
+
+  try {
+    await fetch(`${hostAppUrl}/api/browser/stop-host-browser`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    console.error('[Browser] Error stopping host browser:', error);
+  }
+}
+
+// Broadcast a browser_active event to the owning session's WebSocket subscribers
+function broadcastBrowserEvent(active: boolean): void {
+  if (!browserState.sessionId) return;
+  const sessionId = browserState.sessionId;
+
+  // Broadcast through the session manager's subscriber system
+  sessionManager.broadcast(sessionId, {
+    type: 'browser_active',
+    active,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+// Validate that the requesting session owns the browser (or browser is not active)
+function validateBrowserSession(requestSessionId: string): string | null {
+  if (browserState.active && browserState.sessionId !== requestSessionId) {
+    return `Browser is owned by session ${browserState.sessionId}`;
+  }
+  return null;
+}
+
+// GET /browser/status - Check if browser is running
+app.get('/browser/status', (c) => {
+  return c.json(browserState);
+});
+
+// POST /browser/open - Start browser and navigate to URL
+app.post('/browser/open', async (c) => {
+  try {
+    const body = await c.req.json<{ sessionId: string; url: string }>();
+
+    if (!body.sessionId || !body.url) {
+      return c.json({ error: 'sessionId and url are required' }, 400);
+    }
+
+    const validationError = validateBrowserSession(body.sessionId);
+    if (validationError) {
+      return c.json({ error: validationError }, 409);
+    }
+
+    const cdpUrl = await launchHostBrowserIfNeeded();
+    const profile = process.env.AGENT_BROWSER_PROFILE || '/workspace/.browser-profile';
+    const result = await execBrowser(['open', body.url, '--profile', profile], cdpUrl);
+
+    if (result.exitCode !== 0) {
+      return c.json({ error: result.stdout, success: false }, 500);
+    }
+
+    browserState = { active: true, sessionId: body.sessionId, cdpUrl: cdpUrl || null };
+    broadcastBrowserEvent(true);
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    console.error('[Browser] Error opening browser:', error);
+    return c.json({ error: error.message || 'Failed to open browser' }, 500);
+  }
+});
+
+// POST /browser/close - Stop browser
+app.post('/browser/close', async (c) => {
+  try {
+    const body = await c.req.json<{ sessionId: string }>();
+
+    if (!body.sessionId) {
+      return c.json({ error: 'sessionId is required' }, 400);
+    }
+
+    const validationError = validateBrowserSession(body.sessionId);
+    if (validationError) {
+      return c.json({ error: validationError }, 409);
+    }
+
+    const result = await execBrowser(['close'], browserState.cdpUrl || undefined);
+
+    // If using host browser, tell the host to kill the Chrome process
+    await stopHostBrowserIfNeeded();
+
+    broadcastBrowserEvent(false);
+    browserState = { active: false, sessionId: null, cdpUrl: null };
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    console.error('[Browser] Error closing browser:', error);
+    return c.json({ error: error.message || 'Failed to close browser' }, 500);
+  }
+});
+
+// POST /browser/snapshot - Get accessibility tree snapshot
+app.post('/browser/snapshot', async (c) => {
+  try {
+    const body = await c.req.json<{ sessionId: string; interactive?: boolean; compact?: boolean }>();
+
+    if (!body.sessionId) {
+      return c.json({ error: 'sessionId is required' }, 400);
+    }
+
+    const validationError = validateBrowserSession(body.sessionId);
+    if (validationError) {
+      return c.json({ error: validationError }, 409);
+    }
+
+    if (!browserState.active) {
+      return c.json({ error: 'Browser is not active' }, 400);
+    }
+
+    const snapshotArgs = ['snapshot', '--json'];
+    if (body.interactive !== false) snapshotArgs.push('-i');
+    if (body.compact !== false) snapshotArgs.push('-c');
+
+    const result = await execBrowser(snapshotArgs, browserState.cdpUrl || undefined);
+
+    if (result.exitCode !== 0) {
+      return c.json({ error: result.stdout, success: false }, 500);
+    }
+
+    // Try to parse JSON output
+    try {
+      const parsed = JSON.parse(result.stdout);
+      return c.json(parsed);
+    } catch {
+      // Return raw output if not valid JSON
+      return c.json({ snapshot: result.stdout });
+    }
+  } catch (error: any) {
+    console.error('[Browser] Error taking snapshot:', error);
+    return c.json({ error: error.message || 'Failed to take snapshot' }, 500);
+  }
+});
+
+// POST /browser/click - Click element by ref
+app.post('/browser/click', async (c) => {
+  try {
+    const body = await c.req.json<{ sessionId: string; ref: string }>();
+
+    if (!body.sessionId || !body.ref) {
+      return c.json({ error: 'sessionId and ref are required' }, 400);
+    }
+
+    const validationError = validateBrowserSession(body.sessionId);
+    if (validationError) {
+      return c.json({ error: validationError }, 409);
+    }
+
+    if (!browserState.active) {
+      return c.json({ error: 'Browser is not active' }, 400);
+    }
+
+    const result = await execBrowser(['click', body.ref], browserState.cdpUrl || undefined);
+
+    if (result.exitCode !== 0) {
+      return c.json({ error: result.stdout, success: false }, 500);
+    }
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    console.error('[Browser] Error clicking:', error);
+    return c.json({ error: error.message || 'Failed to click' }, 500);
+  }
+});
+
+// POST /browser/fill - Fill input by ref
+app.post('/browser/fill', async (c) => {
+  try {
+    const body = await c.req.json<{ sessionId: string; ref: string; value: string }>();
+
+    if (!body.sessionId || !body.ref || body.value === undefined) {
+      return c.json({ error: 'sessionId, ref, and value are required' }, 400);
+    }
+
+    const validationError = validateBrowserSession(body.sessionId);
+    if (validationError) {
+      return c.json({ error: validationError }, 409);
+    }
+
+    if (!browserState.active) {
+      return c.json({ error: 'Browser is not active' }, 400);
+    }
+
+    const result = await execBrowser(['fill', body.ref, body.value], browserState.cdpUrl || undefined);
+
+    if (result.exitCode !== 0) {
+      return c.json({ error: result.stdout, success: false }, 500);
+    }
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    console.error('[Browser] Error filling:', error);
+    return c.json({ error: error.message || 'Failed to fill' }, 500);
+  }
+});
+
+// POST /browser/scroll - Scroll page
+app.post('/browser/scroll', async (c) => {
+  try {
+    const body = await c.req.json<{ sessionId: string; direction: string; amount?: number }>();
+
+    if (!body.sessionId || !body.direction) {
+      return c.json({ error: 'sessionId and direction are required' }, 400);
+    }
+
+    const validationError = validateBrowserSession(body.sessionId);
+    if (validationError) {
+      return c.json({ error: validationError }, 409);
+    }
+
+    if (!browserState.active) {
+      return c.json({ error: 'Browser is not active' }, 400);
+    }
+
+    const scrollArgs = ['scroll', body.direction];
+    if (body.amount !== undefined) scrollArgs.push(String(body.amount));
+
+    const result = await execBrowser(scrollArgs, browserState.cdpUrl || undefined);
+
+    if (result.exitCode !== 0) {
+      return c.json({ error: result.stdout, success: false }, 500);
+    }
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    console.error('[Browser] Error scrolling:', error);
+    return c.json({ error: error.message || 'Failed to scroll' }, 500);
+  }
+});
+
+// POST /browser/wait - Wait for condition
+app.post('/browser/wait', async (c) => {
+  try {
+    const body = await c.req.json<{ sessionId: string; for: string }>();
+
+    if (!body.sessionId || !body.for) {
+      return c.json({ error: 'sessionId and for are required' }, 400);
+    }
+
+    const validationError = validateBrowserSession(body.sessionId);
+    if (validationError) {
+      return c.json({ error: validationError }, 409);
+    }
+
+    if (!browserState.active) {
+      return c.json({ error: 'Browser is not active' }, 400);
+    }
+
+    const result = await execBrowser(['wait', body.for], browserState.cdpUrl || undefined);
+
+    if (result.exitCode !== 0) {
+      return c.json({ error: result.stdout, success: false }, 500);
+    }
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    console.error('[Browser] Error waiting:', error);
+    return c.json({ error: error.message || 'Failed to wait' }, 500);
+  }
+});
+
+// POST /browser/press - Press a keyboard key
+app.post('/browser/press', async (c) => {
+  try {
+    const body = await c.req.json<{ sessionId: string; key: string }>();
+
+    if (!body.sessionId || !body.key) {
+      return c.json({ error: 'sessionId and key are required' }, 400);
+    }
+
+    const validationError = validateBrowserSession(body.sessionId);
+    if (validationError) {
+      return c.json({ error: validationError }, 409);
+    }
+
+    if (!browserState.active) {
+      return c.json({ error: 'Browser is not active' }, 400);
+    }
+
+    const result = await execBrowser(['press', body.key], browserState.cdpUrl || undefined);
+
+    if (result.exitCode !== 0) {
+      return c.json({ error: result.stdout, success: false }, 500);
+    }
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    console.error('[Browser] Error pressing key:', error);
+    return c.json({ error: error.message || 'Failed to press key' }, 500);
+  }
+});
+
+// POST /browser/screenshot - Take screenshot
+app.post('/browser/screenshot', async (c) => {
+  try {
+    const body = await c.req.json<{ sessionId: string; full?: boolean }>();
+
+    if (!body.sessionId) {
+      return c.json({ error: 'sessionId is required' }, 400);
+    }
+
+    const validationError = validateBrowserSession(body.sessionId);
+    if (validationError) {
+      return c.json({ error: validationError }, 409);
+    }
+
+    if (!browserState.active) {
+      return c.json({ error: 'Browser is not active' }, 400);
+    }
+
+    const screenshotArgs = ['screenshot'];
+    if (body.full) screenshotArgs.push('--full');
+
+    const result = await execBrowser(screenshotArgs, browserState.cdpUrl || undefined);
+
+    if (result.exitCode !== 0) {
+      return c.json({ error: result.stdout, success: false }, 500);
+    }
+
+    return c.json({ success: true, output: result.stdout });
+  } catch (error: any) {
+    console.error('[Browser] Error taking screenshot:', error);
+    return c.json({ error: error.message || 'Failed to take screenshot' }, 500);
+  }
+});
+
+// POST /browser/select - Select dropdown option by ref
+app.post('/browser/select', async (c) => {
+  try {
+    const body = await c.req.json<{ sessionId: string; ref: string; value: string }>();
+
+    if (!body.sessionId || !body.ref || body.value === undefined) {
+      return c.json({ error: 'sessionId, ref, and value are required' }, 400);
+    }
+
+    const validationError = validateBrowserSession(body.sessionId);
+    if (validationError) {
+      return c.json({ error: validationError }, 409);
+    }
+
+    if (!browserState.active) {
+      return c.json({ error: 'Browser is not active' }, 400);
+    }
+
+    const result = await execBrowser(['select', body.ref, body.value], browserState.cdpUrl || undefined);
+
+    if (result.exitCode !== 0) {
+      return c.json({ error: result.stdout, success: false }, 500);
+    }
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    console.error('[Browser] Error selecting:', error);
+    return c.json({ error: error.message || 'Failed to select' }, 500);
+  }
+});
+
+// POST /browser/hover - Hover element by ref
+app.post('/browser/hover', async (c) => {
+  try {
+    const body = await c.req.json<{ sessionId: string; ref: string }>();
+
+    if (!body.sessionId || !body.ref) {
+      return c.json({ error: 'sessionId and ref are required' }, 400);
+    }
+
+    const validationError = validateBrowserSession(body.sessionId);
+    if (validationError) {
+      return c.json({ error: validationError }, 409);
+    }
+
+    if (!browserState.active) {
+      return c.json({ error: 'Browser is not active' }, 400);
+    }
+
+    const result = await execBrowser(['hover', body.ref], browserState.cdpUrl || undefined);
+
+    if (result.exitCode !== 0) {
+      return c.json({ error: result.stdout, success: false }, 500);
+    }
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    console.error('[Browser] Error hovering:', error);
+    return c.json({ error: error.message || 'Failed to hover' }, 500);
+  }
+});
+
+// POST /browser/run - Generic catch-all for any agent-browser command
+app.post('/browser/run', async (c) => {
+  try {
+    const body = await c.req.json<{ sessionId: string; command: string }>();
+
+    if (!body.sessionId || !body.command) {
+      return c.json({ error: 'sessionId and command are required' }, 400);
+    }
+
+    const validationError = validateBrowserSession(body.sessionId);
+    if (validationError) {
+      return c.json({ error: validationError }, 409);
+    }
+
+    if (!browserState.active) {
+      return c.json({ error: 'Browser is not active' }, 400);
+    }
+
+    const commandArgs = splitCommandArgs(body.command);
+    if (commandArgs.length === 0) {
+      return c.json({ error: 'Empty command' }, 400);
+    }
+
+    const result = await execBrowser(commandArgs, browserState.cdpUrl || undefined);
+
+    if (result.exitCode !== 0) {
+      return c.json({ error: result.stdout, success: false }, 500);
+    }
+
+    return c.json({ success: true, output: result.stdout });
+  } catch (error: any) {
+    console.error('[Browser] Error running command:', error);
+    return c.json({ error: error.message || 'Failed to run browser command' }, 500);
+  }
+});
+
 async function buildFileTree(
   dirPath: string,
   maxDepth: number,
@@ -416,22 +981,39 @@ const server = serve({
 // Create WebSocket server
 const wss = new WebSocketServer({ noServer: true });
 
+// Create a separate WebSocket server for browser stream proxying
+const browserWss = new WebSocketServer({ noServer: true });
+
 // Handle WebSocket upgrade
 server.on('upgrade', (request: http.IncomingMessage, socket: any, head: Buffer) => {
   const url = new URL(request.url || '', `http://${request.headers.host}`);
   const pathname = url.pathname;
 
   // Check if this is a session stream endpoint
-  const match = pathname.match(/^\/sessions\/([^/]+)\/stream$/);
-  if (match) {
-    const sessionId = match[1];
+  const sessionMatch = pathname.match(/^\/sessions\/([^/]+)\/stream$/);
+  if (sessionMatch) {
+    const sessionId = sessionMatch[1];
 
     wss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
       handleWebSocketConnection(ws, sessionId);
     });
-  } else {
-    socket.destroy();
+    return;
   }
+
+  // Check if this is a browser stream endpoint
+  if (pathname === '/browser/stream') {
+    if (!browserState.active) {
+      socket.destroy();
+      return;
+    }
+
+    browserWss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
+      handleBrowserStreamConnection(ws);
+    });
+    return;
+  }
+
+  socket.destroy();
 });
 
 async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
@@ -487,6 +1069,61 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
   }));
 }
 
+// Handle browser stream WebSocket proxy (bidirectional pipe to agent-browser stream server)
+function handleBrowserStreamConnection(ws: WebSocket) {
+  const streamPort = process.env.AGENT_BROWSER_STREAM_PORT || '9223';
+  console.log(`[Browser] Proxying stream connection to ws://localhost:${streamPort}`);
+
+  const upstream = new WebSocket(`ws://localhost:${streamPort}`);
+
+  upstream.on('open', () => {
+    console.log('[Browser] Upstream stream connection established');
+  });
+
+  // Forward frames from agent-browser to the client
+  // Preserve text/binary framing so JSON text frames aren't converted to binary
+  upstream.on('message', (data, isBinary) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(data, { binary: isBinary });
+    }
+  });
+
+  // Forward input events from client to agent-browser
+  ws.on('message', (data, isBinary) => {
+    if (upstream.readyState === WebSocket.OPEN) {
+      upstream.send(data, { binary: isBinary });
+    }
+  });
+
+  upstream.on('close', () => {
+    console.log('[Browser] Upstream stream connection closed');
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.close();
+    }
+  });
+
+  ws.on('close', () => {
+    console.log('[Browser] Client stream connection closed');
+    if (upstream.readyState === WebSocket.OPEN) {
+      upstream.close();
+    }
+  });
+
+  upstream.on('error', (error) => {
+    console.error('[Browser] Upstream stream error:', error);
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.close();
+    }
+  });
+
+  ws.on('error', (error) => {
+    console.error('[Browser] Client stream error:', error);
+    if (upstream.readyState === WebSocket.OPEN) {
+      upstream.close();
+    }
+  });
+}
+
 console.log(`Server running on http://localhost:${port}`);
 console.log('Available endpoints:');
 console.log('  POST   /sessions');
@@ -507,6 +1144,15 @@ console.log('  POST   /inputs/:toolUseId/resolve');
 console.log('  POST   /inputs/:toolUseId/reject');
 console.log('  GET    /inputs/pending');
 console.log('  POST   /env');
+console.log('  GET    /browser/status');
+console.log('  POST   /browser/open');
+console.log('  POST   /browser/close');
+console.log('  POST   /browser/snapshot');
+console.log('  POST   /browser/click');
+console.log('  POST   /browser/fill');
+console.log('  POST   /browser/scroll');
+console.log('  POST   /browser/wait');
+console.log('  WS     /browser/stream');
 
 // Graceful shutdown handling
 let isShuttingDown = false;
@@ -517,6 +1163,17 @@ async function gracefulShutdown(signal: string) {
 
   console.log(`\nReceived ${signal}, shutting down gracefully...`);
 
+  // Close browser if active
+  if (browserState.active) {
+    try {
+      await execBrowser('close', browserState.cdpUrl || undefined);
+      await stopHostBrowserIfNeeded();
+      browserState = { active: false, sessionId: null, cdpUrl: null };
+    } catch (error) {
+      console.error('Error closing browser:', error);
+    }
+  }
+
   // Stop all sessions (stops Claude Code processes)
   try {
     await sessionManager.stopAll();
@@ -524,7 +1181,10 @@ async function gracefulShutdown(signal: string) {
     console.error('Error stopping sessions:', error);
   }
 
-  // Close WebSocket server
+  // Close WebSocket servers
+  browserWss.close(() => {
+    console.log('Browser WebSocket server closed.');
+  });
   wss.close(() => {
     console.log('WebSocket server closed.');
   });

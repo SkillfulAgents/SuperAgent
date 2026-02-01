@@ -6,6 +6,7 @@ import { AgentSettingsDialog } from '@renderer/components/agents/agent-settings-
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { AgentLanding } from '@renderer/components/agents/agent-landing'
 import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/scheduled-task-view'
+import { BrowserPreview } from '@renderer/components/browser/browser-preview'
 import { Button } from '@renderer/components/ui/button'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Plus, Play, Square, ChevronRight, Settings, Clock } from 'lucide-react'
@@ -19,6 +20,7 @@ import { isElectron, getPlatform } from '@renderer/lib/env'
 import { useSidebar } from '@renderer/components/ui/sidebar'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import { useMarkSessionNotificationsRead } from '@renderer/hooks/use-notifications'
+import { useMessageStream } from '@renderer/hooks/use-message-stream'
 
 export function MainContent() {
   const {
@@ -40,6 +42,7 @@ export function MainContent() {
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
   const markSessionNotificationsRead = useMarkSessionNotificationsRead()
+  const { browserActive } = useMessageStream(sessionId ?? null, agentSlug ?? null)
 
   // Auto-mark notifications as read when viewing a session
   useEffect(() => {
@@ -186,7 +189,7 @@ export function MainContent() {
         <ScheduledTaskView taskId={scheduledTaskId} agentSlug={agentSlug} />
       ) : sessionId ? (
         /* Show messages when a session is selected */
-        <div className="flex-1 grid grid-rows-[1fr_auto] min-h-0">
+        <div className="relative flex-1 grid grid-rows-[1fr_auto] min-h-0">
           <MessageList
             sessionId={sessionId}
             agentSlug={agentSlug}
@@ -201,6 +204,7 @@ export function MainContent() {
               onMessageSent={handleMessageSent}
             />
           </div>
+          <BrowserPreview agentSlug={agentSlug} sessionId={sessionId} browserActive={browserActive} />
         </div>
       ) : (
         /* Show landing page with large input when no session is selected */

@@ -20,6 +20,7 @@ import {
   getSession,
   deleteSession,
 } from '@shared/lib/services/session-service'
+import { getSessionJsonlPath, readFileOrNull } from '@shared/lib/utils/file-storage'
 import {
   listSecrets,
   getSecret,
@@ -361,6 +362,30 @@ agents.get('/:id/sessions/:sessionId/messages', async (c) => {
   } catch (error) {
     console.error('Failed to fetch messages:', error)
     return c.json({ error: 'Failed to fetch messages' }, 500)
+  }
+})
+
+// GET /api/agents/:id/sessions/:sessionId/raw-log - Get raw JSONL log for a session
+agents.get('/:id/sessions/:sessionId/raw-log', async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const sessionId = c.req.param('sessionId')
+
+    if (!(await agentExists(agentSlug))) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+
+    const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+    const content = await readFileOrNull(jsonlPath)
+
+    if (content === null) {
+      return c.json({ error: 'Session log not found' }, 404)
+    }
+
+    return c.text(content)
+  } catch (error) {
+    console.error('Failed to fetch raw log:', error)
+    return c.json({ error: 'Failed to fetch raw log' }, 500)
   }
 })
 
@@ -1452,6 +1477,66 @@ agents.post('/:id/sessions/:sessionId/provide-file', async (c) => {
   } catch (error) {
     console.error('Failed to provide file:', error)
     return c.json({ error: 'Failed to provide file' }, 500)
+  }
+})
+
+// ============================================================
+// Browser proxy endpoints
+// ============================================================
+
+// GET /api/agents/:id/browser/status - Check browser state
+agents.get('/:id/browser/status', async (c) => {
+  try {
+    const slug = c.req.param('id')
+
+    if (!(await agentExists(slug))) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+
+    const client = containerManager.getClient(slug)
+    const info = await client.getInfo()
+
+    if (info.status !== 'running') {
+      return c.json({ active: false, sessionId: null })
+    }
+
+    const response = await client.fetch('/browser/status')
+    return c.json(await response.json())
+  } catch (error) {
+    console.error('Failed to get browser status:', error)
+    return c.json({ active: false, sessionId: null })
+  }
+})
+
+// POST /api/agents/:id/browser/:action - Proxy browser tool actions
+agents.post('/:id/browser/:action', async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const action = c.req.param('action')
+
+    if (!(await agentExists(slug))) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+
+    const client = containerManager.getClient(slug)
+    const info = await client.getInfo()
+
+    if (info.status !== 'running') {
+      return c.json({ error: 'Agent container is not running' }, 400)
+    }
+
+    const body = await c.req.json()
+    const response = await client.fetch(`/browser/${action}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+
+    const data = await response.json()
+    return c.json(data, response.status as any)
+  } catch (error: any) {
+    console.error('Failed to proxy browser action:', error)
+    return c.json({ error: error.message || 'Failed to proxy browser action' }, 500)
   }
 })
 

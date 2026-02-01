@@ -66,6 +66,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setBadgeCount: (count: number): Promise<void> => {
     return ipcRenderer.invoke('set-badge-count', count)
   },
+
+  // Detect host browser availability
+  detectHostBrowser: (): Promise<{ available: boolean; browser: string | null; path: string | null }> => {
+    return ipcRenderer.invoke('detect-host-browser')
+  },
 })
 
 // OAuth callback params from main process
@@ -93,6 +98,7 @@ declare global {
       setTrayVisible: (visible: boolean) => Promise<void>
       showNotification: (title: string, body: string) => Promise<void>
       setBadgeCount: (count: number) => Promise<void>
+      detectHostBrowser: () => Promise<{ available: boolean; browser: string | null; path: string | null }>
     }
   }
 }

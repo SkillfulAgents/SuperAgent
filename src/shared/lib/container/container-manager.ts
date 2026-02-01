@@ -5,6 +5,9 @@ import { agentConnectedAccounts, connectedAccounts } from '@shared/lib/db/schema
 import { eq } from 'drizzle-orm'
 import { getOrCreateProxyToken } from '@shared/lib/proxy/token-store'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
+import { getSettings } from '@shared/lib/config/settings'
+import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
+import { copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
 import { messagePersister } from './message-persister'
 
 // Singleton to manage all container clients
@@ -74,6 +77,23 @@ class ContainerManager {
         })
       }
       envVars['CONNECTED_ACCOUNTS'] = JSON.stringify(accountMetadata)
+
+      // Pass host browser env vars if enabled
+      const settings = getSettings()
+      if (settings.app?.useHostBrowser) {
+        envVars['AGENT_BROWSER_USE_HOST'] = '1'
+        envVars['HOST_APP_URL'] = `http://${hostUrl}:${appPort}`
+      }
+
+      // Copy Chrome profile data into workspace if configured
+      const chromeProfileId = settings.app?.chromeProfileId
+      if (chromeProfileId) {
+        const workspaceDir = getAgentWorkspaceDir(agentId)
+        const browserProfileDir = `${workspaceDir}/.browser-profile`
+        if (copyChromeProfileData(chromeProfileId, browserProfileDir)) {
+          console.log(`[ContainerManager] Copied Chrome profile "${chromeProfileId}" to workspace`)
+        }
+      }
 
       // Start container (user secrets are in .env file in workspace)
       await client.start({ envVars })

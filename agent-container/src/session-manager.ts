@@ -278,6 +278,20 @@ export class SessionManager extends EventEmitter {
     };
   }
 
+  // Broadcast an arbitrary message to all subscribers of a session
+  broadcast(sessionId: string, message: unknown): void {
+    const sessionData = this.sessions.get(sessionId);
+    if (!sessionData) return;
+
+    sessionData.subscribers.forEach((callback) => {
+      try {
+        callback(message as SDKMessage);
+      } catch (error) {
+        console.error(`Error in subscriber callback:`, error);
+      }
+    });
+  }
+
   private handleMessage(sessionId: string, message: SDKMessage): void {
     const sessionData = this.sessions.get(sessionId);
     if (!sessionData) return;

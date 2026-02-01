@@ -14,6 +14,7 @@ import {
 } from '@shared/lib/config/settings'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { checkAllRunnersAvailability, startRunner, type ContainerRunner } from '@shared/lib/container/client-factory'
+import { hostBrowserManager } from '../../main/host-browser-manager'
 import { db } from '@shared/lib/db'
 import { proxyAuditLog, proxyTokens, agentConnectedAccounts, scheduledTasks, notifications, connectedAccounts } from '@shared/lib/db/schema'
 import fs from 'fs'
@@ -41,6 +42,7 @@ settings.get('/', async (c) => {
       },
       composioUserId: getComposioUserId(),
       setupCompleted: !!currentSettings.app?.setupCompleted,
+      hostBrowserStatus: hostBrowserManager.detect(),
     }
 
     return c.json(response)
@@ -159,6 +161,7 @@ settings.put('/', async (c) => {
       },
       composioUserId: getComposioUserId(),
       setupCompleted: !!newSettings.app?.setupCompleted,
+      hostBrowserStatus: hostBrowserManager.detect(),
     })
   } catch (error) {
     console.error('Failed to update settings:', error)
