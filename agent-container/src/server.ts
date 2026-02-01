@@ -1166,7 +1166,7 @@ async function gracefulShutdown(signal: string) {
   // Close browser if active
   if (browserState.active) {
     try {
-      await execBrowser('close', browserState.cdpUrl || undefined);
+      await execBrowser(['close'], browserState.cdpUrl || undefined);
       await stopHostBrowserIfNeeded();
       browserState = { active: false, sessionId: null, cdpUrl: null };
     } catch (error) {
