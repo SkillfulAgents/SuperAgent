@@ -208,6 +208,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     'connection',
     'content-length',
     'transfer-encoding',
+    'accept-encoding',
   ])
 
   c.req.raw.headers.forEach((value, key) => {
@@ -227,7 +228,8 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     const response = await fetch(targetUrl, init)
     statusCode = response.status
 
-    await logAuditEntry({
+    // Fire-and-forget audit log to avoid adding latency to proxied responses
+    logAuditEntry({
       agentSlug,
       accountId,
       toolkit: account.toolkitSlug,
@@ -239,9 +241,13 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
 
     // Pass response through
     const responseHeaders = new Headers()
+    const skipResponseHeaders = new Set([
+      'transfer-encoding',
+      'content-encoding', // fetch() auto-decompresses, so body is already decoded
+      'content-length', // length changes after decompression
+    ])
     response.headers.forEach((value, key) => {
-      // Skip hop-by-hop headers
-      if (key.toLowerCase() !== 'transfer-encoding') {
+      if (!skipResponseHeaders.has(key.toLowerCase())) {
         responseHeaders.set(key, value)
       }
     })
