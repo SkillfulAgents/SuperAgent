@@ -147,6 +147,14 @@ settings.put('/', async (c) => {
 
     updateSettings(newSettings)
 
+    // If container runner changed, clear cached clients so new ones use the updated runner
+    if (
+      newSettings.container.containerRunner !==
+      currentSettings.container.containerRunner
+    ) {
+      containerManager.clearClients()
+    }
+
     const runnerAvailability = await checkAllRunnersAvailability()
 
     return c.json({

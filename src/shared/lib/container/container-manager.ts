@@ -114,6 +114,12 @@ class ContainerManager {
     this.clients.delete(agentId)
   }
 
+  // Clear all cached clients (e.g., when container runner setting changes).
+  // Does NOT stop running containers — call stopAll() first if needed.
+  clearClients(): void {
+    this.clients.clear()
+  }
+
   // Stop all containers
   async stopAll(): Promise<void> {
     const stopPromises = Array.from(this.clients.entries()).map(
