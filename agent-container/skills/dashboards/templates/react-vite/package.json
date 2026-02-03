@@ -1,0 +1,17 @@
+{
+  "name": "my-dashboard",
+  "description": "A dashboard",
+  "type": "module",
+  "scripts": {
+    "build": "bunx --bun vite build",
+    "start": "bun run build && bun run serve.js"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "vite": "^5.0.0",
+    "@vitejs/plugin-react": "^4.0.0"
+  }
+}

@@ -10,6 +10,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as dns from 'dns';
 import { inputManager } from './input-manager';
+import { dashboardManager } from './dashboard-manager';
 
 
 
@@ -367,6 +368,126 @@ app.post('/env', async (c) => {
   } catch (error: any) {
     console.error('[ENV] Error setting env var:', error);
     return c.json({ error: error.message || 'Failed to set environment variable' }, 500);
+  }
+});
+
+// ============================================================
+// Dashboard / Artifacts endpoints
+// ============================================================
+
+// GET /artifacts - List all dashboards
+app.get('/artifacts', (c) => {
+  const dashboards = dashboardManager.listDashboards();
+  return c.json(dashboards);
+});
+
+// POST /artifacts/:slug/create - Scaffold a new dashboard
+app.post('/artifacts/:slug/create', async (c) => {
+  try {
+    const slug = c.req.param('slug');
+    const body = await c.req.json<{
+      name: string;
+      description?: string;
+      framework?: 'plain' | 'react';
+    }>();
+
+    if (!body.name) {
+      return c.json({ error: 'name is required' }, 400);
+    }
+
+    await dashboardManager.createDashboard(
+      slug,
+      body.name,
+      body.description || '',
+      body.framework || 'plain'
+    );
+
+    return c.json({ success: true, slug, path: `/workspace/artifacts/${slug}` });
+  } catch (error: any) {
+    console.error('[Artifacts] Error creating dashboard:', error);
+    return c.json({ error: error.message || 'Failed to create dashboard' }, 500);
+  }
+});
+
+// POST /artifacts/:slug/start - Start or restart a dashboard
+app.post('/artifacts/:slug/start', async (c) => {
+  try {
+    const slug = c.req.param('slug');
+    const info = await dashboardManager.startDashboard(slug);
+    return c.json({
+      success: true,
+      slug: info.slug,
+      name: info.name,
+      status: info.status,
+      port: info.port,
+    });
+  } catch (error: any) {
+    console.error('[Artifacts] Error starting dashboard:', error);
+    return c.json({ error: error.message || 'Failed to start dashboard' }, 500);
+  }
+});
+
+// GET /artifacts/:slug/logs - Get dashboard logs
+app.get('/artifacts/:slug/logs', async (c) => {
+  try {
+    const slug = c.req.param('slug');
+    const clear = c.req.query('clear') === 'true';
+    const logs = await dashboardManager.getDashboardLogs(slug, clear);
+    return c.text(logs);
+  } catch (error: any) {
+    console.error('[Artifacts] Error getting logs:', error);
+    return c.json({ error: error.message || 'Failed to get logs' }, 500);
+  }
+});
+
+// Shared handler for proxying requests to a dashboard server
+async function proxyToDashboard(c: any) {
+  const slug = c.req.param('slug');
+  const port = dashboardManager.getDashboardPort(slug);
+
+  if (!port) {
+    return c.json({ error: `Dashboard ${slug} is not running` }, 503);
+  }
+
+  const url = new URL(c.req.url);
+  const prefixPattern = `/artifacts/${slug}`;
+  const subPath = url.pathname.slice(url.pathname.indexOf(prefixPattern) + prefixPattern.length) || '/';
+  const targetUrl = `http://localhost:${port}${subPath}${url.search}`;
+
+  const headers = new Headers(c.req.header());
+  headers.delete('host');
+
+  const response = await fetch(targetUrl, {
+    method: c.req.method,
+    headers,
+    body: c.req.method !== 'GET' && c.req.method !== 'HEAD'
+      ? await c.req.arrayBuffer()
+      : undefined,
+  });
+
+  return new Response(response.body, {
+    status: response.status,
+    headers: new Headers(response.headers),
+  });
+}
+
+// ALL /artifacts/:slug/* - Proxy to dashboard server
+app.all('/artifacts/:slug/*', async (c) => {
+  try {
+    return await proxyToDashboard(c);
+  } catch (error: any) {
+    console.error('[Artifacts] Proxy error:', error);
+    return c.json({ error: error.message || 'Failed to proxy request' }, 502);
+  }
+});
+
+// Also handle /artifacts/:slug (no trailing slash)
+app.all('/artifacts/:slug', async (c) => {
+  try {
+    return await proxyToDashboard(c);
+  } catch (error: any) {
+    console.error('[Artifacts] Proxy error:', error);
+    return c.json({ error: error.message || 'Failed to proxy request' }, 502);
   }
 });
 
@@ -1124,6 +1245,11 @@ function handleBrowserStreamConnection(ws: WebSocket) {
   });
 }
 
+// Start dashboard processes asynchronously (don't block server startup)
+dashboardManager.scanAndStartAll().catch((error) => {
+  console.error('[DashboardManager] Failed to scan and start dashboards:', error);
+});
+
 console.log(`Server running on http://localhost:${port}`);
 console.log('Available endpoints:');
 console.log('  POST   /sessions');
@@ -1144,6 +1270,11 @@ console.log('  POST   /inputs/:toolUseId/resolve');
 console.log('  POST   /inputs/:toolUseId/reject');
 console.log('  GET    /inputs/pending');
 console.log('  POST   /env');
+console.log('  GET    /artifacts');
+console.log('  POST   /artifacts/:slug/create');
+console.log('  POST   /artifacts/:slug/start');
+console.log('  GET    /artifacts/:slug/logs');
+console.log('  ALL    /artifacts/:slug/*');
 console.log('  GET    /browser/status');
 console.log('  POST   /browser/open');
 console.log('  POST   /browser/close');
@@ -1172,6 +1303,13 @@ async function gracefulShutdown(signal: string) {
     } catch (error) {
       console.error('Error closing browser:', error);
     }
+  }
+
+  // Stop all dashboard processes
+  try {
+    await dashboardManager.stopAll();
+  } catch (error) {
+    console.error('Error stopping dashboards:', error);
   }
 
   // Stop all sessions (stops Claude Code processes)

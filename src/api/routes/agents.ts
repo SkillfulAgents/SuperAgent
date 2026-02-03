@@ -38,6 +38,7 @@ import { connectedAccounts, agentConnectedAccounts, proxyAuditLog } from '@share
 import { eq, inArray, desc, count } from 'drizzle-orm'
 import { getProvider } from '@shared/lib/composio/providers'
 import { getAgentSkills } from '@shared/lib/skills'
+import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { withRetry } from '@shared/lib/utils/retry'
 import { transformMessages } from '@shared/lib/utils/message-transform'
 import { getEffectiveAnthropicApiKey } from '@shared/lib/config/settings'
@@ -1477,6 +1478,111 @@ agents.post('/:id/sessions/:sessionId/provide-file', async (c) => {
   } catch (error) {
     console.error('Failed to provide file:', error)
     return c.json({ error: 'Failed to provide file' }, 500)
+  }
+})
+
+// ============================================================
+// Dashboard / Artifacts endpoints
+// ============================================================
+
+// GET /api/agents/:id/artifacts - List dashboards for an agent
+agents.get('/:id/artifacts', async (c) => {
+  try {
+    const slug = c.req.param('id')
+
+    if (!(await agentExists(slug))) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+
+    // Try to get from running container first
+    try {
+      const client = containerManager.getClient(slug)
+      const info = await client.getInfo()
+
+      if (info.status === 'running') {
+        const response = await client.fetch('/artifacts')
+        if (response.ok) {
+          return c.json(await response.json())
+        }
+      }
+    } catch {
+      // Container not running, fall through to filesystem
+    }
+
+    // Read from host filesystem when container is off
+    const dashboards = await listArtifactsFromFilesystem(slug)
+    return c.json(dashboards)
+  } catch (error) {
+    console.error('Failed to fetch artifacts:', error)
+    return c.json({ error: 'Failed to fetch artifacts' }, 500)
+  }
+})
+
+// Shared handler for proxying artifact requests to the container
+const skipProxyRequestHeaders = new Set([
+  'host', 'connection', 'transfer-encoding',
+])
+
+async function proxyArtifactRequest(c: any) {
+  const agentSlug = c.req.param('id')
+  const artifactSlug = c.req.param('artifactSlug')
+
+  if (!(await agentExists(agentSlug))) {
+    return c.json({ error: 'Agent not found' }, 404)
+  }
+
+  const client = containerManager.getClient(agentSlug)
+  const info = await client.getInfo()
+
+  if (info.status !== 'running') {
+    return c.json({ error: 'Agent is not running. Start the agent to view this dashboard.' }, 503)
+  }
+
+  // Build the container path
+  const url = new URL(c.req.url)
+  const prefix = `/api/agents/${agentSlug}/artifacts/${artifactSlug}`
+  const subPath = url.pathname.slice(url.pathname.indexOf(prefix) + prefix.length) || '/'
+  const containerPath = `/artifacts/${artifactSlug}${subPath}${url.search}`
+
+  // Forward request headers (minus hop-by-hop headers)
+  const reqHeaders = c.req.header() as Record<string, string>
+  const headers: Record<string, string> = {}
+  for (const key of Object.keys(reqHeaders)) {
+    if (!skipProxyRequestHeaders.has(key.toLowerCase())) {
+      headers[key] = reqHeaders[key]
+    }
+  }
+
+  const init: RequestInit = { method: c.req.method, headers }
+  if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+    init.body = await c.req.arrayBuffer()
+  }
+
+  const response = await client.fetch(containerPath, init)
+
+  return new Response(response.body, {
+    status: response.status,
+    headers: new Headers(response.headers),
+  })
+}
+
+// ALL /api/agents/:id/artifacts/:slug/* - Proxy all methods to dashboard server
+agents.all('/:id/artifacts/:artifactSlug/*', async (c) => {
+  try {
+    return await proxyArtifactRequest(c)
+  } catch (error: any) {
+    console.error('Failed to proxy artifact:', error)
+    return c.json({ error: error.message || 'Failed to proxy artifact' }, 502)
+  }
+})
+
+// Also handle without trailing path
+agents.all('/:id/artifacts/:artifactSlug', async (c) => {
+  try {
+    return await proxyArtifactRequest(c)
+  } catch (error: any) {
+    console.error('Failed to proxy artifact:', error)
+    return c.json({ error: error.message || 'Failed to proxy artifact' }, 502)
   }
 })
 

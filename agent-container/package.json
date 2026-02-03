@@ -7,7 +7,9 @@
     "build": "tsc && cp src/system-prompt.md dist/",
     "start": "node dist/server.js",
     "dev": "ts-node src/server.ts",
-    "watch": "tsc --watch"
+    "watch": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": [
     "claude",
@@ -18,16 +20,17 @@
   "license": "MIT",
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.2.4",
-    "hono": "^4.0.0",
     "@hono/node-server": "^1.8.0",
-    "ws": "^8.16.0",
-    "uuid": "^9.0.1"
+    "hono": "^4.0.0",
+    "uuid": "^9.0.1",
+    "ws": "^8.16.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
-    "@types/ws": "^8.5.10",
     "@types/uuid": "^9.0.7",
+    "@types/ws": "^8.5.10",
+    "ts-node": "^10.9.2",
     "typescript": "^5.3.3",
-    "ts-node": "^10.9.2"
+    "vitest": "^4.0.18"
   }
 }

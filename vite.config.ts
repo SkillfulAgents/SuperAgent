@@ -31,6 +31,8 @@ export default defineConfig({
   root: './src/renderer',
   build: { outDir: '../../dist/renderer' },
   server: {
-    port: 3000,
+    port: parseInt(process.env.PORT || '47891', 10),
+    host: '0.0.0.0',
+    allowedHosts: ['host.docker.internal', 'host.containers.internal'],
   },
 })

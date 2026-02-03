@@ -31,6 +31,31 @@ jobs:
       - name: Run unit tests
         run: npm run test:run
 
+  container-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: agent-container/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: agent-container
+
+      - name: Run typecheck
+        run: npx tsc --noEmit
+        working-directory: agent-container
+
+      - name: Run container tests
+        run: npm test
+        working-directory: agent-container
+
   e2e-tests:
     runs-on: ubuntu-latest
     steps:

@@ -1,5 +1,5 @@
 
-import { ChevronRight, Plus, Settings, AlertTriangle, Clock } from 'lucide-react'
+import { ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard } from 'lucide-react'
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { isElectron, getPlatform } from '@renderer/lib/env'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
@@ -37,6 +37,7 @@ import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { useSelection } from '@renderer/context/selection-context'
 import { useScheduledTasks, type ApiScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
+import { useArtifacts, type ArtifactInfo } from '@renderer/hooks/use-artifacts'
 import { GlobalSettingsDialog } from '@renderer/components/settings/global-settings-dialog'
 import { ContainerSetupDialog } from '@renderer/components/settings/container-setup-dialog'
 import { NotificationBell } from '@renderer/components/notifications/notification-bell'
@@ -124,11 +125,47 @@ function ScheduledTaskSubItem({
   )
 }
 
+// Dashboard sub-item
+function DashboardSubItem({
+  artifact,
+  agentSlug,
+}: {
+  artifact: ArtifactInfo
+  agentSlug: string
+}) {
+  const { selectedDashboardSlug, selectAgent, selectDashboard } = useSelection()
+  const isSelected = artifact.slug === selectedDashboardSlug
+
+  const handleClick = () => {
+    selectAgent(agentSlug)
+    selectDashboard(artifact.slug)
+  }
+
+  return (
+    <SidebarMenuSubItem>
+      <SidebarMenuSubButton
+        asChild
+        isActive={isSelected}
+        title={artifact.description || artifact.name}
+      >
+        <button
+          onClick={handleClick}
+          className="flex items-center gap-2 w-full"
+        >
+          <LayoutDashboard className="h-3 w-3 shrink-0" />
+          <span className="truncate">{artifact.name}</span>
+        </button>
+      </SidebarMenuSubButton>
+    </SidebarMenuSubItem>
+  )
+}
+
 // Agent menu item with expandable sessions
 function AgentMenuItem({ agent }: { agent: ApiAgent }) {
   const { selectedAgentSlug, selectAgent } = useSelection()
   const { data: sessions } = useSessions(agent.slug)
   const { data: scheduledTasks } = useScheduledTasks(agent.slug, 'pending')
+  const { data: artifacts } = useArtifacts(agent.slug)
   const isSelected = agent.slug === selectedAgentSlug
   const [isOpen, setIsOpen] = useState(isSelected)
   const [showAll, setShowAll] = useState(false)
@@ -136,6 +173,7 @@ function AgentMenuItem({ agent }: { agent: ApiAgent }) {
   const visibleSessions = showAll ? sessions : sessions?.slice(0, 5)
   const hasMore = (sessions?.length ?? 0) > 5
   const pendingTasks = scheduledTasks || []
+  const dashboards = artifacts || []
 
   const handleClick = () => {
     selectAgent(agent.slug)
@@ -159,7 +197,7 @@ function AgentMenuItem({ agent }: { agent: ApiAgent }) {
             />
           </SidebarMenuButton>
         </AgentContextMenu>
-        {(sessions?.length || pendingTasks.length) ? (
+        {(sessions?.length || pendingTasks.length || dashboards.length) ? (
           <>
             <CollapsibleTrigger asChild>
               <SidebarMenuAction className="data-[state=open]:rotate-90">
@@ -169,7 +207,15 @@ function AgentMenuItem({ agent }: { agent: ApiAgent }) {
             </CollapsibleTrigger>
             <CollapsibleContent>
               <SidebarMenuSub>
-                {/* Pending scheduled tasks at the top */}
+                {/* Dashboards at the top */}
+                {dashboards.map((artifact) => (
+                  <DashboardSubItem
+                    key={artifact.slug}
+                    artifact={artifact}
+                    agentSlug={agent.slug}
+                  />
+                ))}
+                {/* Pending scheduled tasks */}
                 {pendingTasks.map((task) => (
                   <ScheduledTaskSubItem
                     key={task.id}

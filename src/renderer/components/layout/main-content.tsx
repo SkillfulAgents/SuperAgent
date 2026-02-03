@@ -7,6 +7,7 @@ import { SessionContextMenu } from '@renderer/components/sessions/session-contex
 import { AgentLanding } from '@renderer/components/agents/agent-landing'
 import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/scheduled-task-view'
 import { BrowserPreview } from '@renderer/components/browser/browser-preview'
+import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
 import { Button } from '@renderer/components/ui/button'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Plus, Play, Square, ChevronRight, Settings, Clock } from 'lucide-react'
@@ -27,6 +28,7 @@ export function MainContent() {
     selectedAgentSlug: agentSlug,
     selectedSessionId: sessionId,
     selectedScheduledTaskId: scheduledTaskId,
+    selectedDashboardSlug: dashboardSlug,
     selectSession,
   } = useSelection()
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -184,8 +186,11 @@ export function MainContent() {
         </div>
       </header>
 
-      {/* Show scheduled task view when a scheduled task is selected */}
-      {scheduledTaskId ? (
+      {/* Show dashboard view when a dashboard is selected */}
+      {dashboardSlug ? (
+        <DashboardView agentSlug={agentSlug} dashboardSlug={dashboardSlug} />
+      ) : /* Show scheduled task view when a scheduled task is selected */
+      scheduledTaskId ? (
         <ScheduledTaskView taskId={scheduledTaskId} agentSlug={agentSlug} />
       ) : sessionId ? (
         /* Show messages when a session is selected */

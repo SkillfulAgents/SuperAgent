@@ -52,6 +52,14 @@ RUN npm install -g @anthropic-ai/claude-code@2.1.4
 # Install TypeScript and ts-node globally
 RUN npm install -g typescript ts-node
 
+# Install Bun (for running dashboard servers)
+# Install as root then copy binary to /usr/local/bin so the claude user can access it
+# (symlinks to /root/.bun/bin/ won't work because /root/ is not readable by other users)
+RUN curl -fsSL https://bun.sh/install | bash && \
+    cp /root/.bun/bin/bun /usr/local/bin/bun && \
+    ln -s /usr/local/bin/bun /usr/local/bin/bunx && \
+    chmod 755 /usr/local/bin/bun
+
 # Install Chromium dependencies (needed by Playwright/agent-browser)
 RUN apt-get update && apt-get install -y \
     libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
@@ -89,6 +97,10 @@ RUN npm run build
 # Create non-root user for running Claude Code
 RUN useradd -m -s /bin/bash claude && \
     chown -R claude:claude /app /workspace
+
+# Copy skills into the user's Claude config directory (after user creation)
+COPY skills/ /home/claude/.claude/skills/
+RUN chown -R claude:claude /home/claude/.claude
 
 # Switch to non-root user
 USER claude
