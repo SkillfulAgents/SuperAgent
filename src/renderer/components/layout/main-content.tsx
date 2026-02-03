@@ -11,7 +11,7 @@ import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
 import { Button } from '@renderer/components/ui/button'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Plus, Play, Square, ChevronRight, Settings, Clock } from 'lucide-react'
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { useAgent, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
 import { useSessions, useSession } from '@renderer/hooks/use-sessions'
 import { useScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
@@ -32,8 +32,9 @@ export function MainContent() {
     selectSession,
   } = useSelection()
   const [settingsOpen, setSettingsOpen] = useState(false)
-  // Track pending user message that hasn't appeared in real data yet
-  const [pendingUserMessage, setPendingUserMessage] = useState<string | null>(null)
+  // Pending user messages per session — survives navigation between sessions
+  const pendingMessagesRef = useRef(new Map<string, string>())
+  const [, forceUpdate] = useState(0)
   const { data: agent } = useAgent(agentSlug)
   const { data: sessions } = useSessions(agentSlug)
   const { data: session } = useSession(sessionId, agentSlug)
@@ -73,20 +74,26 @@ export function MainContent() {
   // Add left padding for macOS traffic lights when sidebar is collapsed in Electron (not in full screen)
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && sidebarState === 'collapsed' && !isFullScreen
 
-  // Callback for MessageInput to set pending message
-  const handleMessageSent = useCallback((content: string) => {
-    setPendingUserMessage(content)
-  }, [])
+  const pendingUserMessage = sessionId ? (pendingMessagesRef.current.get(sessionId) ?? null) : null
 
-  // Callback for MessageList to clear pending message when it appears in real data
+  const handleMessageSent = useCallback((content: string) => {
+    if (sessionId) {
+      pendingMessagesRef.current.set(sessionId, content)
+      forceUpdate((n) => n + 1)
+    }
+  }, [sessionId])
+
   const handlePendingMessageAppeared = useCallback(() => {
-    setPendingUserMessage(null)
-  }, [])
+    if (sessionId) {
+      pendingMessagesRef.current.delete(sessionId)
+      forceUpdate((n) => n + 1)
+    }
+  }, [sessionId])
 
   // Callback for AgentLanding when a new session is created with initial message
-  const handleSessionCreated = useCallback((sessionId: string, initialMessage: string) => {
-    setPendingUserMessage(initialMessage)
-    selectSession(sessionId)
+  const handleSessionCreated = useCallback((newSessionId: string, initialMessage: string) => {
+    pendingMessagesRef.current.set(newSessionId, initialMessage)
+    selectSession(newSessionId)
   }, [selectSession])
 
   if (!agentSlug) {

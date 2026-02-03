@@ -15,6 +15,9 @@ export const SCENARIOS = {
 
   // Trigger a tool use response
   TOOL_USE: 'list files',
+
+  // Trigger a delayed response (3s delay before responding)
+  SLOW_RESPONSE: 'slow response',
 } as const
 
 /**

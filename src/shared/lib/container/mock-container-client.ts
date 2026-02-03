@@ -103,6 +103,22 @@ export class SimpleTextResponseScenario implements MockScenario {
 }
 
 /**
+ * Delayed text response scenario - adds an initial delay before responding.
+ * Useful for E2E tests that need the agent to stay "working" for a while.
+ */
+export class DelayedTextResponseScenario implements MockScenario {
+  constructor(private responseText: string, private delayMs: number) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    const inner = new SimpleTextResponseScenario(this.responseText)
+    // Write user message immediately so it's visible, delay the response
+    setTimeout(() => {
+      inner.execute(sessionId, client, userMessage)
+    }, this.delayMs)
+  }
+}
+
+/**
  * Tool use scenario - simulates a tool call with result
  * Event format matches what MessagePersister expects from the real container
  */
@@ -277,13 +293,18 @@ export class ToolUseScenario implements MockScenario {
  */
 export class MockContainerClient extends EventEmitter implements ContainerClient {
   // Global scenario registry - tests can register scenarios by message pattern
-  static scenarios: Map<string, MockScenario> = new Map([
+  static scenarios = new Map<string, MockScenario>([
     // Register the "list files" scenario for tool use tests
     ['list files', new ToolUseScenario(
       'Bash',
       { command: 'ls -la' },
       'file1.txt\nfile2.txt\nfolder/',
       'I found the following files in the current directory.'
+    )],
+    // Register a slow response scenario for cross-session tests
+    ['slow response', new DelayedTextResponseScenario(
+      'This is a delayed mock response.',
+      3000
     )],
   ])
   static defaultScenario: MockScenario = new SimpleTextResponseScenario(

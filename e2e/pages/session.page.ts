@@ -139,6 +139,16 @@ export class SessionPage {
   }
 
   /**
+   * Click the first session in the sidebar for a given agent
+   */
+  async selectFirstSessionInSidebar(agentSlug: string) {
+    // Sessions are sub-items under the agent's collapsible section
+    // Find session items with data-testid pattern
+    const sessionItem = this.page.locator(`[data-testid^="session-item-"]`).first()
+    await sessionItem.click()
+  }
+
+  /**
    * Assert that the assistant message contains expected text
    */
   async expectAssistantMessage(text: string, index = 0) {
