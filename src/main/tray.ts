@@ -297,6 +297,9 @@ async function updateTrayMenu(): Promise<void> {
     click: () => app.quit(),
   })
 
+  // Check again after async operations in case tray was destroyed during quit
+  if (!tray) return
+
   const contextMenu = Menu.buildFromTemplate(menuTemplate)
   tray.setContextMenu(contextMenu)
 }
