@@ -1249,14 +1249,12 @@ function handleBrowserStreamConnection(ws: WebSocket) {
   });
 
   upstream.on('close', () => {
-    console.log('[Browser] Upstream stream connection closed');
     if (ws.readyState === WebSocket.OPEN) {
       ws.close();
     }
   });
 
   ws.on('close', () => {
-    console.log('[Browser] Client stream connection closed');
     if (upstream.readyState === WebSocket.OPEN) {
       upstream.close();
     }

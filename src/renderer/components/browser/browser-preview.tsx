@@ -17,6 +17,7 @@ const DEFAULT_WIDTH = 380
 const HEADER_HEIGHT = 32
 const MIN_WIDTH = 240
 const EDGE_OFFSET = 16
+const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta'])
 
 interface BrowserPreviewProps {
   agentSlug: string
@@ -310,32 +311,70 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
     [mapCoordinates, sendInput, modifierFlags]
   )
 
+  const pressKeyViaHttp = useCallback(
+    (key: string, mods: number) => {
+      // Build Playwright-style combo: "Meta+Shift+ArrowLeft", "Control+a", etc.
+      const parts: string[] = []
+      if (mods & 2) parts.push('Control')
+      if (mods & 1) parts.push('Alt')
+      if (mods & 4) parts.push('Meta')
+      if (mods & 8) parts.push('Shift')
+      parts.push(key)
+      const combo = parts.join('+')
+
+      const baseUrl = getApiBaseUrl()
+      fetch(`${baseUrl}/api/agents/${agentSlug}/browser/press`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId, key: combo }),
+      }).catch(() => {
+        // Ignore errors — fire-and-forget for responsiveness
+      })
+    },
+    [agentSlug, sessionId]
+  )
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLCanvasElement>) => {
       e.preventDefault()
       const printable = e.key.length === 1
-      sendInput({
-        type: 'input_keyboard',
-        eventType: printable ? 'keyDown' : 'rawKeyDown',
-        key: e.key,
-        code: e.code,
-        text: printable ? e.key : undefined,
-        modifiers: modifierFlags(e),
-      })
+
+      if (printable) {
+        // Printable characters: send via WebSocket stream (low latency, works via CDP text field)
+        sendInput({
+          type: 'input_keyboard',
+          eventType: 'keyDown',
+          key: e.key,
+          code: e.code,
+          text: e.key,
+          modifiers: modifierFlags(e),
+        })
+      } else if (!MODIFIER_KEYS.has(e.key)) {
+        // Non-printable, non-modifier keys (Backspace, Arrow, Enter, Tab, Escape, etc.):
+        // Use HTTP press endpoint which goes through Playwright's keyboard API
+        // (properly sets windowsVirtualKeyCode in CDP, unlike the stream path)
+        pressKeyViaHttp(e.key, modifierFlags(e))
+      }
+      // Pure modifier keys (Shift, Ctrl, etc.) alone: ignore — they're included
+      // in the combo string when a non-modifier key is pressed with them.
     },
-    [sendInput, modifierFlags]
+    [sendInput, modifierFlags, pressKeyViaHttp]
   )
 
   const handleKeyUp = useCallback(
     (e: React.KeyboardEvent<HTMLCanvasElement>) => {
       e.preventDefault()
-      sendInput({
-        type: 'input_keyboard',
-        eventType: 'keyUp',
-        key: e.key,
-        code: e.code,
-        modifiers: modifierFlags(e),
-      })
+      // Only send keyUp for printable characters via stream.
+      // Non-printable keys use press (which sends both down+up).
+      if (e.key.length === 1) {
+        sendInput({
+          type: 'input_keyboard',
+          eventType: 'keyUp',
+          key: e.key,
+          code: e.code,
+          modifiers: modifierFlags(e),
+        })
+      }
     },
     [sendInput, modifierFlags]
   )
