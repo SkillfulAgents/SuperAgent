@@ -21,6 +21,8 @@ class MessagePersister {
   private sseClients: Map<string, Set<(data: unknown) => void>> = new Map()
   // Global notification subscribers (e.g., Electron main process)
   private globalNotificationClients: Set<(data: unknown) => void> = new Set()
+  // Track container clients per session for reconnection
+  private containerClients: Map<string, ContainerClient> = new Map()
 
   // Subscribe to a session's messages for SSE streaming
   subscribeToSession(
@@ -43,6 +45,9 @@ class MessagePersister {
       agentSlug,
     })
 
+    // Store container client for reconnection checks
+    this.containerClients.set(sessionId, client)
+
     // Subscribe to the container's message stream
     const unsubscribe = client.subscribeToStream(
       containerSessionId,
@@ -60,6 +65,7 @@ class MessagePersister {
       this.subscriptions.delete(sessionId)
     }
     this.streamingStates.delete(sessionId)
+    this.containerClients.delete(sessionId)
   }
 
   // Check if a session is currently active (processing user request)
@@ -304,6 +310,13 @@ class MessagePersister {
         })
         break
 
+      case 'connection_closed':
+        // WebSocket connection to container was lost
+        // Check if session is still actually running in the container
+        console.log(`[MessagePersister] Connection closed for session ${sessionId}, checking container state`)
+        this.handleConnectionClosed(sessionId, state)
+        break
+
       case 'stream_event':
         // Handle stream events for SSE broadcasting
         if (content.event) {
@@ -317,6 +330,65 @@ class MessagePersister {
           this.handleStreamEvent(sessionId, content.event, state)
         }
     }
+  }
+
+  // Handle connection closed - check container and mark inactive if session is done
+  private handleConnectionClosed(sessionId: string, state: StreamingState): void {
+    const client = this.containerClients.get(sessionId)
+    if (!client) {
+      // No client reference, assume session is done
+      this.markSessionInactive(sessionId, state)
+      return
+    }
+
+    // Check container asynchronously
+    client.getSession(sessionId)
+      .then((containerSession) => {
+        if (!containerSession) {
+          // Session doesn't exist in container anymore
+          console.log(`[MessagePersister] Session ${sessionId} not found in container, marking inactive`)
+          this.markSessionInactive(sessionId, state)
+          return
+        }
+
+        // Container session exists - check if it's still running
+        // The container's getSession returns isRunning in the response
+        const isRunning = (containerSession as any).isRunning
+        if (isRunning) {
+          // Session still running, try to re-subscribe
+          console.log(`[MessagePersister] Session ${sessionId} still running, re-subscribing`)
+          const unsubscribe = client.subscribeToStream(
+            sessionId,
+            (message) => this.handleMessage(sessionId, message)
+          )
+          this.subscriptions.set(sessionId, unsubscribe)
+        } else {
+          // Session finished
+          console.log(`[MessagePersister] Session ${sessionId} not running in container, marking inactive`)
+          this.markSessionInactive(sessionId, state)
+        }
+      })
+      .catch((error) => {
+        // Can't reach container, assume session is done
+        console.error(`[MessagePersister] Failed to check container for session ${sessionId}:`, error)
+        this.markSessionInactive(sessionId, state)
+      })
+  }
+
+  // Mark a session as inactive and broadcast the update
+  private markSessionInactive(sessionId: string, state: StreamingState): void {
+    state.isStreaming = false
+    state.isActive = false
+    state.currentText = ''
+    state.currentToolUse = null
+    state.currentToolInput = ''
+    this.broadcastToSSE(sessionId, { type: 'session_idle', isActive: false })
+    this.broadcastGlobal({
+      type: 'session_idle',
+      sessionId,
+      agentSlug: state.agentSlug,
+      isActive: false,
+    })
   }
 
   // Handle stream events for SSE broadcasting (not for persistence)

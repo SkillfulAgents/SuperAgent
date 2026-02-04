@@ -583,6 +583,15 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       ws.on('close', () => {
         console.log(`WebSocket closed for session ${sessionId}`)
         this.wsConnections.delete(sessionId)
+        // Notify the callback that the connection was lost
+        // This allows the message persister to handle the disconnection
+        const closeMessage: StreamMessage = {
+          type: 'connection_closed',
+          content: { type: 'connection_closed' },
+          timestamp: new Date(),
+          sessionId,
+        }
+        callback(closeMessage)
       })
 
       this.wsConnections.set(sessionId, ws)
