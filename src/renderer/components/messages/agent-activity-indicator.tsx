@@ -83,8 +83,8 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
         <span className="text-sm font-medium">{statusText}</span>
       </div>
 
-      {/* Todo list if available */}
-      {todos && todos.length > 0 && (
+      {/* Todo list if available and at least one item is not completed */}
+      {todos && todos.length > 0 && todos.some((t) => t.status !== 'completed') && (
         <ul className="mt-2 space-y-1 text-sm">
           {todos.map((todo, index) => (
             <li
