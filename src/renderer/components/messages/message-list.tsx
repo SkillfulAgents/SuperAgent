@@ -87,7 +87,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
 
       // Skip if there are any user messages after this assistant message
       // This means the user has moved past this request (e.g., interrupted and sent new message)
-      const hasSubsequentUserMessage = messages.slice(i + 1).some((m) => m.type === 'user')
+      // Also consider the optimistic pending user message (not yet persisted)
+      const hasSubsequentUserMessage = !!pendingUserMessage || messages.slice(i + 1).some((m) => m.type === 'user')
       if (hasSubsequentUserMessage) continue
 
       for (const toolCall of message.toolCalls) {
@@ -141,7 +142,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     }
 
     return { secretRequests, connectedAccountRequests, questionRequests, fileRequests }
-  }, [messages])
+  }, [messages, pendingUserMessage])
 
   // Merge SSE-based and message-based pending requests (dedupe by toolUseId)
   // Only include message-based requests when session is active (for page refresh recovery)
