@@ -13,6 +13,7 @@ import { messagePersister } from './message-persister'
 // Singleton to manage all container clients
 class ContainerManager {
   private clients: Map<string, ContainerClient> = new Map()
+  private containerStartedAt: Map<string, number> = new Map()
 
   // Get or create a container client for an agent
   getClient(agentId: string): ContainerClient {
@@ -98,6 +99,10 @@ class ContainerManager {
       // Start container (user secrets are in .env file in workspace)
       await client.start({ envVars })
 
+      // Record start time so auto-sleep monitor doesn't immediately
+      // sleep the container based on stale session activity timestamps
+      this.containerStartedAt.set(agentId, Date.now())
+
       // Broadcast agent status change globally
       messagePersister.broadcastGlobal({
         type: 'agent_status_changed',
@@ -109,15 +114,22 @@ class ContainerManager {
     return client
   }
 
+  // Get the time a container was started (used by auto-sleep monitor)
+  getContainerStartTime(agentId: string): number | undefined {
+    return this.containerStartedAt.get(agentId)
+  }
+
   // Remove a client from the cache
   removeClient(agentId: string): void {
     this.clients.delete(agentId)
+    this.containerStartedAt.delete(agentId)
   }
 
   // Clear all cached clients (e.g., when container runner setting changes).
   // Does NOT stop running containers — call stopAll() first if needed.
   clearClients(): void {
     this.clients.clear()
+    this.containerStartedAt.clear()
   }
 
   // Stop all containers
@@ -133,6 +145,7 @@ class ContainerManager {
     )
     await Promise.all(stopPromises)
     this.clients.clear()
+    this.containerStartedAt.clear()
   }
 
   // Synchronous stop - used for exit handlers where async isn't available
@@ -145,6 +158,7 @@ class ContainerManager {
       }
     }
     this.clients.clear()
+    this.containerStartedAt.clear()
   }
 
   // Check if any agents have running containers

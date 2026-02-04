@@ -88,7 +88,14 @@ class AutoSleepMonitor {
             continue
           }
 
+          // Use container start time as a floor — when an agent is woken up
+          // to view its dashboard, session timestamps are stale from before
+          // the previous sleep and would cause immediate re-sleep.
+          const containerStartTime =
+            containerManager.getContainerStartTime(agentId) ?? 0
+
           const lastActivity = Math.max(
+            containerStartTime,
             ...sessions.map((s) => s.lastActivityAt.getTime())
           )
 
