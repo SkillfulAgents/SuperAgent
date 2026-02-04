@@ -96,6 +96,46 @@
   min-width: 0 !important;
 }
 
+/* macOS Electron vibrancy - transparent backgrounds to let native blur show through */
+.electron-vibrancy,
+.electron-vibrancy body {
+  background: transparent !important;
+}
+
+.electron-vibrancy [data-sidebar="sidebar"] {
+  background: transparent !important;
+}
+
+/* Semi-transparent hover/active states so vibrancy remains visible */
+.electron-vibrancy [data-sidebar="sidebar"] [data-sidebar="menu-button"]:hover,
+.electron-vibrancy [data-sidebar="sidebar"] [data-sidebar="menu-button"]:active,
+.electron-vibrancy [data-sidebar="sidebar"] [data-sidebar="menu-button"][data-active="true"],
+.electron-vibrancy [data-sidebar="sidebar"] [data-sidebar="menu-sub-button"]:hover,
+.electron-vibrancy [data-sidebar="sidebar"] [data-sidebar="menu-sub-button"]:active,
+.electron-vibrancy [data-sidebar="sidebar"] [data-sidebar="menu-sub-button"][data-active="true"],
+.electron-vibrancy [data-sidebar="sidebar"] [data-sidebar="group-action"]:hover {
+  background: rgba(0, 0, 0, 0.06) !important;
+}
+
+.electron-vibrancy.dark [data-sidebar="sidebar"] [data-sidebar="menu-button"]:hover,
+.electron-vibrancy.dark [data-sidebar="sidebar"] [data-sidebar="menu-button"]:active,
+.electron-vibrancy.dark [data-sidebar="sidebar"] [data-sidebar="menu-button"][data-active="true"],
+.electron-vibrancy.dark [data-sidebar="sidebar"] [data-sidebar="menu-sub-button"]:hover,
+.electron-vibrancy.dark [data-sidebar="sidebar"] [data-sidebar="menu-sub-button"]:active,
+.electron-vibrancy.dark [data-sidebar="sidebar"] [data-sidebar="menu-sub-button"][data-active="true"],
+.electron-vibrancy.dark [data-sidebar="sidebar"] [data-sidebar="group-action"]:hover {
+  background: rgba(255, 255, 255, 0.1) !important;
+}
+
+/* Hide all sidebar borders with vibrancy - grey lines on translucent look bad */
+.electron-vibrancy [data-sidebar="sidebar"] [data-sidebar="header"],
+.electron-vibrancy [data-sidebar="sidebar"] [data-sidebar="footer"],
+.electron-vibrancy [data-sidebar="sidebar"] [data-sidebar="separator"],
+.electron-vibrancy [data-sidebar="sidebar"] [data-sidebar="menu-sub"],
+.electron-vibrancy :has(> [data-sidebar="sidebar"]) {
+  border-color: transparent !important;
+}
+
 /* Electron window drag regions */
 .app-drag-region {
   -webkit-app-region: drag;

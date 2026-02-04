@@ -52,6 +52,10 @@ function createWindow() {
     },
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 16 },
+    ...(process.platform === 'darwin' && { // translucent window on macOS for the sidebar
+      vibrancy: 'sidebar' as const,
+      visualEffectState: 'active' as const,
+    }),
   })
 
   // Load the app
