@@ -45,7 +45,7 @@ export function MainContent() {
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
   const markSessionNotificationsRead = useMarkSessionNotificationsRead()
-  const { browserActive } = useMessageStream(sessionId ?? null, agentSlug ?? null)
+  const { browserActive, isActive } = useMessageStream(sessionId ?? null, agentSlug ?? null)
 
   // Auto-mark notifications as read when viewing a session
   useEffect(() => {
@@ -216,7 +216,7 @@ export function MainContent() {
               onMessageSent={handleMessageSent}
             />
           </div>
-          <BrowserPreview agentSlug={agentSlug} sessionId={sessionId} browserActive={browserActive} />
+          <BrowserPreview agentSlug={agentSlug} sessionId={sessionId} browserActive={browserActive} isActive={isActive} />
         </div>
       ) : (
         /* Show landing page with large input when no session is selected */

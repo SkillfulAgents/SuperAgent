@@ -1,6 +1,8 @@
 import { Hono } from 'hono'
 import { hostBrowserManager } from '../../main/host-browser-manager'
 import { getSettings } from '@shared/lib/config/settings'
+import { containerManager } from '@shared/lib/container/container-manager'
+import { messagePersister } from '@shared/lib/container/message-persister'
 
 const browser = new Hono()
 
@@ -29,5 +31,32 @@ browser.post('/stop-host-browser', async (c) => {
     return c.json({ error: message }, 500)
   }
 })
+
+// When the host browser exits externally (user closed Chrome), broadcast
+// browser_active: false directly to all frontend SSE clients and also
+// attempt to notify containers so they can clean up their internal state.
+hostBrowserManager.onExternalExit = async () => {
+  console.log('[Browser] Host browser closed externally')
+
+  // Immediately broadcast to all frontend SSE clients so the preview disappears
+  messagePersister.broadcastGlobal({ type: 'browser_active', active: false })
+
+  // Also try to notify containers to clean up their internal browser state.
+  // This may 404 if the container doesn't have the endpoint yet — that's OK,
+  // the frontend is already updated via the SSE broadcast above.
+  try {
+    const runningAgents = await containerManager.getRunningAgentIds()
+    for (const agentId of runningAgents) {
+      try {
+        const client = containerManager.getClient(agentId)
+        await client.fetch('/browser/notify-closed', { method: 'POST' })
+      } catch {
+        // Expected to fail until container is rebuilt with the new endpoint
+      }
+    }
+  } catch {
+    // Non-critical — frontend is already notified
+  }
+}
 
 export default browser

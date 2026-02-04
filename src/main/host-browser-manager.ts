@@ -31,6 +31,11 @@ const CDP_PORT = 9222
 class HostBrowserManager {
   private browserProcess: ChildProcess | null = null
   private detectedPath: string | null = null
+  private stoppingIntentionally = false
+
+  // Callback invoked when the browser exits without stop() being called
+  // (e.g. user closed Chrome manually)
+  onExternalExit: (() => void) | null = null
 
   // Re-export for callers that need direct access
   getChromeUserDataDir = getChromeUserDataDir
@@ -106,7 +111,15 @@ class HostBrowserManager {
 
     this.browserProcess.on('exit', (code) => {
       console.log(`[HostBrowserManager] Browser process exited with code ${code}`)
+      const wasIntentional = this.stoppingIntentionally
+      this.stoppingIntentionally = false
       this.browserProcess = null
+      if (!wasIntentional) {
+        console.log('[HostBrowserManager] Browser closed externally, notifying listeners')
+        Promise.resolve(this.onExternalExit?.()).catch((err) => {
+          console.error('[HostBrowserManager] Error in onExternalExit callback:', err)
+        })
+      }
     })
 
     try {
@@ -121,6 +134,9 @@ class HostBrowserManager {
 
   stop(): void {
     if (this.browserProcess && !this.browserProcess.killed) {
+      // Set flag before kill — the exit event fires asynchronously after kill(),
+      // so we keep the flag set (it's reset in the exit handler after checking it)
+      this.stoppingIntentionally = true
       this.browserProcess.kill()
       this.browserProcess = null
     }

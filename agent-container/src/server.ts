@@ -741,6 +741,16 @@ app.post('/browser/close', async (c) => {
   }
 });
 
+// POST /browser/notify-closed - Host browser was closed externally, clean up state
+app.post('/browser/notify-closed', (c) => {
+  if (browserState.active) {
+    broadcastBrowserEvent(false);
+    browserState = { active: false, sessionId: null, cdpUrl: null };
+    console.log('[Browser] Browser closed externally, state cleaned up');
+  }
+  return c.json({ success: true });
+});
+
 // POST /browser/snapshot - Get accessibility tree snapshot
 app.post('/browser/snapshot', async (c) => {
   try {

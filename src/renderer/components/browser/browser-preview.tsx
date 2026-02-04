@@ -1,7 +1,17 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Globe, ChevronUp, ChevronDown, GripHorizontal } from 'lucide-react'
+import { Globe, ChevronUp, ChevronDown, GripHorizontal, X } from 'lucide-react'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { clearBrowserActive } from '@renderer/hooks/use-message-stream'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@renderer/components/ui/alert-dialog'
 
 const DEFAULT_WIDTH = 380
 const HEADER_HEIGHT = 32
@@ -12,11 +22,14 @@ interface BrowserPreviewProps {
   agentSlug: string
   sessionId: string
   browserActive: boolean
+  isActive: boolean
 }
 
-export function BrowserPreview({ agentSlug, sessionId, browserActive }: BrowserPreviewProps) {
+export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }: BrowserPreviewProps) {
   const [expanded, setExpanded] = useState(false)
   const [connected, setConnected] = useState(false)
+  const [showCloseWarning, setShowCloseWarning] = useState(false)
+  const [isClosing, setIsClosing] = useState(false)
   const [aspectRatio, setAspectRatio] = useState('16 / 9')
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
@@ -327,6 +340,39 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive }: BrowserP
     [sendInput, modifierFlags]
   )
 
+  const closeBrowser = useCallback(async () => {
+    const baseUrl = getApiBaseUrl()
+    setIsClosing(true)
+    try {
+      if (isActive) {
+        // Interrupt the session first
+        await fetch(`${baseUrl}/api/agents/${agentSlug}/sessions/${sessionId}/interrupt`, {
+          method: 'POST',
+        })
+      }
+      // Close the browser
+      await fetch(`${baseUrl}/api/agents/${agentSlug}/browser/close`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId }),
+      })
+      clearBrowserActive(sessionId)
+    } catch (error) {
+      console.error('Failed to close browser:', error)
+    } finally {
+      setIsClosing(false)
+      setShowCloseWarning(false)
+    }
+  }, [agentSlug, sessionId, isActive])
+
+  const handleCloseClick = useCallback(() => {
+    if (isActive) {
+      setShowCloseWarning(true)
+    } else {
+      closeBrowser()
+    }
+  }, [isActive, closeBrowser])
+
   if (!browserActive) return null
 
   const floatStyle: React.CSSProperties = pos
@@ -348,6 +394,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive }: BrowserP
       }
 
   return (
+    <>
     <div
       ref={containerRef}
       style={floatStyle}
@@ -375,6 +422,14 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive }: BrowserP
           ) : (
             <ChevronUp className="h-3.5 w-3.5" />
           )}
+        </button>
+        <button
+          className="p-0.5 rounded hover:bg-destructive/80 hover:text-destructive-foreground transition-colors"
+          onClick={handleCloseClick}
+          onPointerDown={(e) => e.stopPropagation()}
+          title="Close browser"
+        >
+          <X className="h-3.5 w-3.5" />
         </button>
       </div>
 
@@ -411,6 +466,28 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive }: BrowserP
         </div>
       )}
     </div>
+
+    <AlertDialog open={showCloseWarning} onOpenChange={setShowCloseWarning}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Close Browser</AlertDialogTitle>
+          <AlertDialogDescription>
+            The agent is currently running. Closing the browser will interrupt the active session.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={closeBrowser}
+            disabled={isClosing}
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+          >
+            {isClosing ? 'Closing...' : 'Close Browser'}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   )
 }
 
