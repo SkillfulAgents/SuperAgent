@@ -58,6 +58,18 @@ function createWindow() {
     }),
   })
 
+  // Handle window.open() calls - prevent popup windows
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    // Handle file download URLs - download directly without opening a popup
+    if (url.includes('/api/agents/') && url.includes('/files/')) {
+      mainWindow?.webContents.downloadURL(url)
+      return { action: 'deny' }
+    }
+    // For other URLs (OAuth, external links), open in system browser
+    shell.openExternal(url)
+    return { action: 'deny' }
+  })
+
   // Load the app
   if (process.env.ELECTRON_RENDERER_URL) {
     // Development: use Vite dev server
