@@ -89,6 +89,16 @@ class MessagePersister {
     return false
   }
 
+  // Mark all sessions for an agent as inactive (e.g., when container stops)
+  markAllSessionsInactiveForAgent(agentSlug: string): void {
+    for (const [sessionId, state] of this.streamingStates) {
+      if (state.agentSlug === agentSlug && state.isActive) {
+        console.log(`[MessagePersister] Marking session ${sessionId} inactive (container stopped)`)
+        this.markSessionInactive(sessionId, state)
+      }
+    }
+  }
+
   // Check if a session has active SSE clients (someone is viewing it)
   hasActiveViewers(sessionId: string): boolean {
     const clients = this.sseClients.get(sessionId)

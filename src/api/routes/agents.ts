@@ -247,6 +247,9 @@ agents.post('/:id/stop', async (c) => {
 
     await client.stop()
 
+    // Mark all sessions for this agent as inactive since container is stopped
+    messagePersister.markAllSessionsInactiveForAgent(slug)
+
     // Broadcast agent status change globally
     console.log('[Agents] Broadcasting agent_status_changed for', slug, 'status: stopped')
     messagePersister.broadcastGlobal({
@@ -593,14 +596,21 @@ agents.post('/:id/sessions/:sessionId/interrupt', async (c) => {
     const client = containerManager.getClient(agentSlug)
     const info = await client.getInfo()
 
+    // If container isn't running, just mark the session as interrupted locally
+    // This handles the case where container crashed/restarted but UI still shows active
     if (info.status !== 'running') {
-      return c.json({ error: 'Agent container is not running' }, 400)
+      console.log(`[Agents] Container not running for ${agentSlug}, marking session ${sessionId} as interrupted locally`)
+      await messagePersister.markSessionInterrupted(sessionId)
+      return c.json({ success: true, note: 'Container not running, session marked inactive' })
     }
 
+    // Try to interrupt in the container
     const interrupted = await client.interruptSession(sessionId)
 
+    // Even if container interrupt fails (session might not exist there anymore),
+    // still mark it as interrupted locally to update the UI
     if (!interrupted) {
-      return c.json({ error: 'Failed to interrupt session' }, 500)
+      console.log(`[Agents] Container interrupt returned false for session ${sessionId}, marking as interrupted locally`)
     }
 
     await messagePersister.markSessionInterrupted(sessionId)
@@ -608,7 +618,14 @@ agents.post('/:id/sessions/:sessionId/interrupt', async (c) => {
     return c.json({ success: true })
   } catch (error) {
     console.error('Failed to interrupt session:', error)
-    return c.json({ error: 'Failed to interrupt session' }, 500)
+    // Even on error, try to mark session as interrupted to fix UI state
+    try {
+      const sessionId = c.req.param('sessionId')
+      await messagePersister.markSessionInterrupted(sessionId)
+      return c.json({ success: true, note: 'Error during interrupt, but session marked inactive' })
+    } catch {
+      return c.json({ error: 'Failed to interrupt session' }, 500)
+    }
   }
 })
 

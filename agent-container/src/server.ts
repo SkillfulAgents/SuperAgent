@@ -12,7 +12,29 @@ import * as dns from 'dns';
 import { inputManager } from './input-manager';
 import { dashboardManager } from './dashboard-manager';
 
+// Global error handlers to prevent crashes from AbortError during interrupts
+// The SDK throws AbortError when queries are aborted, which can propagate uncaught
+process.on('uncaughtException', (error: Error) => {
+  // AbortError is expected during interrupt operations - don't crash
+  if (error.name === 'AbortError' || error.message?.includes('aborted')) {
+    console.log('[Server] Caught AbortError (expected during interrupt):', error.message);
+    return;
+  }
+  console.error('[Server] Uncaught exception:', error);
+  // For other errors, log but don't exit - let the container stay alive
+});
 
+process.on('unhandledRejection', (reason: unknown) => {
+  // AbortError is expected during interrupt operations - don't crash
+  if (reason instanceof Error) {
+    if (reason.name === 'AbortError' || reason.message?.includes('aborted')) {
+      console.log('[Server] Caught unhandled AbortError (expected during interrupt):', reason.message);
+      return;
+    }
+  }
+  console.error('[Server] Unhandled rejection:', reason);
+  // Don't exit - let the container stay alive
+});
 
 const app = new Hono();
 const sessionManager = new SessionManager();
