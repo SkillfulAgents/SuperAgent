@@ -244,9 +244,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
   async stop(): Promise<void> {
     try {
-      // Close all WebSocket connections
+      // Terminate all WebSocket connections immediately (no graceful close handshake)
+      // to avoid ECONNRESET errors when the container is stopped
       for (const ws of this.wsConnections.values()) {
-        ws.close()
+        ws.removeAllListeners()
+        ws.terminate()
       }
       this.wsConnections.clear()
 
@@ -266,9 +268,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
   stopSync(): void {
     try {
-      // Close all WebSocket connections
+      // Terminate all WebSocket connections immediately (no graceful close handshake)
+      // to avoid ECONNRESET errors when the container is stopped
       for (const ws of this.wsConnections.values()) {
-        ws.close()
+        ws.removeAllListeners()
+        ws.terminate()
       }
       this.wsConnections.clear()
 
@@ -576,8 +580,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       })
 
       ws.on('error', (error) => {
-        console.error(`WebSocket error for session ${sessionId}:`, error)
-        this.emit('error', error)
+        // Only log and emit if this connection is still tracked (not cleaned up by stop())
+        if (this.wsConnections.has(sessionId)) {
+          console.error(`WebSocket error for session ${sessionId}:`, error)
+          this.emit('error', error)
+        }
       })
 
       ws.on('close', () => {
