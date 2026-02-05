@@ -111,6 +111,14 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   /**
+   * Returns a suffix to append to volume mount specifications (e.g., ':U' for Podman).
+   * Subclasses can override this for runtime-specific volume options.
+   */
+  protected getVolumeMountSuffix(): string {
+    return ''
+  }
+
+  /**
    * Returns resource limit flags for the container.
    * Subclasses can override if the runtime uses different flag syntax.
    */
@@ -219,7 +227,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         `${runner} run -d \
           --name ${containerName} \
           -p ${port}:${CONTAINER_INTERNAL_PORT} \
-          -v "${workspaceDir}:/workspace" \
+          -v "${workspaceDir}:/workspace${this.getVolumeMountSuffix()}" \
           ${resourceFlags} \
           ${additionalFlags} \
           ${envFlags} \
@@ -362,6 +370,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           systemPrompt: options.systemPrompt,
           availableEnvVars: options.availableEnvVars,
           initialMessage: options.initialMessage,
+          model: options.model,
         }),
         signal: controller.signal,
       })

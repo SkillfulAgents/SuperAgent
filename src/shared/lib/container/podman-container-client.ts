@@ -15,14 +15,18 @@ export class PodmanContainerClient extends BaseContainerClient {
     return 'podman'
   }
 
-  /**
-   * Podman-specific flags if needed.
-   * For example, Podman might need --userns=keep-id for rootless mode.
-   */
   protected getAdditionalRunFlags(): string {
-    // Podman in rootless mode may need user namespace mapping
-    // Uncomment if needed: return '--userns=keep-id'
     return ''
+  }
+
+  /**
+   * Podman needs :U on volume mounts to remap ownership to the container user.
+   * Unlike Docker Desktop, Podman does not transparently handle UID mapping
+   * for bind mounts — the host user's UID is preserved inside the container,
+   * which prevents the non-root container user from writing to mounted volumes.
+   */
+  protected getVolumeMountSuffix(): string {
+    return ':U'
   }
 
   /**
