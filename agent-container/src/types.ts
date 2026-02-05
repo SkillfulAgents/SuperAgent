@@ -46,6 +46,7 @@ export interface CreateSessionRequest {
   systemPrompt?: string; // Custom system prompt to append to default
   availableEnvVars?: string[]; // List of env var names available to the agent
   initialMessage: string; // Required: first message to send (triggers session ID generation)
+  model?: string; // Claude model to use for this session
 }
 
 export interface SendMessageRequest {

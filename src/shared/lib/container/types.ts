@@ -30,6 +30,7 @@ export interface CreateSessionOptions {
   systemPrompt?: string
   availableEnvVars?: string[]
   initialMessage: string // Required: first message to send (triggers session ID generation)
+  model?: string // Claude model to use for this session
 }
 
 export interface StartOptions {

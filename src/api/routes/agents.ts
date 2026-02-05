@@ -41,7 +41,7 @@ import { getAgentSkills } from '@shared/lib/skills'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { withRetry } from '@shared/lib/utils/retry'
 import { transformMessages } from '@shared/lib/utils/message-transform'
-import { getEffectiveAnthropicApiKey } from '@shared/lib/config/settings'
+import { getEffectiveAnthropicApiKey, getEffectiveModels } from '@shared/lib/config/settings'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import * as fs from 'fs'
@@ -59,7 +59,9 @@ function getAnthropicClient(): Anthropic {
 }
 
 // Model used for generating session names (lightweight task)
-const SUMMARIZER_MODEL = process.env.SUMMARIZER_MODEL || 'claude-haiku-4-5'
+function getSummarizerModel(): string {
+  return getEffectiveModels().summarizerModel
+}
 
 // Generate session name using AI (fire and forget)
 async function generateAndUpdateSessionNameAsync(
@@ -72,7 +74,7 @@ async function generateAndUpdateSessionNameAsync(
     const anthropic = getAnthropicClient()
     const response = await withRetry(() =>
       anthropic.messages.create({
-        model: SUMMARIZER_MODEL,
+        model: getSummarizerModel(),
         max_tokens: 50,
         messages: [
           {
@@ -316,6 +318,7 @@ agents.post('/:id/sessions', async (c) => {
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: message.trim(),
+      model: getEffectiveModels().agentModel,
     })
     const sessionId = containerSession.id
 

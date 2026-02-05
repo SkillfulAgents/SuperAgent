@@ -8,6 +8,7 @@ import {
   getAnthropicApiKeyStatus,
   getComposioApiKeyStatus,
   getComposioUserId,
+  getEffectiveModels,
   type AppSettings,
   type ContainerSettings,
   type GlobalSettingsResponse,
@@ -40,6 +41,7 @@ settings.get('/', async (c) => {
         anthropic: getAnthropicApiKeyStatus(),
         composio: getComposioApiKeyStatus(),
       },
+      models: getEffectiveModels(),
       composioUserId: getComposioUserId(),
       setupCompleted: !!currentSettings.app?.setupCompleted,
       hostBrowserStatus: hostBrowserManager.detect(),
@@ -99,6 +101,12 @@ settings.put('/', async (c) => {
         ...body.app,
       },
       apiKeys: currentSettings.apiKeys,
+      models: body.models
+        ? {
+            ...currentSettings.models,
+            ...body.models,
+          }
+        : currentSettings.models,
     }
 
     // Handle API key updates
@@ -167,6 +175,7 @@ settings.put('/', async (c) => {
         anthropic: getAnthropicApiKeyStatus(),
         composio: getComposioApiKeyStatus(),
       },
+      models: getEffectiveModels(),
       composioUserId: getComposioUserId(),
       setupCompleted: !!newSettings.app?.setupCompleted,
       hostBrowserStatus: hostBrowserManager.detect(),
@@ -216,8 +225,9 @@ settings.post('/validate-anthropic-key', async (c) => {
     }
 
     const client = new Anthropic({ apiKey })
+    const { summarizerModel } = getEffectiveModels()
     await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: summarizerModel,
       max_tokens: 1,
       messages: [{ role: 'user', content: 'Hi' }],
     })

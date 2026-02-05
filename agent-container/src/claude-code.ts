@@ -188,6 +188,7 @@ export interface ClaudeCodeProcessOptions {
   claudeSessionId?: string;
   userSystemPrompt?: string;
   availableEnvVars?: string[];
+  model?: string;
 }
 
 export class ClaudeCodeProcess extends EventEmitter {
@@ -198,6 +199,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private workingDirectory: string;
   private claudeSessionId: string | null;
   private systemPromptAppend: string | undefined;
+  private model: string | undefined;
   private isReady: boolean = false;
   private isProcessing: boolean = false;
 
@@ -206,6 +208,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.sessionId = options.sessionId;
     this.workingDirectory = options.workingDirectory;
     this.claudeSessionId = options.claudeSessionId || null;
+    this.model = options.model;
     this.systemPromptAppend = generateSystemPromptAppend(
       options.availableEnvVars,
       options.userSystemPrompt
@@ -222,6 +225,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     return query({
       prompt: this.messageQueue!,
       options: {
+        model: this.model,
         cwd: this.workingDirectory,
         abortController: this.abortController!,
         resume: this.claudeSessionId || undefined,

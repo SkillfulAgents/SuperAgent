@@ -63,6 +63,7 @@ export class SessionManager extends EventEmitter {
       workingDirectory,
       userSystemPrompt: request.systemPrompt,
       availableEnvVars: request.availableEnvVars,
+      model: request.model,
     });
 
     // Promise to capture Claude's session ID (emitted after first message is sent)
@@ -135,6 +136,7 @@ export class SessionManager extends EventEmitter {
       lastActivity: session.lastActivity.toISOString(),
       systemPrompt: request.systemPrompt,
       availableEnvVars: request.availableEnvVars,
+      model: request.model,
     });
 
     this.sessions.set(sessionId, sessionData);
@@ -160,6 +162,7 @@ export class SessionManager extends EventEmitter {
         claudeSessionId: persisted.claudeSessionId,
         userSystemPrompt: persisted.systemPrompt,
         availableEnvVars: persisted.availableEnvVars,
+        model: persisted.model,
       });
 
       const session: Session = {

@@ -24,6 +24,11 @@ export interface NotificationSettings {
   sessionScheduled: boolean
 }
 
+export interface ModelSettings {
+  summarizerModel: string
+  agentModel: string
+}
+
 export interface AppPreferences {
   showMenuBarIcon?: boolean
   notifications?: NotificationSettings
@@ -37,6 +42,7 @@ export interface AppSettings {
   container: ContainerSettings
   apiKeys?: ApiKeySettings
   app?: AppPreferences
+  models?: ModelSettings
 }
 
 // API key source types
@@ -69,6 +75,7 @@ export interface GlobalSettingsResponse {
     composio: ApiKeyStatus
   }
   composioUserId?: string
+  models: ModelSettings
   setupCompleted: boolean
   hostBrowserStatus?: HostBrowserStatus
 }
@@ -91,6 +98,10 @@ const DEFAULT_SETTINGS: AppSettings = {
       sessionWaiting: true,
       sessionScheduled: true,
     },
+  },
+  models: {
+    summarizerModel: 'claude-haiku-4-5',
+    agentModel: 'claude-opus-4-5',
   },
 }
 
@@ -128,6 +139,10 @@ export function loadSettings(): AppSettings {
           },
         },
         apiKeys: loaded.apiKeys,
+        models: {
+          ...DEFAULT_SETTINGS.models,
+          ...loaded.models,
+        },
       }
     }
   } catch (error) {
@@ -245,6 +260,17 @@ export function getComposioUserId(): string | undefined {
     return settings.apiKeys.composioUserId
   }
   return process.env.COMPOSIO_USER_ID
+}
+
+/**
+ * Get the effective model settings, with defaults applied.
+ */
+export function getEffectiveModels(): ModelSettings {
+  const settings = getSettings()
+  return {
+    summarizerModel: settings.models?.summarizerModel || DEFAULT_SETTINGS.models!.summarizerModel,
+    agentModel: settings.models?.agentModel || DEFAULT_SETTINGS.models!.agentModel,
+  }
 }
 
 export { DEFAULT_SETTINGS }
