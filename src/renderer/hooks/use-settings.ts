@@ -18,7 +18,7 @@ export function useSettings() {
       if (!res.ok) throw new Error('Failed to fetch settings')
       return res.json()
     },
-    refetchInterval: 5000, // Poll to check for running agents status changes
+    refetchInterval: 60000, // Poll less frequently - container status is cached server-side
   })
 }
 

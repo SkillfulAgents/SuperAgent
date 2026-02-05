@@ -38,6 +38,8 @@ Superagent is an open-source application for running sophisticated, code-based A
 |----------|-------------|---------|
 | `ANTHROPIC_API_KEY` | Your Anthropic API key (required) | - |
 | `SUMMARIZER_MODEL` | Model used for generating session names | `claude-haiku-4-5` |
+| `CONTAINER_STATUS_SYNC_INTERVAL_SECONDS` | How often to sync container status with Docker (seconds) | `300` |
+| `RUNNER_AVAILABILITY_CACHE_TTL_SECONDS` | How long to cache Docker/Podman availability checks (seconds) | `60` |
 
 Create a `.env.local` file in the project root:
 
@@ -45,6 +47,8 @@ Create a `.env.local` file in the project root:
 ANTHROPIC_API_KEY=your-api-key-here
 # Optional overrides
 # SUMMARIZER_MODEL=claude-haiku-4-5
+# CONTAINER_STATUS_SYNC_INTERVAL_SECONDS=300
+# RUNNER_AVAILABILITY_CACHE_TTL_SECONDS=60
 ```
 
 ## Scripts

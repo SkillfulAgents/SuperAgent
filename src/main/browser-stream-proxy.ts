@@ -27,8 +27,9 @@ export function setupBrowserStreamProxy(server: ServerType): void {
 
     browserWss.handleUpgrade(request, socket, head, async (ws) => {
       try {
-        const client = containerManager.getClient(agentSlug)
-        const info = await client.getInfo()
+        // Ensure client exists (creates if needed) and get cached status
+        containerManager.getClient(agentSlug)
+        const info = containerManager.getCachedInfo(agentSlug)
 
         if (info.status !== 'running' || !info.port) {
           ws.close(1011, 'Agent container is not running')

@@ -104,6 +104,7 @@ export async function getAgent(slug: string): Promise<AgentConfig | null> {
 
 /**
  * Get a single agent with container status (returns API format)
+ * Uses cached container status to avoid spawning docker processes.
  */
 export async function getAgentWithStatus(slug: string): Promise<ApiAgent | null> {
   const agent = await getAgent(slug)
@@ -111,8 +112,8 @@ export async function getAgentWithStatus(slug: string): Promise<ApiAgent | null>
     return null
   }
 
-  const client = containerManager.getClient(slug)
-  const info = await client.getInfo()
+  // Use cached status to avoid spawning docker processes
+  const info = containerManager.getCachedInfo(slug)
 
   return toApiAgent(agent, info.status, info.port)
 }
@@ -148,17 +149,16 @@ export async function listAgents(): Promise<AgentConfig[]> {
 
 /**
  * List all agents with container status (returns API format)
+ * Uses cached container status to avoid spawning docker processes.
  */
 export async function listAgentsWithStatus(): Promise<ApiAgent[]> {
   const agents = await listAgents()
 
-  const agentsWithStatus = await Promise.all(
-    agents.map(async (agent) => {
-      const client = containerManager.getClient(agent.slug)
-      const info = await client.getInfo()
-      return toApiAgent(agent, info.status, info.port)
-    })
-  )
+  // Use cached status to avoid spawning docker processes
+  const agentsWithStatus = agents.map((agent) => {
+    const info = containerManager.getCachedInfo(agent.slug)
+    return toApiAgent(agent, info.status, info.port)
+  })
 
   return agentsWithStatus
 }
@@ -266,8 +266,7 @@ export async function deleteAgent(slug: string): Promise<boolean> {
 
   // Stop container if running
   try {
-    const client = containerManager.getClient(slug)
-    await client.stop()
+    await containerManager.stopContainer(slug)
   } catch {
     // Ignore errors if container isn't running
   }

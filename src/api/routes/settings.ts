@@ -14,7 +14,7 @@ import {
   type GlobalSettingsResponse,
 } from '@shared/lib/config/settings'
 import { containerManager } from '@shared/lib/container/container-manager'
-import { checkAllRunnersAvailability, startRunner, type ContainerRunner } from '@shared/lib/container/client-factory'
+import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, type ContainerRunner } from '@shared/lib/container/client-factory'
 import { hostBrowserManager } from '../../main/host-browser-manager'
 import { db } from '@shared/lib/db'
 import { proxyAuditLog, proxyTokens, agentConnectedAccounts, scheduledTasks, notifications, connectedAccounts } from '@shared/lib/db/schema'
@@ -26,10 +26,10 @@ const settings = new Hono()
 settings.get('/', async (c) => {
   try {
     const currentSettings = getSettings()
-    const [hasRunningAgents, runnerAvailability] = await Promise.all([
-      containerManager.hasRunningAgents(),
-      checkAllRunnersAvailability(),
-    ])
+    // hasRunningAgents uses cached status (no docker process spawned)
+    const hasRunningAgents = containerManager.hasRunningAgents()
+    // checkAllRunnersAvailability still spawns docker commands, but only on explicit request
+    const runnerAvailability = await checkAllRunnersAvailability()
 
     const response: GlobalSettingsResponse = {
       dataDir: getDataDir(),
@@ -59,7 +59,8 @@ settings.put('/', async (c) => {
   try {
     const body = await c.req.json()
     const currentSettings = getSettings()
-    const hasRunningAgents = await containerManager.hasRunningAgents()
+    // hasRunningAgents uses cached status (no docker process spawned)
+    const hasRunningAgents = containerManager.hasRunningAgents()
 
     // Check if trying to change restricted settings while agents are running
     if (hasRunningAgents && body.container) {
@@ -199,9 +200,9 @@ settings.post('/start-runner', async (c) => {
     const result = await startRunner(runner)
 
     if (result.success) {
-      // Wait a bit for the runtime to start, then check availability
+      // Wait a bit for the runtime to start, then refresh availability (clears cache first)
       await new Promise((resolve) => setTimeout(resolve, 2000))
-      const runnerAvailability = await checkAllRunnersAvailability()
+      const runnerAvailability = await refreshRunnerAvailability()
 
       return c.json({
         ...result,

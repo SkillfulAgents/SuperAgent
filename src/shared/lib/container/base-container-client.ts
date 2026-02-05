@@ -98,6 +98,27 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   /**
+   * Check if an error is a connection error (container not reachable).
+   */
+  private isConnectionError(err: Error): boolean {
+    return (
+      err.message.includes('ECONNREFUSED') ||
+      err.message.includes('ECONNRESET') ||
+      err.message.includes('ETIMEDOUT') ||
+      err.message.includes('fetch failed')
+    )
+  }
+
+  /**
+   * Handle a connection error - notify via callback if configured.
+   */
+  protected handleConnectionError(): void {
+    if (this.config.onConnectionError) {
+      this.config.onConnectionError()
+    }
+  }
+
+  /**
    * Returns the CLI command for this container runtime (e.g., 'docker', 'podman')
    */
   protected abstract getRunnerCommand(): string
@@ -130,7 +151,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return `superagent-${this.config.agentId}`
   }
 
-  async getInfo(): Promise<ContainerInfo> {
+  /**
+   * Query the container runtime for the current container state.
+   * This spawns a CLI process - prefer containerManager.getCachedInfo() for cached status.
+   */
+  async getInfoFromRuntime(): Promise<ContainerInfo> {
     const containerName = this.getContainerName()
     const runner = this.getRunnerCommand()
     try {
@@ -145,6 +170,14 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     } catch {
       return { status: 'stopped', port: null }
     }
+  }
+
+  /**
+   * Alias for getInfoFromRuntime().
+   * @deprecated Use containerManager.getCachedInfo() for cached status instead.
+   */
+  async getInfo(): Promise<ContainerInfo> {
+    return this.getInfoFromRuntime()
   }
 
   private async findAvailablePort(): Promise<number> {
@@ -334,6 +367,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   private async getPortOrThrow(): Promise<number> {
     const info = await this.getInfo()
     if (info.status !== 'running' || !info.port) {
+      // Container is not running - trigger connection error handler
+      // so the manager can sync status and broadcast to UI
+      this.handleConnectionError()
       throw new Error('Container is not running')
     }
     return info.port
@@ -351,7 +387,18 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const port = await this.getPortOrThrow()
     const baseUrl = this.getBaseUrl(port)
     const url = `${baseUrl}${path.startsWith('/') ? path : '/' + path}`
-    return fetch(url, init)
+
+    try {
+      return await fetch(url, init)
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error))
+
+      if (this.isConnectionError(err)) {
+        this.handleConnectionError()
+      }
+
+      throw err
+    }
   }
 
   async createSession(options: CreateSessionOptions): Promise<ContainerSession> {
@@ -417,12 +464,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       }
 
       // Handle network errors with user-friendly messages
-      if (
-        err.message.includes('ECONNREFUSED') ||
-        err.message.includes('ECONNRESET') ||
-        err.message.includes('ETIMEDOUT') ||
-        err.message.includes('fetch failed')
-      ) {
+      if (this.isConnectionError(err)) {
+        this.handleConnectionError()
         throw new Error(
           'Failed to start session - unable to connect to the agent. Please check that the agent is running and try again.'
         )
@@ -512,12 +555,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         )
       }
 
-      if (
-        err.message.includes('ECONNREFUSED') ||
-        err.message.includes('ECONNRESET') ||
-        err.message.includes('ETIMEDOUT') ||
-        err.message.includes('fetch failed')
-      ) {
+      if (this.isConnectionError(err)) {
+        this.handleConnectionError()
         throw new Error(
           'Failed to send message - connection lost. Please check that the agent is running and try again.'
         )

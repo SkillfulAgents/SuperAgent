@@ -405,11 +405,15 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   // Query methods
 
-  async getInfo(): Promise<ContainerInfo> {
+  async getInfoFromRuntime(): Promise<ContainerInfo> {
     return {
       status: this.running ? 'running' : 'stopped',
       port: this.running ? 3000 : null,
     }
+  }
+
+  async getInfo(): Promise<ContainerInfo> {
+    return this.getInfoFromRuntime()
   }
 
   async fetch(_path: string, _init?: RequestInit): Promise<Response> {

@@ -232,8 +232,8 @@ agents.post('/:id/stop', async (c) => {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
-    const client = containerManager.getClient(slug)
-    const info = await client.getInfo()
+    // Use cached status to avoid spawning docker process
+    const info = containerManager.getCachedInfo(slug)
 
     if (info.status === 'stopped') {
       return c.json({
@@ -247,18 +247,7 @@ agents.post('/:id/stop', async (c) => {
       })
     }
 
-    await client.stop()
-
-    // Mark all sessions for this agent as inactive since container is stopped
-    messagePersister.markAllSessionsInactiveForAgent(slug)
-
-    // Broadcast agent status change globally
-    console.log('[Agents] Broadcasting agent_status_changed for', slug, 'status: stopped')
-    messagePersister.broadcastGlobal({
-      type: 'agent_status_changed',
-      agentSlug: slug,
-      status: 'stopped',
-    })
+    await containerManager.stopContainer(slug)
 
     return c.json({
       slug: agent.slug,
@@ -414,11 +403,13 @@ agents.post('/:id/sessions/:sessionId/messages', async (c) => {
     }
 
     const client = containerManager.getClient(agentSlug)
-    let info = await client.getInfo()
+    // Use cached status to avoid spawning docker process
+    let info = containerManager.getCachedInfo(agentSlug)
 
     if (info.status !== 'running') {
       await containerManager.ensureRunning(agentSlug)
-      info = await client.getInfo()
+      // ensureRunning updates the cache, so get updated info
+      info = containerManager.getCachedInfo(agentSlug)
     }
 
     if (!messagePersister.isSubscribed(sessionId)) {
@@ -597,7 +588,8 @@ agents.post('/:id/sessions/:sessionId/interrupt', async (c) => {
     }
 
     const client = containerManager.getClient(agentSlug)
-    const info = await client.getInfo()
+    // Use cached status to avoid spawning docker process
+    const info = containerManager.getCachedInfo(agentSlug)
 
     // If container isn't running, just mark the session as interrupted locally
     // This handles the case where container crashed/restarted but UI still shows active
@@ -1517,7 +1509,8 @@ agents.get('/:id/artifacts', async (c) => {
     // Try to get from running container first
     try {
       const client = containerManager.getClient(slug)
-      const info = await client.getInfo()
+      // Use cached status to avoid spawning docker process
+      const info = containerManager.getCachedInfo(slug)
 
       if (info.status === 'running') {
         const response = await client.fetch('/artifacts')
@@ -1552,7 +1545,8 @@ async function proxyArtifactRequest(c: any) {
   }
 
   const client = containerManager.getClient(agentSlug)
-  const info = await client.getInfo()
+  // Use cached status to avoid spawning docker process
+  const info = containerManager.getCachedInfo(agentSlug)
 
   if (info.status !== 'running') {
     return c.json({ error: 'Agent is not running. Start the agent to view this dashboard.' }, 503)
@@ -1620,7 +1614,8 @@ agents.get('/:id/browser/status', async (c) => {
     }
 
     const client = containerManager.getClient(slug)
-    const info = await client.getInfo()
+    // Use cached status to avoid spawning docker process
+    const info = containerManager.getCachedInfo(slug)
 
     if (info.status !== 'running') {
       return c.json({ active: false, sessionId: null })
@@ -1645,7 +1640,8 @@ agents.post('/:id/browser/:action', async (c) => {
     }
 
     const client = containerManager.getClient(slug)
-    const info = await client.getInfo()
+    // Use cached status to avoid spawning docker process
+    const info = containerManager.getCachedInfo(slug)
 
     if (info.status !== 'running') {
       return c.json({ error: 'Agent container is not running' }, 400)

@@ -67,7 +67,8 @@ class AutoSleepMonitor {
       // 0 means disabled
       if (timeoutMinutes <= 0) return
 
-      const runningAgentIds = await containerManager.getRunningAgentIds()
+      // getRunningAgentIds uses cached status (no docker process spawned)
+      const runningAgentIds = containerManager.getRunningAgentIds()
       if (runningAgentIds.length === 0) return
 
       const now = Date.now()
@@ -104,15 +105,7 @@ class AutoSleepMonitor {
               `[AutoSleepMonitor] Agent ${agentId} idle for >${timeoutMinutes}m, stopping...`
             )
 
-            const client = containerManager.getClient(agentId)
-            await client.stop()
-
-            // Broadcast status change so UI updates
-            messagePersister.broadcastGlobal({
-              type: 'agent_status_changed',
-              agentSlug: agentId,
-              status: 'stopped',
-            })
+            await containerManager.stopContainer(agentId)
           }
         } catch (error) {
           console.error(

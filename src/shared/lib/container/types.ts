@@ -9,6 +9,8 @@ export interface ContainerInfo {
 export interface ContainerConfig {
   agentId: string
   envVars?: Record<string, string>
+  /** Called when a connection error is detected (ECONNREFUSED, etc.) */
+  onConnectionError?: () => void
 }
 
 export interface ContainerSession {
@@ -43,7 +45,11 @@ export interface ContainerClient {
   stop(): Promise<void>
   stopSync(): void // Synchronous stop for exit handlers
 
-  // Query Docker for current state (single source of truth)
+  // Query the container runtime for current state (spawns CLI process)
+  // Use containerManager.getCachedInfo() for cached status instead
+  getInfoFromRuntime(): Promise<ContainerInfo>
+
+  // Alias for getInfoFromRuntime() - prefer getCachedInfo() from containerManager
   getInfo(): Promise<ContainerInfo>
 
   // Make HTTP request to container (abstracts away host/port details)

@@ -45,10 +45,10 @@ export function createTray(
   // Initial menu build
   updateTrayMenu()
 
-  // Set up polling (every 5 seconds to match renderer polling)
+  // Set up polling (every 30 seconds - container status is cached server-side)
   updateInterval = setInterval(() => {
     updateTrayMenu()
-  }, 5000)
+  }, 30000)
 
   return tray
 }
@@ -98,11 +98,11 @@ export function setTrayVisible(visible: boolean): void {
       // Update menu in background (don't await)
       updateTrayMenu()
 
-      // Set up polling
+      // Set up polling (every 30 seconds - container status is cached server-side)
       if (!updateInterval) {
         updateInterval = setInterval(() => {
           updateTrayMenu()
-        }, 5000)
+        }, 30000)
       }
     }
   } else if (!visible && tray) {

@@ -7,6 +7,7 @@ import { containerManager } from '@shared/lib/container/container-manager'
 import { hostBrowserManager } from '../main/host-browser-manager'
 import { taskScheduler } from '@shared/lib/scheduler/task-scheduler'
 import { autoSleepMonitor } from '@shared/lib/scheduler/auto-sleep-monitor'
+import { listAgents } from '@shared/lib/services/agent-service'
 
 const app = new Hono()
 
@@ -24,6 +25,16 @@ const port = parseInt(process.env.PORT || '47891', 10)
 
 const server = serve({ fetch: app.fetch, port }, (info) => {
   console.log(`API server running on http://localhost:${info.port}`)
+
+  // Initialize container manager with all agents and start status sync
+  listAgents().then((agents) => {
+    const slugs = agents.map((a) => a.slug)
+    return containerManager.initializeAgents(slugs)
+  }).then(() => {
+    containerManager.startStatusSync()
+  }).catch((error) => {
+    console.error('Failed to initialize container manager:', error)
+  })
 
   // Start the task scheduler after server is ready
   taskScheduler.start().catch((error) => {
@@ -51,6 +62,7 @@ async function gracefulShutdown(signal: string) {
   // Stop the task scheduler and auto-sleep monitor
   taskScheduler.stop()
   autoSleepMonitor.stop()
+  containerManager.stopStatusSync()
 
   // Stop all containers
   try {

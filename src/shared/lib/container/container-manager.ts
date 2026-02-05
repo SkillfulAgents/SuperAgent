@@ -1,5 +1,5 @@
 import { createContainerClient } from './client-factory'
-import type { ContainerClient, ContainerConfig } from './types'
+import type { ContainerClient, ContainerConfig, ContainerInfo } from './types'
 import { db } from '@shared/lib/db'
 import { agentConnectedAccounts, connectedAccounts } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
@@ -10,10 +10,27 @@ import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
 import { messagePersister } from './message-persister'
 
+/** Interval for syncing container status with reality (in ms). Default: 300 seconds */
+const STATUS_SYNC_INTERVAL_MS = parseInt(
+  process.env.CONTAINER_STATUS_SYNC_INTERVAL_SECONDS || '300',
+  10
+) * 1000
+
+/** Cached container status */
+interface CachedContainerStatus {
+  status: 'running' | 'stopped'
+  port: number | null
+  lastSyncedAt: number
+}
+
 // Singleton to manage all container clients
 class ContainerManager {
   private clients: Map<string, ContainerClient> = new Map()
   private containerStartedAt: Map<string, number> = new Map()
+  /** Cached container statuses - avoids repeated docker inspect calls */
+  private containerStatuses: Map<string, CachedContainerStatus> = new Map()
+  private syncIntervalId: NodeJS.Timeout | null = null
+  private isSyncing = false
 
   // Get or create a container client for an agent
   getClient(agentId: string): ContainerClient {
@@ -22,6 +39,22 @@ class ContainerManager {
     if (!client) {
       const config: ContainerConfig = {
         agentId,
+        onConnectionError: () => {
+          // When a connection error is detected, sync status with Docker
+          // This handles cases where the container crashed or was stopped externally
+          console.log(`[ContainerManager] Connection error for ${agentId}, syncing status...`)
+          this.syncAgentStatus(agentId).catch((err) => {
+            console.error(`[ContainerManager] Failed to sync status after connection error:`, err)
+            // If sync fails, mark as stopped as a fallback and broadcast
+            this.markAsStopped(agentId)
+            messagePersister.markAllSessionsInactiveForAgent(agentId)
+            messagePersister.broadcastGlobal({
+              type: 'agent_status_changed',
+              agentSlug: agentId,
+              status: 'stopped',
+            })
+          })
+        },
       }
 
       client = createContainerClient(config)
@@ -29,6 +62,168 @@ class ContainerManager {
     }
 
     return client
+  }
+
+  /**
+   * Get cached container info. Returns cached status if available,
+   * otherwise returns stopped (will be corrected on next sync).
+   */
+  getCachedInfo(agentId: string): ContainerInfo {
+    const cached = this.containerStatuses.get(agentId)
+    if (cached) {
+      return { status: cached.status, port: cached.port }
+    }
+    // Default to stopped if not in cache
+    return { status: 'stopped', port: null }
+  }
+
+  /**
+   * Update cached container status. Called after start/stop operations.
+   */
+  updateCachedStatus(agentId: string, status: 'running' | 'stopped', port: number | null): void {
+    this.containerStatuses.set(agentId, {
+      status,
+      port,
+      lastSyncedAt: Date.now(),
+    })
+  }
+
+  /**
+   * Mark a container as stopped in cache (e.g., when connection fails).
+   * Prefer using stopContainer() which also stops the actual container.
+   */
+  markAsStopped(agentId: string): void {
+    this.updateCachedStatus(agentId, 'stopped', null)
+  }
+
+  /**
+   * Stop a container and update all related state.
+   * This is the preferred way to stop a container - handles cache, broadcasts, and session state.
+   */
+  async stopContainer(agentId: string): Promise<void> {
+    const client = this.getClient(agentId)
+    await client.stop()
+
+    // Update cached status
+    this.markAsStopped(agentId)
+
+    // Mark all sessions for this agent as inactive
+    messagePersister.markAllSessionsInactiveForAgent(agentId)
+
+    // Broadcast status change so UI updates
+    messagePersister.broadcastGlobal({
+      type: 'agent_status_changed',
+      agentSlug: agentId,
+      status: 'stopped',
+    })
+  }
+
+  /**
+   * Sync a single agent's status with reality by querying Docker.
+   * Broadcasts status change if the actual status differs from cached.
+   */
+  async syncAgentStatus(agentId: string): Promise<ContainerInfo> {
+    const client = this.getClient(agentId)
+    const previousStatus = this.containerStatuses.get(agentId)?.status
+    const info = await client.getInfoFromRuntime()
+    this.updateCachedStatus(agentId, info.status, info.port)
+
+    // Broadcast if status changed (e.g., container was stopped externally)
+    if (previousStatus && previousStatus !== info.status) {
+      console.log(`[ContainerManager] Status changed for ${agentId}: ${previousStatus} -> ${info.status}`)
+      messagePersister.broadcastGlobal({
+        type: 'agent_status_changed',
+        agentSlug: agentId,
+        status: info.status,
+      })
+
+      // If container stopped, mark sessions as inactive
+      if (info.status === 'stopped') {
+        messagePersister.markAllSessionsInactiveForAgent(agentId)
+      }
+    }
+
+    return info
+  }
+
+  /**
+   * Sync all known agents' statuses with reality.
+   * Called on startup and periodically.
+   */
+  async syncAllStatuses(): Promise<void> {
+    if (this.isSyncing) {
+      console.log('[ContainerManager] Sync already in progress, skipping')
+      return
+    }
+
+    this.isSyncing = true
+    console.log('[ContainerManager] Syncing container statuses with Docker...')
+
+    try {
+      const agentIds = Array.from(this.clients.keys())
+
+      for (const agentId of agentIds) {
+        try {
+          await this.syncAgentStatus(agentId)
+        } catch (error) {
+          console.error(`[ContainerManager] Failed to sync status for ${agentId}:`, error)
+          // Mark as stopped on error
+          this.markAsStopped(agentId)
+        }
+      }
+
+      console.log(`[ContainerManager] Synced ${agentIds.length} container statuses`)
+    } finally {
+      this.isSyncing = false
+    }
+  }
+
+  /**
+   * Initialize clients for the given agent slugs and sync their statuses.
+   * Call this on app startup with the list of all agent slugs.
+   */
+  async initializeAgents(agentSlugs: string[]): Promise<void> {
+    console.log(`[ContainerManager] Initializing ${agentSlugs.length} agents...`)
+
+    // Create clients for all agents (this registers them for sync)
+    for (const slug of agentSlugs) {
+      this.getClient(slug)
+    }
+
+    // Sync all statuses
+    await this.syncAllStatuses()
+
+    console.log(`[ContainerManager] Initialized ${agentSlugs.length} agents`)
+  }
+
+  /**
+   * Start the periodic status sync.
+   * Note: Does not do an initial sync - call initializeAgents() first for that.
+   */
+  startStatusSync(): void {
+    if (this.syncIntervalId) {
+      return // Already running
+    }
+
+    console.log(`[ContainerManager] Starting status sync (interval: ${STATUS_SYNC_INTERVAL_MS / 1000}s)`)
+
+    // Set up periodic sync (initial sync is done by initializeAgents)
+    this.syncIntervalId = setInterval(() => {
+      this.syncAllStatuses().catch((error) => {
+        console.error('[ContainerManager] Periodic sync failed:', error)
+      })
+    }, STATUS_SYNC_INTERVAL_MS)
+  }
+
+  /**
+   * Stop the periodic status sync.
+   */
+  stopStatusSync(): void {
+    if (this.syncIntervalId) {
+      clearInterval(this.syncIntervalId)
+      this.syncIntervalId = null
+      console.log('[ContainerManager] Stopped status sync')
+    }
   }
 
   // Ensure container is running, starting it with connected accounts if needed
@@ -40,9 +235,10 @@ class ContainerManager {
   // Parameter is agentId for backwards compatibility, but will be slug after migration
   async ensureRunning(agentId: string): Promise<ContainerClient> {
     const client = this.getClient(agentId)
-    const info = await client.getInfo()
+    // Use cached status to avoid unnecessary docker calls
+    const cachedInfo = this.getCachedInfo(agentId)
 
-    if (info.status !== 'running') {
+    if (cachedInfo.status !== 'running') {
       // Pass proxy config and account metadata (no raw tokens)
       const envVars: Record<string, string> = {}
 
@@ -99,6 +295,9 @@ class ContainerManager {
       // Start container (user secrets are in .env file in workspace)
       await client.start({ envVars })
 
+      // Sync status from Docker to get the actual port
+      const info = await this.syncAgentStatus(agentId)
+
       // Record start time so auto-sleep monitor doesn't immediately
       // sleep the container based on stale session activity timestamps
       this.containerStartedAt.set(agentId, Date.now())
@@ -107,7 +306,7 @@ class ContainerManager {
       messagePersister.broadcastGlobal({
         type: 'agent_status_changed',
         agentSlug: agentId,
-        status: 'running',
+        status: info.status,
       })
     }
 
@@ -123,6 +322,7 @@ class ContainerManager {
   removeClient(agentId: string): void {
     this.clients.delete(agentId)
     this.containerStartedAt.delete(agentId)
+    this.containerStatuses.delete(agentId)
   }
 
   // Clear all cached clients (e.g., when container runner setting changes).
@@ -130,54 +330,56 @@ class ContainerManager {
   clearClients(): void {
     this.clients.clear()
     this.containerStartedAt.clear()
+    this.containerStatuses.clear()
   }
 
   // Stop all containers
   async stopAll(): Promise<void> {
-    const stopPromises = Array.from(this.clients.entries()).map(
-      async ([agentId, client]) => {
-        try {
-          await client.stop()
-        } catch (error) {
-          console.error(`Failed to stop container for agent ${agentId}:`, error)
-        }
+    const agentIds = Array.from(this.clients.keys())
+    const stopPromises = agentIds.map(async (agentId) => {
+      try {
+        await this.stopContainer(agentId)
+      } catch (error) {
+        console.error(`Failed to stop container for agent ${agentId}:`, error)
       }
-    )
+    })
     await Promise.all(stopPromises)
     this.clients.clear()
     this.containerStartedAt.clear()
+    this.containerStatuses.clear()
   }
 
   // Synchronous stop - used for exit handlers where async isn't available
   stopAllSync(): void {
+    this.stopStatusSync() // Stop the sync interval
     for (const [agentId, client] of this.clients.entries()) {
       try {
         client.stopSync()
+        this.markAsStopped(agentId)
       } catch (error) {
         console.error(`Failed to stop container for agent ${agentId} (sync):`, error)
       }
     }
     this.clients.clear()
     this.containerStartedAt.clear()
+    this.containerStatuses.clear()
   }
 
-  // Check if any agents have running containers
-  async hasRunningAgents(): Promise<boolean> {
-    for (const client of this.clients.values()) {
-      const info = await client.getInfo()
-      if (info.status === 'running') {
+  // Check if any agents have running containers (uses cached status)
+  hasRunningAgents(): boolean {
+    for (const status of this.containerStatuses.values()) {
+      if (status.status === 'running') {
         return true
       }
     }
     return false
   }
 
-  // Get list of running agent IDs
-  async getRunningAgentIds(): Promise<string[]> {
+  // Get list of running agent IDs (uses cached status)
+  getRunningAgentIds(): string[] {
     const running: string[] = []
-    for (const [agentId, client] of this.clients.entries()) {
-      const info = await client.getInfo()
-      if (info.status === 'running') {
+    for (const [agentId, status] of this.containerStatuses.entries()) {
+      if (status.status === 'running') {
         running.push(agentId)
       }
     }

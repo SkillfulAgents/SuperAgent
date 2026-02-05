@@ -25,6 +25,15 @@ export interface RunnerAvailability {
  */
 export const SUPPORTED_RUNNERS: ContainerRunner[] = ['docker', 'podman']
 
+/** Cache for runner availability to avoid spawning docker commands repeatedly */
+let cachedRunnerAvailability: RunnerAvailability[] | null = null
+let runnerAvailabilityCachedAt: number = 0
+/** How long to cache runner availability (default: 60 seconds) */
+const RUNNER_AVAILABILITY_CACHE_TTL_MS = parseInt(
+  process.env.RUNNER_AVAILABILITY_CACHE_TTL_SECONDS || '60',
+  10
+) * 1000
+
 /**
  * Check if a runtime's daemon/machine is running and usable.
  * This is different from just having the CLI installed.
@@ -142,12 +151,44 @@ async function checkRunnerDetailedAvailability(runner: ContainerRunner): Promise
 
 /**
  * Check availability of all supported runners with detailed status.
+ * Results are cached to avoid spawning docker commands on every call.
  */
 export async function checkAllRunnersAvailability(): Promise<RunnerAvailability[]> {
+  const now = Date.now()
+
+  // Return cached result if still valid
+  if (cachedRunnerAvailability && (now - runnerAvailabilityCachedAt) < RUNNER_AVAILABILITY_CACHE_TTL_MS) {
+    return cachedRunnerAvailability
+  }
+
+  // Fetch fresh data
   const results = await Promise.all(
     SUPPORTED_RUNNERS.map((runner) => checkRunnerDetailedAvailability(runner))
   )
+
+  // Cache the results
+  cachedRunnerAvailability = results
+  runnerAvailabilityCachedAt = now
+
   return results
+}
+
+/**
+ * Force refresh of runner availability cache.
+ * Call this after starting a runner or when user requests refresh.
+ */
+export async function refreshRunnerAvailability(): Promise<RunnerAvailability[]> {
+  cachedRunnerAvailability = null
+  runnerAvailabilityCachedAt = 0
+  return checkAllRunnersAvailability()
+}
+
+/**
+ * Clear runner availability cache.
+ */
+export function clearRunnerAvailabilityCache(): void {
+  cachedRunnerAvailability = null
+  runnerAvailabilityCachedAt = 0
 }
 
 /**

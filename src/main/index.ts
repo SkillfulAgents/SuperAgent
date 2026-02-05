@@ -18,6 +18,7 @@ import api from '../api'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { taskScheduler } from '@shared/lib/scheduler/task-scheduler'
 import { autoSleepMonitor } from '@shared/lib/scheduler/auto-sleep-monitor'
+import { listAgents } from '@shared/lib/services/agent-service'
 import { findAvailablePort } from './find-port'
 import { setupBrowserStreamProxy } from './browser-stream-proxy'
 
@@ -234,6 +235,16 @@ async function startApp() {
   apiServer = serve({ fetch: api.fetch, port: actualApiPort }, () => {
     console.log(`API server running on http://localhost:${actualApiPort}`)
 
+    // Initialize container manager with all agents and start status sync
+    listAgents().then((agents) => {
+      const slugs = agents.map((a) => a.slug)
+      return containerManager.initializeAgents(slugs)
+    }).then(() => {
+      containerManager.startStatusSync()
+    }).catch((error) => {
+      console.error('Failed to initialize container manager:', error)
+    })
+
     // Start the task scheduler after API server is ready
     taskScheduler.start().catch((error) => {
       console.error('Failed to start task scheduler:', error)
@@ -331,9 +342,10 @@ async function gracefulShutdown() {
   // Stop host browser if we launched it
   hostBrowserManager.stop()
 
-  // Stop the task scheduler and auto-sleep monitor
+  // Stop the task scheduler, auto-sleep monitor, and status sync
   taskScheduler.stop()
   autoSleepMonitor.stop()
+  containerManager.stopStatusSync()
 
   // Stop all containers
   try {
