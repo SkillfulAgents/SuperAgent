@@ -7,6 +7,26 @@ import { requestConnectedAccountRenderer } from './request-connected-account'
 import { scheduleTaskRenderer } from './schedule-task'
 import { deliverFileRenderer } from './deliver-file'
 import { requestFileRenderer } from './request-file'
+import {
+  browserOpenRenderer,
+  browserCloseRenderer,
+  browserSnapshotRenderer,
+  browserClickRenderer,
+  browserFillRenderer,
+  browserScrollRenderer,
+  browserWaitRenderer,
+  browserPressRenderer,
+  browserScreenshotRenderer,
+  browserSelectRenderer,
+  browserHoverRenderer,
+  browserRunRenderer,
+} from './browser-tools'
+import {
+  createDashboardRenderer,
+  startDashboardRenderer,
+  listDashboardsRenderer,
+  getDashboardLogsRenderer,
+} from './dashboard-tools'
 
 export type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps } from './types'
 
@@ -22,12 +42,32 @@ const toolRenderers: Record<string, ToolRenderer> = {
   Read: readRenderer,
   Write: writeRenderer,
 
-  // MCP tools - use full name with prefix
+  // MCP tools - user input
   'mcp__user-input__request_secret': requestSecretRenderer,
   'mcp__user-input__request_connected_account': requestConnectedAccountRenderer,
   'mcp__user-input__schedule_task': scheduleTaskRenderer,
   'mcp__user-input__deliver_file': deliverFileRenderer,
   'mcp__user-input__request_file': requestFileRenderer,
+
+  // MCP tools - browser
+  'mcp__browser__browser_open': browserOpenRenderer,
+  'mcp__browser__browser_close': browserCloseRenderer,
+  'mcp__browser__browser_snapshot': browserSnapshotRenderer,
+  'mcp__browser__browser_click': browserClickRenderer,
+  'mcp__browser__browser_fill': browserFillRenderer,
+  'mcp__browser__browser_scroll': browserScrollRenderer,
+  'mcp__browser__browser_wait': browserWaitRenderer,
+  'mcp__browser__browser_press': browserPressRenderer,
+  'mcp__browser__browser_screenshot': browserScreenshotRenderer,
+  'mcp__browser__browser_select': browserSelectRenderer,
+  'mcp__browser__browser_hover': browserHoverRenderer,
+  'mcp__browser__browser_run': browserRunRenderer,
+
+  // MCP tools - dashboards
+  'mcp__dashboards__create_dashboard': createDashboardRenderer,
+  'mcp__dashboards__start_dashboard': startDashboardRenderer,
+  'mcp__dashboards__list_dashboards': listDashboardsRenderer,
+  'mcp__dashboards__get_dashboard_logs': getDashboardLogsRenderer,
 }
 
 /**
