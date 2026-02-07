@@ -77,6 +77,11 @@ export function GlobalNotificationHandler() {
             }
             break
           }
+
+          case 'runtime_readiness_changed':
+            // Runtime readiness changed (e.g., image pull started/completed)
+            queryClient.invalidateQueries({ queryKey: ['settings'] })
+            break
         }
       } catch {
         // Ignore parse errors for ping/connected messages

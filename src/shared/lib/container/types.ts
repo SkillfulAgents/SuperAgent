@@ -81,3 +81,27 @@ export interface ContainerClient {
   on(event: 'message', callback: (sessionId: string, message: any) => void): void
   off(event: string, callback: (...args: any[]) => void): void
 }
+
+// Runtime readiness types
+
+export type RuntimeReadinessStatus =
+  | 'CHECKING'
+  | 'RUNTIME_UNAVAILABLE'
+  | 'PULLING_IMAGE'
+  | 'READY'
+  | 'ERROR'
+
+export interface ImagePullProgress {
+  /** Human-readable status, e.g. "Pulling image... 3 of 7 layers" */
+  status: string
+  /** Layer-based percentage (completedLayers / totalLayers * 100), null if not yet determined */
+  percent: number | null
+  completedLayers: number
+  totalLayers: number
+}
+
+export interface RuntimeReadiness {
+  status: RuntimeReadinessStatus
+  message: string
+  pullProgress: ImagePullProgress | null
+}

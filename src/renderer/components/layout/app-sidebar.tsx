@@ -1,6 +1,6 @@
 
-import { ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard } from 'lucide-react'
-import { useState, useMemo, useEffect, useRef } from 'react'
+import { ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard, Loader2 } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
 import { isElectron, getPlatform } from '@renderer/lib/env'
 import { useDialogs } from '@renderer/context/dialog-context'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
@@ -265,21 +265,20 @@ export function AppSidebar() {
   const { data: settings } = useSettings()
   const isFullScreen = useFullScreen()
 
-  const noRunnersAvailable = useMemo(() => {
-    if (!settings?.runnerAvailability) return false
-    return settings.runnerAvailability.every((r) => !r.available)
-  }, [settings?.runnerAvailability])
+  const readiness = settings?.runtimeReadiness
+  const isRuntimeUnavailable = readiness?.status === 'RUNTIME_UNAVAILABLE' || readiness?.status === 'ERROR'
+  const isPullingOrBuilding = readiness?.status === 'PULLING_IMAGE'
 
   // Track if we've shown the initial container setup dialog
   const hasShownInitialSetup = useRef(false)
 
-  // Automatically show the container setup dialog on first load if no runners are available
+  // Automatically show the container setup dialog on first load if runtime is unavailable
   useEffect(() => {
-    if (noRunnersAvailable && settings?.runnerAvailability && !hasShownInitialSetup.current) {
+    if (isRuntimeUnavailable && !hasShownInitialSetup.current) {
       hasShownInitialSetup.current = true
       setContainerSetupOpen(true)
     }
-  }, [noRunnersAvailable, settings?.runnerAvailability])
+  }, [isRuntimeUnavailable])
 
   // Add left padding for macOS traffic lights in Electron (not in full screen)
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && !isFullScreen
@@ -297,17 +296,31 @@ export function AppSidebar() {
         </div>
       </SidebarHeader>
 
-      {noRunnersAvailable && (
+      {isRuntimeUnavailable && (
         <div className="px-2 pt-2">
           <Alert
             variant="destructive"
             className="py-2 cursor-pointer hover:bg-destructive/20 transition-colors"
-            onClick={() => setContainerSetupOpen(true)}
+            onClick={() => setSettingsOpen(true)}
           >
             <AlertTriangle className="h-4 w-4" />
             <AlertDescription className="text-xs">
-              Container runtime not detected.{' '}
-              <span className="underline">Click to fix</span>
+              {readiness?.message || 'Container runtime not available.'}{' '}
+              <span className="underline">Open settings</span>
+            </AlertDescription>
+          </Alert>
+        </div>
+      )}
+
+      {isPullingOrBuilding && (
+        <div className="px-2 pt-2">
+          <Alert className="py-2">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <AlertDescription className="text-xs">
+              {readiness?.message || 'Preparing agent image...'}
+              {readiness?.pullProgress?.percent != null && (
+                <span className="ml-1">({readiness.pullProgress.percent}%)</span>
+              )}
             </AlertDescription>
           </Alert>
         </div>

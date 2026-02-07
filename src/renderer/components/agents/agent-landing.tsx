@@ -5,6 +5,7 @@ import { Textarea } from '@renderer/components/ui/textarea'
 import { Send, Loader2, Sparkles, Paperclip } from 'lucide-react'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
 import { useAgentSkills } from '@renderer/hooks/use-agent-skills'
+import { useSettings } from '@renderer/hooks/use-settings'
 import { apiFetch } from '@renderer/lib/api'
 import { AttachmentPreview, type Attachment } from '@renderer/components/messages/attachment-preview'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
@@ -22,6 +23,10 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const createSession = useCreateSession()
   const { data: skills } = useAgentSkills(agent.slug)
+  const { data: settingsData } = useSettings()
+  const readiness = settingsData?.runtimeReadiness
+  const isRuntimeReady = readiness?.status === 'READY'
+  const isPulling = readiness?.status === 'PULLING_IMAGE'
 
   const addFiles = useCallback((files: FileList | File[]) => {
     const newAttachments: Attachment[] = Array.from(files).map((file) => {
@@ -148,7 +153,7 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
     }
   }
 
-  const isDisabled = createSession.isPending || isUploading
+  const isDisabled = createSession.isPending || isUploading || !isRuntimeReady
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-8">
@@ -161,6 +166,16 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
             Send a message to begin a new session
           </p>
         </div>
+
+        {!isRuntimeReady && readiness && (
+          <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+            {isPulling && <Loader2 className="h-4 w-4 animate-spin" />}
+            <span>{readiness.message}</span>
+            {readiness.pullProgress?.percent != null && (
+              <span>({readiness.pullProgress.status} - {readiness.pullProgress.percent}%)</span>
+            )}
+          </div>
+        )}
 
         <form
           onSubmit={handleSubmit}

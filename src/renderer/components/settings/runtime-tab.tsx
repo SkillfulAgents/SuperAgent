@@ -10,8 +10,8 @@ import {
   SelectValue,
 } from '@renderer/components/ui/select'
 import { Alert, AlertDescription, AlertTitle } from '@renderer/components/ui/alert'
-import { useSettings, useUpdateSettings, useStartRunner } from '@renderer/hooks/use-settings'
-import { AlertCircle, AlertTriangle, Play, Loader2 } from 'lucide-react'
+import { useSettings, useUpdateSettings, useStartRunner, useRefreshAvailability } from '@renderer/hooks/use-settings'
+import { AlertCircle, AlertTriangle, Play, Loader2, RefreshCw } from 'lucide-react'
 
 const CONTAINER_RUNNERS = [
   { value: 'docker', label: 'Docker' },
@@ -22,6 +22,7 @@ export function RuntimeTab() {
   const { data: settings, isLoading } = useSettings()
   const updateSettings = useUpdateSettings()
   const startRunner = useStartRunner()
+  const refreshAvailability = useRefreshAvailability()
 
   // Local form state
   const [containerRunner, setContainerRunner] = useState('')
@@ -166,6 +167,34 @@ export function RuntimeTab() {
         </Alert>
       )}
 
+      {/* Image pull progress */}
+      {settings?.runtimeReadiness?.status === 'PULLING_IMAGE' && (
+        <Alert>
+          <Loader2 className="h-4 w-4 animate-spin" />
+          <AlertTitle>Pulling Agent Image</AlertTitle>
+          <AlertDescription className="space-y-2">
+            <p>{settings.runtimeReadiness.pullProgress?.status || 'Downloading...'}</p>
+            {settings.runtimeReadiness.pullProgress?.percent != null && (
+              <div className="mt-2 h-2 w-full bg-muted rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-primary transition-all duration-300"
+                  style={{ width: `${settings.runtimeReadiness.pullProgress.percent}%` }}
+                />
+              </div>
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {/* Image pull error */}
+      {settings?.runtimeReadiness?.status === 'ERROR' && (
+        <Alert variant="destructive">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertTitle>Image Pull Failed</AlertTitle>
+          <AlertDescription>{settings.runtimeReadiness.message}</AlertDescription>
+        </Alert>
+      )}
+
       {hasRunningAgents && (
         <div className="flex items-start gap-2 p-3 text-sm bg-yellow-500/10 border border-yellow-500/20 rounded-md">
           <AlertCircle className="h-4 w-4 text-yellow-500 mt-0.5 shrink-0" />
@@ -231,6 +260,15 @@ export function RuntimeTab() {
               )}
             </Button>
           )}
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => refreshAvailability.mutate()}
+            disabled={refreshAvailability.isPending}
+            title="Refresh runtime availability"
+          >
+            <RefreshCw className={`h-4 w-4 ${refreshAvailability.isPending ? 'animate-spin' : ''}`} />
+          </Button>
         </div>
         <p className="text-xs text-muted-foreground">
           The container runtime to use for running agents.

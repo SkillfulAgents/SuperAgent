@@ -1,10 +1,11 @@
-import type { ContainerClient, ContainerConfig } from './types'
+import type { ContainerClient, ContainerConfig, ImagePullProgress } from './types'
 import { DockerContainerClient } from './docker-container-client'
 import { PodmanContainerClient } from './podman-container-client'
 import { MockContainerClient } from './mock-container-client'
 import { getSettings } from '@shared/lib/config/settings'
-import { execWithPath, checkCommandAvailable } from './base-container-client'
+import { execWithPath, spawnWithPath, checkCommandAvailable, AGENT_CONTAINER_PATH } from './base-container-client'
 import { platform } from 'os'
+import * as fs from 'fs'
 
 export type ContainerRunner = 'docker' | 'podman'
 
@@ -192,40 +193,141 @@ export function clearRunnerAvailabilityCache(): void {
 }
 
 /**
- * Simple check if a runner is available (installed and running).
+ * Check if a container image exists locally.
  */
-async function checkRunnerAvailability(runner: ContainerRunner): Promise<boolean> {
-  const status = await checkRunnerDetailedAvailability(runner)
-  return status.available
+export async function checkImageExists(runner: ContainerRunner, image: string): Promise<boolean> {
+  try {
+    await execWithPath(`${runner} image inspect ${image}`)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /**
- * Get the first available runner, or null if none are available.
+ * Pull a container image, reporting layer-based progress.
+ *
+ * In non-TTY (piped) mode, docker/podman pull output lines like:
+ *   abc123: Pulling fs layer
+ *   abc123: Pull complete
+ *   def456: Already exists
+ *
+ * We track unique layer IDs and completed layers to compute progress.
  */
-export async function getFirstAvailableRunner(): Promise<ContainerRunner | null> {
-  for (const runner of SUPPORTED_RUNNERS) {
-    if (await checkRunnerAvailability(runner)) {
-      return runner
+export function pullImage(
+  runner: ContainerRunner,
+  image: string,
+  onProgress?: (progress: ImagePullProgress) => void
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = spawnWithPath(runner, ['pull', image])
+
+    const allLayers = new Set<string>()
+    const completedLayers = new Set<string>()
+    // Match lines like "abc123def: Pull complete" or "abc123def: Already exists"
+    const layerIdPattern = /^([a-f0-9]+):\s+(.+)$/i
+    const completedStatuses = ['pull complete', 'already exists']
+
+    const handleData = (data: Buffer) => {
+      const text = data.toString()
+      const lines = text.split('\n')
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+
+        const match = trimmed.match(layerIdPattern)
+        if (match) {
+          const layerId = match[1]
+          const status = match[2].toLowerCase()
+          allLayers.add(layerId)
+          if (completedStatuses.some((s) => status.startsWith(s))) {
+            completedLayers.add(layerId)
+          }
+        }
+
+        if (onProgress) {
+          const total = allLayers.size
+          const completed = completedLayers.size
+          onProgress({
+            status: total > 0
+              ? `${completed} of ${total} layers`
+              : trimmed,
+            percent: total > 0 ? Math.round((completed / total) * 100) : null,
+            completedLayers: completed,
+            totalLayers: total,
+          })
+        }
+      }
     }
-  }
-  return null
+
+    proc.stdout?.on('data', handleData)
+    proc.stderr?.on('data', handleData)
+
+    proc.on('close', (code) => {
+      if (code === 0) {
+        resolve()
+      } else {
+        reject(new Error(`Image pull failed with exit code ${code}`))
+      }
+    })
+    proc.on('error', reject)
+  })
 }
 
 /**
- * Get the effective runner to use - the configured one if available,
- * otherwise the first available one.
+ * Check if the local agent-container build context exists (dev mode).
  */
-export async function getEffectiveRunner(): Promise<ContainerRunner | null> {
-  const settings = getSettings()
-  const configuredRunner = settings.container.containerRunner as ContainerRunner
+export function canBuildImage(): boolean {
+  return fs.existsSync(AGENT_CONTAINER_PATH)
+}
 
-  // Check if configured runner is available
-  if (await checkRunnerAvailability(configuredRunner)) {
-    return configuredRunner
-  }
+/**
+ * Build a container image from the local agent-container directory.
+ * Used in dev mode where the image isn't available on a registry.
+ */
+export function buildImage(
+  runner: ContainerRunner,
+  image: string,
+  onProgress?: (progress: ImagePullProgress) => void
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = spawnWithPath(runner, ['build', '-t', image, AGENT_CONTAINER_PATH])
 
-  // Fall back to first available
-  return getFirstAvailableRunner()
+    let stepCount = 0
+
+    const handleData = (data: Buffer) => {
+      const text = data.toString()
+      const lines = text.split('\n')
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        // Count build steps (lines starting with "Step" or "#" for BuildKit)
+        if (/^(Step \d|#\d)/.test(trimmed)) {
+          stepCount++
+        }
+        if (onProgress) {
+          onProgress({
+            status: trimmed.length > 80 ? trimmed.slice(0, 80) + '...' : trimmed,
+            percent: null,
+            completedLayers: stepCount,
+            totalLayers: 0,
+          })
+        }
+      }
+    }
+
+    proc.stdout?.on('data', handleData)
+    proc.stderr?.on('data', handleData)
+
+    proc.on('close', (code) => {
+      if (code === 0) {
+        resolve()
+      } else {
+        reject(new Error(`Image build failed with exit code ${code}`))
+      }
+    })
+    proc.on('error', reject)
+  })
 }
 
 /**

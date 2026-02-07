@@ -80,7 +80,7 @@ export async function checkCommandAvailable(command: string): Promise<boolean> {
   }
 }
 
-const AGENT_CONTAINER_PATH = './agent-container'
+export const AGENT_CONTAINER_PATH = './agent-container'
 const CONTAINER_INTERNAL_PORT = 3000
 const BASE_PORT = 4000
 

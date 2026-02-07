@@ -88,6 +88,23 @@ export function useFactoryReset() {
   })
 }
 
+export function useRefreshAvailability() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async () => {
+      const res = await apiFetch('/api/settings/refresh-availability', {
+        method: 'POST',
+      })
+      if (!res.ok) throw new Error('Failed to refresh availability')
+      return res.json()
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+    },
+  })
+}
+
 export function useStartRunner() {
   const queryClient = useQueryClient()
 

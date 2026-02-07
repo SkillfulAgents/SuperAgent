@@ -45,6 +45,7 @@ settings.get('/', async (c) => {
       composioUserId: getComposioUserId(),
       setupCompleted: !!currentSettings.app?.setupCompleted,
       hostBrowserStatus: hostBrowserManager.detect(),
+      runtimeReadiness: containerManager.getReadiness(),
     }
 
     return c.json(response)
@@ -164,6 +165,16 @@ settings.put('/', async (c) => {
       containerManager.clearClients()
     }
 
+    // If image or runner changed, re-check readiness (may need to pull new image)
+    if (
+      newSettings.container.agentImage !== currentSettings.container.agentImage ||
+      newSettings.container.containerRunner !== currentSettings.container.containerRunner
+    ) {
+      containerManager.ensureImageReady().catch((error) => {
+        console.error('Failed to re-check image readiness:', error)
+      })
+    }
+
     const runnerAvailability = await checkAllRunnersAvailability()
 
     return c.json({
@@ -180,6 +191,7 @@ settings.put('/', async (c) => {
       composioUserId: getComposioUserId(),
       setupCompleted: !!newSettings.app?.setupCompleted,
       hostBrowserStatus: hostBrowserManager.detect(),
+      runtimeReadiness: containerManager.getReadiness(),
     })
   } catch (error) {
     console.error('Failed to update settings:', error)
@@ -204,6 +216,11 @@ settings.post('/start-runner', async (c) => {
       await new Promise((resolve) => setTimeout(resolve, 2000))
       const runnerAvailability = await refreshRunnerAvailability()
 
+      // Re-check image readiness now that a runner is available
+      containerManager.ensureImageReady().catch((error) => {
+        console.error('Failed to check image after starting runner:', error)
+      })
+
       return c.json({
         ...result,
         runnerAvailability,
@@ -214,6 +231,21 @@ settings.post('/start-runner', async (c) => {
   } catch (error) {
     console.error('Failed to start runner:', error)
     return c.json({ error: 'Failed to start runner' }, 500)
+  }
+})
+
+// POST /api/settings/refresh-availability - Force-refresh runner availability (clears cache)
+settings.post('/refresh-availability', async (c) => {
+  try {
+    const runnerAvailability = await refreshRunnerAvailability()
+    // Also re-check image readiness since runner state may have changed
+    containerManager.ensureImageReady().catch((error) => {
+      console.error('Failed to re-check image readiness:', error)
+    })
+    return c.json({ runnerAvailability })
+  } catch (error) {
+    console.error('Failed to refresh runner availability:', error)
+    return c.json({ error: 'Failed to refresh runner availability' }, 500)
   }
 })
 

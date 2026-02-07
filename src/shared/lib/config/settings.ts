@@ -54,9 +54,10 @@ export interface ApiKeyStatus {
   source: ApiKeySource
 }
 
-// Import RunnerAvailability type for GlobalSettingsResponse
+// Import types for GlobalSettingsResponse
 // Note: This creates a type-only dependency, avoiding circular imports
 import type { RunnerAvailability } from '@shared/lib/container/client-factory'
+import type { RuntimeReadiness } from '@shared/lib/container/types'
 
 export interface HostBrowserStatus {
   available: boolean
@@ -79,6 +80,7 @@ export interface GlobalSettingsResponse {
   models: ModelSettings
   setupCompleted: boolean
   hostBrowserStatus?: HostBrowserStatus
+  runtimeReadiness: RuntimeReadiness
 }
 
 const DEFAULT_SETTINGS: AppSettings = {

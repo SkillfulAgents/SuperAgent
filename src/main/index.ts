@@ -257,6 +257,10 @@ async function startApp() {
       const slugs = agents.map((a) => a.slug)
       return containerManager.initializeAgents(slugs)
     }).then(() => {
+      // Check image availability and pull if needed (non-blocking)
+      containerManager.ensureImageReady().catch((error) => {
+        console.error('Failed to ensure image ready:', error)
+      })
       containerManager.startStatusSync()
     }).catch((error) => {
       console.error('Failed to initialize container manager:', error)

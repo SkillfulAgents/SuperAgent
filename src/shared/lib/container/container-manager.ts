@@ -1,5 +1,5 @@
-import { createContainerClient } from './client-factory'
-import type { ContainerClient, ContainerConfig, ContainerInfo } from './types'
+import { createContainerClient, checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, type ContainerRunner } from './client-factory'
+import type { ContainerClient, ContainerConfig, ContainerInfo, RuntimeReadiness } from './types'
 import { db } from '@shared/lib/db'
 import { agentConnectedAccounts, connectedAccounts } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
@@ -31,6 +31,13 @@ class ContainerManager {
   private containerStatuses: Map<string, CachedContainerStatus> = new Map()
   private syncIntervalId: NodeJS.Timeout | null = null
   private isSyncing = false
+
+  /** Unified runtime readiness state */
+  private _readiness: RuntimeReadiness = {
+    status: 'CHECKING',
+    message: 'Checking runtime availability...',
+    pullProgress: null,
+  }
 
   // Get or create a container client for an agent
   getClient(agentId: string): ContainerClient {
@@ -384,6 +391,120 @@ class ContainerManager {
       }
     }
     return running
+  }
+
+  /** Get the current runtime readiness state. */
+  getReadiness(): RuntimeReadiness {
+    return this._readiness
+  }
+
+  /** Update readiness state and broadcast change via SSE. */
+  private setReadiness(readiness: RuntimeReadiness): void {
+    this._readiness = readiness
+    messagePersister.broadcastGlobal({
+      type: 'runtime_readiness_changed',
+      readiness,
+    })
+  }
+
+  /**
+   * Check runtime availability and image readiness.
+   * Pulls the image if it doesn't exist locally.
+   * Updates readiness state throughout and broadcasts via SSE.
+   */
+  async ensureImageReady(): Promise<void> {
+    const settings = getSettings()
+    const image = settings.container.agentImage
+
+    // Step 1: Check configured runner availability
+    // We check the *configured* runner specifically (not a fallback) because
+    // createContainerClient() always uses the configured runner.
+    const configuredRunner = settings.container.containerRunner as ContainerRunner
+
+    this.setReadiness({
+      status: 'CHECKING',
+      message: `Checking ${configuredRunner} availability...`,
+      pullProgress: null,
+    })
+
+    const allAvailability = await checkAllRunnersAvailability()
+    const runnerStatus = allAvailability.find((r) => r.runner === configuredRunner)
+
+    if (!runnerStatus?.available) {
+      const detail = !runnerStatus?.installed
+        ? `${configuredRunner} is not installed.`
+        : `${configuredRunner} is not running. Please start it and refresh.`
+      this.setReadiness({
+        status: 'RUNTIME_UNAVAILABLE',
+        message: detail,
+        pullProgress: null,
+      })
+      return
+    }
+
+    const effectiveRunner = configuredRunner
+
+    // Step 2: Check if image exists
+    this.setReadiness({
+      status: 'CHECKING',
+      message: `Checking if image ${image} exists...`,
+      pullProgress: null,
+    })
+
+    const exists = await checkImageExists(effectiveRunner, image)
+
+    if (exists) {
+      this.setReadiness({
+        status: 'READY',
+        message: 'Ready',
+        pullProgress: null,
+      })
+      return
+    }
+
+    // Step 3: Build or pull the image
+    // In dev mode (agent-container directory exists), build locally.
+    // In production (no build context), pull from registry.
+    const shouldBuild = canBuildImage()
+    const actionLabel = shouldBuild ? 'Building' : 'Pulling'
+
+    this.setReadiness({
+      status: 'PULLING_IMAGE',
+      message: `${actionLabel} image ${image}...`,
+      pullProgress: { status: `Starting ${actionLabel.toLowerCase()}...`, percent: null, completedLayers: 0, totalLayers: 0 },
+    })
+
+    let lastBroadcastTime = 0
+    const THROTTLE_MS = 500
+
+    try {
+      const imageAction = shouldBuild ? buildImage : pullImage
+      await imageAction(effectiveRunner, image, (progress) => {
+        const now = Date.now()
+        if (now - lastBroadcastTime >= THROTTLE_MS) {
+          this.setReadiness({
+            status: 'PULLING_IMAGE',
+            message: `${actionLabel} image ${image}...`,
+            pullProgress: progress,
+          })
+          lastBroadcastTime = now
+        }
+      })
+
+      this.setReadiness({
+        status: 'READY',
+        message: 'Ready',
+        pullProgress: null,
+      })
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error)
+      console.error(`[ContainerManager] Failed to ${actionLabel.toLowerCase()} image ${image}:`, errMsg)
+      this.setReadiness({
+        status: 'ERROR',
+        message: `Failed to ${actionLabel.toLowerCase()} image: ${errMsg}`,
+        pullProgress: null,
+      })
+    }
   }
 }
 

@@ -10,13 +10,15 @@ import { BrowserPreview } from '@renderer/components/browser/browser-preview'
 import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
 import { Button } from '@renderer/components/ui/button'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
-import { Plus, Play, Square, ChevronRight, Settings, Clock } from 'lucide-react'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
+import { Plus, Play, Square, ChevronRight, Settings, Clock, Loader2 } from 'lucide-react'
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useAgent, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
 import { useSessions, useSession } from '@renderer/hooks/use-sessions'
 import { useScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { useSelection } from '@renderer/context/selection-context'
+import { useSettings } from '@renderer/hooks/use-settings'
 import { isElectron, getPlatform } from '@renderer/lib/env'
 import { useSidebar } from '@renderer/components/ui/sidebar'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
@@ -46,6 +48,10 @@ export function MainContent() {
   const isFullScreen = useFullScreen()
   const markSessionNotificationsRead = useMarkSessionNotificationsRead()
   const { browserActive, isActive } = useMessageStream(sessionId ?? null, agentSlug ?? null)
+  const { data: settingsData } = useSettings()
+  const readiness = settingsData?.runtimeReadiness
+  const isRuntimeReady = readiness?.status === 'READY'
+  const isPulling = readiness?.status === 'PULLING_IMAGE'
 
   // Auto-mark notifications as read when viewing a session
   useEffect(() => {
@@ -163,15 +169,35 @@ export function MainContent() {
               Stop
             </Button>
           ) : (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => startAgent.mutate(agentSlug)}
-              disabled={startAgent.isPending}
-            >
-              <Play className="mr-2 h-4 w-4" />
-              Start
-            </Button>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => startAgent.mutate(agentSlug)}
+                      disabled={startAgent.isPending || !isRuntimeReady}
+                    >
+                      {isPulling ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <Play className="mr-2 h-4 w-4" />
+                      )}
+                      Start
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                {!isRuntimeReady && readiness && (
+                  <TooltipContent>
+                    <p>{readiness.message}</p>
+                    {readiness.pullProgress && readiness.pullProgress.percent != null && (
+                      <p className="text-xs opacity-80">{readiness.pullProgress.status} ({readiness.pullProgress.percent}%)</p>
+                    )}
+                  </TooltipContent>
+                )}
+              </Tooltip>
+            </TooltipProvider>
           )}
           <Button
             variant="outline"
@@ -192,6 +218,27 @@ export function MainContent() {
           </Button>
         </div>
       </header>
+
+      {/* Image pull progress indicator */}
+      {isPulling && readiness?.pullProgress && (
+        <div className="shrink-0 border-b bg-muted/30 px-4 py-2">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            <span>Pulling agent image... {readiness.pullProgress.status}</span>
+            {readiness.pullProgress.percent != null && (
+              <span>({readiness.pullProgress.percent}%)</span>
+            )}
+          </div>
+          {readiness.pullProgress.percent != null && (
+            <div className="mt-1 h-1 w-full bg-muted rounded-full overflow-hidden">
+              <div
+                className="h-full bg-primary transition-all duration-300"
+                style={{ width: `${readiness.pullProgress.percent}%` }}
+              />
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Show dashboard view when a dashboard is selected */}
       {dashboardSlug ? (
