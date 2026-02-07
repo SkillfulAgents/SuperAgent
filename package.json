@@ -10,7 +10,7 @@
     "dev:electron": "electron-rebuild -f && electron-vite dev",
     "build": "npm run build:web && npm run build:api",
     "build:web": "vite build",
-    "build:api": "tsup src/web/server.ts --format esm --outDir dist/web",
+    "build:api": "tsup",
     "build:electron": "electron-vite build",
     "preview": "npm run build && node dist/web/server.js",
     "dist:mac": "electron-vite build && electron-builder --mac",
@@ -56,6 +56,7 @@
     "cron-parser": "^5.5.0",
     "date-fns": "^4.1.0",
     "drizzle-orm": "^0.33.0",
+    "electron-updater": "^6.7.3",
     "eventsource": "^4.1.0",
     "hono": "^4.6.14",
     "lucide-react": "^0.446.0",
@@ -136,6 +137,11 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "SkillfulAgents",
+      "repo": "SuperAgent"
     }
   }
 }

@@ -3,7 +3,6 @@ name: Build and Push Container
 on:
   push:
     branches: [main]
-    tags: ['v*']
 
 env:
   REGISTRY: ghcr.io

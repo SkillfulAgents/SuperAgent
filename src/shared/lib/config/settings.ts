@@ -1,6 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import { getDataDir } from './data-dir'
+import { getDefaultAgentImage, AGENT_IMAGE_REGISTRY } from './version'
 
 export interface ContainerSettings {
   containerRunner: string
@@ -83,7 +84,7 @@ export interface GlobalSettingsResponse {
 const DEFAULT_SETTINGS: AppSettings = {
   container: {
     containerRunner: 'docker',
-    agentImage: 'ghcr.io/skilfulagents/superagent-agent-container-base:main',
+    agentImage: getDefaultAgentImage(),
     resourceLimits: {
       cpu: 1,
       memory: '512m',
@@ -120,11 +121,24 @@ export function loadSettings(): AppSettings {
     if (fs.existsSync(settingsPath)) {
       const content = fs.readFileSync(settingsPath, 'utf-8')
       const loaded = JSON.parse(content)
+
+      // Migrate agent image tag: if the saved image uses the default GHCR registry
+      // with a :main or :semver tag, update it to the current version's default.
+      // This ensures upgrades automatically pull the matching agent container.
+      let agentImage = loaded.container?.agentImage
+      if (agentImage && agentImage.startsWith(AGENT_IMAGE_REGISTRY + ':')) {
+        const savedTag = agentImage.split(':').pop()
+        if (savedTag === 'main' || /^\d+\.\d+\.\d+/.test(savedTag!)) {
+          agentImage = getDefaultAgentImage()
+        }
+      }
+
       // Merge with defaults to ensure all fields exist
       return {
         container: {
           ...DEFAULT_SETTINGS.container,
           ...loaded.container,
+          ...(agentImage && { agentImage }),
           resourceLimits: {
             ...DEFAULT_SETTINGS.container.resourceLimits,
             ...loaded.container?.resourceLimits,

@@ -382,7 +382,7 @@ export function AppSidebar({ settingsDialogOpen, onSettingsDialogOpenChange, onO
           </SidebarMenuItem>
         </SidebarMenu>
         <div className="px-2 text-xs text-muted-foreground">
-          Version: {import.meta.env.VITE_VERSION || '0.1.0'}
+          Version: {__APP_VERSION__}
         </div>
       </SidebarFooter>
 

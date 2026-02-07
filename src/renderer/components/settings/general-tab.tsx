@@ -24,6 +24,7 @@ import {
 import { useSettings, useUpdateSettings, useFactoryReset } from '@renderer/hooks/use-settings'
 import { RotateCcw, Wand2 } from 'lucide-react'
 import { AnthropicApiKeyInput } from './anthropic-api-key-input'
+import { UpdateSection } from './update-section'
 
 const MODEL_OPTIONS = [
   { value: 'claude-haiku-4-5', label: 'Claude 4.5 Haiku' },
@@ -162,6 +163,13 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
           </p>
         </div>
       </div>
+
+      {/* Software Updates - Only in Electron */}
+      {window.electronAPI && (
+        <div className="pt-4 border-t space-y-4">
+          <UpdateSection />
+        </div>
+      )}
 
       {/* Setup Wizard */}
       <div className="pt-4 border-t space-y-4">

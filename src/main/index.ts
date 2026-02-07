@@ -4,6 +4,7 @@ import { EventSource } from 'eventsource'
 import { createTray, destroyTray, updateTrayWindow, setTrayVisible } from './tray'
 import { getSettings } from '@shared/lib/config/settings'
 import { hostBrowserManager } from './host-browser-manager'
+import { registerUpdateHandlers, initAutoUpdater, updateAutoUpdaterWindow } from './auto-updater'
 
 // Set Electron-specific data directory BEFORE importing API
 // This uses ~/Library/Application Support/Superagent on macOS
@@ -11,6 +12,10 @@ import { hostBrowserManager } from './host-browser-manager'
 // Note: app.getPath() works synchronously before app.whenReady()
 process.env.SUPERAGENT_DATA_DIR = app.getPath('userData')
 console.log(`Data directory: ${process.env.SUPERAGENT_DATA_DIR}`)
+
+// Register auto-update IPC handlers early (before window creation)
+// so the renderer never gets "no handler" errors, even in dev mode
+registerUpdateHandlers()
 
 // Now safe to import API (env var is set)
 import { serve } from '@hono/node-server'
@@ -79,6 +84,14 @@ function createWindow() {
   } else {
     // Production: load built files
     mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'))
+  }
+
+  // Always set the window ref so IPC status events reach the renderer
+  updateAutoUpdaterWindow(mainWindow)
+
+  // Initialize the actual updater only in production builds
+  if (!process.env.ELECTRON_RENDERER_URL) {
+    initAutoUpdater(mainWindow)
   }
 
   mainWindow.on('closed', () => {
@@ -282,8 +295,9 @@ app.whenReady().then(() => {
     // On macOS, re-create window when dock icon is clicked
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow()
-      // Update tray with new window reference
+      // Update tray and auto-updater with new window reference
       updateTrayWindow(mainWindow)
+      updateAutoUpdaterWindow(mainWindow)
     }
   })
 })

@@ -71,6 +71,31 @@ contextBridge.exposeInMainWorld('electronAPI', {
   detectHostBrowser: (): Promise<{ available: boolean; browser: string | null; path: string | null }> => {
     return ipcRenderer.invoke('detect-host-browser')
   },
+
+  // Auto-update
+  checkForUpdates: (): Promise<void> => {
+    return ipcRenderer.invoke('check-for-updates')
+  },
+
+  downloadUpdate: (): Promise<void> => {
+    return ipcRenderer.invoke('download-update')
+  },
+
+  installUpdate: (): Promise<void> => {
+    return ipcRenderer.invoke('install-update')
+  },
+
+  getUpdateStatus: (): Promise<any> => {
+    return ipcRenderer.invoke('get-update-status')
+  },
+
+  onUpdateStatus: (callback: (status: any) => void) => {
+    ipcRenderer.on('update-status', (_event, status) => callback(status))
+  },
+
+  removeUpdateStatus: () => {
+    ipcRenderer.removeAllListeners('update-status')
+  },
 })
 
 // OAuth callback params from main process
@@ -99,6 +124,12 @@ declare global {
       showNotification: (title: string, body: string) => Promise<void>
       setBadgeCount: (count: number) => Promise<void>
       detectHostBrowser: () => Promise<{ available: boolean; browser: string | null; path: string | null }>
+      checkForUpdates: () => Promise<void>
+      downloadUpdate: () => Promise<void>
+      installUpdate: () => Promise<void>
+      getUpdateStatus: () => Promise<any>
+      onUpdateStatus: (callback: (status: any) => void) => void
+      removeUpdateStatus: () => void
     }
   }
 }
