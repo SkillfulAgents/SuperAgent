@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { QueryProvider } from './providers/query-provider'
 import { SelectionProvider } from './context/selection-context'
+import { DialogProvider } from './context/dialog-context'
 import { AppSidebar } from './components/layout/app-sidebar'
 import { MainContent } from './components/layout/main-content'
 import { SidebarProvider, SidebarInset } from './components/ui/sidebar'
@@ -11,7 +12,6 @@ import { useSettings } from './hooks/use-settings'
 
 function AppContent() {
   const [wizardOpen, setWizardOpen] = useState(false)
-  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
   const { data: settings } = useSettings()
   const hasAutoOpened = useRef(false)
 
@@ -23,21 +23,12 @@ function AppContent() {
     }
   }, [settings])
 
-  const handleOpenWizard = () => {
-    setSettingsDialogOpen(false)
-    setWizardOpen(true)
-  }
-
   return (
-    <>
+    <DialogProvider onOpenWizard={() => setWizardOpen(true)}>
       <TrayNavigationHandler>
         <GlobalNotificationHandler />
         <SidebarProvider className="h-screen">
-          <AppSidebar
-            settingsDialogOpen={settingsDialogOpen}
-            onSettingsDialogOpenChange={setSettingsDialogOpen}
-            onOpenWizard={handleOpenWizard}
-          />
+          <AppSidebar />
           <SidebarInset className="min-w-0 h-full">
             <MainContent />
           </SidebarInset>
@@ -48,7 +39,7 @@ function AppContent() {
         open={wizardOpen}
         onOpenChange={setWizardOpen}
       />
-    </>
+    </DialogProvider>
   )
 }
 

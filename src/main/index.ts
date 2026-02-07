@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, shell, Notification } from 'electron'
 import path from 'path'
 import { EventSource } from 'eventsource'
 import { createTray, destroyTray, updateTrayWindow, setTrayVisible } from './tray'
+import { createAppMenu, updateAppMenuWindow, destroyAppMenu } from './app-menu'
 import { getSettings } from '@shared/lib/config/settings'
 import { hostBrowserManager } from './host-browser-manager'
 import { registerUpdateHandlers, initAutoUpdater, updateAutoUpdaterWindow } from './auto-updater'
@@ -26,6 +27,9 @@ import { autoSleepMonitor } from '@shared/lib/scheduler/auto-sleep-monitor'
 import { listAgents } from '@shared/lib/services/agent-service'
 import { findAvailablePort } from './find-port'
 import { setupBrowserStreamProxy } from './browser-stream-proxy'
+
+// Set the app name (shows in macOS menu bar instead of "Electron" during dev)
+app.name = 'SuperAgent'
 
 // Use a more exotic default port to avoid conflicts
 const DEFAULT_API_PORT = 47891
@@ -279,6 +283,9 @@ async function startApp() {
   await app.whenReady()
   createWindow()
 
+  // Create the application menu (macOS menu bar)
+  createAppMenu(mainWindow, actualApiPort)
+
   // Create system tray if enabled in settings
   const settings = getSettings()
   if (settings.app?.showMenuBarIcon !== false) {
@@ -295,8 +302,9 @@ app.whenReady().then(() => {
     // On macOS, re-create window when dock icon is clicked
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow()
-      // Update tray and auto-updater with new window reference
+      // Update tray, menu, and auto-updater with new window reference
       updateTrayWindow(mainWindow)
+      updateAppMenuWindow(mainWindow)
       updateAutoUpdaterWindow(mainWindow)
     }
   })
@@ -350,8 +358,9 @@ async function gracefulShutdown() {
   // Stop notification listener
   stopNotificationListener()
 
-  // Destroy tray
+  // Destroy tray and app menu
   destroyTray()
+  destroyAppMenu()
 
   // Stop host browser if we launched it
   hostBrowserManager.stop()

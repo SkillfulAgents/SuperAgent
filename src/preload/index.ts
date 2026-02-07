@@ -52,6 +52,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.removeAllListeners('navigate-to-agent')
   },
 
+  // Menu commands - open settings
+  onOpenSettings: (callback: () => void) => {
+    ipcRenderer.on('open-settings', () => callback())
+  },
+
+  removeOpenSettings: () => {
+    ipcRenderer.removeAllListeners('open-settings')
+  },
+
+  // Menu commands - open create agent dialog
+  onOpenCreateAgent: (callback: () => void) => {
+    ipcRenderer.on('open-create-agent', () => callback())
+  },
+
+  removeOpenCreateAgent: () => {
+    ipcRenderer.removeAllListeners('open-create-agent')
+  },
+
   // Tray visibility control
   setTrayVisible: (visible: boolean): Promise<void> => {
     return ipcRenderer.invoke('set-tray-visible', visible)
@@ -120,6 +138,10 @@ declare global {
       openExternal: (url: string) => Promise<void>
       onNavigateToAgent: (callback: (agentSlug: string) => void) => void
       removeNavigateToAgent: () => void
+      onOpenSettings: (callback: () => void) => void
+      removeOpenSettings: () => void
+      onOpenCreateAgent: (callback: () => void) => void
+      removeOpenCreateAgent: () => void
       setTrayVisible: (visible: boolean) => Promise<void>
       showNotification: (title: string, body: string) => Promise<void>
       setBadgeCount: (count: number) => Promise<void>

@@ -1,25 +1,6 @@
 import { Tray, Menu, nativeImage, BrowserWindow, app } from 'electron'
 import path from 'path'
-
-// Types for internal use
-interface ApiAgent {
-  slug: string
-  name: string
-  status: 'running' | 'stopped'
-}
-
-interface ApiSession {
-  id: string
-  isActive: boolean
-}
-
-type ActivityStatus = 'working' | 'idle' | 'sleeping'
-
-interface TrayAgentInfo {
-  slug: string
-  name: string
-  activityStatus: ActivityStatus
-}
+import { fetchAgentsWithStatus, ActivityStatus } from './agent-status'
 
 let tray: Tray | null = null
 let updateInterval: NodeJS.Timeout | null = null
@@ -138,59 +119,6 @@ function createStatusIcon(status: ActivityStatus): Electron.NativeImage {
   return nativeImage.createFromPath(iconPath)
 }
 
-/**
- * Fetch agents with their activity status from the API
- */
-async function fetchAgentsWithStatus(): Promise<TrayAgentInfo[]> {
-  try {
-    // Fetch all agents
-    const agentsRes = await fetch(`http://localhost:${apiPortRef}/api/agents`)
-    if (!agentsRes.ok) return []
-    const agents: ApiAgent[] = await agentsRes.json()
-
-    // For each running agent, check if it has active sessions
-    const agentsWithStatus: TrayAgentInfo[] = await Promise.all(
-      agents.map(async (agent) => {
-        let hasActiveSessions = false
-
-        if (agent.status === 'running') {
-          try {
-            const sessionsRes = await fetch(
-              `http://localhost:${apiPortRef}/api/agents/${agent.slug}/sessions`
-            )
-            if (sessionsRes.ok) {
-              const sessions: ApiSession[] = await sessionsRes.json()
-              hasActiveSessions = sessions.some(s => s.isActive)
-            }
-          } catch {
-            // Ignore session fetch errors
-          }
-        }
-
-        // Derive activity status (matches getAgentActivityStatus logic)
-        let activityStatus: ActivityStatus
-        if (agent.status === 'stopped') {
-          activityStatus = 'sleeping'
-        } else if (hasActiveSessions) {
-          activityStatus = 'working'
-        } else {
-          activityStatus = 'idle'
-        }
-
-        return {
-          slug: agent.slug,
-          name: agent.name,
-          activityStatus,
-        }
-      })
-    )
-
-    return agentsWithStatus
-  } catch (error) {
-    console.error('Failed to fetch agents for tray:', error)
-    return []
-  }
-}
 
 /**
  * Navigate to a specific agent in the app
@@ -230,7 +158,7 @@ function showWindow(): void {
 async function updateTrayMenu(): Promise<void> {
   if (!tray) return
 
-  const agents = await fetchAgentsWithStatus()
+  const agents = await fetchAgentsWithStatus(apiPortRef)
 
   // Group agents by status
   const working = agents.filter(a => a.activityStatus === 'working')

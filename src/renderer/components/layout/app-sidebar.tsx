@@ -2,6 +2,7 @@
 import { ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard } from 'lucide-react'
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { isElectron, getPlatform } from '@renderer/lib/env'
+import { useDialogs } from '@renderer/context/dialog-context'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import {
   Collapsible,
@@ -257,14 +258,8 @@ function AgentMenuItem({ agent }: { agent: ApiAgent }) {
   )
 }
 
-interface AppSidebarProps {
-  settingsDialogOpen: boolean
-  onSettingsDialogOpenChange: (open: boolean) => void
-  onOpenWizard: () => void
-}
-
-export function AppSidebar({ settingsDialogOpen, onSettingsDialogOpenChange, onOpenWizard }: AppSidebarProps) {
-  const [createDialogOpen, setCreateDialogOpen] = useState(false)
+export function AppSidebar() {
+  const { settingsOpen, setSettingsOpen, createAgentOpen, setCreateAgentOpen, openWizard } = useDialogs()
   const [containerSetupOpen, setContainerSetupOpen] = useState(false)
   const { data: agents, isLoading, error } = useAgents()
   const { data: settings } = useSettings()
@@ -323,7 +318,7 @@ export function AppSidebar({ settingsDialogOpen, onSettingsDialogOpenChange, onO
           <Alert
             variant="destructive"
             className="py-2 cursor-pointer hover:bg-destructive/20 transition-colors"
-            onClick={() => onSettingsDialogOpenChange(true)}
+            onClick={() => setSettingsOpen(true)}
           >
             <AlertTriangle className="h-4 w-4" />
             <AlertDescription className="text-xs">
@@ -337,7 +332,7 @@ export function AppSidebar({ settingsDialogOpen, onSettingsDialogOpenChange, onO
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupLabel>Agents</SidebarGroupLabel>
-          <SidebarGroupAction onClick={() => setCreateDialogOpen(true)} title="New Agent" data-testid="create-agent-button">
+          <SidebarGroupAction onClick={() => setCreateAgentOpen(true)} title="New Agent" data-testid="create-agent-button">
             <Plus />
             <span className="sr-only">New Agent</span>
           </SidebarGroupAction>
@@ -373,7 +368,7 @@ export function AppSidebar({ settingsDialogOpen, onSettingsDialogOpenChange, onO
         <SidebarMenu>
           <SidebarMenuItem>
             <div className="flex items-center justify-between w-full">
-              <SidebarMenuButton onClick={() => onSettingsDialogOpenChange(true)} className="flex-1">
+              <SidebarMenuButton onClick={() => setSettingsOpen(true)} className="flex-1">
                 <Settings className="h-4 w-4" />
                 <span>Settings</span>
               </SidebarMenuButton>
@@ -387,14 +382,14 @@ export function AppSidebar({ settingsDialogOpen, onSettingsDialogOpenChange, onO
       </SidebarFooter>
 
       <CreateAgentDialog
-        open={createDialogOpen}
-        onOpenChange={setCreateDialogOpen}
+        open={createAgentOpen}
+        onOpenChange={setCreateAgentOpen}
       />
 
       <GlobalSettingsDialog
-        open={settingsDialogOpen}
-        onOpenChange={onSettingsDialogOpenChange}
-        onOpenWizard={onOpenWizard}
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        onOpenWizard={openWizard}
       />
 
       <ContainerSetupDialog
