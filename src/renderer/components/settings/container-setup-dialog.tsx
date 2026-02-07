@@ -16,7 +16,13 @@ interface ContainerSetupDialogProps {
   onOpenChange: (open: boolean) => void
 }
 
-const RUNTIME_INFO = {
+const RUNTIME_INFO: Record<string, { name: string; description: string; installUrl: string; icon: string }> = {
+  'apple-container': {
+    name: 'macOS Container',
+    description: 'Native container runtime built into macOS. Fast and lightweight with no extra software needed.',
+    installUrl: 'https://github.com/apple/container',
+    icon: '🍎',
+  },
   docker: {
     name: 'Docker Desktop',
     description: 'The most popular container runtime. Easy to use with a graphical interface.',
@@ -39,11 +45,11 @@ export function ContainerSetupDialog({ open, onOpenChange }: ContainerSetupDialo
     if (!settings?.runnerAvailability) return []
     return settings.runnerAvailability.map((r) => ({
       ...r,
-      info: RUNTIME_INFO[r.runner as keyof typeof RUNTIME_INFO],
+      info: RUNTIME_INFO[r.runner] || { name: r.runner, description: '', installUrl: '', icon: '📦' },
     }))
   }, [settings?.runnerAvailability])
 
-  const handleStartRunner = async (runner: 'docker' | 'podman') => {
+  const handleStartRunner = async (runner: string) => {
     try {
       await startRunner.mutateAsync(runner)
     } catch (error) {
@@ -125,7 +131,7 @@ export function ContainerSetupDialog({ open, onOpenChange }: ContainerSetupDialo
                         <Button
                           size="sm"
                           className="h-7 text-xs"
-                          onClick={() => handleStartRunner(runtime.runner as 'docker' | 'podman')}
+                          onClick={() => handleStartRunner(runtime.runner)}
                           disabled={startRunner.isPending}
                         >
                           {startRunner.isPending ? (

@@ -1,4 +1,4 @@
-import { BaseContainerClient, checkCommandAvailable } from './base-container-client'
+import { BaseContainerClient, checkCommandAvailable, execWithPath } from './base-container-client'
 import type { ContainerConfig } from './types'
 
 /**
@@ -34,5 +34,17 @@ export class PodmanContainerClient extends BaseContainerClient {
    */
   static async isAvailable(): Promise<boolean> {
     return checkCommandAvailable('podman')
+  }
+
+  /**
+   * Check if the Podman machine/daemon is running and usable.
+   */
+  static async isRunning(): Promise<boolean> {
+    try {
+      await execWithPath('podman info')
+      return true
+    } catch {
+      return false
+    }
   }
 }

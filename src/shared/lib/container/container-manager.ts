@@ -1,4 +1,4 @@
-import { createContainerClient, checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, type ContainerRunner } from './client-factory'
+import { createContainerClient, checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, startRunner, refreshRunnerAvailability, type ContainerRunner } from './client-factory'
 import type { ContainerClient, ContainerConfig, ContainerInfo, RuntimeReadiness } from './types'
 import { db } from '@shared/lib/db'
 import { agentConnectedAccounts, connectedAccounts } from '@shared/lib/db/schema'
@@ -431,15 +431,56 @@ class ContainerManager {
     const runnerStatus = allAvailability.find((r) => r.runner === configuredRunner)
 
     if (!runnerStatus?.available) {
-      const detail = !runnerStatus?.installed
-        ? `${configuredRunner} is not installed.`
-        : `${configuredRunner} is not running. Please start it and refresh.`
-      this.setReadiness({
-        status: 'RUNTIME_UNAVAILABLE',
-        message: detail,
-        pullProgress: null,
-      })
-      return
+      // Auto-start Apple Container runtime if it's installed but not running
+      if (configuredRunner === 'apple-container' && runnerStatus?.installed && !runnerStatus?.running) {
+        this.setReadiness({
+          status: 'CHECKING',
+          message: 'Starting Apple Container runtime...',
+          pullProgress: null,
+        })
+
+        const startResult = await startRunner('apple-container')
+        if (startResult.success) {
+          // Poll for runtime to become available (up to ~15s)
+          let available = false
+          for (let i = 0; i < 15; i++) {
+            await new Promise((r) => setTimeout(r, 1000))
+            const refreshed = await refreshRunnerAvailability()
+            const status = refreshed.find((r) => r.runner === 'apple-container')
+            if (status?.available) {
+              available = true
+              break
+            }
+          }
+
+          if (!available) {
+            this.setReadiness({
+              status: 'RUNTIME_UNAVAILABLE',
+              message: 'Apple Container runtime failed to start in time.',
+              pullProgress: null,
+            })
+            return
+          }
+          // Fall through to image check below
+        } else {
+          this.setReadiness({
+            status: 'RUNTIME_UNAVAILABLE',
+            message: `Failed to start Apple Container runtime: ${startResult.message}`,
+            pullProgress: null,
+          })
+          return
+        }
+      } else {
+        const detail = !runnerStatus?.installed
+          ? `${configuredRunner} is not installed.`
+          : `${configuredRunner} is not running. Please start it and refresh.`
+        this.setReadiness({
+          status: 'RUNTIME_UNAVAILABLE',
+          message: detail,
+          pullProgress: null,
+        })
+        return
+      }
     }
 
     const effectiveRunner = configuredRunner

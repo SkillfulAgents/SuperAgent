@@ -1,4 +1,4 @@
-import { BaseContainerClient, checkCommandAvailable } from './base-container-client'
+import { BaseContainerClient, checkCommandAvailable, execWithPath } from './base-container-client'
 import type { ContainerConfig } from './types'
 
 /**
@@ -30,5 +30,17 @@ export class DockerContainerClient extends BaseContainerClient {
    */
   static async isAvailable(): Promise<boolean> {
     return checkCommandAvailable('docker')
+  }
+
+  /**
+   * Check if the Docker daemon is running and usable.
+   */
+  static async isRunning(): Promise<boolean> {
+    try {
+      await execWithPath('docker info')
+      return true
+    } catch {
+      return false
+    }
   }
 }

@@ -13,10 +13,11 @@ import { Alert, AlertDescription, AlertTitle } from '@renderer/components/ui/ale
 import { useSettings, useUpdateSettings, useStartRunner, useRefreshAvailability } from '@renderer/hooks/use-settings'
 import { AlertCircle, AlertTriangle, Play, Loader2, RefreshCw } from 'lucide-react'
 
-const CONTAINER_RUNNERS = [
-  { value: 'docker', label: 'Docker' },
-  { value: 'podman', label: 'Podman' },
-]
+const RUNNER_LABELS: Record<string, string> = {
+  'apple-container': 'macOS Container',
+  docker: 'Docker',
+  podman: 'Podman',
+}
 
 export function RuntimeTab() {
   const { data: settings, isLoading } = useSettings()
@@ -59,7 +60,18 @@ export function RuntimeTab() {
     return settings.runnerAvailability.some((r) => r.installed && !r.running && r.canStart)
   }, [settings?.runnerAvailability])
 
-  const handleStartRunner = async (runner: 'docker' | 'podman') => {
+  // Derive runner list from server-reported availability (only shows eligible runners)
+  const containerRunners = useMemo(() => {
+    if (!settings?.runnerAvailability) {
+      return [{ value: 'docker', label: 'Docker' }]
+    }
+    return settings.runnerAvailability.map((r) => ({
+      value: r.runner,
+      label: RUNNER_LABELS[r.runner] || r.runner,
+    }))
+  }, [settings?.runnerAvailability])
+
+  const handleStartRunner = async (runner: string) => {
     try {
       await startRunner.mutateAsync(runner)
     } catch (error) {
@@ -137,7 +149,7 @@ export function RuntimeTab() {
           <AlertTriangle className="h-4 w-4" />
           <AlertTitle>No Container Runtime Available</AlertTitle>
           <AlertDescription className="space-y-2">
-            <p>Neither Docker nor Podman was detected as running on your system.</p>
+            <p>No container runtime was detected as running on your system.</p>
             {hasStartableRunner && (
               <div className="flex gap-2 mt-2">
                 {settings?.runnerAvailability
@@ -147,7 +159,7 @@ export function RuntimeTab() {
                       key={r.runner}
                       size="sm"
                       variant="outline"
-                      onClick={() => handleStartRunner(r.runner as 'docker' | 'podman')}
+                      onClick={() => handleStartRunner(r.runner)}
                       disabled={startRunner.isPending}
                     >
                       {startRunner.isPending ? (
@@ -161,7 +173,7 @@ export function RuntimeTab() {
               </div>
             )}
             {!hasStartableRunner && (
-              <p className="text-xs">Please install Docker or Podman to use Superagent.</p>
+              <p className="text-xs">Please install a container runtime to use Superagent.</p>
             )}
           </AlertDescription>
         </Alert>
@@ -216,7 +228,7 @@ export function RuntimeTab() {
               <SelectValue placeholder="Select a container runner" />
             </SelectTrigger>
             <SelectContent>
-              {CONTAINER_RUNNERS.map((runner) => {
+              {containerRunners.map((runner) => {
                 const status = runnerAvailabilityMap.get(runner.value)
                 const isAvailable = status?.available ?? true
                 const isInstalled = status?.installed ?? true
@@ -249,7 +261,7 @@ export function RuntimeTab() {
             <Button
               variant="outline"
               size="icon"
-              onClick={() => handleStartRunner(containerRunner as 'docker' | 'podman')}
+              onClick={() => handleStartRunner(containerRunner)}
               disabled={startRunner.isPending}
               title={`Start ${containerRunner}`}
             >

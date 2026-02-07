@@ -108,7 +108,7 @@ export function useRefreshAvailability() {
 export function useStartRunner() {
   const queryClient = useQueryClient()
 
-  return useMutation<StartRunnerResponse, Error, 'docker' | 'podman'>({
+  return useMutation<StartRunnerResponse, Error, string>({
     mutationFn: async (runner) => {
       const res = await apiFetch('/api/settings/start-runner', {
         method: 'POST',

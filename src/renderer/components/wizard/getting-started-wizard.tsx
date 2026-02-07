@@ -38,7 +38,7 @@ import type { Provider } from '@shared/lib/composio/providers'
 const STEPS = [
   { label: 'Welcome' },
   { label: 'LLM' },
-  { label: 'Docker' },
+  { label: 'Runtime' },
   { label: 'Composio' },
   { label: 'Agent' },
 ]
@@ -164,7 +164,7 @@ function WelcomeStep() {
     <div className="space-y-4">
       <h2 className="text-2xl font-bold">Welcome to Superagent</h2>
       <p className="text-muted-foreground">
-        Superagent lets you create and manage AI agents that run in isolated Docker containers.
+        Superagent lets you create and manage AI agents that run in isolated containers.
         Each agent has its own environment, tools, and can connect to external services.
       </p>
       <div className="space-y-3 pt-2">
@@ -176,7 +176,7 @@ function WelcomeStep() {
           </li>
           <li className="flex items-start gap-2">
             <span className="font-mono text-primary mt-0.5">2.</span>
-            <span><strong>Docker Runtime</strong> - Ensure containers can run on your machine</span>
+            <span><strong>Container Runtime</strong> - Ensure containers can run on your machine</span>
           </li>
           <li className="flex items-start gap-2">
             <span className="font-mono text-primary mt-0.5">3.</span>
@@ -264,7 +264,7 @@ function DockerSetupStep() {
     if (!settings?.runnerAvailability) return []
     return settings.runnerAvailability.map((r) => ({
       ...r,
-      info: RUNTIME_INFO[r.runner as keyof typeof RUNTIME_INFO],
+      info: RUNTIME_INFO[r.runner] || { name: r.runner, description: '', installUrl: '', icon: '📦' },
     }))
   }, [settings?.runnerAvailability])
 
@@ -272,7 +272,7 @@ function DockerSetupStep() {
     return settings?.runnerAvailability?.some((r) => r.available) ?? false
   }, [settings?.runnerAvailability])
 
-  const handleStartRunner = async (runner: 'docker' | 'podman') => {
+  const handleStartRunner = async (runner: string) => {
     try {
       await startRunner.mutateAsync(runner)
     } catch (error) {
@@ -291,9 +291,9 @@ function DockerSetupStep() {
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-xl font-bold">Set Up Docker Runtime</h2>
+        <h2 className="text-xl font-bold">Set Up Container Runtime</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Superagent runs AI agents in isolated containers. You need Docker or Podman installed and running.
+          Superagent runs AI agents in isolated containers. You need a container runtime installed and running.
         </p>
       </div>
 
@@ -346,7 +346,7 @@ function DockerSetupStep() {
                   <Button
                     size="sm"
                     className="h-7 text-xs"
-                    onClick={() => handleStartRunner(runtime.runner as 'docker' | 'podman')}
+                    onClick={() => handleStartRunner(runtime.runner)}
                     disabled={startRunner.isPending}
                   >
                     {startRunner.isPending ? (
@@ -386,7 +386,13 @@ function DockerSetupStep() {
   )
 }
 
-const RUNTIME_INFO = {
+const RUNTIME_INFO: Record<string, { name: string; description: string; installUrl: string; icon: string }> = {
+  'apple-container': {
+    name: 'macOS Container',
+    description: 'Native container runtime built into macOS. Fast and lightweight with no extra software needed.',
+    installUrl: 'https://github.com/apple/container',
+    icon: '🍎',
+  },
   docker: {
     name: 'Docker Desktop',
     description: 'The most popular container runtime. Easy to use with a graphical interface.',

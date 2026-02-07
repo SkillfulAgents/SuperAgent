@@ -1,13 +1,14 @@
 import type { ContainerClient, ContainerConfig, ImagePullProgress } from './types'
 import { DockerContainerClient } from './docker-container-client'
 import { PodmanContainerClient } from './podman-container-client'
+import { AppleContainerClient } from './apple-container-client'
 import { MockContainerClient } from './mock-container-client'
 import { getSettings } from '@shared/lib/config/settings'
-import { execWithPath, spawnWithPath, checkCommandAvailable, AGENT_CONTAINER_PATH } from './base-container-client'
+import { execWithPath, spawnWithPath, AGENT_CONTAINER_PATH } from './base-container-client'
 import { platform } from 'os'
 import * as fs from 'fs'
 
-export type ContainerRunner = 'docker' | 'podman'
+export type ContainerRunner = 'docker' | 'podman' | 'apple-container'
 
 export interface RunnerAvailability {
   runner: ContainerRunner
@@ -22,9 +23,36 @@ export interface RunnerAvailability {
 }
 
 /**
- * All supported container runners in order of preference.
+ * Registry of all container runners with their client classes.
+ * Order determines preference (first eligible runner is the default).
  */
-export const SUPPORTED_RUNNERS: ContainerRunner[] = ['docker', 'podman']
+const ALL_RUNNERS: {
+  name: ContainerRunner
+  cliCommand: string
+  isEligible: () => boolean
+  isAvailable: () => Promise<boolean>
+  isRunning: () => Promise<boolean>
+}[] = [
+  { name: 'apple-container', cliCommand: 'container', isEligible: () => AppleContainerClient.isEligible(), isAvailable: () => AppleContainerClient.isAvailable(), isRunning: () => AppleContainerClient.isRunning() },
+  { name: 'docker', cliCommand: 'docker', isEligible: () => DockerContainerClient.isEligible(), isAvailable: () => DockerContainerClient.isAvailable(), isRunning: () => DockerContainerClient.isRunning() },
+  { name: 'podman', cliCommand: 'podman', isEligible: () => PodmanContainerClient.isEligible(), isAvailable: () => PodmanContainerClient.isAvailable(), isRunning: () => PodmanContainerClient.isRunning() },
+]
+
+/**
+ * Supported container runners on this platform, filtered by eligibility.
+ * Order reflects preference (apple-container first on macOS 26+, then docker, then podman).
+ */
+export const SUPPORTED_RUNNERS: ContainerRunner[] = ALL_RUNNERS
+  .filter((r) => r.isEligible())
+  .map((r) => r.name)
+
+/**
+ * Get the actual CLI command for a runner name.
+ * E.g., 'apple-container' -> 'container', 'docker' -> 'docker'
+ */
+function getCliCommand(runner: ContainerRunner): string {
+  return ALL_RUNNERS.find((r) => r.name === runner)?.cliCommand ?? runner
+}
 
 /** Cache for runner availability to avoid spawning docker commands repeatedly */
 let cachedRunnerAvailability: RunnerAvailability[] | null = null
@@ -36,24 +64,14 @@ const RUNNER_AVAILABILITY_CACHE_TTL_MS = parseInt(
 ) * 1000
 
 /**
- * Check if a runtime's daemon/machine is running and usable.
- * This is different from just having the CLI installed.
- */
-async function checkRuntimeRunning(runner: ContainerRunner): Promise<boolean> {
-  try {
-    // `docker info` and `podman info` check if the daemon/machine is running
-    await execWithPath(`${runner} info`)
-    return true
-  } catch {
-    return false
-  }
-}
-
-/**
  * Check if we can attempt to start this runner.
  * Only possible on macOS for Docker Desktop and Podman machine.
  */
-function canAttemptStart(_runner: ContainerRunner): boolean {
+function canAttemptStart(runner: ContainerRunner): boolean {
+  if (runner === 'apple-container') {
+    // Apple Container is always startable on macOS (where it's eligible)
+    return true
+  }
   const os = platform()
   if (os === 'darwin') {
     // On macOS, we can start Docker Desktop or Podman machine
@@ -70,6 +88,18 @@ function canAttemptStart(_runner: ContainerRunner): boolean {
  */
 export async function startRunner(runner: ContainerRunner): Promise<{ success: boolean; message: string }> {
   const os = platform()
+
+  if (runner === 'apple-container') {
+    try {
+      await execWithPath('container system start')
+      return { success: true, message: 'Apple Container runtime is starting...' }
+    } catch (error: any) {
+      if (error.message?.includes('already running')) {
+        return { success: true, message: 'Apple Container runtime is already running.' }
+      }
+      return { success: false, message: `Failed to start Apple Container runtime: ${error.message}` }
+    }
+  }
 
   if (os === 'darwin') {
     if (runner === 'docker') {
@@ -127,7 +157,12 @@ export async function startRunner(runner: ContainerRunner): Promise<{ success: b
  * Check detailed availability of a specific runner.
  */
 async function checkRunnerDetailedAvailability(runner: ContainerRunner): Promise<RunnerAvailability> {
-  const installed = await checkCommandAvailable(runner)
+  const entry = ALL_RUNNERS.find((r) => r.name === runner)
+  if (!entry) {
+    return { runner, installed: false, running: false, available: false, canStart: false }
+  }
+
+  const installed = await entry.isAvailable()
 
   if (!installed) {
     return {
@@ -139,7 +174,7 @@ async function checkRunnerDetailedAvailability(runner: ContainerRunner): Promise
     }
   }
 
-  const running = await checkRuntimeRunning(runner)
+  const running = await entry.isRunning()
 
   return {
     runner,
@@ -197,7 +232,8 @@ export function clearRunnerAvailabilityCache(): void {
  */
 export async function checkImageExists(runner: ContainerRunner, image: string): Promise<boolean> {
   try {
-    await execWithPath(`${runner} image inspect ${image}`)
+    const cli = getCliCommand(runner)
+    await execWithPath(`${cli} image inspect ${image}`)
     return true
   } catch {
     return false
@@ -220,7 +256,12 @@ export function pullImage(
   onProgress?: (progress: ImagePullProgress) => void
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    const proc = spawnWithPath(runner, ['pull', image])
+    const cli = getCliCommand(runner)
+    // Apple's container CLI uses `container image pull`, not `container pull`
+    const args = runner === 'apple-container'
+      ? ['image', 'pull', image]
+      : ['pull', image]
+    const proc = spawnWithPath(cli, args)
 
     const allLayers = new Set<string>()
     const completedLayers = new Set<string>()
@@ -291,7 +332,8 @@ export function buildImage(
   onProgress?: (progress: ImagePullProgress) => void
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    const proc = spawnWithPath(runner, ['build', '-t', image, AGENT_CONTAINER_PATH])
+    const cli = getCliCommand(runner)
+    const proc = spawnWithPath(cli, ['build', '-t', image, AGENT_CONTAINER_PATH])
 
     let stepCount = 0
 
@@ -345,6 +387,8 @@ export function createContainerClient(config: ContainerConfig): ContainerClient 
   const runner = settings.container.containerRunner as ContainerRunner
 
   switch (runner) {
+    case 'apple-container':
+      return new AppleContainerClient(config)
     case 'docker':
       return new DockerContainerClient(config)
     case 'podman':

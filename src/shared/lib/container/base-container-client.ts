@@ -81,16 +81,32 @@ export async function checkCommandAvailable(command: string): Promise<boolean> {
 }
 
 export const AGENT_CONTAINER_PATH = './agent-container'
-const CONTAINER_INTERNAL_PORT = 3000
+export const CONTAINER_INTERNAL_PORT = 3000
 const BASE_PORT = 4000
 
 /**
  * Base class for OCI-compatible container runtimes (Docker, Podman, etc.)
- * Subclasses should override getRunnerCommand() to specify the CLI command.
+ * Subclasses should override getRunnerCommand() to specify the CLI command,
+ * and the static methods isAvailable() and isRunning().
  */
 export abstract class BaseContainerClient extends EventEmitter implements ContainerClient {
   protected config: ContainerConfig
   private wsConnections: Map<string, WebSocket> = new Map()
+
+  /** Whether this runner is eligible on the current platform. Override for platform-specific runners. */
+  static isEligible(): boolean {
+    return true
+  }
+
+  /** Whether the CLI is installed. Subclasses must override. */
+  static async isAvailable(): Promise<boolean> {
+    throw new Error('Subclass must implement static isAvailable()')
+  }
+
+  /** Whether the runtime daemon/service is running. Subclasses must override. */
+  static async isRunning(): Promise<boolean> {
+    throw new Error('Subclass must implement static isRunning()')
+  }
 
   constructor(config: ContainerConfig) {
     super()
@@ -147,7 +163,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return `--cpus=${cpu} --memory=${memory}`
   }
 
-  private getContainerName(): string {
+  protected getContainerName(): string {
     return `superagent-${this.config.agentId}`
   }
 
@@ -190,7 +206,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return port
   }
 
-  private async getUsedPorts(): Promise<Set<number>> {
+  protected async getUsedPorts(): Promise<Set<number>> {
     const usedPorts = new Set<number>()
     const runner = this.getRunnerCommand()
     try {

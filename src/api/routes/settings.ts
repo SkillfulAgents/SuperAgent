@@ -14,7 +14,7 @@ import {
   type GlobalSettingsResponse,
 } from '@shared/lib/config/settings'
 import { containerManager } from '@shared/lib/container/container-manager'
-import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, type ContainerRunner } from '@shared/lib/container/client-factory'
+import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
 import { hostBrowserManager } from '../../main/host-browser-manager'
 import { db } from '@shared/lib/db'
 import { proxyAuditLog, proxyTokens, agentConnectedAccounts, scheduledTasks, notifications, connectedAccounts } from '@shared/lib/db/schema'
@@ -205,8 +205,8 @@ settings.post('/start-runner', async (c) => {
     const body = await c.req.json()
     const runner = body.runner as ContainerRunner
 
-    if (!runner || !['docker', 'podman'].includes(runner)) {
-      return c.json({ error: 'Invalid runner. Must be "docker" or "podman".' }, 400)
+    if (!runner || !SUPPORTED_RUNNERS.includes(runner)) {
+      return c.json({ error: `Invalid runner. Must be one of: ${SUPPORTED_RUNNERS.join(', ')}` }, 400)
     }
 
     const result = await startRunner(runner)
