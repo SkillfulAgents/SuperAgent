@@ -62,11 +62,14 @@ export function GlobalNotificationHandler() {
           case 'session_error':
             // Session state changed - update sessions list in sidebar
             queryClient.invalidateQueries({ queryKey: ['sessions'] })
+            // Artifacts may have been created/modified during the session
+            queryClient.invalidateQueries({ queryKey: ['artifacts'] })
             break
 
           case 'agent_status_changed':
-            // Agent started/stopped - update agent list
+            // Agent started/stopped - update agent list and artifacts
             queryClient.invalidateQueries({ queryKey: ['agents'] })
+            queryClient.invalidateQueries({ queryKey: ['artifacts'] })
             break
 
           case 'scheduled_task_created': {

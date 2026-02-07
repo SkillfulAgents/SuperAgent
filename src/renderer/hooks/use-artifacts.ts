@@ -18,6 +18,7 @@ export function useArtifacts(agentSlug: string | null) {
       return res.json()
     },
     enabled: !!agentSlug,
-    refetchInterval: 5000,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
   })
 }
