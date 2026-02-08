@@ -5,7 +5,7 @@ import { agentConnectedAccounts, connectedAccounts } from '@shared/lib/db/schema
 import { eq } from 'drizzle-orm'
 import { getOrCreateProxyToken } from '@shared/lib/proxy/token-store'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
-import { getSettings } from '@shared/lib/config/settings'
+import { getSettings, updateSettings } from '@shared/lib/config/settings'
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
 import { messagePersister } from './message-persister'
@@ -413,13 +413,13 @@ class ContainerManager {
    * Updates readiness state throughout and broadcasts via SSE.
    */
   async ensureImageReady(): Promise<void> {
-    const settings = getSettings()
+    let settings = getSettings()
     const image = settings.container.agentImage
 
     // Step 1: Check configured runner availability
     // We check the *configured* runner specifically (not a fallback) because
     // createContainerClient() always uses the configured runner.
-    const configuredRunner = settings.container.containerRunner as ContainerRunner
+    let configuredRunner = settings.container.containerRunner as ContainerRunner
 
     this.setReadiness({
       status: 'CHECKING',
@@ -471,15 +471,24 @@ class ContainerManager {
           return
         }
       } else {
-        const detail = !runnerStatus?.installed
-          ? `${configuredRunner} is not installed.`
-          : `${configuredRunner} is not running. Please start it and refresh.`
-        this.setReadiness({
-          status: 'RUNTIME_UNAVAILABLE',
-          message: detail,
-          pullProgress: null,
-        })
-        return
+        // Configured runner not available — check if another runner is available and auto-switch
+        const alternativeRunner = allAvailability.find((r) => r.available && r.runner !== configuredRunner)
+        if (alternativeRunner) {
+          console.log(`Configured runner ${configuredRunner} not available, auto-switching to ${alternativeRunner.runner}`)
+          configuredRunner = alternativeRunner.runner as ContainerRunner
+          settings = { ...settings, container: { ...settings.container, containerRunner: configuredRunner } }
+          updateSettings(settings)
+        } else {
+          const detail = !runnerStatus?.installed
+            ? `${configuredRunner} is not installed.`
+            : `${configuredRunner} is not running. Please start it and refresh.`
+          this.setReadiness({
+            status: 'RUNTIME_UNAVAILABLE',
+            message: detail,
+            pullProgress: null,
+          })
+          return
+        }
       }
     }
 
