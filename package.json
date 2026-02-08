@@ -114,6 +114,11 @@
       {
         "from": "src/shared/lib/db/migrations",
         "to": "migrations"
+      },
+      {
+        "from": "build",
+        "to": "tray-icons",
+        "filter": ["tray*", "status_*"]
       }
     ],
     "mac": {

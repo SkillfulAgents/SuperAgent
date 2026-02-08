@@ -100,12 +100,25 @@ export function isTrayVisible(): boolean {
 }
 
 /**
+ * Get the directory containing tray/status icons.
+ * In dev mode, icons are in the project's build/ directory.
+ * In production, they are bundled as extraResources under tray-icons/.
+ */
+function getIconDir(): string {
+  if (process.env.ELECTRON_RENDERER_URL) {
+    // Dev mode
+    return path.join(__dirname, '../../build')
+  }
+  // Production — extraResources are in process.resourcesPath
+  return path.join(process.resourcesPath, 'tray-icons')
+}
+
+/**
  * Create the tray icon from file
  */
 function createTrayIcon(): Electron.NativeImage {
-  // Use template image from build directory
-  // Electron automatically picks up @2x version for Retina displays
-  const iconPath = path.join(__dirname, '../../build/trayTemplate.png')
+  // Use template image — Electron automatically picks up @2x version for Retina displays
+  const iconPath = path.join(getIconDir(), 'trayTemplate.png')
   const icon = nativeImage.createFromPath(iconPath)
   icon.setTemplateImage(true)
   return icon
@@ -115,7 +128,7 @@ function createTrayIcon(): Electron.NativeImage {
  * Create a status icon from file
  */
 function createStatusIcon(status: ActivityStatus): Electron.NativeImage {
-  const iconPath = path.join(__dirname, `../../build/status_${status}.png`)
+  const iconPath = path.join(getIconDir(), `status_${status}.png`)
   return nativeImage.createFromPath(iconPath)
 }
 
