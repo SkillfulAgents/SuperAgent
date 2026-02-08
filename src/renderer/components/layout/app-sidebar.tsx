@@ -273,12 +273,13 @@ export function AppSidebar() {
   const hasShownInitialSetup = useRef(false)
 
   // Automatically show the container setup dialog on first load if runtime is unavailable
+  // Skip if setup wizard hasn't been completed yet — it already covers runtime setup
   useEffect(() => {
-    if (isRuntimeUnavailable && !hasShownInitialSetup.current) {
+    if (isRuntimeUnavailable && !hasShownInitialSetup.current && settings?.setupCompleted) {
       hasShownInitialSetup.current = true
       setContainerSetupOpen(true)
     }
-  }, [isRuntimeUnavailable])
+  }, [isRuntimeUnavailable, settings?.setupCompleted])
 
   // Add left padding for macOS traffic lights in Electron (not in full screen)
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && !isFullScreen
