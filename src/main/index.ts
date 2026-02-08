@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, Notification } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeTheme, shell, Notification } from 'electron'
 import path from 'path'
 import { EventSource } from 'eventsource'
 import { createTray, destroyTray, updateTrayWindow, setTrayVisible } from './tray'
@@ -156,6 +156,11 @@ ipcMain.handle('set-badge-count', (_event, count: number) => {
 // IPC handler for detecting host browser availability
 ipcMain.handle('detect-host-browser', () => {
   return hostBrowserManager.detect()
+})
+
+// IPC handler for setting native theme (controls vibrancy appearance on macOS)
+ipcMain.handle('set-native-theme', (_event, theme: string) => {
+  nativeTheme.themeSource = theme as 'system' | 'light' | 'dark'
 })
 
 // Handle OAuth callback URLs (macOS)

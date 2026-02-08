@@ -66,6 +66,30 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
 
   return (
     <div className="space-y-6">
+      {/* Appearance */}
+      <div className="space-y-2">
+        <Label htmlFor="theme">Appearance</Label>
+        <Select
+          value={settings?.app?.theme ?? 'system'}
+          onValueChange={(value) => {
+            updateSettings.mutate({ app: { theme: value as 'system' | 'light' | 'dark' } })
+          }}
+          disabled={isLoading}
+        >
+          <SelectTrigger id="theme">
+            <SelectValue placeholder="Select theme" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="system">System</SelectItem>
+            <SelectItem value="light">Light</SelectItem>
+            <SelectItem value="dark">Dark</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          Choose light or dark theme, or follow your system setting
+        </p>
+      </div>
+
       {/* Menu Bar Icon Toggle - Only show in Electron */}
       {window.electronAPI && (
         <div className="flex items-center justify-between">

@@ -9,8 +9,10 @@ import { TrayNavigationHandler } from './components/tray-navigation-handler'
 import { GlobalNotificationHandler } from './components/notifications/global-notification-handler'
 import { GettingStartedWizard } from './components/wizard/getting-started-wizard'
 import { useSettings } from './hooks/use-settings'
+import { useTheme } from './hooks/use-theme'
 
 function AppContent() {
+  useTheme()
   const [wizardOpen, setWizardOpen] = useState(false)
   const { data: settings } = useSettings()
   const hasAutoOpened = useRef(false)

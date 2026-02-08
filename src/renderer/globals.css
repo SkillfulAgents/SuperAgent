@@ -136,6 +136,15 @@
   border-color: transparent !important;
 }
 
+/* In dark mode, user message bubbles have a light background (primary flips to white),
+   so reset prose-invert to use dark text matching primary-foreground */
+.dark .prose-user-message {
+  --tw-prose-body: hsl(var(--primary-foreground));
+  --tw-prose-headings: hsl(var(--primary-foreground));
+  --tw-prose-bold: hsl(var(--primary-foreground));
+  --tw-prose-code: hsl(var(--primary-foreground));
+}
+
 /* Electron window drag regions */
 .app-drag-region {
   -webkit-app-region: drag;

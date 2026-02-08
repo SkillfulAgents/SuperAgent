@@ -69,7 +69,8 @@ export function MessageItem({ message, isStreaming, agentSlug }: MessageItemProp
                 <div className={cn(
                   'prose prose-sm max-w-none break-words',
                   // Use inverted (light) text for user messages (dark bg) and dark mode
-                  isUser ? 'prose-invert' : 'dark:prose-invert'
+                  // prose-user-message resets prose-invert in dark mode where primary bg is light
+                  isUser ? 'prose-invert prose-user-message' : 'dark:prose-invert'
                 )}>
                   <ReactMarkdown
                     components={{
@@ -77,7 +78,7 @@ export function MessageItem({ message, isStreaming, agentSlug }: MessageItemProp
                       pre: ({ children }) => (
                         <pre className={cn(
                           'rounded p-2 overflow-x-auto text-xs',
-                          isUser ? 'bg-white/20' : 'bg-background/50'
+                          isUser ? 'bg-white/20 dark:bg-black/10' : 'bg-background/50'
                         )}>
                           {children}
                         </pre>
@@ -87,7 +88,7 @@ export function MessageItem({ message, isStreaming, agentSlug }: MessageItemProp
                         return isInline ? (
                           <code className={cn(
                             'rounded px-1 py-0.5 text-xs',
-                            isUser ? 'bg-white/20' : 'bg-background/50'
+                            isUser ? 'bg-white/20 dark:bg-black/10' : 'bg-background/50'
                           )}>
                             {children}
                           </code>
@@ -103,7 +104,7 @@ export function MessageItem({ message, isStreaming, agentSlug }: MessageItemProp
                           rel="noopener noreferrer"
                           className={cn(
                             'hover:underline',
-                            isUser ? 'text-blue-200' : 'text-blue-500'
+                            isUser ? 'text-blue-200 dark:text-blue-600' : 'text-blue-500'
                           )}
                         >
                           {children}

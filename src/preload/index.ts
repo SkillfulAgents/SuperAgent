@@ -90,6 +90,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('detect-host-browser')
   },
 
+  // Set native theme (controls vibrancy appearance on macOS)
+  setNativeTheme: (theme: string): Promise<void> => {
+    return ipcRenderer.invoke('set-native-theme', theme)
+  },
+
   // Auto-update
   checkForUpdates: (): Promise<void> => {
     return ipcRenderer.invoke('check-for-updates')
@@ -146,6 +151,7 @@ declare global {
       showNotification: (title: string, body: string) => Promise<void>
       setBadgeCount: (count: number) => Promise<void>
       detectHostBrowser: () => Promise<{ available: boolean; browser: string | null; path: string | null }>
+      setNativeTheme: (theme: string) => Promise<void>
       checkForUpdates: () => Promise<void>
       downloadUpdate: () => Promise<void>
       installUpdate: () => Promise<void>

@@ -38,6 +38,7 @@ export interface AppPreferences {
   useHostBrowser?: boolean
   chromeProfileId?: string
   allowPrereleaseUpdates?: boolean
+  theme?: 'system' | 'light' | 'dark'
 }
 
 export interface AppSettings {
