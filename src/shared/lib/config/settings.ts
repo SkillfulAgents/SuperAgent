@@ -2,7 +2,6 @@ import fs from 'fs'
 import path from 'path'
 import { getDataDir } from './data-dir'
 import { getDefaultAgentImage, AGENT_IMAGE_REGISTRY } from './version'
-import { SUPPORTED_RUNNERS } from '@shared/lib/container/client-factory'
 
 export interface ContainerSettings {
   containerRunner: string
@@ -86,7 +85,7 @@ export interface GlobalSettingsResponse {
 
 const DEFAULT_SETTINGS: AppSettings = {
   container: {
-    containerRunner: SUPPORTED_RUNNERS[0] || 'docker',
+    containerRunner: 'docker',
     agentImage: getDefaultAgentImage(),
     resourceLimits: {
       cpu: 1,
