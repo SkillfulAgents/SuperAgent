@@ -11,6 +11,11 @@ let currentStatus: UpdateStatus = { state: 'idle' }
 let mainWindowRef: BrowserWindow | null = null
 let updaterReady = false
 
+async function getAutoUpdater() {
+  const mod = await import('electron-updater')
+  return mod.autoUpdater ?? (mod as any).default?.autoUpdater
+}
+
 function sendStatusToRenderer() {
   if (mainWindowRef && !mainWindowRef.isDestroyed()) {
     mainWindowRef.webContents.send('update-status', currentStatus)
@@ -37,7 +42,7 @@ export function registerUpdateHandlers() {
       return
     }
     try {
-      const { autoUpdater } = await import('electron-updater')
+      const autoUpdater = await getAutoUpdater()
       await autoUpdater.checkForUpdates()
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -48,7 +53,7 @@ export function registerUpdateHandlers() {
   ipcMain.handle('download-update', async () => {
     if (!updaterReady) return
     try {
-      const { autoUpdater } = await import('electron-updater')
+      const autoUpdater = await getAutoUpdater()
       await autoUpdater.downloadUpdate()
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -58,7 +63,7 @@ export function registerUpdateHandlers() {
 
   ipcMain.handle('install-update', async () => {
     if (!updaterReady) return
-    const { autoUpdater } = await import('electron-updater')
+    const autoUpdater = await getAutoUpdater()
     autoUpdater.quitAndInstall()
   })
 }
@@ -69,37 +74,45 @@ export function registerUpdateHandlers() {
 export async function initAutoUpdater(mainWindow: BrowserWindow) {
   mainWindowRef = mainWindow
 
-  const { autoUpdater } = await import('electron-updater')
+  try {
+    const autoUpdater = await getAutoUpdater()
+    if (!autoUpdater) {
+      console.warn('electron-updater: autoUpdater not found, skipping auto-update init')
+      return
+    }
 
-  // Don't auto-download — let the user choose
-  autoUpdater.autoDownload = false
-  autoUpdater.autoInstallOnAppQuit = true
+    // Don't auto-download — let the user choose
+    autoUpdater.autoDownload = false
+    autoUpdater.autoInstallOnAppQuit = true
 
-  autoUpdater.on('checking-for-update', () => {
-    setStatus({ state: 'checking' })
-  })
+    autoUpdater.on('checking-for-update', () => {
+      setStatus({ state: 'checking' })
+    })
 
-  autoUpdater.on('update-available', (info) => {
-    setStatus({ state: 'available', version: info.version })
-  })
+    autoUpdater.on('update-available', (info: any) => {
+      setStatus({ state: 'available', version: info.version })
+    })
 
-  autoUpdater.on('update-not-available', () => {
-    setStatus({ state: 'not-available' })
-  })
+    autoUpdater.on('update-not-available', () => {
+      setStatus({ state: 'not-available' })
+    })
 
-  autoUpdater.on('download-progress', (progress) => {
-    setStatus({ state: 'downloading', progress: progress.percent })
-  })
+    autoUpdater.on('download-progress', (progress: any) => {
+      setStatus({ state: 'downloading', progress: progress.percent })
+    })
 
-  autoUpdater.on('update-downloaded', (info) => {
-    setStatus({ state: 'downloaded', version: info.version })
-  })
+    autoUpdater.on('update-downloaded', (info: any) => {
+      setStatus({ state: 'downloaded', version: info.version })
+    })
 
-  autoUpdater.on('error', (err: Error) => {
-    setStatus({ state: 'error', error: err.message })
-  })
+    autoUpdater.on('error', (err: Error) => {
+      setStatus({ state: 'error', error: err.message })
+    })
 
-  updaterReady = true
+    updaterReady = true
+  } catch (err) {
+    console.warn('Failed to initialize auto-updater:', err)
+  }
 }
 
 export function updateAutoUpdaterWindow(window: BrowserWindow | null) {
