@@ -37,6 +37,7 @@ export interface AppPreferences {
   setupCompleted?: boolean
   useHostBrowser?: boolean
   chromeProfileId?: string
+  allowPrereleaseUpdates?: boolean
 }
 
 export interface AppSettings {

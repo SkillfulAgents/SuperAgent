@@ -1,4 +1,5 @@
 import { BrowserWindow, ipcMain } from 'electron'
+import { getSettings } from '@shared/lib/config/settings'
 
 export interface UpdateStatus {
   state: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
@@ -43,6 +44,7 @@ export function registerUpdateHandlers() {
     }
     try {
       const autoUpdater = await getAutoUpdater()
+      autoUpdater.allowPrerelease = !!getSettings().app?.allowPrereleaseUpdates
       await autoUpdater.checkForUpdates()
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -84,6 +86,7 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
     // Don't auto-download — let the user choose
     autoUpdater.autoDownload = false
     autoUpdater.autoInstallOnAppQuit = true
+    autoUpdater.allowPrerelease = !!getSettings().app?.allowPrereleaseUpdates
 
     autoUpdater.on('checking-for-update', () => {
       setStatus({ state: 'checking' })
