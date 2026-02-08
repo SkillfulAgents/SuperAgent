@@ -1,0 +1,1 @@
+Instead of passing LLM key into container, add an endpoint at the parent process that proxies LLM requests from the container to the actual LLM service, adding the key internally - https://code.claude.com/docs/en/llm-gateway
