@@ -10,19 +10,21 @@ import {
 
 // Mock containerManager before importing the service
 // Use vi.hoisted to ensure mock variables are available when vi.mock is hoisted
-const { mockGetInfo, mockStop, mockGetClient } = vi.hoisted(() => {
+const { mockGetCachedInfo, mockStopContainer, mockGetInfo, mockGetClient } = vi.hoisted(() => {
+  const mockGetCachedInfo = vi.fn((): { status: string; port: number | null } => ({ status: 'stopped', port: null }))
+  const mockStopContainer = vi.fn(() => Promise.resolve())
   const mockGetInfo = vi.fn(() => Promise.resolve({ status: 'stopped', port: null }))
-  const mockStop = vi.fn(() => Promise.resolve())
   const mockGetClient = vi.fn(() => ({
     getInfo: mockGetInfo,
-    stop: mockStop,
   }))
-  return { mockGetInfo, mockStop, mockGetClient }
+  return { mockGetCachedInfo, mockStopContainer, mockGetInfo, mockGetClient }
 })
 
 vi.mock('@shared/lib/container/container-manager', () => ({
   containerManager: {
     getClient: mockGetClient,
+    getCachedInfo: mockGetCachedInfo,
+    stopContainer: mockStopContainer,
   },
 }))
 
@@ -162,7 +164,7 @@ Instructions
       await createTestAgent('running-agent', SAMPLE_CLAUDE_MD)
 
       // Mock container as running
-      mockGetInfo.mockResolvedValueOnce({ status: 'running', port: 3456 } as any)
+      mockGetCachedInfo.mockReturnValueOnce({ status: 'running', port: 3456 })
 
       const agent = await getAgentWithStatus('running-agent')
 
@@ -368,14 +370,11 @@ Instructions`
 
     it('stops container before deleting', async () => {
       await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
-
-      // Mock container as running so it will be stopped
-      mockGetInfo.mockResolvedValueOnce({ status: 'running', port: 3456 } as any)
-      mockStop.mockClear()
+      mockStopContainer.mockClear()
 
       await deleteAgent('test-agent')
 
-      expect(mockStop).toHaveBeenCalled()
+      expect(mockStopContainer).toHaveBeenCalledWith('test-agent')
     })
   })
 
