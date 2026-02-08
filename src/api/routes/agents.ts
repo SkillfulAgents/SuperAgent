@@ -312,7 +312,7 @@ agents.post('/:id/sessions', async (c) => {
     const sessionId = containerSession.id
 
     await registerSession(slug, sessionId, 'New Session')
-    messagePersister.subscribeToSession(sessionId, client, sessionId, slug)
+    await messagePersister.subscribeToSession(sessionId, client, sessionId, slug)
     messagePersister.markSessionActive(sessionId, slug)
 
     generateAndUpdateSessionNameAsync(
@@ -413,7 +413,7 @@ agents.post('/:id/sessions/:sessionId/messages', async (c) => {
     }
 
     if (!messagePersister.isSubscribed(sessionId)) {
-      messagePersister.subscribeToSession(sessionId, client, sessionId, agentSlug)
+      await messagePersister.subscribeToSession(sessionId, client, sessionId, agentSlug)
     }
 
     messagePersister.markSessionActive(sessionId, agentSlug)

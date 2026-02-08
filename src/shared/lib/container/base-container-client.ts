@@ -610,7 +610,14 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   subscribeToStream(
     sessionId: string,
     callback: (message: StreamMessage) => void
-  ): () => void {
+  ): { unsubscribe: () => void; ready: Promise<void> } {
+    let resolveReady: () => void
+    let rejectReady: (error: Error) => void
+    const ready = new Promise<void>((resolve, reject) => {
+      resolveReady = resolve
+      rejectReady = reject
+    })
+
     const setupWebSocket = async () => {
       const port = await this.getPortOrThrow()
 
@@ -625,6 +632,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       ws.on('open', () => {
         console.log(`WebSocket connected for session ${sessionId}`)
+        resolveReady()
       })
 
       ws.on('message', (data) => {
@@ -649,6 +657,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           console.error(`WebSocket error for session ${sessionId}:`, error)
           this.emit('error', error)
         }
+        rejectReady(error instanceof Error ? error : new Error(String(error)))
       })
 
       ws.on('close', () => {
@@ -671,15 +680,18 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     setupWebSocket().catch((error) => {
       console.error('Failed to set up WebSocket:', error)
       this.emit('error', error)
+      rejectReady(error instanceof Error ? error : new Error(String(error)))
     })
 
-    return () => {
+    const unsubscribe = () => {
       const ws = this.wsConnections.get(sessionId)
       if (ws) {
         ws.close()
         this.wsConnections.delete(sessionId)
       }
     }
+
+    return { unsubscribe, ready }
   }
 
   private async ensureImageExists(): Promise<void> {

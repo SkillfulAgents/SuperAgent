@@ -239,9 +239,9 @@ export class ClaudeCodeProcess extends EventEmitter {
           'dashboards': dashboardsMcpServer,
         },
         // Handle AskUserQuestion via canUseTool callback (per SDK docs)
-        canUseTool: async (toolName: string, toolInput: Record<string, unknown>) => {
+        canUseTool: async (toolName: string, toolInput: Record<string, unknown>, options: { toolUseID: string; signal: AbortSignal }) => {
           if (toolName === 'AskUserQuestion') {
-            console.log('[canUseTool] AskUserQuestion called');
+            console.log('[canUseTool] AskUserQuestion called, toolUseID:', options.toolUseID);
 
             const questions = toolInput.questions as Array<{
               question: string;
@@ -255,12 +255,7 @@ export class ClaudeCodeProcess extends EventEmitter {
               return { behavior: 'allow' as const, updatedInput: toolInput };
             }
 
-            // Get the tool_use_id that was captured by the PreToolUse hook
-            const toolUseId = inputManager.consumeCurrentToolUseId();
-            if (!toolUseId) {
-              console.log('[canUseTool] No toolUseId available, generating one');
-            }
-            const requestId = toolUseId || `ask-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            const requestId = options.toolUseID || `ask-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
             console.log('[canUseTool] Creating pending request:', requestId);
 
             try {
@@ -297,19 +292,6 @@ export class ClaudeCodeProcess extends EventEmitter {
               hooks: [
                 async (_input, toolUseId) => {
                   if (toolUseId) {
-                    inputManager.setCurrentToolUseId(toolUseId);
-                  }
-                  return {};
-                },
-              ],
-            },
-            {
-              // Capture tool_use_id for AskUserQuestion so canUseTool can use it
-              matcher: 'AskUserQuestion',
-              hooks: [
-                async (_input, toolUseId) => {
-                  if (toolUseId) {
-                    console.log('[AskUserQuestion PreToolUse] Capturing toolUseId:', toolUseId);
                     inputManager.setCurrentToolUseId(toolUseId);
                   }
                   return {};

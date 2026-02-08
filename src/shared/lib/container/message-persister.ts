@@ -24,13 +24,14 @@ class MessagePersister {
   // Track container clients per session for reconnection
   private containerClients: Map<string, ContainerClient> = new Map()
 
-  // Subscribe to a session's messages for SSE streaming
-  subscribeToSession(
+  // Subscribe to a session's messages for SSE streaming.
+  // Returns a promise that resolves when the WebSocket connection is ready.
+  async subscribeToSession(
     sessionId: string,
     client: ContainerClient,
     containerSessionId: string,
     agentSlug?: string
-  ): void {
+  ): Promise<void> {
     // Unsubscribe if already subscribed
     this.unsubscribeFromSession(sessionId)
 
@@ -49,12 +50,15 @@ class MessagePersister {
     this.containerClients.set(sessionId, client)
 
     // Subscribe to the container's message stream
-    const unsubscribe = client.subscribeToStream(
+    const { unsubscribe, ready } = client.subscribeToStream(
       containerSessionId,
       (message) => this.handleMessage(sessionId, message)
     )
 
     this.subscriptions.set(sessionId, unsubscribe)
+
+    // Wait for the WebSocket connection to be established
+    await ready
   }
 
   // Unsubscribe from a session
@@ -367,7 +371,7 @@ class MessagePersister {
         if (isRunning) {
           // Session still running, try to re-subscribe
           console.log(`[MessagePersister] Session ${sessionId} still running, re-subscribing`)
-          const unsubscribe = client.subscribeToStream(
+          const { unsubscribe } = client.subscribeToStream(
             sessionId,
             (message) => this.handleMessage(sessionId, message)
           )

@@ -177,7 +177,7 @@ class TaskScheduler {
     })
 
     // Subscribe to the session for SSE updates
-    messagePersister.subscribeToSession(
+    await messagePersister.subscribeToSession(
       sessionId,
       client,
       sessionId,

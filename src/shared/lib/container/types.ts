@@ -70,11 +70,11 @@ export interface ContainerClient {
   getMessages(sessionId: string): Promise<any[]>
   interruptSession(sessionId: string): Promise<boolean>
 
-  // Streaming - returns unsubscribe function
+  // Streaming - returns unsubscribe function and a ready promise
   subscribeToStream(
     sessionId: string,
     callback: (message: StreamMessage) => void
-  ): () => void
+  ): { unsubscribe: () => void; ready: Promise<void> }
 
   // Events
   on(event: 'error', callback: (error: Error) => void): void

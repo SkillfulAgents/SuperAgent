@@ -562,7 +562,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   subscribeToStream(
     sessionId: string,
     callback: (message: StreamMessage) => void
-  ): () => void {
+  ): { unsubscribe: () => void; ready: Promise<void> } {
     let callbacks = this.streamCallbacks.get(sessionId)
     if (!callbacks) {
       callbacks = new Set()
@@ -572,10 +572,12 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
     console.log(`[MockContainerClient] Subscribed to stream for session ${sessionId}`)
 
-    return () => {
+    const unsubscribe = () => {
       callbacks?.delete(callback)
       console.log(`[MockContainerClient] Unsubscribed from stream for session ${sessionId}`)
     }
+
+    return { unsubscribe, ready: Promise.resolve() }
   }
 
   // Events (inherited from EventEmitter)

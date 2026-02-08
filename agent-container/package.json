@@ -19,7 +19,8 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.2.4",
+    "@anthropic-ai/claude-agent-sdk": "0.2.37",
+    "zod": "^4.0.0",
     "@hono/node-server": "^1.8.0",
     "hono": "^4.0.0",
     "uuid": "^9.0.1",
