@@ -11,7 +11,7 @@ import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
 import { Button } from '@renderer/components/ui/button'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
-import { Plus, Play, Square, ChevronRight, Settings, Clock, Loader2 } from 'lucide-react'
+import { Plus, Play, Square, ChevronRight, Settings, Clock, Loader2, AlertCircle } from 'lucide-react'
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useAgent, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
 import { useSessions, useSession } from '@renderer/hooks/use-sessions'
@@ -237,6 +237,16 @@ export function MainContent() {
               />
             </div>
           )}
+        </div>
+      )}
+
+      {/* Start error banner */}
+      {startAgent.isError && (
+        <div className="shrink-0 border-b bg-destructive/10 px-4 py-2">
+          <div className="flex items-center gap-2 text-xs text-destructive">
+            <AlertCircle className="h-3 w-3 shrink-0" />
+            <span>Failed to start agent: {startAgent.error.message}</span>
+          </div>
         </div>
       )}
 

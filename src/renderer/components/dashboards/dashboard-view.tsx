@@ -56,6 +56,9 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
             Start Agent
           </Button>
         )}
+        {startAgent.isError && (
+          <p className="text-sm text-destructive">{startAgent.error.message}</p>
+        )}
       </div>
     )
   }

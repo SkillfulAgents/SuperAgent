@@ -218,7 +218,8 @@ agents.post('/:id/start', async (c) => {
     return c.json(agent)
   } catch (error) {
     console.error('Failed to start agent:', error)
-    return c.json({ error: 'Failed to start agent' }, 500)
+    const message = error instanceof Error ? error.message : 'Failed to start agent'
+    return c.json({ error: message }, 500)
   }
 })
 

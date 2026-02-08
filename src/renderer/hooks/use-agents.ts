@@ -102,7 +102,10 @@ export function useStartAgent() {
   return useMutation({
     mutationFn: async (slug: string) => {
       const res = await apiFetch(`/api/agents/${slug}/start`, { method: 'POST' })
-      if (!res.ok) throw new Error('Failed to start agent')
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.error || 'Failed to start agent')
+      }
       return res.json()
     },
     onSuccess: (_, slug) => {
