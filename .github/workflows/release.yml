@@ -165,7 +165,7 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: Superagent ${{ needs.prepare.outputs.version }}
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
           files: |
             ./release-artifacts/*
