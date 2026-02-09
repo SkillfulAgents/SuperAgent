@@ -33,11 +33,9 @@ class ContainerManager {
   private isSyncing = false
 
   /** Unified runtime readiness state */
-  private _readiness: RuntimeReadiness = {
-    status: 'CHECKING',
-    message: 'Checking runtime availability...',
-    pullProgress: null,
-  }
+  private _readiness: RuntimeReadiness = process.env.E2E_MOCK === 'true'
+    ? { status: 'READY', message: 'Ready (E2E mock)', pullProgress: null }
+    : { status: 'CHECKING', message: 'Checking runtime availability...', pullProgress: null }
 
   // Get or create a container client for an agent
   getClient(agentId: string): ContainerClient {
@@ -413,6 +411,16 @@ class ContainerManager {
    * Updates readiness state throughout and broadcasts via SSE.
    */
   async ensureImageReady(): Promise<void> {
+    // In E2E mock mode, skip real runtime checks and report ready immediately
+    if (process.env.E2E_MOCK === 'true') {
+      this.setReadiness({
+        status: 'READY',
+        message: 'Ready (E2E mock)',
+        pullProgress: null,
+      })
+      return
+    }
+
     let settings = getSettings()
     const image = settings.container.agentImage
 

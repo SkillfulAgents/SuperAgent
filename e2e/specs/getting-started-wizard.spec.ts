@@ -83,7 +83,7 @@ test.describe('Getting Started Wizard', () => {
     // Go to Step 2: Docker
     await wizardPage.clickNext()
     await wizardPage.expectStep(2)
-    await expect(page.getByText('Set Up Docker Runtime')).toBeVisible()
+    await expect(page.getByText('Set Up Container Runtime')).toBeVisible()
 
     // Go to Step 3: Composio (optional)
     await wizardPage.clickNext()
