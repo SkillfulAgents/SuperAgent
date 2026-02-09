@@ -301,8 +301,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
           />
         )}
 
-        {/* Streaming text message - only show if not already persisted */}
-        {isStreaming && streamingMessage && !isStreamingMessagePersisted && (
+        {/* Streaming text message - keep visible until persisted data arrives */}
+        {streamingMessage && !isStreamingMessagePersisted && (
           <MessageItem
             message={{
               id: 'streaming',
@@ -311,12 +311,12 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
               toolCalls: [],
               createdAt: new Date(),
             }}
-            isStreaming
+            isStreaming={isStreaming}
           />
         )}
 
         {/* Tool use streaming - show partial input as it streams */}
-        {isStreaming && streamingToolUse && !streamingMessage && (
+        {isStreaming && streamingToolUse && (
           <div className="flex gap-3">
             <div className="h-8 w-8 rounded-full flex items-center justify-center shrink-0 bg-muted">
               <Wrench className="h-4 w-4" />

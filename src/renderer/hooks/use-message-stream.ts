@@ -123,11 +123,12 @@ function getOrCreateEventSource(
       }
       else if (data.type === 'session_idle') {
         // Session became idle - query completed or interrupted
-        // Clear pending requests as the query is done
+        // Keep streamingMessage so it stays visible until persisted data arrives
+        // (isStreamingMessagePersisted in MessageList handles deduplication)
         streamStates.set(sessionId, {
           isActive: false,
           isStreaming: false,
-          streamingMessage: null,
+          streamingMessage: current?.streamingMessage ?? null,
           streamingToolUse: null,
           pendingSecretRequests: [],
           pendingConnectedAccountRequests: [],
@@ -222,7 +223,7 @@ function getOrCreateEventSource(
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
           isStreaming: false,
-          streamingMessage: null,
+          streamingMessage: current?.streamingMessage ?? null,
           streamingToolUse: null,
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
@@ -233,12 +234,12 @@ function getOrCreateEventSource(
         })
       }
       else if (data.type === 'tool_call' || data.type === 'tool_result') {
-        // Message has been persisted - clear streaming state, refresh from DB
+        // Message has been persisted - keep streamingMessage visible until refetch completes
         if (current) {
           streamStates.set(sessionId, {
             isActive: current.isActive,
             isStreaming: false,
-            streamingMessage: null,
+            streamingMessage: current.streamingMessage,
             streamingToolUse: null,
             pendingSecretRequests: current.pendingSecretRequests ?? [],
             pendingConnectedAccountRequests: current.pendingConnectedAccountRequests ?? [],
