@@ -41,7 +41,7 @@ export default defineConfig({
       stdout: 'pipe',
     },
     {
-      command: `SUPERAGENT_DATA_DIR="${e2eDataDir}" E2E_MOCK=true npm run dev:web`,
+      command: `SUPERAGENT_DATA_DIR="${e2eDataDir}" E2E_MOCK=true PORT=3000 npm run dev:web`,
       url: 'http://localhost:3000',
       reuseExistingServer: false,  // Always start fresh for E2E tests
       timeout: 120000,
