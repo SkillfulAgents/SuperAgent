@@ -52,9 +52,13 @@ export function registerUpdateHandlers() {
       // discover stable releases (which use latest-mac.yml) without this fallback.
       const isPreRelease = app.getVersion().includes('-')
       if (isPreRelease && (!result || !result.updateInfo || currentStatus.state === 'not-available')) {
-        autoUpdater.allowPrerelease = false
-        autoUpdater.channel = 'latest'
-        await autoUpdater.checkForUpdates()
+        try {
+          autoUpdater.allowPrerelease = false
+          autoUpdater.channel = 'latest'
+          await autoUpdater.checkForUpdates()
+        } catch {
+          // No stable releases exist yet — ignore
+        }
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
