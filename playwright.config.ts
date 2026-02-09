@@ -34,14 +34,18 @@ export default defineConfig({
 
   webServer: [
     {
-      command: `SUPERAGENT_DATA_DIR="${e2eDataDir}" E2E_MOCK=true npm run dev:api`,
+      command: `SUPERAGENT_DATA_DIR="${e2eDataDir}" E2E_MOCK=true tsx src/web/server.ts`,
       url: 'http://localhost:47891/api/settings',
       reuseExistingServer: false,  // Always start fresh to ensure E2E_MOCK is set
+      timeout: 120000,
+      stdout: 'pipe',
     },
     {
       command: `SUPERAGENT_DATA_DIR="${e2eDataDir}" E2E_MOCK=true npm run dev:web`,
       url: 'http://localhost:3000',
       reuseExistingServer: false,  // Always start fresh for E2E tests
+      timeout: 120000,
+      stdout: 'pipe',
     },
   ],
 })
