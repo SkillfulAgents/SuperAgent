@@ -163,6 +163,15 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return `--cpus=${cpu} --memory=${memory}`
   }
 
+  /**
+   * Called when `container run` fails. Subclasses can override to attempt recovery
+   * (e.g., configuring a missing kernel). Return true if recovery was performed and
+   * the run should be retried.
+   */
+  protected async handleRunError(_error: any): Promise<boolean> {
+    return false
+  }
+
   protected getContainerName(): string {
     return `superagent-${this.config.agentId}`
   }
@@ -273,8 +282,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       const additionalFlags = this.getAdditionalRunFlags()
 
       // Start container with volume mount for persistent workspace
-      const { stdout } = await execWithPath(
-        `${runner} run -d \
+      const runCmd = `${runner} run -d \
           --name ${containerName} \
           -p ${port}:${CONTAINER_INTERNAL_PORT} \
           -v "${workspaceDir}:/workspace${this.getVolumeMountSuffix()}" \
@@ -282,7 +290,19 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           ${additionalFlags} \
           ${envFlags} \
           ${image}`
-      )
+
+      let stdout: string
+      try {
+        ({ stdout } = await execWithPath(runCmd))
+      } catch (runError: any) {
+        // Allow subclasses to handle and recover from run errors (e.g., kernel setup)
+        const recovered = await this.handleRunError(runError)
+        if (!recovered) throw runError
+        // Retry after recovery
+        await execWithPath(`${runner} stop ${containerName} 2>/dev/null || true`)
+        await execWithPath(`${runner} rm ${containerName} 2>/dev/null || true`);
+        ({ stdout } = await execWithPath(runCmd))
+      }
 
       console.log(`Started container ${stdout.trim()} on port ${port}`)
 

@@ -51,6 +51,19 @@ export class AppleContainerClient extends BaseContainerClient {
   }
 
   /**
+   * Handle kernel-not-configured error on first use by auto-installing the recommended kernel.
+   */
+  protected async handleRunError(error: any): Promise<boolean> {
+    if (error.message?.includes('kernel not configured')) {
+      const arch = process.arch === 'arm64' ? 'arm64' : 'amd64'
+      console.log(`Apple Container kernel not configured for ${arch}, installing recommended kernel...`)
+      await execWithPath(`container system kernel set --arch ${arch} --recommended`)
+      return true
+    }
+    return false
+  }
+
+  /**
    * Override: Apple's `container inspect` outputs JSON without --format support.
    * Parse the JSON to extract running state and port mappings.
    */
