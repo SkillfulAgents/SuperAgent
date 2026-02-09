@@ -264,8 +264,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       const envFlags = this.buildEnvFlags(options?.envVars)
       const containerName = this.getContainerName()
 
-      // Remove existing container if exists (might be stopped)
-      await execWithPath(`${runner} rm -f ${containerName} 2>/dev/null || true`)
+      // Remove existing container if exists (stop first for runtimes like Apple Container that don't support rm -f)
+      await execWithPath(`${runner} stop ${containerName} 2>/dev/null || true`)
+      await execWithPath(`${runner} rm ${containerName} 2>/dev/null || true`)
 
       // Build resource limit flags
       const resourceFlags = this.getResourceFlags(cpu, memory)

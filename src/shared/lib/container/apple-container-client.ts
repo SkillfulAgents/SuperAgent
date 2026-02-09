@@ -64,22 +64,18 @@ export class AppleContainerClient extends BaseContainerClient {
       // Handle both possible formats: single object or array of objects
       const info = Array.isArray(data) ? data[0] : data
 
-      // Extract running state
-      const state = info?.State || info?.state
-      const isRunning = state === 'running' ||
-        state?.Status === 'running' ||
-        state?.Running === true
+      // Extract running state (Apple uses top-level "status" field)
+      const isRunning = info?.status === 'running'
 
-      // Extract port mappings
+      // Extract port mappings (Apple uses configuration.publishedPorts)
       let port: number | null = null
-      const ports = info?.NetworkSettings?.Ports || info?.Ports || info?.ports || {}
-      const portKey = `${CONTAINER_INTERNAL_PORT}/tcp`
-
-      if (ports[portKey]) {
-        const binding = Array.isArray(ports[portKey]) ? ports[portKey][0] : ports[portKey]
-        const hostPort = binding?.HostPort || binding?.hostPort
-        if (hostPort) {
-          port = parseInt(hostPort, 10)
+      const publishedPorts = info?.configuration?.publishedPorts
+      if (Array.isArray(publishedPorts)) {
+        const mapping = publishedPorts.find(
+          (p: any) => p.containerPort === CONTAINER_INTERNAL_PORT
+        )
+        if (mapping?.hostPort) {
+          port = mapping.hostPort
         }
       }
 
@@ -103,12 +99,11 @@ export class AppleContainerClient extends BaseContainerClient {
       const containers = JSON.parse(stdout)
       if (Array.isArray(containers)) {
         for (const c of containers) {
-          // Extract published ports from the container data
-          const ports = c.Ports || c.ports || []
+          // Apple Container uses configuration.publishedPorts
+          const ports = c.configuration?.publishedPorts || []
           if (Array.isArray(ports)) {
             for (const p of ports) {
-              const hostPort = p.HostPort || p.hostPort
-              if (hostPort) usedPorts.add(parseInt(hostPort, 10))
+              if (p.hostPort) usedPorts.add(p.hostPort)
             }
           }
         }
