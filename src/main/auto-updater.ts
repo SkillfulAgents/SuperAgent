@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain } from 'electron'
+import { BrowserWindow, ipcMain, app } from 'electron'
 import { getSettings } from '@shared/lib/config/settings'
 
 export interface UpdateStatus {
@@ -45,7 +45,17 @@ export function registerUpdateHandlers() {
     try {
       const autoUpdater = await getAutoUpdater()
       autoUpdater.allowPrerelease = !!getSettings().app?.allowPrereleaseUpdates
-      await autoUpdater.checkForUpdates()
+      const result = await autoUpdater.checkForUpdates()
+
+      // If no update found and we're on a pre-release, also check the stable channel.
+      // Pre-release versions use a channel-specific yml (e.g. rc-mac.yml) so they won't
+      // discover stable releases (which use latest-mac.yml) without this fallback.
+      const isPreRelease = app.getVersion().includes('-')
+      if (isPreRelease && (!result || !result.updateInfo || currentStatus.state === 'not-available')) {
+        autoUpdater.allowPrerelease = false
+        autoUpdater.channel = 'latest'
+        await autoUpdater.checkForUpdates()
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       setStatus({ state: 'error', error: message })
