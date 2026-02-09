@@ -190,6 +190,11 @@ async function checkRunnerDetailedAvailability(runner: ContainerRunner): Promise
  * Results are cached to avoid spawning docker commands on every call.
  */
 export async function checkAllRunnersAvailability(): Promise<RunnerAvailability[]> {
+  // In E2E mock mode, skip real runtime checks
+  if (process.env.E2E_MOCK === 'true') {
+    return [{ runner: 'docker', installed: true, running: true, available: true, canStart: false }]
+  }
+
   const now = Date.now()
 
   // Return cached result if still valid
