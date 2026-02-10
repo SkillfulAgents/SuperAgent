@@ -8,6 +8,7 @@ import { hostBrowserManager } from '../main/host-browser-manager'
 import { taskScheduler } from '@shared/lib/scheduler/task-scheduler'
 import { autoSleepMonitor } from '@shared/lib/scheduler/auto-sleep-monitor'
 import { listAgents } from '@shared/lib/services/agent-service'
+import { findAvailablePort } from '../main/find-port'
 
 const app = new Hono()
 
@@ -21,32 +22,7 @@ if (existsSync('./dist/renderer')) {
   app.get('*', serveStatic({ path: './dist/renderer/index.html' }))
 }
 
-const port = parseInt(process.env.PORT || '47891', 10)
-
-const server = serve({ fetch: app.fetch, port }, (info) => {
-  console.log(`API server running on http://localhost:${info.port}`)
-
-  // Initialize container manager with all agents and start status sync
-  listAgents().then((agents) => {
-    const slugs = agents.map((a) => a.slug)
-    return containerManager.initializeAgents(slugs)
-  }).then(() => {
-    containerManager.startStatusSync()
-    containerManager.startHealthMonitor()
-  }).catch((error) => {
-    console.error('Failed to initialize container manager:', error)
-  })
-
-  // Start the task scheduler after server is ready
-  taskScheduler.start().catch((error) => {
-    console.error('Failed to start task scheduler:', error)
-  })
-
-  // Start the auto-sleep monitor
-  autoSleepMonitor.start().catch((error) => {
-    console.error('Failed to start auto-sleep monitor:', error)
-  })
-})
+let server: ReturnType<typeof serve>
 
 // Graceful shutdown handling
 let isShuttingDown = false
@@ -74,7 +50,7 @@ async function gracefulShutdown(signal: string) {
   }
 
   // Close the server
-  server.close(() => {
+  server?.close(() => {
     console.log('Server closed.')
     process.exit(0)
   })
@@ -88,3 +64,36 @@ async function gracefulShutdown(signal: string) {
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
 process.on('SIGINT', () => gracefulShutdown('SIGINT'))
+
+async function start() {
+  const defaultPort = parseInt(process.env.PORT || '47891', 10)
+  const port = await findAvailablePort(defaultPort)
+  process.env.PORT = String(port)
+
+  server = serve({ fetch: app.fetch, port }, (info) => {
+    console.log(`API server running on http://localhost:${info.port}`)
+
+    // Initialize container manager with all agents and start status sync
+    listAgents().then((agents) => {
+      const slugs = agents.map((a) => a.slug)
+      return containerManager.initializeAgents(slugs)
+    }).then(() => {
+      containerManager.startStatusSync()
+      containerManager.startHealthMonitor()
+    }).catch((error) => {
+      console.error('Failed to initialize container manager:', error)
+    })
+
+    // Start the task scheduler after server is ready
+    taskScheduler.start().catch((error) => {
+      console.error('Failed to start task scheduler:', error)
+    })
+
+    // Start the auto-sleep monitor
+    autoSleepMonitor.start().catch((error) => {
+      console.error('Failed to start auto-sleep monitor:', error)
+    })
+  })
+}
+
+start()

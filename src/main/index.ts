@@ -246,6 +246,7 @@ async function startApp() {
   // Find an available port
   try {
     actualApiPort = await findAvailablePort(DEFAULT_API_PORT)
+    process.env.PORT = String(actualApiPort)
     console.log(`Found available port: ${actualApiPort}`)
   } catch (error) {
     console.error('Failed to find available port:', error)
