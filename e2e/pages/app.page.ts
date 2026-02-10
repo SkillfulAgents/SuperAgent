@@ -27,12 +27,15 @@ export class AppPage {
   async dismissWizardIfVisible() {
     const wizard = this.page.locator('[data-testid="wizard-dialog"]')
     if (await wizard.isVisible({ timeout: 1000 }).catch(() => false)) {
-      // Click Next through required steps (Welcome, LLM, Docker)
+      const stepContent = this.page.locator('[data-testid="wizard-step-content"]')
+      // Click Next through required steps (Welcome→LLM→Docker)
       for (let i = 0; i < 3; i++) {
         await this.page.locator('[data-testid="wizard-next"]').click()
+        await expect(stepContent).toHaveAttribute('data-step', String(i + 1))
       }
       // Skip Composio step
       await this.page.locator('[data-testid="wizard-skip"]').click()
+      await expect(stepContent).toHaveAttribute('data-step', '4')
       // Finish on last step
       await this.page.locator('[data-testid="wizard-finish"]').click()
       await expect(wizard).not.toBeVisible()

@@ -16,6 +16,13 @@ test.describe('Getting Started Wizard', () => {
     agentPage = new AgentPage(page)
   })
 
+  test.afterEach(async ({ request }) => {
+    // Restore setupCompleted to true so subsequent test files don't see the wizard
+    await request.put('http://localhost:3000/api/settings', {
+      data: { app: { setupCompleted: true } },
+    })
+  })
+
   test('auto-opens when setupCompleted is false', async ({ page, request }) => {
     // Reset setupCompleted via API so the wizard will auto-open on next load
     await request.put('http://localhost:3000/api/settings', {

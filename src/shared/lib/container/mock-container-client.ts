@@ -416,8 +416,15 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     return this.getInfoFromRuntime()
   }
 
-  async fetch(_path: string, _init?: RequestInit): Promise<Response> {
-    // Mock fetch - return empty JSON response
+  async fetch(fetchPath: string, _init?: RequestInit): Promise<Response> {
+    // Mock fetch - return appropriate empty responses based on path
+    // Endpoints that return arrays need to return [] not {}
+    if (fetchPath === '/artifacts') {
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
     return new Response(JSON.stringify({}), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
