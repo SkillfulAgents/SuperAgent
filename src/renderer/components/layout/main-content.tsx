@@ -11,6 +11,7 @@ import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
 import { Button } from '@renderer/components/ui/button'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
+import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { Plus, Play, Square, ChevronRight, Settings, Clock, Loader2, AlertCircle } from 'lucide-react'
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useAgent, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
@@ -251,39 +252,41 @@ export function MainContent() {
       )}
 
       {/* Show dashboard view when a dashboard is selected */}
-      {dashboardSlug ? (
-        <DashboardView agentSlug={agentSlug} dashboardSlug={dashboardSlug} />
-      ) : /* Show scheduled task view when a scheduled task is selected */
-      scheduledTaskId ? (
-        <ScheduledTaskView taskId={scheduledTaskId} agentSlug={agentSlug} />
-      ) : sessionId ? (
-        /* Show messages when a session is selected */
-        <div className="relative flex-1 grid grid-rows-[1fr_auto] min-h-0">
-          <MessageList
-            sessionId={sessionId}
-            agentSlug={agentSlug}
-            pendingUserMessage={pendingUserMessage}
-            onPendingMessageAppeared={handlePendingMessageAppeared}
-          />
-          <div className="bg-background">
-            <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
-            <MessageInput
+      <ErrorBoundary>
+        {dashboardSlug ? (
+          <DashboardView agentSlug={agentSlug} dashboardSlug={dashboardSlug} />
+        ) : /* Show scheduled task view when a scheduled task is selected */
+        scheduledTaskId ? (
+          <ScheduledTaskView taskId={scheduledTaskId} agentSlug={agentSlug} />
+        ) : sessionId ? (
+          /* Show messages when a session is selected */
+          <div className="relative flex-1 grid grid-rows-[1fr_auto] min-h-0">
+            <MessageList
               sessionId={sessionId}
               agentSlug={agentSlug}
-              onMessageSent={handleMessageSent}
+              pendingUserMessage={pendingUserMessage}
+              onPendingMessageAppeared={handlePendingMessageAppeared}
             />
+            <div className="bg-background">
+              <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
+              <MessageInput
+                sessionId={sessionId}
+                agentSlug={agentSlug}
+                onMessageSent={handleMessageSent}
+              />
+            </div>
+            <BrowserPreview agentSlug={agentSlug} sessionId={sessionId} browserActive={browserActive} isActive={isActive} />
           </div>
-          <BrowserPreview agentSlug={agentSlug} sessionId={sessionId} browserActive={browserActive} isActive={isActive} />
-        </div>
-      ) : (
-        /* Show landing page with large input when no session is selected */
-        agent && (
-          <AgentLanding
-            agent={agent}
-            onSessionCreated={handleSessionCreated}
-          />
-        )
-      )}
+        ) : (
+          /* Show landing page with large input when no session is selected */
+          agent && (
+            <AgentLanding
+              agent={agent}
+              onSessionCreated={handleSessionCreated}
+            />
+          )
+        )}
+      </ErrorBoundary>
 
       {agent && (
         <AgentSettingsDialog

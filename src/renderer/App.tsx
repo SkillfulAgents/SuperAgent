@@ -8,6 +8,7 @@ import { SidebarProvider, SidebarInset } from './components/ui/sidebar'
 import { TrayNavigationHandler } from './components/tray-navigation-handler'
 import { GlobalNotificationHandler } from './components/notifications/global-notification-handler'
 import { GettingStartedWizard } from './components/wizard/getting-started-wizard'
+import { ErrorBoundary } from './components/ui/error-boundary'
 import { useSettings } from './hooks/use-settings'
 import { useTheme } from './hooks/use-theme'
 
@@ -49,7 +50,9 @@ export default function App() {
   return (
     <QueryProvider>
       <SelectionProvider>
-        <AppContent />
+        <ErrorBoundary>
+          <AppContent />
+        </ErrorBoundary>
       </SelectionProvider>
     </QueryProvider>
   )

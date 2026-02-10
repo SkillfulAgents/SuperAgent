@@ -1,5 +1,6 @@
 
 import { ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard, Loader2 } from 'lucide-react'
+import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { useState, useEffect, useRef } from 'react'
 import { isElectron, getPlatform } from '@renderer/lib/env'
 import { useDialogs } from '@renderer/context/dialog-context'
@@ -174,7 +175,7 @@ function AgentMenuItem({ agent }: { agent: ApiAgent }) {
   const visibleSessions = showAll ? sessions : sessions?.slice(0, 5)
   const hasMore = (sessions?.length ?? 0) > 5
   const pendingTasks = scheduledTasks || []
-  const dashboards = artifacts || []
+  const dashboards = Array.isArray(artifacts) ? artifacts : []
 
   const handleClick = () => {
     selectAgent(agent.slug)
@@ -343,40 +344,42 @@ export function AppSidebar() {
         </div>
       )}
 
-      <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupLabel>Agents</SidebarGroupLabel>
-          <SidebarGroupAction onClick={() => setCreateAgentOpen(true)} title="New Agent" data-testid="create-agent-button">
-            <Plus />
-            <span className="sr-only">New Agent</span>
-          </SidebarGroupAction>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {isLoading ? (
-                <>
-                  {Array.from({ length: 3 }).map((_, index) => (
-                    <SidebarMenuItem key={index}>
-                      <SidebarMenuSkeleton />
-                    </SidebarMenuItem>
-                  ))}
-                </>
-              ) : error ? (
-                <div className="px-2 py-4 text-sm text-destructive">
-                  Failed to load agents
-                </div>
-              ) : !agents?.length ? (
-                <div className="px-2 py-4 text-sm text-muted-foreground">
-                  No agents yet. Create one to get started.
-                </div>
-              ) : (
-                agents.map((agent) => (
-                  <AgentMenuItem key={agent.slug} agent={agent} />
-                ))
-              )}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
-      </SidebarContent>
+      <ErrorBoundary compact>
+        <SidebarContent>
+          <SidebarGroup>
+            <SidebarGroupLabel>Agents</SidebarGroupLabel>
+            <SidebarGroupAction onClick={() => setCreateAgentOpen(true)} title="New Agent" data-testid="create-agent-button">
+              <Plus />
+              <span className="sr-only">New Agent</span>
+            </SidebarGroupAction>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {isLoading ? (
+                  <>
+                    {Array.from({ length: 3 }).map((_, index) => (
+                      <SidebarMenuItem key={index}>
+                        <SidebarMenuSkeleton />
+                      </SidebarMenuItem>
+                    ))}
+                  </>
+                ) : error ? (
+                  <div className="px-2 py-4 text-sm text-destructive">
+                    Failed to load agents
+                  </div>
+                ) : !agents?.length ? (
+                  <div className="px-2 py-4 text-sm text-muted-foreground">
+                    No agents yet. Create one to get started.
+                  </div>
+                ) : (
+                  agents.map((agent) => (
+                    <AgentMenuItem key={agent.slug} agent={agent} />
+                  ))
+                )}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        </SidebarContent>
+      </ErrorBoundary>
 
       <SidebarFooter className="border-t">
         <SidebarMenu>
