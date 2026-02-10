@@ -129,7 +129,7 @@ function getOrCreateEventSource(
           isActive: false,
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
-          streamingToolUse: null,
+          streamingToolUse: current?.streamingToolUse ?? null,
           pendingSecretRequests: [],
           pendingConnectedAccountRequests: [],
           pendingQuestionRequests: [],
@@ -205,12 +205,12 @@ function getOrCreateEventSource(
         })
       }
       else if (data.type === 'tool_use_ready') {
-        // Tool is ready to execute - keep streaming true, clear tool use
+        // Tool is ready to execute - keep streamingToolUse visible until persisted
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
           isStreaming: true,
           streamingMessage: current?.streamingMessage ?? null,
-          streamingToolUse: null,
+          streamingToolUse: current?.streamingToolUse ?? null,
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
@@ -240,7 +240,7 @@ function getOrCreateEventSource(
             isActive: current.isActive,
             isStreaming: false,
             streamingMessage: current.streamingMessage,
-            streamingToolUse: null,
+            streamingToolUse: current.streamingToolUse,
             pendingSecretRequests: current.pendingSecretRequests ?? [],
             pendingConnectedAccountRequests: current.pendingConnectedAccountRequests ?? [],
             pendingQuestionRequests: current.pendingQuestionRequests ?? [],

@@ -266,6 +266,15 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     return persistedText.startsWith(streamingText) || streamingText.startsWith(persistedText)
   }, [messages, streamingMessage])
 
+  // Check if streaming tool use is already in persisted messages (prevents double-render)
+  const isStreamingToolUsePersisted = useMemo(() => {
+    if (!streamingToolUse || !messages?.length) return false
+    return messages.some(m =>
+      m.type === 'assistant' &&
+      m.toolCalls.some(tc => tc.id === streamingToolUse.id)
+    )
+  }, [messages, streamingToolUse])
+
   // Auto-scroll to bottom when new messages arrive or requests appear
   useEffect(() => {
     if (scrollRef.current) {
@@ -273,7 +282,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     }
   }, [messages, pendingUserMessage, streamingMessage, streamingToolUse, pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests, pendingFileRequests])
 
-  if (isLoading) {
+  if (isLoading && !pendingUserMessage) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -315,8 +324,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
           />
         )}
 
-        {/* Tool use streaming - show partial input as it streams */}
-        {isStreaming && streamingToolUse && (
+        {/* Tool use streaming - keep visible until persisted data arrives */}
+        {streamingToolUse && !isStreamingToolUsePersisted && (
           <div className="flex gap-3">
             <div className="h-8 w-8 rounded-full flex items-center justify-center shrink-0 bg-muted">
               <Wrench className="h-4 w-4" />
