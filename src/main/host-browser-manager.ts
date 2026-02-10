@@ -88,7 +88,11 @@ class HostBrowserManager {
 
     if (profileId) {
       const destProfileDir = path.join(userDataDir, 'Default')
-      if (copyChromeProfileData(profileId, destProfileDir)) {
+      // Only copy the user's Chrome profile on first launch. Subsequent launches
+      // should keep the session data (cookies, local storage, etc.) that the
+      // agent accumulated during its browsing sessions.
+      const alreadyHasProfile = fs.existsSync(path.join(destProfileDir, 'Cookies'))
+      if (!alreadyHasProfile && copyChromeProfileData(profileId, destProfileDir)) {
         console.log(`[HostBrowserManager] Copied Chrome profile "${profileId}" to ${destProfileDir}`)
       }
     }
