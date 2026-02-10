@@ -90,8 +90,8 @@ const DEFAULT_SETTINGS: AppSettings = {
     containerRunner: 'docker',
     agentImage: getDefaultAgentImage(),
     resourceLimits: {
-      cpu: 1,
-      memory: '512m',
+      cpu: 2,
+      memory: '2g',
     },
   },
   app: {
