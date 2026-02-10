@@ -12,7 +12,7 @@ import { Button } from '@renderer/components/ui/button'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
-import { Plus, Play, Square, ChevronRight, Settings, Clock, Loader2, AlertCircle } from 'lucide-react'
+import { Plus, Play, Square, ChevronRight, Settings, Clock, Loader2, AlertCircle, AlertTriangle } from 'lucide-react'
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useAgent, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
 import { useSessions, useSession } from '@renderer/hooks/use-sessions'
@@ -250,6 +250,27 @@ export function MainContent() {
           </div>
         </div>
       )}
+
+      {/* Health warning banner */}
+      {agent?.healthWarnings?.map((warning) => (
+        <div
+          key={warning.checkName}
+          className={`shrink-0 border-b px-4 py-2 ${
+            warning.status === 'critical'
+              ? 'bg-destructive/10'
+              : 'bg-yellow-500/10'
+          }`}
+        >
+          <div className={`flex items-center gap-2 text-xs ${
+            warning.status === 'critical'
+              ? 'text-destructive'
+              : 'text-yellow-700 dark:text-yellow-400'
+          }`}>
+            <AlertTriangle className="h-3 w-3 shrink-0" />
+            <span>{warning.message}</span>
+          </div>
+        </div>
+      ))}
 
       {/* Show dashboard view when a dashboard is selected */}
       <ErrorBoundary>

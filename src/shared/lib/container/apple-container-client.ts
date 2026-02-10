@@ -1,6 +1,6 @@
 import { execSync } from 'child_process'
 import { BaseContainerClient, checkCommandAvailable, execWithPath, CONTAINER_INTERNAL_PORT } from './base-container-client'
-import type { ContainerConfig, ContainerInfo } from './types'
+import type { ContainerConfig, ContainerInfo, ContainerStats } from './types'
 
 /** Cached macOS major version (null = not yet checked, undefined = not macOS) */
 let cachedMacOSMajorVersion: number | null | undefined = undefined
@@ -125,6 +125,13 @@ export class AppleContainerClient extends BaseContainerClient {
       // If command fails, continue with empty set
     }
     return usedPorts
+  }
+
+  /**
+   * Apple Container does not currently support `container stats`.
+   */
+  async getStats(): Promise<ContainerStats | null> {
+    return null
   }
 
   /**

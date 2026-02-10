@@ -267,6 +267,7 @@ async function startApp() {
         console.error('Failed to ensure image ready:', error)
       })
       containerManager.startStatusSync()
+      containerManager.startHealthMonitor()
     }).catch((error) => {
       console.error('Failed to initialize container manager:', error)
     })

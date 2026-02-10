@@ -72,6 +72,11 @@ export function GlobalNotificationHandler() {
             queryClient.invalidateQueries({ queryKey: ['artifacts'] })
             break
 
+          case 'container_health_changed':
+            // Container health warnings changed - update agent list
+            queryClient.invalidateQueries({ queryKey: ['agents'] })
+            break
+
           case 'scheduled_task_created': {
             // Scheduled task created - update task list for that agent
             const agentSlug = data.agentSlug as string | undefined

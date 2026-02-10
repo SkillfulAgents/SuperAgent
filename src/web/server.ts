@@ -32,6 +32,7 @@ const server = serve({ fetch: app.fetch, port }, (info) => {
     return containerManager.initializeAgents(slugs)
   }).then(() => {
     containerManager.startStatusSync()
+    containerManager.startHealthMonitor()
   }).catch((error) => {
     console.error('Failed to initialize container manager:', error)
   })

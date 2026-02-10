@@ -9,6 +9,7 @@ import type {
   ContainerConfig,
   ContainerInfo,
   ContainerSession,
+  ContainerStats,
   CreateSessionOptions,
   StartOptions,
   StreamMessage,
@@ -83,6 +84,24 @@ export async function checkCommandAvailable(command: string): Promise<boolean> {
 export const AGENT_CONTAINER_PATH = './agent-container'
 export const CONTAINER_INTERNAL_PORT = 3000
 const BASE_PORT = 4000
+
+/**
+ * Parse a memory value string (e.g., "231.2MiB", "1.5GiB", "512MB") to bytes.
+ */
+function parseMemoryValue(value: string): number {
+  const match = value.match(/^([\d.]+)\s*(B|KiB|MiB|GiB|TiB|KB|MB|GB|TB|kB)?$/i)
+  if (!match) return 0
+  const num = parseFloat(match[1])
+  const unit = (match[2] || 'B').toLowerCase()
+  const multipliers: Record<string, number> = {
+    b: 1,
+    kb: 1000, kib: 1024,
+    mb: 1e6, mib: 1024 ** 2,
+    gb: 1e9, gib: 1024 ** 3,
+    tb: 1e12, tib: 1024 ** 4,
+  }
+  return Math.round(num * (multipliers[unit] || 1))
+}
 
 /**
  * Base class for OCI-compatible container runtimes (Docker, Podman, etc.)
@@ -203,6 +222,33 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    */
   async getInfo(): Promise<ContainerInfo> {
     return this.getInfoFromRuntime()
+  }
+
+  /**
+   * Get container resource usage stats (memory, CPU).
+   * Returns null if the container is not running or stats are unavailable.
+   */
+  async getStats(): Promise<ContainerStats | null> {
+    const containerName = this.getContainerName()
+    const runner = this.getRunnerCommand()
+    try {
+      const { stdout } = await execWithPath(
+        `${runner} stats ${containerName} --no-stream --format '{{json .}}'`
+      )
+      const stats = JSON.parse(stdout.trim())
+
+      const memPercent = parseFloat(String(stats.MemPerc).replace('%', '')) || 0
+      const cpuPercent = parseFloat(String(stats.CPUPerc).replace('%', '')) || 0
+
+      // Parse MemUsage like "231.2MiB / 512MiB"
+      const memUsageParts = String(stats.MemUsage).split('/')
+      const memoryUsageBytes = parseMemoryValue(memUsageParts[0]?.trim() || '0')
+      const memoryLimitBytes = parseMemoryValue(memUsageParts[1]?.trim() || '0')
+
+      return { memoryUsageBytes, memoryLimitBytes, memoryPercent: memPercent, cpuPercent }
+    } catch {
+      return null
+    }
   }
 
   private async findAvailablePort(): Promise<number> {

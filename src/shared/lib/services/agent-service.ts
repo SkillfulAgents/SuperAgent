@@ -42,6 +42,7 @@ function toApiAgent(
   status: 'running' | 'stopped',
   containerPort: number | null
 ): ApiAgent {
+  const healthWarnings = containerManager.getHealthWarnings(agent.slug)
   return {
     slug: agent.slug,
     name: agent.frontmatter.name,
@@ -50,6 +51,7 @@ function toApiAgent(
     createdAt: new Date(agent.frontmatter.createdAt),
     status,
     containerPort,
+    ...(healthWarnings.length > 0 ? { healthWarnings } : {}),
   }
 }
 

@@ -39,6 +39,22 @@ export interface StartOptions {
   envVars?: Record<string, string>
 }
 
+// Container resource usage stats
+export interface ContainerStats {
+  memoryUsageBytes: number
+  memoryLimitBytes: number
+  memoryPercent: number
+  cpuPercent: number
+}
+
+// Result from a health check
+export interface HealthCheckResult {
+  checkName: string
+  status: 'ok' | 'warning' | 'critical'
+  message?: string
+  details?: Record<string, unknown>
+}
+
 export interface ContainerClient {
   // Lifecycle management
   start(options?: StartOptions): Promise<void>
@@ -59,6 +75,9 @@ export interface ContainerClient {
   // Health checks
   waitForHealthy(timeoutMs?: number): Promise<boolean>
   isHealthy(): Promise<boolean>
+
+  // Resource stats (memory, CPU usage)
+  getStats(): Promise<ContainerStats | null>
 
   // Session management (proxied to container API)
   createSession(options: CreateSessionOptions): Promise<ContainerSession>

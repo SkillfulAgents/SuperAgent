@@ -5,6 +5,8 @@
  * These types represent the "flattened" format returned by API routes.
  */
 
+import type { HealthCheckResult } from '@shared/lib/container/types'
+
 // ============================================================================
 // Agent API Types
 // ============================================================================
@@ -20,6 +22,7 @@ export interface ApiAgent {
   createdAt: Date
   status: 'running' | 'stopped'
   containerPort: number | null
+  healthWarnings?: HealthCheckResult[]
 }
 
 // ============================================================================

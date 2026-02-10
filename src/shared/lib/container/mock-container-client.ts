@@ -6,6 +6,7 @@ import type {
   ContainerConfig,
   ContainerInfo,
   ContainerSession,
+  ContainerStats,
   CreateSessionOptions,
   StartOptions,
   StreamMessage,
@@ -429,6 +430,18 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     })
+  }
+
+  // Resource stats
+
+  async getStats(): Promise<ContainerStats | null> {
+    if (!this.running) return null
+    return {
+      memoryUsageBytes: 256 * 1024 * 1024, // 256 MiB
+      memoryLimitBytes: 2 * 1024 * 1024 * 1024, // 2 GiB
+      memoryPercent: 12.5,
+      cpuPercent: 5.0,
+    }
   }
 
   // Health checks

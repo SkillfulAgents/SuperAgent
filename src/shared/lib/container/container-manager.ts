@@ -1,5 +1,6 @@
 import { createContainerClient, checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, startRunner, refreshRunnerAvailability, type ContainerRunner } from './client-factory'
-import type { ContainerClient, ContainerConfig, ContainerInfo, RuntimeReadiness } from './types'
+import type { ContainerClient, ContainerConfig, ContainerInfo, HealthCheckResult, RuntimeReadiness } from './types'
+import { healthMonitor } from './health-monitor'
 import { db } from '@shared/lib/db'
 import { agentConnectedAccounts, connectedAccounts } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
@@ -13,6 +14,12 @@ import { messagePersister } from './message-persister'
 /** Interval for syncing container status with reality (in ms). Default: 300 seconds */
 const STATUS_SYNC_INTERVAL_MS = parseInt(
   process.env.CONTAINER_STATUS_SYNC_INTERVAL_SECONDS || '300',
+  10
+) * 1000
+
+/** Interval for health monitoring (in ms). Default: 30 seconds */
+const HEALTH_CHECK_INTERVAL_MS = parseInt(
+  process.env.CONTAINER_HEALTH_CHECK_INTERVAL_SECONDS || '30',
   10
 ) * 1000
 
@@ -31,6 +38,9 @@ class ContainerManager {
   private containerStatuses: Map<string, CachedContainerStatus> = new Map()
   private syncIntervalId: NodeJS.Timeout | null = null
   private isSyncing = false
+  private healthCheckIntervalId: NodeJS.Timeout | null = null
+  /** Cached health warnings per agent */
+  private healthWarnings: Map<string, HealthCheckResult[]> = new Map()
 
   /** Unified runtime readiness state */
   private _readiness: RuntimeReadiness = process.env.E2E_MOCK === 'true'
@@ -231,6 +241,78 @@ class ContainerManager {
     }
   }
 
+  /**
+   * Start periodic health monitoring for running containers.
+   */
+  startHealthMonitor(): void {
+    if (this.healthCheckIntervalId) {
+      return // Already running
+    }
+
+    console.log(`[ContainerManager] Starting health monitor (interval: ${HEALTH_CHECK_INTERVAL_MS / 1000}s)`)
+
+    this.healthCheckIntervalId = setInterval(() => {
+      this.runHealthChecks().catch((error) => {
+        console.error('[ContainerManager] Health check failed:', error)
+      })
+    }, HEALTH_CHECK_INTERVAL_MS)
+  }
+
+  /**
+   * Stop the periodic health monitor.
+   */
+  stopHealthMonitor(): void {
+    if (this.healthCheckIntervalId) {
+      clearInterval(this.healthCheckIntervalId)
+      this.healthCheckIntervalId = null
+      console.log('[ContainerManager] Stopped health monitor')
+    }
+  }
+
+  /**
+   * Run health checks on all running containers.
+   */
+  private async runHealthChecks(): Promise<void> {
+    const runningIds = this.getRunningAgentIds()
+    if (runningIds.length === 0) return
+
+    for (const agentId of runningIds) {
+      try {
+        const client = this.clients.get(agentId)
+        if (!client) continue
+
+        const stats = await client.getStats()
+        if (!stats) continue
+
+        const warnings = healthMonitor.checkAll(agentId, stats)
+        const previous = this.healthWarnings.get(agentId) || []
+
+        // Broadcast only if warnings changed
+        const changed = warnings.length !== previous.length ||
+          warnings.some((w, i) => w.status !== previous[i]?.status || w.checkName !== previous[i]?.checkName)
+
+        this.healthWarnings.set(agentId, warnings)
+
+        if (changed) {
+          messagePersister.broadcastGlobal({
+            type: 'container_health_changed',
+            agentSlug: agentId,
+            warnings,
+          })
+        }
+      } catch (error) {
+        console.error(`[ContainerManager] Health check failed for ${agentId}:`, error)
+      }
+    }
+  }
+
+  /**
+   * Get cached health warnings for an agent.
+   */
+  getHealthWarnings(agentId: string): HealthCheckResult[] {
+    return this.healthWarnings.get(agentId) || []
+  }
+
   // Ensure container is running, starting it with connected accounts if needed
   // Returns the container client
   //
@@ -328,6 +410,7 @@ class ContainerManager {
     this.clients.delete(agentId)
     this.containerStartedAt.delete(agentId)
     this.containerStatuses.delete(agentId)
+    this.healthWarnings.delete(agentId)
   }
 
   // Clear all cached clients (e.g., when container runner setting changes).
@@ -336,6 +419,7 @@ class ContainerManager {
     this.clients.clear()
     this.containerStartedAt.clear()
     this.containerStatuses.clear()
+    this.healthWarnings.clear()
   }
 
   // Stop all containers
@@ -352,11 +436,13 @@ class ContainerManager {
     this.clients.clear()
     this.containerStartedAt.clear()
     this.containerStatuses.clear()
+    this.healthWarnings.clear()
   }
 
   // Synchronous stop - used for exit handlers where async isn't available
   stopAllSync(): void {
     this.stopStatusSync() // Stop the sync interval
+    this.stopHealthMonitor() // Stop the health monitor
     for (const [agentId, client] of this.clients.entries()) {
       try {
         client.stopSync()
@@ -368,6 +454,7 @@ class ContainerManager {
     this.clients.clear()
     this.containerStartedAt.clear()
     this.containerStatuses.clear()
+    this.healthWarnings.clear()
   }
 
   // Check if any agents have running containers (uses cached status)
