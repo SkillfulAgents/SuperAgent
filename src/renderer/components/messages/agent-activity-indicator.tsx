@@ -1,9 +1,10 @@
 
 import { useMessages } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
+import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
 import { cn } from '@shared/lib/utils'
 import { AlertTriangle } from 'lucide-react'
-import type { ApiMessage } from '@shared/lib/types/api'
+import { useMemo } from 'react'
 
 interface Todo {
   content: string
@@ -17,8 +18,23 @@ interface AgentActivityIndicatorProps {
 }
 
 export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIndicatorProps) {
-  const { isActive, error } = useMessageStream(sessionId, agentSlug)
+  const { isActive, error, activeStartTime } = useMessageStream(sessionId, agentSlug)
   const { data: messages } = useMessages(sessionId, agentSlug)
+
+  // Use activeStartTime from SSE (set when session_active fires) as primary source.
+  // Falls back to last persisted user message timestamp (for page refresh recovery).
+  const timerStartTime = useMemo(() => {
+    if (activeStartTime) return new Date(activeStartTime)
+    if (!messages) return null
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].type === 'user') {
+        return new Date(messages[i].createdAt)
+      }
+    }
+    return null
+  }, [activeStartTime, messages])
+
+  const elapsed = useElapsedTimer(isActive ? timerStartTime : null)
 
   // Show error if present
   if (error) {
@@ -81,6 +97,9 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
           <span className="relative inline-flex rounded-full h-3 w-3 bg-primary"></span>
         </span>
         <span className="text-sm font-medium">{statusText}</span>
+        {elapsed && (
+          <span className="text-xs text-muted-foreground tabular-nums">{elapsed}</span>
+        )}
       </div>
 
       {/* Todo list if available and at least one item is not completed */}

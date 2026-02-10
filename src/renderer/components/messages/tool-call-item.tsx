@@ -1,13 +1,15 @@
 
 import { cn } from '@shared/lib/utils/cn'
 import { Circle, CheckCircle, XCircle, ChevronDown, ChevronRight, Loader2, Wrench } from 'lucide-react'
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { getToolRenderer } from './tool-renderers'
 import { parseToolResult } from '@renderer/lib/parse-tool-result'
+import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
 import type { ApiToolCall } from '@shared/lib/types/api'
 
 interface ToolCallItemProps {
   toolCall: ApiToolCall
+  messageCreatedAt?: Date | string
   agentSlug?: string
 }
 
@@ -24,10 +26,11 @@ function getStatus(toolCall: ApiToolCall): ToolCallStatus {
   return 'success'
 }
 
-export function ToolCallItem({ toolCall, agentSlug }: ToolCallItemProps) {
+export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug }: ToolCallItemProps) {
   const [expanded, setExpanded] = useState(false)
   const status = getStatus(toolCall)
   const renderer = getToolRenderer(toolCall.name)
+  const elapsed = useElapsedTimer(status === 'running' ? (messageCreatedAt ?? null) : null)
 
   const StatusIcon = {
     running: Circle,
@@ -91,8 +94,15 @@ export function ToolCallItem({ toolCall, agentSlug }: ToolCallItemProps) {
           </span>
         )}
 
+        {/* Elapsed timer for running tool calls */}
+        {elapsed && (
+          <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">
+            {elapsed}
+          </span>
+        )}
+
         {/* Expand chevron */}
-        <span className="ml-auto shrink-0">
+        <span className={cn('shrink-0', !elapsed && 'ml-auto')}>
           {expanded ? (
             <ChevronDown className="h-4 w-4 text-muted-foreground" />
           ) : (
@@ -161,6 +171,8 @@ export function ToolCallItem({ toolCall, agentSlug }: ToolCallItemProps) {
 
 // Component for displaying a tool call while its input is being streamed
 export function StreamingToolCallItem({ name, partialInput }: StreamingToolCallItemProps) {
+  const startTimeRef = useRef(new Date())
+  const elapsed = useElapsedTimer(startTimeRef.current)
   const renderer = getToolRenderer(name)
 
   // Get custom icon if available
@@ -214,9 +226,9 @@ export function StreamingToolCallItem({ name, partialInput }: StreamingToolCallI
           </span>
         )}
 
-        {/* Streaming indicator */}
-        <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-          streaming...
+        {/* Elapsed timer */}
+        <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">
+          {elapsed}
         </span>
       </div>
 

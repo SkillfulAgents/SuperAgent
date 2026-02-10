@@ -14,7 +14,8 @@ import { ConnectedAccountRequestItem } from './connected-account-request-item'
 import { QuestionRequestItem } from './question-request-item'
 import { FileRequestItem } from './file-request-item'
 import { Loader2, Wrench } from 'lucide-react'
-import { useEffect, useRef, useCallback, useMemo } from 'react'
+import { useEffect, useRef, useCallback, useMemo, Fragment } from 'react'
+import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 
 interface MessageListProps {
   sessionId: string
@@ -275,6 +276,39 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     )
   }, [messages, streamingToolUse])
 
+  // Compute elapsed time for each completed response turn
+  // A turn starts with a user message and ends at the last assistant message before the next user message (or end of messages when idle)
+  const turnElapsedTimes = useMemo(() => {
+    const elapsed = new Map<string, number>()
+    if (!messages) return elapsed
+
+    let lastUserMessageTime: number | null = null
+    let lastAssistantMessageId: string | null = null
+    let lastAssistantMessageTime: number | null = null
+
+    for (const msg of messages) {
+      if (msg.type === 'user') {
+        // Close previous turn
+        if (lastUserMessageTime && lastAssistantMessageId && lastAssistantMessageTime) {
+          elapsed.set(lastAssistantMessageId, lastAssistantMessageTime - lastUserMessageTime)
+        }
+        lastUserMessageTime = new Date(msg.createdAt).getTime()
+        lastAssistantMessageId = null
+        lastAssistantMessageTime = null
+      } else if (msg.type === 'assistant') {
+        lastAssistantMessageId = msg.id
+        lastAssistantMessageTime = new Date(msg.createdAt).getTime()
+      }
+    }
+
+    // Close the last turn only if session is idle
+    if (!isActive && lastUserMessageTime && lastAssistantMessageId && lastAssistantMessageTime) {
+      elapsed.set(lastAssistantMessageId, lastAssistantMessageTime - lastUserMessageTime)
+    }
+
+    return elapsed
+  }, [messages, isActive])
+
   // Auto-scroll to bottom when new messages arrive or requests appear
   useEffect(() => {
     if (scrollRef.current) {
@@ -294,7 +328,14 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     <div className="overflow-y-auto" ref={scrollRef} data-testid="message-list">
       <div className="p-4 space-y-4">
         {messages?.map((message) => (
-          <MessageItem key={message.id} message={message} agentSlug={agentSlug} />
+          <Fragment key={message.id}>
+            <MessageItem message={message} agentSlug={agentSlug} />
+            {turnElapsedTimes.has(message.id) && (
+              <div className="text-xs text-muted-foreground pb-1 -mt-1 tabular-nums ml-11 italic">
+                Agent took {formatElapsed(turnElapsedTimes.get(message.id)!)}
+              </div>
+            )}
+          </Fragment>
         ))}
 
         {/* Pending user message - shown immediately after sending */}

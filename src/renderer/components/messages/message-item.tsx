@@ -132,7 +132,7 @@ export function MessageItem({ message, isStreaming, agentSlug }: MessageItemProp
         {isAssistant && toolCalls.length > 0 && (
           <div className="w-full space-y-2">
             {toolCalls.map((toolCall) => (
-              <ToolCallItem key={toolCall.id} toolCall={toolCall} agentSlug={agentSlug} />
+              <ToolCallItem key={toolCall.id} toolCall={toolCall} messageCreatedAt={message.createdAt} agentSlug={agentSlug} />
             ))}
           </div>
         )}
