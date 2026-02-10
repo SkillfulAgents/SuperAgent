@@ -11,6 +11,7 @@ export interface UpdateStatus {
 let currentStatus: UpdateStatus = { state: 'idle' }
 let mainWindowRef: BrowserWindow | null = null
 let updaterReady = false
+let suppressErrors = false
 
 async function getAutoUpdater() {
   const mod = await import('electron-updater')
@@ -53,11 +54,14 @@ export function registerUpdateHandlers() {
       const isPreRelease = app.getVersion().includes('-')
       if (isPreRelease && (!result || !result.updateInfo || currentStatus.state === 'not-available')) {
         try {
+          suppressErrors = true
           autoUpdater.allowPrerelease = false
           autoUpdater.channel = 'latest'
           await autoUpdater.checkForUpdates()
         } catch {
           // No stable releases exist yet — ignore
+        } finally {
+          suppressErrors = false
         }
       }
     } catch (err) {
@@ -123,6 +127,7 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
     })
 
     autoUpdater.on('error', (err: Error) => {
+      if (suppressErrors) return
       setStatus({ state: 'error', error: err.message })
     })
 
