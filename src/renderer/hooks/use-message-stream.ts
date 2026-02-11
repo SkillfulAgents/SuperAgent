@@ -128,11 +128,13 @@ function getOrCreateEventSource(
         // Session became idle - query completed or interrupted
         // Keep streamingMessage so it stays visible until persisted data arrives
         // (isStreamingMessagePersisted in MessageList handles deduplication)
+        // Clear streamingToolUse - if the tool was persisted, ToolCallItem renders it;
+        // if it wasn't (interrupted mid-stream), it should disappear.
         streamStates.set(sessionId, {
           isActive: false,
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
-          streamingToolUse: current?.streamingToolUse ?? null,
+          streamingToolUse: null,
           pendingSecretRequests: [],
           pendingConnectedAccountRequests: [],
           pendingQuestionRequests: [],

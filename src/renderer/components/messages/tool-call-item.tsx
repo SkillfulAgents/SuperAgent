@@ -1,6 +1,6 @@
 
 import { cn } from '@shared/lib/utils/cn'
-import { Circle, CheckCircle, XCircle, ChevronDown, ChevronRight, Loader2, Wrench } from 'lucide-react'
+import { Circle, CheckCircle, XCircle, ChevronDown, ChevronRight, Loader2, Wrench, StopCircle } from 'lucide-react'
 import { useState, useRef } from 'react'
 import { getToolRenderer } from './tool-renderers'
 import { parseToolResult } from '@renderer/lib/parse-tool-result'
@@ -11,6 +11,7 @@ interface ToolCallItemProps {
   toolCall: ApiToolCall
   messageCreatedAt?: Date | string
   agentSlug?: string
+  isSessionActive?: boolean
 }
 
 interface StreamingToolCallItemProps {
@@ -18,17 +19,21 @@ interface StreamingToolCallItemProps {
   partialInput: string
 }
 
-type ToolCallStatus = 'running' | 'success' | 'error'
+type ToolCallStatus = 'running' | 'success' | 'error' | 'cancelled'
 
-function getStatus(toolCall: ApiToolCall): ToolCallStatus {
-  if (toolCall.result === null || toolCall.result === undefined) return 'running'
+function getStatus(toolCall: ApiToolCall, isSessionActive?: boolean): ToolCallStatus {
+  if (toolCall.result === null || toolCall.result === undefined) {
+    // Only show "running" if the caller explicitly says this tool could still be active.
+    // Otherwise it was interrupted/cancelled (or is from a historical interrupted turn).
+    return isSessionActive ? 'running' : 'cancelled'
+  }
   if (toolCall.isError) return 'error'
   return 'success'
 }
 
-export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug }: ToolCallItemProps) {
+export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug, isSessionActive }: ToolCallItemProps) {
   const [expanded, setExpanded] = useState(false)
-  const status = getStatus(toolCall)
+  const status = getStatus(toolCall, isSessionActive)
   const renderer = getToolRenderer(toolCall.name)
   const elapsed = useElapsedTimer(status === 'running' ? (messageCreatedAt ?? null) : null)
 
@@ -36,12 +41,14 @@ export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug }: ToolCall
     running: Circle,
     success: CheckCircle,
     error: XCircle,
+    cancelled: StopCircle,
   }[status]
 
   const statusColor = {
     running: 'text-gray-400',
     success: 'text-green-500',
     error: 'text-red-500',
+    cancelled: 'text-gray-400',
   }[status]
 
   // Get custom icon if available

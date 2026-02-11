@@ -14,9 +14,10 @@ interface MessageItemProps {
   message: ApiMessage
   isStreaming?: boolean
   agentSlug?: string
+  isSessionActive?: boolean
 }
 
-export function MessageItem({ message, isStreaming, agentSlug }: MessageItemProps) {
+export function MessageItem({ message, isStreaming, agentSlug, isSessionActive }: MessageItemProps) {
   const isUser = message.type === 'user'
   const isAssistant = message.type === 'assistant'
 
@@ -158,7 +159,7 @@ export function MessageItem({ message, isStreaming, agentSlug }: MessageItemProp
         {isAssistant && toolCalls.length > 0 && (
           <div className="w-full space-y-2">
             {toolCalls.map((toolCall) => (
-              <ToolCallItem key={toolCall.id} toolCall={toolCall} messageCreatedAt={message.createdAt} agentSlug={agentSlug} />
+              <ToolCallItem key={toolCall.id} toolCall={toolCall} messageCreatedAt={message.createdAt} agentSlug={agentSlug} isSessionActive={isSessionActive} />
             ))}
           </div>
         )}

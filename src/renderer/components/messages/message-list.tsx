@@ -306,6 +306,23 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     return elapsed
   }, [messages, isActive])
 
+  // Determine which messages could have tool calls that are still running.
+  // Only the trailing assistant messages (after the last user message) can have running tools,
+  // and only if the session is active and there's no pending user message (which means user moved on).
+  const canHaveRunningToolCalls = useMemo(() => {
+    const result = new Set<string>()
+    if (!messages || !isActive || pendingUserMessage) return result
+
+    // Walk backwards - only assistant messages after the last user message can have running tools
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].type === 'user') break
+      if (messages[i].type === 'assistant') {
+        result.add(messages[i].id)
+      }
+    }
+    return result
+  }, [messages, isActive, pendingUserMessage])
+
   // Auto-scroll to bottom when new messages arrive or requests appear
   useEffect(() => {
     if (scrollRef.current) {
@@ -326,7 +343,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
       <div className="p-4 space-y-4">
         {messages?.map((message) => (
           <Fragment key={message.id}>
-            <MessageItem message={message} agentSlug={agentSlug} />
+            <MessageItem message={message} agentSlug={agentSlug} isSessionActive={canHaveRunningToolCalls.has(message.id)} />
             {turnElapsedTimes.has(message.id) && (
               <div className="text-xs text-muted-foreground pb-1 -mt-1 tabular-nums ml-11 italic">
                 Agent took {formatElapsed(turnElapsedTimes.get(message.id)!)}
