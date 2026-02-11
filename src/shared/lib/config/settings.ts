@@ -91,7 +91,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     agentImage: getDefaultAgentImage(),
     resourceLimits: {
       cpu: 2,
-      memory: '2g',
+      memory: '4g',
     },
   },
   app: {

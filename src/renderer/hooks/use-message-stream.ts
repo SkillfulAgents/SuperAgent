@@ -378,8 +378,24 @@ function getOrCreateEventSource(
           queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', taskAgentSlug] })
         }
       }
+      else if (data.type === 'ping') {
+        // Safety net: sync isActive from server.
+        // If server says inactive but we think active, the session ended and we missed it.
+        if (current?.isActive && data.isActive === false) {
+          streamStates.set(sessionId, {
+            ...current,
+            isActive: false,
+            isStreaming: false,
+            streamingMessage: null,
+            streamingToolUse: null,
+            error: null,
+            activeStartTime: null,
+          })
+          queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+          queryClient.invalidateQueries({ queryKey: ['sessions'] })
+        }
+      }
       // Note: os_notification events are handled by GlobalNotificationHandler, not here
-      // Ignore ping and other events - they don't change state
 
       // Notify all listeners
       streamListeners.get(sessionId)?.forEach((listener) => listener())

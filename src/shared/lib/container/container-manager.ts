@@ -200,6 +200,14 @@ class ContainerManager {
   async initializeAgents(agentSlugs: string[]): Promise<void> {
     console.log(`[ContainerManager] Initializing ${agentSlugs.length} agents...`)
 
+    // Register callback so message-persister can request container stops on fatal errors (e.g., OOM)
+    messagePersister.setStopContainerCallback((agentSlug) => {
+      console.log(`[ContainerManager] Stopping container for ${agentSlug} due to fatal error`)
+      this.stopContainer(agentSlug).catch((err) => {
+        console.error(`[ContainerManager] Failed to stop container for ${agentSlug}:`, err)
+      })
+    })
+
     // Create clients for all agents (this registers them for sync)
     for (const slug of agentSlugs) {
       this.getClient(slug)

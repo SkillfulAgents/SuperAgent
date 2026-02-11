@@ -23,6 +23,8 @@ class MessagePersister {
   private globalNotificationClients: Set<(data: unknown) => void> = new Set()
   // Track container clients per session for reconnection
   private containerClients: Map<string, ContainerClient> = new Map()
+  // Callback to request stopping a container (registered by container-manager)
+  private onStopContainerRequested: ((agentSlug: string) => void) | null = null
 
   // Subscribe to a session's messages for SSE streaming.
   // Returns a promise that resolves when the WebSocket connection is ready.
@@ -93,12 +95,21 @@ class MessagePersister {
     return false
   }
 
-  // Mark all sessions for an agent as inactive (e.g., when container stops)
+  // Mark all sessions for an agent as inactive and clean up subscriptions (e.g., when container stops)
   markAllSessionsInactiveForAgent(agentSlug: string): void {
     for (const [sessionId, state] of this.streamingStates) {
-      if (state.agentSlug === agentSlug && state.isActive) {
-        console.log(`[MessagePersister] Marking session ${sessionId} inactive (container stopped)`)
-        this.markSessionInactive(sessionId, state)
+      if (state.agentSlug === agentSlug) {
+        if (state.isActive) {
+          console.log(`[MessagePersister] Marking session ${sessionId} inactive (container stopped)`)
+          this.markSessionInactive(sessionId, state)
+        }
+        // Clean up stale WebSocket subscription so next message re-subscribes to the new container
+        const unsubscribe = this.subscriptions.get(sessionId)
+        if (unsubscribe) {
+          unsubscribe()
+          this.subscriptions.delete(sessionId)
+        }
+        this.containerClients.delete(sessionId)
       }
     }
   }
@@ -135,6 +146,11 @@ class MessagePersister {
     return () => {
       this.globalNotificationClients.delete(callback)
     }
+  }
+
+  // Register callback for when a container should be stopped (e.g., on OOM)
+  setStopContainerCallback(callback: (agentSlug: string) => void): void {
+    this.onStopContainerRequested = callback
   }
 
   // Check if there are any session-specific SSE clients connected
@@ -298,6 +314,11 @@ class MessagePersister {
             error: errorMessage,
             isActive: false,
           })
+          // If the error is fatal (e.g., OOM), request container stop
+          if (content.fatal && state.agentSlug && this.onStopContainerRequested) {
+            console.log(`[MessagePersister] Fatal error for agent ${state.agentSlug}, requesting container stop`)
+            this.onStopContainerRequested(state.agentSlug)
+          }
         } else {
           this.broadcastToSSE(sessionId, { type: 'session_idle', isActive: false })
           // Also broadcast globally so sidebar updates

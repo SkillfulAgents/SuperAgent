@@ -342,6 +342,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     if (!this.queryInstance) return;
 
     this.isProcessing = true;
+    let receivedResult = false;
 
     try {
       for await (const message of this.queryInstance) {
@@ -359,12 +360,21 @@ export class ClaudeCodeProcess extends EventEmitter {
         // Emit the SDK message
         console.log(`[Session ${this.sessionId}] SDK message:`, message.type,
           'subtype' in message ? (message as any).subtype : '');
-        this.emit('message', message);
 
         // Check for result message to know when processing is complete
         if (message.type === 'result') {
+          receivedResult = true;
+          // Enrich error results that have no useful error message
+          const msg = message as any;
+          if ((msg.subtype === 'error_during_execution' || msg.subtype === 'error') && !msg.error && !msg.message) {
+            if (this.claudeSessionId) {
+              msg.error = 'This session could not be resumed (it may have been corrupted by a previous crash). Please start a new session.';
+            }
+          }
           console.log(`[Session ${this.sessionId}] Query completed`);
         }
+
+        this.emit('message', message);
       }
     } catch (error: any) {
       // Check for abort error in multiple ways (SDK may use different error types)
@@ -378,6 +388,30 @@ export class ClaudeCodeProcess extends EventEmitter {
         console.log(`[Session ${this.sessionId}] Query aborted`);
       } else {
         console.error(`[Session ${this.sessionId}] Query error:`, error);
+        // Only emit synthetic result if the SDK didn't already send a real one
+        // (e.g., SDK sends result error_during_execution then throws — don't overwrite)
+        if (!receivedResult) {
+          // Provide a user-friendly error message for known failure modes
+          const errorMsg = error.message || '';
+          let userError: string;
+          if (errorMsg.includes('SIGKILL')) {
+            userError = 'The agent process was killed due to running out of memory. Try starting a new session, or increase the container memory limit in settings.';
+          } else if (errorMsg.includes('SIGTERM')) {
+            userError = 'The agent process was terminated unexpectedly.';
+          } else {
+            userError = errorMsg || 'An unexpected error occurred';
+          }
+          // Emit synthetic result so downstream (WebSocket → message-persister → UI)
+          // knows the query failed and can transition to error state
+          const isFatal = errorMsg.includes('SIGKILL') || errorMsg.includes('SIGTERM');
+          this.emit('message', {
+            type: 'result',
+            subtype: 'error',
+            error: userError,
+            session_id: this.claudeSessionId || this.sessionId,
+            ...(isFatal && { fatal: true }),
+          });
+        }
         // Only emit if there are listeners to prevent crash
         if (this.listenerCount('error') > 0) {
           this.emit('error', error);

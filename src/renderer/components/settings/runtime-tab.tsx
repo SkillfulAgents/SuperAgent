@@ -13,6 +13,18 @@ import { Alert, AlertDescription, AlertTitle } from '@renderer/components/ui/ale
 import { useSettings, useUpdateSettings, useStartRunner, useRefreshAvailability } from '@renderer/hooks/use-settings'
 import { AlertCircle, AlertTriangle, Play, Loader2, RefreshCw } from 'lucide-react'
 
+const MIN_MEMORY_BYTES = 512 * 1024 * 1024 // 512 MiB
+
+/** Parse Docker memory string (e.g., "512m", "2g") to bytes. Returns 0 if invalid. */
+function parseMemoryToBytes(value: string): number {
+  const match = value.trim().match(/^([\d.]+)\s*([kmg])$/i)
+  if (!match) return 0
+  const num = parseFloat(match[1])
+  const unit = match[2].toLowerCase()
+  const multipliers: Record<string, number> = { k: 1024, m: 1024 ** 2, g: 1024 ** 3 }
+  return Math.round(num * (multipliers[unit] || 1))
+}
+
 const RUNNER_LABELS: Record<string, string> = {
   'apple-container': 'macOS Container',
   docker: 'Docker',
@@ -104,7 +116,10 @@ export function RuntimeTab() {
     setHasChanges(changed)
   }, [containerRunner, agentImage, cpuLimit, memoryLimit, settings])
 
+  const memoryTooLow = parseMemoryToBytes(memoryLimit) > 0 && parseMemoryToBytes(memoryLimit) < MIN_MEMORY_BYTES
+
   const handleSave = async () => {
+    if (memoryTooLow) return
     try {
       await updateSettings.mutateAsync({
         container: {
@@ -341,8 +356,11 @@ export function RuntimeTab() {
             className={hasRunningAgents ? 'bg-muted' : ''}
           />
           <p className="text-xs text-muted-foreground">
-            Memory limit (e.g., 512m, 1g).
+            Memory limit (e.g., 512m, 1g). Minimum 512m.
           </p>
+          {memoryTooLow && (
+            <p className="text-xs text-destructive">Memory limit must be at least 512m.</p>
+          )}
         </div>
       </div>
 
@@ -387,7 +405,7 @@ export function RuntimeTab() {
           </Button>
           <Button
             onClick={handleSave}
-            disabled={updateSettings.isPending || saveBlocked}
+            disabled={updateSettings.isPending || saveBlocked || memoryTooLow}
           >
             {updateSettings.isPending ? 'Saving...' : 'Save'}
           </Button>
