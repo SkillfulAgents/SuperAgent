@@ -4,6 +4,7 @@ import { User, Bot } from 'lucide-react'
 import { ToolCallItem } from './tool-call-item'
 import { MessageContextMenu } from './message-context-menu'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
 
 // Re-export for use by other components
@@ -73,6 +74,7 @@ export function MessageItem({ message, isStreaming, agentSlug }: MessageItemProp
                   isUser ? 'prose-invert prose-user-message' : 'dark:prose-invert'
                 )}>
                   <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
                     components={{
                       // Style code blocks
                       pre: ({ children }) => (
@@ -96,6 +98,30 @@ export function MessageItem({ message, isStreaming, agentSlug }: MessageItemProp
                           <code className={className}>{children}</code>
                         )
                       },
+                      // Style tables with borders and horizontal scroll
+                      table: ({ children }) => (
+                        <div className="overflow-x-auto">
+                          <table className="w-full border-collapse text-sm">
+                            {children}
+                          </table>
+                        </div>
+                      ),
+                      th: ({ children }) => (
+                        <th className={cn(
+                          'border-b-2 px-3 py-1.5 text-left font-semibold',
+                          isUser ? 'border-white/30 dark:border-black/20' : 'border-border'
+                        )}>
+                          {children}
+                        </th>
+                      ),
+                      td: ({ children }) => (
+                        <td className={cn(
+                          'border-b px-3 py-1.5',
+                          isUser ? 'border-white/20 dark:border-black/10' : 'border-border'
+                        )}>
+                          {children}
+                        </td>
+                      ),
                       // Ensure links open in new tab
                       a: ({ children, href }) => (
                         <a
