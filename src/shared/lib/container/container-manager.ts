@@ -367,6 +367,7 @@ class ContainerManager {
       if (settings.app?.useHostBrowser) {
         envVars['AGENT_BROWSER_USE_HOST'] = '1'
         envVars['HOST_APP_URL'] = `http://${hostUrl}:${appPort}`
+        envVars['AGENT_ID'] = agentId
       }
 
       // Copy Chrome profile data into workspace if configured

@@ -373,8 +373,8 @@ async function gracefulShutdown() {
   destroyTray()
   destroyAppMenu()
 
-  // Stop host browser if we launched it
-  hostBrowserManager.stop()
+  // Stop all host browser instances
+  hostBrowserManager.stopAll()
 
   // Stop the task scheduler, auto-sleep monitor, and status sync
   taskScheduler.stop()

@@ -591,9 +591,12 @@ async function launchHostBrowserIfNeeded(): Promise<string | undefined> {
     throw new Error('Host browser mode is enabled but HOST_APP_URL is not configured');
   }
 
+  const agentId = process.env.AGENT_ID;
+
   const response = await fetch(`${hostAppUrl}/api/browser/launch-host-browser`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agentId: agentId || 'default' }),
   });
 
   if (!response.ok) {
@@ -637,17 +640,20 @@ async function launchHostBrowserIfNeeded(): Promise<string | undefined> {
   return debuggerUrl;
 }
 
-// Tell the host to stop the Chrome process.
+// Tell the host to stop the Chrome process for this agent.
 async function stopHostBrowserIfNeeded(): Promise<void> {
   if (!process.env.AGENT_BROWSER_USE_HOST) return;
 
   const hostAppUrl = process.env.HOST_APP_URL;
   if (!hostAppUrl) return;
 
+  const agentId = process.env.AGENT_ID || 'default';
+
   try {
     await fetch(`${hostAppUrl}/api/browser/stop-host-browser`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentId }),
     });
   } catch (error) {
     console.error('[Browser] Error stopping host browser:', error);

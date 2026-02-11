@@ -26,16 +26,20 @@ const BROWSER_CANDIDATES: Record<string, BrowserCandidate> = {
   },
 }
 
-const CDP_PORT = 9222
+interface AgentBrowserInstance {
+  process: ChildProcess
+  port: number
+  userDataDir: string
+  stoppingIntentionally: boolean
+}
 
 class HostBrowserManager {
-  private browserProcess: ChildProcess | null = null
+  private instances: Map<string, AgentBrowserInstance> = new Map()
   private detectedPath: string | null = null
-  private stoppingIntentionally = false
 
-  // Callback invoked when the browser exits without stop() being called
-  // (e.g. user closed Chrome manually)
-  onExternalExit: (() => void) | null = null
+  // Callback invoked when a specific agent's browser exits without stopAgent() being called
+  // (e.g. user closed Chrome manually). Receives the agentId of the affected instance.
+  onExternalExit: ((agentId: string) => void) | null = null
 
   // Re-export for callers that need direct access
   getChromeUserDataDir = getChromeUserDataDir
@@ -61,16 +65,16 @@ class HostBrowserManager {
     return { available: false, browser: null, path: null }
   }
 
-  async ensureRunning(profileId?: string): Promise<{ port: number }> {
-    // Check if CDP port is already open (e.g. we already launched, or user
-    // started Chrome with --remote-debugging-port themselves)
-    if (await this.isPortOpen(CDP_PORT)) {
-      return { port: CDP_PORT }
+  async ensureRunning(agentId: string, profileId?: string): Promise<{ port: number }> {
+    // Check if an instance already exists for this agent and its port is still open
+    const existing = this.instances.get(agentId)
+    if (existing && await this.isPortOpen(existing.port)) {
+      return { port: existing.port }
     }
 
-    // If we had a process reference but port is gone, clean up
-    if (this.browserProcess) {
-      this.stop()
+    // If an instance exists but port is gone, clean up the stale entry
+    if (existing) {
+      this.stopAgent(agentId)
     }
 
     const status = this.detect()
@@ -78,12 +82,14 @@ class HostBrowserManager {
       throw new Error('No supported browser detected')
     }
 
+    const port = await this.findFreePort()
+
     // Chrome refuses to enable CDP on its default (real) data directory:
     //   "DevTools remote debugging requires a non-default data directory"
-    // So we always use a dedicated user-data-dir. When a profile is selected,
-    // we copy session data (cookies, login data, etc.) from the real Chrome
-    // profile into our dedicated dir before launching.
-    const userDataDir = path.join(getDataDir(), 'host-browser-profile')
+    // So we always use a dedicated user-data-dir per agent. When a profile is
+    // selected, we copy session data (cookies, login data, etc.) from the real
+    // Chrome profile into our dedicated dir before launching.
+    const userDataDir = path.join(getDataDir(), 'host-browser-profiles', agentId)
     fs.mkdirSync(userDataDir, { recursive: true })
 
     if (profileId) {
@@ -93,14 +99,14 @@ class HostBrowserManager {
       // agent accumulated during its browsing sessions.
       const alreadyHasProfile = fs.existsSync(path.join(destProfileDir, 'Cookies'))
       if (!alreadyHasProfile && copyChromeProfileData(profileId, destProfileDir)) {
-        console.log(`[HostBrowserManager] Copied Chrome profile "${profileId}" to ${destProfileDir}`)
+        console.log(`[HostBrowserManager] Copied Chrome profile "${profileId}" for agent ${agentId}`)
       }
     }
 
-    this.browserProcess = spawn(
+    const browserProcess = spawn(
       status.path,
       [
-        `--remote-debugging-port=${CDP_PORT}`,
+        `--remote-debugging-port=${port}`,
         '--remote-debugging-address=0.0.0.0',
         '--no-first-run',
         '--no-default-browser-check',
@@ -109,45 +115,74 @@ class HostBrowserManager {
       { detached: false, stdio: 'ignore' }
     )
 
-    this.browserProcess.on('error', (err) => {
-      console.error('[HostBrowserManager] Browser process error:', err)
+    const instance: AgentBrowserInstance = {
+      process: browserProcess,
+      port,
+      userDataDir,
+      stoppingIntentionally: false,
+    }
+    this.instances.set(agentId, instance)
+
+    browserProcess.on('error', (err) => {
+      console.error(`[HostBrowserManager] Browser process error for agent ${agentId}:`, err)
     })
 
-    this.browserProcess.on('exit', (code) => {
-      console.log(`[HostBrowserManager] Browser process exited with code ${code}`)
-      const wasIntentional = this.stoppingIntentionally
-      this.stoppingIntentionally = false
-      this.browserProcess = null
+    browserProcess.on('exit', (code) => {
+      console.log(`[HostBrowserManager] Browser for agent ${agentId} exited with code ${code}`)
+      const wasIntentional = instance.stoppingIntentionally
+      this.instances.delete(agentId)
       if (!wasIntentional) {
-        console.log('[HostBrowserManager] Browser closed externally, notifying listeners')
-        Promise.resolve(this.onExternalExit?.()).catch((err) => {
+        console.log(`[HostBrowserManager] Browser for agent ${agentId} closed externally, notifying listeners`)
+        Promise.resolve(this.onExternalExit?.(agentId)).catch((err) => {
           console.error('[HostBrowserManager] Error in onExternalExit callback:', err)
         })
       }
     })
 
     try {
-      await this.waitForPort(CDP_PORT, 15000)
+      await this.waitForPort(port, 15000)
     } catch (err) {
-      this.stop()
+      this.stopAgent(agentId)
       throw err
     }
 
-    return { port: CDP_PORT }
+    return { port }
   }
 
-  stop(): void {
-    if (this.browserProcess && !this.browserProcess.killed) {
+  stopAgent(agentId: string): void {
+    const instance = this.instances.get(agentId)
+    if (instance && !instance.process.killed) {
       // Set flag before kill — the exit event fires asynchronously after kill(),
       // so we keep the flag set (it's reset in the exit handler after checking it)
-      this.stoppingIntentionally = true
-      this.browserProcess.kill()
-      this.browserProcess = null
+      instance.stoppingIntentionally = true
+      instance.process.kill()
+    }
+    this.instances.delete(agentId)
+  }
+
+  stopAll(): void {
+    for (const agentId of Array.from(this.instances.keys())) {
+      this.stopAgent(agentId)
     }
   }
 
-  isRunning(): boolean {
-    return this.browserProcess !== null && !this.browserProcess.killed
+  isRunning(agentId?: string): boolean {
+    if (agentId) {
+      const instance = this.instances.get(agentId)
+      return instance !== undefined && !instance.process.killed
+    }
+    return this.instances.size > 0
+  }
+
+  private async findFreePort(): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const server = net.createServer()
+      server.listen(0, '127.0.0.1', () => {
+        const port = (server.address() as net.AddressInfo).port
+        server.close(() => resolve(port))
+      })
+      server.on('error', reject)
+    })
   }
 
   private isPortOpen(port: number): Promise<boolean> {

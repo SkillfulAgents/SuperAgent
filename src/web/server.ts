@@ -33,8 +33,8 @@ async function gracefulShutdown(signal: string) {
 
   console.log(`\nReceived ${signal}, shutting down gracefully...`)
 
-  // Stop host browser if we launched it
-  hostBrowserManager.stop()
+  // Stop all host browser instances
+  hostBrowserManager.stopAll()
 
   // Stop the task scheduler and auto-sleep monitor
   taskScheduler.stop()

@@ -9,9 +9,13 @@ const browser = new Hono()
 // POST /api/browser/launch-host-browser - Launch browser on host for CDP connection
 browser.post('/launch-host-browser', async (c) => {
   try {
+    const body = await c.req.json<{ agentId?: string }>().catch(() => ({} as { agentId?: string }))
+    // Fall back to 'default' for backward compat with containers that don't send agentId yet
+    const agentId = body.agentId || 'default'
+
     const settings = getSettings()
     const profileId = settings.app?.chromeProfileId || undefined
-    const { port } = await hostBrowserManager.ensureRunning(profileId)
+    const { port } = await hostBrowserManager.ensureRunning(agentId, profileId)
     return c.json({ port })
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Failed to launch browser'
@@ -20,10 +24,14 @@ browser.post('/launch-host-browser', async (c) => {
   }
 })
 
-// POST /api/browser/stop-host-browser - Stop the host browser process
+// POST /api/browser/stop-host-browser - Stop the host browser process for a specific agent
 browser.post('/stop-host-browser', async (c) => {
   try {
-    hostBrowserManager.stop()
+    const body = await c.req.json<{ agentId?: string }>().catch(() => ({} as { agentId?: string }))
+    // Fall back to 'default' for backward compat with containers that don't send agentId yet
+    const agentId = body.agentId || 'default'
+
+    hostBrowserManager.stopAgent(agentId)
     return c.json({ success: true })
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Failed to stop browser'
@@ -32,28 +40,19 @@ browser.post('/stop-host-browser', async (c) => {
   }
 })
 
-// When the host browser exits externally (user closed Chrome), broadcast
-// browser_active: false directly to all frontend SSE clients and also
-// attempt to notify containers so they can clean up their internal state.
-hostBrowserManager.onExternalExit = async () => {
-  console.log('[Browser] Host browser closed externally')
+// When a specific agent's host browser exits externally (user closed Chrome),
+// notify that agent's container so it can clean up its internal state, and
+// broadcast to frontend SSE clients so the preview disappears.
+hostBrowserManager.onExternalExit = async (agentId: string) => {
+  console.log(`[Browser] Host browser for agent ${agentId} closed externally`)
 
-  // Immediately broadcast to all frontend SSE clients so the preview disappears
-  messagePersister.broadcastGlobal({ type: 'browser_active', active: false })
+  // Broadcast to all frontend SSE clients with the agentSlug so UI can scope it
+  messagePersister.broadcastGlobal({ type: 'browser_active', active: false, agentSlug: agentId })
 
-  // Also try to notify containers to clean up their internal browser state.
-  // This may 404 if the container doesn't have the endpoint yet — that's OK,
-  // the frontend is already updated via the SSE broadcast above.
+  // Notify the affected container to clean up its internal browser state.
   try {
-    const runningAgents = await containerManager.getRunningAgentIds()
-    for (const agentId of runningAgents) {
-      try {
-        const client = containerManager.getClient(agentId)
-        await client.fetch('/browser/notify-closed', { method: 'POST' })
-      } catch {
-        // Expected to fail until container is rebuilt with the new endpoint
-      }
-    }
+    const client = containerManager.getClient(agentId)
+    await client.fetch('/browser/notify-closed', { method: 'POST' })
   } catch {
     // Non-critical — frontend is already notified
   }
