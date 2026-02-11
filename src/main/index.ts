@@ -7,9 +7,16 @@ import { getSettings } from '@shared/lib/config/settings'
 import { hostBrowserManager } from './host-browser-manager'
 import { registerUpdateHandlers, initAutoUpdater, updateAutoUpdaterWindow } from './auto-updater'
 
+// In dev mode, use a separate data directory to avoid mixing with production data.
+// Setting app.name before getPath('userData') changes the resolved directory.
+// app.isPackaged is false during `electron-vite dev`, true in production builds.
+if (!app.isPackaged) {
+  app.name = 'Superagent-Dev'
+}
+
 // Set Electron-specific data directory BEFORE importing API
-// This uses ~/Library/Application Support/Superagent on macOS
-// or %APPDATA%/Superagent on Windows
+// This uses ~/Library/Application Support/Superagent (or Superagent-Dev) on macOS
+// or %APPDATA%/Superagent (or Superagent-Dev) on Windows
 // Note: app.getPath() works synchronously before app.whenReady()
 process.env.SUPERAGENT_DATA_DIR = app.getPath('userData')
 console.log(`Data directory: ${process.env.SUPERAGENT_DATA_DIR}`)
