@@ -17,39 +17,36 @@ import { Loader2, Wrench } from 'lucide-react'
 import { useEffect, useRef, useCallback, useMemo, Fragment } from 'react'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 
+interface PendingMessage {
+  text: string
+  sentAt: number
+}
+
 interface MessageListProps {
   sessionId: string
   agentSlug: string
-  pendingUserMessage?: string | null
+  pendingUserMessage?: PendingMessage | null
   onPendingMessageAppeared?: () => void
 }
 
 export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendingMessageAppeared }: MessageListProps) {
   const { data: messages, isLoading } = useMessages(sessionId, agentSlug)
 
-  // Check if pending message has appeared in real messages
-  // We track the message count when the pending message was set to avoid
-  // false positives from older messages with the same text
-  const messageCountWhenPendingSet = useRef<number | null>(null)
+  // Check if pending message has appeared in real messages.
+  // Once the server persists the user message and it shows up in the fetched
+  // messages array, we clear the optimistic pending copy to avoid duplication.
+  // We match by both text AND timestamp to handle duplicate message text correctly:
+  // only messages created around the time the pending was set can match.
   useEffect(() => {
     if (pendingUserMessage && messages) {
-      if (messageCountWhenPendingSet.current === null) {
-        // First time seeing this pending message - record current count
-        messageCountWhenPendingSet.current = messages.length
-      } else {
-        // Check if any NEW messages (after the pending was set) match
-        const newMessages = messages.slice(messageCountWhenPendingSet.current)
-        const found = newMessages.some(
-          (m) => m.type === 'user' && m.content.text === pendingUserMessage
-        )
-        if (found) {
-          messageCountWhenPendingSet.current = null
-          onPendingMessageAppeared?.()
-        }
+      const found = messages.some(
+        (m) => m.type === 'user' &&
+          m.content.text === pendingUserMessage.text &&
+          new Date(m.createdAt).getTime() >= pendingUserMessage.sentAt - 5000
+      )
+      if (found) {
+        onPendingMessageAppeared?.()
       }
-    } else {
-      // Reset when pending message is cleared
-      messageCountWhenPendingSet.current = null
     }
   }, [messages, pendingUserMessage, onPendingMessageAppeared])
   const {
@@ -344,7 +341,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
             message={{
               id: 'pending-user-message',
               type: 'user',
-              content: { text: pendingUserMessage },
+              content: { text: pendingUserMessage.text },
               toolCalls: [],
               createdAt: new Date(),
             }}

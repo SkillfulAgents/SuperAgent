@@ -36,7 +36,7 @@ export function MainContent() {
   } = useSelection()
   const [settingsOpen, setSettingsOpen] = useState(false)
   // Pending user messages per session — survives navigation between sessions
-  const pendingMessagesRef = useRef(new Map<string, string>())
+  const pendingMessagesRef = useRef(new Map<string, { text: string; sentAt: number }>())
   const [, forceUpdate] = useState(0)
   const { data: agent } = useAgent(agentSlug)
   const { data: sessions } = useSessions(agentSlug)
@@ -85,7 +85,7 @@ export function MainContent() {
 
   const handleMessageSent = useCallback((content: string) => {
     if (sessionId) {
-      pendingMessagesRef.current.set(sessionId, content)
+      pendingMessagesRef.current.set(sessionId, { text: content, sentAt: Date.now() })
       forceUpdate((n) => n + 1)
     }
   }, [sessionId])
@@ -99,7 +99,7 @@ export function MainContent() {
 
   // Callback for AgentLanding when a new session is created with initial message
   const handleSessionCreated = useCallback((newSessionId: string, initialMessage: string) => {
-    pendingMessagesRef.current.set(newSessionId, initialMessage)
+    pendingMessagesRef.current.set(newSessionId, { text: initialMessage, sentAt: Date.now() })
     selectSession(newSessionId)
   }, [selectSession])
 
