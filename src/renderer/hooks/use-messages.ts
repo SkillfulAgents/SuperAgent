@@ -49,6 +49,38 @@ export function useUploadFile() {
   })
 }
 
+export function useDeleteMessage() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ sessionId, agentSlug, messageId }: { sessionId: string; agentSlug: string; messageId: string }) => {
+      const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/messages/${messageId}`, {
+        method: 'DELETE',
+      })
+      if (!res.ok) throw new Error('Failed to delete message')
+    },
+    onSuccess: (_, { sessionId, agentSlug }) => {
+      queryClient.invalidateQueries({ queryKey: ['messages', sessionId, agentSlug] })
+    },
+  })
+}
+
+export function useDeleteToolCall() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ sessionId, agentSlug, toolCallId }: { sessionId: string; agentSlug: string; toolCallId: string }) => {
+      const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/tool-calls/${toolCallId}`, {
+        method: 'DELETE',
+      })
+      if (!res.ok) throw new Error('Failed to delete tool call')
+    },
+    onSuccess: (_, { sessionId, agentSlug }) => {
+      queryClient.invalidateQueries({ queryKey: ['messages', sessionId, agentSlug] })
+    },
+  })
+}
+
 export function useInterruptSession() {
   const queryClient = useQueryClient()
 

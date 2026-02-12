@@ -1,5 +1,5 @@
 
-import { useMessages } from '@renderer/hooks/use-messages'
+import { useMessages, useDeleteMessage, useDeleteToolCall } from '@renderer/hooks/use-messages'
 import {
   useMessageStream,
   removeSecretRequest,
@@ -31,6 +31,22 @@ interface MessageListProps {
 
 export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendingMessageAppeared }: MessageListProps) {
   const { data: messages, isLoading } = useMessages(sessionId, agentSlug)
+  const deleteMessage = useDeleteMessage()
+  const deleteToolCall = useDeleteToolCall()
+
+  const handleRemoveMessage = useCallback(
+    (messageId: string) => {
+      deleteMessage.mutate({ sessionId, agentSlug, messageId })
+    },
+    [sessionId, agentSlug, deleteMessage]
+  )
+
+  const handleRemoveToolCall = useCallback(
+    (toolCallId: string) => {
+      deleteToolCall.mutate({ sessionId, agentSlug, toolCallId })
+    },
+    [sessionId, agentSlug, deleteToolCall]
+  )
 
   // Check if pending message has appeared in real messages.
   // Once the server persists the user message and it shows up in the fetched
@@ -343,7 +359,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
       <div className="p-4 space-y-4">
         {messages?.map((message) => (
           <Fragment key={message.id}>
-            <MessageItem message={message} agentSlug={agentSlug} isSessionActive={canHaveRunningToolCalls.has(message.id)} />
+            <MessageItem message={message} agentSlug={agentSlug} isSessionActive={canHaveRunningToolCalls.has(message.id)} onRemoveMessage={handleRemoveMessage} onRemoveToolCall={handleRemoveToolCall} />
             {turnElapsedTimes.has(message.id) && (
               <div className="text-xs text-muted-foreground pb-1 -mt-1 tabular-nums ml-11 italic">
                 Agent took {formatElapsed(turnElapsedTimes.get(message.id)!)}

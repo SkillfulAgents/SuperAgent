@@ -19,6 +19,8 @@ import {
   getSessionMessages,
   getSession,
   deleteSession,
+  removeMessage,
+  removeToolCall,
 } from '@shared/lib/services/session-service'
 import { getSessionJsonlPath, readFileOrNull } from '@shared/lib/utils/file-storage'
 import {
@@ -359,6 +361,52 @@ agents.get('/:id/sessions/:sessionId/messages', async (c) => {
   } catch (error) {
     console.error('Failed to fetch messages:', error)
     return c.json({ error: 'Failed to fetch messages' }, 500)
+  }
+})
+
+// DELETE /api/agents/:id/sessions/:sessionId/messages/:messageId - Remove a message from history
+agents.delete('/:id/sessions/:sessionId/messages/:messageId', async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const sessionId = c.req.param('sessionId')
+    const messageId = c.req.param('messageId')
+
+    if (!(await agentExists(agentSlug))) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+
+    const removed = await removeMessage(agentSlug, sessionId, messageId)
+    if (!removed) {
+      return c.json({ error: 'Message not found' }, 404)
+    }
+
+    return c.body(null, 204)
+  } catch (error) {
+    console.error('Failed to remove message:', error)
+    return c.json({ error: 'Failed to remove message' }, 500)
+  }
+})
+
+// DELETE /api/agents/:id/sessions/:sessionId/tool-calls/:toolCallId - Remove a tool call from history
+agents.delete('/:id/sessions/:sessionId/tool-calls/:toolCallId', async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const sessionId = c.req.param('sessionId')
+    const toolCallId = c.req.param('toolCallId')
+
+    if (!(await agentExists(agentSlug))) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+
+    const removed = await removeToolCall(agentSlug, sessionId, toolCallId)
+    if (!removed) {
+      return c.json({ error: 'Tool call not found' }, 404)
+    }
+
+    return c.body(null, 204)
+  } catch (error) {
+    console.error('Failed to remove tool call:', error)
+    return c.json({ error: 'Failed to remove tool call' }, 500)
   }
 })
 

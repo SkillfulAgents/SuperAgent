@@ -26,6 +26,7 @@ import {
   SessionMetadataMap,
   JsonlEntry,
   JsonlMessageEntry,
+  ContentBlock,
 } from '@shared/lib/types/agent'
 
 // ============================================================================
@@ -372,6 +373,154 @@ export async function findSessionAcrossAgents(
   }
 
   return null
+}
+
+// ============================================================================
+// Message Removal
+// ============================================================================
+
+/**
+ * Remove an entire message (and its associated tool results) from a session's JSONL file.
+ *
+ * For assistant messages: removes all JSONL entries sharing the same message.id,
+ * plus any user-type entries containing tool_result blocks for those tool calls.
+ * For user messages: removes the single entry matching the uuid.
+ */
+export async function removeMessage(
+  agentSlug: string,
+  sessionId: string,
+  messageUuid: string
+): Promise<boolean> {
+  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  if (!(await fileExists(jsonlPath))) return false
+
+  const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
+
+  // Find the target entry by uuid
+  const target = entries.find(
+    (e): e is JsonlMessageEntry =>
+      'uuid' in e && e.uuid === messageUuid
+  )
+  if (!target) return false
+
+  // Collect message IDs and tool_use IDs to remove
+  const messageIdsToRemove = new Set<string>()
+  const toolUseIdsToRemove = new Set<string>()
+
+  if (target.type === 'assistant' && target.message.id) {
+    // Remove all entries for this assistant message (they share message.id)
+    messageIdsToRemove.add(target.message.id)
+
+    // Collect tool_use IDs from all entries with this message.id
+    for (const entry of entries) {
+      if (!('message' in entry)) continue
+      const e = entry as JsonlMessageEntry
+      if (e.type === 'assistant' && e.message.id === target.message.id) {
+        const content = e.message.content
+        if (Array.isArray(content)) {
+          for (const block of content as ContentBlock[]) {
+            if (block.type === 'tool_use') {
+              toolUseIdsToRemove.add(block.id)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Filter entries
+  const filtered = entries.filter((entry) => {
+    if (!('uuid' in entry)) return true // keep non-message entries
+    const e = entry as JsonlMessageEntry
+
+    // Remove the target entry (user message) or all entries with same message.id (assistant)
+    if (e.uuid === messageUuid) return false
+    if (e.type === 'assistant' && e.message.id && messageIdsToRemove.has(e.message.id)) return false
+
+    // Remove tool_result user entries referencing removed tool calls
+    if (e.type === 'user' && toolUseIdsToRemove.size > 0) {
+      const content = e.message.content
+      if (Array.isArray(content)) {
+        const blocks = content as ContentBlock[]
+        if (blocks.every((b) => b.type === 'tool_result' && toolUseIdsToRemove.has(b.tool_use_id))) {
+          return false
+        }
+      }
+    }
+
+    return true
+  })
+
+  // Write back
+  const jsonl = filtered.map((e) => JSON.stringify(e)).join('\n') + (filtered.length > 0 ? '\n' : '')
+  await writeFile(jsonlPath, jsonl)
+  return true
+}
+
+/**
+ * Remove a specific tool call (and its result) from a session's JSONL file.
+ *
+ * Removes the tool_use content block from the assistant entry and the
+ * corresponding tool_result user entry. If the assistant entry has no
+ * remaining content blocks, the entire entry is removed.
+ */
+export async function removeToolCall(
+  agentSlug: string,
+  sessionId: string,
+  toolCallId: string
+): Promise<boolean> {
+  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  if (!(await fileExists(jsonlPath))) return false
+
+  const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
+  let found = false
+
+  // Process entries: remove the tool_use block and tool_result entries
+  const filtered: JsonlEntry[] = []
+
+  for (const entry of entries) {
+    if (!('message' in entry)) {
+      filtered.push(entry)
+      continue
+    }
+    const e = entry as JsonlMessageEntry
+
+    // Remove tool_result user entries for this tool call
+    if (e.type === 'user' && Array.isArray(e.message.content)) {
+      const blocks = e.message.content as ContentBlock[]
+      const remaining = blocks.filter(
+        (b) => !(b.type === 'tool_result' && b.tool_use_id === toolCallId)
+      )
+      if (remaining.length < blocks.length) {
+        found = true
+        if (remaining.length === 0) continue // drop entire entry
+        filtered.push({ ...e, message: { ...e.message, content: remaining } })
+        continue
+      }
+    }
+
+    // Remove tool_use block from assistant entries
+    if (e.type === 'assistant' && Array.isArray(e.message.content)) {
+      const blocks = e.message.content as ContentBlock[]
+      const remaining = blocks.filter(
+        (b) => !(b.type === 'tool_use' && b.id === toolCallId)
+      )
+      if (remaining.length < blocks.length) {
+        found = true
+        if (remaining.length === 0) continue // drop entire entry
+        filtered.push({ ...e, message: { ...e.message, content: remaining } })
+        continue
+      }
+    }
+
+    filtered.push(entry)
+  }
+
+  if (!found) return false
+
+  const jsonl = filtered.map((e) => JSON.stringify(e)).join('\n') + (filtered.length > 0 ? '\n' : '')
+  await writeFile(jsonlPath, jsonl)
+  return true
 }
 
 /**

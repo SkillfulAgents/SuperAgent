@@ -15,9 +15,11 @@ interface MessageItemProps {
   isStreaming?: boolean
   agentSlug?: string
   isSessionActive?: boolean
+  onRemoveMessage?: (messageId: string) => void
+  onRemoveToolCall?: (toolCallId: string) => void
 }
 
-export function MessageItem({ message, isStreaming, agentSlug, isSessionActive }: MessageItemProps) {
+export function MessageItem({ message, isStreaming, agentSlug, isSessionActive, onRemoveMessage, onRemoveToolCall }: MessageItemProps) {
   const isUser = message.type === 'user'
   const isAssistant = message.type === 'assistant'
 
@@ -58,7 +60,7 @@ export function MessageItem({ message, isStreaming, agentSlug, isSessionActive }
       >
         {/* Message bubble - only show if there's text content */}
         {showMessageBubble && (
-          <MessageContextMenu text={text || ''}>
+          <MessageContextMenu text={text || ''} onRemove={onRemoveMessage ? () => onRemoveMessage(message.id) : undefined}>
             <div
               className={cn(
                 'rounded-lg px-4 py-2',
@@ -159,7 +161,11 @@ export function MessageItem({ message, isStreaming, agentSlug, isSessionActive }
         {isAssistant && toolCalls.length > 0 && (
           <div className="w-full space-y-2">
             {toolCalls.map((toolCall) => (
-              <ToolCallItem key={toolCall.id} toolCall={toolCall} messageCreatedAt={message.createdAt} agentSlug={agentSlug} isSessionActive={isSessionActive} />
+              <MessageContextMenu key={toolCall.id} text={toolCall.name} onRemove={onRemoveToolCall ? () => onRemoveToolCall(toolCall.id) : undefined}>
+                <div>
+                  <ToolCallItem toolCall={toolCall} messageCreatedAt={message.createdAt} agentSlug={agentSlug} isSessionActive={isSessionActive} />
+                </div>
+              </MessageContextMenu>
             ))}
           </div>
         )}
