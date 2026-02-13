@@ -109,6 +109,25 @@ export interface JsonlMessageEntry {
     isImage: boolean
   }
   sourceToolAssistantUUID?: string
+  // Compact summary fields (present on user messages that contain a compaction summary)
+  isCompactSummary?: boolean
+  isVisibleInTranscriptOnly?: boolean
+}
+
+/**
+ * System entry from Claude's JSONL format (e.g., compact_boundary, init)
+ */
+export interface JsonlSystemEntry {
+  uuid: string
+  type: 'system'
+  subtype: string
+  content: string
+  isMeta: boolean
+  timestamp: string
+  compactMetadata?: {
+    trigger: string
+    preTokens: number
+  }
 }
 
 /**
@@ -127,7 +146,7 @@ export interface JsonlFileHistoryEntry {
 /**
  * Union type for all JSONL entry types
  */
-export type JsonlEntry = JsonlMessageEntry | JsonlFileHistoryEntry
+export type JsonlEntry = JsonlMessageEntry | JsonlFileHistoryEntry | JsonlSystemEntry
 
 // ============================================================================
 // Content Block Types (from Anthropic API)

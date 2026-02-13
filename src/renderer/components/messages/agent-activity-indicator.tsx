@@ -65,6 +65,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     // Iterate through messages in reverse to find the most recent TodoWrite
     for (let i = messages.length - 1; i >= 0; i--) {
       const message = messages[i]
+      if (message.type === 'compact_boundary') continue
       // Use the toolCalls array from the API message
       const toolCalls = message.toolCalls || []
       for (let j = toolCalls.length - 1; j >= 0; j--) {

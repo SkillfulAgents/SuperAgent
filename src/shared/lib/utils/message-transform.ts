@@ -5,7 +5,7 @@
  * Handles merging of streaming message chunks and attaching tool results.
  */
 
-import { ContentBlock, JsonlMessageEntry } from '@shared/lib/types/agent'
+import { ContentBlock, JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
 
 export interface TransformedMessage {
   id: string
@@ -20,6 +20,17 @@ export interface TransformedMessage {
   }>
   createdAt: Date
 }
+
+export interface TransformedCompactBoundary {
+  id: string
+  type: 'compact_boundary'
+  summary: string
+  trigger: string
+  preTokens?: number
+  createdAt: Date
+}
+
+export type TransformedItem = TransformedMessage | TransformedCompactBoundary
 
 /**
  * Check if a user message only contains tool results (not a real user message)
@@ -45,15 +56,59 @@ export function isToolResultOnlyMessage(entry: JsonlMessageEntry): boolean {
  * 2. Tool results come as separate user messages with tool_result content
  *    - We attach these results to the corresponding tool_use in the assistant message
  * 3. Empty string results (e.g., mkdir with no output) should be preserved as valid results
+ * 4. Compact boundaries are paired with their following summary message
  */
-export function transformMessages(entries: JsonlMessageEntry[]): TransformedMessage[] {
+export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry)[]): TransformedItem[] {
+  // Pre-pass: identify compact boundaries and pair them with their summary messages
+  const compactBoundaries = new Map<number, { boundary: JsonlSystemEntry; summaryContent: string }>()
+  const skipIndices = new Set<number>()
+
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i]
+    if (entry.type === 'system' && (entry as JsonlSystemEntry).subtype === 'compact_boundary') {
+      const sysEntry = entry as JsonlSystemEntry
+      let summaryContent = ''
+
+      // Look ahead for the next isCompactSummary user message (within a few entries)
+      for (let j = i + 1; j < entries.length && j <= i + 3; j++) {
+        const nextEntry = entries[j]
+        if (nextEntry.type === 'user' && (nextEntry as JsonlMessageEntry).isCompactSummary) {
+          const msgEntry = nextEntry as JsonlMessageEntry
+          summaryContent = typeof msgEntry.message.content === 'string'
+            ? msgEntry.message.content
+            : ''
+          skipIndices.add(j)
+          break
+        }
+      }
+
+      compactBoundaries.set(i, { boundary: sysEntry, summaryContent })
+      skipIndices.add(i)
+    }
+    // Also skip any isCompactSummary messages that weren't paired
+    if (entry.type === 'user' && (entry as JsonlMessageEntry).isCompactSummary) {
+      skipIndices.add(i)
+    }
+  }
+
+  // Filter to only message entries for the main transform pipeline
+  const messageEntries: JsonlMessageEntry[] = []
+
+  for (let i = 0; i < entries.length; i++) {
+    if (skipIndices.has(i)) continue
+    const entry = entries[i]
+    if (entry.type === 'user' || entry.type === 'assistant') {
+      messageEntries.push(entry as JsonlMessageEntry)
+    }
+  }
+
   // Merge assistant messages by message.id
   // Claude SDK writes separate entries for each content block (text, tool_use, etc.)
   // with the same message.id but different UUIDs. We need to merge them into one message.
   const mergedEntries: JsonlMessageEntry[] = []
   const assistantMessageIds = new Map<string, number>() // message.id -> index in mergedEntries
 
-  for (const entry of entries) {
+  for (const entry of messageEntries) {
     const messageId = entry.message.id
     if (entry.type === 'assistant' && messageId) {
       const existingIndex = assistantMessageIds.get(messageId)
@@ -94,7 +149,7 @@ export function transformMessages(entries: JsonlMessageEntry[]): TransformedMess
     { content: string; isError: boolean; toolUseResult?: JsonlMessageEntry['toolUseResult'] }
   >()
 
-  for (const entry of entries) {
+  for (const entry of messageEntries) {
     if (entry.type !== 'user') continue
 
     const content = entry.message.content
@@ -111,10 +166,50 @@ export function transformMessages(entries: JsonlMessageEntry[]): TransformedMess
     }
   }
 
-  // Second pass: transform messages, attaching results to tool calls
-  const result: TransformedMessage[] = []
+  // Build a map of message UUID -> compact boundary that precedes it
+  // This allows us to insert boundaries at the correct position in the output
+  const boundaryBeforeUuid = new Map<string, TransformedCompactBoundary>()
+  // Also track boundaries that appear at the very end (no following message)
+  const trailingBoundaries: TransformedCompactBoundary[] = []
+
+  for (const [idx, { boundary, summaryContent }] of compactBoundaries) {
+    const item: TransformedCompactBoundary = {
+      id: boundary.uuid,
+      type: 'compact_boundary',
+      summary: summaryContent,
+      trigger: boundary.compactMetadata?.trigger || 'auto',
+      preTokens: boundary.compactMetadata?.preTokens,
+      createdAt: new Date(boundary.timestamp),
+    }
+
+    // Find the next non-skipped message entry after this boundary
+    let nextUuid: string | null = null
+    for (let j = idx + 1; j < entries.length; j++) {
+      if (skipIndices.has(j)) continue
+      const nextEntry = entries[j]
+      if (nextEntry.type === 'user' || nextEntry.type === 'assistant') {
+        nextUuid = (nextEntry as JsonlMessageEntry).uuid
+        break
+      }
+    }
+
+    if (nextUuid) {
+      boundaryBeforeUuid.set(nextUuid, item)
+    } else {
+      trailingBoundaries.push(item)
+    }
+  }
+
+  // Transform merged message entries, inserting boundaries at correct positions
+  const result: TransformedItem[] = []
 
   for (const entry of mergedEntries) {
+    // Insert any compact boundary that precedes this message
+    const boundary = boundaryBeforeUuid.get(entry.uuid)
+    if (boundary) {
+      result.push(boundary)
+    }
+
     // Skip user messages that only contain tool results
     if (isToolResultOnlyMessage(entry)) continue
 
@@ -153,6 +248,9 @@ export function transformMessages(entries: JsonlMessageEntry[]): TransformedMess
       createdAt: new Date(entry.timestamp),
     })
   }
+
+  // Append any boundaries that appear after all messages
+  result.push(...trailingBoundaries)
 
   return result
 }

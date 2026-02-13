@@ -26,6 +26,7 @@ import {
   SessionMetadataMap,
   JsonlEntry,
   JsonlMessageEntry,
+  JsonlSystemEntry,
   ContentBlock,
 } from '@shared/lib/types/agent'
 
@@ -286,6 +287,36 @@ export async function getSessionMessages(
 
   const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
   return entries.filter(isMessageEntry)
+}
+
+/**
+ * Check if a JSONL entry is a message or compact boundary (for display)
+ */
+function isMessageOrCompactEntry(
+  entry: JsonlEntry
+): entry is JsonlMessageEntry | JsonlSystemEntry {
+  return (
+    entry.type === 'user' ||
+    entry.type === 'assistant' ||
+    (entry.type === 'system' && (entry as JsonlSystemEntry).subtype === 'compact_boundary')
+  )
+}
+
+/**
+ * Get all messages from a session including compact boundary markers
+ */
+export async function getSessionMessagesWithCompact(
+  agentSlug: string,
+  sessionId: string
+): Promise<(JsonlMessageEntry | JsonlSystemEntry)[]> {
+  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+
+  if (!(await fileExists(jsonlPath))) {
+    return []
+  }
+
+  const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
+  return entries.filter(isMessageOrCompactEntry)
 }
 
 /**

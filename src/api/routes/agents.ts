@@ -16,7 +16,7 @@ import {
   listSessions,
   updateSessionName,
   registerSession,
-  getSessionMessages,
+  getSessionMessagesWithCompact,
   getSession,
   deleteSession,
   removeMessage,
@@ -353,7 +353,7 @@ agents.get('/:id/sessions/:sessionId/messages', async (c) => {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
-    const messages = await getSessionMessages(agentSlug, sessionId)
+    const messages = await getSessionMessagesWithCompact(agentSlug, sessionId)
     const filtered = messages.filter((m) => !('isMeta' in m && m.isMeta))
     const transformed = transformMessages(filtered)
 

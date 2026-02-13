@@ -1,12 +1,12 @@
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import type { ApiMessage } from '@shared/lib/types/api'
+import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
 
 // Re-export for convenience
-export type { ApiMessage }
+export type { ApiMessage, ApiMessageOrBoundary }
 
 export function useMessages(sessionId: string | null, agentSlug: string | null) {
-  return useQuery<ApiMessage[]>({
+  return useQuery<ApiMessageOrBoundary[]>({
     queryKey: ['messages', sessionId, agentSlug],
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/messages`)

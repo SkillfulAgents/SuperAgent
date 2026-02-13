@@ -9,6 +9,7 @@ import {
 } from '@renderer/hooks/use-message-stream'
 import { MessageItem } from './message-item'
 import { StreamingToolCallItem } from './tool-call-item'
+import { CompactBoundaryItem } from './compact-boundary-item'
 import { SecretRequestItem } from './secret-request-item'
 import { ConnectedAccountRequestItem } from './connected-account-request-item'
 import { QuestionRequestItem } from './question-request-item'
@@ -16,6 +17,7 @@ import { FileRequestItem } from './file-request-item'
 import { Loader2, Wrench } from 'lucide-react'
 import { useEffect, useRef, useCallback, useMemo, Fragment } from 'react'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
+import type { ApiMessage, ApiCompactBoundary } from '@shared/lib/types/api'
 
 interface PendingMessage {
   text: string
@@ -70,6 +72,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     streamingMessage,
     isStreaming,
     streamingToolUse,
+    isCompacting,
     pendingSecretRequests: sseSecretRequests,
     pendingConnectedAccountRequests: sseConnectedAccountRequests,
     pendingQuestionRequests: sseQuestionRequests,
@@ -264,7 +267,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     if (!streamingMessage || !messages?.length) return false
 
     // Find the last assistant message
-    const lastAssistantMessage = [...messages].reverse().find(m => m.type === 'assistant')
+    const lastAssistantMessage = [...messages].reverse().find((m): m is ApiMessage => m.type === 'assistant')
     if (!lastAssistantMessage) return false
 
     // Check if the persisted message text contains the streaming content
@@ -344,7 +347,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [messages, pendingUserMessage, streamingMessage, streamingToolUse, pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests, pendingFileRequests])
+  }, [messages, pendingUserMessage, streamingMessage, streamingToolUse, isCompacting, pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests, pendingFileRequests])
 
   if (isLoading && !pendingUserMessage) {
     return (
@@ -357,13 +360,19 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
   return (
     <div className="overflow-y-auto" ref={scrollRef} data-testid="message-list">
       <div className="p-4 space-y-4">
-        {messages?.map((message) => (
-          <Fragment key={message.id}>
-            <MessageItem message={message} agentSlug={agentSlug} isSessionActive={canHaveRunningToolCalls.has(message.id)} onRemoveMessage={handleRemoveMessage} onRemoveToolCall={handleRemoveToolCall} />
-            {turnElapsedTimes.has(message.id) && (
-              <div className="text-xs text-muted-foreground pb-1 -mt-1 tabular-nums ml-11 italic">
-                Agent took {formatElapsed(turnElapsedTimes.get(message.id)!)}
-              </div>
+        {messages?.map((item) => (
+          <Fragment key={item.id}>
+            {item.type === 'compact_boundary' ? (
+              <CompactBoundaryItem boundary={item as ApiCompactBoundary} />
+            ) : (
+              <>
+                <MessageItem message={item as ApiMessage} agentSlug={agentSlug} isSessionActive={canHaveRunningToolCalls.has(item.id)} onRemoveMessage={handleRemoveMessage} onRemoveToolCall={handleRemoveToolCall} />
+                {turnElapsedTimes.has(item.id) && (
+                  <div className="text-xs text-muted-foreground pb-1 -mt-1 tabular-nums ml-11 italic">
+                    Agent took {formatElapsed(turnElapsedTimes.get(item.id)!)}
+                  </div>
+                )}
+              </>
             )}
           </Fragment>
         ))}
@@ -408,6 +417,11 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
               />
             </div>
           </div>
+        )}
+
+        {/* Real-time compacting indicator */}
+        {isCompacting && (
+          <CompactBoundaryItem isCompacting />
         )}
 
         {/* Pending secret requests from the agent */}

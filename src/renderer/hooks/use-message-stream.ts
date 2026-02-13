@@ -43,6 +43,7 @@ interface StreamState {
   error: string | null // Error message if session encountered an error
   browserActive: boolean // Whether browser is running for this session
   activeStartTime: number | null // Timestamp when session became active (for elapsed timer)
+  isCompacting: boolean // True while context compaction is in progress
 }
 
 // Global state to track streaming per session
@@ -94,6 +95,7 @@ function getOrCreateEventSource(
           error: null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
+          isCompacting: current?.isCompacting ?? false,
         })
         // Fetch current browser status to sync state (handles missed events)
         fetch(`${baseUrl}/api/agents/${agentSlug}/browser/status`)
@@ -121,6 +123,7 @@ function getOrCreateEventSource(
           error: null, // Clear any previous error when starting new request
           browserActive: current?.browserActive ?? false,
           activeStartTime: Date.now(),
+          isCompacting: false,
         })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
       }
@@ -142,6 +145,7 @@ function getOrCreateEventSource(
           error: null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: null,
+          isCompacting: false,
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -160,6 +164,7 @@ function getOrCreateEventSource(
           error: data.error || 'An unknown error occurred',
           browserActive: current?.browserActive ?? false,
           activeStartTime: null,
+          isCompacting: false,
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -178,6 +183,7 @@ function getOrCreateEventSource(
           error: null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
+          isCompacting: current?.isCompacting ?? false,
         })
       }
       else if (data.type === 'stream_delta') {
@@ -193,6 +199,7 @@ function getOrCreateEventSource(
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
+          isCompacting: current?.isCompacting ?? false,
         })
       }
       else if (data.type === 'tool_use_start' || data.type === 'tool_use_streaming') {
@@ -212,6 +219,7 @@ function getOrCreateEventSource(
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
+          isCompacting: current?.isCompacting ?? false,
         })
       }
       else if (data.type === 'tool_use_ready') {
@@ -228,6 +236,7 @@ function getOrCreateEventSource(
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
+          isCompacting: current?.isCompacting ?? false,
         })
       }
       else if (data.type === 'stream_end') {
@@ -243,6 +252,7 @@ function getOrCreateEventSource(
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
+          isCompacting: current?.isCompacting ?? false,
         })
       }
       else if (data.type === 'tool_call' || data.type === 'tool_result') {
@@ -260,6 +270,7 @@ function getOrCreateEventSource(
             error: current.error ?? null,
             browserActive: current.browserActive ?? false,
             activeStartTime: current.activeStartTime ?? null,
+            isCompacting: current.isCompacting ?? false,
           })
         }
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
@@ -286,6 +297,7 @@ function getOrCreateEventSource(
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
+          isCompacting: current?.isCompacting ?? false,
         })
       }
       else if (data.type === 'connected_account_request') {
@@ -310,6 +322,7 @@ function getOrCreateEventSource(
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
+          isCompacting: current?.isCompacting ?? false,
         })
       }
       else if (data.type === 'user_question_request') {
@@ -333,6 +346,7 @@ function getOrCreateEventSource(
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
+          isCompacting: current?.isCompacting ?? false,
         })
       }
       else if (data.type === 'file_request') {
@@ -357,7 +371,27 @@ function getOrCreateEventSource(
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
+          isCompacting: current?.isCompacting ?? false,
         })
+      }
+      else if (data.type === 'compact_start') {
+        // Context compaction started
+        if (current) {
+          streamStates.set(sessionId, {
+            ...current,
+            isCompacting: true,
+          })
+        }
+      }
+      else if (data.type === 'compact_complete') {
+        // Context compaction finished — messages_updated will trigger refetch
+        if (current) {
+          streamStates.set(sessionId, {
+            ...current,
+            isCompacting: false,
+          })
+        }
+        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
       }
       else if (data.type === 'browser_active') {
         // Browser state changed
@@ -525,6 +559,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     error: null,
     browserActive: false,
     activeStartTime: null,
+    isCompacting: false,
   })
   const queryClient = useQueryClient()
 
@@ -563,6 +598,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
         error: null,
         browserActive: false,
         activeStartTime: null,
+        isCompacting: false,
       })
     }
     updateState()

@@ -280,6 +280,13 @@ class MessagePersister {
         break
 
       case 'user':
+        // Check if this is a compact summary message
+        if (content.isCompactSummary) {
+          // Compaction complete — broadcast so frontend transitions from spinner to boundary
+          this.broadcastToSSE(sessionId, { type: 'compact_complete' })
+          this.broadcastToSSE(sessionId, { type: 'messages_updated' })
+          break
+        }
         // Tool results come as 'user' type messages
         this.handleToolResults(sessionId, content)
         break
@@ -288,6 +295,9 @@ class MessagePersister {
         // System messages (init, etc.)
         if (content.subtype === 'init') {
           this.broadcastToSSE(sessionId, { type: 'stream_start' })
+        } else if (content.subtype === 'compact_boundary') {
+          // Compaction has started — broadcast so frontend shows "Compacting..." indicator
+          this.broadcastToSSE(sessionId, { type: 'compact_start' })
         }
         break
 

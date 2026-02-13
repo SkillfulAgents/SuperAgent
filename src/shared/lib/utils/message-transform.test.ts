@@ -2,8 +2,14 @@ import { describe, it, expect } from 'vitest'
 import {
   transformMessages,
   isToolResultOnlyMessage,
+  TransformedMessage,
 } from './message-transform'
 import { JsonlMessageEntry, ContentBlock } from '@shared/lib/types/agent'
+
+/** Helper to narrow TransformedItem to TransformedMessage in tests */
+function asMessage(item: unknown): TransformedMessage {
+  return item as TransformedMessage
+}
 
 // ============================================================================
 // Test Fixtures
@@ -161,7 +167,7 @@ describe('transformMessages', () => {
 
       const result = transformMessages(entries)
 
-      expect(result[0].content.text).toBe('First Second')
+      expect(asMessage(result[0]).content.text).toBe('First Second')
     })
   })
 
@@ -228,8 +234,8 @@ describe('transformMessages', () => {
       const result = transformMessages(entries)
 
       expect(result).toHaveLength(2)
-      expect(result[0].content.text).toBe('First')
-      expect(result[1].content.text).toBe('Second')
+      expect(asMessage(result[0]).content.text).toBe('First')
+      expect(asMessage(result[1]).content.text).toBe('Second')
     })
 
     it('handles three-way merge (text + tool_use + more text)', () => {
@@ -244,8 +250,8 @@ describe('transformMessages', () => {
       const result = transformMessages(entries)
 
       expect(result).toHaveLength(1)
-      expect(result[0].content.text).toBe('Starting. Done!')
-      expect(result[0].toolCalls).toHaveLength(1)
+      expect(asMessage(result[0]).content.text).toBe('Starting. Done!')
+      expect(asMessage(result[0]).toolCalls).toHaveLength(1)
     })
 
     it('does not mutate original entries when merging', () => {
@@ -286,8 +292,8 @@ describe('transformMessages', () => {
       const result = transformMessages(entries)
 
       expect(result).toHaveLength(1) // Tool result message is filtered out
-      expect(result[0].toolCalls[0].result).toBe('hello')
-      expect(result[0].toolCalls[0].isError).toBe(false)
+      expect(asMessage(result[0]).toolCalls[0].result).toBe('hello')
+      expect(asMessage(result[0]).toolCalls[0].isError).toBe(false)
     })
 
     it('attaches error tool result', () => {
@@ -302,8 +308,8 @@ describe('transformMessages', () => {
 
       const result = transformMessages(entries)
 
-      expect(result[0].toolCalls[0].result).toBe('command not found')
-      expect(result[0].toolCalls[0].isError).toBe(true)
+      expect(asMessage(result[0]).toolCalls[0].result).toBe('command not found')
+      expect(asMessage(result[0]).toolCalls[0].isError).toBe(true)
     })
 
     it('preserves empty string as valid result (mkdir has no output)', () => {
@@ -322,7 +328,7 @@ describe('transformMessages', () => {
       const result = transformMessages(entries)
 
       // Empty string should be preserved, NOT undefined
-      expect(result[0].toolCalls[0].result).toBe('')
+      expect(asMessage(result[0]).toolCalls[0].result).toBe('')
     })
 
     it('prefers toolUseResult.stdout over content', () => {
@@ -347,7 +353,7 @@ describe('transformMessages', () => {
 
       const result = transformMessages(entries)
 
-      expect(result[0].toolCalls[0].result).toBe('file1\nfile2\nfile3')
+      expect(asMessage(result[0]).toolCalls[0].result).toBe('file1\nfile2\nfile3')
     })
 
     it('handles multiple tool calls with results', () => {
@@ -364,9 +370,9 @@ describe('transformMessages', () => {
 
       const result = transformMessages(entries)
 
-      expect(result[0].toolCalls).toHaveLength(2)
-      expect(result[0].toolCalls[0].result).toBe('/home/user')
-      expect(result[0].toolCalls[1].result).toBe('user')
+      expect(asMessage(result[0]).toolCalls).toHaveLength(2)
+      expect(asMessage(result[0]).toolCalls[0].result).toBe('/home/user')
+      expect(asMessage(result[0]).toolCalls[1].result).toBe('user')
     })
 
     it('handles tool call without result yet (pending)', () => {
@@ -379,7 +385,7 @@ describe('transformMessages', () => {
 
       const result = transformMessages(entries)
 
-      expect(result[0].toolCalls[0].result).toBeUndefined()
+      expect(asMessage(result[0]).toolCalls[0].result).toBeUndefined()
     })
   })
 
@@ -417,7 +423,7 @@ describe('transformMessages', () => {
       const result = transformMessages(entries)
 
       expect(result).toHaveLength(1)
-      expect(result[0].content.text).toBe('Here is the result:')
+      expect(asMessage(result[0]).content.text).toBe('Here is the result:')
     })
   })
 
@@ -475,8 +481,8 @@ describe('transformMessages', () => {
         type: 'assistant',
         content: { text: "I'll help you check your Gmail inbox." },
       })
-      expect(result[1].toolCalls).toHaveLength(1)
-      expect(result[1].toolCalls[0].name).toBe('mcp__user-input__request_connected_account')
+      expect(asMessage(result[1]).toolCalls).toHaveLength(1)
+      expect(asMessage(result[1]).toolCalls[0].name).toBe('mcp__user-input__request_connected_account')
       expect(result[1].createdAt).toEqual(new Date('2026-01-24T18:48:35.550Z'))
     })
 
@@ -505,8 +511,8 @@ describe('transformMessages', () => {
       expect(result.map((m) => m.id)).toEqual(['u1', 'a1', 'a2', 'u2', 'a3'])
 
       // Check tool results are attached
-      expect(result[1].toolCalls[0].result).toBe('file1.txt\nfile2.txt')
-      expect(result[1].toolCalls[1].result).toBe('/home/user')
+      expect(asMessage(result[1]).toolCalls[0].result).toBe('file1.txt\nfile2.txt')
+      expect(asMessage(result[1]).toolCalls[1].result).toBe('/home/user')
     })
   })
 
@@ -538,7 +544,7 @@ describe('transformMessages', () => {
       const result = transformMessages([entryWithoutId])
 
       expect(result).toHaveLength(1)
-      expect(result[0].content.text).toBe('Hello')
+      expect(asMessage(result[0]).content.text).toBe('Hello')
     })
 
     it('ignores thinking blocks in content', () => {
@@ -552,8 +558,8 @@ describe('transformMessages', () => {
       const result = transformMessages(entries)
 
       // Thinking block should be ignored, only text extracted
-      expect(result[0].content.text).toBe('Here is my answer.')
-      expect(result[0].toolCalls).toHaveLength(0)
+      expect(asMessage(result[0]).content.text).toBe('Here is my answer.')
+      expect(asMessage(result[0]).toolCalls).toHaveLength(0)
     })
 
     it('handles tool result for non-existent tool (orphaned result)', () => {
@@ -570,7 +576,7 @@ describe('transformMessages', () => {
 
       // Should not crash, orphaned result is just ignored
       expect(result).toHaveLength(1)
-      expect(result[0].toolCalls).toHaveLength(0)
+      expect(asMessage(result[0]).toolCalls).toHaveLength(0)
     })
 
     it('handles tool_result appearing before tool_use in entries', () => {
@@ -589,7 +595,7 @@ describe('transformMessages', () => {
 
       // Should still attach the result correctly
       expect(result).toHaveLength(1)
-      expect(result[0].toolCalls[0].result).toBe('result')
+      expect(asMessage(result[0]).toolCalls[0].result).toBe('result')
     })
 
     it('handles assistant message with string content (legacy format)', () => {
@@ -608,7 +614,7 @@ describe('transformMessages', () => {
 
       const result = transformMessages([entry])
 
-      expect(result[0].content.text).toBe('Plain string content')
+      expect(asMessage(result[0]).content.text).toBe('Plain string content')
     })
 
     it('handles multiple tool results for same tool (last wins)', () => {
@@ -627,7 +633,7 @@ describe('transformMessages', () => {
       const result = transformMessages(entries)
 
       // Last result should win
-      expect(result[0].toolCalls[0].result).toBe('second result')
+      expect(asMessage(result[0]).toolCalls[0].result).toBe('second result')
     })
 
     it('handles message with only thinking block (no visible content)', () => {
@@ -641,8 +647,8 @@ describe('transformMessages', () => {
 
       // Should produce a message with empty text
       expect(result).toHaveLength(1)
-      expect(result[0].content.text).toBe('')
-      expect(result[0].toolCalls).toHaveLength(0)
+      expect(asMessage(result[0]).content.text).toBe('')
+      expect(asMessage(result[0]).toolCalls).toHaveLength(0)
     })
 
     it('handles unicode and special characters in text', () => {
@@ -655,8 +661,8 @@ describe('transformMessages', () => {
 
       const result = transformMessages(entries)
 
-      expect(result[0].content.text).toBe('Hello 👋 世界 \n\t "quotes" & <tags>')
-      expect(result[1].content.text).toBe('Response: émojis 🎉 and spëcial çhars')
+      expect(asMessage(result[0]).content.text).toBe('Hello 👋 世界 \n\t "quotes" & <tags>')
+      expect(asMessage(result[1]).content.text).toBe('Response: émojis 🎉 and spëcial çhars')
     })
 
     it('handles deeply nested tool input', () => {
@@ -677,7 +683,7 @@ describe('transformMessages', () => {
 
       const result = transformMessages(entries)
 
-      expect(result[0].toolCalls[0].input).toEqual(complexInput)
+      expect(asMessage(result[0]).toolCalls[0].input).toEqual(complexInput)
     })
 
     it('handles interleaved messages from multiple assistant responses', () => {
@@ -693,8 +699,8 @@ describe('transformMessages', () => {
 
       // Should merge by message.id correctly even when interleaved
       expect(result).toHaveLength(2)
-      expect(result[0].content.text).toBe('A1 A2')
-      expect(result[1].content.text).toBe('B1 B2')
+      expect(asMessage(result[0]).content.text).toBe('A1 A2')
+      expect(asMessage(result[1]).content.text).toBe('B1 B2')
     })
 
     it('preserves order when mixing user and merged assistant messages', () => {
@@ -710,7 +716,7 @@ describe('transformMessages', () => {
 
       expect(result).toHaveLength(4)
       expect(result.map(m => m.id)).toEqual(['u1', 'a1', 'u2', 'a3'])
-      expect(result[1].content.text).toBe('Part 1 Part 2')
+      expect(asMessage(result[1]).content.text).toBe('Part 1 Part 2')
     })
   })
 })

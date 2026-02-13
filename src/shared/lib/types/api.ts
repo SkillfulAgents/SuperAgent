@@ -75,6 +75,23 @@ export interface ApiMessage {
   createdAt: Date
 }
 
+/**
+ * Compact boundary marker in API response
+ */
+export interface ApiCompactBoundary {
+  id: string
+  type: 'compact_boundary'
+  summary: string
+  trigger: string
+  preTokens?: number
+  createdAt: Date
+}
+
+/**
+ * Union type for all message-like items in the API response
+ */
+export type ApiMessageOrBoundary = ApiMessage | ApiCompactBoundary
+
 // ============================================================================
 // Secret API Types
 // ============================================================================
