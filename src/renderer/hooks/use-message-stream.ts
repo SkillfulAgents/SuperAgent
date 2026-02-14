@@ -537,6 +537,15 @@ export function removeQuestionRequest(sessionId: string, toolUseId: string): voi
   }
 }
 
+// Helper to clear isCompacting state (used when persisted messages already show the boundary)
+export function clearCompacting(sessionId: string): void {
+  const current = streamStates.get(sessionId)
+  if (current && current.isCompacting) {
+    streamStates.set(sessionId, { ...current, isCompacting: false })
+    streamListeners.get(sessionId)?.forEach((listener) => listener())
+  }
+}
+
 // Helper to clear browserActive state (used by BrowserPreview when stream disconnects)
 export function clearBrowserActive(sessionId: string): void {
   const current = streamStates.get(sessionId)

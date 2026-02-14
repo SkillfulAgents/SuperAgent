@@ -6,6 +6,7 @@ import {
   removeConnectedAccountRequest,
   removeQuestionRequest,
   removeFileRequest,
+  clearCompacting,
 } from '@renderer/hooks/use-message-stream'
 import { MessageItem } from './message-item'
 import { StreamingToolCallItem } from './tool-call-item'
@@ -229,6 +230,23 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
   }, [sseFileRequests, messagesBasedPendingRequests.fileRequests, isActive])
 
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  // Safety net: if isCompacting is true but a NEW compact boundary appears in fetched
+  // messages, compaction is done and the SSE compact_complete event was missed.
+  // Track the boundary count baseline when not compacting, then detect increases.
+  const boundaryCountRef = useRef(0)
+  const boundaryCount = useMemo(
+    () => messages?.filter(m => m.type === 'compact_boundary').length ?? 0,
+    [messages]
+  )
+  useEffect(() => {
+    if (isCompacting && boundaryCount > boundaryCountRef.current) {
+      clearCompacting(sessionId)
+    }
+    if (!isCompacting) {
+      boundaryCountRef.current = boundaryCount
+    }
+  }, [isCompacting, boundaryCount, sessionId])
 
   // Handler to remove a completed secret request
   const handleSecretRequestComplete = useCallback(

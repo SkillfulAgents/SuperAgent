@@ -12,6 +12,7 @@ interface StreamingState {
   currentToolInput: string // Accumulated partial JSON input for current tool
   isActive: boolean // True from user message until result received
   isInterrupted: boolean // True after user interrupts, prevents race conditions
+  isCompacting: boolean // True after compact_boundary, cleared on next user message (compact summary)
   agentSlug?: string // The agent slug for this session
 }
 
@@ -45,6 +46,7 @@ class MessagePersister {
       currentToolInput: '',
       isActive: false,
       isInterrupted: false,
+      isCompacting: false,
       agentSlug,
     })
 
@@ -218,6 +220,7 @@ class MessagePersister {
         currentToolInput: '',
         isActive: false,
         isInterrupted: false,
+        isCompacting: false,
         agentSlug,
       }
       this.streamingStates.set(sessionId, state)
@@ -280,8 +283,12 @@ class MessagePersister {
         break
 
       case 'user':
-        // Check if this is a compact summary message
-        if (content.isCompactSummary) {
+        // After a compact_boundary, the next user message is always the compact summary.
+        // Use position-based detection (state.isCompacting flag) as primary check,
+        // with content.isCompactSummary as fallback, since the WebSocket payload
+        // may not always carry the isCompactSummary metadata flag.
+        if (state.isCompacting || content.isCompactSummary) {
+          state.isCompacting = false
           // Compaction complete — broadcast so frontend transitions from spinner to boundary
           this.broadcastToSSE(sessionId, { type: 'compact_complete' })
           this.broadcastToSSE(sessionId, { type: 'messages_updated' })
@@ -296,7 +303,8 @@ class MessagePersister {
         if (content.subtype === 'init') {
           this.broadcastToSSE(sessionId, { type: 'stream_start' })
         } else if (content.subtype === 'compact_boundary') {
-          // Compaction has started — broadcast so frontend shows "Compacting..." indicator
+          // Compaction has started — set flag so we recognize the next user message as compact summary
+          state.isCompacting = true
           this.broadcastToSSE(sessionId, { type: 'compact_start' })
         }
         break
