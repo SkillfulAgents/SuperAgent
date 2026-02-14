@@ -18,6 +18,7 @@ import {
   registerSession,
   getSessionMessagesWithCompact,
   getSession,
+  getSessionMetadata,
   deleteSession,
   removeMessage,
   removeToolCall,
@@ -492,6 +493,7 @@ agents.get('/:id/sessions/:sessionId', async (c) => {
     }
 
     const isActive = messagePersister.isSessionActive(sessionId)
+    const metadata = await getSessionMetadata(agentSlug, sessionId)
 
     return c.json({
       id: session.id,
@@ -501,6 +503,7 @@ agents.get('/:id/sessions/:sessionId', async (c) => {
       lastActivityAt: session.lastActivityAt,
       messageCount: session.messageCount,
       isActive,
+      lastUsage: metadata?.lastUsage,
     })
   } catch (error) {
     console.error('Failed to fetch session:', error)

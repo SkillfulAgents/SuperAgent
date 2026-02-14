@@ -52,6 +52,14 @@ export interface UpdateAgentInput {
 /**
  * Session metadata stored in session-metadata.json
  */
+export interface SessionUsage {
+  inputTokens: number
+  outputTokens: number
+  cacheCreationInputTokens: number
+  cacheReadInputTokens: number
+  contextWindow: number
+}
+
 export interface SessionMetadata {
   name?: string
   starred?: boolean
@@ -60,6 +68,8 @@ export interface SessionMetadata {
   isScheduledExecution?: boolean
   scheduledTaskId?: string
   scheduledTaskName?: string
+  // Context window usage from the last completed turn
+  lastUsage?: SessionUsage
 }
 
 /**

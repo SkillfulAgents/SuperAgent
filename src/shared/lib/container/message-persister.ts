@@ -1,5 +1,7 @@
 import type { ContainerClient, StreamMessage } from './types'
+import type { SessionUsage } from '@shared/lib/types/agent'
 import { createScheduledTask } from '@shared/lib/services/scheduled-task-service'
+import { updateSessionMetadata } from '@shared/lib/services/session-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 
 // Tracks streaming state for SSE broadcasts
@@ -14,6 +16,8 @@ interface StreamingState {
   isInterrupted: boolean // True after user interrupts, prevents race conditions
   isCompacting: boolean // True after compact_boundary, cleared on next user message (compact summary)
   agentSlug?: string // The agent slug for this session
+  lastContextWindow: number // Last known context window size (default 200k)
+  lastAssistantUsage: SessionUsage | null // Per-call usage from most recent assistant message
 }
 
 class MessagePersister {
@@ -48,6 +52,8 @@ class MessagePersister {
       isInterrupted: false,
       isCompacting: false,
       agentSlug,
+      lastContextWindow: 200_000,
+      lastAssistantUsage: null,
     })
 
     // Store container client for reconnection checks
@@ -222,6 +228,8 @@ class MessagePersister {
         isInterrupted: false,
         isCompacting: false,
         agentSlug,
+        lastContextWindow: 200_000,
+        lastAssistantUsage: null,
       }
       this.streamingStates.set(sessionId, state)
     }
@@ -274,13 +282,19 @@ class MessagePersister {
     const content = message.content
 
     switch (content.type) {
-      case 'assistant':
+      case 'assistant': {
         // Complete assistant message - JSONL is the source of truth
         // Clear currentText since the message is now persisted
         state.currentText = ''
         // Broadcast refresh event so frontend can refetch
         this.broadcastToSSE(sessionId, { type: 'messages_updated' })
+        // Broadcast context usage from the assistant message's usage field
+        const assistantUsage = content.message?.usage
+        if (assistantUsage) {
+          this.broadcastContextUsage(sessionId, state, assistantUsage)
+        }
         break
+      }
 
       case 'user':
         // After a compact_boundary, the next user message is always the compact summary.
@@ -309,11 +323,14 @@ class MessagePersister {
         }
         break
 
-      case 'result':
+      case 'result': {
         // Query completed - session is no longer active
         state.isStreaming = false
         state.isActive = false
         state.currentText = ''
+
+        // Extract and persist context usage from result event
+        this.handleResultUsage(sessionId, state, content)
 
         // Check if this is an error result
         if (content.subtype === 'error_during_execution' || content.subtype === 'error') {
@@ -354,6 +371,7 @@ class MessagePersister {
           }
         }
         break
+      }
 
       case 'browser_active':
         // Browser state changed — forward to SSE clients
@@ -804,6 +822,65 @@ class MessagePersister {
       }
     } catch (error) {
       console.error('[MessagePersister] Error handling file request:', error)
+    }
+  }
+
+  // Broadcast context usage from an assistant message's per-call usage field.
+  // This is the actual token count for that single API call (≈ current context size).
+  private broadcastContextUsage(
+    sessionId: string,
+    state: StreamingState,
+    usage: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number }
+  ): void {
+    const contextUsage: SessionUsage = {
+      inputTokens: usage.input_tokens ?? 0,
+      outputTokens: usage.output_tokens ?? 0,
+      cacheCreationInputTokens: usage.cache_creation_input_tokens ?? 0,
+      cacheReadInputTokens: usage.cache_read_input_tokens ?? 0,
+      contextWindow: state.lastContextWindow,
+    }
+    state.lastAssistantUsage = contextUsage
+    this.broadcastToSSE(sessionId, { type: 'context_usage', ...contextUsage })
+  }
+
+  // Extract contextWindow from SDK result event, then persist the last assistant
+  // message's per-call usage (NOT the cumulative result.usage which sums all turns).
+  private handleResultUsage(
+    sessionId: string,
+    state: StreamingState,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    content: any
+  ): void {
+    try {
+      // Extract contextWindow from modelUsage (per-model breakdown in SDK result)
+      const modelUsage = content.modelUsage
+      if (modelUsage && typeof modelUsage === 'object') {
+        const firstModel = Object.values(modelUsage)[0] as { contextWindow?: number } | undefined
+        if (firstModel?.contextWindow) {
+          state.lastContextWindow = firstModel.contextWindow
+        }
+      }
+
+      // Use the last assistant message's per-call usage (current context snapshot).
+      // Update its contextWindow now that we have the authoritative value from modelUsage.
+      if (state.lastAssistantUsage) {
+        const lastUsage: SessionUsage = {
+          ...state.lastAssistantUsage,
+          contextWindow: state.lastContextWindow,
+        }
+
+        // Re-broadcast with the correct contextWindow
+        this.broadcastToSSE(sessionId, { type: 'context_usage', ...lastUsage })
+
+        // Persist to session metadata (fire-and-forget)
+        if (state.agentSlug) {
+          updateSessionMetadata(state.agentSlug, sessionId, { lastUsage }).catch((err) => {
+            console.error('[MessagePersister] Failed to persist lastUsage:', err)
+          })
+        }
+      }
+    } catch (error) {
+      console.error('[MessagePersister] Error handling result usage:', error)
     }
   }
 

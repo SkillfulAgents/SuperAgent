@@ -11,8 +11,9 @@ import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
 import { Button } from '@renderer/components/ui/button'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
+import { DonutChart } from '@renderer/components/ui/donut-chart'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
-import { Plus, Play, Square, ChevronRight, Settings, Clock, Loader2, AlertCircle, AlertTriangle } from 'lucide-react'
+import { Plus, Play, Square, ChevronRight, Settings, Clock, Loader2, AlertCircle, AlertTriangle, X } from 'lucide-react'
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useAgent, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
 import { useSessions, useSession } from '@renderer/hooks/use-sessions'
@@ -25,6 +26,7 @@ import { useSidebar } from '@renderer/components/ui/sidebar'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import { useMarkSessionNotificationsRead } from '@renderer/hooks/use-notifications'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
+import { computeContextPercent } from '@shared/lib/utils/context-usage'
 
 export function MainContent() {
   const {
@@ -35,6 +37,7 @@ export function MainContent() {
     selectSession,
   } = useSelection()
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [contextBarExpanded, setContextBarExpanded] = useState(false)
   // Pending user messages per session — survives navigation between sessions
   const pendingMessagesRef = useRef(new Map<string, { text: string; sentAt: number }>())
   const [, forceUpdate] = useState(0)
@@ -48,11 +51,15 @@ export function MainContent() {
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
   const markSessionNotificationsRead = useMarkSessionNotificationsRead()
-  const { browserActive, isActive } = useMessageStream(sessionId ?? null, agentSlug ?? null)
+  const { browserActive, isActive, contextUsage: streamContextUsage } = useMessageStream(sessionId ?? null, agentSlug ?? null)
   const { data: settingsData } = useSettings()
   const readiness = settingsData?.runtimeReadiness
   const isRuntimeReady = readiness?.status === 'READY'
   const isPulling = readiness?.status === 'PULLING_IMAGE'
+
+  // Context usage: prefer live stream data, fall back to persisted session metadata
+  const contextUsage = streamContextUsage ?? session?.lastUsage ?? null
+  const contextPercent = contextUsage ? computeContextPercent(contextUsage) : null
 
   // Auto-mark notifications as read when viewing a session
   useEffect(() => {
@@ -159,6 +166,14 @@ export function MainContent() {
           )}
         </div>
         <div className="flex items-center gap-2 shrink-0 app-no-drag">
+          {sessionId && contextPercent != null && (
+            <DonutChart
+              percent={contextPercent}
+              tooltip={`Context window: ${contextPercent}%`}
+              animated={isActive}
+              onClick={() => setContextBarExpanded(v => !v)}
+            />
+          )}
           {agent?.status === 'running' ? (
             <Button
               variant="outline"
@@ -271,6 +286,50 @@ export function MainContent() {
           </div>
         </div>
       ))}
+
+      {/* Context window usage bar (expanded) */}
+      {sessionId && contextPercent != null && contextBarExpanded && (
+        <div className="shrink-0 border-b px-4 py-1.5 flex items-center gap-2">
+          <span className="text-xs text-muted-foreground whitespace-nowrap">Context</span>
+          <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all duration-500 relative overflow-hidden ${
+                contextPercent >= 70
+                  ? 'bg-destructive'
+                  : contextPercent >= 50
+                    ? 'bg-yellow-500'
+                    : 'bg-primary'
+              }`}
+              style={{ width: `${Math.min(contextPercent, 100)}%` }}
+            >
+              {isActive && (
+                <div
+                  className="absolute inset-0 animate-shimmer"
+                  style={{
+                    backgroundImage: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.3) 50%, transparent 100%)',
+                    backgroundSize: '200% 100%',
+                  }}
+                />
+              )}
+            </div>
+          </div>
+          <span className={`text-xs tabular-nums whitespace-nowrap ${
+            contextPercent >= 70
+              ? 'text-destructive'
+              : contextPercent >= 50
+                ? 'text-yellow-600 dark:text-yellow-400'
+                : 'text-muted-foreground'
+          }`}>
+            {contextPercent}%
+          </span>
+          <button
+            onClick={() => setContextBarExpanded(false)}
+            className="text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Show dashboard view when a dashboard is selected */}
       <ErrorBoundary>

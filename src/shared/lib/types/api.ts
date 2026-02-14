@@ -6,6 +6,7 @@
  */
 
 import type { HealthCheckResult } from '@shared/lib/container/types'
+import type { SessionUsage } from '@shared/lib/types/agent'
 
 // ============================================================================
 // Agent API Types
@@ -40,6 +41,7 @@ export interface ApiSession {
   lastActivityAt: Date
   messageCount: number
   isActive?: boolean
+  lastUsage?: SessionUsage
 }
 
 // ============================================================================

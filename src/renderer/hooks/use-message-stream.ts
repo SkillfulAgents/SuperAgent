@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useQueryClient, QueryClient } from '@tanstack/react-query'
 import { getApiBaseUrl } from '@renderer/lib/env'
+import type { SessionUsage } from '@shared/lib/types/agent'
 
 interface SecretRequest {
   toolUseId: string
@@ -44,6 +45,7 @@ interface StreamState {
   browserActive: boolean // Whether browser is running for this session
   activeStartTime: number | null // Timestamp when session became active (for elapsed timer)
   isCompacting: boolean // True while context compaction is in progress
+  contextUsage: SessionUsage | null // Latest context window usage data
 }
 
 // Global state to track streaming per session
@@ -96,6 +98,7 @@ function getOrCreateEventSource(
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
+          contextUsage: current?.contextUsage ?? null,
         })
         // Fetch current browser status to sync state (handles missed events)
         fetch(`${baseUrl}/api/agents/${agentSlug}/browser/status`)
@@ -124,6 +127,7 @@ function getOrCreateEventSource(
           browserActive: current?.browserActive ?? false,
           activeStartTime: Date.now(),
           isCompacting: false,
+          contextUsage: current?.contextUsage ?? null,
         })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
       }
@@ -146,6 +150,7 @@ function getOrCreateEventSource(
           browserActive: current?.browserActive ?? false,
           activeStartTime: null,
           isCompacting: false,
+          contextUsage: current?.contextUsage ?? null,
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -165,6 +170,7 @@ function getOrCreateEventSource(
           browserActive: current?.browserActive ?? false,
           activeStartTime: null,
           isCompacting: false,
+          contextUsage: current?.contextUsage ?? null,
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -184,6 +190,7 @@ function getOrCreateEventSource(
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
+          contextUsage: current?.contextUsage ?? null,
         })
       }
       else if (data.type === 'stream_delta') {
@@ -200,6 +207,7 @@ function getOrCreateEventSource(
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
+          contextUsage: current?.contextUsage ?? null,
         })
       }
       else if (data.type === 'tool_use_start' || data.type === 'tool_use_streaming') {
@@ -220,6 +228,7 @@ function getOrCreateEventSource(
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
+          contextUsage: current?.contextUsage ?? null,
         })
       }
       else if (data.type === 'tool_use_ready') {
@@ -237,6 +246,7 @@ function getOrCreateEventSource(
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
+          contextUsage: current?.contextUsage ?? null,
         })
       }
       else if (data.type === 'stream_end') {
@@ -253,27 +263,33 @@ function getOrCreateEventSource(
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
+          contextUsage: current?.contextUsage ?? null,
         })
       }
       else if (data.type === 'tool_call' || data.type === 'tool_result') {
         // Message has been persisted - keep streamingMessage visible until refetch completes
         if (current) {
           streamStates.set(sessionId, {
-            isActive: current.isActive,
+            ...current,
             isStreaming: false,
-            streamingMessage: current.streamingMessage,
-            streamingToolUse: current.streamingToolUse,
-            pendingSecretRequests: current.pendingSecretRequests ?? [],
-            pendingConnectedAccountRequests: current.pendingConnectedAccountRequests ?? [],
-            pendingQuestionRequests: current.pendingQuestionRequests ?? [],
-            pendingFileRequests: current.pendingFileRequests ?? [],
-            error: current.error ?? null,
-            browserActive: current.browserActive ?? false,
-            activeStartTime: current.activeStartTime ?? null,
-            isCompacting: current.isCompacting ?? false,
           })
         }
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+      }
+      else if (data.type === 'context_usage') {
+        // Context window usage update from backend
+        if (current) {
+          streamStates.set(sessionId, {
+            ...current,
+            contextUsage: {
+              inputTokens: data.inputTokens ?? 0,
+              outputTokens: data.outputTokens ?? 0,
+              cacheCreationInputTokens: data.cacheCreationInputTokens ?? 0,
+              cacheReadInputTokens: data.cacheReadInputTokens ?? 0,
+              contextWindow: data.contextWindow ?? 200_000,
+            },
+          })
+        }
       }
       else if (data.type === 'secret_request') {
         // Agent is requesting a secret from the user
@@ -282,23 +298,12 @@ function getOrCreateEventSource(
           secretName: data.secretName,
           reason: data.reason,
         }
-        streamStates.set(sessionId, {
-          isActive: current?.isActive ?? false,
-          isStreaming: current?.isStreaming ?? false,
-          streamingMessage: current?.streamingMessage ?? null,
-          streamingToolUse: current?.streamingToolUse ?? null,
-          pendingSecretRequests: [
-            ...(current?.pendingSecretRequests ?? []),
-            newRequest,
-          ],
-          pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
-          pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
-          pendingFileRequests: current?.pendingFileRequests ?? [],
-          error: current?.error ?? null,
-          browserActive: current?.browserActive ?? false,
-          activeStartTime: current?.activeStartTime ?? null,
-          isCompacting: current?.isCompacting ?? false,
-        })
+        if (current) {
+          streamStates.set(sessionId, {
+            ...current,
+            pendingSecretRequests: [...current.pendingSecretRequests, newRequest],
+          })
+        }
       }
       else if (data.type === 'connected_account_request') {
         // Agent is requesting access to a connected account
@@ -307,23 +312,12 @@ function getOrCreateEventSource(
           toolkit: data.toolkit,
           reason: data.reason,
         }
-        streamStates.set(sessionId, {
-          isActive: current?.isActive ?? false,
-          isStreaming: current?.isStreaming ?? false,
-          streamingMessage: current?.streamingMessage ?? null,
-          streamingToolUse: current?.streamingToolUse ?? null,
-          pendingSecretRequests: current?.pendingSecretRequests ?? [],
-          pendingConnectedAccountRequests: [
-            ...(current?.pendingConnectedAccountRequests ?? []),
-            newRequest,
-          ],
-          pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
-          pendingFileRequests: current?.pendingFileRequests ?? [],
-          error: current?.error ?? null,
-          browserActive: current?.browserActive ?? false,
-          activeStartTime: current?.activeStartTime ?? null,
-          isCompacting: current?.isCompacting ?? false,
-        })
+        if (current) {
+          streamStates.set(sessionId, {
+            ...current,
+            pendingConnectedAccountRequests: [...current.pendingConnectedAccountRequests, newRequest],
+          })
+        }
       }
       else if (data.type === 'user_question_request') {
         // Agent is asking the user questions
@@ -331,23 +325,12 @@ function getOrCreateEventSource(
           toolUseId: data.toolUseId,
           questions: data.questions,
         }
-        streamStates.set(sessionId, {
-          isActive: current?.isActive ?? false,
-          isStreaming: current?.isStreaming ?? false,
-          streamingMessage: current?.streamingMessage ?? null,
-          streamingToolUse: current?.streamingToolUse ?? null,
-          pendingSecretRequests: current?.pendingSecretRequests ?? [],
-          pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
-          pendingQuestionRequests: [
-            ...(current?.pendingQuestionRequests ?? []),
-            newRequest,
-          ],
-          pendingFileRequests: current?.pendingFileRequests ?? [],
-          error: current?.error ?? null,
-          browserActive: current?.browserActive ?? false,
-          activeStartTime: current?.activeStartTime ?? null,
-          isCompacting: current?.isCompacting ?? false,
-        })
+        if (current) {
+          streamStates.set(sessionId, {
+            ...current,
+            pendingQuestionRequests: [...current.pendingQuestionRequests, newRequest],
+          })
+        }
       }
       else if (data.type === 'file_request') {
         // Agent is requesting a file from the user
@@ -356,23 +339,12 @@ function getOrCreateEventSource(
           description: data.description,
           fileTypes: data.fileTypes,
         }
-        streamStates.set(sessionId, {
-          isActive: current?.isActive ?? false,
-          isStreaming: current?.isStreaming ?? false,
-          streamingMessage: current?.streamingMessage ?? null,
-          streamingToolUse: current?.streamingToolUse ?? null,
-          pendingSecretRequests: current?.pendingSecretRequests ?? [],
-          pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
-          pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
-          pendingFileRequests: [
-            ...(current?.pendingFileRequests ?? []),
-            newRequest,
-          ],
-          error: current?.error ?? null,
-          browserActive: current?.browserActive ?? false,
-          activeStartTime: current?.activeStartTime ?? null,
-          isCompacting: current?.isCompacting ?? false,
-        })
+        if (current) {
+          streamStates.set(sessionId, {
+            ...current,
+            pendingFileRequests: [...current.pendingFileRequests, newRequest],
+          })
+        }
       }
       else if (data.type === 'compact_start') {
         // Context compaction started
@@ -569,6 +541,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     browserActive: false,
     activeStartTime: null,
     isCompacting: false,
+    contextUsage: null,
   })
   const queryClient = useQueryClient()
 
@@ -608,6 +581,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
         browserActive: false,
         activeStartTime: null,
         isCompacting: false,
+        contextUsage: null,
       })
     }
     updateState()
