@@ -1,6 +1,7 @@
 
 import { useAgentSkills } from '@renderer/hooks/use-agent-skills'
 import { Loader2, Sparkles } from 'lucide-react'
+import { AgentSkillCard } from '../agent-skill-card'
 
 interface SkillsTabProps {
   agentSlug: string
@@ -25,7 +26,7 @@ export function SkillsTab({ agentSlug }: SkillsTabProps) {
           No skills have been created yet.
         </p>
         <p className="text-xs text-muted-foreground mt-1">
-          Skills are created by the agent during conversations.
+          Skills can be installed from skillsets or created by the agent during conversations.
         </p>
       </div>
     )
@@ -39,23 +40,7 @@ export function SkillsTab({ agentSlug }: SkillsTabProps) {
 
       <div className="grid gap-3">
         {skills.map((skill) => (
-          <div
-            key={skill.path}
-            className="p-4 rounded-lg border bg-card"
-          >
-            <div className="flex items-start gap-3">
-              <Sparkles className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium">{skill.name}</p>
-                <p className="text-sm text-muted-foreground mt-1">
-                  {skill.description}
-                </p>
-                <p className="text-xs text-muted-foreground mt-2 font-mono">
-                  .claude/skills/{skill.path}/
-                </p>
-              </div>
-            </div>
-          </div>
+          <AgentSkillCard key={skill.path} skill={skill} agentSlug={agentSlug} />
         ))}
       </div>
     </div>

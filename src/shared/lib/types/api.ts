@@ -128,6 +128,51 @@ export interface ApiSkill {
   description: string
 }
 
+/**
+ * Skill with status info (installed skill with version tracking)
+ */
+export interface ApiSkillWithStatus {
+  name: string
+  description: string
+  path: string
+  status: {
+    type: 'local' | 'up_to_date' | 'update_available' | 'locally_modified'
+    skillsetId?: string
+    skillsetName?: string
+    latestVersion?: string
+    openPrUrl?: string
+  }
+}
+
+/**
+ * Skill available from a skillset but not yet installed
+ */
+export interface ApiDiscoverableSkill {
+  skillsetId: string
+  skillsetName: string
+  name: string
+  description: string
+  version: string
+  path: string
+  requiredEnvVars?: Array<{ name: string; description: string }>
+}
+
+// ============================================================================
+// Skillset API Types
+// ============================================================================
+
+/**
+ * Skillset configuration for API responses
+ */
+export interface ApiSkillsetConfig {
+  id: string
+  url: string
+  name: string
+  description: string
+  skillCount: number
+  addedAt: string
+}
+
 // ============================================================================
 // Scheduled Task API Types
 // ============================================================================

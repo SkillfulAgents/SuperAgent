@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { getDataDir } from './data-dir'
 import { getDefaultAgentImage, AGENT_IMAGE_REGISTRY } from './version'
+import type { SkillsetConfig } from '@shared/lib/types/skillset'
 
 export interface ContainerSettings {
   containerRunner: string
@@ -46,6 +47,7 @@ export interface AppSettings {
   apiKeys?: ApiKeySettings
   app?: AppPreferences
   models?: ModelSettings
+  skillsets?: SkillsetConfig[]
 }
 
 // API key source types
@@ -161,6 +163,7 @@ export function loadSettings(): AppSettings {
           ...DEFAULT_SETTINGS.models,
           ...loaded.models,
         },
+        skillsets: loaded.skillsets,
       }
     }
   } catch (error) {

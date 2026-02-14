@@ -1,10 +1,15 @@
 
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useMemo, useRef, useCallback, useEffect } from 'react'
 import { Button } from '@renderer/components/ui/button'
+import { Input } from '@renderer/components/ui/input'
 import { Textarea } from '@renderer/components/ui/textarea'
-import { Send, Loader2, Sparkles, Paperclip } from 'lucide-react'
+import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import { Checkbox } from '@renderer/components/ui/checkbox'
+import { Send, Loader2, Sparkles, Paperclip, Search, RefreshCw, ChevronLeft, ChevronRight, Filter } from 'lucide-react'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
-import { useAgentSkills } from '@renderer/hooks/use-agent-skills'
+import { useAgentSkills, useDiscoverableSkills, useRefreshAgentSkills } from '@renderer/hooks/use-agent-skills'
+import { AgentSkillCard } from './agent-skill-card'
+import { DiscoverableSkillCard } from './discoverable-skill-card'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { apiFetch } from '@renderer/lib/api'
 import { AttachmentPreview, type Attachment } from '@renderer/components/messages/attachment-preview'
@@ -20,9 +25,17 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [isUploading, setIsUploading] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
+  const [skillSearch, setSkillSearch] = useState('')
+  const [skillPage, setSkillPage] = useState(0)
+  const [selectedSkillsets, setSelectedSkillsets] = useState<Set<string> | null>(null)
+  const SKILLS_PER_PAGE = 6
   const fileInputRef = useRef<HTMLInputElement>(null)
   const createSession = useCreateSession()
-  const { data: skills } = useAgentSkills(agent.slug)
+  const { data: skillsData } = useAgentSkills(agent.slug)
+  const skills = Array.isArray(skillsData) ? skillsData : []
+  const { data: discoverableSkillsData } = useDiscoverableSkills(agent.slug)
+  const discoverableSkills = Array.isArray(discoverableSkillsData) ? discoverableSkillsData : []
+  const refreshSkills = useRefreshAgentSkills()
   const { data: settingsData } = useSettings()
   const readiness = settingsData?.runtimeReadiness
   const isRuntimeReady = readiness?.status === 'READY'
@@ -153,11 +166,46 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
     }
   }
 
+  // Unique skillsets from discoverable skills
+  const skillsetList = useMemo(() => {
+    const seen = new Map<string, string>()
+    for (const s of discoverableSkills) {
+      if (!seen.has(s.skillsetId)) seen.set(s.skillsetId, s.skillsetName)
+    }
+    return Array.from(seen, ([id, name]) => ({ id, name }))
+  }, [discoverableSkills])
+
+  // Effective selected skillsets: null means all selected
+  const activeSkillsets = useMemo(
+    () => selectedSkillsets ?? new Set(skillsetList.map((s) => s.id)),
+    [selectedSkillsets, skillsetList]
+  )
+
+  const filteredSkills = useMemo(() => {
+    return discoverableSkills.filter((s) => {
+      if (!activeSkillsets.has(s.skillsetId)) return false
+      if (!skillSearch.trim()) return true
+      const q = skillSearch.toLowerCase()
+      return s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q)
+    })
+  }, [discoverableSkills, skillSearch, activeSkillsets])
+
+  const totalPages = Math.ceil(filteredSkills.length / SKILLS_PER_PAGE)
+  const pagedSkills = filteredSkills.slice(
+    skillPage * SKILLS_PER_PAGE,
+    (skillPage + 1) * SKILLS_PER_PAGE
+  )
+
+  // Reset page when search or filter changes
+  useEffect(() => {
+    setSkillPage(0)
+  }, [skillSearch, selectedSkillsets])
+
   const isDisabled = createSession.isPending || isUploading || !isRuntimeReady
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-center p-8">
-      <div className="w-full max-w-2xl space-y-6">
+    <div className="flex-1 flex flex-col items-center overflow-y-auto p-8">
+      <div className="w-full max-w-2xl space-y-6 my-auto">
         <div className="text-center space-y-2">
           <h1 className="text-2xl font-semibold">
             Start a conversation with {agent.name}
@@ -235,30 +283,137 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
           </p>
         </form>
 
-        {/* Skills Section */}
-        {skills && skills.length > 0 && (
+        {/* Agent Skills Section */}
+        {skills.length > 0 && (
           <div className="pt-6 border-t">
             <div className="flex items-center gap-2 mb-3">
               <Sparkles className="h-4 w-4 text-muted-foreground" />
               <h2 className="text-sm font-medium text-muted-foreground">
-                Available Skills
+                Agent Skills
               </h2>
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                className="h-6 w-6 ml-auto"
+                onClick={() => refreshSkills.mutate({ agentSlug: agent.slug })}
+                disabled={refreshSkills.isPending}
+                title="Refresh skills from upstream"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${refreshSkills.isPending ? 'animate-spin' : ''}`} />
+              </Button>
             </div>
             <div className="grid gap-2">
               {skills.map((skill) => (
-                <div
-                  key={skill.path}
-                  className="flex items-start gap-3 p-3 rounded-lg bg-muted/50 hover:bg-muted transition-colors"
-                >
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">{skill.name}</p>
-                    <p className="text-xs text-muted-foreground line-clamp-2">
-                      {skill.description}
-                    </p>
-                  </div>
-                </div>
+                <AgentSkillCard key={skill.path} skill={skill} agentSlug={agent.slug} />
               ))}
             </div>
+          </div>
+        )}
+
+        {/* Discover Skills Section */}
+        {discoverableSkills.length > 0 && (
+          <div className="pt-6 border-t">
+            <div className="flex items-center gap-2 mb-3">
+              <Search className="h-4 w-4 text-muted-foreground shrink-0" />
+              <h2 className="text-sm font-medium text-muted-foreground shrink-0">
+                Discover Skills
+              </h2>
+              <div className="ml-auto flex items-center gap-1.5">
+                {skillsetList.length > 0 && (
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7 relative"
+                        title="Filter by skillset"
+                      >
+                        <Filter className="h-3.5 w-3.5 text-muted-foreground" />
+                        {selectedSkillsets && selectedSkillsets.size < skillsetList.length && (
+                          <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-primary" />
+                        )}
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent align="end" className="w-56 p-3">
+                      <p className="text-xs font-medium mb-2">Filter by skillset</p>
+                      <div className="space-y-2">
+                        {skillsetList.map((ss) => (
+                          <label key={ss.id} className="flex items-center gap-2 cursor-pointer">
+                            <Checkbox
+                              checked={activeSkillsets.has(ss.id)}
+                              onCheckedChange={(checked) => {
+                                const next = new Set(activeSkillsets)
+                                if (checked) {
+                                  next.add(ss.id)
+                                } else {
+                                  next.delete(ss.id)
+                                }
+                                setSelectedSkillsets(
+                                  next.size === skillsetList.length ? null : next
+                                )
+                              }}
+                            />
+                            <span className="text-xs truncate">{ss.name}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </PopoverContent>
+                  </Popover>
+                )}
+                <div className="relative w-48">
+                  <Input
+                    value={skillSearch}
+                    onChange={(e) => setSkillSearch(e.target.value)}
+                    placeholder="Search skills..."
+                    className="h-7 text-xs pr-7"
+                  />
+                  <Search className="absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground pointer-events-none" />
+                </div>
+              </div>
+            </div>
+            <div className="grid gap-2">
+              {pagedSkills.map((skill) => (
+                <DiscoverableSkillCard
+                  key={`${skill.skillsetId}/${skill.path}`}
+                  skill={skill}
+                  agentSlug={agent.slug}
+                />
+              ))}
+              {filteredSkills.length === 0 && skillSearch.trim() && (
+                <p className="text-xs text-muted-foreground text-center py-3">
+                  No skills matching &ldquo;{skillSearch}&rdquo;
+                </p>
+              )}
+            </div>
+            {totalPages > 1 && (
+              <div className="flex items-center justify-center gap-2 mt-3">
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="h-7 w-7"
+                  onClick={() => setSkillPage((p) => p - 1)}
+                  disabled={skillPage === 0}
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  {skillPage + 1} / {totalPages}
+                </span>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="h-7 w-7"
+                  onClick={() => setSkillPage((p) => p + 1)}
+                  disabled={skillPage >= totalPages - 1}
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -39,17 +39,38 @@ import { db } from '@shared/lib/db'
 import { connectedAccounts, agentConnectedAccounts, proxyAuditLog } from '@shared/lib/db/schema'
 import { eq, inArray, desc, count } from 'drizzle-orm'
 import { getProvider } from '@shared/lib/composio/providers'
-import { getAgentSkills } from '@shared/lib/skills'
+// getAgentSkills is superseded by getAgentSkillsWithStatus from skillset-service
+// import { getAgentSkills } from '@shared/lib/skills'
+import {
+  getAgentSkillsWithStatus,
+  getDiscoverableSkills,
+  installSkillFromSkillset,
+  updateSkillFromSkillset,
+  createSkillPR,
+  getSkillPRInfo,
+  getSkillPublishInfo,
+  publishSkillToSkillset,
+  refreshAgentSkills,
+} from '@shared/lib/services/skillset-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { withRetry } from '@shared/lib/utils/retry'
 import { transformMessages } from '@shared/lib/utils/message-transform'
-import { getEffectiveAnthropicApiKey, getEffectiveModels } from '@shared/lib/config/settings'
+import { getEffectiveAnthropicApiKey, getEffectiveModels, getSettings } from '@shared/lib/config/settings'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import * as fs from 'fs'
 import * as path from 'path'
 
 const agents = new Hono()
+
+// Middleware: verify agent exists for all /:id/* routes
+agents.use('/:id/*', async (c, next) => {
+  const slug = c.req.param('id')
+  if (!(await agentExists(slug))) {
+    return c.json({ error: 'Agent not found' }, 404)
+  }
+  await next()
+})
 
 // Create Anthropic client lazily to use API key from settings
 function getAnthropicClient(): Anthropic {
@@ -208,9 +229,6 @@ agents.post('/:id/start', async (c) => {
   try {
     const slug = c.req.param('id')
 
-    if (!(await agentExists(slug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     await containerManager.ensureRunning(slug)
     const agent = await getAgentWithStatus(slug)
@@ -271,9 +289,6 @@ agents.get('/:id/sessions', async (c) => {
   try {
     const slug = c.req.param('id')
 
-    if (!(await agentExists(slug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     const sessionList = await listSessions(slug)
     const sessionsWithStatus = sessionList.map((session) => ({
@@ -349,9 +364,6 @@ agents.get('/:id/sessions/:sessionId/messages', async (c) => {
     const agentSlug = c.req.param('id')
     const sessionId = c.req.param('sessionId')
 
-    if (!(await agentExists(agentSlug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     const messages = await getSessionMessagesWithCompact(agentSlug, sessionId)
     const filtered = messages.filter((m) => !('isMeta' in m && m.isMeta))
@@ -371,9 +383,6 @@ agents.delete('/:id/sessions/:sessionId/messages/:messageId', async (c) => {
     const sessionId = c.req.param('sessionId')
     const messageId = c.req.param('messageId')
 
-    if (!(await agentExists(agentSlug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     const removed = await removeMessage(agentSlug, sessionId, messageId)
     if (!removed) {
@@ -394,9 +403,6 @@ agents.delete('/:id/sessions/:sessionId/tool-calls/:toolCallId', async (c) => {
     const sessionId = c.req.param('sessionId')
     const toolCallId = c.req.param('toolCallId')
 
-    if (!(await agentExists(agentSlug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     const removed = await removeToolCall(agentSlug, sessionId, toolCallId)
     if (!removed) {
@@ -416,9 +422,6 @@ agents.get('/:id/sessions/:sessionId/raw-log', async (c) => {
     const agentSlug = c.req.param('id')
     const sessionId = c.req.param('sessionId')
 
-    if (!(await agentExists(agentSlug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
     const content = await readFileOrNull(jsonlPath)
@@ -481,9 +484,6 @@ agents.get('/:id/sessions/:sessionId', async (c) => {
     const agentSlug = c.req.param('id')
     const sessionId = c.req.param('sessionId')
 
-    if (!(await agentExists(agentSlug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     const session = await getSession(agentSlug, sessionId)
 
@@ -516,9 +516,6 @@ agents.patch('/:id/sessions/:sessionId', async (c) => {
     const body = await c.req.json()
     const { name } = body
 
-    if (!(await agentExists(agentSlug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     const session = await getSession(agentSlug, sessionId)
 
@@ -552,9 +549,6 @@ agents.delete('/:id/sessions/:sessionId', async (c) => {
     const agentSlug = c.req.param('id')
     const sessionId = c.req.param('sessionId')
 
-    if (!(await agentExists(agentSlug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     const session = await getSession(agentSlug, sessionId)
 
@@ -632,9 +626,6 @@ agents.post('/:id/sessions/:sessionId/interrupt', async (c) => {
     const agentSlug = c.req.param('id')
     const sessionId = c.req.param('sessionId')
 
-    if (!(await agentExists(agentSlug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     const client = containerManager.getClient(agentSlug)
     // Use cached status to avoid spawning docker process
@@ -688,9 +679,6 @@ agents.post('/:id/sessions/:sessionId/provide-secret', async (c) => {
       return c.json({ error: 'secretName is required' }, 400)
     }
 
-    if (!(await agentExists(agentSlug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     const client = containerManager.getClient(agentSlug)
 
@@ -798,9 +786,6 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', async (c) => {
       return c.json({ error: 'toolkit is required' }, 400)
     }
 
-    if (!(await agentExists(agentSlug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     const client = containerManager.getClient(agentSlug)
 
@@ -979,9 +964,6 @@ agents.post('/:id/sessions/:sessionId/answer-question', async (c) => {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
 
-    if (!(await agentExists(agentSlug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     const client = containerManager.getClient(agentSlug)
 
@@ -1047,9 +1029,6 @@ agents.get('/:id/scheduled-tasks', async (c) => {
     const slug = c.req.param('id')
     const status = c.req.query('status') // Optional: filter by status (e.g., 'pending')
 
-    if (!(await agentExists(slug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     let tasks
     if (status === 'pending') {
@@ -1070,9 +1049,6 @@ agents.get('/:id/secrets', async (c) => {
   try {
     const slug = c.req.param('id')
 
-    if (!(await agentExists(slug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     const secrets = await listSecrets(slug)
     const response = secrets.map((secret) => ({
@@ -1103,9 +1079,6 @@ agents.post('/:id/secrets', async (c) => {
       return c.json({ error: 'Value is required' }, 400)
     }
 
-    if (!(await agentExists(slug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     const envVar = keyToEnvVar(key.trim())
 
@@ -1130,9 +1103,6 @@ agents.put('/:id/secrets/:secretId', async (c) => {
     const body = await c.req.json()
     const { key, value } = body
 
-    if (!(await agentExists(slug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     const existing = await getSecret(slug, envVar)
     if (!existing) {
@@ -1166,9 +1136,6 @@ agents.delete('/:id/secrets/:secretId', async (c) => {
     const slug = c.req.param('id')
     const envVar = c.req.param('secretId')
 
-    if (!(await agentExists(slug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     const deleted = await deleteSecret(slug, envVar)
 
@@ -1188,9 +1155,6 @@ agents.get('/:id/connected-accounts', async (c) => {
   try {
     const slug = c.req.param('id')
 
-    if (!(await agentExists(slug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     const mappings = await db
       .select({
@@ -1232,9 +1196,6 @@ agents.post('/:id/connected-accounts', async (c) => {
       )
     }
 
-    if (!(await agentExists(slug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     const now = new Date()
     const newMappings = accountIds.map((accountId) => ({
@@ -1309,15 +1270,190 @@ agents.delete('/:id/connected-accounts/:accountId', async (c) => {
   }
 })
 
-// GET /api/agents/:id/skills - Get skills for an agent
+// GET /api/agents/:id/skills - Get skills for an agent (with status info)
 agents.get('/:id/skills', async (c) => {
   try {
     const id = c.req.param('id')
-    const skills = await getAgentSkills(id)
+    const { skillsets } = getSettings()
+    const skills = await getAgentSkillsWithStatus(id, skillsets || [])
     return c.json({ skills })
   } catch (error) {
     console.error('Failed to fetch skills:', error)
     return c.json({ error: 'Failed to fetch skills' }, 500)
+  }
+})
+
+// GET /api/agents/:id/discoverable-skills - Get available skills from skillsets
+agents.get('/:id/discoverable-skills', async (c) => {
+  try {
+    const id = c.req.param('id')
+    const { skillsets } = getSettings()
+    const skills = await getDiscoverableSkills(id, skillsets || [])
+    return c.json({ skills })
+  } catch (error) {
+    console.error('Failed to fetch discoverable skills:', error)
+    return c.json({ error: 'Failed to fetch discoverable skills' }, 500)
+  }
+})
+
+// POST /api/agents/:id/skills/install - Install a skill from a skillset
+agents.post('/:id/skills/install', async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const { skillsetId, skillPath, skillName, skillVersion, envVars } = await c.req.json()
+
+    if (!skillsetId || !skillPath) {
+      return c.json({ error: 'skillsetId and skillPath are required' }, 400)
+    }
+
+    // Find the skillset config
+    const { skillsets } = getSettings()
+    const config = (skillsets || []).find((s) => s.id === skillsetId)
+    if (!config) {
+      return c.json({ error: 'Skillset not found' }, 404)
+    }
+
+    const result = await installSkillFromSkillset(
+      agentSlug,
+      skillsetId,
+      config.url,
+      skillPath,
+      skillName || skillPath,
+      skillVersion || '0.0.0',
+    )
+
+    // If env vars were provided, save them as agent secrets
+    if (envVars && typeof envVars === 'object') {
+      for (const [envVar, value] of Object.entries(envVars)) {
+        if (value && typeof value === 'string') {
+          await setSecret(agentSlug, { key: envVar, envVar, value })
+        }
+      }
+    }
+
+    return c.json({ installed: true, ...result })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to install skill'
+    console.error('Failed to install skill:', error)
+    return c.json({ error: message }, 500)
+  }
+})
+
+// POST /api/agents/:id/skills/:dir/update - Update an installed skill
+agents.post('/:id/skills/:dir/update', async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const skillDir = c.req.param('dir')
+    const result = await updateSkillFromSkillset(agentSlug, skillDir)
+    return c.json(result)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to update skill'
+    console.error('Failed to update skill:', error)
+    return c.json({ error: message }, 500)
+  }
+})
+
+// GET /api/agents/:id/skills/:dir/pr-info - Get info for PR dialog
+agents.get('/:id/skills/:dir/pr-info', async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const skillDir = c.req.param('dir')
+    const info = await getSkillPRInfo(agentSlug, skillDir)
+    return c.json(info)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to get PR info'
+    console.error('Failed to get PR info:', error)
+    return c.json({ error: message }, 500)
+  }
+})
+
+// POST /api/agents/:id/skills/:dir/create-pr - Create PR for local changes
+agents.post('/:id/skills/:dir/create-pr', async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const skillDir = c.req.param('dir')
+    const { title, body, newVersion } = await c.req.json()
+
+    if (!title || !body) {
+      return c.json({ error: 'title and body are required' }, 400)
+    }
+
+    const result = await createSkillPR(agentSlug, skillDir, { title, body, newVersion })
+    return c.json(result)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to create PR'
+    console.error('Failed to create PR:', error)
+    return c.json({ error: message }, 500)
+  }
+})
+
+// GET /api/agents/:id/skills/:dir/publish-info - Get info for publishing a local skill
+agents.get('/:id/skills/:dir/publish-info', async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const skillDir = c.req.param('dir')
+    const skillsetId = c.req.query('skillsetId')
+
+    if (!skillsetId) {
+      return c.json({ error: 'skillsetId query parameter is required' }, 400)
+    }
+
+    const settings = getSettings()
+    const config = (settings.skillsets || []).find((s) => s.id === skillsetId)
+    if (!config) {
+      return c.json({ error: 'Skillset not found' }, 404)
+    }
+
+    const info = await getSkillPublishInfo(agentSlug, skillDir, config)
+    return c.json(info)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to get publish info'
+    console.error('Failed to get publish info:', error)
+    return c.json({ error: message }, 500)
+  }
+})
+
+// POST /api/agents/:id/skills/:dir/publish - Publish a local skill to a skillset
+agents.post('/:id/skills/:dir/publish', async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const skillDir = c.req.param('dir')
+    const { skillsetId, title, body, newVersion } = await c.req.json()
+
+    if (!skillsetId || !title || !body) {
+      return c.json({ error: 'skillsetId, title, and body are required' }, 400)
+    }
+
+    const settings = getSettings()
+    const config = (settings.skillsets || []).find((s) => s.id === skillsetId)
+    if (!config) {
+      return c.json({ error: 'Skillset not found' }, 404)
+    }
+
+    const result = await publishSkillToSkillset(agentSlug, skillDir, config, {
+      title, body, newVersion,
+    })
+    return c.json(result)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to publish skill'
+    console.error('Failed to publish skill:', error)
+    return c.json({ error: message }, 500)
+  }
+})
+
+// POST /api/agents/:id/skills/refresh - Refresh skillset caches and reconcile skill status
+agents.post('/:id/skills/refresh', async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const settings = getSettings()
+    const skillsets = settings.skillsets || []
+    await refreshAgentSkills(agentSlug, skillsets)
+    const skills = await getAgentSkillsWithStatus(agentSlug, skillsets)
+    return c.json({ skills })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to refresh skills'
+    console.error('Failed to refresh skills:', error)
+    return c.json({ error: message }, 500)
   }
 })
 
@@ -1326,9 +1462,6 @@ agents.get('/:id/audit-log', async (c) => {
   try {
     const slug = c.req.param('id')
 
-    if (!(await agentExists(slug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     const offset = parseInt(c.req.query('offset') ?? '0', 10)
     const limit = Math.min(parseInt(c.req.query('limit') ?? '20', 10), 100)
@@ -1380,9 +1513,6 @@ agents.post('/:id/upload-file', async (c) => {
   try {
     const agentSlug = c.req.param('id')
 
-    if (!(await agentExists(agentSlug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     const formData = await c.req.formData()
     const file = formData.get('file') as File | null
@@ -1404,9 +1534,6 @@ agents.post('/:id/sessions/:sessionId/upload-file', async (c) => {
   try {
     const agentSlug = c.req.param('id')
 
-    if (!(await agentExists(agentSlug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     const formData = await c.req.formData()
     const file = formData.get('file') as File | null
@@ -1438,9 +1565,6 @@ agents.get('/:id/files/*', async (c) => {
       return c.json({ error: 'File path is required' }, 400)
     }
 
-    if (!(await agentExists(agentSlug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     const workspaceDir = getAgentWorkspaceDir(agentSlug)
     const fullPath = path.resolve(workspaceDir, filePath)
@@ -1480,9 +1604,6 @@ agents.post('/:id/sessions/:sessionId/provide-file', async (c) => {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
 
-    if (!(await agentExists(agentSlug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     const client = containerManager.getClient(agentSlug)
 
@@ -1551,9 +1672,6 @@ agents.get('/:id/artifacts', async (c) => {
   try {
     const slug = c.req.param('id')
 
-    if (!(await agentExists(slug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     // Try to get from running container first
     try {
@@ -1588,10 +1706,6 @@ const skipProxyRequestHeaders = new Set([
 async function proxyArtifactRequest(c: any) {
   const agentSlug = c.req.param('id')
   const artifactSlug = c.req.param('artifactSlug')
-
-  if (!(await agentExists(agentSlug))) {
-    return c.json({ error: 'Agent not found' }, 404)
-  }
 
   const client = containerManager.getClient(agentSlug)
   // Use cached status to avoid spawning docker process
@@ -1658,9 +1772,6 @@ agents.get('/:id/browser/status', async (c) => {
   try {
     const slug = c.req.param('id')
 
-    if (!(await agentExists(slug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     const client = containerManager.getClient(slug)
     // Use cached status to avoid spawning docker process
@@ -1684,9 +1795,6 @@ agents.post('/:id/browser/:action', async (c) => {
     const slug = c.req.param('id')
     const action = c.req.param('action')
 
-    if (!(await agentExists(slug))) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
 
     const client = containerManager.getClient(slug)
     // Use cached status to avoid spawning docker process

@@ -8,6 +8,7 @@ import scheduledTasks from './routes/scheduled-tasks'
 import notifications from './routes/notifications'
 import proxy from './routes/proxy'
 import browser from './routes/browser'
+import skillsets from './routes/skillsets'
 import { taskScheduler } from '@shared/lib/scheduler/task-scheduler'
 
 const app = new Hono()
@@ -30,6 +31,7 @@ app.route('/api/scheduled-tasks', scheduledTasks)
 app.route('/api/notifications', notifications)
 app.route('/api/proxy', proxy)
 app.route('/api/browser', browser)
+app.route('/api/skillsets', skillsets)
 
 // Global error handler
 app.onError((err, c) => {
