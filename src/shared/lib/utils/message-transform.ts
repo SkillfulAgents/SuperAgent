@@ -17,6 +17,13 @@ export interface TransformedMessage {
     input: Record<string, unknown>
     result?: string
     isError?: boolean
+    subagent?: {
+      agentId: string
+      status: string
+      totalDurationMs?: number
+      totalTokens?: number
+      totalToolUseCount?: number
+    }
   }>
   createdAt: Date
 }
@@ -229,12 +236,24 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
           // Use ?? instead of || to preserve empty string as valid result (e.g., mkdir has no output)
           const resultContent =
             toolResult?.toolUseResult?.stdout ?? toolResult?.content ?? undefined
+
+          const subagent = (block.name === 'Task' && toolResult?.toolUseResult?.agentId)
+            ? {
+                agentId: toolResult.toolUseResult.agentId!,
+                status: toolResult.toolUseResult.status || 'completed',
+                totalDurationMs: toolResult.toolUseResult.totalDurationMs,
+                totalTokens: toolResult.toolUseResult.totalTokens,
+                totalToolUseCount: toolResult.toolUseResult.totalToolUseCount,
+              }
+            : undefined
+
           toolCalls.push({
             id: block.id,
             name: block.name,
             input: block.input,
             result: resultContent,
             isError: toolResult?.isError,
+            subagent,
           })
         }
       }

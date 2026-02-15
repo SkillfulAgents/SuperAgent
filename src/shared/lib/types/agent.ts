@@ -117,6 +117,12 @@ export interface JsonlMessageEntry {
     stderr: string
     interrupted: boolean
     isImage: boolean
+    // Subagent-specific (present only on Task tool results)
+    agentId?: string
+    status?: string
+    totalDurationMs?: number
+    totalTokens?: number
+    totalToolUseCount?: number
   }
   sourceToolAssistantUUID?: string
   // Compact summary fields (present on user messages that contain a compaction summary)

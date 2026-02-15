@@ -32,6 +32,13 @@ interface FileRequest {
   fileTypes?: string
 }
 
+export interface SubagentInfo {
+  parentToolId: string | null
+  agentId: string | null
+  streamingMessage: string | null
+  streamingToolUse: { id: string; name: string; partialInput: string } | null
+}
+
 interface StreamState {
   isActive: boolean // True from user message until query result
   isStreaming: boolean // True while actively receiving tokens
@@ -46,6 +53,7 @@ interface StreamState {
   activeStartTime: number | null // Timestamp when session became active (for elapsed timer)
   isCompacting: boolean // True while context compaction is in progress
   contextUsage: SessionUsage | null // Latest context window usage data
+  activeSubagent: SubagentInfo | null // Currently running subagent info
 }
 
 // Global state to track streaming per session
@@ -99,6 +107,7 @@ function getOrCreateEventSource(
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
           contextUsage: current?.contextUsage ?? null,
+          activeSubagent: current?.activeSubagent ?? null,
         })
         // Fetch current browser status to sync state (handles missed events)
         fetch(`${baseUrl}/api/agents/${agentSlug}/browser/status`)
@@ -128,6 +137,7 @@ function getOrCreateEventSource(
           activeStartTime: Date.now(),
           isCompacting: false,
           contextUsage: current?.contextUsage ?? null,
+          activeSubagent: null,
         })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
       }
@@ -151,6 +161,7 @@ function getOrCreateEventSource(
           activeStartTime: null,
           isCompacting: false,
           contextUsage: current?.contextUsage ?? null,
+          activeSubagent: null,
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -171,6 +182,7 @@ function getOrCreateEventSource(
           activeStartTime: null,
           isCompacting: false,
           contextUsage: current?.contextUsage ?? null,
+          activeSubagent: null,
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -191,6 +203,7 @@ function getOrCreateEventSource(
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
           contextUsage: current?.contextUsage ?? null,
+          activeSubagent: current?.activeSubagent ?? null,
         })
       }
       else if (data.type === 'stream_delta') {
@@ -208,6 +221,7 @@ function getOrCreateEventSource(
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
           contextUsage: current?.contextUsage ?? null,
+          activeSubagent: current?.activeSubagent ?? null,
         })
       }
       else if (data.type === 'tool_use_start' || data.type === 'tool_use_streaming') {
@@ -229,6 +243,7 @@ function getOrCreateEventSource(
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
           contextUsage: current?.contextUsage ?? null,
+          activeSubagent: current?.activeSubagent ?? null,
         })
       }
       else if (data.type === 'tool_use_ready') {
@@ -247,6 +262,7 @@ function getOrCreateEventSource(
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
           contextUsage: current?.contextUsage ?? null,
+          activeSubagent: current?.activeSubagent ?? null,
         })
       }
       else if (data.type === 'stream_end') {
@@ -264,6 +280,7 @@ function getOrCreateEventSource(
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
           contextUsage: current?.contextUsage ?? null,
+          activeSubagent: current?.activeSubagent ?? null,
         })
       }
       else if (data.type === 'tool_call' || data.type === 'tool_result') {
@@ -385,6 +402,78 @@ function getOrCreateEventSource(
         if (taskAgentSlug) {
           queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', taskAgentSlug] })
         }
+      }
+      else if (data.type === 'subagent_updated') {
+        // Subagent message persisted — clear streaming state, refetch persisted messages
+        if (current) {
+          streamStates.set(sessionId, {
+            ...current,
+            activeSubagent: {
+              parentToolId: data.parentToolId,
+              agentId: data.agentId,
+              streamingMessage: null,
+              streamingToolUse: null,
+            },
+          })
+          queryClient.invalidateQueries({ queryKey: ['subagent-messages', sessionId] })
+        }
+      }
+      else if (data.type === 'subagent_completed') {
+        // Subagent finished
+        if (current) {
+          streamStates.set(sessionId, { ...current, activeSubagent: null })
+          queryClient.invalidateQueries({ queryKey: ['subagent-messages', sessionId] })
+          queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+        }
+      }
+      // Subagent streaming events
+      else if (data.type === 'subagent_stream_start') {
+        if (current) {
+          streamStates.set(sessionId, {
+            ...current,
+            activeSubagent: {
+              parentToolId: data.parentToolId,
+              agentId: data.agentId ?? current.activeSubagent?.agentId ?? null,
+              streamingMessage: '',
+              streamingToolUse: null,
+            },
+          })
+        }
+      }
+      else if (data.type === 'subagent_stream_delta') {
+        if (current) {
+          const existing = current.activeSubagent
+          streamStates.set(sessionId, {
+            ...current,
+            activeSubagent: {
+              parentToolId: data.parentToolId,
+              agentId: data.agentId ?? existing?.agentId ?? null,
+              streamingMessage: (existing?.streamingMessage || '') + data.text,
+              streamingToolUse: existing?.streamingToolUse ?? null,
+            },
+          })
+        }
+      }
+      else if (data.type === 'subagent_tool_use_start' || data.type === 'subagent_tool_use_streaming') {
+        if (current) {
+          const existing = current.activeSubagent
+          streamStates.set(sessionId, {
+            ...current,
+            activeSubagent: {
+              parentToolId: data.parentToolId,
+              agentId: data.agentId ?? existing?.agentId ?? null,
+              streamingMessage: existing?.streamingMessage ?? null,
+              streamingToolUse: {
+                id: data.toolId,
+                name: data.toolName,
+                partialInput: data.partialInput ?? '',
+              },
+            },
+          })
+        }
+      }
+      else if (data.type === 'subagent_tool_use_ready') {
+        // Tool ready — keep visible until subagent_updated clears it
       }
       else if (data.type === 'ping') {
         // Safety net: sync isActive from server.
@@ -542,6 +631,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     activeStartTime: null,
     isCompacting: false,
     contextUsage: null,
+    activeSubagent: null,
   })
   const queryClient = useQueryClient()
 
@@ -582,6 +672,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
         activeStartTime: null,
         isCompacting: false,
         contextUsage: null,
+        activeSubagent: null,
       })
     }
     updateState()

@@ -2,10 +2,12 @@
 import { cn } from '@shared/lib/utils/cn'
 import { User, Bot } from 'lucide-react'
 import { ToolCallItem } from './tool-call-item'
+import { SubAgentBlock } from './subagent-block'
 import { MessageContextMenu } from './message-context-menu'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
+import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
 
 // Re-export for use by other components
 export type { ApiToolCall }
@@ -14,12 +16,14 @@ interface MessageItemProps {
   message: ApiMessage
   isStreaming?: boolean
   agentSlug?: string
+  sessionId?: string
   isSessionActive?: boolean
+  activeSubagent?: SubagentInfo | null
   onRemoveMessage?: (messageId: string) => void
   onRemoveToolCall?: (toolCallId: string) => void
 }
 
-export function MessageItem({ message, isStreaming, agentSlug, isSessionActive, onRemoveMessage, onRemoveToolCall }: MessageItemProps) {
+export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagent, onRemoveMessage, onRemoveToolCall }: MessageItemProps) {
   const isUser = message.type === 'user'
   const isAssistant = message.type === 'assistant'
 
@@ -163,7 +167,17 @@ export function MessageItem({ message, isStreaming, agentSlug, isSessionActive, 
             {toolCalls.map((toolCall) => (
               <MessageContextMenu key={toolCall.id} text={toolCall.name} onRemove={onRemoveToolCall ? () => onRemoveToolCall(toolCall.id) : undefined}>
                 <div>
-                  <ToolCallItem toolCall={toolCall} messageCreatedAt={message.createdAt} agentSlug={agentSlug} isSessionActive={isSessionActive} />
+                  {toolCall.name === 'Task' && sessionId ? (
+                    <SubAgentBlock
+                      toolCall={toolCall}
+                      sessionId={sessionId}
+                      agentSlug={agentSlug!}
+                      isSessionActive={isSessionActive}
+                      activeSubagent={activeSubagent}
+                    />
+                  ) : (
+                    <ToolCallItem toolCall={toolCall} messageCreatedAt={message.createdAt} agentSlug={agentSlug} isSessionActive={isSessionActive} />
+                  )}
                 </div>
               </MessageContextMenu>
             ))}

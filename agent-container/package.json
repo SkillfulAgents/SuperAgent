@@ -4,7 +4,7 @@
   "description": "Docker container running Claude Code with HTTP/WebSocket API",
   "main": "dist/server.js",
   "scripts": {
-    "build": "tsc && cp src/system-prompt.md dist/",
+    "build": "tsc && cp src/system-prompt.md src/web-browser-agent-prompt.md dist/",
     "start": "node dist/server.js",
     "dev": "ts-node src/server.ts",
     "watch": "tsc --watch",

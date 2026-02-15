@@ -334,6 +334,49 @@ Available commands:
   }
 )
 
+export const browserGetStateTool = tool(
+  'browser_get_state',
+  `Get the current state of the browser in one call. Returns the current URL, a screenshot file path, and an accessibility snapshot. Use this to quickly check what the browser is showing without needing multiple tool calls.`,
+  {},
+  async () => {
+    const [urlResult, screenshotResult, snapshotResult] = await Promise.all([
+      browserFetch('run', { command: 'get url' }),
+      browserFetch('screenshot', { full: false }),
+      browserFetch('snapshot', { interactive: true, compact: true }),
+    ])
+
+    const parts: string[] = []
+
+    if (urlResult.success) {
+      const data = urlResult.data as Record<string, unknown>
+      parts.push(`**Current URL:** ${data.output || 'unknown'}`)
+    } else {
+      parts.push(`**Current URL:** Error - ${urlResult.error}`)
+    }
+
+    if (screenshotResult.success) {
+      const data = screenshotResult.data as Record<string, unknown>
+      parts.push(`**Screenshot:** ${data.output || 'No screenshot path returned'}`)
+    } else {
+      parts.push(`**Screenshot:** Error - ${screenshotResult.error}`)
+    }
+
+    if (snapshotResult.success) {
+      const data = snapshotResult.data as Record<string, unknown>
+      const snapshot = data.snapshot
+        ? String(data.snapshot)
+        : JSON.stringify(data, null, 2)
+      parts.push(`**Accessibility Snapshot:**\n${snapshot}`)
+    } else {
+      parts.push(`**Accessibility Snapshot:** Error - ${snapshotResult.error}`)
+    }
+
+    return {
+      content: [{ type: 'text' as const, text: parts.join('\n\n') }],
+    }
+  }
+)
+
 export const browserTools = [
   browserOpenTool,
   browserCloseTool,
@@ -347,4 +390,5 @@ export const browserTools = [
   browserSelectTool,
   browserHoverTool,
   browserRunTool,
+  browserGetStateTool,
 ]

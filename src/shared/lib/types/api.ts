@@ -57,6 +57,13 @@ export interface ApiToolCall {
   input: Record<string, unknown>
   result?: unknown
   isError?: boolean
+  subagent?: {
+    agentId: string
+    status: string
+    totalDurationMs?: number
+    totalTokens?: number
+    totalToolUseCount?: number
+  }
 }
 
 /**

@@ -12,6 +12,12 @@ const PLATFORM_SYSTEM_PROMPT = fs.readFileSync(
   'utf-8'
 );
 
+// Load web-browser subagent prompt from file
+const WEB_BROWSER_AGENT_PROMPT = fs.readFileSync(
+  path.join(__dirname, 'web-browser-agent-prompt.md'),
+  'utf-8'
+);
+
 /**
  * Parses connected accounts metadata from the CONNECTED_ACCOUNTS env var.
  * Format: {"toolkit": [{"name": "Display Name", "id": "uuid"}, ...]}
@@ -232,11 +238,35 @@ export class ClaudeCodeProcess extends EventEmitter {
         permissionMode: 'bypassPermissions',
         includePartialMessages: true,
         settingSources: ['user', 'project'],
-        allowedTools: ['Skill'],
+        allowedTools: ['Skill', 'Task'],
         mcpServers: {
           'user-input': userInputMcpServer,
           'browser': browserMcpServer,
           'dashboards': dashboardsMcpServer,
+        },
+        agents: {
+          'web-browser': {
+            description: 'Web browsing specialist. Delegate any task that requires interacting with websites — navigating pages, filling forms, clicking buttons, extracting information, searching for products, changing settings on web services, or any multi-step web interaction. The browser should already be open (use browser_open first). This agent runs on a cheaper model and handles all browser interactions autonomously.',
+            model: 'sonnet',
+            tools: [
+              'mcp__browser__browser_open',
+              'mcp__browser__browser_snapshot',
+              'mcp__browser__browser_click',
+              'mcp__browser__browser_fill',
+              'mcp__browser__browser_scroll',
+              'mcp__browser__browser_wait',
+              'mcp__browser__browser_press',
+              'mcp__browser__browser_screenshot',
+              'mcp__browser__browser_select',
+              'mcp__browser__browser_hover',
+              'mcp__browser__browser_run',
+              'mcp__browser__browser_get_state',
+              'WebSearch',
+              'Read',
+            ],
+            prompt: WEB_BROWSER_AGENT_PROMPT,
+            maxTurns: 50,
+          },
         },
         // Handle AskUserQuestion via canUseTool callback (per SDK docs)
         canUseTool: async (toolName: string, toolInput: Record<string, unknown>, options: { toolUseID: string; signal: AbortSignal }) => {

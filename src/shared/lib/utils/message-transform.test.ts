@@ -719,4 +719,227 @@ describe('transformMessages', () => {
       expect(asMessage(result[1]).content.text).toBe('Part 1 Part 2')
     })
   })
+
+  // ============================================================================
+  // transformMessages - Subagent Metadata Extraction Tests
+  // ============================================================================
+
+  describe('subagent metadata extraction', () => {
+    it('extracts subagent metadata from Task tool result with agentId', () => {
+      const entries: JsonlMessageEntry[] = [
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'tool_use', id: 'tool-1', name: 'Task', input: { subagent_type: 'Explore', description: 'search codebase' } },
+        ]),
+        createUserMessage(
+          'uuid-2',
+          [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Found 3 files' }],
+          '2026-01-24T10:00:02.000Z',
+          {
+            toolUseResult: {
+              stdout: 'Found 3 files',
+              stderr: '',
+              interrupted: false,
+              isImage: false,
+              agentId: 'abc123',
+              status: 'completed',
+              totalDurationMs: 45000,
+              totalTokens: 12500,
+              totalToolUseCount: 8,
+            },
+          }
+        ),
+      ]
+
+      const result = transformMessages(entries)
+
+      expect(result).toHaveLength(1)
+      const toolCall = asMessage(result[0]).toolCalls[0]
+      expect(toolCall.name).toBe('Task')
+      expect(toolCall.subagent).toEqual({
+        agentId: 'abc123',
+        status: 'completed',
+        totalDurationMs: 45000,
+        totalTokens: 12500,
+        totalToolUseCount: 8,
+      })
+    })
+
+    it('does not extract subagent metadata from non-Task tools', () => {
+      const entries: JsonlMessageEntry[] = [
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'ls' } },
+        ]),
+        createUserMessage(
+          'uuid-2',
+          [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'file.txt' }],
+          '2026-01-24T10:00:02.000Z',
+          {
+            toolUseResult: {
+              stdout: 'file.txt',
+              stderr: '',
+              interrupted: false,
+              isImage: false,
+              agentId: 'abc123', // Present but should be ignored for non-Task tools
+            },
+          }
+        ),
+      ]
+
+      const result = transformMessages(entries)
+
+      expect(asMessage(result[0]).toolCalls[0].subagent).toBeUndefined()
+    })
+
+    it('does not extract subagent metadata when toolUseResult has no agentId', () => {
+      const entries: JsonlMessageEntry[] = [
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'tool_use', id: 'tool-1', name: 'Task', input: { subagent_type: 'Explore' } },
+        ]),
+        createUserMessage(
+          'uuid-2',
+          [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'result' }],
+          '2026-01-24T10:00:02.000Z',
+          {
+            toolUseResult: {
+              stdout: 'result',
+              stderr: '',
+              interrupted: false,
+              isImage: false,
+              // No agentId
+            },
+          }
+        ),
+      ]
+
+      const result = transformMessages(entries)
+
+      expect(asMessage(result[0]).toolCalls[0].subagent).toBeUndefined()
+    })
+
+    it('defaults status to "completed" when not provided', () => {
+      const entries: JsonlMessageEntry[] = [
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'tool_use', id: 'tool-1', name: 'Task', input: {} },
+        ]),
+        createUserMessage(
+          'uuid-2',
+          [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'done' }],
+          '2026-01-24T10:00:02.000Z',
+          {
+            toolUseResult: {
+              stdout: 'done',
+              stderr: '',
+              interrupted: false,
+              isImage: false,
+              agentId: 'xyz789',
+              // No status field
+            },
+          }
+        ),
+      ]
+
+      const result = transformMessages(entries)
+
+      expect(asMessage(result[0]).toolCalls[0].subagent).toMatchObject({
+        agentId: 'xyz789',
+        status: 'completed',
+      })
+    })
+
+    it('handles Task tool result without toolUseResult (no subagent metadata)', () => {
+      const entries: JsonlMessageEntry[] = [
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'tool_use', id: 'tool-1', name: 'Task', input: { subagent_type: 'Bash' } },
+        ]),
+        createUserMessage(
+          'uuid-2',
+          [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'output' }],
+        ),
+      ]
+
+      const result = transformMessages(entries)
+
+      expect(asMessage(result[0]).toolCalls[0].subagent).toBeUndefined()
+      expect(asMessage(result[0]).toolCalls[0].result).toBe('output')
+    })
+
+    it('handles subagent metadata with optional stats fields missing', () => {
+      const entries: JsonlMessageEntry[] = [
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'tool_use', id: 'tool-1', name: 'Task', input: {} },
+        ]),
+        createUserMessage(
+          'uuid-2',
+          [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'done' }],
+          '2026-01-24T10:00:02.000Z',
+          {
+            toolUseResult: {
+              stdout: 'done',
+              stderr: '',
+              interrupted: false,
+              isImage: false,
+              agentId: 'agent-1',
+              status: 'error',
+              // No totalDurationMs, totalTokens, totalToolUseCount
+            },
+          }
+        ),
+      ]
+
+      const result = transformMessages(entries)
+
+      const subagent = asMessage(result[0]).toolCalls[0].subagent
+      expect(subagent).toBeDefined()
+      expect(subagent!.agentId).toBe('agent-1')
+      expect(subagent!.status).toBe('error')
+      expect(subagent!.totalDurationMs).toBeUndefined()
+      expect(subagent!.totalTokens).toBeUndefined()
+      expect(subagent!.totalToolUseCount).toBeUndefined()
+    })
+
+    it('handles multiple tool calls where only Task has subagent metadata', () => {
+      const entries: JsonlMessageEntry[] = [
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'pwd' } },
+          { type: 'tool_use', id: 'tool-2', name: 'Task', input: { subagent_type: 'Explore' } },
+        ]),
+        createUserMessage('uuid-2', [
+          {
+            type: 'tool_result', tool_use_id: 'tool-1', content: '/home',
+          },
+        ]),
+        createUserMessage(
+          'uuid-3',
+          [{ type: 'tool_result', tool_use_id: 'tool-2', content: 'found it' }],
+          '2026-01-24T10:00:03.000Z',
+          {
+            toolUseResult: {
+              stdout: 'found it',
+              stderr: '',
+              interrupted: false,
+              isImage: false,
+              agentId: 'sub-1',
+              status: 'completed',
+              totalTokens: 5000,
+            },
+          }
+        ),
+      ]
+
+      const result = transformMessages(entries)
+
+      const toolCalls = asMessage(result[0]).toolCalls
+      expect(toolCalls).toHaveLength(2)
+      expect(toolCalls[0].name).toBe('Bash')
+      expect(toolCalls[0].subagent).toBeUndefined()
+      expect(toolCalls[1].name).toBe('Task')
+      expect(toolCalls[1].subagent).toEqual({
+        agentId: 'sub-1',
+        status: 'completed',
+        totalTokens: 5000,
+        totalDurationMs: undefined,
+        totalToolUseCount: undefined,
+      })
+    })
+  })
 })

@@ -81,6 +81,25 @@ export function useDeleteToolCall() {
   })
 }
 
+export function useSubagentMessages(
+  sessionId: string | null,
+  agentSlug: string | null,
+  subagentId: string | null
+) {
+  return useQuery<ApiMessageOrBoundary[]>({
+    queryKey: ['subagent-messages', sessionId, agentSlug, subagentId],
+    queryFn: async () => {
+      const res = await apiFetch(
+        `/api/agents/${agentSlug}/sessions/${sessionId}/subagent/${subagentId}/messages`
+      )
+      if (!res.ok) throw new Error('Failed to fetch subagent messages')
+      return res.json()
+    },
+    enabled: !!sessionId && !!agentSlug && !!subagentId,
+    refetchInterval: false,
+  })
+}
+
 export function useInterruptSession() {
   const queryClient = useQueryClient()
 

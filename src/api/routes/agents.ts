@@ -23,7 +23,7 @@ import {
   removeMessage,
   removeToolCall,
 } from '@shared/lib/services/session-service'
-import { getSessionJsonlPath, readFileOrNull } from '@shared/lib/utils/file-storage'
+import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile } from '@shared/lib/utils/file-storage'
 import {
   listSecrets,
   getSecret,
@@ -414,6 +414,28 @@ agents.delete('/:id/sessions/:sessionId/tool-calls/:toolCallId', async (c) => {
   } catch (error) {
     console.error('Failed to remove tool call:', error)
     return c.json({ error: 'Failed to remove tool call' }, 500)
+  }
+})
+
+// GET /api/agents/:id/sessions/:sessionId/subagent/:agentId/messages - Get subagent messages
+agents.get('/:id/sessions/:sessionId/subagent/:agentId/messages', async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const sessionId = c.req.param('sessionId')
+    const subagentId = c.req.param('agentId')
+
+    const sessionsDir = getAgentSessionsDir(agentSlug)
+    const subagentJsonlPath = path.join(sessionsDir, sessionId, 'subagents', `agent-${subagentId}.jsonl`)
+
+    const entries = await readJsonlFile(subagentJsonlPath) as any[]
+    const messageEntries = entries.filter(
+      (e) => e.type === 'user' || e.type === 'assistant'
+    )
+    const transformed = transformMessages(messageEntries)
+    return c.json(transformed)
+  } catch (error) {
+    console.error('Failed to fetch subagent messages:', error)
+    return c.json({ error: 'Failed to fetch subagent messages' }, 500)
   }
 })
 

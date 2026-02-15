@@ -74,6 +74,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     isStreaming,
     streamingToolUse,
     isCompacting,
+    activeSubagent,
     pendingSecretRequests: sseSecretRequests,
     pendingConnectedAccountRequests: sseConnectedAccountRequests,
     pendingQuestionRequests: sseQuestionRequests,
@@ -365,7 +366,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [messages, pendingUserMessage, streamingMessage, streamingToolUse, isCompacting, pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests, pendingFileRequests])
+  }, [messages, pendingUserMessage, streamingMessage, streamingToolUse, isCompacting, pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests, pendingFileRequests, activeSubagent])
 
   if (isLoading && !pendingUserMessage) {
     return (
@@ -384,7 +385,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
               <CompactBoundaryItem boundary={item as ApiCompactBoundary} />
             ) : (
               <>
-                <MessageItem message={item as ApiMessage} agentSlug={agentSlug} isSessionActive={canHaveRunningToolCalls.has(item.id)} onRemoveMessage={handleRemoveMessage} onRemoveToolCall={handleRemoveToolCall} />
+                <MessageItem message={item as ApiMessage} agentSlug={agentSlug} sessionId={sessionId} isSessionActive={canHaveRunningToolCalls.has(item.id)} activeSubagent={activeSubagent} onRemoveMessage={handleRemoveMessage} onRemoveToolCall={handleRemoveToolCall} />
                 {turnElapsedTimes.has(item.id) && (
                   <div className="text-xs text-muted-foreground pb-1 -mt-1 tabular-nums ml-11 italic">
                     Agent took {formatElapsed(turnElapsedTimes.get(item.id)!)}

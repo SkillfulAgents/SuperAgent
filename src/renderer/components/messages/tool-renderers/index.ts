@@ -7,6 +7,7 @@ import { requestConnectedAccountRenderer } from './request-connected-account'
 import { scheduleTaskRenderer } from './schedule-task'
 import { deliverFileRenderer } from './deliver-file'
 import { requestFileRenderer } from './request-file'
+import { taskRenderer } from './task'
 import {
   browserOpenRenderer,
   browserCloseRenderer,
@@ -35,6 +36,9 @@ export type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps } from
  * Keys are tool names (matching toolCall.name)
  */
 const toolRenderers: Record<string, ToolRenderer> = {
+  // Agent tools
+  Task: taskRenderer,
+
   // Shell/command tools
   Bash: bashRenderer,
 
