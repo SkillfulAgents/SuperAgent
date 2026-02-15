@@ -1,7 +1,7 @@
 import { Download } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { getApiBaseUrl } from '@renderer/lib/env'
-import type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps } from './types'
+import type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps, CollapsedContentProps } from './types'
 
 interface DeliverFileInput {
   filePath?: string
@@ -77,6 +77,28 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
   return <div className="text-sm text-muted-foreground">Preparing file...</div>
 }
 
+function CollapsedContent({ input, isError, agentSlug }: CollapsedContentProps) {
+  const { filePath } = input as DeliverFileInput
+  if (!filePath || !agentSlug || isError) return null
+
+  const relativePath = getRelativePath(filePath)
+  const baseUrl = getApiBaseUrl()
+  const downloadUrl = `${baseUrl}/api/agents/${agentSlug}/files/${relativePath}`
+
+  return (
+    <a
+      href={downloadUrl}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={(e) => e.stopPropagation()}
+      className="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+    >
+      <Download className="h-3 w-3" />
+      Download
+    </a>
+  )
+}
+
 export const deliverFileRenderer: ToolRenderer = {
   displayName: 'Deliver File',
   icon: Download,
@@ -86,4 +108,5 @@ export const deliverFileRenderer: ToolRenderer = {
   },
   ExpandedView,
   StreamingView,
+  CollapsedContent,
 }

@@ -101,6 +101,16 @@ export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug, isSessionA
           </span>
         )}
 
+        {/* Custom collapsed content */}
+        {renderer?.CollapsedContent && (
+          <renderer.CollapsedContent
+            input={toolCall.input}
+            result={resultStr}
+            isError={toolCall.isError ?? false}
+            agentSlug={agentSlug}
+          />
+        )}
+
         {/* Elapsed timer for running tool calls */}
         {elapsed && (
           <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">

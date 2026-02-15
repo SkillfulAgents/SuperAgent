@@ -2,6 +2,12 @@ import type { ToolRenderer } from './types'
 import { bashRenderer } from './bash'
 import { readRenderer } from './read'
 import { writeRenderer } from './write'
+import { globRenderer } from './glob'
+import { grepRenderer } from './grep'
+import { webSearchRenderer } from './web-search'
+import { webFetchRenderer } from './web-fetch'
+import { todoWriteRenderer } from './todo-write'
+import { askUserQuestionRenderer } from './ask-user-question'
 import { requestSecretRenderer } from './request-secret'
 import { requestConnectedAccountRenderer } from './request-connected-account'
 import { scheduleTaskRenderer } from './schedule-task'
@@ -29,7 +35,7 @@ import {
   getDashboardLogsRenderer,
 } from './dashboard-tools'
 
-export type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps } from './types'
+export type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps, CollapsedContentProps } from './types'
 
 /**
  * Registry of tool-specific renderers
@@ -45,6 +51,18 @@ const toolRenderers: Record<string, ToolRenderer> = {
   // File operations
   Read: readRenderer,
   Write: writeRenderer,
+  Glob: globRenderer,
+  Grep: grepRenderer,
+
+  // Web tools
+  WebSearch: webSearchRenderer,
+  WebFetch: webFetchRenderer,
+
+  // Task management
+  TodoWrite: todoWriteRenderer,
+
+  // User interaction
+  AskUserQuestion: askUserQuestionRenderer,
 
   // MCP tools - user input
   'mcp__user-input__request_secret': requestSecretRenderer,

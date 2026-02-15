@@ -18,6 +18,16 @@ export interface StreamingToolRendererProps {
 }
 
 /**
+ * Props passed to custom collapsed content components
+ */
+export interface CollapsedContentProps {
+  input: unknown
+  result?: string | null
+  isError?: boolean
+  agentSlug?: string
+}
+
+/**
  * Configuration for a tool-specific renderer
  */
 export interface ToolRenderer {
@@ -49,4 +59,10 @@ export interface ToolRenderer {
    * If not provided, falls back to generic streaming display
    */
   StreamingView?: React.ComponentType<StreamingToolRendererProps>
+
+  /**
+   * Custom component rendered in the collapsed header row
+   * Rendered after the summary text, before the chevron
+   */
+  CollapsedContent?: React.ComponentType<CollapsedContentProps>
 }

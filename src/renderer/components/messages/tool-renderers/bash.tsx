@@ -38,33 +38,27 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
   const { command } = parseBashInput(input)
 
   return (
-    <div className="space-y-2">
-      {/* Command */}
-      {command && (
-        <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Command</div>
-          <pre className="bg-background rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto font-mono">
-            <span className="text-muted-foreground select-none">$ </span>
+    <div className="rounded-md bg-black overflow-hidden">
+      <div className="p-3 font-mono text-xs overflow-x-auto max-h-80 overflow-y-auto">
+        {/* Command line */}
+        {command && (
+          <pre className="text-white font-bold whitespace-pre-wrap break-all m-0">
+            <span className="text-gray-500 select-none">$ </span>
             {command}
           </pre>
-        </div>
-      )}
+        )}
 
-      {/* Output */}
-      {result && (
-        <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">
-            {isError ? 'Error' : 'Output'}
-          </div>
+        {/* Output */}
+        {result && (
           <pre
-            className={`rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto font-mono ${
-              isError ? 'bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200' : 'bg-background'
+            className={`mt-2 whitespace-pre-wrap break-all m-0 ${
+              isError ? 'text-red-400' : 'text-gray-400'
             }`}
           >
             {result}
           </pre>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   )
 }
@@ -78,16 +72,15 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
   }
 
   return (
-    <div className="space-y-2">
-      {parsed.description && (
-        <div className="text-xs text-muted-foreground">{parsed.description}</div>
-      )}
-      <div>
-        <div className="text-xs font-medium text-muted-foreground mb-1">Command</div>
-        <pre className="bg-background rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto font-mono whitespace-pre-wrap break-all">
-          <span className="text-muted-foreground select-none">$ </span>
-          {parsed.command || <span className="text-muted-foreground italic">...</span>}
-          <span className="animate-pulse">|</span>
+    <div className="rounded-md bg-black overflow-hidden">
+      <div className="p-3 font-mono text-xs overflow-x-auto max-h-80 overflow-y-auto">
+        {parsed.description && (
+          <div className="text-gray-500 mb-1">{parsed.description}</div>
+        )}
+        <pre className="text-white font-bold whitespace-pre-wrap break-all m-0">
+          <span className="text-gray-500 select-none">$ </span>
+          {parsed.command || <span className="text-gray-600 italic">...</span>}
+          <span className="animate-pulse text-gray-400">|</span>
         </pre>
       </div>
     </div>
