@@ -106,7 +106,8 @@ connectedAccountsRouter.post('/initiate', async (c) => {
     let callbackUrl: string
     if (electron) {
       // Electron: use custom protocol that the app handles
-      callbackUrl = `superagent://oauth-callback?toolkit=${encodeURIComponent(providerSlug)}`
+      const protocol = process.env.SUPERAGENT_PROTOCOL || 'superagent'
+      callbackUrl = `${protocol}://oauth-callback?toolkit=${encodeURIComponent(providerSlug)}`
     } else {
       // Web: use HTTP callback endpoint
       const origin = c.req.header('origin') || new URL(c.req.url).origin

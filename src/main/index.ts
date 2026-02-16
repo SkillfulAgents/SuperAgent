@@ -46,14 +46,18 @@ let apiServer: ReturnType<typeof serve> | null = null
 let notificationEventSource: EventSource | null = null
 
 // Register custom protocol for OAuth callbacks
+// Use a different scheme in dev to avoid conflicts with the installed production app
+const PROTOCOL_SCHEME = app.isPackaged ? 'superagent' : 'superagent-dev'
+process.env.SUPERAGENT_PROTOCOL = PROTOCOL_SCHEME
+
 if (process.defaultApp) {
   if (process.argv.length >= 2) {
-    app.setAsDefaultProtocolClient('superagent', process.execPath, [
+    app.setAsDefaultProtocolClient(PROTOCOL_SCHEME, process.execPath, [
       path.resolve(process.argv[1]),
     ])
   }
 } else {
-  app.setAsDefaultProtocolClient('superagent')
+  app.setAsDefaultProtocolClient(PROTOCOL_SCHEME)
 }
 
 function createWindow() {
@@ -175,7 +179,7 @@ app.on('open-url', (event, url) => {
   event.preventDefault()
 
   // Parse the callback URL and extract OAuth parameters
-  if (mainWindow && url.startsWith('superagent://oauth-callback')) {
+  if (mainWindow && url.startsWith(`${PROTOCOL_SCHEME}://oauth-callback`)) {
     try {
       const callbackUrl = new URL(url)
       const params = {
@@ -343,7 +347,7 @@ if (!gotTheLock) {
 } else {
   app.on('second-instance', (event, commandLine) => {
     // Handle protocol URL on Windows/Linux
-    const url = commandLine.find((arg) => arg.startsWith('superagent://oauth-callback'))
+    const url = commandLine.find((arg) => arg.startsWith(`${PROTOCOL_SCHEME}://oauth-callback`))
     if (url && mainWindow) {
       try {
         const callbackUrl = new URL(url)
