@@ -11,7 +11,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Checkbox } from '@renderer/components/ui/checkbox'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@renderer/components/ui/tabs'
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useCreateAgent } from '@renderer/hooks/use-agents'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
 import { useSelection } from '@renderer/context/selection-context'
@@ -68,14 +68,16 @@ function useAllSkillsetSkills() {
 interface CreateAgentDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  /** Pre-select a discoverable agent template (opens "From Skillset" tab) */
+  initialTemplate?: { skillsetId: string; name: string; path: string; version: string } | null
 }
 
-export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps) {
+export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: CreateAgentDialogProps) {
   const [name, setName] = useState('')
   const [selectedSkills, setSelectedSkills] = useState<Set<string>>(new Set())
   const [showSkills, setShowSkills] = useState(false)
   const [isInstalling, setIsInstalling] = useState(false)
-  const [activeTab, setActiveTab] = useState('new')
+  const [activeTab, setActiveTab] = useState(initialTemplate ? 'skillset' : 'new')
   const createAgent = useCreateAgent()
   const createSession = useCreateSession()
   const { selectAgent, selectSession } = useSelection()
@@ -98,6 +100,15 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
     version: string
   } | null>(null)
   const [skillsetAgentName, setSkillsetAgentName] = useState('')
+
+  // When opened with an initialTemplate, jump to the skillset tab with it pre-selected
+  useEffect(() => {
+    if (open && initialTemplate) {
+      setActiveTab('skillset')
+      setSelectedTemplate(initialTemplate)
+      setSkillsetAgentName(initialTemplate.name)
+    }
+  }, [open, initialTemplate])
 
   const hasSkillsets = skillsetSkills && skillsetSkills.length > 0
   const hasDiscoverableAgents = discoverableAgents && discoverableAgents.length > 0

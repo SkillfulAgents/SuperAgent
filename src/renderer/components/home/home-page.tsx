@@ -59,6 +59,7 @@ export function HomePage() {
   const { data: agents, isLoading: agentsLoading } = useAgents()
   const { data: discoverableAgents } = useDiscoverableAgents()
   const [createAgentOpen, setCreateAgentOpen] = useState(false)
+  const [selectedTemplate, setSelectedTemplate] = useState<ApiDiscoverableAgent | null>(null)
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
 
@@ -124,7 +125,7 @@ export function HomePage() {
                   <TemplateCard
                     key={`${template.skillsetId}::${template.path}`}
                     template={template}
-                    onClick={() => setCreateAgentOpen(true)}
+                    onClick={() => { setSelectedTemplate(template); setCreateAgentOpen(true) }}
                   />
                 ))}
               </div>
@@ -133,7 +134,11 @@ export function HomePage() {
         </div>
       </div>
 
-      <CreateAgentDialog open={createAgentOpen} onOpenChange={setCreateAgentOpen} />
+      <CreateAgentDialog
+        open={createAgentOpen}
+        onOpenChange={(open) => { setCreateAgentOpen(open); if (!open) setSelectedTemplate(null) }}
+        initialTemplate={selectedTemplate}
+      />
     </div>
   )
 }
