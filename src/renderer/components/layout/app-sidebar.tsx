@@ -261,6 +261,7 @@ function AgentMenuItem({ agent }: { agent: ApiAgent }) {
 
 export function AppSidebar() {
   const { settingsOpen, setSettingsOpen, createAgentOpen, setCreateAgentOpen, openWizard } = useDialogs()
+  const { clearSelection } = useSelection()
   const [containerSetupOpen, setContainerSetupOpen] = useState(false)
   const { data: agents, isLoading, error } = useAgents()
   const { data: settings } = useSettings()
@@ -294,7 +295,9 @@ export function AppSidebar() {
         }}
       >
         <div className="flex items-center h-full px-2">
-          <span className="text-lg font-bold">Super Agent</span>
+          <button onClick={clearSelection} className="text-lg font-bold app-no-drag cursor-pointer hover:opacity-80 transition-opacity">
+            Super Agent
+          </button>
         </div>
       </SidebarHeader>
 

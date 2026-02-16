@@ -5,6 +5,7 @@ import { AgentActivityIndicator } from '@renderer/components/messages/agent-acti
 import { AgentSettingsDialog } from '@renderer/components/agents/agent-settings-dialog'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { AgentLanding } from '@renderer/components/agents/agent-landing'
+import { HomePage } from '@renderer/components/home/home-page'
 import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/scheduled-task-view'
 import { BrowserPreview } from '@renderer/components/browser/browser-preview'
 import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
@@ -111,20 +112,7 @@ export function MainContent() {
   }, [selectSession])
 
   if (!agentSlug) {
-    return (
-      <div className="h-full flex flex-col">
-        <header
-          className={`shrink-0 flex h-12 items-center gap-2 border-b bg-background px-4 ${isElectron() ? 'app-drag-region' : ''}`}
-        >
-          <SidebarTrigger
-            className={`app-no-drag ${needsTrafficLightPadding ? 'ml-16' : '-ml-1'}`}
-          />
-        </header>
-        <div className="flex-1 flex items-center justify-center text-muted-foreground">
-          Select an agent to get started
-        </div>
-      </div>
-    )
+    return <HomePage />
   }
 
   return (
