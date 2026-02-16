@@ -1,6 +1,6 @@
 
 import * as React from 'react'
-import { Settings, Link2, Container, Bell, Globe, Library } from 'lucide-react'
+import { Settings, Link2, Container, Bell, Globe, Library, BarChart3 } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -23,8 +23,9 @@ import { ComposioTab } from './composio-tab'
 import { NotificationsTab } from './notifications-tab'
 import { BrowserTab } from './browser-tab'
 import { SkillsetsTab } from './skillsets-tab'
+import { UsageTab } from './usage-tab'
 
-type SettingsSection = 'general' | 'notifications' | 'runtime' | 'browser' | 'composio' | 'skillsets'
+type SettingsSection = 'general' | 'notifications' | 'runtime' | 'browser' | 'composio' | 'skillsets' | 'usage'
 
 const navItems = [
   { id: 'general' as const, name: 'General', icon: Settings },
@@ -33,6 +34,7 @@ const navItems = [
   { id: 'browser' as const, name: 'Browser Use', icon: Globe },
   { id: 'composio' as const, name: 'Accounts', icon: Link2 },
   { id: 'skillsets' as const, name: 'Skillsets', icon: Library },
+  { id: 'usage' as const, name: 'Usage', icon: BarChart3 },
 ]
 
 interface GlobalSettingsDialogProps {
@@ -99,6 +101,7 @@ export function GlobalSettingsDialog({
               {activeSection === 'browser' && <BrowserTab />}
               {activeSection === 'composio' && <ComposioTab />}
               {activeSection === 'skillsets' && <SkillsetsTab />}
+              {activeSection === 'usage' && <UsageTab />}
             </div>
           </main>
         </SidebarProvider>
