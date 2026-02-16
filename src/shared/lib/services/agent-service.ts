@@ -284,6 +284,36 @@ export async function deleteAgent(slug: string): Promise<boolean> {
 // ============================================================================
 
 /**
+ * Create a new agent with an empty workspace, ready for files to be placed into it.
+ * Used by template import/install which populates the workspace after creation.
+ */
+export async function createAgentFromExistingWorkspace(name: string): Promise<ApiAgent> {
+  const slug = await generateUniqueAgentSlug(name)
+
+  const workspaceDir = getAgentWorkspaceDir(slug)
+  await ensureDirectory(workspaceDir)
+
+  // Create a basic CLAUDE.md (may be overwritten by template)
+  const claudeMdPath = getAgentClaudeMdPath(slug)
+  const frontmatter: AgentFrontmatter = {
+    name,
+    createdAt: new Date().toISOString(),
+  }
+
+  const body = DEFAULT_AGENT_INSTRUCTIONS
+  const content = serializeMarkdownWithFrontmatter(frontmatter, body)
+  await writeFile(claudeMdPath, content)
+
+  return {
+    slug,
+    name,
+    createdAt: new Date(frontmatter.createdAt),
+    status: 'stopped',
+    containerPort: null,
+  }
+}
+
+/**
  * Check if an agent exists
  */
 export async function agentExists(slug: string): Promise<boolean> {

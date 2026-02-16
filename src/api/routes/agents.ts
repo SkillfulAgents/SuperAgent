@@ -54,6 +54,21 @@ import {
   refreshAgentSkills,
 } from '@shared/lib/services/skillset-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
+import {
+  exportAgentTemplate,
+  importAgentFromTemplate,
+  installAgentFromSkillset,
+  updateAgentFromSkillset,
+  getAgentTemplateStatus,
+  getDiscoverableAgents,
+  refreshSkillsetCaches,
+  getAgentPRInfo,
+  createAgentPR,
+  getAgentPublishInfo,
+  publishAgentToSkillset,
+  refreshAgentTemplates,
+  hasOnboardingSkill,
+} from '@shared/lib/services/agent-template-service'
 import { withRetry } from '@shared/lib/utils/retry'
 import { transformMessages } from '@shared/lib/utils/message-transform'
 import { getEffectiveAnthropicApiKey, getEffectiveModels, getSettings } from '@shared/lib/config/settings'
@@ -63,6 +78,87 @@ import * as fs from 'fs'
 import * as path from 'path'
 
 const agents = new Hono()
+
+// ============================================================
+// Routes that must be registered BEFORE /:id middleware
+// (paths like /import-template would otherwise match as :id)
+// ============================================================
+
+// POST /api/agents/import-template - Import agent from uploaded ZIP
+agents.post('/import-template', async (c) => {
+  try {
+    const formData = await c.req.formData()
+    const file = formData.get('file') as File | null
+    const nameOverride = formData.get('name') as string | null
+
+    if (!file) {
+      return c.json({ error: 'No file provided' }, 400)
+    }
+
+    const arrayBuffer = await file.arrayBuffer()
+    const zipBuffer = Buffer.from(arrayBuffer)
+
+    const agent = await importAgentFromTemplate(zipBuffer, nameOverride || undefined)
+    const hasOnboarding = await hasOnboardingSkill(agent.slug)
+    return c.json({ ...agent, hasOnboarding }, 201)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to import template'
+    console.error('Failed to import template:', error)
+    return c.json({ error: message }, 500)
+  }
+})
+
+// GET /api/agents/discoverable-agents - List agents available from skillsets
+// Uses ?refresh=true to force a cache refresh before reading
+agents.get('/discoverable-agents', async (c) => {
+  try {
+    const { skillsets } = getSettings()
+    const ssArray = skillsets || []
+    const shouldRefresh = c.req.query('refresh') === 'true'
+
+    if (shouldRefresh) {
+      await refreshSkillsetCaches(ssArray)
+    }
+
+    const discoverableAgents = await getDiscoverableAgents(ssArray)
+    return c.json({ agents: discoverableAgents })
+  } catch (error) {
+    console.error('Failed to fetch discoverable agents:', error)
+    return c.json({ error: 'Failed to fetch discoverable agents' }, 500)
+  }
+})
+
+// POST /api/agents/install-from-skillset - Install agent from skillset
+agents.post('/install-from-skillset', async (c) => {
+  try {
+    const { skillsetId, agentPath, agentName, agentVersion } = await c.req.json()
+
+    if (!skillsetId || !agentPath) {
+      return c.json({ error: 'skillsetId and agentPath are required' }, 400)
+    }
+
+    const { skillsets } = getSettings()
+    const config = (skillsets || []).find((s: any) => s.id === skillsetId)
+    if (!config) {
+      return c.json({ error: 'Skillset not found' }, 404)
+    }
+
+    const agent = await installAgentFromSkillset(
+      skillsetId,
+      config.url,
+      agentPath,
+      agentName || agentPath,
+      agentVersion || '0.0.0',
+    )
+
+    const hasOnboarding = await hasOnboardingSkill(agent.slug)
+    return c.json({ ...agent, hasOnboarding }, 201)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to install agent from skillset'
+    console.error('Failed to install agent from skillset:', error)
+    return c.json({ error: message }, 500)
+  }
+})
 
 // Middleware: verify agent exists for all /:id/* routes
 agents.use('/:id/*', async (c, next) => {
@@ -1462,6 +1558,155 @@ agents.post('/:id/skills/:dir/publish', async (c) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to publish skill'
     console.error('Failed to publish skill:', error)
+    return c.json({ error: message }, 500)
+  }
+})
+
+// ============================================================
+// Agent Template endpoints
+// ============================================================
+
+// POST /api/agents/:id/export-template - Export agent as ZIP download
+agents.post('/:id/export-template', async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const zipBuffer = await exportAgentTemplate(slug)
+
+    return new Response(new Uint8Array(zipBuffer), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/zip',
+        'Content-Disposition': `attachment; filename="${slug}-template.zip"`,
+        'Content-Length': zipBuffer.byteLength.toString(),
+      },
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to export template'
+    console.error('Failed to export template:', error)
+    return c.json({ error: message }, 500)
+  }
+})
+
+// GET /api/agents/:id/template-status - Get skillset status
+agents.get('/:id/template-status', async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const { skillsets } = getSettings()
+    const status = await getAgentTemplateStatus(slug, skillsets || [])
+    return c.json(status)
+  } catch (error) {
+    console.error('Failed to get template status:', error)
+    return c.json({ error: 'Failed to get template status' }, 500)
+  }
+})
+
+// POST /api/agents/:id/template-update - Update from skillset
+agents.post('/:id/template-update', async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const result = await updateAgentFromSkillset(slug)
+    return c.json(result)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to update template'
+    console.error('Failed to update template:', error)
+    return c.json({ error: message }, 500)
+  }
+})
+
+// GET /api/agents/:id/template-pr-info - Get AI-suggested PR info
+agents.get('/:id/template-pr-info', async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const info = await getAgentPRInfo(slug)
+    return c.json(info)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to get PR info'
+    console.error('Failed to get template PR info:', error)
+    return c.json({ error: message }, 500)
+  }
+})
+
+// POST /api/agents/:id/template-create-pr - Create PR for modifications
+agents.post('/:id/template-create-pr', async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const { title, body, newVersion } = await c.req.json()
+
+    if (!title || !body) {
+      return c.json({ error: 'title and body are required' }, 400)
+    }
+
+    const result = await createAgentPR(slug, { title, body, newVersion })
+    return c.json(result)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to create PR'
+    console.error('Failed to create template PR:', error)
+    return c.json({ error: message }, 500)
+  }
+})
+
+// GET /api/agents/:id/template-publish-info - Get publish info
+agents.get('/:id/template-publish-info', async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const skillsetId = c.req.query('skillsetId')
+
+    if (!skillsetId) {
+      return c.json({ error: 'skillsetId query parameter is required' }, 400)
+    }
+
+    const settings = getSettings()
+    const config = (settings.skillsets || []).find((s) => s.id === skillsetId)
+    if (!config) {
+      return c.json({ error: 'Skillset not found' }, 404)
+    }
+
+    const info = await getAgentPublishInfo(slug, config)
+    return c.json(info)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to get publish info'
+    console.error('Failed to get template publish info:', error)
+    return c.json({ error: message }, 500)
+  }
+})
+
+// POST /api/agents/:id/template-publish - Publish to skillset
+agents.post('/:id/template-publish', async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const { skillsetId, title, body, newVersion } = await c.req.json()
+
+    if (!skillsetId || !title || !body) {
+      return c.json({ error: 'skillsetId, title, and body are required' }, 400)
+    }
+
+    const settings = getSettings()
+    const config = (settings.skillsets || []).find((s) => s.id === skillsetId)
+    if (!config) {
+      return c.json({ error: 'Skillset not found' }, 404)
+    }
+
+    const result = await publishAgentToSkillset(slug, config, { title, body, newVersion })
+    return c.json(result)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to publish template'
+    console.error('Failed to publish template:', error)
+    return c.json({ error: message }, 500)
+  }
+})
+
+// POST /api/agents/:id/template-refresh - Refresh status
+agents.post('/:id/template-refresh', async (c) => {
+  try {
+    const settings = getSettings()
+    const skillsets = settings.skillsets || []
+    await refreshAgentTemplates(skillsets)
+    const slug = c.req.param('id')
+    const status = await getAgentTemplateStatus(slug, skillsets)
+    return c.json(status)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to refresh template'
+    console.error('Failed to refresh template:', error)
     return c.json({ error: message }, 500)
   }
 })

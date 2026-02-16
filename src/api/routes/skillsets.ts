@@ -15,13 +15,14 @@ import type { ApiSkillsetConfig } from '@shared/lib/types/api'
 
 const skillsets = new Hono()
 
-function configToApiResponse(config: SkillsetConfig, skillCount: number): ApiSkillsetConfig {
+function configToApiResponse(config: SkillsetConfig, skillCount: number, agentCount: number = 0): ApiSkillsetConfig {
   return {
     id: config.id,
     url: config.url,
     name: config.name,
     description: config.description,
     skillCount,
+    agentCount,
     addedAt: config.addedAt,
   }
 }
@@ -35,7 +36,7 @@ skillsets.get('/', async (c) => {
 
     for (const config of configs) {
       const index = await getSkillsetIndex(config.id)
-      result.push(configToApiResponse(config, index?.skills.length ?? 0))
+      result.push(configToApiResponse(config, index?.skills.length ?? 0, index?.agents?.length ?? 0))
     }
 
     return c.json(result)
@@ -97,7 +98,7 @@ skillsets.post('/', async (c) => {
     }
     updateSettings(newSettings)
 
-    return c.json(configToApiResponse(config, index.skills.length), 201)
+    return c.json(configToApiResponse(config, index.skills.length, index.agents?.length ?? 0), 201)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to add skillset'
     return c.json({ error: message }, 500)
@@ -162,6 +163,23 @@ skillsets.get('/:id/skills', async (c) => {
   } catch (error) {
     console.error('Failed to get skillset skills:', error)
     return c.json({ error: 'Failed to get skillset skills' }, 500)
+  }
+})
+
+// GET /api/skillsets/:id/agents - Get agents from a specific skillset
+skillsets.get('/:id/agents', async (c) => {
+  try {
+    const id = c.req.param('id')
+    const index = await getSkillsetIndex(id)
+
+    if (!index) {
+      return c.json({ error: 'Skillset not found or not cached' }, 404)
+    }
+
+    return c.json({ agents: index.agents || [] })
+  } catch (error) {
+    console.error('Failed to get skillset agents:', error)
+    return c.json({ error: 'Failed to get skillset agents' }, 500)
   }
 })
 

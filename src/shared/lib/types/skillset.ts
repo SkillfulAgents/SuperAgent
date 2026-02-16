@@ -23,6 +23,7 @@ export interface SkillsetIndex {
   description: string
   version: string
   skills: SkillsetIndexSkill[]
+  agents?: SkillsetIndexAgent[]
 }
 
 // ============================================================================
@@ -98,4 +99,45 @@ export interface DiscoverableSkill {
   version: string
   path: string // path within skillset repo
   requiredEnvVars?: RequiredEnvVar[]
+}
+
+// ============================================================================
+// Agent Template Types (for skillset-based agent sharing)
+// ============================================================================
+
+/** An agent entry within a skillset's index.json */
+export interface SkillsetIndexAgent {
+  name: string
+  path: string // e.g. "agents/research-assistant/"
+  description: string
+  version: string
+}
+
+/** Metadata stored in workspace/.skillset-agent-metadata.json */
+export interface InstalledAgentMetadata {
+  skillsetId: string
+  skillsetUrl: string
+  agentName: string
+  agentPath: string // path within skillset repo
+  installedVersion: string
+  installedAt: string // ISO date
+  originalContentHash: string // SHA-256 of template-eligible files
+  openPrUrl?: string
+}
+
+/** Agent template status (mirrors SkillStatus) */
+export type AgentTemplateStatus =
+  | { type: 'local' }
+  | { type: 'up_to_date'; skillsetId: string; skillsetName: string }
+  | { type: 'update_available'; skillsetId: string; skillsetName: string; latestVersion: string }
+  | { type: 'locally_modified'; skillsetId: string; skillsetName: string; openPrUrl?: string }
+
+/** An agent available from a skillset that is not yet installed */
+export interface DiscoverableAgent {
+  skillsetId: string
+  skillsetName: string
+  name: string
+  description: string
+  version: string
+  path: string // path within skillset repo
 }

@@ -24,6 +24,30 @@ export interface ApiAgent {
   status: 'running' | 'stopped'
   containerPort: number | null
   healthWarnings?: HealthCheckResult[]
+  templateStatus?: ApiAgentTemplateStatus
+}
+
+/**
+ * Agent template status from skillset tracking
+ */
+export interface ApiAgentTemplateStatus {
+  type: 'local' | 'up_to_date' | 'update_available' | 'locally_modified'
+  skillsetId?: string
+  skillsetName?: string
+  latestVersion?: string
+  openPrUrl?: string
+}
+
+/**
+ * Agent available from a skillset but not yet installed
+ */
+export interface ApiDiscoverableAgent {
+  skillsetId: string
+  skillsetName: string
+  name: string
+  description: string
+  version: string
+  path: string
 }
 
 // ============================================================================
@@ -179,6 +203,7 @@ export interface ApiSkillsetConfig {
   name: string
   description: string
   skillCount: number
+  agentCount: number
   addedAt: string
 }
 

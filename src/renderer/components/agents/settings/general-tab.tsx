@@ -16,7 +16,15 @@ import {
 } from '@renderer/components/ui/alert-dialog'
 import { useDeleteAgent } from '@renderer/hooks/use-agents'
 import { useSelection } from '@renderer/context/selection-context'
-import { Trash2 } from 'lucide-react'
+import {
+  useAgentTemplateStatus,
+  useUpdateAgentTemplate,
+  useExportAgentTemplate,
+} from '@renderer/hooks/use-agent-templates'
+import { StatusBadge } from '@renderer/components/agents/status-badge'
+import { AgentTemplatePRDialog } from '@renderer/components/agents/agent-template-pr-dialog'
+import { AgentTemplatePublishDialog } from '@renderer/components/agents/agent-template-publish-dialog'
+import { Trash2, Download, RefreshCw, GitPullRequest, Upload, Loader2 } from 'lucide-react'
 
 interface GeneralTabProps {
   name: string
@@ -27,8 +35,13 @@ interface GeneralTabProps {
 
 export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: GeneralTabProps) {
   const [isDeleting, setIsDeleting] = useState(false)
+  const [prDialogOpen, setPrDialogOpen] = useState(false)
+  const [publishDialogOpen, setPublishDialogOpen] = useState(false)
   const deleteAgent = useDeleteAgent()
   const { handleAgentDeleted } = useSelection()
+  const { data: templateStatus } = useAgentTemplateStatus(agentSlug)
+  const updateTemplate = useUpdateAgentTemplate()
+  const exportTemplate = useExportAgentTemplate()
 
   const handleDelete = async () => {
     setIsDeleting(true)
@@ -53,6 +66,78 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
           onChange={(e) => onNameChange(e.target.value)}
           placeholder="Enter agent name"
         />
+      </div>
+
+      {/* Template Status */}
+      {templateStatus && templateStatus.type !== 'local' && (
+        <div className="space-y-2">
+          <h3 className="text-sm font-medium">Template Status</h3>
+          <div className="flex items-center gap-2 flex-wrap">
+            <StatusBadge status={templateStatus} />
+            {templateStatus.skillsetName && (
+              <span className="text-xs text-muted-foreground">
+                from {templateStatus.skillsetName}
+              </span>
+            )}
+          </div>
+          <div className="flex gap-2 mt-2">
+            {templateStatus.type === 'update_available' && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => updateTemplate.mutate({ agentSlug })}
+                disabled={updateTemplate.isPending}
+              >
+                {updateTemplate.isPending ? (
+                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-3 w-3 mr-1" />
+                )}
+                Update
+              </Button>
+            )}
+            {templateStatus.type === 'locally_modified' && !templateStatus.openPrUrl && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setPrDialogOpen(true)}
+              >
+                <GitPullRequest className="h-3 w-3 mr-1" />
+                Open PR
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Export / Publish */}
+      <div className="space-y-2">
+        <h3 className="text-sm font-medium">Template</h3>
+        <div className="flex gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => exportTemplate.mutate({ agentSlug, agentName: name })}
+            disabled={exportTemplate.isPending}
+          >
+            {exportTemplate.isPending ? (
+              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+            ) : (
+              <Download className="h-3 w-3 mr-1" />
+            )}
+            Export as Template
+          </Button>
+          {templateStatus?.type === 'local' && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setPublishDialogOpen(true)}
+            >
+              <Upload className="h-3 w-3 mr-1" />
+              Publish to Skillset
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Danger Zone */}
@@ -92,6 +177,20 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
           </AlertDialog>
         </div>
       </div>
+
+      {/* PR Dialog */}
+      <AgentTemplatePRDialog
+        open={prDialogOpen}
+        onOpenChange={setPrDialogOpen}
+        agentSlug={agentSlug}
+      />
+
+      {/* Publish Dialog */}
+      <AgentTemplatePublishDialog
+        open={publishDialogOpen}
+        onOpenChange={setPublishDialogOpen}
+        agentSlug={agentSlug}
+      />
     </div>
   )
 }

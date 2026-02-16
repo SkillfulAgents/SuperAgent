@@ -1,7 +1,8 @@
 import { useState } from 'react'
-import { Sparkles, RefreshCw, GitPullRequest, ExternalLink, Loader2, Upload } from 'lucide-react'
+import { Sparkles, RefreshCw, GitPullRequest, Loader2, Upload } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { useUpdateSkill } from '@renderer/hooks/use-agent-skills'
+import { StatusBadge } from './status-badge'
 import { SkillPRDialog } from './skill-pr-dialog'
 import { SkillPublishDialog } from './skill-publish-dialog'
 import type { ApiSkillWithStatus } from '@shared/lib/types/api'
@@ -16,48 +17,13 @@ export function AgentSkillCard({ skill, agentSlug }: AgentSkillCardProps) {
   const [prDialogOpen, setPrDialogOpen] = useState(false)
   const [publishDialogOpen, setPublishDialogOpen] = useState(false)
 
-  const statusBadge = () => {
-    switch (skill.status.type) {
-      case 'up_to_date':
-        return (
-          <span className="text-xs px-2 py-0.5 rounded-full bg-green-500/10 text-green-700 dark:text-green-400">
-            Up to date
-          </span>
-        )
-      case 'update_available':
-        return (
-          <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-500/10 text-yellow-700 dark:text-yellow-400">
-            Update available
-          </span>
-        )
-      case 'locally_modified':
-        return skill.status.openPrUrl ? (
-          <a
-            href={skill.status.openPrUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-purple-500/10 text-purple-700 dark:text-purple-400 hover:underline"
-          >
-            <ExternalLink className="h-3 w-3" />
-            PR opened
-          </a>
-        ) : (
-          <span className="text-xs px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-700 dark:text-blue-400">
-            Locally modified
-          </span>
-        )
-      default:
-        return null
-    }
-  }
-
   return (
     <div className="flex items-start gap-3 p-3 rounded-lg bg-muted/50 hover:bg-muted transition-colors">
       <Sparkles className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <p className="text-sm font-medium truncate">{skill.name}</p>
-          {statusBadge()}
+          <StatusBadge status={skill.status} />
         </div>
         <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">
           {skill.description}

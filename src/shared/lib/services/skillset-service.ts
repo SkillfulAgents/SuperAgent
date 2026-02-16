@@ -42,7 +42,7 @@ function getSkillsetCacheDir(): string {
   return path.join(getDataDir(), 'skillset-cache')
 }
 
-function getSkillsetRepoDir(skillsetId: string): string {
+export function getSkillsetRepoDir(skillsetId: string): string {
   return path.join(getSkillsetCacheDir(), skillsetId)
 }
 
@@ -259,7 +259,7 @@ async function getOriginalFromGitHistory(
  * Ensure a skillset repo is cached locally. Clones if not present.
  * Returns the path to the cached repo.
  */
-async function ensureGitInstalled(): Promise<void> {
+export async function ensureGitInstalled(): Promise<void> {
   try {
     await execFileAsync('git', ['--version'], { timeout: 5000 })
   } catch {
@@ -269,7 +269,7 @@ async function ensureGitInstalled(): Promise<void> {
   }
 }
 
-async function ensureSkillsetCached(skillsetId: string, url: string): Promise<string> {
+export async function ensureSkillsetCached(skillsetId: string, url: string): Promise<string> {
   const repoDir = getSkillsetRepoDir(skillsetId)
 
   if (await isGitRepo(repoDir)) {
@@ -291,7 +291,7 @@ async function ensureSkillsetCached(skillsetId: string, url: string): Promise<st
 /**
  * Read and parse index.json from a cached skillset repo.
  */
-async function readIndexJson(repoDir: string): Promise<SkillsetIndex> {
+export async function readIndexJson(repoDir: string): Promise<SkillsetIndex> {
   const indexPath = path.join(repoDir, 'index.json')
   const content = await readFileOrNull(indexPath)
   if (!content) {
@@ -861,7 +861,7 @@ export async function getSkillPRInfo(
 // Shared Git Fork/Branch/PR Helper
 // ============================================================================
 
-interface ForkBranchContext {
+export interface ForkBranchContext {
   repoDir: string
   upstreamNwo: string
   forkOwner: string
@@ -873,7 +873,7 @@ interface ForkBranchContext {
  * Prepare a git fork, feature branch, and remote for creating a PR.
  * Handles: cleanup, fork, remote setup, base branch detection, and branch creation.
  */
-async function prepareForkBranch(
+export async function prepareForkBranch(
   repoDir: string,
   branchPrefix: string,
 ): Promise<ForkBranchContext> {
@@ -953,7 +953,7 @@ async function prepareForkBranch(
 /**
  * Push staged changes and create a PR. Always cleans up the local branch afterwards.
  */
-async function pushAndCreatePR(
+export async function pushAndCreatePR(
   ctx: ForkBranchContext,
   options: { title: string; body: string },
 ): Promise<string> {
@@ -1328,7 +1328,7 @@ export async function publishSkillToSkillset(
 /**
  * Recursively copy a directory, excluding .git and internal skillset files.
  */
-async function copyDirectory(src: string, dest: string): Promise<void> {
+export async function copyDirectory(src: string, dest: string): Promise<void> {
   await ensureDirectory(dest)
   const entries = await fs.promises.readdir(src, { withFileTypes: true })
 
