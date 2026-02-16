@@ -1,5 +1,5 @@
 
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useRef, useMemo, useEffect } from 'react'
 import { cn } from '@shared/lib/utils/cn'
 import { Bot, ChevronDown, ChevronRight, CheckCircle, XCircle, Loader2, StopCircle } from 'lucide-react'
 import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
@@ -40,10 +40,17 @@ export function SubAgentBlock({
   isSessionActive,
   activeSubagent,
 }: SubAgentBlockProps) {
-  // Determine subagent ID from completed result or active SSE state
-  const subagentId = toolCall.subagent?.agentId
+  // Determine subagent ID from completed result or active SSE state.
+  // Latch the ID once resolved — it's a fixed property of this subagent run and should
+  // never revert to null (prevents messages from disappearing during completion transition).
+  const computedSubagentId = toolCall.subagent?.agentId
     ?? (activeSubagent?.parentToolId === toolCall.id ? activeSubagent.agentId : null)
     ?? null
+  const latchedSubagentIdRef = useRef<string | null>(null)
+  if (computedSubagentId) {
+    latchedSubagentIdRef.current = computedSubagentId
+  }
+  const subagentId = computedSubagentId ?? latchedSubagentIdRef.current
 
   // Determine status
   let status: SubagentStatus = 'cancelled'

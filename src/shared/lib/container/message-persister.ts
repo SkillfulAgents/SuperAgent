@@ -23,6 +23,7 @@ interface StreamingState {
   lastAssistantUsage: SessionUsage | null // Per-call usage from most recent assistant message
   pendingTaskToolId: string | null // tool_use ID of the currently executing Task tool
   activeSubagentId: string | null // agentId of the running subagent
+  completedSubagentIds: Set<string> // agentIds of subagents that have completed (to avoid re-discovery)
   // Subagent streaming state (separate from main agent to avoid corruption)
   subagentCurrentText: string
   subagentCurrentToolUse: { id: string; name: string } | null
@@ -65,6 +66,7 @@ class MessagePersister {
       lastAssistantUsage: null,
       pendingTaskToolId: null,
       activeSubagentId: null,
+      completedSubagentIds: new Set(),
       subagentCurrentText: '',
       subagentCurrentToolUse: null,
       subagentCurrentToolInput: '',
@@ -251,6 +253,7 @@ class MessagePersister {
         lastAssistantUsage: null,
         pendingTaskToolId: null,
         activeSubagentId: null,
+        completedSubagentIds: new Set(),
         subagentCurrentText: '',
         subagentCurrentToolUse: null,
         subagentCurrentToolInput: '',
@@ -514,7 +517,13 @@ class MessagePersister {
 
   // Handle sidechain (subagent) messages — filter them out of main streaming state
   private handleSidechainMessage(sessionId: string, content: any, state: StreamingState): void {
-    // Try to discover agentId from the subagent JSONL files if not already known
+    // Try to extract agentId directly from the message (available on complete user/assistant messages)
+    const messageAgentId = content.agentId as string | undefined
+    if (messageAgentId && messageAgentId !== state.activeSubagentId) {
+      state.activeSubagentId = messageAgentId
+    }
+
+    // Fallback: discover agentId from the subagent JSONL files if not already known
     if (!state.activeSubagentId && state.agentSlug) {
       this.discoverSubagentId(sessionId, state).catch(() => {})
     }
@@ -554,10 +563,13 @@ class MessagePersister {
       const subagentsDir = path.join(sessionsDir, sessionId, 'subagents')
       const files = await fsPromises.readdir(subagentsDir)
 
-      // Find the most recently modified agent-*.jsonl file
+      // Find the most recently modified agent-*.jsonl file,
+      // skipping files for subagents that have already completed
       let latest: { name: string; mtime: number } | null = null
       for (const file of files) {
         if (file.startsWith('agent-') && file.endsWith('.jsonl')) {
+          const id = file.replace('agent-', '').replace('.jsonl', '')
+          if (state.completedSubagentIds.has(id)) continue
           const stat = await fsPromises.stat(path.join(subagentsDir, file))
           if (!latest || stat.mtimeMs > latest.mtime) {
             latest = { name: file, mtime: stat.mtimeMs }
@@ -596,6 +608,10 @@ class MessagePersister {
       parentToolId: state.pendingTaskToolId,
       agentId: state.activeSubagentId,
     })
+    // Track completed subagent ID so it won't be re-discovered for future subagents
+    if (state.activeSubagentId) {
+      state.completedSubagentIds.add(state.activeSubagentId)
+    }
     state.pendingTaskToolId = null
     state.activeSubagentId = null
     state.subagentCurrentText = ''
