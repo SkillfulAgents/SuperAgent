@@ -527,34 +527,7 @@ let browserState: BrowserState = { active: false, sessionId: null, cdpUrl: null 
 
 const execFileAsync = promisify(execFile);
 
-// Split a command string into arguments, respecting quoted strings.
-// e.g. 'get text "hello world"' -> ['get', 'text', 'hello world']
-function splitCommandArgs(command: string): string[] {
-  const args: string[] = [];
-  let current = '';
-  let inQuote: string | null = null;
-  for (let i = 0; i < command.length; i++) {
-    const ch = command[i];
-    if (inQuote) {
-      if (ch === inQuote) {
-        inQuote = null;
-      } else {
-        current += ch;
-      }
-    } else if (ch === '"' || ch === "'") {
-      inQuote = ch;
-    } else if (ch === ' ' || ch === '\t') {
-      if (current) {
-        args.push(current);
-        current = '';
-      }
-    } else {
-      current += ch;
-    }
-  }
-  if (current) args.push(current);
-  return args;
-}
+import { splitCommandArgs, buildRunCommandArgs } from './browser-command-args';
 
 // Execute an agent-browser CLI command and return the result.
 // Uses execFile (no shell) to prevent command injection.
@@ -1082,7 +1055,7 @@ app.post('/browser/run', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const commandArgs = splitCommandArgs(body.command);
+    const commandArgs = buildRunCommandArgs(body.command);
     if (commandArgs.length === 0) {
       return c.json({ error: 'Empty command' }, 400);
     }
