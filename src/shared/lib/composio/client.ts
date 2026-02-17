@@ -10,7 +10,7 @@ import {
 const COMPOSIO_BASE_URL = 'https://backend.composio.dev/api/v3'
 
 interface ComposioError {
-  error: string
+  error: string | { message?: string; slug?: string; suggested_fix?: string }
   message?: string
 }
 
@@ -54,8 +54,14 @@ async function composioFetch<T>(
     } catch {
       // Ignore JSON parse errors
     }
+    // Extract message from nested error object if present
+    const errorMessage =
+      errorDetails?.message ||
+      (typeof errorDetails?.error === 'object' ? errorDetails.error.message : undefined) ||
+      `Composio API error: ${response.status}`
+
     throw new ComposioApiError(
-      errorDetails?.message || `Composio API error: ${response.status}`,
+      errorMessage,
       response.status,
       errorDetails
     )

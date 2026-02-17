@@ -231,6 +231,7 @@ function ConnectedAccountsSection() {
   const invalidateAccounts = useInvalidateConnectedAccounts()
 
   const [connectingProvider, setConnectingProvider] = useState<string | null>(null)
+  const [connectionError, setConnectionError] = useState<string | null>(null)
   const [deletingAccount, setDeletingAccount] = useState<string | null>(null)
   const [editingAccount, setEditingAccount] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
@@ -292,6 +293,7 @@ function ConnectedAccountsSection() {
 
   const handleConnect = async (providerSlug: string) => {
     setConnectingProvider(providerSlug)
+    setConnectionError(null)
     try {
       // Pass electron flag to get correct callback URL
       const isElectronApp = !!window.electronAPI
@@ -303,8 +305,9 @@ function ConnectedAccountsSection() {
       } else {
         window.open(result.redirectUrl, '_blank')
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to initiate connection:', error)
+      setConnectionError(error.message || 'Failed to connect. Please try again.')
       setConnectingProvider(null)
     }
   }
@@ -452,6 +455,13 @@ function ConnectedAccountsSection() {
         </div>
       ) : (
         <p className="text-sm text-muted-foreground">No accounts connected yet.</p>
+      )}
+
+      {/* Connection error */}
+      {connectionError && (
+        <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3">
+          <p className="text-sm text-destructive">{connectionError}</p>
+        </div>
       )}
 
       {/* Connect new account */}

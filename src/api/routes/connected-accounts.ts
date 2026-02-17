@@ -126,6 +126,22 @@ connectedAccountsRouter.post('/initiate', async (c) => {
     })
   } catch (error: any) {
     console.error('Failed to initiate connection:', error)
+
+    // Detect "no managed credentials" error from Composio and return a friendly message
+    const slug = typeof error.details?.error === 'object' ? error.details.error.slug : undefined
+    const isNoManagedAuth =
+      slug === 'Auth_Config_DefaultAuthConfigNotFound' ||
+      error.message?.includes('does not have managed credentials')
+
+    if (isNoManagedAuth) {
+      return c.json(
+        {
+          error: `This provider requires custom OAuth credentials. Composio does not have managed credentials for it. Please set up your own app credentials in the Composio dashboard and configure a custom auth config for this provider.`,
+        },
+        400
+      )
+    }
+
     return c.json(
       { error: error.message || 'Failed to initiate connection' },
       error.statusCode || 500
