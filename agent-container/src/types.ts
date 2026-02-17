@@ -47,6 +47,7 @@ export interface CreateSessionRequest {
   availableEnvVars?: string[]; // List of env var names available to the agent
   initialMessage: string; // Required: first message to send (triggers session ID generation)
   model?: string; // Claude model to use for this session
+  browserModel?: string; // Model for browser subagent
 }
 
 export interface SendMessageRequest {

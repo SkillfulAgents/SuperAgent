@@ -33,6 +33,7 @@ export interface CreateSessionOptions {
   availableEnvVars?: string[]
   initialMessage: string // Required: first message to send (triggers session ID generation)
   model?: string // Claude model to use for this session
+  browserModel?: string // Model for browser subagent
 }
 
 export interface StartOptions {

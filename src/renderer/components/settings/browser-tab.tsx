@@ -10,6 +10,12 @@ import {
 import { Switch } from '@renderer/components/ui/switch'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 
+const MODEL_OPTIONS = [
+  { value: 'claude-haiku-4-5', label: 'Claude 4.5 Haiku' },
+  { value: 'claude-sonnet-4-5', label: 'Claude 4.5 Sonnet' },
+  { value: 'claude-opus-4-5', label: 'Claude 4.5 Opus' },
+]
+
 export function BrowserTab() {
   const { data: settings, isLoading } = useSettings()
   const updateSettings = useUpdateSettings()
@@ -23,6 +29,32 @@ export function BrowserTab() {
 
   return (
     <div className="space-y-6">
+      {/* Browser Agent Model */}
+      <div className="space-y-2">
+        <Label htmlFor="browser-model">Browser Agent Model</Label>
+        <Select
+          value={settings?.models?.browserModel ?? 'claude-sonnet-4-5'}
+          onValueChange={(value) => {
+            updateSettings.mutate({ models: { browserModel: value } })
+          }}
+          disabled={isLoading}
+        >
+          <SelectTrigger id="browser-model">
+            <SelectValue placeholder="Select a model" />
+          </SelectTrigger>
+          <SelectContent>
+            {MODEL_OPTIONS.map((model) => (
+              <SelectItem key={model.value} value={model.value}>
+                {model.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          Model used for the web browser subagent
+        </p>
+      </div>
+
       {/* Use My Browser toggle */}
       {settings?.hostBrowserStatus && (
         <div className="space-y-2">

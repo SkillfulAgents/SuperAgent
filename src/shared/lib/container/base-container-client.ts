@@ -501,6 +501,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           availableEnvVars: options.availableEnvVars,
           initialMessage: options.initialMessage,
           model: options.model,
+          browserModel: options.browserModel,
         }),
         signal: controller.signal,
       })

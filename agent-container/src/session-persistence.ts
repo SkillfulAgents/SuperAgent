@@ -10,6 +10,7 @@ interface SessionMetadata {
   systemPrompt?: string;
   availableEnvVars?: string[];
   model?: string;
+  browserModel?: string;
 }
 
 const SESSIONS_FILE = '/workspace/.superagent-sessions.json';

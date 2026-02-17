@@ -423,6 +423,7 @@ agents.post('/:id/sessions', async (c) => {
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: message.trim(),
       model: getEffectiveModels().agentModel,
+      browserModel: getEffectiveModels().browserModel,
     })
     const sessionId = containerSession.id
 

@@ -29,6 +29,7 @@ export interface NotificationSettings {
 export interface ModelSettings {
   summarizerModel: string
   agentModel: string
+  browserModel: string
 }
 
 export interface AppPreferences {
@@ -109,6 +110,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   models: {
     summarizerModel: 'claude-haiku-4-5',
     agentModel: 'claude-opus-4-5',
+    browserModel: 'claude-sonnet-4-5',
   },
 }
 
@@ -291,6 +293,7 @@ export function getEffectiveModels(): ModelSettings {
   return {
     summarizerModel: settings.models?.summarizerModel || DEFAULT_SETTINGS.models!.summarizerModel,
     agentModel: settings.models?.agentModel || DEFAULT_SETTINGS.models!.agentModel,
+    browserModel: settings.models?.browserModel || DEFAULT_SETTINGS.models!.browserModel,
   }
 }
 

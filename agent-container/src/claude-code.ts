@@ -188,6 +188,19 @@ class MessageQueue {
   }
 }
 
+type SDKModelAlias = 'sonnet' | 'opus' | 'haiku';
+
+/**
+ * Maps a full model ID (e.g. 'claude-sonnet-4-5') to the SDK's short alias.
+ */
+function toModelAlias(model?: string): SDKModelAlias | undefined {
+  if (!model) return undefined;
+  if (model.includes('opus')) return 'opus';
+  if (model.includes('sonnet')) return 'sonnet';
+  if (model.includes('haiku')) return 'haiku';
+  return undefined;
+}
+
 export interface ClaudeCodeProcessOptions {
   sessionId: string;
   workingDirectory: string;
@@ -195,6 +208,7 @@ export interface ClaudeCodeProcessOptions {
   userSystemPrompt?: string;
   availableEnvVars?: string[];
   model?: string;
+  browserModel?: string;
 }
 
 export class ClaudeCodeProcess extends EventEmitter {
@@ -206,6 +220,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private claudeSessionId: string | null;
   private systemPromptAppend: string | undefined;
   private model: string | undefined;
+  private browserModel: 'sonnet' | 'opus' | 'haiku' | undefined;
   private isReady: boolean = false;
   private isProcessing: boolean = false;
 
@@ -215,6 +230,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.workingDirectory = options.workingDirectory;
     this.claudeSessionId = options.claudeSessionId || null;
     this.model = options.model;
+    this.browserModel = toModelAlias(options.browserModel);
     this.systemPromptAppend = generateSystemPromptAppend(
       options.availableEnvVars,
       options.userSystemPrompt
@@ -247,7 +263,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         agents: {
           'web-browser': {
             description: 'Web browsing specialist. Delegate any task that requires interacting with websites — navigating pages, filling forms, clicking buttons, extracting information, searching for products, changing settings on web services, or any multi-step web interaction. The browser should already be open (use browser_open first). This agent runs on a cheaper model and handles all browser interactions autonomously.',
-            model: 'sonnet',
+            model: this.browserModel || 'sonnet',
             tools: [
               'mcp__browser__browser_open',
               'mcp__browser__browser_snapshot',

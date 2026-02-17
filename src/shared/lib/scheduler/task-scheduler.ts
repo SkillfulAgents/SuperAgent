@@ -6,6 +6,7 @@
  */
 
 import { containerManager } from '@shared/lib/container/container-manager'
+import { getEffectiveModels } from '@shared/lib/config/settings'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import {
@@ -161,6 +162,8 @@ class TaskScheduler {
       availableEnvVars:
         availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: task.prompt,
+      model: getEffectiveModels().agentModel,
+      browserModel: getEffectiveModels().browserModel,
     })
 
     const sessionId = containerSession.id
