@@ -194,12 +194,12 @@ export const browserScrollTool = tool(
 
 export const browserWaitTool = tool(
   'browser_wait',
-  `Wait for a condition before continuing. Use "networkidle" after navigation to ensure the page is fully loaded.`,
+  `Wait for a CSS selector to appear on the page. Only use this when you need to wait for a specific element to render (e.g. after triggering dynamic content). Do NOT use for "networkidle", "load", or "domcontentloaded" — browser_open already waits for the page to load.`,
   {
     for: z
       .string()
       .describe(
-        'Condition to wait for: "networkidle", "load", "domcontentloaded", or a CSS selector'
+        'CSS selector to wait for (e.g. "#results", ".loaded"). Avoid "networkidle"/"load"/"domcontentloaded" — browser_open already handles page load.'
       ),
   },
   async (args) => {

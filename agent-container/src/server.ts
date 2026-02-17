@@ -913,9 +913,20 @@ app.post('/browser/wait', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const result = await execBrowser(['wait', body.for], browserState.cdpUrl || undefined);
+    const loadStates = ['networkidle', 'load', 'domcontentloaded'];
+    const isLoadState = loadStates.includes(body.for);
+    const waitArgs = isLoadState
+      ? ['wait', '--load', body.for]
+      : ['wait', body.for];
+    const result = await execBrowser(waitArgs, browserState.cdpUrl || undefined);
 
     if (result.exitCode !== 0) {
+      // Load state waits (especially networkidle) often time out on real-world pages
+      // with continuous ad/analytics traffic. Since browser_open already waits for the
+      // 'load' event, the page is usable — treat load state timeouts as success.
+      if (isLoadState) {
+        return c.json({ success: true });
+      }
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
