@@ -107,6 +107,8 @@ export const browserScreenshotRenderer: ToolRenderer = {
     const { full } = input as { full?: boolean }
     return full ? 'full page' : 'viewport'
   },
+  // Hide Input/Output sections — the image is rendered separately by ToolCallItem
+  ExpandedView: () => null,
 }
 
 // ── browser_select ────────────────────────────────────────────

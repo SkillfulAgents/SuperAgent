@@ -7,6 +7,7 @@
  */
 
 import { tool } from '@anthropic-ai/claude-agent-sdk'
+import { readFile } from 'fs/promises'
 import { z } from 'zod'
 
 const CONTAINER_URL = `http://localhost:${process.env.PORT || '3000'}`
@@ -43,6 +44,31 @@ function errorResult(message: string) {
   return {
     content: [{ type: 'text' as const, text: `Error: ${message}` }],
     isError: true,
+  }
+}
+
+export function stripAnsi(str: string): string {
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\x1b\[[0-9;]*m/g, '')
+}
+
+export function extractScreenshotPath(output: string): string {
+  const clean = stripAnsi(output).trim()
+  // Extract file path - look for an absolute path ending with .png or .jpg/.jpeg
+  const match = clean.match(/(\/\S+\.(?:png|jpe?g))/i)
+  return match ? match[1] : clean
+}
+
+async function readScreenshotAsBase64(filePath: string): Promise<{ data: string; mimeType: string } | null> {
+  try {
+    const buffer = await readFile(filePath.trim())
+    const data = buffer.toString('base64')
+    const mimeType = filePath.endsWith('.jpg') || filePath.endsWith('.jpeg')
+      ? 'image/jpeg'
+      : 'image/png'
+    return { data, mimeType }
+  } catch {
+    return null
   }
 }
 
@@ -232,7 +258,7 @@ export const browserPressTool = tool(
 
 export const browserScreenshotTool = tool(
   'browser_screenshot',
-  `Take a screenshot of the current page. Returns the file path of the saved screenshot. You can then read the file to see the image. Use full=true to capture the entire scrollable page.`,
+  `Take a screenshot of the current page. Returns the screenshot image and the file path where it was saved. Use full=true to capture the entire scrollable page.`,
   {
     full: z
       .boolean()
@@ -244,12 +270,22 @@ export const browserScreenshotTool = tool(
     const result = await browserFetch('screenshot', { full: args.full })
     if (!result.success) return errorResult(result.error!)
     const data = result.data as Record<string, unknown>
-    const output = data.output ? String(data.output) : 'Screenshot taken.'
-    return {
-      content: [
-        { type: 'text' as const, text: output },
-      ],
+    const rawOutput = data.output ? String(data.output) : ''
+    const filePath = rawOutput ? extractScreenshotPath(rawOutput) : ''
+
+    const content: Array<{ type: 'image'; data: string; mimeType: string } | { type: 'text'; text: string }> = []
+
+    if (filePath) {
+      const image = await readScreenshotAsBase64(filePath)
+      if (image) {
+        content.push({ type: 'image' as const, data: image.data, mimeType: image.mimeType })
+      }
+      content.push({ type: 'text' as const, text: `Screenshot saved to: ${filePath}` })
+    } else {
+      content.push({ type: 'text' as const, text: 'Screenshot taken.' })
     }
+
+    return { content }
   }
 )
 
@@ -336,7 +372,7 @@ Available commands:
 
 export const browserGetStateTool = tool(
   'browser_get_state',
-  `Get the current state of the browser in one call. Returns the current URL, a screenshot file path, and an accessibility snapshot. Use this to quickly check what the browser is showing without needing multiple tool calls.`,
+  `Get the current state of the browser in one call. Returns the current URL, a screenshot image, and an accessibility snapshot. Use this to quickly check what the browser is showing without needing multiple tool calls.`,
   {},
   async () => {
     const [urlResult, screenshotResult, snapshotResult] = await Promise.all([
@@ -345,6 +381,7 @@ export const browserGetStateTool = tool(
       browserFetch('snapshot', { interactive: true, compact: true }),
     ])
 
+    const content: Array<{ type: 'image'; data: string; mimeType: string } | { type: 'text'; text: string }> = []
     const parts: string[] = []
 
     if (urlResult.success) {
@@ -356,7 +393,17 @@ export const browserGetStateTool = tool(
 
     if (screenshotResult.success) {
       const data = screenshotResult.data as Record<string, unknown>
-      parts.push(`**Screenshot:** ${data.output || 'No screenshot path returned'}`)
+      const rawOutput = data.output ? String(data.output) : ''
+      const filePath = rawOutput ? extractScreenshotPath(rawOutput) : ''
+      if (filePath) {
+        const image = await readScreenshotAsBase64(filePath)
+        if (image) {
+          content.push({ type: 'image' as const, data: image.data, mimeType: image.mimeType })
+        }
+        parts.push(`**Screenshot:** ${filePath}`)
+      } else {
+        parts.push(`**Screenshot:** No screenshot path returned`)
+      }
     } else {
       parts.push(`**Screenshot:** Error - ${screenshotResult.error}`)
     }
@@ -371,9 +418,9 @@ export const browserGetStateTool = tool(
       parts.push(`**Accessibility Snapshot:** Error - ${snapshotResult.error}`)
     }
 
-    return {
-      content: [{ type: 'text' as const, text: parts.join('\n\n') }],
-    }
+    content.push({ type: 'text' as const, text: parts.join('\n\n') })
+
+    return { content }
   }
 )
 
