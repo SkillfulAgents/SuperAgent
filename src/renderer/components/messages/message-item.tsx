@@ -67,7 +67,7 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
           <MessageContextMenu text={text || ''} onRemove={onRemoveMessage ? () => onRemoveMessage(message.id) : undefined}>
             <div
               className={cn(
-                'rounded-lg px-4 py-2',
+                'rounded-lg px-4 py-2 max-w-full overflow-hidden',
                 isUser && 'bg-primary text-primary-foreground',
                 isAssistant && 'bg-muted'
               )}
@@ -75,7 +75,7 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
               {/* Text content */}
               {hasText && (
                 <div className={cn(
-                  'prose prose-sm max-w-none break-words',
+                  'prose prose-sm max-w-none min-w-0 break-words',
                   // Use inverted (light) text for user messages (dark bg) and dark mode
                   // prose-user-message resets prose-invert in dark mode where primary bg is light
                   isUser ? 'prose-invert prose-user-message' : 'dark:prose-invert'
@@ -87,7 +87,7 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
                       pre: ({ children }) => (
                         <pre className={cn(
                           'rounded p-2 overflow-x-auto text-xs',
-                          isUser ? 'bg-white/20 dark:bg-black/10' : 'bg-background/50'
+                          isUser ? 'bg-black/20 text-inherit' : 'bg-background/50'
                         )}>
                           {children}
                         </pre>
@@ -97,12 +97,12 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
                         return isInline ? (
                           <code className={cn(
                             'rounded px-1 py-0.5 text-xs',
-                            isUser ? 'bg-white/20 dark:bg-black/10' : 'bg-background/50'
+                            isUser ? 'bg-black/20 text-inherit' : 'bg-background/50'
                           )}>
                             {children}
                           </code>
                         ) : (
-                          <code className={className}>{children}</code>
+                          <code className={cn(className, isUser && 'text-inherit')}>{children}</code>
                         )
                       },
                       // Style tables with borders and horizontal scroll
