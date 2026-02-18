@@ -25,6 +25,7 @@ import {
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronDown, ChevronRight, Loader2, Upload, FileArchive } from 'lucide-react'
+import { SkillInstallDialog } from './skill-install-dialog'
 import type { SkillsetIndexSkill } from '@shared/lib/types/skillset'
 
 const ONBOARDING_MESSAGE = 'This agent was just set up from a template. Please run the agent-onboarding skill to help me configure it.'
@@ -84,6 +85,14 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
   const { data: skillsetSkills } = useAllSkillsetSkills()
   const installSkill = useInstallSkill()
 
+  // Secrets prompt state for skill installation
+  const [secretsPrompt, setSecretsPrompt] = useState<{
+    agentSlug: string
+    requiredEnvVars: Array<{ name: string; description: string }>
+    /** Skills that need the collected envVars re-installed */
+    skillsNeedingSecrets: Array<{ skillsetId: string; skillPath: string; skillName: string; skillVersion: string }>
+  } | null>(null)
+
   // Import tab state
   const [importFile, setImportFile] = useState<File | null>(null)
   const [importName, setImportName] = useState('')
@@ -125,6 +134,72 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
     })
   }
 
+  const resolveSkillKey = (key: string) => {
+    const [skillsetId, skillPath] = key.split('::')
+    const skillsetData = skillsetSkills?.find((s) => s.skillsetId === skillsetId)
+    const skill = skillsetData?.skills.find((s) => s.path === skillPath)
+    return skill ? { skillsetId, skillPath, skillName: skill.name, skillVersion: skill.version } : null
+  }
+
+  const installSkillKeys = async (agentSlug: string, keys: string[], envVars?: Record<string, string>) => {
+    setIsInstalling(true)
+    const skillsNeedingSecrets: Array<{ skillsetId: string; skillPath: string; skillName: string; skillVersion: string }> = []
+    const allRequiredEnvVars = new Map<string, { name: string; description: string }>()
+
+    for (const key of keys) {
+      const resolved = resolveSkillKey(key)
+      if (!resolved) continue
+      try {
+        const result = await installSkill.mutateAsync({
+          agentSlug,
+          ...resolved,
+          envVars,
+        })
+        if (result.requiredEnvVars && result.requiredEnvVars.length > 0 && !envVars) {
+          skillsNeedingSecrets.push(resolved)
+          for (const v of result.requiredEnvVars) {
+            allRequiredEnvVars.set(v.name, v)
+          }
+        }
+      } catch (error) {
+        console.error(`Failed to install skill ${resolved.skillName}:`, error)
+      }
+    }
+
+    if (allRequiredEnvVars.size > 0) {
+      // Pause and prompt for all required secrets at once
+      setSecretsPrompt({
+        agentSlug,
+        requiredEnvVars: Array.from(allRequiredEnvVars.values()),
+        skillsNeedingSecrets,
+      })
+      return
+    }
+
+    setIsInstalling(false)
+    handleOpenChange(false)
+    selectAgent(agentSlug)
+  }
+
+  const handleSecretsSubmit = async (envVars: Record<string, string>) => {
+    if (!secretsPrompt) return
+    const { agentSlug, skillsNeedingSecrets } = secretsPrompt
+    setSecretsPrompt(null)
+
+    // Re-install the skills that needed secrets, now with envVars
+    for (const skill of skillsNeedingSecrets) {
+      try {
+        await installSkill.mutateAsync({ agentSlug, ...skill, envVars })
+      } catch (error) {
+        console.error(`Failed to install skill ${skill.skillName} with secrets:`, error)
+      }
+    }
+
+    setIsInstalling(false)
+    handleOpenChange(false)
+    selectAgent(agentSlug)
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!name.trim()) return
@@ -132,33 +207,12 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
     try {
       const newAgent = await createAgent.mutateAsync({ name: name.trim() })
 
-      // Install selected skills
       if (selectedSkills.size > 0) {
-        setIsInstalling(true)
-        for (const key of selectedSkills) {
-          const [skillsetId, skillPath] = key.split('::')
-          // Find the skill details
-          const skillsetData = skillsetSkills?.find((s) => s.skillsetId === skillsetId)
-          const skill = skillsetData?.skills.find((s) => s.path === skillPath)
-          if (skill) {
-            try {
-              await installSkill.mutateAsync({
-                agentSlug: newAgent.slug,
-                skillsetId,
-                skillPath,
-                skillName: skill.name,
-                skillVersion: skill.version,
-              })
-            } catch (error) {
-              console.error(`Failed to install skill ${skill.name}:`, error)
-            }
-          }
-        }
-        setIsInstalling(false)
+        await installSkillKeys(newAgent.slug, Array.from(selectedSkills))
+      } else {
+        handleOpenChange(false)
+        selectAgent(newAgent.slug)
       }
-
-      handleOpenChange(false)
-      selectAgent(newAgent.slug)
     } catch (error) {
       console.error('Failed to create agent:', error)
       setIsInstalling(false)
@@ -234,6 +288,7 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
       setImportName('')
       setSelectedTemplate(null)
       setSkillsetAgentName('')
+      setSecretsPrompt(null)
       importTemplate.reset()
     }
     onOpenChange(nextOpen)
@@ -548,6 +603,25 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
           )}
         </Tabs>
       </DialogContent>
+
+      {secretsPrompt && (
+        <SkillInstallDialog
+          open={!!secretsPrompt}
+          onOpenChange={(open) => {
+            if (!open) {
+              setSecretsPrompt(null)
+              setIsInstalling(false)
+            }
+          }}
+          skillName={
+            secretsPrompt.skillsNeedingSecrets.length === 1
+              ? secretsPrompt.skillsNeedingSecrets[0].skillName
+              : `${secretsPrompt.skillsNeedingSecrets.length} skills`
+          }
+          requiredEnvVars={secretsPrompt.requiredEnvVars}
+          onInstall={handleSecretsSubmit}
+        />
+      )}
     </Dialog>
   )
 }
