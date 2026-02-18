@@ -3,6 +3,8 @@ import { createContext, useContext, useState, useEffect, useCallback } from 'rea
 interface DialogContextType {
   settingsOpen: boolean
   setSettingsOpen: (open: boolean) => void
+  settingsTab: string | undefined
+  openSettings: (tab?: string) => void
   createAgentOpen: boolean
   setCreateAgentOpen: (open: boolean) => void
   openWizard: () => void
@@ -18,7 +20,13 @@ export function DialogProvider({
   onOpenWizard: () => void
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsTab, setSettingsTab] = useState<string | undefined>()
   const [createAgentOpen, setCreateAgentOpen] = useState(false)
+
+  const openSettings = useCallback((tab?: string) => {
+    setSettingsTab(tab)
+    setSettingsOpen(true)
+  }, [])
 
   const openWizard = useCallback(() => {
     setSettingsOpen(false)
@@ -48,6 +56,8 @@ export function DialogProvider({
       value={{
         settingsOpen,
         setSettingsOpen,
+        settingsTab,
+        openSettings,
         createAgentOpen,
         setCreateAgentOpen,
         openWizard,

@@ -1,6 +1,6 @@
 
 import * as React from 'react'
-import { Settings, FileText, KeyRound, Sparkles, Link2, ScrollText } from 'lucide-react'
+import { Settings, FileText, KeyRound, Sparkles, Link2, ScrollText, Plug } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import {
   Dialog,
@@ -24,9 +24,10 @@ import { SystemPromptTab } from './settings/system-prompt-tab'
 import { SecretsTab } from './settings/secrets-tab'
 import { SkillsTab } from './settings/skills-tab'
 import { ConnectedAccountsTab } from './settings/connected-accounts-tab'
+import { RemoteMcpsTab } from './settings/remote-mcps-tab'
 import { AuditLogTab } from './settings/audit-log-tab'
 
-type SettingsSection = 'general' | 'system-prompt' | 'secrets' | 'skills' | 'connected-accounts' | 'audit-log'
+type SettingsSection = 'general' | 'system-prompt' | 'secrets' | 'skills' | 'connected-accounts' | 'remote-mcps' | 'audit-log'
 
 const navItems = [
   { id: 'general' as const, name: 'General', icon: Settings },
@@ -34,6 +35,7 @@ const navItems = [
   { id: 'secrets' as const, name: 'Secrets', icon: KeyRound },
   { id: 'skills' as const, name: 'Skills', icon: Sparkles },
   { id: 'connected-accounts' as const, name: 'Accounts', icon: Link2 },
+  { id: 'remote-mcps' as const, name: 'MCPs', icon: Plug },
   { id: 'audit-log' as const, name: 'API Log', icon: ScrollText },
 ]
 
@@ -134,11 +136,14 @@ export function AgentSettingsDialog({
               {activeSection === 'connected-accounts' && (
                 <ConnectedAccountsTab agentSlug={agent.slug} />
               )}
+              {activeSection === 'remote-mcps' && (
+                <RemoteMcpsTab agentSlug={agent.slug} onClose={() => onOpenChange(false)} />
+              )}
               {activeSection === 'audit-log' && (
                 <AuditLogTab agentSlug={agent.slug} />
               )}
             </div>
-            {activeSection !== 'secrets' && activeSection !== 'skills' && activeSection !== 'connected-accounts' && activeSection !== 'audit-log' && (
+            {activeSection !== 'secrets' && activeSection !== 'skills' && activeSection !== 'connected-accounts' && activeSection !== 'remote-mcps' && activeSection !== 'audit-log' && (
               <div className="flex items-center justify-end gap-2 border-t p-4">
                 <Button variant="outline" onClick={() => onOpenChange(false)}>
                   Cancel

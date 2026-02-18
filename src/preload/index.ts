@@ -24,6 +24,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.removeAllListeners('oauth-callback')
   },
 
+  // MCP OAuth callback handling - receives result from main process after token exchange
+  onMcpOAuthCallback: (callback: (params: {
+    success: boolean
+    mcpId?: string | null
+    error?: string | null
+  }) => void) => {
+    ipcRenderer.on('mcp-oauth-callback', (_event, params) => callback(params))
+  },
+
+  // Remove MCP OAuth callback listener
+  removeMcpOAuthCallback: () => {
+    ipcRenderer.removeAllListeners('mcp-oauth-callback')
+  },
+
   // Full screen state handling
   onFullScreenChange: (callback: (isFullScreen: boolean) => void) => {
     ipcRenderer.on('fullscreen-change', (_event, isFullScreen) => callback(isFullScreen))
@@ -137,6 +151,8 @@ declare global {
       platform: string
       onOAuthCallback: (callback: (params: OAuthCallbackParams) => void) => void
       removeOAuthCallback: () => void
+      onMcpOAuthCallback: (callback: (params: { success: boolean; mcpId?: string | null; error?: string | null }) => void) => void
+      removeMcpOAuthCallback: () => void
       onFullScreenChange: (callback: (isFullScreen: boolean) => void) => void
       removeFullScreenChange: () => void
       getFullScreenState: () => Promise<boolean>

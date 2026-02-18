@@ -37,8 +37,8 @@ import {
   listPendingScheduledTasks,
 } from '@shared/lib/services/scheduled-task-service'
 import { db } from '@shared/lib/db'
-import { connectedAccounts, agentConnectedAccounts, proxyAuditLog } from '@shared/lib/db/schema'
-import { eq, inArray, desc, count } from 'drizzle-orm'
+import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog } from '@shared/lib/db/schema'
+import { eq, and, inArray, desc, count } from 'drizzle-orm'
 import { getProvider } from '@shared/lib/composio/providers'
 // getAgentSkills is superseded by getAgentSkillsWithStatus from skillset-service
 // import { getAgentSkills } from '@shared/lib/skills'
@@ -54,6 +54,7 @@ import {
   refreshAgentSkills,
 } from '@shared/lib/services/skillset-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
+import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import {
   exportAgentTemplate,
   importAgentFromTemplate,
@@ -1392,6 +1393,230 @@ agents.delete('/:id/connected-accounts/:accountId', async (c) => {
   }
 })
 
+// GET /api/agents/:id/remote-mcps - List remote MCP servers assigned to this agent
+agents.get('/:id/remote-mcps', async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const mappings = await db
+      .select({ mcp: remoteMcpServers, mapping: agentRemoteMcps })
+      .from(agentRemoteMcps)
+      .innerJoin(
+        remoteMcpServers,
+        eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id)
+      )
+      .where(eq(agentRemoteMcps.agentSlug, slug))
+
+    return c.json({
+      mcps: mappings.map(({ mcp, mapping }) => ({
+        id: mcp.id,
+        name: mcp.name,
+        url: mcp.url,
+        authType: mcp.authType,
+        status: mcp.status,
+        errorMessage: mcp.errorMessage,
+        tools: mcp.toolsJson ? JSON.parse(mcp.toolsJson) : [],
+        mappingId: mapping.id,
+        mappedAt: mapping.createdAt,
+      })),
+    })
+  } catch (error) {
+    console.error('Failed to fetch agent remote MCPs:', error)
+    return c.json({ error: 'Failed to fetch agent remote MCPs' }, 500)
+  }
+})
+
+// POST /api/agents/:id/remote-mcps - Assign remote MCP server(s) to agent
+agents.post('/:id/remote-mcps', async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const body = await c.req.json<{ mcpIds: string[] }>()
+
+    if (!Array.isArray(body.mcpIds) || body.mcpIds.length === 0) {
+      return c.json({ error: 'mcpIds array is required' }, 400)
+    }
+
+    const now = new Date()
+    const values = body.mcpIds.map((mcpId) => ({
+      id: crypto.randomUUID(),
+      agentSlug: slug,
+      remoteMcpId: mcpId,
+      createdAt: now,
+    }))
+
+    await db.insert(agentRemoteMcps).values(values).onConflictDoNothing()
+
+    return c.json({ success: true, added: values.length })
+  } catch (error) {
+    console.error('Failed to assign remote MCPs to agent:', error)
+    return c.json({ error: 'Failed to assign remote MCPs to agent' }, 500)
+  }
+})
+
+// DELETE /api/agents/:id/remote-mcps/:mcpId - Remove remote MCP from agent
+agents.delete('/:id/remote-mcps/:mcpId', async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const mcpId = c.req.param('mcpId')
+
+    const [mapping] = await db
+      .select()
+      .from(agentRemoteMcps)
+      .where(
+        and(
+          eq(agentRemoteMcps.agentSlug, slug),
+          eq(agentRemoteMcps.remoteMcpId, mcpId)
+        )
+      )
+      .limit(1)
+
+    if (!mapping) {
+      return c.json({ error: 'MCP mapping not found' }, 404)
+    }
+
+    await db.delete(agentRemoteMcps).where(eq(agentRemoteMcps.id, mapping.id))
+    return c.body(null, 204)
+  } catch (error) {
+    console.error('Failed to remove remote MCP from agent:', error)
+    return c.json({ error: 'Failed to remove remote MCP from agent' }, 500)
+  }
+})
+
+// POST /api/agents/:id/sessions/:sessionId/provide-remote-mcp - Handle user approval of runtime MCP request
+agents.post('/:id/sessions/:sessionId/provide-remote-mcp', async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const body = await c.req.json<{
+      toolUseId: string
+      remoteMcpId: string
+      decline?: boolean
+      declineReason?: string
+    }>()
+
+    if (!body.toolUseId) {
+      return c.json({ error: 'toolUseId is required' }, 400)
+    }
+    if (!body.decline && !body.remoteMcpId) {
+      return c.json({ error: 'remoteMcpId is required when not declining' }, 400)
+    }
+
+    const client = containerManager.getClient(slug)
+
+    if (body.decline) {
+      // Decline the request
+      const rejectResponse = await client.fetch(`/inputs/${encodeURIComponent(body.toolUseId)}/reject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reason: body.declineReason || 'User declined to provide MCP access',
+        }),
+      })
+      if (!rejectResponse.ok) {
+        console.error('Failed to reject remote MCP request:', await rejectResponse.text())
+        return c.json({ error: 'Failed to decline the request in container' }, 502)
+      }
+      return c.json({ success: true, status: 'declined' })
+    }
+
+    // Map MCP to agent if not already mapped
+    const existingMapping = await db
+      .select()
+      .from(agentRemoteMcps)
+      .where(
+        and(
+          eq(agentRemoteMcps.agentSlug, slug),
+          eq(agentRemoteMcps.remoteMcpId, body.remoteMcpId)
+        )
+      )
+      .limit(1)
+
+    if (existingMapping.length === 0) {
+      await db.insert(agentRemoteMcps).values({
+        id: crypto.randomUUID(),
+        agentSlug: slug,
+        remoteMcpId: body.remoteMcpId,
+        createdAt: new Date(),
+      })
+    }
+
+    // Fetch updated remote MCPs for this agent
+    const hostUrl = getContainerHostUrl()
+    const appPort = getAppPort()
+    const mcpMappings = await db
+      .select({ mcp: remoteMcpServers })
+      .from(agentRemoteMcps)
+      .innerJoin(remoteMcpServers, eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id))
+      .where(eq(agentRemoteMcps.agentSlug, slug))
+
+    const mcpConfigs = mcpMappings
+      .filter(({ mcp }) => mcp.status === 'active')
+      .map(({ mcp }) => ({
+        id: mcp.id,
+        name: mcp.name,
+        proxyUrl: `http://${hostUrl}:${appPort}/api/mcp-proxy/${slug}/${mcp.id}`,
+        tools: mcp.toolsJson ? JSON.parse(mcp.toolsJson) : [],
+      }))
+
+    // Update container env var
+    const envResponse = await client.fetch('/env', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: 'REMOTE_MCPS', value: JSON.stringify(mcpConfigs) }),
+    })
+    if (!envResponse.ok) {
+      console.error('Failed to update REMOTE_MCPS env var:', await envResponse.text())
+      return c.json({ error: 'Failed to update container environment' }, 502)
+    }
+
+    // Resolve the pending input request
+    const resolveResponse = await client.fetch(`/inputs/${encodeURIComponent(body.toolUseId)}/resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: body.remoteMcpId }),
+    })
+    if (!resolveResponse.ok) {
+      console.error('Failed to resolve remote MCP request:', await resolveResponse.text())
+      return c.json({ error: 'Failed to resolve the request in container' }, 502)
+    }
+
+    return c.json({ success: true, status: 'provided' })
+  } catch (error) {
+    console.error('Failed to provide remote MCP:', error)
+    return c.json({ error: 'Failed to provide remote MCP' }, 500)
+  }
+})
+
+// GET /api/agents/:id/mcp-audit-log - Get MCP audit log for an agent
+agents.get('/:id/mcp-audit-log', async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const limit = Math.min(parseInt(c.req.query('limit') || '50', 10), 100)
+    const offset = parseInt(c.req.query('offset') || '0', 10)
+
+    const entries = await db
+      .select()
+      .from(mcpAuditLog)
+      .where(eq(mcpAuditLog.agentSlug, slug))
+      .orderBy(desc(mcpAuditLog.createdAt))
+      .limit(limit)
+      .offset(offset)
+
+    const [totalResult] = await db
+      .select({ count: count() })
+      .from(mcpAuditLog)
+      .where(eq(mcpAuditLog.agentSlug, slug))
+
+    return c.json({
+      entries,
+      total: totalResult?.count || 0,
+      limit,
+      offset,
+    })
+  } catch (error) {
+    console.error('Failed to fetch MCP audit log:', error)
+    return c.json({ error: 'Failed to fetch MCP audit log' }, 500)
+  }
+})
+
 // GET /api/agents/:id/skills - Get skills for an agent (with status info)
 agents.get('/:id/skills', async (c) => {
   try {
@@ -1728,30 +1953,74 @@ agents.post('/:id/skills/refresh', async (c) => {
   }
 })
 
-// GET /api/agents/:id/audit-log - Get proxy audit log for agent
+// GET /api/agents/:id/audit-log - Get combined proxy + MCP audit log for agent
 agents.get('/:id/audit-log', async (c) => {
   try {
     const slug = c.req.param('id')
 
-
     const offset = parseInt(c.req.query('offset') ?? '0', 10)
     const limit = Math.min(parseInt(c.req.query('limit') ?? '20', 10), 100)
 
-    const [entries, totalResult] = await Promise.all([
+    // Fetch a window from each table (offset+limit from each, already sorted by time desc)
+    // then merge, sort, and slice for the requested page
+    const window = offset + limit
+    const [proxyEntries, proxyTotal, mcpEntries, mcpTotal] = await Promise.all([
       db
         .select()
         .from(proxyAuditLog)
         .where(eq(proxyAuditLog.agentSlug, slug))
         .orderBy(desc(proxyAuditLog.createdAt))
-        .limit(limit)
-        .offset(offset),
+        .limit(window),
       db
         .select({ count: count() })
         .from(proxyAuditLog)
         .where(eq(proxyAuditLog.agentSlug, slug)),
+      db
+        .select()
+        .from(mcpAuditLog)
+        .where(eq(mcpAuditLog.agentSlug, slug))
+        .orderBy(desc(mcpAuditLog.createdAt))
+        .limit(window),
+      db
+        .select({ count: count() })
+        .from(mcpAuditLog)
+        .where(eq(mcpAuditLog.agentSlug, slug)),
     ])
 
-    return c.json({ entries, total: totalResult[0].count })
+    // Normalize to a common shape
+    const normalized = [
+      ...proxyEntries.map((e) => ({
+        id: e.id,
+        source: 'proxy' as const,
+        agentSlug: e.agentSlug,
+        label: e.toolkit,
+        targetUrl: `${e.targetHost}/${e.targetPath}`,
+        method: e.method,
+        statusCode: e.statusCode ?? null,
+        errorMessage: e.errorMessage ?? null,
+        durationMs: null as number | null,
+        createdAt: e.createdAt,
+      })),
+      ...mcpEntries.map((e) => ({
+        id: e.id,
+        source: 'mcp' as const,
+        agentSlug: e.agentSlug,
+        label: e.remoteMcpName,
+        targetUrl: e.requestPath,
+        method: e.method,
+        statusCode: e.statusCode ?? null,
+        errorMessage: e.errorMessage ?? null,
+        durationMs: e.durationMs ?? null,
+        createdAt: e.createdAt,
+      })),
+    ]
+
+    // Sort by time descending, then paginate
+    normalized.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    const total = (proxyTotal[0]?.count ?? 0) + (mcpTotal[0]?.count ?? 0)
+    const entries = normalized.slice(offset, offset + limit)
+
+    return c.json({ entries, total })
   } catch (error) {
     console.error('Failed to fetch audit log:', error)
     return c.json({ error: 'Failed to fetch audit log' }, 500)

@@ -193,6 +193,26 @@ if gmail_accounts:
 - Tokens are managed by the proxy - you never handle raw OAuth tokens directly
 - Multiple accounts of the same type can be connected (e.g., work and personal Gmail)
 
+## Requesting Remote MCP Servers
+
+If you need to use tools from a remote MCP (Model Context Protocol) server that hasn't been configured for this agent, you can request access using the `mcp__user-input__request_remote_mcp` tool.
+
+**Parameters:**
+- `url` (required): The URL of the remote MCP server (e.g., `https://mcp.example.com/mcp`)
+- `name` (optional): A suggested display name for the MCP server
+- `reason` (optional): Explain why you need access to this MCP server
+
+**How it works:**
+1. Call the tool with the MCP server URL and reason
+2. The user will see a prompt to approve access (they may need to register the server or complete OAuth)
+3. Once approved, the MCP server's tools are immediately available for use
+4. The tools will be available as `mcp__<server_name>__<tool_name>`
+
+**Important:**
+- Check the "Remote MCP Servers (Available)" section in your system prompt before requesting a new server - it may already be connected
+- You should know the specific URL of the MCP server you want to connect to
+- The user can decline the request, in which case you should proceed without the MCP or ask for alternatives
+
 ## Scheduling Tasks
 
 You can schedule tasks to run at specific times or on recurring schedules using the `mcp__user-input__schedule_task` tool. This is useful for:

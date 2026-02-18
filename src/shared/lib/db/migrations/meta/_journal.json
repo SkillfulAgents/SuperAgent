@@ -29,6 +29,20 @@
       "when": 1769658411861,
       "tag": "0003_bored_thunderbolt_ross",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1771364939625,
+      "tag": "0004_crazy_major_mapleleaf",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1771383823463,
+      "tag": "0005_even_baron_zemo",
+      "breakpoints": true
     }
   ]
 }

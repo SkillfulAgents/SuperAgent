@@ -108,6 +108,59 @@ export const proxyAuditLog = sqliteTable('proxy_audit_log', {
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
 })
 
+// Remote MCP servers registered at app level
+export const remoteMcpServers = sqliteTable('remote_mcp_servers', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  url: text('url').notNull(),
+  authType: text('auth_type', { enum: ['none', 'oauth', 'bearer'] }).notNull().default('none'),
+
+  // Auth tokens
+  accessToken: text('access_token'),
+  refreshToken: text('refresh_token'),
+  tokenExpiresAt: integer('token_expires_at', { mode: 'timestamp' }),
+
+  // OAuth metadata (for token refresh)
+  oauthTokenEndpoint: text('oauth_token_endpoint'),
+  oauthClientId: text('oauth_client_id'),
+  oauthClientSecret: text('oauth_client_secret'),
+  oauthResource: text('oauth_resource'),
+
+  // Server metadata (cached from discovery)
+  toolsJson: text('tools_json'),
+  toolsDiscoveredAt: integer('tools_discovered_at', { mode: 'timestamp' }),
+
+  status: text('status', { enum: ['active', 'error', 'auth_required'] }).notNull().default('active'),
+  errorMessage: text('error_message'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+})
+
+// Junction table: agent → remote MCP mappings
+export const agentRemoteMcps = sqliteTable('agent_remote_mcps', {
+  id: text('id').primaryKey(),
+  agentSlug: text('agent_slug').notNull(),
+  remoteMcpId: text('remote_mcp_id').notNull()
+    .references(() => remoteMcpServers.id, { onDelete: 'cascade' }),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+}, (table) => ({
+  agentMcpUnique: uniqueIndex('agent_remote_mcps_unique').on(table.agentSlug, table.remoteMcpId),
+}))
+
+// MCP audit log
+export const mcpAuditLog = sqliteTable('mcp_audit_log', {
+  id: text('id').primaryKey(),
+  agentSlug: text('agent_slug').notNull(),
+  remoteMcpId: text('remote_mcp_id').notNull(),
+  remoteMcpName: text('remote_mcp_name').notNull(),
+  method: text('method').notNull(),
+  requestPath: text('request_path').notNull(),
+  statusCode: integer('status_code'),
+  errorMessage: text('error_message'),
+  durationMs: integer('duration_ms'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+})
+
 // Type exports for convenience
 export type ConnectedAccount = typeof connectedAccounts.$inferSelect
 export type NewConnectedAccount = typeof connectedAccounts.$inferInsert
@@ -121,3 +174,9 @@ export type ProxyToken = typeof proxyTokens.$inferSelect
 export type NewProxyToken = typeof proxyTokens.$inferInsert
 export type ProxyAuditLogEntry = typeof proxyAuditLog.$inferSelect
 export type NewProxyAuditLogEntry = typeof proxyAuditLog.$inferInsert
+export type RemoteMcpServer = typeof remoteMcpServers.$inferSelect
+export type NewRemoteMcpServer = typeof remoteMcpServers.$inferInsert
+export type AgentRemoteMcp = typeof agentRemoteMcps.$inferSelect
+export type NewAgentRemoteMcp = typeof agentRemoteMcps.$inferInsert
+export type McpAuditLogEntry = typeof mcpAuditLog.$inferSelect
+export type NewMcpAuditLogEntry = typeof mcpAuditLog.$inferInsert

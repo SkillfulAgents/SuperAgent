@@ -7,14 +7,14 @@ import { formatDistanceToNow } from 'date-fns'
 
 interface AuditLogEntry {
   id: string
+  source: 'proxy' | 'mcp'
   agentSlug: string
-  accountId: string
-  toolkit: string
-  targetHost: string
-  targetPath: string
+  label: string
+  targetUrl: string
   method: string
   statusCode: number | null
   errorMessage: string | null
+  durationMs: number | null
   createdAt: string
 }
 
@@ -52,6 +52,17 @@ function StatusBadge({ status }: { status: number | null }) {
   return <span className={`text-xs font-mono font-medium ${color}`}>{status}</span>
 }
 
+function SourceBadge({ source }: { source: 'proxy' | 'mcp' }) {
+  const style = source === 'mcp'
+    ? 'text-purple-700 bg-purple-100 dark:text-purple-300 dark:bg-purple-900/40'
+    : 'text-sky-700 bg-sky-100 dark:text-sky-300 dark:bg-sky-900/40'
+  return (
+    <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold leading-none ${style}`}>
+      {source === 'mcp' ? 'MCP' : 'API'}
+    </span>
+  )
+}
+
 export function AuditLogTab({ agentSlug }: AuditLogTabProps) {
   const [page, setPage] = useState(0)
 
@@ -72,9 +83,9 @@ export function AuditLogTab({ agentSlug }: AuditLogTabProps) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="text-sm font-medium">API Request Log</h3>
+          <h3 className="text-sm font-medium">Request Log</h3>
           <p className="text-xs text-muted-foreground mt-1">
-            Recent API calls made through the proxy by this agent.
+            Recent API and MCP proxy requests made by this agent.
           </p>
         </div>
         <Button
@@ -94,28 +105,31 @@ export function AuditLogTab({ agentSlug }: AuditLogTabProps) {
         </div>
       ) : entries.length === 0 && page === 0 ? (
         <p className="text-sm text-muted-foreground">
-          No API requests logged yet.
+          No requests logged yet.
         </p>
       ) : (
         <>
           <div className="space-y-1.5">
             {entries.map((entry) => {
-              const fullUrl = `${entry.targetHost}/${entry.targetPath}`
               const time = formatDistanceToNow(new Date(entry.createdAt), { addSuffix: true })
 
               return (
                 <div
                   key={entry.id}
-                  className="grid grid-cols-[auto_auto_1fr_auto] items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs"
+                  className="grid grid-cols-[auto_auto_auto_auto_1fr_auto] items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs"
                 >
+                  <SourceBadge source={entry.source} />
                   <MethodBadge method={entry.method} />
                   <StatusBadge status={entry.statusCode} />
+                  <span className="text-muted-foreground font-medium truncate max-w-[80px]" title={entry.label}>
+                    {entry.label}
+                  </span>
                   <div className="min-w-0">
                     <p
                       className="font-mono text-xs truncate"
-                      title={fullUrl}
+                      title={entry.targetUrl}
                     >
-                      {fullUrl}
+                      {entry.targetUrl}
                     </p>
                     {entry.errorMessage && (
                       <p className="text-red-600 dark:text-red-400 mt-0.5 truncate" title={entry.errorMessage}>
@@ -123,9 +137,14 @@ export function AuditLogTab({ agentSlug }: AuditLogTabProps) {
                       </p>
                     )}
                   </div>
-                  <span className="text-muted-foreground shrink-0 whitespace-nowrap">
-                    {time}
-                  </span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {entry.durationMs !== null && (
+                      <span className="text-muted-foreground tabular-nums">{entry.durationMs}ms</span>
+                    )}
+                    <span className="text-muted-foreground whitespace-nowrap">
+                      {time}
+                    </span>
+                  </div>
                 </div>
               )
             })}

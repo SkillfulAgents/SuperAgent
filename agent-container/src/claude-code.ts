@@ -5,6 +5,7 @@ import * as path from 'path';
 import { userInputMcpServer, browserMcpServer, dashboardsMcpServer } from './mcp-server';
 import { inputManager } from './input-manager';
 import { setCurrentBrowserSessionId } from './tools/browser';
+import { sanitizeMcpName } from './sanitize-mcp-name';
 
 // Load platform system prompt from file
 const PLATFORM_SYSTEM_PROMPT = fs.readFileSync(
@@ -17,6 +18,26 @@ const WEB_BROWSER_AGENT_PROMPT = fs.readFileSync(
   path.join(__dirname, 'web-browser-agent-prompt.md'),
   'utf-8'
 );
+
+interface RemoteMcpConfig {
+  id: string;
+  name: string;
+  proxyUrl: string;
+  tools: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
+}
+
+/**
+ * Parses remote MCP server configs from the REMOTE_MCPS env var.
+ */
+function parseRemoteMcps(): RemoteMcpConfig[] {
+  const raw = process.env.REMOTE_MCPS;
+  if (!raw) return [];
+  try {
+    return JSON.parse(raw) as RemoteMcpConfig[];
+  } catch {
+    return [];
+  }
+}
 
 /**
  * Parses connected accounts metadata from the CONNECTED_ACCOUNTS env var.
@@ -112,6 +133,24 @@ resp = requests.get(
 - The \`CONNECTED_ACCOUNTS\` env var contains the full account metadata as JSON`);
   }
 
+  // Remote MCP servers section
+  const remoteMcps = parseRemoteMcps();
+  if (remoteMcps.length > 0) {
+    const mcpSections: string[] = [];
+    for (const mcp of remoteMcps) {
+      const toolNames = mcp.tools.map(t => t.name);
+      const sanitizedName = sanitizeMcpName(mcp.name);
+      mcpSections.push(
+        `### ${mcp.name}\nTools: ${toolNames.join(', ')}\nUse these tools via mcp__${sanitizedName}__<tool_name>`
+      );
+    }
+    sections.push(`## Remote MCP Servers (Available)
+
+The following remote MCP servers are connected and their tools are available for use:
+
+${mcpSections.join('\n\n')}`);
+  }
+
   // Available environment variables (regular secrets)
   if (regularEnvVars.length > 0) {
     sections.push(`## Available Environment Variables
@@ -201,6 +240,12 @@ function toModelAlias(model?: string): SDKModelAlias | undefined {
   return undefined;
 }
 
+// Module-level reference to the current process (one per container)
+let currentProcess: ClaudeCodeProcess | null = null;
+export function getCurrentProcess(): ClaudeCodeProcess | null {
+  return currentProcess;
+}
+
 export interface ClaudeCodeProcessOptions {
   sessionId: string;
   workingDirectory: string;
@@ -237,6 +282,58 @@ export class ClaudeCodeProcess extends EventEmitter {
     );
     // Set the session ID for browser tools so they can identify the owning session
     setCurrentBrowserSessionId(this.sessionId);
+    // Set module-level reference for tools that need access to the process
+    currentProcess = this;
+  }
+
+  /**
+   * Interrupt and restart the query after MCP approval.
+   * Called by request_remote_mcp tool after user approval. The env var REMOTE_MCPS
+   * is already updated by the host. We can't inject tools into the running query
+   * mid-stream, so we interrupt the current query and restart. The new query
+   * picks up the MCP server from the env var, and we send a continuation message
+   * so the model proceeds with the original request using the newly available tools.
+   */
+  addRemoteMcpServer(name: string): void {
+    const sanitizedName = sanitizeMcpName(name);
+    console.log(`[ClaudeCodeProcess] MCP server "${sanitizedName}" approved, scheduling interrupt to inject tools`);
+
+    // Defer to run after the tool result is delivered back to the CLI.
+    // interrupt() aborts the current query, waits for it to stop, then restarts
+    // with a new query that includes the MCP from the REMOTE_MCPS env var.
+    setTimeout(async () => {
+      try {
+        console.log(`[ClaudeCodeProcess] Interrupting for MCP injection: ${sanitizedName}`);
+        await this.interrupt();
+        console.log(`[ClaudeCodeProcess] Interrupt complete, sending MCP continuation for: ${sanitizedName}`);
+        await this.sendMessage(
+          `[The remote MCP server "${name}" has been fully registered and its tools are now available. Please proceed to use them to fulfill the original request. Do not request the MCP server again.]`
+        );
+      } catch (err) {
+        console.error(`[ClaudeCodeProcess] MCP injection via interrupt failed:`, err);
+      }
+    }, 0);
+  }
+
+  /**
+   * Builds HTTP MCP server configs from the REMOTE_MCPS env var.
+   * Each remote MCP is configured as an HTTP transport pointing to the proxy URL.
+   */
+  private buildRemoteMcpServers(): Record<string, { type: 'http'; url: string; headers?: Record<string, string> }> {
+    const remoteMcps = parseRemoteMcps();
+    const configs: Record<string, { type: 'http'; url: string; headers?: Record<string, string> }> = {};
+    const proxyToken = process.env.PROXY_TOKEN;
+
+    for (const mcp of remoteMcps) {
+      const sanitizedName = sanitizeMcpName(mcp.name);
+      configs[sanitizedName] = {
+        type: 'http',
+        url: mcp.proxyUrl,
+        headers: proxyToken ? { 'Authorization': `Bearer ${proxyToken}` } : undefined,
+      };
+    }
+
+    return configs;
   }
 
   /**
@@ -244,6 +341,9 @@ export class ClaudeCodeProcess extends EventEmitter {
    * Used by start(), restart(), and interrupt() to avoid duplication.
    */
   private createQuery(): Query {
+    const remoteMcpConfigs = this.buildRemoteMcpServers();
+    const remoteMcpToolPatterns = Object.keys(remoteMcpConfigs).map(name => `mcp__${name}__*`);
+
     return query({
       prompt: this.messageQueue!,
       options: {
@@ -254,11 +354,12 @@ export class ClaudeCodeProcess extends EventEmitter {
         permissionMode: 'bypassPermissions',
         includePartialMessages: true,
         settingSources: ['user', 'project'],
-        allowedTools: ['Skill', 'Task'],
+        allowedTools: ['Skill', 'Task', ...remoteMcpToolPatterns],
         mcpServers: {
           'user-input': userInputMcpServer,
           'browser': browserMcpServer,
           'dashboards': dashboardsMcpServer,
+          ...remoteMcpConfigs,
         },
         agents: {
           'web-browser': {

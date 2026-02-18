@@ -803,6 +803,16 @@ class MessagePersister {
             )
           }
 
+          // Check if this is a remote MCP request tool
+          if (state.currentToolUse.name === 'mcp__user-input__request_remote_mcp') {
+            this.handleRemoteMcpRequestTool(
+              sessionId,
+              state.currentToolUse.id,
+              state.currentToolInput,
+              state.agentSlug
+            )
+          }
+
           // Track Task tool for subagent correlation
           if (state.currentToolUse.name === 'Task') {
             state.pendingTaskToolId = state.currentToolUse.id
@@ -1064,6 +1074,48 @@ class MessagePersister {
       }
     } catch (error) {
       console.error('[MessagePersister] Error handling file request:', error)
+    }
+  }
+
+  // Handle remote MCP request tool - broadcast to SSE clients so they can show the UI
+  private handleRemoteMcpRequestTool(
+    sessionId: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug?: string
+  ): void {
+    try {
+      let input: { url: string; name?: string; reason?: string } = { url: '' }
+      try {
+        input = JSON.parse(toolInput)
+      } catch {
+        console.error('[MessagePersister] Failed to parse remote MCP request input:', toolInput)
+        return
+      }
+
+      if (!input.url) {
+        console.error('[MessagePersister] Remote MCP request missing url')
+        return
+      }
+
+      // Broadcast the remote MCP request event to SSE clients
+      this.broadcastToSSE(sessionId, {
+        type: 'remote_mcp_request',
+        toolUseId,
+        url: input.url,
+        name: input.name,
+        reason: input.reason,
+        agentSlug,
+      })
+
+      // Trigger waiting for input notification (only if no one is viewing the session)
+      if (agentSlug && !this.hasActiveViewers(sessionId)) {
+        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'remote_mcp').catch((err) => {
+          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
+        })
+      }
+    } catch (error) {
+      console.error('[MessagePersister] Error handling remote MCP request:', error)
     }
   }
 

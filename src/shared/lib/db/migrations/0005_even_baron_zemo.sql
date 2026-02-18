@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS `remote_mcp_servers_url_unique`;

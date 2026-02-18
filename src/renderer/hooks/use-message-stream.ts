@@ -32,6 +32,13 @@ interface FileRequest {
   fileTypes?: string
 }
 
+interface RemoteMcpRequest {
+  toolUseId: string
+  url: string
+  name?: string
+  reason?: string
+}
+
 export interface SubagentInfo {
   parentToolId: string | null
   agentId: string | null
@@ -48,6 +55,7 @@ interface StreamState {
   pendingConnectedAccountRequests: ConnectedAccountRequest[]
   pendingQuestionRequests: QuestionRequest[]
   pendingFileRequests: FileRequest[]
+  pendingRemoteMcpRequests: RemoteMcpRequest[]
   error: string | null // Error message if session encountered an error
   browserActive: boolean // Whether browser is running for this session
   activeStartTime: number | null // Timestamp when session became active (for elapsed timer)
@@ -102,6 +110,7 @@ function getOrCreateEventSource(
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
+          pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           error: null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -132,6 +141,7 @@ function getOrCreateEventSource(
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
+          pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           error: null, // Clear any previous error when starting new request
           browserActive: current?.browserActive ?? false,
           activeStartTime: Date.now(),
@@ -156,6 +166,7 @@ function getOrCreateEventSource(
           pendingConnectedAccountRequests: [],
           pendingQuestionRequests: [],
           pendingFileRequests: [],
+          pendingRemoteMcpRequests: [],
           error: null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: null,
@@ -177,6 +188,7 @@ function getOrCreateEventSource(
           pendingConnectedAccountRequests: [],
           pendingQuestionRequests: [],
           pendingFileRequests: [],
+          pendingRemoteMcpRequests: [],
           error: data.error || 'An unknown error occurred',
           browserActive: current?.browserActive ?? false,
           activeStartTime: null,
@@ -198,6 +210,7 @@ function getOrCreateEventSource(
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
+          pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           error: null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -216,6 +229,7 @@ function getOrCreateEventSource(
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
+          pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -238,6 +252,7 @@ function getOrCreateEventSource(
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
+          pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -257,6 +272,7 @@ function getOrCreateEventSource(
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
+          pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -275,6 +291,7 @@ function getOrCreateEventSource(
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
+          pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -360,6 +377,21 @@ function getOrCreateEventSource(
           streamStates.set(sessionId, {
             ...current,
             pendingFileRequests: [...current.pendingFileRequests, newRequest],
+          })
+        }
+      }
+      else if (data.type === 'remote_mcp_request') {
+        // Agent is requesting access to a remote MCP server
+        const newRequest: RemoteMcpRequest = {
+          toolUseId: data.toolUseId,
+          url: data.url,
+          name: data.name,
+          reason: data.reason,
+        }
+        if (current) {
+          streamStates.set(sessionId, {
+            ...current,
+            pendingRemoteMcpRequests: [...current.pendingRemoteMcpRequests, newRequest],
           })
         }
       }
@@ -598,6 +630,21 @@ export function removeQuestionRequest(sessionId: string, toolUseId: string): voi
   }
 }
 
+// Helper function to remove a remote MCP request from a session
+export function removeRemoteMcpRequest(sessionId: string, toolUseId: string): void {
+  const current = streamStates.get(sessionId)
+  if (current) {
+    streamStates.set(sessionId, {
+      ...current,
+      pendingRemoteMcpRequests: current.pendingRemoteMcpRequests.filter(
+        (r) => r.toolUseId !== toolUseId
+      ),
+    })
+    // Notify listeners
+    streamListeners.get(sessionId)?.forEach((listener) => listener())
+  }
+}
+
 // Helper to clear isCompacting state (used when persisted messages already show the boundary)
 export function clearCompacting(sessionId: string): void {
   const current = streamStates.get(sessionId)
@@ -626,6 +673,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     pendingConnectedAccountRequests: [],
     pendingQuestionRequests: [],
     pendingFileRequests: [],
+    pendingRemoteMcpRequests: [],
     error: null,
     browserActive: false,
     activeStartTime: null,
@@ -667,6 +715,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
         pendingConnectedAccountRequests: [],
         pendingQuestionRequests: [],
         pendingFileRequests: [],
+        pendingRemoteMcpRequests: [],
         error: null,
         browserActive: false,
         activeStartTime: null,

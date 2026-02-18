@@ -2,7 +2,7 @@ import { createContainerClient, checkAllRunnersAvailability, checkImageExists, p
 import type { ContainerClient, ContainerConfig, ContainerInfo, HealthCheckResult, RuntimeReadiness } from './types'
 import { healthMonitor } from './health-monitor'
 import { db } from '@shared/lib/db'
-import { agentConnectedAccounts, connectedAccounts } from '@shared/lib/db/schema'
+import { agentConnectedAccounts, connectedAccounts, agentRemoteMcps, remoteMcpServers } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { getOrCreateProxyToken } from '@shared/lib/proxy/token-store'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
@@ -369,6 +369,26 @@ class ContainerManager {
         })
       }
       envVars['CONNECTED_ACCOUNTS'] = JSON.stringify(accountMetadata)
+
+      // Fetch remote MCPs for this agent
+      const mcpMappings = await db
+        .select({ mcp: remoteMcpServers })
+        .from(agentRemoteMcps)
+        .innerJoin(remoteMcpServers, eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id))
+        .where(eq(agentRemoteMcps.agentSlug, agentId))
+
+      const mcpConfigs = mcpMappings
+        .filter(({ mcp }) => mcp.status === 'active')
+        .map(({ mcp }) => ({
+          id: mcp.id,
+          name: mcp.name,
+          proxyUrl: `http://${hostUrl}:${appPort}/api/mcp-proxy/${agentId}/${mcp.id}`,
+          tools: mcp.toolsJson ? (() => { try { return JSON.parse(mcp.toolsJson) } catch { return [] } })() : [],
+        }))
+
+      if (mcpConfigs.length > 0) {
+        envVars['REMOTE_MCPS'] = JSON.stringify(mcpConfigs)
+      }
 
       // Pass host browser env vars if enabled
       const settings = getSettings()

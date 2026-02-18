@@ -929,4 +929,150 @@ describe('MessagePersister', () => {
       expect(idle.length).toBeGreaterThanOrEqual(1)
     })
   })
+
+  // ============================================================================
+  // Remote MCP request tool handling
+  // ============================================================================
+
+  describe('remote MCP request tool handling', () => {
+    // Helper to simulate a complete tool_use block for request_remote_mcp
+    function simulateRemoteMcpToolUse(toolId: string, input: Record<string, unknown>) {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: toolId, name: 'mcp__user-input__request_remote_mcp' },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_stop' },
+      })
+    }
+
+    it('broadcasts remote_mcp_request event on tool_use completion', () => {
+      sseEvents.length = 0
+
+      simulateRemoteMcpToolUse('mcp-tool-1', {
+        url: 'https://mcp.example.com/mcp',
+        name: 'Example MCP',
+        reason: 'Need weather data',
+      })
+
+      const mcpRequests = sseEvents.filter(e => e.type === 'remote_mcp_request')
+      expect(mcpRequests).toHaveLength(1)
+      expect(mcpRequests[0].toolUseId).toBe('mcp-tool-1')
+      expect(mcpRequests[0].url).toBe('https://mcp.example.com/mcp')
+      expect(mcpRequests[0].name).toBe('Example MCP')
+      expect(mcpRequests[0].reason).toBe('Need weather data')
+      expect(mcpRequests[0].agentSlug).toBe(AGENT_SLUG)
+    })
+
+    it('broadcasts remote_mcp_request with only url (name and reason optional)', () => {
+      sseEvents.length = 0
+
+      simulateRemoteMcpToolUse('mcp-tool-2', {
+        url: 'https://other.mcp.io/api',
+      })
+
+      const mcpRequests = sseEvents.filter(e => e.type === 'remote_mcp_request')
+      expect(mcpRequests).toHaveLength(1)
+      expect(mcpRequests[0].url).toBe('https://other.mcp.io/api')
+      expect(mcpRequests[0].name).toBeUndefined()
+      expect(mcpRequests[0].reason).toBeUndefined()
+    })
+
+    it('does not broadcast remote_mcp_request for invalid JSON input', () => {
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: 'mcp-bad', name: 'mcp__user-input__request_remote_mcp' },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          delta: { type: 'input_json_delta', partial_json: 'not valid json{{{' },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_stop' },
+      })
+
+      const mcpRequests = sseEvents.filter(e => e.type === 'remote_mcp_request')
+      expect(mcpRequests).toHaveLength(0)
+    })
+
+    it('does not broadcast remote_mcp_request when url is missing', () => {
+      sseEvents.length = 0
+
+      simulateRemoteMcpToolUse('mcp-no-url', { name: 'No URL MCP' })
+
+      const mcpRequests = sseEvents.filter(e => e.type === 'remote_mcp_request')
+      expect(mcpRequests).toHaveLength(0)
+    })
+
+    it('triggers notification when no active viewers', async () => {
+      const { notificationManager } = await import('@shared/lib/notifications/notification-manager')
+
+      sseEvents.length = 0
+      vi.mocked(notificationManager.triggerSessionWaitingInput).mockClear()
+
+      // Remove SSE client so there are no active viewers
+      sseCleanup()
+
+      simulateRemoteMcpToolUse('mcp-notify', {
+        url: 'https://mcp.example.com/mcp',
+      })
+
+      expect(notificationManager.triggerSessionWaitingInput).toHaveBeenCalledWith(
+        SESSION_ID,
+        AGENT_SLUG,
+        'remote_mcp'
+      )
+
+      // Re-attach SSE client for afterEach cleanup
+      const sse = collectSSEEvents(SESSION_ID)
+      sseEvents = sse.events
+      sseCleanup = sse.cleanup
+    })
+
+    it('does not trigger notification when there are active viewers', async () => {
+      const { notificationManager } = await import('@shared/lib/notifications/notification-manager')
+
+      sseEvents.length = 0
+      vi.mocked(notificationManager.triggerSessionWaitingInput).mockClear()
+
+      // SSE client is attached (active viewer) — notification should NOT fire
+      simulateRemoteMcpToolUse('mcp-no-notify', {
+        url: 'https://mcp.example.com/mcp',
+      })
+
+      expect(notificationManager.triggerSessionWaitingInput).not.toHaveBeenCalled()
+    })
+
+    it('still broadcasts tool_use_ready alongside remote_mcp_request', () => {
+      sseEvents.length = 0
+
+      simulateRemoteMcpToolUse('mcp-tool-ready', {
+        url: 'https://mcp.example.com/mcp',
+      })
+
+      const toolReady = sseEvents.filter(e => e.type === 'tool_use_ready')
+      expect(toolReady).toHaveLength(1)
+      expect(toolReady[0].toolName).toBe('mcp__user-input__request_remote_mcp')
+    })
+  })
 })

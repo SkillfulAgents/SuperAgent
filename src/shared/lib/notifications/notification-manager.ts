@@ -122,7 +122,7 @@ class NotificationManager {
   async triggerSessionWaitingInput(
     sessionId: string,
     agentSlug: string,
-    waitingFor: 'secret' | 'connected_account' | 'question' | 'file',
+    waitingFor: 'secret' | 'connected_account' | 'question' | 'file' | 'remote_mcp',
     agentName?: string
   ): Promise<void> {
     const displayName = agentName || await this.getAgentDisplayName(agentSlug)
@@ -139,6 +139,9 @@ class NotificationManager {
         break
       case 'file':
         waitingMessage = 'needs a file from you'
+        break
+      case 'remote_mcp':
+        waitingMessage = 'needs access to an MCP server'
         break
     }
 

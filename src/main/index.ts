@@ -177,9 +177,14 @@ ipcMain.handle('set-native-theme', (_event, theme: string) => {
 // Handle OAuth callback URLs (macOS)
 app.on('open-url', (event, url) => {
   event.preventDefault()
+  handleDeepLinkUrl(url)
+})
 
-  // Parse the callback URL and extract OAuth parameters
-  if (mainWindow && url.startsWith(`${PROTOCOL_SCHEME}://oauth-callback`)) {
+function handleDeepLinkUrl(url: string) {
+  if (!mainWindow) return
+
+  // Composio OAuth callback
+  if (url.startsWith(`${PROTOCOL_SCHEME}://oauth-callback`)) {
     try {
       const callbackUrl = new URL(url)
       const params = {
@@ -195,7 +200,41 @@ app.on('open-url', (event, url) => {
       mainWindow.webContents.send('oauth-callback', { error: 'Invalid callback URL' })
     }
   }
-})
+
+  // MCP OAuth callback — forward to the local API server to complete token exchange
+  if (url.startsWith(`${PROTOCOL_SCHEME}://mcp-oauth-callback`)) {
+    try {
+      const callbackUrl = new URL(url)
+      const queryString = callbackUrl.search
+      const apiUrl = `http://localhost:${actualApiPort}/api/remote-mcps/oauth-callback${queryString}`
+      fetch(apiUrl)
+        .then(async (res) => {
+          const text = await res.text()
+          const success = text.includes('OAuth successful')
+          const mcpIdMatch = text.match(/mcpId:\s*'([^']+)'/)
+          mainWindow?.webContents.send('mcp-oauth-callback', {
+            success,
+            mcpId: mcpIdMatch?.[1] || null,
+            error: success ? null : 'OAuth failed',
+          })
+        })
+        .catch((err) => {
+          console.error('Failed to complete MCP OAuth callback:', err)
+          mainWindow?.webContents.send('mcp-oauth-callback', {
+            success: false,
+            error: err.message || 'Failed to complete OAuth',
+          })
+        })
+      mainWindow.focus()
+    } catch (error) {
+      console.error('Failed to parse MCP OAuth callback URL:', error)
+      mainWindow.webContents.send('mcp-oauth-callback', {
+        success: false,
+        error: 'Invalid callback URL',
+      })
+    }
+  }
+}
 
 // Start listening for global notifications via SSE
 // This handles notifications when the window is closed
@@ -345,25 +384,13 @@ const gotTheLock = app.requestSingleInstanceLock()
 if (!gotTheLock) {
   app.quit()
 } else {
-  app.on('second-instance', (event, commandLine) => {
-    // Handle protocol URL on Windows/Linux
-    const url = commandLine.find((arg) => arg.startsWith(`${PROTOCOL_SCHEME}://oauth-callback`))
-    if (url && mainWindow) {
-      try {
-        const callbackUrl = new URL(url)
-        const params = {
-          connectionId: callbackUrl.searchParams.get('connectedAccountId'),
-          status: callbackUrl.searchParams.get('status'),
-          toolkit: callbackUrl.searchParams.get('toolkit'),
-          error: callbackUrl.searchParams.get('error'),
-        }
-        mainWindow.webContents.send('oauth-callback', params)
-      } catch (error) {
-        console.error('Failed to parse OAuth callback URL:', error)
-        mainWindow.webContents.send('oauth-callback', { error: 'Invalid callback URL' })
-      }
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      mainWindow.focus()
+  app.on('second-instance', (_event, commandLine) => {
+    // Handle protocol URLs on Windows/Linux
+    const url = commandLine.find((arg) => arg.startsWith(`${PROTOCOL_SCHEME}://`))
+    if (url) {
+      handleDeepLinkUrl(url)
+      if (mainWindow?.isMinimized()) mainWindow.restore()
+      mainWindow?.focus()
     }
   })
 }

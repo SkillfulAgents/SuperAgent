@@ -4,6 +4,7 @@ import {
   useMessageStream,
   removeSecretRequest,
   removeConnectedAccountRequest,
+  removeRemoteMcpRequest,
   removeQuestionRequest,
   removeFileRequest,
   clearCompacting,
@@ -13,6 +14,7 @@ import { StreamingToolCallItem } from './tool-call-item'
 import { CompactBoundaryItem } from './compact-boundary-item'
 import { SecretRequestItem } from './secret-request-item'
 import { ConnectedAccountRequestItem } from './connected-account-request-item'
+import { RemoteMcpRequestItem } from './remote-mcp-request-item'
 import { QuestionRequestItem } from './question-request-item'
 import { FileRequestItem } from './file-request-item'
 import { Loader2, Wrench } from 'lucide-react'
@@ -77,6 +79,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     activeSubagent,
     pendingSecretRequests: sseSecretRequests,
     pendingConnectedAccountRequests: sseConnectedAccountRequests,
+    pendingRemoteMcpRequests: sseRemoteMcpRequests,
     pendingQuestionRequests: sseQuestionRequests,
     pendingFileRequests: sseFileRequests,
   } = useMessageStream(sessionId, agentSlug)
@@ -97,8 +100,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
       }>
     }[] = []
     const fileRequests: { toolUseId: string; description: string; fileTypes?: string }[] = []
+    const remoteMcpRequests: { toolUseId: string; url: string; name?: string; reason?: string }[] = []
 
-    if (!messages) return { secretRequests, connectedAccountRequests, questionRequests, fileRequests }
+    if (!messages) return { secretRequests, connectedAccountRequests, questionRequests, fileRequests, remoteMcpRequests }
 
     for (let i = 0; i < messages.length; i++) {
       const message = messages[i]
@@ -147,6 +151,16 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
               questions: input.questions,
             })
           }
+        } else if (toolCall.name === 'mcp__user-input__request_remote_mcp') {
+          const input = toolCall.input as { url?: string; name?: string; reason?: string }
+          if (input.url) {
+            remoteMcpRequests.push({
+              toolUseId: toolCall.id,
+              url: input.url,
+              name: input.name,
+              reason: input.reason,
+            })
+          }
         } else if (toolCall.name === 'mcp__user-input__request_file') {
           const input = toolCall.input as { description?: string; fileTypes?: string }
           if (input.description) {
@@ -160,7 +174,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
       }
     }
 
-    return { secretRequests, connectedAccountRequests, questionRequests, fileRequests }
+    return { secretRequests, connectedAccountRequests, questionRequests, fileRequests, remoteMcpRequests }
   }, [messages, pendingUserMessage])
 
   // Merge SSE-based and message-based pending requests (dedupe by toolUseId)
@@ -230,6 +244,20 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     return merged
   }, [sseFileRequests, messagesBasedPendingRequests.fileRequests, isActive])
 
+  const pendingRemoteMcpRequests = useMemo(() => {
+    const seen = new Set<string>()
+    const merged: { toolUseId: string; url: string; name?: string; reason?: string }[] = []
+
+    const messageBased = isActive ? messagesBasedPendingRequests.remoteMcpRequests : []
+    for (const req of [...sseRemoteMcpRequests, ...messageBased]) {
+      if (!seen.has(req.toolUseId)) {
+        seen.add(req.toolUseId)
+        merged.push(req)
+      }
+    }
+    return merged
+  }, [sseRemoteMcpRequests, messagesBasedPendingRequests.remoteMcpRequests, isActive])
+
   const scrollRef = useRef<HTMLDivElement>(null)
 
   // Safety net: if isCompacting is true but a NEW compact boundary appears in fetched
@@ -269,6 +297,14 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
   const handleQuestionRequestComplete = useCallback(
     (toolUseId: string) => {
       removeQuestionRequest(sessionId, toolUseId)
+    },
+    [sessionId]
+  )
+
+  // Handler to remove a completed remote MCP request
+  const handleRemoteMcpRequestComplete = useCallback(
+    (toolUseId: string) => {
+      removeRemoteMcpRequest(sessionId, toolUseId)
     },
     [sessionId]
   )
@@ -366,7 +402,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [messages, pendingUserMessage, streamingMessage, streamingToolUse, isCompacting, pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests, pendingFileRequests, activeSubagent])
+  }, [messages, pendingUserMessage, streamingMessage, streamingToolUse, isCompacting, pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests, pendingFileRequests, pendingRemoteMcpRequests, activeSubagent])
 
   if (isLoading && !pendingUserMessage) {
     return (
@@ -466,6 +502,20 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
             sessionId={sessionId}
             agentSlug={agentSlug}
             onComplete={() => handleConnectedAccountRequestComplete(request.toolUseId)}
+          />
+        ))}
+
+        {/* Pending remote MCP requests from the agent */}
+        {pendingRemoteMcpRequests.map((request) => (
+          <RemoteMcpRequestItem
+            key={request.toolUseId}
+            toolUseId={request.toolUseId}
+            url={request.url}
+            name={request.name}
+            reason={request.reason}
+            sessionId={sessionId}
+            agentSlug={agentSlug}
+            onComplete={() => handleRemoteMcpRequestComplete(request.toolUseId)}
           />
         ))}
 

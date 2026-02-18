@@ -1,6 +1,6 @@
 
 import * as React from 'react'
-import { Settings, Link2, Container, Bell, Globe, Library, BarChart3 } from 'lucide-react'
+import { Settings, Link2, Container, Bell, Globe, Library, BarChart3, Plug } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -24,8 +24,9 @@ import { NotificationsTab } from './notifications-tab'
 import { BrowserTab } from './browser-tab'
 import { SkillsetsTab } from './skillsets-tab'
 import { UsageTab } from './usage-tab'
+import { RemoteMcpsTab } from './remote-mcps-tab'
 
-type SettingsSection = 'general' | 'notifications' | 'runtime' | 'browser' | 'composio' | 'skillsets' | 'usage'
+type SettingsSection = 'general' | 'notifications' | 'runtime' | 'browser' | 'composio' | 'remote-mcps' | 'skillsets' | 'usage'
 
 const navItems = [
   { id: 'general' as const, name: 'General', icon: Settings },
@@ -33,6 +34,7 @@ const navItems = [
   { id: 'runtime' as const, name: 'Runtime', icon: Container },
   { id: 'browser' as const, name: 'Browser Use', icon: Globe },
   { id: 'composio' as const, name: 'Accounts', icon: Link2 },
+  { id: 'remote-mcps' as const, name: 'MCPs', icon: Plug },
   { id: 'skillsets' as const, name: 'Skillsets', icon: Library },
   { id: 'usage' as const, name: 'Usage', icon: BarChart3 },
 ]
@@ -41,21 +43,24 @@ interface GlobalSettingsDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onOpenWizard: () => void
+  initialTab?: string
 }
 
 export function GlobalSettingsDialog({
   open,
   onOpenChange,
   onOpenWizard,
+  initialTab,
 }: GlobalSettingsDialogProps) {
   const [activeSection, setActiveSection] = React.useState<SettingsSection>('general')
 
-  // Reset to general tab when dialog opens
+  // Reset tab when dialog opens (use initialTab if provided)
   React.useEffect(() => {
     if (open) {
-      setActiveSection('general')
+      const tab = initialTab as SettingsSection | undefined
+      setActiveSection(tab && navItems.some(item => item.id === tab) ? tab : 'general')
     }
-  }, [open])
+  }, [open, initialTab])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -100,6 +105,7 @@ export function GlobalSettingsDialog({
               {activeSection === 'runtime' && <RuntimeTab />}
               {activeSection === 'browser' && <BrowserTab />}
               {activeSection === 'composio' && <ComposioTab />}
+              {activeSection === 'remote-mcps' && <RemoteMcpsTab />}
               {activeSection === 'skillsets' && <SkillsetsTab />}
               {activeSection === 'usage' && <UsageTab />}
             </div>

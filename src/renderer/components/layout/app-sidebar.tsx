@@ -260,7 +260,7 @@ function AgentMenuItem({ agent }: { agent: ApiAgent }) {
 }
 
 export function AppSidebar() {
-  const { settingsOpen, setSettingsOpen, createAgentOpen, setCreateAgentOpen, openWizard } = useDialogs()
+  const { settingsOpen, setSettingsOpen, settingsTab, createAgentOpen, setCreateAgentOpen, openWizard } = useDialogs()
   const { clearSelection } = useSelection()
   const [containerSetupOpen, setContainerSetupOpen] = useState(false)
   const { data: agents, isLoading, error } = useAgents()
@@ -410,6 +410,7 @@ export function AppSidebar() {
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
         onOpenWizard={openWizard}
+        initialTab={settingsTab}
       />
 
       <ContainerSetupDialog
