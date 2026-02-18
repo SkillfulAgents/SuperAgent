@@ -11,6 +11,10 @@ interface SessionMetadata {
   availableEnvVars?: string[];
   model?: string;
   browserModel?: string;
+  maxOutputTokens?: number;
+  maxThinkingTokens?: number;
+  maxTurns?: number;
+  maxBudgetUsd?: number;
 }
 
 const SESSIONS_FILE = '/workspace/.superagent-sessions.json';

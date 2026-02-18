@@ -9,6 +9,7 @@ import {
   getComposioApiKeyStatus,
   getComposioUserId,
   getEffectiveModels,
+  getEffectiveAgentLimits,
   type AppSettings,
   type ContainerSettings,
   type GlobalSettingsResponse,
@@ -42,6 +43,7 @@ settings.get('/', async (c) => {
         composio: getComposioApiKeyStatus(),
       },
       models: getEffectiveModels(),
+      agentLimits: getEffectiveAgentLimits(),
       composioUserId: getComposioUserId(),
       setupCompleted: !!currentSettings.app?.setupCompleted,
       hostBrowserStatus: hostBrowserManager.detect(),
@@ -109,6 +111,12 @@ settings.put('/', async (c) => {
             ...body.models,
           }
         : currentSettings.models,
+      agentLimits: body.agentLimits !== undefined
+        ? {
+            ...currentSettings.agentLimits,
+            ...body.agentLimits,
+          }
+        : currentSettings.agentLimits,
     }
 
     // Handle API key updates
@@ -188,6 +196,7 @@ settings.put('/', async (c) => {
         composio: getComposioApiKeyStatus(),
       },
       models: getEffectiveModels(),
+      agentLimits: getEffectiveAgentLimits(),
       composioUserId: getComposioUserId(),
       setupCompleted: !!newSettings.app?.setupCompleted,
       hostBrowserStatus: hostBrowserManager.detect(),

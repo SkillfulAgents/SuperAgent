@@ -502,6 +502,10 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           initialMessage: options.initialMessage,
           model: options.model,
           browserModel: options.browserModel,
+          maxOutputTokens: options.maxOutputTokens,
+          maxThinkingTokens: options.maxThinkingTokens,
+          maxTurns: options.maxTurns,
+          maxBudgetUsd: options.maxBudgetUsd,
         }),
         signal: controller.signal,
       })

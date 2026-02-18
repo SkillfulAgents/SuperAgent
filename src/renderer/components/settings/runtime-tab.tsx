@@ -43,6 +43,10 @@ export function RuntimeTab() {
   const [cpuLimit, setCpuLimit] = useState('')
   const [memoryLimit, setMemoryLimit] = useState('')
   const [autoSleepMinutes, setAutoSleepMinutes] = useState<string | null>(null)
+  const [maxOutputTokens, setMaxOutputTokens] = useState<string | null>(null)
+  const [maxThinkingTokens, setMaxThinkingTokens] = useState<string | null>(null)
+  const [maxTurns, setMaxTurns] = useState<string | null>(null)
+  const [maxBudgetUsd, setMaxBudgetUsd] = useState<string | null>(null)
 
   // Track if form has unsaved changes
   const [hasChanges, setHasChanges] = useState(false)
@@ -389,6 +393,118 @@ export function RuntimeTab() {
             disabled={isLoading}
           />
           <span className="text-sm text-muted-foreground">minutes</span>
+        </div>
+      </div>
+
+      {/* Agent Limits */}
+      <div className="space-y-4 pt-2">
+        <div className="space-y-0.5">
+          <Label className="text-base">Agent Limits</Label>
+          <p className="text-xs text-muted-foreground">
+            Configure limits for agent sessions. Leave empty to use defaults.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label htmlFor="max-output-tokens">Max Output Tokens</Label>
+            <Input
+              id="max-output-tokens"
+              type="number"
+              min={1024}
+              step={1024}
+              value={maxOutputTokens ?? (settings?.agentLimits?.maxOutputTokens?.toString() || '')}
+              onChange={(e) => setMaxOutputTokens(e.target.value)}
+              onBlur={() => {
+                const raw = maxOutputTokens
+                setMaxOutputTokens(null)
+                if (raw === null) return
+                const parsed = parseInt(raw, 10)
+                const value = raw === '' ? undefined : (isNaN(parsed) ? undefined : Math.max(1024, parsed))
+                updateSettings.mutate({ agentLimits: { maxOutputTokens: value } })
+              }}
+              placeholder="32000"
+              disabled={isLoading}
+            />
+            <p className="text-xs text-muted-foreground">
+              Max tokens per model response. Default: 32,000.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="max-thinking-tokens">Max Thinking Tokens</Label>
+            <Input
+              id="max-thinking-tokens"
+              type="number"
+              min={1024}
+              step={1024}
+              value={maxThinkingTokens ?? (settings?.agentLimits?.maxThinkingTokens?.toString() || '')}
+              onChange={(e) => setMaxThinkingTokens(e.target.value)}
+              onBlur={() => {
+                const raw = maxThinkingTokens
+                setMaxThinkingTokens(null)
+                if (raw === null) return
+                const parsed = parseInt(raw, 10)
+                const value = raw === '' ? undefined : (isNaN(parsed) ? undefined : Math.max(1024, parsed))
+                updateSettings.mutate({ agentLimits: { maxThinkingTokens: value } })
+              }}
+              placeholder="Unlimited"
+              disabled={isLoading}
+            />
+            <p className="text-xs text-muted-foreground">
+              Max tokens for extended thinking/reasoning.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="max-turns">Max Turns</Label>
+            <Input
+              id="max-turns"
+              type="number"
+              min={1}
+              step={1}
+              value={maxTurns ?? (settings?.agentLimits?.maxTurns?.toString() || '')}
+              onChange={(e) => setMaxTurns(e.target.value)}
+              onBlur={() => {
+                const raw = maxTurns
+                setMaxTurns(null)
+                if (raw === null) return
+                const parsed = parseInt(raw, 10)
+                const value = raw === '' ? undefined : (isNaN(parsed) ? undefined : Math.max(1, parsed))
+                updateSettings.mutate({ agentLimits: { maxTurns: value } })
+              }}
+              placeholder="Unlimited"
+              disabled={isLoading}
+            />
+            <p className="text-xs text-muted-foreground">
+              Max conversation turns per session.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="max-budget-usd">Max Budget (USD)</Label>
+            <Input
+              id="max-budget-usd"
+              type="number"
+              min={0.01}
+              step={0.01}
+              value={maxBudgetUsd ?? (settings?.agentLimits?.maxBudgetUsd?.toString() || '')}
+              onChange={(e) => setMaxBudgetUsd(e.target.value)}
+              onBlur={() => {
+                const raw = maxBudgetUsd
+                setMaxBudgetUsd(null)
+                if (raw === null) return
+                const parsed = parseFloat(raw)
+                const value = raw === '' ? undefined : (isNaN(parsed) ? undefined : Math.max(0.01, parsed))
+                updateSettings.mutate({ agentLimits: { maxBudgetUsd: value } })
+              }}
+              placeholder="Unlimited"
+              disabled={isLoading}
+            />
+            <p className="text-xs text-muted-foreground">
+              Maximum cost per session in USD.
+            </p>
+          </div>
         </div>
       </div>
 

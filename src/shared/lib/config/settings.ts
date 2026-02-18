@@ -32,6 +32,13 @@ export interface ModelSettings {
   browserModel: string
 }
 
+export interface AgentLimitsSettings {
+  maxOutputTokens?: number
+  maxThinkingTokens?: number
+  maxTurns?: number
+  maxBudgetUsd?: number
+}
+
 export interface AppPreferences {
   showMenuBarIcon?: boolean
   notifications?: NotificationSettings
@@ -48,6 +55,7 @@ export interface AppSettings {
   apiKeys?: ApiKeySettings
   app?: AppPreferences
   models?: ModelSettings
+  agentLimits?: AgentLimitsSettings
   skillsets?: SkillsetConfig[]
 }
 
@@ -83,6 +91,7 @@ export interface GlobalSettingsResponse {
   }
   composioUserId?: string
   models: ModelSettings
+  agentLimits: AgentLimitsSettings
   setupCompleted: boolean
   hostBrowserStatus?: HostBrowserStatus
   runtimeReadiness: RuntimeReadiness
@@ -165,6 +174,7 @@ export function loadSettings(): AppSettings {
           ...DEFAULT_SETTINGS.models,
           ...loaded.models,
         },
+        agentLimits: loaded.agentLimits,
         skillsets: loaded.skillsets,
       }
     }
@@ -295,6 +305,14 @@ export function getEffectiveModels(): ModelSettings {
     agentModel: settings.models?.agentModel || DEFAULT_SETTINGS.models!.agentModel,
     browserModel: settings.models?.browserModel || DEFAULT_SETTINGS.models!.browserModel,
   }
+}
+
+/**
+ * Get the effective agent limits settings.
+ */
+export function getEffectiveAgentLimits(): AgentLimitsSettings {
+  const settings = getSettings()
+  return settings.agentLimits ?? {}
 }
 
 export { DEFAULT_SETTINGS }

@@ -5,10 +5,11 @@ import type {
   ContainerSettings,
   AppPreferences,
   ModelSettings,
+  AgentLimitsSettings,
 } from '@shared/lib/config/settings'
 import type { RunnerAvailability } from '@shared/lib/container/client-factory'
 
-export type { GlobalSettingsResponse, ContainerSettings, AppPreferences, ModelSettings, RunnerAvailability }
+export type { GlobalSettingsResponse, ContainerSettings, AppPreferences, ModelSettings, AgentLimitsSettings, RunnerAvailability }
 
 export function useSettings() {
   return useQuery<GlobalSettingsResponse>({
@@ -31,6 +32,7 @@ export interface UpdateSettingsParams {
     composioUserId?: string
   }
   models?: Partial<ModelSettings>
+  agentLimits?: Partial<AgentLimitsSettings>
 }
 
 export interface UpdateSettingsError {

@@ -254,6 +254,10 @@ export interface ClaudeCodeProcessOptions {
   availableEnvVars?: string[];
   model?: string;
   browserModel?: string;
+  maxOutputTokens?: number;
+  maxThinkingTokens?: number;
+  maxTurns?: number;
+  maxBudgetUsd?: number;
 }
 
 export class ClaudeCodeProcess extends EventEmitter {
@@ -266,6 +270,10 @@ export class ClaudeCodeProcess extends EventEmitter {
   private systemPromptAppend: string | undefined;
   private model: string | undefined;
   private browserModel: 'sonnet' | 'opus' | 'haiku' | undefined;
+  private maxOutputTokens: number | undefined;
+  private maxThinkingTokens: number | undefined;
+  private maxTurns: number | undefined;
+  private maxBudgetUsd: number | undefined;
   private isReady: boolean = false;
   private isProcessing: boolean = false;
 
@@ -276,6 +284,10 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.claudeSessionId = options.claudeSessionId || null;
     this.model = options.model;
     this.browserModel = toModelAlias(options.browserModel);
+    this.maxOutputTokens = options.maxOutputTokens;
+    this.maxThinkingTokens = options.maxThinkingTokens;
+    this.maxTurns = options.maxTurns;
+    this.maxBudgetUsd = options.maxBudgetUsd;
     this.systemPromptAppend = generateSystemPromptAppend(
       options.availableEnvVars,
       options.userSystemPrompt
@@ -355,6 +367,12 @@ export class ClaudeCodeProcess extends EventEmitter {
         includePartialMessages: true,
         settingSources: ['user', 'project'],
         allowedTools: ['Skill', 'Task', ...remoteMcpToolPatterns],
+        ...(this.maxThinkingTokens && { maxThinkingTokens: this.maxThinkingTokens }),
+        ...(this.maxTurns && { maxTurns: this.maxTurns }),
+        ...(this.maxBudgetUsd && { maxBudgetUsd: this.maxBudgetUsd }),
+        ...(this.maxOutputTokens && {
+          env: { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) },
+        }),
         mcpServers: {
           'user-input': userInputMcpServer,
           'browser': browserMcpServer,

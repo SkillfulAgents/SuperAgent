@@ -34,6 +34,10 @@ export interface CreateSessionOptions {
   initialMessage: string // Required: first message to send (triggers session ID generation)
   model?: string // Claude model to use for this session
   browserModel?: string // Model for browser subagent
+  maxOutputTokens?: number // Max tokens per response (CLAUDE_CODE_MAX_OUTPUT_TOKENS)
+  maxThinkingTokens?: number // Max tokens for extended thinking
+  maxTurns?: number // Max conversation turns
+  maxBudgetUsd?: number // Max cost in USD per session
 }
 
 export interface StartOptions {

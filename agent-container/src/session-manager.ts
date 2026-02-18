@@ -65,6 +65,10 @@ export class SessionManager extends EventEmitter {
       availableEnvVars: request.availableEnvVars,
       model: request.model,
       browserModel: request.browserModel,
+      maxOutputTokens: request.maxOutputTokens,
+      maxThinkingTokens: request.maxThinkingTokens,
+      maxTurns: request.maxTurns,
+      maxBudgetUsd: request.maxBudgetUsd,
     });
 
     // Promise to capture Claude's session ID (emitted after first message is sent)
@@ -139,6 +143,10 @@ export class SessionManager extends EventEmitter {
       availableEnvVars: request.availableEnvVars,
       model: request.model,
       browserModel: request.browserModel,
+      maxOutputTokens: request.maxOutputTokens,
+      maxThinkingTokens: request.maxThinkingTokens,
+      maxTurns: request.maxTurns,
+      maxBudgetUsd: request.maxBudgetUsd,
     });
 
     this.sessions.set(sessionId, sessionData);
@@ -166,6 +174,10 @@ export class SessionManager extends EventEmitter {
         availableEnvVars: persisted.availableEnvVars,
         model: persisted.model,
         browserModel: persisted.browserModel,
+        maxOutputTokens: persisted.maxOutputTokens,
+        maxThinkingTokens: persisted.maxThinkingTokens,
+        maxTurns: persisted.maxTurns,
+        maxBudgetUsd: persisted.maxBudgetUsd,
       });
 
       const session: Session = {
