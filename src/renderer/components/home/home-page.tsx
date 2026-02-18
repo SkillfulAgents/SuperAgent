@@ -23,11 +23,11 @@ function AgentCard({ agent }: { agent: ApiAgent }) {
   return (
     <button
       onClick={() => selectAgent(agent.slug)}
-      className="text-left p-4 rounded-lg border bg-card hover:bg-accent/50 transition-colors flex flex-col gap-2"
+      className="text-left p-4 rounded-lg border bg-card hover:bg-accent/50 transition-colors flex flex-col gap-2 overflow-hidden"
     >
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex items-center justify-between gap-2 min-w-0">
         <span className="font-medium truncate">{agent.name}</span>
-        <AgentStatus status={agent.status} hasActiveSessions={hasActiveSessions} />
+        <AgentStatus status={agent.status} hasActiveSessions={hasActiveSessions} className="shrink-0" />
       </div>
       {agent.description && (
         <p className="text-xs text-muted-foreground line-clamp-2">{agent.description}</p>
