@@ -5,6 +5,7 @@ import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
 import { useSessions } from '@renderer/hooks/use-sessions'
 import { useSelection } from '@renderer/context/selection-context'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
+import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { CreateAgentDialog } from '@renderer/components/agents/create-agent-dialog'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Button } from '@renderer/components/ui/button'
@@ -21,18 +22,20 @@ function AgentCard({ agent }: { agent: ApiAgent }) {
   const hasActiveSessions = sessions?.some((s) => s.isActive) ?? false
 
   return (
-    <button
-      onClick={() => selectAgent(agent.slug)}
-      className="text-left p-4 rounded-lg border bg-card hover:bg-accent/50 transition-colors flex flex-col gap-2 overflow-hidden"
-    >
-      <div className="flex items-center justify-between gap-2 min-w-0">
-        <span className="font-medium truncate">{agent.name}</span>
-        <AgentStatus status={agent.status} hasActiveSessions={hasActiveSessions} className="shrink-0" />
-      </div>
-      {agent.description && (
-        <p className="text-xs text-muted-foreground line-clamp-2">{agent.description}</p>
-      )}
-    </button>
+    <AgentContextMenu agent={agent}>
+      <button
+        onClick={() => selectAgent(agent.slug)}
+        className="text-left p-4 rounded-lg border bg-card hover:bg-accent/50 transition-colors flex flex-col gap-2 overflow-hidden"
+      >
+        <div className="flex items-center justify-between gap-2 min-w-0">
+          <span className="font-medium truncate">{agent.name}</span>
+          <AgentStatus status={agent.status} hasActiveSessions={hasActiveSessions} className="shrink-0" />
+        </div>
+        {agent.description && (
+          <p className="text-xs text-muted-foreground line-clamp-2">{agent.description}</p>
+        )}
+      </button>
+    </AgentContextMenu>
   )
 }
 
