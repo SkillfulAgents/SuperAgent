@@ -76,6 +76,7 @@ import { getEffectiveAnthropicApiKey, getEffectiveModels, getSettings } from '@s
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import * as fs from 'fs'
+import { Readable } from 'stream'
 import * as path from 'path'
 
 const agents = new Hono()
@@ -2119,14 +2120,16 @@ agents.get('/:id/files/*', async (c) => {
       return c.json({ error: 'File not found' }, 404)
     }
 
-    const buffer = await fs.promises.readFile(fullPath)
     const filename = path.basename(filePath)
+    const fileStream = fs.createReadStream(fullPath)
+    const webStream = Readable.toWeb(fileStream) as ReadableStream
 
-    c.header('Content-Disposition', `attachment; filename="${filename}"`)
+    const encodedFilename = encodeURIComponent(filename)
+    c.header('Content-Disposition', `attachment; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`)
     c.header('Content-Type', 'application/octet-stream')
-    c.header('Content-Length', buffer.byteLength.toString())
+    c.header('Content-Length', stat.size.toString())
 
-    return c.body(buffer)
+    return c.body(webStream)
   } catch (error) {
     console.error('Failed to download file:', error)
     return c.json({ error: 'Failed to download file' }, 500)
