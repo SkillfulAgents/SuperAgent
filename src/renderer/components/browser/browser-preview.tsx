@@ -29,6 +29,7 @@ interface BrowserPreviewProps {
 export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }: BrowserPreviewProps) {
   const [expanded, setExpanded] = useState(false)
   const [connected, setConnected] = useState(false)
+  const [reconnectKey, setReconnectKey] = useState(0)
   const [showCloseWarning, setShowCloseWarning] = useState(false)
   const [isClosing, setIsClosing] = useState(false)
   const [aspectRatio, setAspectRatio] = useState('16 / 9')
@@ -176,7 +177,12 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
         const data = typeof event.data === 'string' ? JSON.parse(event.data) : null
         if (!data) return
 
-        if (data.type === 'frame' && data.data) {
+        if (data.type === 'metadata') {
+          metadataRef.current = {
+            deviceWidth: data.deviceWidth || 1280,
+            deviceHeight: data.deviceHeight || 720,
+          }
+        } else if (data.type === 'frame' && data.data) {
           const blob = base64ToBlob(data.data, 'image/jpeg')
           renderFrame(blob)
 
@@ -199,6 +205,10 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
         .then((status: { active?: boolean }) => {
           if (!status.active) {
             clearBrowserActive(sessionId)
+          } else {
+            // Browser still active but stream dropped (e.g. tab switch disrupted
+            // CDP screencast). Retry after a brief delay.
+            setTimeout(() => setReconnectKey(k => k + 1), 1000)
           }
         })
         .catch(() => {
@@ -215,7 +225,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
       wsRef.current = null
       setConnected(false)
     }
-  }, [browserActive, expanded, agentSlug, sessionId, renderFrame])
+  }, [browserActive, expanded, agentSlug, sessionId, renderFrame, reconnectKey])
 
   // Auto-expand when browser becomes active
   useEffect(() => {

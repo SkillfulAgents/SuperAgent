@@ -9,6 +9,7 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as dns from 'dns';
+import * as net from 'net';
 import { inputManager } from './input-manager';
 import { dashboardManager } from './dashboard-manager';
 
@@ -525,6 +526,7 @@ interface BrowserState {
 
 let browserState: BrowserState = { active: false, sessionId: null, cdpUrl: null };
 
+
 const execFileAsync = promisify(execFile);
 
 import { splitCommandArgs, buildRunCommandArgs } from './browser-command-args';
@@ -555,6 +557,14 @@ async function ensureBrowserDownloadPreferences(profileDir: string, downloadDir:
   await fs.promises.writeFile(prefsPath, JSON.stringify(prefs, null, 2));
 }
 
+// Ensure --remote-debugging-port=9222 is present in browser args so we can
+// connect directly to Chrome's CDP for screencast (bypassing agent-browser's
+// StreamServer which doesn't follow tab switches).
+function ensureRemoteDebuggingPort(args: string): string {
+  if (args.includes('--remote-debugging-port')) return args;
+  return args + ',--remote-debugging-port=9222';
+}
+
 // Execute an agent-browser CLI command and return the result.
 // Uses execFile (no shell) to prevent command injection.
 async function execBrowser(args: string[], cdpUrl?: string): Promise<{ stdout: string; exitCode: number }> {
@@ -565,7 +575,7 @@ async function execBrowser(args: string[], cdpUrl?: string): Promise<{ stdout: s
       env: {
         ...process.env,
         AGENT_BROWSER_STREAM_PORT: process.env.AGENT_BROWSER_STREAM_PORT || '9223',
-        AGENT_BROWSER_ARGS: process.env.AGENT_BROWSER_ARGS || '--no-sandbox,--disable-blink-features=AutomationControlled',
+        AGENT_BROWSER_ARGS: ensureRemoteDebuggingPort(process.env.AGENT_BROWSER_ARGS || '--no-sandbox,--disable-blink-features=AutomationControlled'),
       },
     });
     return { stdout: stdout.trim(), exitCode: 0 };
@@ -736,6 +746,7 @@ app.get('/browser/status', (c) => {
   return c.json(browserState);
 });
 
+
 // POST /browser/open - Start browser and navigate to URL
 app.post('/browser/open', async (c) => {
   try {
@@ -799,11 +810,12 @@ app.post('/browser/close', async (c) => {
       return c.json({ error: validationError }, 409);
     }
 
-    const result = await execBrowser(['close'], browserState.cdpUrl || undefined);
+    await execBrowser(['close'], browserState.cdpUrl || undefined);
 
     // If using host browser, tell the host to kill the Chrome process
     await stopHostBrowserIfNeeded();
 
+    cleanupCdpScreencast();
     broadcastBrowserEvent(false);
     browserState = { active: false, sessionId: null, cdpUrl: null };
 
@@ -817,6 +829,7 @@ app.post('/browser/close', async (c) => {
 // POST /browser/notify-closed - Host browser was closed externally, clean up state
 app.post('/browser/notify-closed', (c) => {
   if (browserState.active) {
+    cleanupCdpScreencast();
     broadcastBrowserEvent(false);
     browserState = { active: false, sessionId: null, cdpUrl: null };
     console.log('[Browser] Browser closed externally, state cleaned up');
@@ -890,6 +903,7 @@ app.post('/browser/click', async (c) => {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
+    notifyBrowserAction();
     return c.json({ success: true });
   } catch (error: any) {
     console.error('[Browser] Error clicking:', error);
@@ -921,6 +935,7 @@ app.post('/browser/fill', async (c) => {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
+    notifyBrowserAction();
     return c.json({ success: true });
   } catch (error: any) {
     console.error('[Browser] Error filling:', error);
@@ -955,6 +970,7 @@ app.post('/browser/scroll', async (c) => {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
+    notifyBrowserAction();
     return c.json({ success: true });
   } catch (error: any) {
     console.error('[Browser] Error scrolling:', error);
@@ -1028,6 +1044,7 @@ app.post('/browser/press', async (c) => {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
+    notifyBrowserAction();
     return c.json({ success: true });
   } catch (error: any) {
     console.error('[Browser] Error pressing key:', error);
@@ -1093,6 +1110,7 @@ app.post('/browser/select', async (c) => {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
+    notifyBrowserAction();
     return c.json({ success: true });
   } catch (error: any) {
     console.error('[Browser] Error selecting:', error);
@@ -1124,6 +1142,7 @@ app.post('/browser/hover', async (c) => {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
+    notifyBrowserAction();
     return c.json({ success: true });
   } catch (error: any) {
     console.error('[Browser] Error hovering:', error);
@@ -1160,6 +1179,7 @@ app.post('/browser/run', async (c) => {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
+    notifyBrowserAction();
     return c.json({ success: true, output: result.stdout });
   } catch (error: any) {
     console.error('[Browser] Error running command:', error);
@@ -1306,56 +1326,246 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
   }));
 }
 
-// Handle browser stream WebSocket proxy (bidirectional pipe to agent-browser stream server)
+// ============================================================
+// CDP-based browser screencast
+// Connects directly to Chrome's CDP to stream the active page,
+// bypassing agent-browser's StreamServer which doesn't follow
+// tab switches. After each browser action, we ask the daemon
+// which tab is active and switch the screencast if needed.
+// ============================================================
+
+let cdpScreencast: {
+  clientWs: WebSocket;
+  cdpWs: WebSocket;
+  currentTargetId: string;
+  msgId: number;
+  lastDeviceWidth: number;
+  lastDeviceHeight: number;
+} | null = null;
+
+/** Derive the CDP HTTP endpoint from the current browser state */
+function getCdpHttpEndpoint(): string {
+  if (browserState.cdpUrl) {
+    const match = browserState.cdpUrl.match(/^wss?:\/\/([^/]+)/);
+    if (match) return `http://${match[1]}`;
+  }
+  return 'http://localhost:9222';
+}
+
+/** Query the agent-browser daemon for its tab list via Unix socket */
+async function queryDaemonTabs(): Promise<Array<{ index: number; url: string; title: string; active: boolean }>> {
+  const socketDir = process.env.AGENT_BROWSER_SOCKET_DIR
+    || (process.env.XDG_RUNTIME_DIR ? path.join(process.env.XDG_RUNTIME_DIR, 'agent-browser') : null)
+    || path.join(process.env.HOME || '/home/claude', '.agent-browser');
+  const session = process.env.AGENT_BROWSER_SESSION || 'default';
+  const socketPath = path.join(socketDir, `${session}.sock`);
+
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => { client.destroy(); reject(new Error('Timeout')); }, 3000);
+    const client = net.createConnection(socketPath, () => {
+      client.write(JSON.stringify({ id: 'tab-q', action: 'tab_list' }) + '\n');
+    });
+    let buf = '';
+    client.on('data', (chunk: Buffer) => {
+      buf += chunk.toString();
+      try {
+        const resp = JSON.parse(buf);
+        clearTimeout(timeout);
+        client.end();
+        // Response format: { id, success, data: { tabs, active } }
+        const tabs = resp.data?.tabs;
+        resp.success && tabs ? resolve(tabs) : reject(new Error(resp.error || 'No tabs'));
+      } catch { /* incomplete JSON, wait for more */ }
+    });
+    client.on('error', (err: Error) => { clearTimeout(timeout); reject(err); });
+  });
+}
+
+/** Find the CDP page target that corresponds to agent-browser's active page */
+async function findActivePageTarget(): Promise<{ id: string; wsUrl: string } | null> {
+  const endpoint = getCdpHttpEndpoint();
+
+  let targets: Array<{ id: string; type: string; url: string; webSocketDebuggerUrl: string }>;
+  try {
+    const res = await fetch(`${endpoint}/json`);
+    targets = await res.json() as typeof targets;
+  } catch (err) {
+    console.error('[CDP] Failed to fetch targets:', err);
+    return null;
+  }
+
+  const pages = targets.filter(t => t.type === 'page');
+  if (pages.length === 0) return null;
+
+  // Chrome's /json may return webSocketDebuggerUrl with localhost which won't
+  // work from inside a Docker container. Rewrite to the host we actually used.
+  const cdpHost = endpoint.replace(/^https?:\/\//, '');
+  for (const page of pages) {
+    page.webSocketDebuggerUrl = page.webSocketDebuggerUrl.replace(/^ws:\/\/[^/]+/, `ws://${cdpHost}`);
+  }
+
+  if (pages.length === 1) return { id: pages[0].id, wsUrl: pages[0].webSocketDebuggerUrl };
+
+  // Ask agent-browser daemon which tab is active and match to a CDP target
+  try {
+    const tabs = await queryDaemonTabs();
+    const active = tabs.find(t => t.active);
+    if (active) {
+      const byUrl = pages.find(p => p.url === active.url);
+      if (byUrl) return { id: byUrl.id, wsUrl: byUrl.webSocketDebuggerUrl };
+      if (active.index < pages.length) return { id: pages[active.index].id, wsUrl: pages[active.index].webSocketDebuggerUrl };
+    }
+  } catch (err) {
+    console.error('[CDP] Daemon tab query failed:', err);
+  }
+
+  // Fallback: last page (most recently created)
+  const last = pages[pages.length - 1];
+  return { id: last.id, wsUrl: last.webSocketDebuggerUrl };
+}
+
+/** Connect CDP screencast to a page target and forward frames to the client */
+function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket) {
+  const cdpWs = new WebSocket(wsUrl);
+  cdpScreencast = { clientWs, cdpWs, currentTargetId: targetId, msgId: 0, lastDeviceWidth: 0, lastDeviceHeight: 0 };
+  const state = cdpScreencast;
+
+  cdpWs.on('open', () => {
+    cdpWs.send(JSON.stringify({
+      id: ++state.msgId,
+      method: 'Page.startScreencast',
+      params: { format: 'jpeg', quality: 80, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1 },
+    }));
+  });
+
+  cdpWs.on('message', (rawData) => {
+    try {
+      const msg = JSON.parse(rawData.toString());
+      if (msg.method === 'Page.screencastFrame') {
+        cdpWs.send(JSON.stringify({
+          id: ++state.msgId,
+          method: 'Page.screencastFrameAck',
+          params: { sessionId: msg.params.sessionId },
+        }));
+        if (clientWs.readyState === WebSocket.OPEN) {
+          // Send metadata when viewport dimensions change
+          const meta = msg.params.metadata;
+          if (meta && (meta.deviceWidth !== state.lastDeviceWidth || meta.deviceHeight !== state.lastDeviceHeight)) {
+            state.lastDeviceWidth = meta.deviceWidth;
+            state.lastDeviceHeight = meta.deviceHeight;
+            clientWs.send(JSON.stringify({
+              type: 'metadata',
+              deviceWidth: meta.deviceWidth,
+              deviceHeight: meta.deviceHeight,
+            }));
+          }
+          clientWs.send(Buffer.from(msg.params.data, 'base64'));
+        }
+      }
+    } catch { /* ignore */ }
+  });
+
+  cdpWs.on('close', () => {
+    // If this was our active connection, close the client so the frontend reconnects
+    if (cdpScreencast?.cdpWs === cdpWs && clientWs.readyState === WebSocket.OPEN) {
+      clientWs.close();
+    }
+  });
+
+  cdpWs.on('error', (err) => {
+    console.error('[CDP] Screencast error:', err);
+  });
+}
+
+function cleanupCdpScreencast() {
+  if (!cdpScreencast) return;
+  if (cdpScreencast.cdpWs.readyState === WebSocket.OPEN) {
+    cdpScreencast.cdpWs.send(JSON.stringify({ id: ++cdpScreencast.msgId, method: 'Page.stopScreencast' }));
+    cdpScreencast.cdpWs.close();
+  }
+  cdpScreencast = null;
+}
+
+/** After a browser action, check if the active tab changed and switch screencast */
+function notifyBrowserAction() {
+  if (!cdpScreencast) return;
+  const currentClient = cdpScreencast.clientWs;
+  // Brief delay to let agent-browser update its internal state after the action
+  setTimeout(() => {
+    if (!cdpScreencast || cdpScreencast.clientWs !== currentClient) return;
+    findActivePageTarget().then((target) => {
+      if (!target || !cdpScreencast || target.id === cdpScreencast.currentTargetId) return;
+      console.log(`[CDP] Switching screencast to target ${target.id}`);
+      // Stop old screencast and connect to the new target
+      if (cdpScreencast.cdpWs.readyState === WebSocket.OPEN) {
+        cdpScreencast.cdpWs.send(JSON.stringify({ id: ++cdpScreencast.msgId, method: 'Page.stopScreencast' }));
+        cdpScreencast.cdpWs.close();
+      }
+      connectCdpToTarget(target.id, target.wsUrl, currentClient);
+    }).catch(err => console.error('[CDP] Recheck failed:', err));
+  }, 300);
+}
+
+// Handle browser stream WebSocket - CDP-based screencast
 function handleBrowserStreamConnection(ws: WebSocket) {
-  const streamPort = process.env.AGENT_BROWSER_STREAM_PORT || '9223';
-  console.log(`[Browser] Proxying stream connection to ws://localhost:${streamPort}`);
+  // If there's an existing screencast, close it (single viewer)
+  cleanupCdpScreencast();
 
-  const upstream = new WebSocket(`ws://localhost:${streamPort}`);
-
-  upstream.on('open', () => {
-    console.log('[Browser] Upstream stream connection established');
-  });
-
-  // Forward frames from agent-browser to the client
-  // Preserve text/binary framing so JSON text frames aren't converted to binary
-  upstream.on('message', (data, isBinary) => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(data, { binary: isBinary });
-    }
-  });
-
-  // Forward input events from client to agent-browser
-  ws.on('message', (data, isBinary) => {
-    if (upstream.readyState === WebSocket.OPEN) {
-      upstream.send(data, { binary: isBinary });
-    }
-  });
-
-  upstream.on('close', () => {
-    if (ws.readyState === WebSocket.OPEN) {
+  findActivePageTarget().then((target) => {
+    if (!target) {
+      console.error('[CDP] No active page target found');
       ws.close();
+      return;
     }
+    connectCdpToTarget(target.id, target.wsUrl, ws);
+  }).catch((err) => {
+    console.error('[CDP] Failed to start screencast:', err);
+    ws.close();
+  });
+
+  // Forward input events from client to the active page via CDP
+  ws.on('message', (rawData) => {
+    try {
+      const data = JSON.parse(rawData.toString());
+      if (!cdpScreencast || cdpScreencast.cdpWs.readyState !== WebSocket.OPEN) return;
+
+      if (data.type === 'input_mouse') {
+        cdpScreencast.cdpWs.send(JSON.stringify({
+          id: ++cdpScreencast.msgId,
+          method: 'Input.dispatchMouseEvent',
+          params: {
+            type: data.eventType,
+            x: Math.round(data.x),
+            y: Math.round(data.y),
+            button: data.button,
+            clickCount: data.clickCount || 0,
+            deltaX: data.deltaX || 0,
+            deltaY: data.deltaY || 0,
+            modifiers: data.modifiers || 0,
+          },
+        }));
+      } else if (data.type === 'input_keyboard') {
+        cdpScreencast.cdpWs.send(JSON.stringify({
+          id: ++cdpScreencast.msgId,
+          method: 'Input.dispatchKeyEvent',
+          params: {
+            type: data.eventType,
+            key: data.key,
+            code: data.code,
+            text: data.text,
+            modifiers: data.modifiers || 0,
+          },
+        }));
+      }
+    } catch { /* ignore */ }
   });
 
   ws.on('close', () => {
-    if (upstream.readyState === WebSocket.OPEN) {
-      upstream.close();
-    }
+    if (cdpScreencast?.clientWs === ws) cleanupCdpScreencast();
   });
 
-  upstream.on('error', (error) => {
-    console.error('[Browser] Upstream stream error:', error);
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.close();
-    }
-  });
-
-  ws.on('error', (error) => {
-    console.error('[Browser] Client stream error:', error);
-    if (upstream.readyState === WebSocket.OPEN) {
-      upstream.close();
-    }
+  ws.on('error', () => {
+    if (cdpScreencast?.clientWs === ws) cleanupCdpScreencast();
   });
 }
 
