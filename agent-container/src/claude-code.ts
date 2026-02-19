@@ -407,7 +407,7 @@ export class ClaudeCodeProcess extends EventEmitter {
               'Read',
             ],
             prompt: WEB_BROWSER_AGENT_PROMPT,
-            maxTurns: 50,
+            maxTurns: 500,
           },
         },
         // Handle AskUserQuestion via canUseTool callback (per SDK docs)
@@ -532,6 +532,9 @@ export class ClaudeCodeProcess extends EventEmitter {
         // Emit the SDK message
         console.log(`[Session ${this.sessionId}] SDK message:`, message.type,
           'subtype' in message ? (message as any).subtype : '');
+
+
+
 
         // Check for result message to know when processing is complete
         if (message.type === 'result') {
