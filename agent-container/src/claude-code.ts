@@ -278,6 +278,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private customEnvVars: Record<string, string> | undefined;
   private isReady: boolean = false;
   private isProcessing: boolean = false;
+  public slashCommands: { name: string; description: string; argumentHint: string }[] = [];
 
   constructor(options: ClaudeCodeProcessOptions) {
     super();
@@ -527,6 +528,14 @@ export class ClaudeCodeProcess extends EventEmitter {
           setCurrentBrowserSessionId(this.sessionId);
           console.log(`[Session ${this.sessionId}] Captured Claude session ID:`, this.claudeSessionId);
           this.emit('claude-session-id', this.claudeSessionId);
+          // Fetch rich slash command info from SDK
+          try {
+            const cmds = await this.queryInstance!.supportedCommands();
+            this.slashCommands = cmds.map(c => ({ name: c.name, description: c.description, argumentHint: c.argumentHint }));
+          } catch (err) {
+            console.error(`[Session ${this.sessionId}] Failed to fetch slash commands:`, err);
+          }
+          this.emit('init-complete');
         }
 
         // Emit the SDK message

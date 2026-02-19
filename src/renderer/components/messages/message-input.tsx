@@ -1,10 +1,11 @@
 
 import { Button } from '@renderer/components/ui/button'
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { useSendMessage, useUploadFile, useInterruptSession } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { Send, Loader2, StopCircle, Paperclip } from 'lucide-react'
 import { AttachmentPreview, type Attachment } from './attachment-preview'
+import { SlashCommandMenu } from './slash-command-menu'
 
 interface MessageInputProps {
   sessionId: string
@@ -17,12 +18,53 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [isUploading, setIsUploading] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
+  const [slashMenuOpen, setSlashMenuOpen] = useState(false)
+  const [slashMenuIndex, setSlashMenuIndex] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const sendMessage = useSendMessage()
   const uploadFile = useUploadFile()
   const interruptSession = useInterruptSession()
-  const { isActive } = useMessageStream(sessionId, agentSlug)
+  const { isActive, slashCommands } = useMessageStream(sessionId, agentSlug)
+
+  // Extract the slash command prefix being typed (e.g. "co" from "/co")
+  const slashFilter = useMemo(() => {
+    const match = message.match(/^\/(\S*)$/)
+    return match ? match[1] : null
+  }, [message])
+
+  // Filter slash commands based on current input
+  const filteredCommands = useMemo(() => {
+    if (!slashMenuOpen || slashCommands.length === 0 || slashFilter === null) return []
+    const prefix = slashFilter.toLowerCase()
+    return slashCommands.filter(cmd => cmd.name.toLowerCase().startsWith(prefix))
+  }, [slashFilter, slashMenuOpen, slashCommands])
+
+  // Clamp menu index when filtered list shrinks
+  useEffect(() => {
+    if (slashMenuIndex >= filteredCommands.length) {
+      setSlashMenuIndex(Math.max(0, filteredCommands.length - 1))
+    }
+  }, [filteredCommands.length, slashMenuIndex])
+
+  const selectSlashCommand = useCallback((name: string) => {
+    setMessage(`/${name} `)
+    setSlashMenuOpen(false)
+    textareaRef.current?.focus()
+  }, [])
+
+  const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const value = e.target.value
+    setMessage(value)
+
+    // Open slash menu when input is "/" followed by optional non-space chars (still typing command)
+    if (/^\/\S*$/.test(value) && slashCommands.length > 0) {
+      setSlashMenuOpen(true)
+      setSlashMenuIndex(0)
+    } else {
+      setSlashMenuOpen(false)
+    }
+  }, [slashCommands.length])
 
   const handleInterrupt = async () => {
     if (interruptSession.isPending) return
@@ -129,6 +171,30 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Slash command menu keyboard navigation
+    if (slashMenuOpen && filteredCommands.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSlashMenuIndex(i => (i + 1) % filteredCommands.length)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSlashMenuIndex(i => (i - 1 + filteredCommands.length) % filteredCommands.length)
+        return
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault()
+        selectSlashCommand(filteredCommands[slashMenuIndex].name)
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setSlashMenuOpen(false)
+        return
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSubmit(e)
@@ -169,11 +235,18 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
   return (
     <form
       onSubmit={handleSubmit}
-      className={`p-4 border-t bg-background ${isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
+      className={`relative p-4 border-t bg-background ${isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      <SlashCommandMenu
+        commands={filteredCommands}
+        selectedIndex={slashMenuIndex}
+        onSelect={selectSlashCommand}
+        visible={slashMenuOpen}
+        filter={slashFilter ?? ''}
+      />
       <AttachmentPreview attachments={attachments} onRemove={removeAttachment} />
       <div className="flex gap-2">
         <input
@@ -196,8 +269,10 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
         <textarea
           ref={textareaRef}
           value={message}
-          onChange={(e) => setMessage(e.target.value)}
+          onChange={handleChange}
           onKeyDown={handleKeyDown}
+          onFocus={() => { if (slashFilter !== null && slashCommands.length > 0) setSlashMenuOpen(true) }}
+          onBlur={() => setSlashMenuOpen(false)}
           placeholder={isActive ? 'Agent is responding...' : 'Type a message...'}
           disabled={isDisabled}
           className="flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 min-h-[40px] max-h-[200px] overflow-y-auto"

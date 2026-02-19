@@ -12,6 +12,12 @@ export type {
   Options,
 } from '@anthropic-ai/claude-agent-sdk';
 
+export interface SlashCommandInfo {
+  name: string;
+  description: string;
+  argumentHint: string;
+}
+
 // Custom types for our container
 export interface Session {
   id: string;
@@ -22,6 +28,7 @@ export interface Session {
   envVars?: Record<string, string>;
   systemPrompt?: string;
   availableEnvVars?: string[];
+  slashCommands?: SlashCommandInfo[];
 }
 
 export interface FileInfo {

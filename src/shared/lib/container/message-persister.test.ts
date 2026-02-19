@@ -1075,4 +1075,120 @@ describe('MessagePersister', () => {
       expect(toolReady[0].toolName).toBe('mcp__user-input__request_remote_mcp')
     })
   })
+
+  // ============================================================================
+  // Slash command handling
+  // ============================================================================
+
+  describe('slash commands', () => {
+    it('getSlashCommands returns empty array for unknown session', () => {
+      expect(messagePersister.getSlashCommands('nonexistent')).toEqual([])
+    })
+
+    it('getSlashCommands returns empty array initially', () => {
+      expect(messagePersister.getSlashCommands(SESSION_ID)).toEqual([])
+    })
+
+    it('setSlashCommands stores and getSlashCommands retrieves', () => {
+      const commands = [
+        { name: 'compact', description: 'Clear history', argumentHint: '<instructions>' },
+        { name: 'review', description: 'Review code', argumentHint: '' },
+      ]
+      messagePersister.setSlashCommands(SESSION_ID, commands)
+      expect(messagePersister.getSlashCommands(SESSION_ID)).toEqual(commands)
+    })
+
+    it('setSlashCommands is a no-op for unknown session', () => {
+      // Should not throw
+      messagePersister.setSlashCommands('nonexistent', [
+        { name: 'test', description: '', argumentHint: '' },
+      ])
+      expect(messagePersister.getSlashCommands('nonexistent')).toEqual([])
+    })
+
+    it('captures slash commands from init event as fallback when none are set', () => {
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'init',
+        session_id: 'claude-session-1',
+        slash_commands: ['compact', 'review', 'cost'],
+      })
+
+      // Should have broadcast stream_start with slash commands
+      const streamStarts = sseEvents.filter(e => e.type === 'stream_start')
+      expect(streamStarts).toHaveLength(1)
+      expect(streamStarts[0].slashCommands).toEqual([
+        { name: 'compact', description: '', argumentHint: '' },
+        { name: 'review', description: '', argumentHint: '' },
+        { name: 'cost', description: '', argumentHint: '' },
+      ])
+
+      // Should be retrievable via accessor
+      const stored = messagePersister.getSlashCommands(SESSION_ID)
+      expect(stored).toHaveLength(3)
+      expect(stored[0].name).toBe('compact')
+    })
+
+    it('does not overwrite rich slash commands with init event strings', () => {
+      // Pre-set rich commands (e.g. from container HTTP response)
+      const richCommands = [
+        { name: 'compact', description: 'Clear conversation history', argumentHint: '<instructions>' },
+      ]
+      messagePersister.setSlashCommands(SESSION_ID, richCommands)
+
+      sseEvents.length = 0
+
+      // Init event arrives with plain string names
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'init',
+        session_id: 'claude-session-1',
+        slash_commands: ['compact', 'review'],
+      })
+
+      // Should still have the rich commands, NOT overwritten by strings
+      const stored = messagePersister.getSlashCommands(SESSION_ID)
+      expect(stored).toEqual(richCommands)
+
+      // stream_start should include the rich commands
+      const streamStarts = sseEvents.filter(e => e.type === 'stream_start')
+      expect(streamStarts[0].slashCommands).toEqual(richCommands)
+    })
+
+    it('broadcasts slash commands in stream_start when available', () => {
+      const commands = [
+        { name: 'cost', description: 'Show cost', argumentHint: '' },
+      ]
+      messagePersister.setSlashCommands(SESSION_ID, commands)
+
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'init',
+        session_id: 'claude-session-1',
+      })
+
+      const streamStarts = sseEvents.filter(e => e.type === 'stream_start')
+      expect(streamStarts).toHaveLength(1)
+      expect(streamStarts[0].slashCommands).toEqual(commands)
+    })
+
+    it('omits slashCommands from stream_start when none are available', () => {
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'init',
+        session_id: 'claude-session-1',
+        // No slash_commands field
+      })
+
+      const streamStarts = sseEvents.filter(e => e.type === 'stream_start')
+      expect(streamStarts).toHaveLength(1)
+      expect(streamStarts[0].slashCommands).toBeUndefined()
+    })
+  })
 })

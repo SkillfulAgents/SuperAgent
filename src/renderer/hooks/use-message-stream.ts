@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useQueryClient, QueryClient } from '@tanstack/react-query'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import type { SessionUsage } from '@shared/lib/types/agent'
+import type { SlashCommandInfo } from '@shared/lib/container/types'
 
 interface SecretRequest {
   toolUseId: string
@@ -68,6 +69,9 @@ interface StreamState {
 const streamStates = new Map<string, StreamState>()
 const streamListeners = new Map<string, Set<() => void>>()
 
+// Slash commands per session (separate from streamStates to avoid touching 25+ set() calls)
+const sessionSlashCommands = new Map<string, SlashCommandInfo[]>()
+
 // Singleton EventSource connections per session (prevents duplicates from StrictMode/re-renders)
 const eventSources = new Map<string, EventSource>()
 const refCounts = new Map<string, number>()
@@ -100,6 +104,10 @@ function getOrCreateEventSource(
       // All other events preserve the current isActive value
 
       if (data.type === 'connected') {
+        // Capture slash commands from server
+        if (Array.isArray(data.slashCommands)) {
+          sessionSlashCommands.set(sessionId, data.slashCommands)
+        }
         // Initial connection - get isActive from server
         streamStates.set(sessionId, {
           isActive: data.isActive ?? false,
@@ -201,6 +209,10 @@ function getOrCreateEventSource(
       }
       // Streaming events - update streaming state, preserve isActive
       else if (data.type === 'stream_start') {
+        // Capture slash commands from init event (piggybacked on stream_start)
+        if (Array.isArray(data.slashCommands)) {
+          sessionSlashCommands.set(sessionId, data.slashCommands)
+        }
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
           isStreaming: true,
@@ -681,6 +693,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     contextUsage: null,
     activeSubagent: null,
   })
+  const [slashCommands, setSlashCommands] = useState<SlashCommandInfo[]>([])
   const queryClient = useQueryClient()
 
   // Update local state when global state changes
@@ -690,6 +703,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
       if (globalState) {
         setState(globalState)
       }
+      setSlashCommands(sessionSlashCommands.get(sessionId) ?? [])
     }
   }, [sessionId])
 
@@ -738,5 +752,5 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     }
   }, [sessionId, agentSlug, updateState, queryClient])
 
-  return state
+  return { ...state, slashCommands }
 }

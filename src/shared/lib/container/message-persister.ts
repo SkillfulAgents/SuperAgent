@@ -1,4 +1,4 @@
-import type { ContainerClient, StreamMessage } from './types'
+import type { ContainerClient, StreamMessage, SlashCommandInfo } from './types'
 import type { SessionUsage } from '@shared/lib/types/agent'
 import { createScheduledTask } from '@shared/lib/services/scheduled-task-service'
 import { updateSessionMetadata } from '@shared/lib/services/session-service'
@@ -28,6 +28,7 @@ interface StreamingState {
   subagentCurrentText: string
   subagentCurrentToolUse: { id: string; name: string } | null
   subagentCurrentToolInput: string
+  slashCommands: SlashCommandInfo[] // Available slash commands from SDK
 }
 
 class MessagePersister {
@@ -70,6 +71,7 @@ class MessagePersister {
       subagentCurrentText: '',
       subagentCurrentToolUse: null,
       subagentCurrentToolInput: '',
+      slashCommands: [],
     })
 
     // Store container client for reconnection checks
@@ -102,6 +104,19 @@ class MessagePersister {
   isSessionActive(sessionId: string): boolean {
     const state = this.streamingStates.get(sessionId)
     return state?.isActive ?? false
+  }
+
+  // Get available slash commands for a session
+  getSlashCommands(sessionId: string): SlashCommandInfo[] {
+    return this.streamingStates.get(sessionId)?.slashCommands ?? []
+  }
+
+  // Set slash commands for a session (from container session creation response)
+  setSlashCommands(sessionId: string, commands: SlashCommandInfo[]): void {
+    const state = this.streamingStates.get(sessionId)
+    if (state) {
+      state.slashCommands = commands
+    }
   }
 
   // Check if a session has an active subscription
@@ -257,6 +272,7 @@ class MessagePersister {
         subagentCurrentText: '',
         subagentCurrentToolUse: null,
         subagentCurrentToolInput: '',
+        slashCommands: [],
       }
       this.streamingStates.set(sessionId, state)
     }
@@ -363,7 +379,18 @@ class MessagePersister {
       case 'system':
         // System messages (init, etc.)
         if (content.subtype === 'init') {
-          this.broadcastToSSE(sessionId, { type: 'stream_start' })
+          // Capture slash commands from init event as fallback (e.g. resumed sessions)
+          if (state.slashCommands.length === 0 && Array.isArray(content.slash_commands)) {
+            state.slashCommands = content.slash_commands.map((name: string) => ({
+              name,
+              description: '',
+              argumentHint: '',
+            }))
+          }
+          this.broadcastToSSE(sessionId, {
+            type: 'stream_start',
+            slashCommands: state.slashCommands.length > 0 ? state.slashCommands : undefined,
+          })
         } else if (content.subtype === 'compact_boundary') {
           // Compaction has started — set flag so we recognize the next user message as compact summary
           state.isCompacting = true

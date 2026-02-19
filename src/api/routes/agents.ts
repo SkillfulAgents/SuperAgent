@@ -19,6 +19,7 @@ import {
   getSessionMessagesWithCompact,
   getSession,
   getSessionMetadata,
+  updateSessionMetadata,
   deleteSession,
   removeMessage,
   removeToolCall,
@@ -438,6 +439,11 @@ agents.post('/:id/sessions', async (c) => {
 
     await registerSession(slug, sessionId, 'New Session')
     await messagePersister.subscribeToSession(sessionId, client, sessionId, slug)
+    // Store slash commands from container's init event (captured during session creation)
+    if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
+      messagePersister.setSlashCommands(sessionId, containerSession.slashCommands)
+      updateSessionMetadata(slug, sessionId, { slashCommands: containerSession.slashCommands }).catch(console.error)
+    }
     messagePersister.markSessionActive(sessionId, slug)
 
     generateAndUpdateSessionNameAsync(
@@ -718,10 +724,24 @@ agents.get('/:id/sessions/:sessionId/stream', async (c) => {
         }
       })
 
-      // Send initial connection message
+      // Send initial connection message (include slash commands for late-joining clients)
       const isActive = messagePersister.isSessionActive(sessionId)
+      let slashCommands = messagePersister.getSlashCommands(sessionId)
+      // Fall back to persisted metadata (e.g. after container restart)
+      if (slashCommands.length === 0) {
+        const agentSlug = c.req.param('id')
+        const meta = await getSessionMetadata(agentSlug, sessionId)
+        if (meta?.slashCommands && meta.slashCommands.length > 0) {
+          slashCommands = meta.slashCommands
+          messagePersister.setSlashCommands(sessionId, slashCommands)
+        }
+      }
       await stream.writeSSE({
-        data: JSON.stringify({ type: 'connected', isActive }),
+        data: JSON.stringify({
+          type: 'connected',
+          isActive,
+          slashCommands: slashCommands.length > 0 ? slashCommands : undefined,
+        }),
         event: 'message',
       })
 

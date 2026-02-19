@@ -4,6 +4,8 @@
  * Type definitions for file-based agent storage
  */
 
+import type { SlashCommandInfo } from '../container/types'
+
 // ============================================================================
 // Agent Types
 // ============================================================================
@@ -70,6 +72,8 @@ export interface SessionMetadata {
   scheduledTaskName?: string
   // Context window usage from the last completed turn
   lastUsage?: SessionUsage
+  // Available slash commands from the agent SDK
+  slashCommands?: SlashCommandInfo[]
 }
 
 /**

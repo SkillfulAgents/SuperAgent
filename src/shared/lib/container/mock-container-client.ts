@@ -465,6 +465,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       createdAt: now,
       lastActivity: now,
       workingDirectory: '/workspace',
+      slashCommands: [],
     }
 
     this.sessions.set(sessionId, session)

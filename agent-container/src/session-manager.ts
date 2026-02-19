@@ -72,15 +72,22 @@ export class SessionManager extends EventEmitter {
       customEnvVars: request.customEnvVars,
     });
 
-    // Promise to capture Claude's session ID (emitted after first message is sent)
-    const claudeSessionIdPromise = new Promise<string>((resolve, reject) => {
+    // Promise to capture Claude's session ID and slash commands (emitted after first message is sent)
+    const initCompletePromise = new Promise<string>((resolve, reject) => {
+      let claudeSessionId: string | null = null;
       const timeout = setTimeout(() => {
-        reject(new Error('Timeout waiting for Claude session ID'));
-      }, 30000); // 30 second timeout
+        if (claudeSessionId) resolve(claudeSessionId);
+        else reject(new Error('Timeout waiting for Claude session ID'));
+      }, 30000);
 
-      process.once('claude-session-id', (claudeSessionId: string) => {
+      process.once('claude-session-id', (id: string) => {
+        claudeSessionId = id;
+      });
+
+      process.once('init-complete', () => {
         clearTimeout(timeout);
-        resolve(claudeSessionId);
+        if (claudeSessionId) resolve(claudeSessionId);
+        else reject(new Error('init-complete fired before session ID was captured'));
       });
 
       process.once('error', (error: Error) => {
@@ -95,8 +102,8 @@ export class SessionManager extends EventEmitter {
     // Send the initial message - this triggers Claude to emit the session ID
     await process.sendMessage(request.initialMessage);
 
-    // Wait for Claude's session ID
-    const claudeSessionId = await claudeSessionIdPromise;
+    // Wait for init to complete (session ID + slash commands)
+    const claudeSessionId = await initCompletePromise;
     console.log(`Got Claude session ID: ${claudeSessionId}`);
 
     // Use Claude's session ID as the canonical session ID
@@ -111,6 +118,7 @@ export class SessionManager extends EventEmitter {
       envVars: request.envVars,
       systemPrompt: request.systemPrompt,
       availableEnvVars: request.availableEnvVars,
+      slashCommands: process.slashCommands,
     };
 
     const sessionData: SessionData = {
@@ -215,6 +223,7 @@ export class SessionManager extends EventEmitter {
       this.sessions.set(sessionId, sessionData);
 
       // Start the process (which will resume the Claude session)
+      // Note: slash commands are captured later when init event fires via WebSocket
       await process.start();
 
       console.log(`Successfully resumed session ${sessionId}`);

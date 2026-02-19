@@ -13,11 +13,18 @@ export interface ContainerConfig {
   onConnectionError?: () => void
 }
 
+export interface SlashCommandInfo {
+  name: string
+  description: string
+  argumentHint: string
+}
+
 export interface ContainerSession {
   id: string
   createdAt: string
   lastActivity: string
   workingDirectory: string
+  slashCommands?: SlashCommandInfo[]
 }
 
 export interface StreamMessage {
