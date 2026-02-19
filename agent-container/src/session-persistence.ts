@@ -15,6 +15,7 @@ interface SessionMetadata {
   maxThinkingTokens?: number;
   maxTurns?: number;
   maxBudgetUsd?: number;
+  customEnvVars?: Record<string, string>;
 }
 
 const SESSIONS_FILE = '/workspace/.superagent-sessions.json';

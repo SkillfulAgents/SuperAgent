@@ -258,6 +258,7 @@ export interface ClaudeCodeProcessOptions {
   maxThinkingTokens?: number;
   maxTurns?: number;
   maxBudgetUsd?: number;
+  customEnvVars?: Record<string, string>;
 }
 
 export class ClaudeCodeProcess extends EventEmitter {
@@ -274,6 +275,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private maxThinkingTokens: number | undefined;
   private maxTurns: number | undefined;
   private maxBudgetUsd: number | undefined;
+  private customEnvVars: Record<string, string> | undefined;
   private isReady: boolean = false;
   private isProcessing: boolean = false;
 
@@ -288,6 +290,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.maxThinkingTokens = options.maxThinkingTokens;
     this.maxTurns = options.maxTurns;
     this.maxBudgetUsd = options.maxBudgetUsd;
+    this.customEnvVars = options.customEnvVars;
     this.systemPromptAppend = generateSystemPromptAppend(
       options.availableEnvVars,
       options.userSystemPrompt
@@ -370,8 +373,12 @@ export class ClaudeCodeProcess extends EventEmitter {
         ...(this.maxThinkingTokens && { maxThinkingTokens: this.maxThinkingTokens }),
         ...(this.maxTurns && { maxTurns: this.maxTurns }),
         ...(this.maxBudgetUsd && { maxBudgetUsd: this.maxBudgetUsd }),
-        ...(this.maxOutputTokens && {
-          env: { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) },
+        ...((this.customEnvVars || this.maxOutputTokens) && {
+          env: {
+            ...this.customEnvVars,
+            // Explicit maxOutputTokens setting takes precedence over custom env var
+            ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
+          },
         }),
         mcpServers: {
           'user-input': userInputMcpServer,

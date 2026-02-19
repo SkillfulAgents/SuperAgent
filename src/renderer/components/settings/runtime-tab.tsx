@@ -11,7 +11,7 @@ import {
 } from '@renderer/components/ui/select'
 import { Alert, AlertDescription, AlertTitle } from '@renderer/components/ui/alert'
 import { useSettings, useUpdateSettings, useStartRunner, useRefreshAvailability } from '@renderer/hooks/use-settings'
-import { AlertCircle, AlertTriangle, Play, Loader2, RefreshCw } from 'lucide-react'
+import { AlertCircle, AlertTriangle, Play, Loader2, RefreshCw, Plus, X } from 'lucide-react'
 
 const MIN_MEMORY_BYTES = 512 * 1024 * 1024 // 512 MiB
 
@@ -505,6 +505,68 @@ export function RuntimeTab() {
               Maximum cost per session in USD.
             </p>
           </div>
+        </div>
+      </div>
+
+      {/* Custom Environment Variables */}
+      <div className="space-y-4 pt-2">
+        <div className="space-y-0.5">
+          <Label className="text-base">Custom Environment Variables</Label>
+          <p className="text-xs text-muted-foreground">
+            Set additional environment variables for the agent process. These are passed to the Claude Code CLI. Changes apply to new sessions.
+          </p>
+        </div>
+
+        <div className="space-y-2">
+          {Object.entries(settings?.customEnvVars ?? {}).map(([key, value]) => (
+            <div key={key} className="flex items-center gap-2">
+              <Input
+                value={key}
+                className="font-mono text-sm flex-[2]"
+                disabled
+              />
+              <Input
+                value={value}
+                className="font-mono text-sm flex-[3]"
+                onChange={(e) => {
+                  const updated = { ...settings?.customEnvVars, [key]: e.target.value }
+                  updateSettings.mutate({ customEnvVars: updated })
+                }}
+                onBlur={(e) => {
+                  const updated = { ...settings?.customEnvVars, [key]: e.target.value }
+                  updateSettings.mutate({ customEnvVars: updated })
+                }}
+              />
+              <Button
+                variant="ghost"
+                size="icon"
+                className="shrink-0"
+                onClick={() => {
+                  const updated = { ...settings?.customEnvVars }
+                  delete updated[key]
+                  updateSettings.mutate({ customEnvVars: updated })
+                }}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          ))}
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              const name = prompt('Environment variable name (e.g., CLAUDE_CODE_MAX_OUTPUT_TOKENS):')
+              if (!name?.trim()) return
+              const envName = name.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_')
+              const updated = { ...settings?.customEnvVars, [envName]: '' }
+              updateSettings.mutate({ customEnvVars: updated })
+            }}
+            disabled={isLoading}
+          >
+            <Plus className="h-4 w-4 mr-2" />
+            Add Variable
+          </Button>
         </div>
       </div>
 

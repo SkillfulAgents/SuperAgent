@@ -506,6 +506,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           maxThinkingTokens: options.maxThinkingTokens,
           maxTurns: options.maxTurns,
           maxBudgetUsd: options.maxBudgetUsd,
+          customEnvVars: options.customEnvVars,
         }),
         signal: controller.signal,
       })

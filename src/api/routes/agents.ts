@@ -72,7 +72,7 @@ import {
 } from '@shared/lib/services/agent-template-service'
 import { withRetry } from '@shared/lib/utils/retry'
 import { transformMessages } from '@shared/lib/utils/message-transform'
-import { getEffectiveAnthropicApiKey, getEffectiveModels, getEffectiveAgentLimits, getSettings } from '@shared/lib/config/settings'
+import { getEffectiveAnthropicApiKey, getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings } from '@shared/lib/config/settings'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import * as fs from 'fs'
@@ -422,6 +422,7 @@ agents.post('/:id/sessions', async (c) => {
     const availableEnvVars = await getSecretEnvVars(slug)
 
     const agentLimits = getEffectiveAgentLimits()
+    const customEnvVars = getCustomEnvVars()
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: message.trim(),
@@ -431,6 +432,7 @@ agents.post('/:id/sessions', async (c) => {
       maxThinkingTokens: agentLimits.maxThinkingTokens,
       maxTurns: agentLimits.maxTurns,
       maxBudgetUsd: agentLimits.maxBudgetUsd,
+      customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
     })
     const sessionId = containerSession.id
 

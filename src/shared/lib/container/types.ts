@@ -38,6 +38,7 @@ export interface CreateSessionOptions {
   maxThinkingTokens?: number // Max tokens for extended thinking
   maxTurns?: number // Max conversation turns
   maxBudgetUsd?: number // Max cost in USD per session
+  customEnvVars?: Record<string, string> // User-defined env vars for the agent process
 }
 
 export interface StartOptions {

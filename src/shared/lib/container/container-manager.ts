@@ -408,6 +408,11 @@ class ContainerManager {
         }
       }
 
+      // Inject user-defined custom env vars (set in global settings)
+      if (settings.customEnvVars) {
+        Object.assign(envVars, settings.customEnvVars)
+      }
+
       // Start container (user secrets are in .env file in workspace)
       await client.start({ envVars })
 

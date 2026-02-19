@@ -33,6 +33,7 @@ export interface UpdateSettingsParams {
   }
   models?: Partial<ModelSettings>
   agentLimits?: Partial<AgentLimitsSettings>
+  customEnvVars?: Record<string, string>
 }
 
 export interface UpdateSettingsError {

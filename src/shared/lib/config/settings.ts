@@ -56,6 +56,7 @@ export interface AppSettings {
   app?: AppPreferences
   models?: ModelSettings
   agentLimits?: AgentLimitsSettings
+  customEnvVars?: Record<string, string>
   skillsets?: SkillsetConfig[]
 }
 
@@ -92,6 +93,7 @@ export interface GlobalSettingsResponse {
   composioUserId?: string
   models: ModelSettings
   agentLimits: AgentLimitsSettings
+  customEnvVars: Record<string, string>
   setupCompleted: boolean
   hostBrowserStatus?: HostBrowserStatus
   runtimeReadiness: RuntimeReadiness
@@ -175,6 +177,7 @@ export function loadSettings(): AppSettings {
           ...loaded.models,
         },
         agentLimits: loaded.agentLimits,
+        customEnvVars: loaded.customEnvVars,
         skillsets: loaded.skillsets,
       }
     }
@@ -313,6 +316,14 @@ export function getEffectiveModels(): ModelSettings {
 export function getEffectiveAgentLimits(): AgentLimitsSettings {
   const settings = getSettings()
   return settings.agentLimits ?? {}
+}
+
+/**
+ * Get custom environment variables for agent containers.
+ */
+export function getCustomEnvVars(): Record<string, string> {
+  const settings = getSettings()
+  return settings.customEnvVars ?? {}
 }
 
 export { DEFAULT_SETTINGS }
