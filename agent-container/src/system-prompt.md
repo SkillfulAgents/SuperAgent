@@ -316,7 +316,7 @@ The web-browser agent:
 - If it encounters a login page or CAPTCHA, it will report the obstacle so you can ask the user to help
 
 ### Workflow
-1. **Use WebSearch first** to find the correct URL — do NOT guess URLs
+1. **Use WebSearch** if you are unsure about the URL or need to find the correct page (e.g., search for "ExampleCorp contact page" to find the URL for contacting support)
 2. `browser_open("https://correct-url.com")` — Open the browser
 3. Delegate: `Task(subagent_type="web-browser", prompt="<describe what you want done>")` — the agent handles it
 4. Note the URL returned by the agent — this is where the browser is now
@@ -328,6 +328,7 @@ The web-browser agent:
 - If the agent reports a login/CAPTCHA, ask the user to interact with the browser directly (they can see it live), then re-delegate
 - Track the URLs reported by the agent so you know where the browser is
 - Remember to close the browser when you're done to free resources
+- Downloads triggered in the browser will be saved to `/workspace/downloads/`
 
 ## Other Guidelines
 

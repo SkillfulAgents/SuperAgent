@@ -529,6 +529,32 @@ const execFileAsync = promisify(execFile);
 
 import { splitCommandArgs, buildRunCommandArgs } from './browser-command-args';
 
+// Ensure Chrome download preferences are set in the browser profile directory.
+// Merges with existing preferences to avoid overwriting other settings.
+async function ensureBrowserDownloadPreferences(profileDir: string, downloadDir: string): Promise<void> {
+  const prefsDir = path.join(profileDir, 'Default');
+  const prefsPath = path.join(prefsDir, 'Preferences');
+
+  await fs.promises.mkdir(prefsDir, { recursive: true });
+  await fs.promises.mkdir(downloadDir, { recursive: true });
+
+  let prefs: Record<string, any> = {};
+  try {
+    const existing = await fs.promises.readFile(prefsPath, 'utf-8');
+    prefs = JSON.parse(existing);
+  } catch {
+    // No existing preferences file
+  }
+
+  prefs.download = {
+    ...prefs.download,
+    default_directory: downloadDir,
+    prompt_for_download: false,
+  };
+
+  await fs.promises.writeFile(prefsPath, JSON.stringify(prefs, null, 2));
+}
+
 // Execute an agent-browser CLI command and return the result.
 // Uses execFile (no shell) to prevent command injection.
 async function execBrowser(args: string[], cdpUrl?: string): Promise<{ stdout: string; exitCode: number }> {
@@ -551,10 +577,16 @@ async function execBrowser(args: string[], cdpUrl?: string): Promise<{ stdout: s
   }
 }
 
+interface HostBrowserInfo {
+  cdpUrl: string;
+  /** Host-filesystem path where Chrome should save downloads */
+  hostDownloadDir: string;
+}
+
 // Launch the host browser via CDP if AGENT_BROWSER_USE_HOST is set.
-// Returns the CDP WebSocket URL or undefined if not using host browser.
+// Returns the CDP WebSocket URL and host download dir, or undefined if not using host browser.
 // Throws if host browser mode is enabled but the browser fails to launch.
-async function launchHostBrowserIfNeeded(): Promise<string | undefined> {
+async function launchHostBrowserIfNeeded(): Promise<HostBrowserInfo | undefined> {
   if (!process.env.AGENT_BROWSER_USE_HOST) {
     return undefined;
   }
@@ -577,7 +609,7 @@ async function launchHostBrowserIfNeeded(): Promise<string | undefined> {
     throw new Error(`Failed to launch host browser: ${body}`);
   }
 
-  const data = await response.json() as { port: number };
+  const data = await response.json() as { port: number; downloadDir?: string };
 
   // Resolve host.docker.internal to its IP address. Chrome's CDP server
   // validates the Host header and only accepts "localhost" or IP addresses,
@@ -610,7 +642,52 @@ async function launchHostBrowserIfNeeded(): Promise<string | undefined> {
     /^ws:\/\/[^/]+/,
     `ws://${cdpHost}`
   );
-  return debuggerUrl;
+  return { cdpUrl: debuggerUrl, hostDownloadDir: data.downloadDir || '' };
+}
+
+// Use CDP to tell Chrome where to save downloads. This must be called AFTER
+// agent-browser has connected (via --cdp) so our call is the last to set
+// the download behavior, overriding Playwright's internal interception.
+async function setDownloadBehaviorViaCDP(cdpUrl: string, downloadPath: string): Promise<void> {
+  if (!downloadPath) return;
+
+  return new Promise<void>((resolve, reject) => {
+    const ws = new WebSocket(cdpUrl);
+    const timeout = setTimeout(() => {
+      ws.close();
+      reject(new Error('CDP setDownloadBehavior timed out'));
+    }, 5000);
+
+    ws.on('open', () => {
+      ws.send(JSON.stringify({
+        id: 1,
+        method: 'Browser.setDownloadBehavior',
+        params: {
+          behavior: 'allowAndName',
+          downloadPath,
+          eventsEnabled: false,
+        },
+      }));
+    });
+
+    ws.on('message', (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg.id === 1) {
+        clearTimeout(timeout);
+        ws.close();
+        if (msg.error) {
+          reject(new Error(`CDP error: ${msg.error.message}`));
+        } else {
+          resolve();
+        }
+      }
+    });
+
+    ws.on('error', (err) => {
+      clearTimeout(timeout);
+      reject(err);
+    });
+  });
 }
 
 // Tell the host to stop the Chrome process for this agent.
@@ -673,12 +750,29 @@ app.post('/browser/open', async (c) => {
       return c.json({ error: validationError }, 409);
     }
 
-    const cdpUrl = await launchHostBrowserIfNeeded();
+    const hostBrowser = await launchHostBrowserIfNeeded();
+    const cdpUrl = hostBrowser?.cdpUrl;
     const profile = process.env.AGENT_BROWSER_PROFILE || '/workspace/.browser-profile';
+
+    // Configure Chrome to save downloads to /workspace/downloads so the agent can access them
+    await ensureBrowserDownloadPreferences(profile, '/workspace/downloads');
+
     const result = await execBrowser(['open', body.url, '--profile', profile], cdpUrl);
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
+    }
+
+    // Override Playwright's download interception via CDP so downloads go to workspace.
+    // For host browser: use the host-filesystem path (volume-mounted as /workspace).
+    // For container browser: use /workspace/downloads directly.
+    const downloadPath = hostBrowser?.hostDownloadDir || '/workspace/downloads';
+    if (cdpUrl) {
+      try {
+        await setDownloadBehaviorViaCDP(cdpUrl, downloadPath);
+      } catch (err) {
+        console.error('[Browser] Failed to set download behavior via CDP:', err);
+      }
     }
 
     browserState = { active: true, sessionId: body.sessionId, cdpUrl: cdpUrl || null };

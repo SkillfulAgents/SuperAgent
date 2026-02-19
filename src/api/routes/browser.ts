@@ -1,6 +1,8 @@
 import { Hono } from 'hono'
+import path from 'path'
 import { hostBrowserManager } from '../../main/host-browser-manager'
 import { getSettings } from '@shared/lib/config/settings'
+import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { messagePersister } from '@shared/lib/container/message-persister'
 
@@ -16,7 +18,8 @@ browser.post('/launch-host-browser', async (c) => {
     const settings = getSettings()
     const profileId = settings.app?.chromeProfileId || undefined
     const { port } = await hostBrowserManager.ensureRunning(agentId, profileId)
-    return c.json({ port })
+    const downloadDir = path.join(getAgentWorkspaceDir(agentId), 'downloads')
+    return c.json({ port, downloadDir })
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Failed to launch browser'
     console.error('[Browser] Failed to launch host browser:', message)
