@@ -40,6 +40,48 @@ export interface TransformedCompactBoundary {
 export type TransformedItem = TransformedMessage | TransformedCompactBoundary
 
 /**
+ * Parse a user message that may contain SDK-injected slash command XML tags.
+ *
+ * Claude Code SDK injects slash commands as user messages with XML markup:
+ * - Command invocation: `<command-name>X</command-name>` optionally with `<command-args>Y</command-args>`
+ * - Command output: `<local-command-stdout>...</local-command-stdout>`
+ */
+type ParsedCommand =
+  | { type: 'slash-command'; name: string; args?: string }
+  | { type: 'command-output'; content: string }
+
+export function parseCommandMessage(text: string): ParsedCommand | null {
+  const trimmed = text.trim()
+
+  // Match <local-command-stdout>...</local-command-stdout>
+  const stdoutMatch = trimmed.match(/^<local-command-stdout>([\s\S]*)<\/local-command-stdout>$/)
+  if (stdoutMatch) {
+    return { type: 'command-output', content: stdoutMatch[1] }
+  }
+
+  // Match command invocations — tags can appear in any order:
+  // <command-name>, <command-message>, <command-args>
+  // Only <command-name> is required; the others are optional.
+  const nameMatch = trimmed.match(/<command-name>\/?([^<]+)<\/command-name>/)
+  if (!nameMatch) return null
+
+  // Verify the entire text is only these XML tags (no other content)
+  const stripped = trimmed
+    .replace(/<command-name>[^<]*<\/command-name>/g, '')
+    .replace(/<command-message>[^<]*<\/command-message>/g, '')
+    .replace(/<command-args>[\s\S]*?<\/command-args>/g, '')
+    .trim()
+  if (stripped !== '') return null
+
+  const argsMatch = trimmed.match(/<command-args>([\s\S]*?)<\/command-args>/)
+  return {
+    type: 'slash-command',
+    name: nameMatch[1],
+    args: argsMatch?.[1]?.trim() || undefined,
+  }
+}
+
+/**
  * Check if a user message only contains tool results (not a real user message)
  * These are filtered out because tool results are attached to their corresponding tool calls
  */
@@ -222,6 +264,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
 
     const content = entry.message.content
     let text = ''
+    let messageType: 'user' | 'assistant' = entry.type
     const toolCalls: TransformedMessage['toolCalls'] = []
 
     if (typeof content === 'string') {
@@ -259,9 +302,23 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
       }
     }
 
+    // Transform SDK-injected slash command messages
+    if (entry.type === 'user' && text) {
+      const parsed = parseCommandMessage(text)
+      if (parsed) {
+        if (parsed.type === 'slash-command') {
+          text = parsed.args ? `/${parsed.name} ${parsed.args}` : `/${parsed.name}`
+        } else if (parsed.type === 'command-output') {
+          // Flip to assistant so output renders as an agent response
+          messageType = 'assistant'
+          text = parsed.content
+        }
+      }
+    }
+
     result.push({
       id: entry.uuid,
-      type: entry.type,
+      type: messageType,
       content: { text },
       toolCalls,
       createdAt: new Date(entry.timestamp),

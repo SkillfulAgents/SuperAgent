@@ -1,6 +1,6 @@
 
 import { cn } from '@shared/lib/utils/cn'
-import { User, Bot } from 'lucide-react'
+import { User, Bot, Terminal } from 'lucide-react'
 import { ToolCallItem } from './tool-call-item'
 import { SubAgentBlock } from './subagent-block'
 import { MessageContextMenu } from './message-context-menu'
@@ -31,6 +31,9 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
   const hasText = text && text.length > 0
   const toolCalls = message.toolCalls || []
 
+  // Detect slash commands (user messages starting with /)
+  const isSlashCommand = isUser && hasText && text.startsWith('/')
+
   // Skip rendering empty assistant messages (only tool calls, no text)
   // unless streaming. The tool calls will still be rendered below
   const showMessageBubble = !isAssistant || hasText || isStreaming
@@ -51,7 +54,8 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
           isAssistant && 'bg-muted'
         )}
       >
-        {isUser && <User className="h-4 w-4" />}
+        {isSlashCommand && <Terminal className="h-4 w-4" />}
+        {isUser && !isSlashCommand && <User className="h-4 w-4" />}
         {isAssistant && <Bot className="h-4 w-4" />}
       </div>
 
@@ -72,8 +76,22 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
                 isAssistant && 'bg-muted'
               )}
             >
+              {/* Slash command display */}
+              {isSlashCommand && hasText && (
+                <div className="flex items-baseline gap-1.5">
+                  <span className="font-mono font-semibold text-sm">
+                    {text.split(' ')[0]}
+                  </span>
+                  {text.includes(' ') && (
+                    <span className="text-sm opacity-80">
+                      {text.slice(text.indexOf(' ') + 1)}
+                    </span>
+                  )}
+                </div>
+              )}
+
               {/* Text content */}
-              {hasText && (
+              {hasText && !isSlashCommand && (
                 <div className={cn(
                   'prose prose-sm max-w-none min-w-0 break-words',
                   // Use inverted (light) text for user messages (dark bg) and dark mode
