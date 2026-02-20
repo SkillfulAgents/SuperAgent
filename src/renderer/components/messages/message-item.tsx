@@ -104,8 +104,8 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
                       // Style code blocks
                       pre: ({ children }) => (
                         <pre className={cn(
-                          'rounded p-2 overflow-x-auto text-xs',
-                          isUser ? 'bg-black/20 text-inherit' : 'bg-background/50'
+                          'rounded-md p-3 overflow-x-auto text-[13px] leading-relaxed border',
+                          isUser ? 'bg-black/20 text-inherit border-white/10' : 'bg-black/[0.03] dark:bg-white/[0.06] border-border/60 text-foreground'
                         )}>
                           {children}
                         </pre>
@@ -114,13 +114,13 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
                         const isInline = !className
                         return isInline ? (
                           <code className={cn(
-                            'rounded px-1 py-0.5 text-xs',
-                            isUser ? 'bg-black/20 text-inherit' : 'bg-background/50'
+                            'rounded px-1.5 py-0.5 text-[13px] font-medium',
+                            isUser ? 'bg-black/20 text-inherit' : 'bg-black/[0.05] dark:bg-white/[0.08] text-foreground'
                           )}>
                             {children}
                           </code>
                         ) : (
-                          <code className={cn(className, isUser && 'text-inherit')}>{children}</code>
+                          <code className={cn(className, isUser ? 'text-inherit' : 'text-foreground')}>{children}</code>
                         )
                       },
                       // Style tables with borders and horizontal scroll
