@@ -181,7 +181,7 @@ export function UsageTab() {
                 content={
                   <ChartTooltipContent
                     valueFormatter={(value) =>
-                      `$${(value as number).toFixed(4)}`
+                      `$${(value as number).toFixed(2)}`
                     }
                   />
                 }
