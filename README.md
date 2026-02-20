@@ -1,14 +1,78 @@
-# Superagent
+![SuperAgent Icon](build/icon.png)
+<p align="center">
+  <img src="build/icon.png" height="128">
+  <h1 align="center">SuperAgent - AI Agent Platform</h1>
+</p>
 
-Superagent is an open-source application for running sophisticated, code-based AI agents powered by Claude Code running in Docker containers. It supports both web browser and Electron desktop deployments.
+SuperAgent is a super app for building and running personal agents. You can create custom agents, let them develop the skills they need to do task for you, and have them run automatocally in the background for you.
 
-## Prerequisites
+**Features:**
 
-- Node.js 20+
-- Docker or Podman
-- Anthropic API key
+- **Containerized Agents** - SuperAgents spins up a containerized sandbox per agent - keeping your computer secure. 
+- **Connected Accounts** - easily connect 100s of accounts your agent can use.
+- **Secure Integrations** - API calls are proxied outside your agent and the agent never sees Auth Tokens, keeping your account secure and giving you an audit trail of agent actions.
+- **Recurring and Scheduled Tasks** - agents can schedule recurring tasks and future work so they can serve you autonomously in the backhround.
+- **Beowser Access** - agents can spin up and use a web browser to accomplish tasks where no API / MCP is available.
+- **Agent Dashboards & Artifacts** - agents can create dashboard for you to more easily access information.
+- **Create Shared Skillsets** - as agents create skills for your work - creaate skillsets to share them with your team!
 
-## Setup
+**Run as:**
+
+- **Web App** - you can run super agent in server mode and access it via the web. Great if you have a computer that can run it 24/7
+- **Desktop App** - you can download and run superagent locally in your machine as a desktop app.
+
+## Pre-Reqs
+
+To get strated with Superagent, you need:
+
+1. **A container runtime** -> this is where SuperAgent will run it’s agent containers. Our recommendations:
+  1. [Docker Desktop](https://docs.docker.com/desktop/setup/install/mac-install/)
+  2. [OrbStack](https://orbstack.dev/download)
+  3. [Podman](https://podman.io/get-started)
+2. **An Anthropic API Key** -> we currently only support Anthropic models, more coming soon. Get your API key from the [Anthropic Console](https://platform.claude.com/settings/keys).
+3. **[Optional] A Composio API key** -> SuperAgent uses Composio to generate OAuth Tokens for you for different acocunts. You can get one on [Composio](https://platform.composio.dev).
+
+
+# Getting Started
+
+## Desktop App
+Download the latest release of the App here (MacOC only, Linux and Windows coming soon).
+
+[[Insert Download Links for Latest Stable Release]]
+
+## Running with Docker
+
+You can run Superagent in a Docker container using Docker-outside-of-Docker (DooD) to spawn agent containers.
+
+### Using the published image
+
+```bash
+# Set your API key
+export ANTHROPIC_API_KEY=your-api-key-here
+
+# Pull and run
+docker compose up
+
+# Access at http://localhost:47891
+```
+
+### Building locally
+
+```bash
+# Build and run from source
+docker compose up --build
+```
+
+### How it works
+
+The Docker setup:
+- Mounts the Docker socket for spawning sibling agent containers
+- Persists data in `~/.superagent` (same path on host and container)
+- Mounts `./agent-container` for building agent images on-demand
+
+The image is published to `ghcr.io/iddogino/superagent` on every push to main and on version tags.
+
+## Running from Source
 
 1. Install dependencies:
    ```bash
@@ -50,6 +114,10 @@ ANTHROPIC_API_KEY=your-api-key-here
 # CONTAINER_STATUS_SYNC_INTERVAL_SECONDS=300
 # RUNNER_AVAILABILITY_CACHE_TTL_SECONDS=60
 ```
+
+[[Finish this section -- get to a running server]]
+
+# Development
 
 ## Scripts
 
@@ -94,70 +162,6 @@ ANTHROPIC_API_KEY=your-api-key-here
 | `npm run db:studio` | Open Drizzle Studio |
 | `npm run db:reset` | Reset database |
 
-## Project Structure
-
-```
-superagent/
-├── src/
-│   ├── api/                    # Hono API routes
-│   │   ├── index.ts            # Main Hono app with route mounting
-│   │   └── routes/
-│   │       ├── agents.ts       # Agent CRUD, sessions, secrets, skills
-│   │       ├── sessions.ts     # Session management, SSE streaming
-│   │       ├── connected-accounts.ts  # OAuth flows
-│   │       ├── settings.ts     # Global settings
-│   │       └── providers.ts    # OAuth providers
-│   │
-│   ├── web/                    # Node.js web server entry
-│   │   └── server.ts           # Production server with static file serving
-│   │
-│   ├── main/                   # Electron main process
-│   │   └── index.ts            # Window creation, API server, protocol handling
-│   │
-│   ├── preload/                # Electron preload scripts
-│   │   └── index.ts            # IPC bridge for renderer
-│   │
-│   ├── renderer/               # React frontend (shared between web & Electron)
-│   │   ├── index.html          # HTML entry point
-│   │   ├── main.tsx            # React entry point
-│   │   ├── App.tsx             # Root React component
-│   │   ├── globals.css         # Global styles and CSS variables
-│   │   ├── components/         # React components
-│   │   │   ├── agents/         # Agent management UI
-│   │   │   ├── sessions/       # Session list and dialogs
-│   │   │   ├── messages/       # Message display and input
-│   │   │   ├── settings/       # Settings dialogs
-│   │   │   ├── layout/         # App sidebar and main content
-│   │   │   └── ui/             # Reusable UI primitives (shadcn)
-│   │   ├── hooks/              # React Query hooks for data fetching
-│   │   ├── providers/          # React context providers
-│   │   ├── context/            # React contexts
-│   │   └── lib/                # Frontend utilities
-│   │       └── env.ts          # Environment detection (web vs Electron)
-│   │
-│   └── shared/                 # Shared code (used by API and services)
-│       └── lib/
-│           ├── services/       # Business logic (agents, sessions, secrets)
-│           ├── container/      # Docker/Podman container management
-│           ├── db/             # Database schema and migrations
-│           ├── config/         # Settings and configuration
-│           ├── composio/       # Composio OAuth integration
-│           ├── skills/         # Agent skills registry
-│           ├── types/          # TypeScript type definitions
-│           └── utils/          # Utility functions
-│
-├── agent-container/            # Docker container for running Claude Code
-│   ├── Dockerfile
-│   ├── src/                    # Container server code
-│   └── package.json
-│
-├── vite.config.ts              # Vite config for web builds
-├── electron.vite.config.ts     # electron-vite config for Electron builds
-├── tailwind.config.ts          # Tailwind CSS configuration
-├── tsconfig.json               # TypeScript configuration
-└── drizzle.config.ts           # Drizzle ORM configuration
-```
-
 ## Architecture
 
 The application uses a dual-target architecture supporting both web and Electron desktop deployment:
@@ -177,49 +181,3 @@ Each agent runs in its own Docker/Podman container with Claude Code in headless 
 - SSE streaming for real-time message updates
 - File-based persistence for agents, sessions, and messages
 - SQLite database for OAuth connected accounts
-
-## Technology Stack
-
-- **Frontend**: React 18, TanStack Query, Tailwind CSS, Radix UI
-- **Backend**: Hono (lightweight web framework)
-- **Build**: Vite, electron-vite, tsup
-- **Desktop**: Electron
-- **Database**: SQLite (better-sqlite3), Drizzle ORM
-- **Containers**: Docker/Podman
-- **AI**: Anthropic Claude API
-
-## Running with Docker
-
-You can run Superagent in a Docker container using Docker-outside-of-Docker (DooD) to spawn agent containers.
-
-### Using the published image
-
-```bash
-# Set your API key
-export ANTHROPIC_API_KEY=your-api-key-here
-
-# Pull and run
-docker compose up
-
-# Access at http://localhost:47891
-```
-
-### Building locally
-
-```bash
-# Build and run from source
-docker compose up --build
-```
-
-### How it works
-
-The Docker setup:
-- Mounts the Docker socket for spawning sibling agent containers
-- Persists data in `~/.superagent` (same path on host and container)
-- Mounts `./agent-container` for building agent images on-demand
-
-The image is published to `ghcr.io/iddogino/superagent` on every push to main and on version tags.
-
-## License
-
-MIT
