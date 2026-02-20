@@ -1,4 +1,3 @@
-![SuperAgent Icon](build/icon.png)
 <p align="center">
   <img src="build/icon.png" height="128">
   <h1 align="center">SuperAgent - AI Agent Platform</h1>
