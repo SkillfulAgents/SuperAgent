@@ -7,7 +7,7 @@ declare const __APP_VERSION__: string
 export const APP_VERSION: string =
   typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0-dev'
 
-export const AGENT_IMAGE_REGISTRY = 'ghcr.io/skilfulagents/superagent-agent-container-base'
+export const AGENT_IMAGE_REGISTRY = 'ghcr.io/skillfulagents/superagent-agent-container-base'
 
 /**
  * Get the default agent container image for the current app version.

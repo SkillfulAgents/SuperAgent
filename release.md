@@ -5,8 +5,8 @@
 Superagent uses a tag-based release process. Pushing a `v*` tag triggers the release pipeline which builds and publishes all three components:
 
 1. **Electron desktop app** (macOS DMG + ZIP) — attached to a GitHub Release
-2. **App container** (`ghcr.io/skilfulagents/superagent`) — pushed to GHCR
-3. **Agent container** (`ghcr.io/skilfulagents/superagent-agent-container-base`) — pushed to GHCR
+2. **App container** (`ghcr.io/skillfulagents/superagent`) — pushed to GHCR
+3. **Agent container** (`ghcr.io/skillfulagents/superagent-agent-container-base`) — pushed to GHCR
 
 All three artifacts are tagged with the same version, ensuring they stay in sync.
 
@@ -66,8 +66,8 @@ The three build jobs (agent container, app container, macOS app) run in parallel
 
 When a release is built, the app version from `package.json` is injected at build time via `__APP_VERSION__`. This is used to set the default agent container image tag:
 
-- **Production builds**: default agent image is `ghcr.io/skilfulagents/superagent-agent-container-base:0.2.0`
-- **Development**: default agent image is `ghcr.io/skilfulagents/superagent-agent-container-base:main`
+- **Production builds**: default agent image is `ghcr.io/skillfulagents/superagent-agent-container-base:0.2.0`
+- **Development**: default agent image is `ghcr.io/skillfulagents/superagent-agent-container-base:main`
 
 When users upgrade their Electron app (or pull a new Docker app container), the agent container reference automatically updates to match the new version. Users who have configured a custom agent image (different registry) are unaffected.
 

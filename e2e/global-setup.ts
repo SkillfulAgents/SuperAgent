@@ -41,7 +41,7 @@ async function globalSetup() {
   const settings = {
     container: {
       containerRunner: 'docker',
-      agentImage: 'ghcr.io/skilfulagents/superagent-agent-container-base:main',
+      agentImage: 'ghcr.io/skillfulagents/superagent-agent-container-base:latest',
       resourceLimits: { cpu: 1, memory: '512m' },
     },
     app: {

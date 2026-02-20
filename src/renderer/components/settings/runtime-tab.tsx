@@ -322,7 +322,7 @@ export function RuntimeTab() {
           id="agent-image"
           value={agentImage}
           onChange={(e) => setAgentImage(e.target.value)}
-          placeholder="ghcr.io/skilfulagents/superagent-agent-container-base:main"
+          placeholder="ghcr.io/skillfulagents/superagent-agent-container-base:latest"
           disabled={isLoading}
         />
         <p className="text-xs text-muted-foreground">
