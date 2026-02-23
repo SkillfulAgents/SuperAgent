@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import {
   Dialog,
   DialogContent,
@@ -51,6 +51,8 @@ interface GettingStartedWizardProps {
 
 export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizardProps) {
   const [currentStep, setCurrentStep] = useState(0)
+  const [composioCanProceed, setComposioCanProceed] = useState(false)
+  const composioSaveRef = useRef<(() => Promise<void>) | null>(null)
   const updateSettings = useUpdateSettings()
 
   // Reset step when dialog opens
@@ -63,6 +65,18 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
   const handleFinish = async () => {
     await updateSettings.mutateAsync({ app: { setupCompleted: true } })
     onOpenChange(false)
+  }
+
+  const handleComposioNext = async () => {
+    if (composioSaveRef.current) {
+      try {
+        await composioSaveRef.current()
+      } catch (error) {
+        console.error('Failed to save Composio settings:', error)
+        return
+      }
+    }
+    setCurrentStep((s) => s + 1)
   }
 
   const isLastStep = currentStep === STEPS.length - 1
@@ -111,7 +125,7 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
           {currentStep === 0 && <WelcomeStep />}
           {currentStep === 1 && <ConfigureLLMStep />}
           {currentStep === 2 && <DockerSetupStep />}
-          {currentStep === 3 && <ComposioStep />}
+          {currentStep === 3 && <ComposioStep onCanProceedChange={setComposioCanProceed} saveRef={composioSaveRef} />}
           {currentStep === 4 && <CreateAgentStep />}
         </div>
 
@@ -148,7 +162,11 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
                 Finish
               </Button>
             ) : (
-              <Button onClick={() => setCurrentStep((s) => s + 1)} data-testid="wizard-next">
+              <Button
+                onClick={currentStep === 3 ? handleComposioNext : () => setCurrentStep((s) => s + 1)}
+                disabled={currentStep === 3 && !composioCanProceed}
+                data-testid="wizard-next"
+              >
                 Next
                 <ChevronRight className="h-4 w-4 ml-1" />
               </Button>
@@ -421,7 +439,12 @@ const RUNTIME_INFO: Record<string, { name: string; description: string; installU
   },
 }
 
-function ComposioStep() {
+interface ComposioStepProps {
+  onCanProceedChange: (canProceed: boolean) => void
+  saveRef: { current: (() => Promise<void>) | null }
+}
+
+function ComposioStep({ onCanProceedChange, saveRef }: ComposioStepProps) {
   const { data: settings } = useSettings()
   const updateSettings = useUpdateSettings()
 
@@ -433,6 +456,11 @@ function ComposioStep() {
   const composioApiKeyStatus = settings?.apiKeyStatus?.composio
   const hasComposioUserId = !!settings?.composioUserId
   const isComposioConfigured = composioApiKeyStatus?.isConfigured && hasComposioUserId
+  const hasInput = !!(composioApiKeyInput.trim() || composioUserIdInput.trim())
+
+  useEffect(() => {
+    onCanProceedChange(!!(isComposioConfigured || hasInput) && !isSaving)
+  }, [isComposioConfigured, hasInput, isSaving, onCanProceedChange])
 
   const handleSave = async () => {
     if (!composioApiKeyInput.trim() && !composioUserIdInput.trim()) return
@@ -445,12 +473,13 @@ function ComposioStep() {
       setComposioApiKeyInput('')
       setComposioUserIdInput('')
       setShowComposioApiKey(false)
-    } catch (error) {
-      console.error('Failed to save Composio settings:', error)
     } finally {
       setIsSaving(false)
     }
   }
+
+  // Keep save ref in sync for parent to call on Next
+  saveRef.current = (hasInput && !isComposioConfigured) ? handleSave : null
 
   return (
     <div className="space-y-4">
@@ -518,12 +547,6 @@ function ComposioStep() {
               Your unique identifier in Composio. Can be any string.
             </p>
           </div>
-
-          {(composioApiKeyInput.trim() || composioUserIdInput.trim()) && (
-            <Button size="sm" onClick={handleSave} disabled={isSaving}>
-              {isSaving ? 'Saving...' : 'Save Composio Settings'}
-            </Button>
-          )}
         </>
       )}
 
