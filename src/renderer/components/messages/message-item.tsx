@@ -34,8 +34,15 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
   // Detect slash commands (user messages starting with /)
   const isSlashCommand = isUser && hasText && text.startsWith('/')
 
-  // Skip rendering empty assistant messages (only tool calls, no text)
-  // unless streaming. The tool calls will still be rendered below
+  // Don't render assistant messages that have no text and no tool calls
+  // (and aren't streaming). These are transient empty entries from partially-
+  // persisted JSONL that will be filled in on the next refetch.
+  if (isAssistant && !hasText && toolCalls.length === 0 && !isStreaming) {
+    return null
+  }
+
+  // Skip rendering the text bubble for assistant messages with only tool calls
+  // (no text) unless streaming. The tool calls will still be rendered below.
   const showMessageBubble = !isAssistant || hasText || isStreaming
 
   return (
