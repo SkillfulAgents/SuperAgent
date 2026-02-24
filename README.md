@@ -85,12 +85,17 @@ The image is published to `ghcr.io/iddogino/superagent` on every push to main an
 
 3. Set up environment variables (see below)
 
-4. Run database migrations:
+4. Create the local data directory:
+   ```bash
+   mkdir -p ~/.superagent
+   ```
+
+5. Run database migrations:
    ```bash
    npm run db:migrate
    ```
 
-5. Start the development server:
+6. Start the development server:
    ```bash
    npm run dev
    ```
