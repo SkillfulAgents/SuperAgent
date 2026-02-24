@@ -109,6 +109,17 @@ The image is published to `ghcr.io/iddogino/superagent` on every push to main an
 | `CONTAINER_STATUS_SYNC_INTERVAL_SECONDS` | How often to sync container status with Docker (seconds) | `300` |
 | `RUNNER_AVAILABILITY_CACHE_TTL_SECONDS` | How long to cache Docker/Podman availability checks (seconds) | `60` |
 
+### Optional: Composio OAuth setup
+
+If you connect accounts through Composio (Slack/Gmail/GitHub, etc.), make sure token masking is disabled in your Composio project settings, otherwise SuperAgent cannot read usable access tokens and proxy calls may fail.
+
+In the Composio dashboard, go to:
+- `Project Settings`
+- `Project Configuration`
+- Disable `Mask Connected Account Secrets`
+
+After changing this setting, reconnect the account in SuperAgent.
+
 Create a `.env.local` file in the project root:
 
 ```bash
