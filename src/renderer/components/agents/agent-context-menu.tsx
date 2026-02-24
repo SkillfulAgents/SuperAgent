@@ -19,7 +19,10 @@ import {
 import { useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useSelection } from '@renderer/context/selection-context'
 import { AgentSettingsDialog } from './agent-settings-dialog'
-import { Settings, Trash2 } from 'lucide-react'
+import { apiFetch } from '@renderer/lib/api'
+import { isElectron } from '@renderer/lib/env'
+import { Settings, FolderOpen, Copy, Trash2 } from 'lucide-react'
+import { useCallback } from 'react'
 
 interface AgentContextMenuProps {
   agent: ApiAgent
@@ -32,9 +35,28 @@ export function AgentContextMenu({
 }: AgentContextMenuProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [showSettingsDialog, setShowSettingsDialog] = useState(false)
+  const [showPathDialog, setShowPathDialog] = useState(false)
+  const [agentPath, setAgentPath] = useState('')
   const [isDeleting, setIsDeleting] = useState(false)
   const deleteAgent = useDeleteAgent()
   const { handleAgentDeleted } = useSelection()
+
+  const handleDirectoryAction = useCallback(async () => {
+    const res = await apiFetch(`/api/agents/${agent.slug}/open-directory`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ open: isElectron() }),
+    })
+    if (!isElectron() && res.ok) {
+      const { path } = await res.json()
+      try {
+        await navigator.clipboard.writeText(path)
+      } catch {
+        setAgentPath(path)
+        setShowPathDialog(true)
+      }
+    }
+  }, [agent.slug])
 
   const handleDelete = async () => {
     setIsDeleting(true)
@@ -62,6 +84,22 @@ export function AgentContextMenu({
           >
             <Settings className="h-4 w-4 mr-2" />
             Settings
+          </ContextMenuItem>
+          <ContextMenuItem
+            onClick={handleDirectoryAction}
+            data-testid="open-agent-directory-item"
+          >
+            {isElectron() ? (
+              <>
+                <FolderOpen className="h-4 w-4 mr-2" />
+                Show Agent Directory
+              </>
+            ) : (
+              <>
+                <Copy className="h-4 w-4 mr-2" />
+                Copy Agent Directory Path
+              </>
+            )}
           </ContextMenuItem>
           <ContextMenuItem
             className="text-destructive focus:text-destructive"
@@ -99,6 +137,20 @@ export function AgentContextMenu({
             >
               {isDeleting ? 'Deleting...' : 'Delete'}
             </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={showPathDialog} onOpenChange={setShowPathDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Agent Directory Path</AlertDialogTitle>
+            <AlertDialogDescription className="break-all font-mono text-sm select-all">
+              {agentPath}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Close</AlertDialogCancel>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

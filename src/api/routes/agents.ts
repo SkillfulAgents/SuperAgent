@@ -384,6 +384,34 @@ agents.post('/:id/stop', async (c) => {
   }
 })
 
+// POST /api/agents/:id/open-directory - Get workspace path, optionally open in system file manager
+agents.post('/:id/open-directory', async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const workspaceDir = getAgentWorkspaceDir(slug)
+
+    // Ensure directory exists
+    await fs.promises.mkdir(workspaceDir, { recursive: true })
+
+    const body = await c.req.json().catch(() => ({}))
+    if (body.open) {
+      const { exec } = await import('child_process')
+      const platform = process.platform
+      const command =
+        platform === 'darwin' ? 'open' :
+        platform === 'win32' ? 'explorer' :
+        'xdg-open'
+
+      exec(`${command} "${workspaceDir}"`)
+    }
+
+    return c.json({ success: true, path: workspaceDir })
+  } catch (error) {
+    console.error('Failed to open agent directory:', error)
+    return c.json({ error: 'Failed to open agent directory' }, 500)
+  }
+})
+
 // GET /api/agents/:id/sessions - List sessions for an agent
 agents.get('/:id/sessions', async (c) => {
   try {
