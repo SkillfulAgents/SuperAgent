@@ -285,7 +285,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.sessionId = options.sessionId;
     this.workingDirectory = options.workingDirectory;
     this.claudeSessionId = options.claudeSessionId || null;
-    this.model = options.model;
+    this.model = toModelAlias(options.model) || options.model;
     this.browserModel = toModelAlias(options.browserModel);
     this.maxOutputTokens = options.maxOutputTokens;
     this.maxThinkingTokens = options.maxThinkingTokens;
