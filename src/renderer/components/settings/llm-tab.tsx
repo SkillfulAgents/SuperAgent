@@ -11,8 +11,8 @@ import { AnthropicApiKeyInput } from './anthropic-api-key-input'
 
 const MODEL_OPTIONS = [
   { value: 'claude-haiku-4-5', label: 'Claude 4.5 Haiku' },
-  { value: 'claude-sonnet-4-5', label: 'Claude 4.5 Sonnet' },
-  { value: 'claude-opus-4-5', label: 'Claude 4.5 Opus' },
+  { value: 'claude-sonnet-4-6', label: 'Claude 4.6 Sonnet' },
+  { value: 'claude-opus-4-6', label: 'Claude 4.6 Opus' },
 ]
 
 export function LlmTab() {
@@ -33,7 +33,7 @@ export function LlmTab() {
         <div className="space-y-2">
           <Label htmlFor="agent-model">Agent Model</Label>
           <Select
-            value={settings?.models?.agentModel ?? 'claude-opus-4-5'}
+            value={settings?.models?.agentModel ?? 'claude-opus-4-6'}
             onValueChange={(value) => {
               updateSettings.mutate({ models: { agentModel: value } })
             }}

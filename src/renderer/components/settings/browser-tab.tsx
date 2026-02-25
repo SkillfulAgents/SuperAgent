@@ -12,8 +12,8 @@ import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 
 const MODEL_OPTIONS = [
   { value: 'claude-haiku-4-5', label: 'Claude 4.5 Haiku' },
-  { value: 'claude-sonnet-4-5', label: 'Claude 4.5 Sonnet' },
-  { value: 'claude-opus-4-5', label: 'Claude 4.5 Opus' },
+  { value: 'claude-sonnet-4-6', label: 'Claude 4.6 Sonnet' },
+  { value: 'claude-opus-4-6', label: 'Claude 4.6 Opus' },
 ]
 
 export function BrowserTab() {
@@ -33,7 +33,7 @@ export function BrowserTab() {
       <div className="space-y-2">
         <Label htmlFor="browser-model">Browser Agent Model</Label>
         <Select
-          value={settings?.models?.browserModel ?? 'claude-sonnet-4-5'}
+          value={settings?.models?.browserModel ?? 'claude-sonnet-4-6'}
           onValueChange={(value) => {
             updateSettings.mutate({ models: { browserModel: value } })
           }}

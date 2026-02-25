@@ -120,8 +120,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   },
   models: {
     summarizerModel: 'claude-haiku-4-5',
-    agentModel: 'claude-opus-4-5',
-    browserModel: 'claude-sonnet-4-5',
+    agentModel: 'claude-opus-4-6',
+    browserModel: 'claude-sonnet-4-6',
   },
 }
 
