@@ -200,6 +200,49 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
     selectAgent(agentSlug)
   }
 
+  // State for template-based secret prompting (skills already installed, just need secrets saved)
+  const [templateSecretsPrompt, setTemplateSecretsPrompt] = useState<{
+    agentSlug: string
+    requiredEnvVars: Array<{ name: string; description: string }>
+    hasOnboarding?: boolean
+  } | null>(null)
+
+  const handleTemplateSecretsSubmit = async (envVars: Record<string, string>) => {
+    if (!templateSecretsPrompt) return
+    const { agentSlug, hasOnboarding } = templateSecretsPrompt
+    setTemplateSecretsPrompt(null)
+
+    // Save each secret via the existing secrets API
+    for (const [key, value] of Object.entries(envVars)) {
+      if (value && typeof value === 'string') {
+        try {
+          await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/secrets`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key, value }),
+          })
+        } catch (error) {
+          console.error(`Failed to save secret ${key}:`, error)
+        }
+      }
+    }
+
+    handleOpenChange(false)
+    selectAgent(agentSlug)
+
+    if (hasOnboarding) {
+      try {
+        const session = await createSession.mutateAsync({
+          agentSlug,
+          message: ONBOARDING_MESSAGE,
+        })
+        selectSession(session.id)
+      } catch {
+        // Onboarding session creation failed - user can still use agent normally
+      }
+    }
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!name.trim()) return
@@ -228,6 +271,16 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
         file: importFile,
         nameOverride: importName.trim() || undefined,
       })
+
+      if (result.requiredEnvVars && result.requiredEnvVars.length > 0) {
+        setTemplateSecretsPrompt({
+          agentSlug: result.slug,
+          requiredEnvVars: result.requiredEnvVars,
+          hasOnboarding: result.hasOnboarding,
+        })
+        return
+      }
+
       handleOpenChange(false)
       selectAgent(result.slug)
 
@@ -257,6 +310,16 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
         agentName: skillsetAgentName.trim(),
         agentVersion: selectedTemplate.version,
       })
+
+      if (newAgent.requiredEnvVars && newAgent.requiredEnvVars.length > 0) {
+        setTemplateSecretsPrompt({
+          agentSlug: newAgent.slug,
+          requiredEnvVars: newAgent.requiredEnvVars,
+          hasOnboarding: newAgent.hasOnboarding,
+        })
+        return
+      }
+
       handleOpenChange(false)
       selectAgent(newAgent.slug)
 
@@ -289,6 +352,7 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
       setSelectedTemplate(null)
       setSkillsetAgentName('')
       setSecretsPrompt(null)
+      setTemplateSecretsPrompt(null)
       importTemplate.reset()
     }
     onOpenChange(nextOpen)
@@ -620,6 +684,20 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
           }
           requiredEnvVars={secretsPrompt.requiredEnvVars}
           onInstall={handleSecretsSubmit}
+        />
+      )}
+
+      {templateSecretsPrompt && (
+        <SkillInstallDialog
+          open={!!templateSecretsPrompt}
+          onOpenChange={(open) => {
+            if (!open) {
+              setTemplateSecretsPrompt(null)
+            }
+          }}
+          skillName="agent template"
+          requiredEnvVars={templateSecretsPrompt.requiredEnvVars}
+          onInstall={handleTemplateSecretsSubmit}
         />
       )}
     </Dialog>

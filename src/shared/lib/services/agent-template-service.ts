@@ -32,6 +32,7 @@ import {
   prepareForkBranch,
   pushAndCreatePR,
   copyDirectory,
+  parseSkillFrontmatter,
 } from '@shared/lib/services/skillset-service'
 import { createAgentFromExistingWorkspace } from '@shared/lib/services/agent-service'
 import type {
@@ -39,6 +40,7 @@ import type {
   InstalledAgentMetadata,
   AgentTemplateStatus,
   DiscoverableAgent,
+  RequiredEnvVar,
 } from '@shared/lib/types/skillset'
 import type { ApiAgent } from '@shared/lib/types/api'
 import type { AgentFrontmatter } from '@shared/lib/types/agent'
@@ -581,6 +583,38 @@ export async function hasOnboardingSkill(agentSlug: string): Promise<boolean> {
     return true
   } catch {
     return false
+  }
+}
+
+/**
+ * Scan all skills in an agent workspace and collect required_env_vars from SKILL.md frontmatter.
+ * De-duplicates by env var name.
+ */
+export async function collectAgentRequiredEnvVars(agentSlug: string): Promise<RequiredEnvVar[]> {
+  const workspaceDir = getAgentWorkspaceDir(agentSlug)
+  const skillsDir = path.join(workspaceDir, '.claude', 'skills')
+
+  try {
+    const entries = await fs.promises.readdir(skillsDir, { withFileTypes: true })
+    const allEnvVars = new Map<string, RequiredEnvVar>()
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      const skillMdPath = path.join(skillsDir, entry.name, 'SKILL.md')
+      const content = await readFileOrNull(skillMdPath)
+      if (!content) continue
+
+      const frontmatter = parseSkillFrontmatter(content)
+      if (frontmatter.required_env_vars) {
+        for (const envVar of frontmatter.required_env_vars) {
+          allEnvVars.set(envVar.name, envVar)
+        }
+      }
+    }
+
+    return Array.from(allEnvVars.values())
+  } catch {
+    return []
   }
 }
 

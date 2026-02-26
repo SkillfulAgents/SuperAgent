@@ -71,7 +71,7 @@ export function useExportAgentTemplate() {
 export function useImportAgentTemplate() {
   const queryClient = useQueryClient()
 
-  return useMutation<ApiAgent & { hasOnboarding?: boolean }, Error, { file: File; nameOverride?: string }>({
+  return useMutation<ApiAgent & { hasOnboarding?: boolean; requiredEnvVars?: Array<{ name: string; description: string }> }, Error, { file: File; nameOverride?: string }>({
     mutationFn: async ({ file, nameOverride }) => {
       const formData = new FormData()
       formData.append('file', file)
@@ -99,7 +99,7 @@ export function useInstallAgentFromSkillset() {
   const queryClient = useQueryClient()
 
   return useMutation<
-    ApiAgent & { hasOnboarding?: boolean },
+    ApiAgent & { hasOnboarding?: boolean; requiredEnvVars?: Array<{ name: string; description: string }> },
     Error,
     {
       skillsetId: string

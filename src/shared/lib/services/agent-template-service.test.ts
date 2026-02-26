@@ -3,7 +3,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import AdmZip from 'adm-zip'
-import { validateAgentTemplate, exportAgentTemplate } from './agent-template-service'
+import { validateAgentTemplate, exportAgentTemplate, collectAgentRequiredEnvVars } from './agent-template-service'
 
 const MINIMAL_CLAUDE_MD = `---
 name: Test Agent
@@ -283,5 +283,141 @@ describe('exportAgentTemplate', () => {
     expect(entries).toContain('.claude/skills/my-skill.py')
     expect(entries.some((e) => e.includes('.claude/projects'))).toBe(false)
     expect(entries.some((e) => e.includes('.claude/debug'))).toBe(false)
+  })
+})
+
+// ============================================================================
+// collectAgentRequiredEnvVars
+// ============================================================================
+
+describe('collectAgentRequiredEnvVars', () => {
+  let testDir: string
+  let originalEnv: string | undefined
+
+  beforeEach(async () => {
+    testDir = await fs.promises.mkdtemp(
+      path.join(os.tmpdir(), 'agent-env-vars-test-')
+    )
+    originalEnv = process.env.SUPERAGENT_DATA_DIR
+    process.env.SUPERAGENT_DATA_DIR = testDir
+  })
+
+  afterEach(async () => {
+    process.env.SUPERAGENT_DATA_DIR = originalEnv
+    await fs.promises.rm(testDir, { recursive: true, force: true })
+  })
+
+  function createWorkspace(agentSlug: string, files: Record<string, string>): void {
+    const workspaceDir = path.join(testDir, 'agents', agentSlug, 'workspace')
+    for (const [filePath, content] of Object.entries(files)) {
+      const fullPath = path.join(workspaceDir, filePath)
+      fs.mkdirSync(path.dirname(fullPath), { recursive: true })
+      fs.writeFileSync(fullPath, content)
+    }
+  }
+
+  it('returns empty array when agent has no skills directory', async () => {
+    createWorkspace('test-agent', { 'CLAUDE.md': MINIMAL_CLAUDE_MD })
+    const result = await collectAgentRequiredEnvVars('test-agent')
+    expect(result).toEqual([])
+  })
+
+  it('returns empty array when skills have no required_env_vars', async () => {
+    createWorkspace('test-agent', {
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      '.claude/skills/my-skill/SKILL.md': `---
+description: A skill with no secrets
+---
+# My Skill`,
+    })
+    const result = await collectAgentRequiredEnvVars('test-agent')
+    expect(result).toEqual([])
+  })
+
+  it('collects required_env_vars from a single skill', async () => {
+    createWorkspace('test-agent', {
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      '.claude/skills/db-query/SKILL.md': `---
+description: Query the database
+metadata:
+  required_env_vars:
+    - name: DB_HOST
+      description: Database hostname
+    - name: DB_PASSWORD
+      description: Database password
+---
+# DB Query`,
+    })
+    const result = await collectAgentRequiredEnvVars('test-agent')
+    expect(result).toEqual([
+      { name: 'DB_HOST', description: 'Database hostname' },
+      { name: 'DB_PASSWORD', description: 'Database password' },
+    ])
+  })
+
+  it('collects and de-duplicates required_env_vars across multiple skills', async () => {
+    createWorkspace('test-agent', {
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      '.claude/skills/skill-a/SKILL.md': `---
+description: Skill A
+metadata:
+  required_env_vars:
+    - name: API_KEY
+      description: Shared API key
+    - name: SECRET_A
+      description: Secret for A
+---
+# Skill A`,
+      '.claude/skills/skill-b/SKILL.md': `---
+description: Skill B
+metadata:
+  required_env_vars:
+    - name: API_KEY
+      description: Shared API key (duplicate)
+    - name: SECRET_B
+      description: Secret for B
+---
+# Skill B`,
+    })
+    const result = await collectAgentRequiredEnvVars('test-agent')
+    const names = result.map((v) => v.name).sort()
+    expect(names).toEqual(['API_KEY', 'SECRET_A', 'SECRET_B'])
+  })
+
+  it('skips skill directories without SKILL.md', async () => {
+    createWorkspace('test-agent', {
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      '.claude/skills/no-md/script.py': 'print("hi")',
+      '.claude/skills/has-md/SKILL.md': `---
+description: Has secrets
+metadata:
+  required_env_vars:
+    - name: TOKEN
+      description: Auth token
+---
+# Has MD`,
+    })
+    const result = await collectAgentRequiredEnvVars('test-agent')
+    expect(result).toEqual([{ name: 'TOKEN', description: 'Auth token' }])
+  })
+
+  it('handles a mix of skills with and without required_env_vars', async () => {
+    createWorkspace('test-agent', {
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      '.claude/skills/no-secrets/SKILL.md': `---
+description: No secrets needed
+---
+# No Secrets`,
+      '.claude/skills/has-secrets/SKILL.md': `---
+description: Needs secrets
+metadata:
+  required_env_vars:
+    - name: MY_SECRET
+      description: A secret value
+---
+# Has Secrets`,
+    })
+    const result = await collectAgentRequiredEnvVars('test-agent')
+    expect(result).toEqual([{ name: 'MY_SECRET', description: 'A secret value' }])
   })
 })

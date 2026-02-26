@@ -70,6 +70,7 @@ import {
   publishAgentToSkillset,
   refreshAgentTemplates,
   hasOnboardingSkill,
+  collectAgentRequiredEnvVars,
 } from '@shared/lib/services/agent-template-service'
 import { withRetry } from '@shared/lib/utils/retry'
 import { transformMessages } from '@shared/lib/utils/message-transform'
@@ -103,7 +104,8 @@ agents.post('/import-template', async (c) => {
 
     const agent = await importAgentFromTemplate(zipBuffer, nameOverride || undefined)
     const hasOnboarding = await hasOnboardingSkill(agent.slug)
-    return c.json({ ...agent, hasOnboarding }, 201)
+    const requiredEnvVars = await collectAgentRequiredEnvVars(agent.slug)
+    return c.json({ ...agent, hasOnboarding, requiredEnvVars }, 201)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to import template'
     console.error('Failed to import template:', error)
@@ -155,7 +157,8 @@ agents.post('/install-from-skillset', async (c) => {
     )
 
     const hasOnboarding = await hasOnboardingSkill(agent.slug)
-    return c.json({ ...agent, hasOnboarding }, 201)
+    const requiredEnvVars = await collectAgentRequiredEnvVars(agent.slug)
+    return c.json({ ...agent, hasOnboarding, requiredEnvVars }, 201)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to install agent from skillset'
     console.error('Failed to install agent from skillset:', error)
