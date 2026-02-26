@@ -56,14 +56,22 @@ const MAX_FILE_COUNT = 1000
 const TEMPLATE_EXCLUDE = new Set([
   '.env',
   '.DS_Store',
+  'node_modules',
+  '__pycache__',
   'session-metadata.json',
   '.superagent-sessions.json',
   '.skillset-agent-metadata.json',
 ])
 
+/** File extensions excluded from templates at any level */
+const TEMPLATE_EXCLUDE_EXTENSIONS = new Set([
+  '.pyc',
+])
+
 /** Top-level directories excluded from templates entirely */
 const TEMPLATE_EXCLUDE_TOP_DIRS = new Set([
   'uploads',
+  'downloads',
   '.browser-profile',
 ])
 
@@ -129,7 +137,9 @@ async function walkTemplateFiles(workspaceDir: string): Promise<string[]> {
 
         await walk(path.join(dir, entry.name), relativePath, depth + 1)
       } else {
-        files.push(relativePath)
+        if (!TEMPLATE_EXCLUDE_EXTENSIONS.has(path.extname(entry.name))) {
+          files.push(relativePath)
+        }
       }
     }
   }
@@ -257,8 +267,14 @@ export function validateAgentTemplate(zipBuffer: Buffer): TemplateValidationResu
     const zip = new AdmZip(zipBuffer)
     const entries = zip.getEntries()
 
-    // Filter out macOS resource fork entries for all checks
-    const realEntries = entries.filter((e) => !e.entryName.startsWith('__MACOSX/'))
+    // Filter out macOS resource fork entries and node_modules for all checks
+    const realEntries = entries.filter((e) => {
+      if (e.entryName.startsWith('__MACOSX/')) return false
+      const parts = e.entryName.split('/')
+      if (parts.some((p) => TEMPLATE_EXCLUDE.has(p))) return false
+      if (!e.isDirectory && TEMPLATE_EXCLUDE_EXTENSIONS.has(path.extname(e.entryName))) return false
+      return true
+    })
 
     // Check file count
     if (realEntries.length > MAX_FILE_COUNT) {
@@ -346,6 +362,10 @@ export async function importAgentFromTemplate(
   for (const entry of entries) {
     if (entry.isDirectory) continue
     if (entry.entryName.startsWith('__MACOSX/')) continue
+    // Skip excluded directories (node_modules, __pycache__, etc.) and extensions (.pyc)
+    const entryParts = entry.entryName.split('/')
+    if (entryParts.some((p) => TEMPLATE_EXCLUDE.has(p))) continue
+    if (TEMPLATE_EXCLUDE_EXTENSIONS.has(path.extname(entry.entryName))) continue
 
     // Strip wrapper directory prefix and normalize
     let entryName = stripPrefix
