@@ -261,6 +261,16 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
   }, [sseRemoteMcpRequests, messagesBasedPendingRequests.remoteMcpRequests, isActive])
 
   const scrollRef = useRef<HTMLDivElement>(null)
+  const isScrolledToBottomRef = useRef(true)
+
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    // Consider "at bottom" if within 80px of the bottom edge
+    const threshold = 80
+    isScrolledToBottomRef.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight < threshold
+  }, [])
 
   // Safety net: if isCompacting is true but a NEW compact boundary appears in fetched
   // messages, compaction is done and the SSE compact_complete event was missed.
@@ -414,9 +424,17 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     return result
   }, [messages, isActive, pendingUserMessage])
 
-  // Auto-scroll to bottom when new messages arrive or requests appear
+  // Re-pin to bottom when the user sends a new message
   useEffect(() => {
-    if (scrollRef.current) {
+    if (pendingUserMessage) {
+      isScrolledToBottomRef.current = true
+    }
+  }, [pendingUserMessage])
+
+  // Auto-scroll to bottom when new messages arrive or requests appear,
+  // but only if the user hasn't scrolled up to read earlier content.
+  useEffect(() => {
+    if (scrollRef.current && isScrolledToBottomRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
   }, [messages, pendingUserMessage, streamingMessage, streamingToolUse, isCompacting, pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests, pendingFileRequests, pendingRemoteMcpRequests, activeSubagent])
@@ -430,7 +448,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
   }
 
   return (
-    <div className="overflow-y-auto" ref={scrollRef} data-testid="message-list">
+    <div className="overflow-y-auto" ref={scrollRef} onScroll={handleScroll} data-testid="message-list">
       <div className="p-4 space-y-4">
         {messages?.map((item) => (
           <Fragment key={item.id}>
