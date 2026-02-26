@@ -44,7 +44,9 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
           <p>
             {!isAgentRunning
               ? 'Agent is not running. Start the agent to view this dashboard.'
-              : 'Dashboard is not running. It will start automatically when the agent starts.'}
+              : dashboard?.status === 'starting'
+                ? 'Dashboard is starting up...'
+                : 'Dashboard is not running. It will start automatically when the agent starts.'}
           </p>
         </div>
         {!isAgentRunning && (

@@ -128,7 +128,6 @@ class DashboardManager {
       })
 
       info.process = proc
-      info.status = 'running'
 
       proc.stdout?.pipe(info.logStream, { end: false })
       proc.stderr?.pipe(info.logStream, { end: false })
@@ -150,10 +149,23 @@ class DashboardManager {
         info.process = null
       })
 
-      console.log(`[DashboardManager] Started dashboard ${slug} on port ${port}`)
+      console.log(`[DashboardManager] Starting dashboard ${slug} on port ${port}, waiting for port...`)
 
-      // Wait briefly to detect immediate crashes (e.g. syntax errors, missing files)
-      await new Promise((resolve) => setTimeout(resolve, 1500))
+      // Wait for the server to actually be listening on the port
+      const ready = await this.waitForPort(port, 30000)
+      if (ready && info.status === 'starting') {
+        info.status = 'running'
+        console.log(`[DashboardManager] Dashboard ${slug} is now running on port ${port}`)
+      } else if (info.status === 'starting') {
+        // Timed out waiting for port — process may be slow or broken
+        console.error(`[DashboardManager] Dashboard ${slug} did not become ready in time`)
+        info.logStream?.write(`[DashboardManager] Timed out waiting for port ${port} to be ready\n`)
+        info.status = 'crashed'
+        if (info.process) {
+          info.process.kill('SIGTERM')
+          info.process = null
+        }
+      }
     } catch (error: any) {
       console.error(`[DashboardManager] Failed to start dashboard ${slug}:`, error)
       info.logStream?.write(`[DashboardManager] Failed to start: ${error?.message || error}\n`)
@@ -194,6 +206,25 @@ class DashboardManager {
         reject(err)
       })
     })
+  }
+
+  private async waitForPort(port: number, timeoutMs: number): Promise<boolean> {
+    const start = Date.now()
+    const interval = 250
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const response = await fetch(`http://localhost:${port}/`, {
+          method: 'HEAD',
+          signal: AbortSignal.timeout(1000),
+        })
+        // Any response (even 404) means the server is listening
+        if (response) return true
+      } catch {
+        // Not ready yet
+      }
+      await new Promise((resolve) => setTimeout(resolve, interval))
+    }
+    return false
   }
 
   private handleCrash(slug: string): void {
