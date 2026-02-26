@@ -85,12 +85,17 @@ The image is published to `ghcr.io/iddogino/superagent` on every push to main an
 
 3. Set up environment variables (see below)
 
-4. Run database migrations:
+4. Create the local data directory:
+   ```bash
+   mkdir -p ~/.superagent
+   ```
+
+5. Run database migrations:
    ```bash
    npm run db:migrate
    ```
 
-5. Start the development server:
+6. Start the development server:
    ```bash
    npm run dev
    ```
@@ -103,6 +108,17 @@ The image is published to `ghcr.io/iddogino/superagent` on every push to main an
 | `SUMMARIZER_MODEL` | Model used for generating session names | `claude-haiku-4-5` |
 | `CONTAINER_STATUS_SYNC_INTERVAL_SECONDS` | How often to sync container status with Docker (seconds) | `300` |
 | `RUNNER_AVAILABILITY_CACHE_TTL_SECONDS` | How long to cache Docker/Podman availability checks (seconds) | `60` |
+
+### Optional: Composio OAuth setup
+
+If you connect accounts through Composio (Slack/Gmail/GitHub, etc.), make sure token masking is disabled in your Composio project settings, otherwise SuperAgent cannot read usable access tokens and proxy calls may fail.
+
+In the Composio dashboard, go to:
+- `Project Settings`
+- `Project Configuration`
+- Disable `Mask Connected Account Secrets`
+
+After changing this setting, reconnect the account in SuperAgent.
 
 Create a `.env.local` file in the project root:
 
