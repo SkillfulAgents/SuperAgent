@@ -28,8 +28,15 @@ jobs:
       - name: Run lint
         run: npm run lint
 
-      - name: Run unit tests
-        run: npm run test:run
+      - name: Run unit tests with coverage
+        run: npx vitest run --coverage
+
+      - name: Coverage summary
+        if: always()
+        uses: davelosert/vitest-coverage-report-action@v2
+        with:
+          json-summary-path: ./coverage/coverage-summary.json
+          json-final-path: ./coverage/coverage-final.json
 
   container-tests:
     runs-on: ubuntu-latest
