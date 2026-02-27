@@ -43,6 +43,13 @@
       "when": 1771383823463,
       "tag": "0005_even_baron_zemo",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1772153570664,
+      "tag": "0006_nasty_magus",
+      "breakpoints": true
     }
   ]
 }

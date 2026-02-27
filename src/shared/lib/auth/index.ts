@@ -1,7 +1,9 @@
 import { betterAuth } from 'better-auth'
 import { drizzleAdapter } from 'better-auth/adapters/drizzle'
 import { admin } from 'better-auth/plugins'
-import { db, sqlite } from '@shared/lib/db'
+import { eq, sql } from 'drizzle-orm'
+import { db } from '@shared/lib/db'
+import * as schema from '@shared/lib/db/schema'
 import { getOrCreateAuthSecret } from './secret'
 import { getAppBaseUrl, getTrustedOrigins } from './config'
 
@@ -23,6 +25,12 @@ export function getAuth() {
     _auth = betterAuth({
       database: drizzleAdapter(db, {
         provider: 'sqlite',
+        schema: {
+          user: schema.user,
+          session: schema.authSession,
+          account: schema.authAccount,
+          verification: schema.verification,
+        },
       }),
       emailAndPassword: {
         enabled: true,
@@ -36,14 +44,19 @@ export function getAuth() {
       databaseHooks: {
         user: {
           create: {
-            after: async (user) => {
+            after: async (createdUser) => {
               // Make the first user an admin automatically.
               // Race-safe: check count after this user was already inserted.
               try {
-                const result = sqlite.prepare('SELECT COUNT(*) as count FROM user').get() as { count: number }
-                if (result.count === 1) {
+                const [{ count }] = await db
+                  .select({ count: sql<number>`count(*)` })
+                  .from(schema.user)
+                if (count === 1) {
                   // This is the first (and only) user — promote to admin
-                  sqlite.prepare('UPDATE user SET role = ? WHERE id = ?').run('admin', user.id)
+                  await db
+                    .update(schema.user)
+                    .set({ role: 'admin' })
+                    .where(eq(schema.user.id, createdUser.id))
                 }
               } catch (error) {
                 console.error('Failed to check/set first user as admin:', error)
