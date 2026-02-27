@@ -45,23 +45,32 @@ export function registerUpdateHandlers() {
     }
     try {
       const autoUpdater = await getAutoUpdater()
-      autoUpdater.allowPrerelease = !!getSettings().app?.allowPrereleaseUpdates
+      const isPreRelease = app.getVersion().includes('-')
+      // If running a prerelease, always check for newer prereleases
+      // (the user opted in by installing a prerelease)
+      autoUpdater.allowPrerelease = isPreRelease || !!getSettings().app?.allowPrereleaseUpdates
       const result = await autoUpdater.checkForUpdates()
 
-      // If no update found and we're on a pre-release, also check the stable channel.
-      // Pre-release versions use a channel-specific yml (e.g. rc-mac.yml) so they won't
-      // discover stable releases (which use latest-mac.yml) without this fallback.
-      const isPreRelease = app.getVersion().includes('-')
+      // If on a pre-release and no prerelease update found, also check the stable channel
+      // so users can upgrade to a stable release when one is published.
       if (isPreRelease && (!result || !result.updateInfo || currentStatus.state === 'not-available')) {
         try {
           suppressErrors = true
           autoUpdater.allowPrerelease = false
           autoUpdater.channel = 'latest'
-          await autoUpdater.checkForUpdates()
+          // Timeout the stable check — may hang if no stable release exists for this platform
+          await Promise.race([
+            autoUpdater.checkForUpdates(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000)),
+          ])
         } catch {
-          // No stable releases exist yet — ignore
+          // No stable releases exist for this platform, or timed out — ignore
         } finally {
           suppressErrors = false
+          // If we're still in 'checking' state, the fallback didn't find anything
+          if (currentStatus.state === 'checking') {
+            setStatus({ state: 'not-available' })
+          }
         }
       }
     } catch (err) {
@@ -104,7 +113,8 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
     // Don't auto-download — let the user choose
     autoUpdater.autoDownload = false
     autoUpdater.autoInstallOnAppQuit = true
-    autoUpdater.allowPrerelease = !!getSettings().app?.allowPrereleaseUpdates
+    const isPreRelease = app.getVersion().includes('-')
+    autoUpdater.allowPrerelease = isPreRelease || !!getSettings().app?.allowPrereleaseUpdates
 
     autoUpdater.on('checking-for-update', () => {
       setStatus({ state: 'checking' })
