@@ -1,3 +1,4 @@
+import path from 'path'
 import { createContainerClient, checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, startRunner, refreshRunnerAvailability, type ContainerRunner } from './client-factory'
 import type { ContainerClient, ContainerConfig, ContainerInfo, HealthCheckResult, RuntimeReadiness } from './types'
 import { healthMonitor } from './health-monitor'
@@ -402,7 +403,7 @@ class ContainerManager {
       const chromeProfileId = settings.app?.chromeProfileId
       if (chromeProfileId) {
         const workspaceDir = getAgentWorkspaceDir(agentId)
-        const browserProfileDir = `${workspaceDir}/.browser-profile`
+        const browserProfileDir = path.join(workspaceDir, '.browser-profile')
         if (copyChromeProfileData(chromeProfileId, browserProfileDir)) {
           console.log(`[ContainerManager] Copied Chrome profile "${chromeProfileId}" to workspace`)
         }

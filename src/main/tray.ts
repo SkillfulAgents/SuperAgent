@@ -71,6 +71,11 @@ export function setTrayVisible(visible: boolean): void {
       tray = new Tray(icon)
       tray.setToolTip('Superagent')
 
+      // On Windows, clicking the tray icon should show/focus the window
+      if (process.platform === 'win32') {
+        tray.on('click', () => showWindow())
+      }
+
       // Set initial simple menu, then update async
       const initialMenu = Menu.buildFromTemplate([
         { label: 'Open Superagent', click: () => showWindow() },

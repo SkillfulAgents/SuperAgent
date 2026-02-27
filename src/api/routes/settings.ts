@@ -1,3 +1,4 @@
+import path from 'path'
 import { Hono } from 'hono'
 import Anthropic from '@anthropic-ai/sdk'
 import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
@@ -382,7 +383,7 @@ settings.post('/factory-reset', async (c) => {
     db.delete(connectedAccounts).run()
 
     // Delete settings file
-    const settingsPath = `${getDataDir()}/settings.json`
+    const settingsPath = path.join(getDataDir(), 'settings.json')
     await fs.promises.rm(settingsPath, { force: true })
     clearSettingsCache()
 
