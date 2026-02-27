@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { QueryProvider } from './providers/query-provider'
+import { UserProvider } from './context/user-context'
+import { AuthGate } from './components/auth/auth-gate'
 import { SelectionProvider } from './context/selection-context'
 import { ConnectivityProvider } from './context/connectivity-context'
 import { DialogProvider } from './context/dialog-context'
@@ -50,13 +52,17 @@ function AppContent() {
 export default function App() {
   return (
     <QueryProvider>
-      <SelectionProvider>
-        <ConnectivityProvider>
-          <ErrorBoundary>
-            <AppContent />
-          </ErrorBoundary>
-        </ConnectivityProvider>
-      </SelectionProvider>
+      <UserProvider>
+        <AuthGate>
+          <SelectionProvider>
+            <ConnectivityProvider>
+              <ErrorBoundary>
+                <AppContent />
+              </ErrorBoundary>
+            </ConnectivityProvider>
+          </SelectionProvider>
+        </AuthGate>
+      </UserProvider>
     </QueryProvider>
   )
 }
