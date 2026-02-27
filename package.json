@@ -1,6 +1,6 @@
 {
   "name": "superagent",
-  "version": "0.1.4",
+  "version": "0.1.5-rc1",
   "private": true,
   "main": "dist/main/index.js",
   "scripts": {
@@ -150,11 +150,17 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64", "arm64"]
+          "arch": [
+            "x64",
+            "arm64"
+          ]
         },
         {
           "target": "zip",
-          "arch": ["x64", "arm64"]
+          "arch": [
+            "x64",
+            "arm64"
+          ]
         }
       ],
       "icon": "build/icon.png"
