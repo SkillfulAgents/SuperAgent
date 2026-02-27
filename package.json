@@ -52,6 +52,7 @@
     "@tanstack/react-query": "^5.56.0",
     "adm-zip": "^0.5.16",
     "archiver": "^7.0.1",
+    "better-auth": "^1.4.19",
     "better-sqlite3": "^11.3.0",
     "ccusage": "^15.2.0",
     "chrono-node": "^2.9.0",
@@ -73,7 +74,8 @@
     "tailwind-merge": "^2.6.0",
     "tailwindcss-animate": "^1.0.7",
     "uuid": "^10.0.0",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@electron/rebuild": "^3.7.2",

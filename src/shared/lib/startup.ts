@@ -2,6 +2,8 @@ import { containerManager } from './container/container-manager'
 import { taskScheduler } from './scheduler/task-scheduler'
 import { autoSleepMonitor } from './scheduler/auto-sleep-monitor'
 import { listAgents } from './services/agent-service'
+import { isAuthMode } from './auth/mode'
+import { validateAuthModeStartup } from './auth/startup-validation'
 
 /**
  * Initialize all background services.
@@ -11,6 +13,10 @@ import { listAgents } from './services/agent-service'
  * - main/index.ts: for Electron, after SUPERAGENT_DATA_DIR is set
  */
 export async function initializeServices() {
+  // Validate auth mode startup requirements before anything else
+  if (isAuthMode()) {
+    await validateAuthModeStartup()
+  }
   // Initialize container manager with all agents
   const agents = await listAgents()
   const slugs = agents.map((a) => a.slug)

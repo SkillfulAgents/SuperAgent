@@ -5,6 +5,7 @@ import { remoteMcpServers } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { initiateOAuthFlow, initiateNewServerOAuth, completeOAuthFlow, discoverOAuthMetadata } from '@shared/lib/mcp/oauth'
 import type { McpToolInfo } from '@shared/lib/mcp/types'
+import { getAppBaseUrlFromRequest } from '@shared/lib/auth/config'
 
 const remoteMcps = new Hono()
 
@@ -189,7 +190,7 @@ remoteMcps.post('/initiate-oauth', async (c) => {
   const protocol = process.env.SUPERAGENT_PROTOCOL || 'superagent'
   const redirectUri = body.electron
     ? `${protocol}://mcp-oauth-callback`
-    : `${c.req.url.split('/api/')[0]}/api/remote-mcps/oauth-callback`
+    : `${getAppBaseUrlFromRequest(c)}/api/remote-mcps/oauth-callback`
 
   if (body.mcpId) {
     // Existing server re-auth

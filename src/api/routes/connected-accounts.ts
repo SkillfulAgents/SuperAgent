@@ -10,6 +10,7 @@ import {
   deleteConnection,
   getAccountDisplayName,
 } from '@shared/lib/composio/client'
+import { getAppBaseUrlFromRequest } from '@shared/lib/auth/config'
 
 const connectedAccountsRouter = new Hono()
 
@@ -110,7 +111,7 @@ connectedAccountsRouter.post('/initiate', async (c) => {
       callbackUrl = `${protocol}://oauth-callback?toolkit=${encodeURIComponent(providerSlug)}`
     } else {
       // Web: use HTTP callback endpoint
-      const origin = c.req.header('origin') || new URL(c.req.url).origin
+      const origin = getAppBaseUrlFromRequest(c)
       callbackUrl = `${origin}/api/connected-accounts/callback?toolkit=${encodeURIComponent(providerSlug)}`
     }
 

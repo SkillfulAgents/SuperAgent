@@ -56,6 +56,10 @@ export interface AppPreferences {
   theme?: 'system' | 'light' | 'dark'
 }
 
+export interface AuthSettings {
+  trustedOrigins?: string[]
+}
+
 export interface AppSettings {
   container: ContainerSettings
   apiKeys?: ApiKeySettings
@@ -64,6 +68,7 @@ export interface AppSettings {
   agentLimits?: AgentLimitsSettings
   customEnvVars?: Record<string, string>
   skillsets?: SkillsetConfig[]
+  auth?: AuthSettings
 }
 
 // API key source types
