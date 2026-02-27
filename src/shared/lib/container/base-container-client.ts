@@ -4,6 +4,7 @@ import { promisify } from 'util'
 import { EventEmitter } from 'events'
 import WebSocket from 'ws'
 import * as fs from 'fs'
+import os from 'os'
 import net from 'net'
 import type {
   ContainerClient,
@@ -113,6 +114,29 @@ export async function checkCommandAvailable(command: string): Promise<boolean> {
     return true
   } catch {
     return false
+  }
+}
+
+/**
+ * Write environment variables to a Docker-compatible env file.
+ * Returns the --env-file flag string and a cleanup function to delete the temp file.
+ * Docker env-file format: one KEY=VALUE per line, no shell quoting needed.
+ */
+export function writeEnvFile(
+  envVars: Record<string, string | undefined>,
+  agentId: string
+): { flag: string; cleanup: () => void } {
+  const content = Object.entries(envVars)
+    .filter(([_, value]) => value !== undefined)
+    .map(([key, value]) => `${key}=${value!.replace(/[\r\n]/g, '')}`)
+    .join('\n')
+
+  const envFilePath = path.join(os.tmpdir(), `superagent-env-${agentId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+  fs.writeFileSync(envFilePath, content, { mode: 0o600 })
+
+  return {
+    flag: `--env-file "${envFilePath}"`,
+    cleanup: () => { try { fs.unlinkSync(envFilePath) } catch { /* ignore */ } },
   }
 }
 
@@ -355,8 +379,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // Find an available port
       const port = await this.findAvailablePort()
 
-      // Build run command with additional env vars from options
-      const envFlags = this.buildEnvFlags(options?.envVars)
+      // Write env vars to a temp file (avoids command length limits on Windows)
+      const { flag: envFileFlag, cleanup: cleanupEnvFile } = this.buildEnvFile(options?.envVars)
       const containerName = this.getContainerName()
 
       // Remove existing container if exists (stop first for runtimes like Apple Container that don't support rm -f)
@@ -375,7 +399,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         '-v', `"${workspaceDir.replace(/\\/g, '/')}:/workspace${this.getVolumeMountSuffix()}"`,
         resourceFlags,
         additionalFlags,
-        envFlags,
+        envFileFlag,
         image,
       ].filter(Boolean).join(' ')
 
@@ -390,6 +414,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         await execWithPathSilent(`${runner} stop ${containerName}`)
         await execWithPathSilent(`${runner} rm ${containerName}`);
         ({ stdout } = await execWithPath(runCmd))
+      } finally {
+        cleanupEnvFile()
       }
 
       console.log(`Started container ${stdout.trim()} on port ${port}`)
@@ -840,7 +866,12 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
   }
 
-  private buildEnvFlags(additionalEnvVars?: Record<string, string>): string {
+  /**
+   * Write env vars to a temp file and return the --env-file flag.
+   * This avoids shell quoting issues and Windows command length limits.
+   * The caller must clean up the file after the container starts.
+   */
+  private buildEnvFile(additionalEnvVars?: Record<string, string>): { flag: string; cleanup: () => void } {
     const envVars: Record<string, string | undefined> = {
       ANTHROPIC_API_KEY: getEffectiveAnthropicApiKey(),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
@@ -848,18 +879,6 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       ...additionalEnvVars,
     }
 
-    return Object.entries(envVars)
-      .filter(([_, value]) => value !== undefined)
-      .map(([key, value]) => {
-        if (isWindows) {
-          // Windows cmd.exe: use double quotes, escape inner double quotes
-          const escaped = value!.replace(/"/g, '\\"')
-          return `-e ${key}="${escaped}"`
-        }
-        // Unix: use single quotes, escape inner single quotes
-        const escaped = value!.replace(/'/g, "'\\''")
-        return `-e ${key}='${escaped}'`
-      })
-      .join(' ')
+    return writeEnvFile(envVars, this.config.agentId)
   }
 }
