@@ -1,5 +1,5 @@
 
-import { ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard, Loader2, WifiOff, LogOut, User } from 'lucide-react'
+import { ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard, Loader2, WifiOff, LogOut, User, Users } from 'lucide-react'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { useState, useEffect, useRef } from 'react'
 import { isElectron, getPlatform } from '@renderer/lib/env'
@@ -169,12 +169,14 @@ function DashboardSubItem({
 // Agent menu item with expandable sessions
 function AgentMenuItem({ agent }: { agent: ApiAgent }) {
   const { selectedAgentSlug, selectAgent } = useSelection()
+  const { agentMemberCount } = useUser()
   const { data: sessions } = useSessions(agent.slug)
   const { data: scheduledTasks } = useScheduledTasks(agent.slug, 'pending')
   const { data: artifacts } = useArtifacts(agent.slug)
   const isSelected = agent.slug === selectedAgentSlug
   const [isOpen, setIsOpen] = useState(isSelected)
   const [showAll, setShowAll] = useState(false)
+  const isShared = agentMemberCount(agent.slug) > 1
 
   const visibleSessions = showAll ? sessions : sessions?.slice(0, 5)
   const hasMore = (sessions?.length ?? 0) > 5
@@ -196,7 +198,10 @@ function AgentMenuItem({ agent }: { agent: ApiAgent }) {
             className="justify-between"
             data-testid={`agent-item-${agent.slug}`}
           >
-            <span className="truncate">{agent.name}</span>
+            <span className="flex items-center gap-1.5 min-w-0">
+              <span className="truncate">{agent.name}</span>
+              {isShared && <Users className="h-3 w-3 shrink-0 text-muted-foreground" />}
+            </span>
             <AgentStatus
               status={agent.status}
               hasActiveSessions={sessions?.some((s) => s.isActive) ?? false}

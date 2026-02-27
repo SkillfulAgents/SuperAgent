@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { Globe, ChevronUp, ChevronDown, GripHorizontal, X } from 'lucide-react'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { clearBrowserActive } from '@renderer/hooks/use-message-stream'
+import { useUser } from '@renderer/context/user-context'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -27,6 +28,8 @@ interface BrowserPreviewProps {
 }
 
 export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }: BrowserPreviewProps) {
+  const { canUseAgent } = useUser()
+  const isViewOnly = !canUseAgent(agentSlug)
   const [expanded, setExpanded] = useState(false)
   const [connected, setConnected] = useState(false)
   const [reconnectKey, setReconnectKey] = useState(0)
@@ -472,14 +475,16 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
             <ChevronUp className="h-3.5 w-3.5" />
           )}
         </button>
-        <button
-          className="p-0.5 rounded hover:bg-destructive/80 hover:text-destructive-foreground transition-colors"
-          onClick={handleCloseClick}
-          onPointerDown={(e) => e.stopPropagation()}
-          title="Close browser"
-        >
-          <X className="h-3.5 w-3.5" />
-        </button>
+        {!isViewOnly && (
+          <button
+            className="p-0.5 rounded hover:bg-destructive/80 hover:text-destructive-foreground transition-colors"
+            onClick={handleCloseClick}
+            onPointerDown={(e) => e.stopPropagation()}
+            title="Close browser"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
       </div>
 
       {/* Canvas viewport */}
@@ -487,15 +492,15 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
         <div className="relative flex-1 min-h-0 bg-black">
           <canvas
             ref={canvasRef}
-            className="w-full h-full object-contain cursor-default"
+            className={`w-full h-full object-contain ${isViewOnly ? 'cursor-not-allowed' : 'cursor-default'}`}
             style={{ aspectRatio }}
-            tabIndex={0}
-            onMouseDown={handleMouseDown}
-            onMouseUp={handleMouseUp}
-            onMouseMove={handleMouseMove}
-            onWheel={handleWheel}
-            onKeyDown={handleKeyDown}
-            onKeyUp={handleKeyUp}
+            tabIndex={isViewOnly ? -1 : 0}
+            onMouseDown={isViewOnly ? undefined : handleMouseDown}
+            onMouseUp={isViewOnly ? undefined : handleMouseUp}
+            onMouseMove={isViewOnly ? undefined : handleMouseMove}
+            onWheel={isViewOnly ? undefined : handleWheel}
+            onKeyDown={isViewOnly ? undefined : handleKeyDown}
+            onKeyUp={isViewOnly ? undefined : handleKeyUp}
           />
           {!connected && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/50">

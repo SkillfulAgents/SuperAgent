@@ -12,6 +12,7 @@ interface SecretRequestItemProps {
   reason?: string
   sessionId: string
   agentSlug: string
+  readOnly?: boolean
   onComplete: () => void
 }
 
@@ -23,6 +24,7 @@ export function SecretRequestItem({
   reason,
   sessionId,
   agentSlug,
+  readOnly,
   onComplete,
 }: SecretRequestItemProps) {
   const [value, setValue] = useState('')
@@ -109,6 +111,31 @@ export function SecretRequestItem({
           >
             {status === 'provided' ? 'Provided' : 'Declined'}
           </span>
+        </div>
+      </div>
+    )
+  }
+
+  // Read-only state for viewers
+  if (readOnly) {
+    return (
+      <div className="border rounded-md bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800 text-sm">
+        <div className="flex items-center gap-3 p-3">
+          <div className="h-8 w-8 rounded-full bg-amber-100 dark:bg-amber-900 flex items-center justify-center shrink-0">
+            <Key className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="font-medium text-amber-900 dark:text-amber-100">
+              Secret Requested:{' '}
+              <code className="bg-amber-100 dark:bg-amber-900 px-1.5 py-0.5 rounded text-amber-800 dark:text-amber-200">
+                {secretName}
+              </code>
+            </div>
+            {reason && (
+              <p className="text-sm text-amber-700 dark:text-amber-300 mt-1">{reason}</p>
+            )}
+          </div>
+          <span className="text-xs text-amber-600 dark:text-amber-400 shrink-0">Waiting for response</span>
         </div>
       </div>
     )

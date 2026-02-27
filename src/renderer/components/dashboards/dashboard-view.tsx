@@ -3,6 +3,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Play, RefreshCw, LayoutDashboard } from 'lucide-react'
 import { useAgent, useStartAgent } from '@renderer/hooks/use-agents'
 import { useArtifacts } from '@renderer/hooks/use-artifacts'
+import { useUser } from '@renderer/context/user-context'
 import { getApiBaseUrl } from '@renderer/lib/env'
 
 interface DashboardViewProps {
@@ -15,6 +16,8 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   const { data: agent } = useAgent(agentSlug)
   const { data: artifacts } = useArtifacts(agentSlug)
   const startAgent = useStartAgent()
+  const { canUseAgent } = useUser()
+  const canStart = canUseAgent(agentSlug)
 
   const dashboard = artifacts?.find((a) => a.slug === dashboardSlug)
   const isAgentRunning = agent?.status === 'running'
@@ -49,7 +52,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
                 : 'Dashboard is not running. It will start automatically when the agent starts.'}
           </p>
         </div>
-        {!isAgentRunning && (
+        {!isAgentRunning && canStart && (
           <Button
             onClick={handleStartAgent}
             disabled={startAgent.isPending}

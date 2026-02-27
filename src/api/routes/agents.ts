@@ -1,6 +1,7 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import Anthropic from '@anthropic-ai/sdk'
+import { randomUUID } from 'crypto'
 import { Authenticated, AgentRead, AgentUser, AgentAdmin } from '../middleware/auth'
 import {
   listAgentsWithStatus,
@@ -39,8 +40,10 @@ import {
   listPendingScheduledTasks,
 } from '@shared/lib/services/scheduled-task-service'
 import { db } from '@shared/lib/db'
-import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog } from '@shared/lib/db/schema'
-import { eq, and, inArray, desc, count } from 'drizzle-orm'
+import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, user as userTable } from '@shared/lib/db/schema'
+import { eq, and, inArray, desc, count, like, or } from 'drizzle-orm'
+import { isAuthMode } from '@shared/lib/auth/mode'
+import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getProvider } from '@shared/lib/composio/providers'
 // getAgentSkills is superseded by getAgentSkillsWithStatus from skillset-service
 // import { getAgentSkills } from '@shared/lib/skills'
@@ -106,6 +109,7 @@ agents.post('/import-template', async (c) => {
     const zipBuffer = Buffer.from(arrayBuffer)
 
     const agent = await importAgentFromTemplate(zipBuffer, nameOverride || undefined)
+    await createOwnerAcl(c, agent.slug)
     const hasOnboarding = await hasOnboardingSkill(agent.slug)
     const requiredEnvVars = await collectAgentRequiredEnvVars(agent.slug)
     return c.json({ ...agent, hasOnboarding, requiredEnvVars }, 201)
@@ -159,6 +163,7 @@ agents.post('/install-from-skillset', async (c) => {
       agentVersion || '0.0.0',
     )
 
+    await createOwnerAcl(c, agent.slug)
     const hasOnboarding = await hasOnboardingSkill(agent.slug)
     const requiredEnvVars = await collectAgentRequiredEnvVars(agent.slug)
     return c.json({ ...agent, hasOnboarding, requiredEnvVars }, 201)
@@ -166,6 +171,48 @@ agents.post('/install-from-skillset', async (c) => {
     const message = error instanceof Error ? error.message : 'Failed to install agent from skillset'
     console.error('Failed to install agent from skillset:', error)
     return c.json({ error: message }, 500)
+  }
+})
+
+// GET /api/agents/my-roles - Get current user's roles on all agents (with member counts)
+agents.get('/my-roles', async (c) => {
+  try {
+    if (!isAuthMode()) {
+      return c.json({ roles: {} })
+    }
+    const userId = getCurrentUserId(c)
+
+    // Get user's roles
+    const rows = await db
+      .select({ agentSlug: agentAcl.agentSlug, role: agentAcl.role })
+      .from(agentAcl)
+      .where(eq(agentAcl.userId, userId))
+
+    if (rows.length === 0) {
+      return c.json({ roles: {} })
+    }
+
+    // Get member counts for those agents in one query
+    const slugs = rows.map((r) => r.agentSlug)
+    const counts = await db
+      .select({ agentSlug: agentAcl.agentSlug, memberCount: count() })
+      .from(agentAcl)
+      .where(inArray(agentAcl.agentSlug, slugs))
+      .groupBy(agentAcl.agentSlug)
+
+    const countMap = new Map(counts.map((c) => [c.agentSlug, c.memberCount]))
+
+    const roles: Record<string, { role: string; memberCount: number }> = {}
+    for (const row of rows) {
+      roles[row.agentSlug] = {
+        role: row.role,
+        memberCount: countMap.get(row.agentSlug) ?? 1,
+      }
+    }
+    return c.json({ roles })
+  } catch (error) {
+    console.error('Failed to fetch agent roles:', error)
+    return c.json({ error: 'Failed to fetch agent roles' }, 500)
   }
 })
 
@@ -177,6 +224,19 @@ agents.use('/:id/*', async (c, next) => {
   }
   await next()
 })
+
+// Create owner ACL entry when an agent is created in auth mode
+async function createOwnerAcl(c: Context, agentSlug: string) {
+  if (!isAuthMode()) return
+  const userId = getCurrentUserId(c)
+  await db.insert(agentAcl).values({
+    id: randomUUID(),
+    userId,
+    agentSlug,
+    role: 'owner',
+    createdAt: new Date(),
+  })
+}
 
 // Create Anthropic client lazily to use API key from settings
 function getAnthropicClient(): Anthropic {
@@ -230,18 +290,30 @@ Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
   }
 }
 
-// GET /api/agents - List all agents with status
+// GET /api/agents - List agents with status (filtered by ACL in auth mode)
 agents.get('/', async (c) => {
   try {
-    const agentList = await listAgentsWithStatus()
-    return c.json(agentList)
+    // In auth mode, only load agents the user has access to (avoids reading all agent dirs)
+    if (isAuthMode()) {
+      const userId = getCurrentUserId(c)
+      const rows = await db
+        .select({ agentSlug: agentAcl.agentSlug })
+        .from(agentAcl)
+        .where(eq(agentAcl.userId, userId))
+      const agents = await Promise.all(
+        rows.map((r) => getAgentWithStatus(r.agentSlug))
+      )
+      return c.json(agents.filter(Boolean))
+    }
+
+    return c.json(await listAgentsWithStatus())
   } catch (error) {
     console.error('Failed to fetch agents:', error)
     return c.json({ error: 'Failed to fetch agents' }, 500)
   }
 })
 
-// POST /api/agents - Create a new agent
+// POST /api/agents - Create a new agent (with owner ACL in auth mode)
 agents.post('/', async (c) => {
   try {
     const body = await c.req.json()
@@ -255,6 +327,8 @@ agents.post('/', async (c) => {
       name: name.trim(),
       description: description?.trim(),
     })
+
+    await createOwnerAcl(c, agent.slug)
 
     return c.json(agent, 201)
   } catch (error) {
@@ -323,10 +397,262 @@ agents.delete('/:id', AgentAdmin(), async (c) => {
       console.error('Failed to revoke proxy token:', error)
     }
 
+    // Clean up ACL entries
+    await db.delete(agentAcl).where(eq(agentAcl.agentSlug, slug))
+
     return c.body(null, 204)
   } catch (error) {
     console.error('Failed to delete agent:', error)
     return c.json({ error: 'Failed to delete agent' }, 500)
+  }
+})
+
+// ============================================================
+// Agent Access (ACL) endpoints
+// ============================================================
+
+// GET /api/agents/:id/access - List users with roles on this agent
+agents.get('/:id/access', AgentAdmin(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const rows = await db
+      .select({
+        userId: agentAcl.userId,
+        role: agentAcl.role,
+        createdAt: agentAcl.createdAt,
+        userName: userTable.name,
+        userEmail: userTable.email,
+      })
+      .from(agentAcl)
+      .innerJoin(userTable, eq(agentAcl.userId, userTable.id))
+      .where(eq(agentAcl.agentSlug, slug))
+    return c.json(rows)
+  } catch (error) {
+    console.error('Failed to fetch agent access:', error)
+    return c.json({ error: 'Failed to fetch agent access' }, 500)
+  }
+})
+
+// POST /api/agents/:id/access - Invite user (assign role)
+agents.post('/:id/access', AgentAdmin(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const { userId, role } = await c.req.json()
+
+    if (!userId || !role) {
+      return c.json({ error: 'userId and role are required' }, 400)
+    }
+    if (!['owner', 'user', 'viewer'].includes(role)) {
+      return c.json({ error: 'Invalid role. Must be owner, user, or viewer' }, 400)
+    }
+
+    // Check user exists
+    const [targetUser] = await db
+      .select({ id: userTable.id })
+      .from(userTable)
+      .where(eq(userTable.id, userId))
+      .limit(1)
+    if (!targetUser) {
+      return c.json({ error: 'User not found' }, 404)
+    }
+
+    // Check if ACL already exists
+    const [existing] = await db
+      .select({ id: agentAcl.id })
+      .from(agentAcl)
+      .where(and(eq(agentAcl.userId, userId), eq(agentAcl.agentSlug, slug)))
+      .limit(1)
+    if (existing) {
+      return c.json({ error: 'User already has access to this agent' }, 409)
+    }
+
+    await db.insert(agentAcl).values({
+      id: randomUUID(),
+      userId,
+      agentSlug: slug,
+      role,
+      createdAt: new Date(),
+    })
+
+    return c.json({ ok: true }, 201)
+  } catch (error) {
+    console.error('Failed to add agent access:', error)
+    return c.json({ error: 'Failed to add agent access' }, 500)
+  }
+})
+
+// PATCH /api/agents/:id/access/:userId - Change user's role
+agents.patch('/:id/access/:userId', AgentAdmin(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const targetUserId = c.req.param('userId')
+    const { role } = await c.req.json()
+
+    if (!role || !['owner', 'user', 'viewer'].includes(role)) {
+      return c.json({ error: 'Invalid role. Must be owner, user, or viewer' }, 400)
+    }
+
+    // Transaction to prevent TOCTOU race on last-owner check
+    // Note: better-sqlite3 transactions are synchronous — no async/await inside
+    const error = db.transaction((tx) => {
+      const [currentAcl] = tx
+        .select({ role: agentAcl.role })
+        .from(agentAcl)
+        .where(and(eq(agentAcl.userId, targetUserId), eq(agentAcl.agentSlug, slug)))
+        .limit(1)
+        .all()
+
+      if (!currentAcl) return 'User does not have access to this agent'
+
+      if (currentAcl.role === 'owner' && role !== 'owner') {
+        const [{ ownerCount }] = tx
+          .select({ ownerCount: count() })
+          .from(agentAcl)
+          .where(and(eq(agentAcl.agentSlug, slug), eq(agentAcl.role, 'owner')))
+          .all()
+        if (ownerCount <= 1) return 'Cannot change role: agent must have at least one owner'
+      }
+
+      tx
+        .update(agentAcl)
+        .set({ role })
+        .where(and(eq(agentAcl.userId, targetUserId), eq(agentAcl.agentSlug, slug)))
+        .run()
+
+      return null
+    })
+
+    if (error) {
+      const status = error.includes('does not have access') ? 404 : 400
+      return c.json({ error }, status)
+    }
+    return c.json({ ok: true })
+  } catch (error) {
+    console.error('Failed to update agent access:', error)
+    return c.json({ error: 'Failed to update agent access' }, 500)
+  }
+})
+
+// DELETE /api/agents/:id/access/:userId - Remove user's access
+agents.delete('/:id/access/:userId', AgentAdmin(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const targetUserId = c.req.param('userId')
+
+    // Transaction to prevent TOCTOU race on last-owner check
+    // Note: better-sqlite3 transactions are synchronous — no async/await inside
+    const error = db.transaction((tx) => {
+      const [currentAcl] = tx
+        .select({ role: agentAcl.role })
+        .from(agentAcl)
+        .where(and(eq(agentAcl.userId, targetUserId), eq(agentAcl.agentSlug, slug)))
+        .limit(1)
+        .all()
+
+      if (!currentAcl) return 'User does not have access to this agent'
+
+      if (currentAcl.role === 'owner') {
+        const [{ ownerCount }] = tx
+          .select({ ownerCount: count() })
+          .from(agentAcl)
+          .where(and(eq(agentAcl.agentSlug, slug), eq(agentAcl.role, 'owner')))
+          .all()
+        if (ownerCount <= 1) return 'Cannot remove access: agent must have at least one owner'
+      }
+
+      tx
+        .delete(agentAcl)
+        .where(and(eq(agentAcl.userId, targetUserId), eq(agentAcl.agentSlug, slug)))
+        .run()
+
+      return null
+    })
+
+    if (error) {
+      const status = error.includes('does not have access') ? 404 : 400
+      return c.json({ error }, status)
+    }
+    return c.body(null, 204)
+  } catch (error) {
+    console.error('Failed to remove agent access:', error)
+    return c.json({ error: 'Failed to remove agent access' }, 500)
+  }
+})
+
+// POST /api/agents/:id/leave - Remove yourself from an agent's ACL
+agents.post('/:id/leave', AgentRead(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const userId = getCurrentUserId(c)
+
+    const error = db.transaction((tx) => {
+      const [currentAcl] = tx
+        .select({ role: agentAcl.role })
+        .from(agentAcl)
+        .where(and(eq(agentAcl.userId, userId), eq(agentAcl.agentSlug, slug)))
+        .limit(1)
+        .all()
+
+      if (!currentAcl) return 'You do not have access to this agent'
+
+      if (currentAcl.role === 'owner') {
+        const [{ ownerCount }] = tx
+          .select({ ownerCount: count() })
+          .from(agentAcl)
+          .where(and(eq(agentAcl.agentSlug, slug), eq(agentAcl.role, 'owner')))
+          .all()
+        if (ownerCount <= 1) return 'Cannot leave: you are the only owner'
+      }
+
+      tx
+        .delete(agentAcl)
+        .where(and(eq(agentAcl.userId, userId), eq(agentAcl.agentSlug, slug)))
+        .run()
+
+      return null
+    })
+
+    if (error) {
+      return c.json({ error }, 400)
+    }
+    return c.body(null, 204)
+  } catch (error) {
+    console.error('Failed to leave agent:', error)
+    return c.json({ error: 'Failed to leave agent' }, 500)
+  }
+})
+
+// GET /api/agents/:id/access/search-users - Search users for invite
+agents.get('/:id/access/search-users', AgentAdmin(), async (c) => {
+  try {
+    const query = c.req.query('q')?.trim()
+    if (!query || query.length < 2) {
+      return c.json([])
+    }
+
+    const slug = c.req.param('id')
+
+    // Get users who already have access
+    const existingUserIds = await db
+      .select({ userId: agentAcl.userId })
+      .from(agentAcl)
+      .where(eq(agentAcl.agentSlug, slug))
+
+    const excludeIds = new Set(existingUserIds.map((r) => r.userId))
+
+    // Search users by name or email (SQLite LIKE is case-insensitive by default)
+    // Escape LIKE wildcards to prevent pattern injection (e.g. searching "%" matching all users)
+    const escaped = query.replace(/%/g, '\\%').replace(/_/g, '\\_')
+    const users = await db
+      .select({ id: userTable.id, name: userTable.name, email: userTable.email })
+      .from(userTable)
+      .where(or(like(userTable.name, `%${escaped}%`), like(userTable.email, `%${escaped}%`)))
+      .limit(20)
+
+    return c.json(users.filter((u) => !excludeIds.has(u.id)))
+  } catch (error) {
+    console.error('Failed to search users:', error)
+    return c.json({ error: 'Failed to search users' }, 500)
   }
 })
 
@@ -2454,7 +2780,7 @@ async function proxyArtifactRequest(c: any) {
 }
 
 // ALL /api/agents/:id/artifacts/:slug/* - Proxy all methods to dashboard server
-agents.all('/:id/artifacts/:artifactSlug/*', async (c) => {
+agents.all('/:id/artifacts/:artifactSlug/*', AgentRead(), async (c) => {
   try {
     return await proxyArtifactRequest(c)
   } catch (error: any) {
@@ -2464,7 +2790,7 @@ agents.all('/:id/artifacts/:artifactSlug/*', async (c) => {
 })
 
 // Also handle without trailing path
-agents.all('/:id/artifacts/:artifactSlug', async (c) => {
+agents.all('/:id/artifacts/:artifactSlug', AgentRead(), async (c) => {
   try {
     return await proxyArtifactRequest(c)
   } catch (error: any) {

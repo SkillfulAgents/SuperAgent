@@ -5,6 +5,11 @@ import { apiFetch } from '@renderer/lib/api'
 
 type AgentRole = 'owner' | 'user' | 'viewer'
 
+interface AgentRoleInfo {
+  role: AgentRole
+  memberCount: number
+}
+
 interface User {
   id: string
   name: string
@@ -19,9 +24,12 @@ interface UserContextValue {
   isAuthMode: boolean
   isPending: boolean
   agentRole: (agentSlug: string) => AgentRole | null
+  agentMemberCount: (agentSlug: string) => number
   canAccessAgent: (agentSlug: string) => boolean
   canUseAgent: (agentSlug: string) => boolean
   canAdminAgent: (agentSlug: string) => boolean
+  /** True once agent roles have been fetched (or auth mode is off) */
+  rolesReady: boolean
   signOut: () => Promise<void>
 }
 
@@ -37,8 +45,8 @@ function useAgentRoles(enabled: boolean) {
     queryKey: ['my-agent-roles'],
     queryFn: async () => {
       const res = await apiFetch('/api/agents/my-roles')
-      if (!res.ok) return {} as Record<string, AgentRole>
-      const data = await res.json() as { roles: Record<string, AgentRole> }
+      if (!res.ok) return {} as Record<string, AgentRoleInfo>
+      const data = await res.json() as { roles: Record<string, AgentRoleInfo> }
       return data.roles
     },
     enabled,
@@ -56,43 +64,48 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const isAdmin = isAuthenticated && sessionUser?.role === 'admin'
 
   // Fetch agent roles when authenticated
-  const { data: agentRoles } = useAgentRoles(isAuthenticated)
+  const { data: agentRoles, isFetched: rolesFetched } = useAgentRoles(isAuthenticated)
+  const rolesReady = !isAuthMode || !isAuthenticated || rolesFetched
 
   const agentRole = useCallback(
     (agentSlug: string): AgentRole | null => {
       if (!isAuthMode) return null
-      if (isAdmin) return 'owner' // Admins have full access
-      return agentRoles?.[agentSlug] ?? null
+      return agentRoles?.[agentSlug]?.role ?? null
     },
-    [isAdmin, agentRoles],
+    [agentRoles],
+  )
+
+  const agentMemberCount = useCallback(
+    (agentSlug: string): number => {
+      if (!isAuthMode) return 0
+      return agentRoles?.[agentSlug]?.memberCount ?? 0
+    },
+    [agentRoles],
   )
 
   const canAccessAgent = useCallback(
     (agentSlug: string): boolean => {
       if (!isAuthMode) return true
-      if (isAdmin) return true
       return agentRole(agentSlug) !== null
     },
-    [isAdmin, agentRole],
+    [agentRole],
   )
 
   const canUseAgent = useCallback(
     (agentSlug: string): boolean => {
       if (!isAuthMode) return true
-      if (isAdmin) return true
       const role = agentRole(agentSlug)
       return role === 'owner' || role === 'user'
     },
-    [isAdmin, agentRole],
+    [agentRole],
   )
 
   const canAdminAgent = useCallback(
     (agentSlug: string): boolean => {
       if (!isAuthMode) return true
-      if (isAdmin) return true
       return agentRole(agentSlug) === 'owner'
     },
-    [isAdmin, agentRole],
+    [agentRole],
   )
 
   const signOut = useCallback(async () => {
@@ -107,9 +120,11 @@ export function UserProvider({ children }: { children: ReactNode }) {
       isAuthMode,
       isPending,
       agentRole,
+      agentMemberCount,
       canAccessAgent,
       canUseAgent,
       canAdminAgent,
+      rolesReady,
       signOut,
     }),
     [
@@ -118,9 +133,11 @@ export function UserProvider({ children }: { children: ReactNode }) {
       isAdmin,
       isPending,
       agentRole,
+      agentMemberCount,
       canAccessAgent,
       canUseAgent,
       canAdminAgent,
+      rolesReady,
       signOut,
     ],
   )

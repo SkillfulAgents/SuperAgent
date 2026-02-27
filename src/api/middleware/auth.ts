@@ -64,7 +64,7 @@ function hasMinRole(actual: AgentRole | null, required: AgentRole): boolean {
 }
 
 /**
- * AgentRead — user has any role on the agent (viewer+) OR is admin.
+ * AgentRead — user has any role on the agent (viewer+).
  * Expects `:id` route param for the agent slug.
  */
 export function AgentRead(): MiddlewareHandler {
@@ -72,8 +72,6 @@ export function AgentRead(): MiddlewareHandler {
     if (!isAuthMode()) return next()
 
     const user = getUser(c)
-    if (isAdmin(user)) return next()
-
     const agentSlug = c.req.param('id')
     const role = await getUserAgentRole(user.id, agentSlug)
     if (!hasMinRole(role, 'viewer')) {
@@ -84,7 +82,7 @@ export function AgentRead(): MiddlewareHandler {
 }
 
 /**
- * AgentUser — user has 'user' or 'owner' role on the agent OR is admin.
+ * AgentUser — user has 'user' or 'owner' role on the agent.
  * Expects `:id` route param for the agent slug.
  */
 export function AgentUser(): MiddlewareHandler {
@@ -92,8 +90,6 @@ export function AgentUser(): MiddlewareHandler {
     if (!isAuthMode()) return next()
 
     const user = getUser(c)
-    if (isAdmin(user)) return next()
-
     const agentSlug = c.req.param('id')
     const role = await getUserAgentRole(user.id, agentSlug)
     if (!hasMinRole(role, 'user')) {
@@ -104,7 +100,7 @@ export function AgentUser(): MiddlewareHandler {
 }
 
 /**
- * AgentAdmin — user has 'owner' role on the agent OR is admin.
+ * AgentAdmin — user has 'owner' role on the agent.
  * Expects `:id` route param for the agent slug.
  */
 export function AgentAdmin(): MiddlewareHandler {
@@ -112,8 +108,6 @@ export function AgentAdmin(): MiddlewareHandler {
     if (!isAuthMode()) return next()
 
     const user = getUser(c)
-    if (isAdmin(user)) return next()
-
     const agentSlug = c.req.param('id')
     const role = await getUserAgentRole(user.id, agentSlug)
     if (!hasMinRole(role, 'owner')) {

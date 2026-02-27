@@ -1,6 +1,7 @@
 
 import * as React from 'react'
-import { Settings, FileText, KeyRound, Sparkles, Link2, ScrollText, Plug } from 'lucide-react'
+import { Settings, FileText, KeyRound, Sparkles, Link2, ScrollText, Plug, Users } from 'lucide-react'
+import { useUser } from '@renderer/context/user-context'
 import { Button } from '@renderer/components/ui/button'
 import {
   Dialog,
@@ -26,10 +27,11 @@ import { SkillsTab } from './settings/skills-tab'
 import { ConnectedAccountsTab } from './settings/connected-accounts-tab'
 import { RemoteMcpsTab } from './settings/remote-mcps-tab'
 import { AuditLogTab } from './settings/audit-log-tab'
+import { AccessTab } from './settings/access-tab'
 
-type SettingsSection = 'general' | 'system-prompt' | 'secrets' | 'skills' | 'connected-accounts' | 'remote-mcps' | 'audit-log'
+type SettingsSection = 'general' | 'system-prompt' | 'secrets' | 'skills' | 'connected-accounts' | 'remote-mcps' | 'audit-log' | 'access'
 
-const navItems = [
+const baseNavItems = [
   { id: 'general' as const, name: 'General', icon: Settings },
   { id: 'system-prompt' as const, name: 'System Prompt', icon: FileText },
   { id: 'secrets' as const, name: 'Secrets', icon: KeyRound },
@@ -38,6 +40,8 @@ const navItems = [
   { id: 'remote-mcps' as const, name: 'MCPs', icon: Plug },
   { id: 'audit-log' as const, name: 'API Log', icon: ScrollText },
 ]
+
+const accessNavItem = { id: 'access' as const, name: 'Access', icon: Users }
 
 interface AgentSettingsDialogProps {
   agent: ApiAgent
@@ -54,6 +58,9 @@ export function AgentSettingsDialog({
   const [name, setName] = React.useState(agent.name)
   const [instructions, setInstructions] = React.useState(agent.instructions || '')
   const updateAgent = useUpdateAgent()
+  const { isAuthMode, canAdminAgent, rolesReady } = useUser()
+  const isOwner = canAdminAgent(agent.slug)
+  const navItems = isAuthMode ? [...baseNavItems, accessNavItem] : baseNavItems
 
   // Reset form when dialog opens with new agent data
   React.useEffect(() => {
@@ -82,7 +89,15 @@ export function AgentSettingsDialog({
         <DialogDescription className="sr-only">
           Configure settings for {agent.name}
         </DialogDescription>
-        <SidebarProvider className="items-start min-h-0">
+        {isAuthMode && rolesReady && !isOwner && (
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm rounded-lg">
+            <div className="text-center space-y-2">
+              <p className="text-sm font-medium">You don&apos;t have permission to edit settings</p>
+              <p className="text-xs text-muted-foreground">Only agent owners can modify settings.</p>
+            </div>
+          </div>
+        )}
+        <SidebarProvider className="items-start min-h-0" {...(isAuthMode && rolesReady && !isOwner ? { inert: '' } : {})}>
           <Sidebar collapsible="none" className="hidden md:flex w-48">
             <SidebarContent>
               <SidebarGroup>
@@ -142,8 +157,11 @@ export function AgentSettingsDialog({
               {activeSection === 'audit-log' && (
                 <AuditLogTab agentSlug={agent.slug} />
               )}
+              {activeSection === 'access' && (
+                <AccessTab agentSlug={agent.slug} />
+              )}
             </div>
-            {activeSection !== 'secrets' && activeSection !== 'skills' && activeSection !== 'connected-accounts' && activeSection !== 'remote-mcps' && activeSection !== 'audit-log' && (
+            {activeSection !== 'secrets' && activeSection !== 'skills' && activeSection !== 'connected-accounts' && activeSection !== 'remote-mcps' && activeSection !== 'audit-log' && activeSection !== 'access' && (
               <div className="flex items-center justify-end gap-2 border-t p-4">
                 <Button variant="outline" onClick={() => onOpenChange(false)}>
                   Cancel

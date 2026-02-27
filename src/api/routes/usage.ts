@@ -1,9 +1,14 @@
 import { Hono } from 'hono'
-import { listAgents } from '@shared/lib/services/agent-service'
+import { listAgents, getAgent } from '@shared/lib/services/agent-service'
 import { getAgentClaudeConfigDir } from '@shared/lib/utils/file-storage'
 import { subDays, format, addDays } from 'date-fns'
 import type { DailyUsageEntry, UsageResponse } from '@shared/lib/types/usage'
 import { Authenticated } from '../middleware/auth'
+import { isAuthMode } from '@shared/lib/auth/mode'
+import { getCurrentUserId } from '@shared/lib/auth/config'
+import { db } from '@shared/lib/db'
+import { agentAcl } from '@shared/lib/db/schema'
+import { eq } from 'drizzle-orm'
 
 const usage = new Hono()
 
@@ -17,7 +22,19 @@ usage.get('/', async (c) => {
   const sinceDate = subDays(now, days)
   const since = format(sinceDate, 'yyyyMMdd')
 
-  const agents = await listAgents()
+  // In auth mode, only load agents the user has access to
+  let agents
+  if (isAuthMode()) {
+    const userId = getCurrentUserId(c)
+    const rows = await db
+      .select({ agentSlug: agentAcl.agentSlug })
+      .from(agentAcl)
+      .where(eq(agentAcl.userId, userId))
+    const results = await Promise.all(rows.map((r) => getAgent(r.agentSlug)))
+    agents = results.filter(Boolean) as Awaited<ReturnType<typeof listAgents>>
+  } else {
+    agents = await listAgents()
+  }
 
   // Dynamic import — ccusage is ESM-only
   // Suppress ccusage's consola logging
