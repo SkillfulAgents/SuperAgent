@@ -119,17 +119,7 @@ If you need to interact with external services like Gmail, Slack, GitHub, or oth
 - `toolkit` (required): The service to connect (lowercase, e.g., `gmail`, `slack`, `github`)
 - `reason` (optional): Explain why you need access - helps the user understand the request
 
-**Supported services:**
-- `gmail` - Google email
-- `googlecalendar` - Google calendar
-- `googledrive` - Google cloud storage
-- `slack` - Team communication
-- `github` - Code repositories
-- `notion` - Workspace and documentation
-- `linear` - Issue tracking
-- `twitter` - Social media
-- `discord` - Community chat
-- `trello` - Project boards
+**Supported services include:** Google Workspace (`gmail`, `googlecalendar`, `googledrive`, `googlesheets`, `googledocs`, `googlemeet`, `googletasks`, `youtube`), Microsoft (`outlook`, `microsoftteams`), communication (`slack`, `discord`, `zoom`, `gong`), developer tools (`github`, `gitlab`, `bitbucket`, `sentry`, `datadog`, `pagerduty`), project management (`notion`, `linear`, `jira`, `confluence`, `asana`, `monday`, `clickup`, `trello`), CRM (`hubspot`, `salesforce`, `pipedrive`, `zendesk`, `intercom`), storage (`airtable`, `dropbox`, `box`, `docusign`), social (`twitter`, `linkedin`, `instagram`), commerce/finance (`shopify`, `stripe`, `quickbooks`, `xero`), marketing (`mailchimp`), design (`figma`), and scheduling (`calendly`, `typeform`).
 
 **If you need access to these services - ask for account, do not ask for raw tokens / API keys**
 

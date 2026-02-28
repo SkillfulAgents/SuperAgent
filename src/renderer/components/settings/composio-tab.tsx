@@ -13,7 +13,7 @@ import {
   useInvalidateConnectedAccounts,
   type ConnectedAccount,
 } from '@renderer/hooks/use-connected-accounts'
-import { Eye, EyeOff, Plus, Trash2, ExternalLink, Loader2, Pencil, Check, X } from 'lucide-react'
+import { Eye, EyeOff, Plus, Trash2, ExternalLink, Loader2, Pencil, Check, X, Search } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import type { Provider } from '@shared/lib/composio/providers'
 import { formatDistanceToNow } from 'date-fns'
@@ -235,6 +235,7 @@ function ConnectedAccountsSection() {
   const [deletingAccount, setDeletingAccount] = useState<string | null>(null)
   const [editingAccount, setEditingAccount] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
+  const [providerFilter, setProviderFilter] = useState('')
 
   // Listen for OAuth callback messages (both IPC in Electron and postMessage in web)
   useEffect(() => {
@@ -467,26 +468,60 @@ function ConnectedAccountsSection() {
       {/* Connect new account */}
       <div className="space-y-2">
         <Label>Connect a new account</Label>
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Filter services..."
+            value={providerFilter}
+            onChange={(e) => setProviderFilter(e.target.value)}
+            className="pl-8"
+          />
+        </div>
         <div className="grid grid-cols-2 gap-2">
-          {providers.map((provider) => (
-            <Button
-              key={provider.slug}
-              variant="outline"
-              size="sm"
-              className="justify-start"
-              onClick={() => handleConnect(provider.slug)}
-              disabled={connectingProvider !== null}
-            >
-              {connectingProvider === provider.slug ? (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              ) : (
-                <Plus className="h-4 w-4 mr-2" />
-              )}
-              {provider.displayName}
-            </Button>
-          ))}
+          {providers
+            .filter((p) => {
+              if (!providerFilter) return true
+              const term = providerFilter.toLowerCase()
+              return (
+                p.displayName.toLowerCase().includes(term) ||
+                p.slug.toLowerCase().includes(term) ||
+                p.description.toLowerCase().includes(term)
+              )
+            })
+            .map((provider) => (
+              <Button
+                key={provider.slug}
+                variant="outline"
+                size="sm"
+                className="justify-start"
+                onClick={() => handleConnect(provider.slug)}
+                disabled={connectingProvider !== null}
+              >
+                {connectingProvider === provider.slug ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Plus className="h-4 w-4 mr-2" />
+                )}
+                <HighlightMatch text={provider.displayName} query={providerFilter} />
+              </Button>
+            ))}
         </div>
       </div>
     </div>
+  )
+}
+
+function HighlightMatch({ text, query }: { text: string; query: string }) {
+  if (!query) return <>{text}</>
+
+  const idx = text.toLowerCase().indexOf(query.toLowerCase())
+  if (idx === -1) return <>{text}</>
+
+  return (
+    <span>
+      {text.slice(0, idx)}
+      <span className="bg-yellow-200 dark:bg-yellow-800 rounded-sm">{text.slice(idx, idx + query.length)}</span>
+      {text.slice(idx + query.length)}
+    </span>
   )
 }
