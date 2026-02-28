@@ -7,10 +7,22 @@ let apiPortRef: number = 0
 let updateInterval: NodeJS.Timeout | null = null
 
 /**
+ * Get the directory containing status icons.
+ * In dev mode, icons are in the project's build/ directory.
+ * In production, they are bundled as extraResources under tray-icons/.
+ */
+function getIconDir(): string {
+  if (process.env.ELECTRON_RENDERER_URL) {
+    return path.join(__dirname, '../../build')
+  }
+  return path.join(process.resourcesPath, 'tray-icons')
+}
+
+/**
  * Create a status icon from file
  */
 function createStatusIcon(status: ActivityStatus): Electron.NativeImage {
-  const iconPath = path.join(__dirname, `../../build/status_${status}.png`)
+  const iconPath = path.join(getIconDir(), `status_${status}.png`)
   return nativeImage.createFromPath(iconPath)
 }
 
@@ -81,26 +93,28 @@ async function buildAppMenu(): Promise<void> {
     agentsSubmenu.push({ label: 'No agents', enabled: false })
   }
 
+  const isMac = process.platform === 'darwin'
+
   const template: Electron.MenuItemConstructorOptions[] = [
-    // App menu (macOS uses the app name automatically)
-    {
+    // App menu (macOS only — on macOS, the first menu becomes the "app" menu)
+    ...(isMac ? [{
       label: 'SuperAgent',
       submenu: [
-        { role: 'about', label: 'About SuperAgent' },
-        { type: 'separator' },
+        { role: 'about' as const, label: 'About SuperAgent' },
+        { type: 'separator' as const },
         {
           label: 'Settings...',
           accelerator: 'CmdOrCtrl+,',
           click: () => sendToRenderer('open-settings'),
         },
-        { type: 'separator' },
-        { role: 'hide' },
-        { role: 'hideOthers' },
-        { role: 'unhide' },
-        { type: 'separator' },
-        { role: 'quit' },
+        { type: 'separator' as const },
+        { role: 'hide' as const },
+        { role: 'hideOthers' as const },
+        { role: 'unhide' as const },
+        { type: 'separator' as const },
+        { role: 'quit' as const },
       ],
-    },
+    }] : []),
     // File menu
     {
       label: 'File',
@@ -110,8 +124,16 @@ async function buildAppMenu(): Promise<void> {
           accelerator: 'CmdOrCtrl+N',
           click: () => sendToRenderer('open-create-agent'),
         },
+        ...(!isMac ? [
+          { type: 'separator' as const },
+          {
+            label: 'Settings...',
+            accelerator: 'CmdOrCtrl+,',
+            click: () => sendToRenderer('open-settings'),
+          },
+        ] : []),
         { type: 'separator' },
-        { role: 'close' },
+        ...(!isMac ? [{ role: 'quit' as const }] : [{ role: 'close' as const }]),
       ],
     },
     // Edit menu (needed for standard text editing shortcuts)
@@ -138,8 +160,10 @@ async function buildAppMenu(): Promise<void> {
       submenu: [
         { role: 'minimize' },
         { role: 'zoom' },
-        { type: 'separator' },
-        { role: 'front' },
+        ...(isMac ? [
+          { type: 'separator' as const },
+          { role: 'front' as const },
+        ] : []),
       ],
     },
   ]
@@ -159,11 +183,15 @@ export function createAppMenu(
   apiPortRef = apiPort
 
   // Initial build
-  buildAppMenu()
+  buildAppMenu().catch((error) => {
+    console.error('Failed to build app menu:', error)
+  })
 
   // Update periodically to refresh agent list (every 30s, same as tray)
   updateInterval = setInterval(() => {
-    buildAppMenu()
+    buildAppMenu().catch((error) => {
+      console.error('Failed to update app menu:', error)
+    })
   }, 30000)
 }
 

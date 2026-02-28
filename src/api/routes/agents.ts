@@ -1938,12 +1938,19 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
 
     const mcpConfigs = mcpMappings
       .filter(({ mcp }) => mcp.status === 'active')
-      .map(({ mcp }) => ({
-        id: mcp.id,
-        name: mcp.name,
-        proxyUrl: `http://${hostUrl}:${appPort}/api/mcp-proxy/${slug}/${mcp.id}`,
-        tools: mcp.toolsJson ? JSON.parse(mcp.toolsJson) : [],
-      }))
+      .map(({ mcp }) => {
+        // Only pass tool names (not full schemas) to keep env var size small
+        let toolNames: Array<{ name: string }> = []
+        if (mcp.toolsJson) {
+          try { toolNames = JSON.parse(mcp.toolsJson).map((t: any) => ({ name: t.name })) } catch { /* ignore */ }
+        }
+        return {
+          id: mcp.id,
+          name: mcp.name,
+          proxyUrl: `http://${hostUrl}:${appPort}/api/mcp-proxy/${slug}/${mcp.id}`,
+          tools: toolNames,
+        }
+      })
 
     // Update container env var
     const envResponse = await client.fetch('/env', {

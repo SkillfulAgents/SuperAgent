@@ -444,10 +444,22 @@ export async function getAccountDisplayName(
   toolkitSlug: string,
   fallbackName: string
 ): Promise<string> {
-  // Only fetch user info for supported providers
-  const googleToolkits = ['gmail', 'googlecalendar', 'googledrive']
+  // Fetch user-specific info for providers that support it
+  const googleToolkits = [
+    'gmail',
+    'googlecalendar',
+    'googledrive',
+    'googlesheets',
+    'googledocs',
+    'googlemeet',
+    'googletasks',
+    'youtube',
+  ]
+  const microsoftToolkits = ['outlook', 'microsoftteams']
 
-  if (googleToolkits.includes(toolkitSlug.toLowerCase())) {
+  const slug = toolkitSlug.toLowerCase()
+
+  if (googleToolkits.includes(slug)) {
     try {
       const { accessToken } = await getConnectionToken(connectionId)
       const userInfo = await getGoogleUserInfo(accessToken)
@@ -456,6 +468,27 @@ export async function getAccountDisplayName(
       }
     } catch (error) {
       console.warn('Could not fetch user info for display name:', error)
+    }
+  } else if (microsoftToolkits.includes(slug)) {
+    try {
+      const { accessToken } = await getConnectionToken(connectionId)
+      const res = await fetch('https://graph.microsoft.com/v1.0/me', {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      })
+      if (res.ok) {
+        const profile = (await res.json()) as {
+          mail?: string
+          userPrincipalName?: string
+        }
+        if (profile.mail || profile.userPrincipalName) {
+          return profile.mail || profile.userPrincipalName!
+        }
+      }
+    } catch (error) {
+      console.warn(
+        'Could not fetch Microsoft user info for display name:',
+        error
+      )
     }
   }
 

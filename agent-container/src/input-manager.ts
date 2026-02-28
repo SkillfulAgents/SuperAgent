@@ -20,9 +20,20 @@ interface PendingInput<T extends InputValue = string> {
   createdAt: Date
 }
 
+// Buffered result for when resolve/reject arrives before createPending
+type EarlyResult =
+  | { type: 'resolve'; value: InputValue }
+  | { type: 'reject'; error: string }
+
 class InputManager {
   // Pending requests keyed by toolUseId
   private pending: Map<string, PendingInput<InputValue>> = new Map()
+
+  // Buffered results for resolve/reject calls that arrive before createPending.
+  // This handles the race condition where the UI responds to a tool call before
+  // the tool handler has registered its pending entry (e.g. parallel tool calls
+  // where the user answers the second one before its handler has started).
+  private earlyResults: Map<string, EarlyResult> = new Map()
 
   // Current toolUseId captured by the PreToolUse hook
   // The hook sets this before the tool handler runs
@@ -57,6 +68,23 @@ class InputManager {
     secretName: string,
     reason?: string
   ): Promise<string> {
+    // Check if the user already responded before this pending was created
+    const early = this.earlyResults.get(toolUseId)
+    if (early) {
+      this.earlyResults.delete(toolUseId)
+      if (early.type === 'resolve') {
+        console.log(
+          `[InputManager] Immediately resolving ${toolUseId} for secret ${secretName} (early result)`
+        )
+        return Promise.resolve(early.value as string)
+      } else {
+        console.log(
+          `[InputManager] Immediately rejecting ${toolUseId} for secret ${secretName} (early result): ${early.error}`
+        )
+        return Promise.reject(new Error(early.error))
+      }
+    }
+
     return new Promise((resolve, reject) => {
       this.pending.set(toolUseId, {
         resolve: resolve as (value: InputValue) => void,
@@ -84,6 +112,23 @@ class InputManager {
     inputType: string,
     metadata?: unknown
   ): Promise<T> {
+    // Check if the user already responded before this pending was created
+    const early = this.earlyResults.get(toolUseId)
+    if (early) {
+      this.earlyResults.delete(toolUseId)
+      if (early.type === 'resolve') {
+        console.log(
+          `[InputManager] Immediately resolving ${inputType} request ${toolUseId} (early result)`
+        )
+        return Promise.resolve(early.value as T)
+      } else {
+        console.log(
+          `[InputManager] Immediately rejecting ${inputType} request ${toolUseId} (early result): ${early.error}`
+        )
+        return Promise.reject(new Error(early.error))
+      }
+    }
+
     return new Promise((resolve, reject) => {
       this.pending.set(toolUseId, {
         resolve: resolve as (value: InputValue) => void,
@@ -101,15 +146,23 @@ class InputManager {
 
   /**
    * Resolve a pending request with a value.
+   * If no pending request exists yet (e.g. parallel tool calls race condition),
+   * the value is buffered so createPending can resolve immediately when called.
    * @param toolUseId - The tool_use_id to resolve
    * @param value - The value provided by the user (string or Record<string, string>)
-   * @returns true if the request was found and resolved, false otherwise
+   * @returns true (always succeeds — either resolves immediately or buffers)
    */
   resolve(toolUseId: string, value: InputValue): boolean {
     const pending = this.pending.get(toolUseId)
     if (!pending) {
-      console.log(`[InputManager] No pending request found for ${toolUseId}`)
-      return false
+      // The tool handler hasn't called createPending yet (race condition with
+      // parallel tool calls). Buffer the value so createPending can resolve
+      // immediately when it runs.
+      console.log(
+        `[InputManager] No pending request found for ${toolUseId}, buffering early resolve`
+      )
+      this.earlyResults.set(toolUseId, { type: 'resolve', value })
+      return true
     }
 
     console.log(
@@ -122,15 +175,23 @@ class InputManager {
 
   /**
    * Reject a pending request with an error.
+   * If no pending request exists yet (e.g. parallel tool calls race condition),
+   * the rejection is buffered so createPending can reject immediately when called.
    * @param toolUseId - The tool_use_id to reject
    * @param error - Error message describing why the request was rejected
-   * @returns true if the request was found and rejected, false otherwise
+   * @returns true (always succeeds — either rejects immediately or buffers)
    */
   reject(toolUseId: string, error: string): boolean {
     const pending = this.pending.get(toolUseId)
     if (!pending) {
-      console.log(`[InputManager] No pending request found for ${toolUseId}`)
-      return false
+      // The tool handler hasn't called createPending yet (race condition with
+      // parallel tool calls). Buffer the rejection so createPending can reject
+      // immediately when it runs.
+      console.log(
+        `[InputManager] No pending request found for ${toolUseId}, buffering early reject`
+      )
+      this.earlyResults.set(toolUseId, { type: 'reject', error })
+      return true
     }
 
     console.log(
@@ -181,6 +242,13 @@ class InputManager {
         pending.reject(new Error('Input request timed out'))
         this.pending.delete(toolUseId)
       }
+    }
+    // Early results should be consumed almost immediately; clear any stragglers
+    if (this.earlyResults.size > 0) {
+      console.log(
+        `[InputManager] Cleaning up ${this.earlyResults.size} stale early results`
+      )
+      this.earlyResults.clear()
     }
   }
 }

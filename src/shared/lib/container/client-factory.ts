@@ -77,6 +77,10 @@ function canAttemptStart(runner: ContainerRunner): boolean {
     // On macOS, we can start Docker Desktop or Podman machine
     return true
   }
+  if (os === 'win32' && runner === 'docker') {
+    // On Windows, we can start Docker Desktop
+    return true
+  }
   // On Linux, Docker typically requires sudo to start the daemon
   // Podman on Linux is daemonless and should just work if installed
   return false
@@ -86,6 +90,7 @@ function canAttemptStart(runner: ContainerRunner): boolean {
  * Attempt to start a container runtime.
  * Returns true if start was attempted (not necessarily successful).
  */
+// TODO: disgusting piece of code. The whole idea of having the container client classes is that they should encapsulate all runtime-specific logic, including starting the runtime if needed. We should move this logic into static methods on each client class, e.g., DockerContainerClient.startRuntime(), PodmanContainerClient.startRuntime(), etc. Then this function can just delegate to the appropriate class without needing to know about platform-specific details here. Refactor this in the future to clean up the code and adhere to better separation of concerns.
 export async function startRunner(runner: ContainerRunner): Promise<{ success: boolean; message: string }> {
   const os = platform()
 
@@ -133,6 +138,21 @@ export async function startRunner(runner: ContainerRunner): Promise<{ success: b
           return { success: true, message: 'Podman machine is already running.' }
         }
         return { success: false, message: `Failed to start Podman machine: ${error.message}` }
+      }
+    }
+  } else if (os === 'win32') {
+    if (runner === 'docker') {
+      try {
+        // Start Docker Desktop on Windows
+        const dockerDesktopPath = 'C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe'
+        if (fs.existsSync(dockerDesktopPath)) {
+          const { spawn } = await import('child_process')
+          spawn(dockerDesktopPath, [], { detached: true, stdio: 'ignore' }).unref()
+          return { success: true, message: 'Docker Desktop is starting...' }
+        }
+        return { success: false, message: 'Docker Desktop not found. Is it installed?' }
+      } catch (error) {
+        return { success: false, message: 'Failed to start Docker Desktop. Is it installed?' }
       }
     }
   } else if (os === 'linux') {

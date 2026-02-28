@@ -10,10 +10,14 @@ if (isElectron() && getPlatform() === 'darwin') {
 }
 
 // Initialize API URL before rendering (needed for Electron where port may vary)
-initApiBaseUrl().then(() => {
-  ReactDOM.createRoot(document.getElementById('root')!).render(
-    <React.StrictMode>
-      <App />
-    </React.StrictMode>
-  )
-})
+initApiBaseUrl()
+  .catch((error) => {
+    console.error('Failed to initialize API URL:', error)
+  })
+  .finally(() => {
+    ReactDOM.createRoot(document.getElementById('root')!).render(
+      <React.StrictMode>
+        <App />
+      </React.StrictMode>
+    )
+  })

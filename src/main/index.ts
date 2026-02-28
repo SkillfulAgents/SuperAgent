@@ -75,9 +75,9 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
     },
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 16, y: 16 },
-    ...(process.platform === 'darwin' && { // translucent window on macOS for the sidebar
+    ...(process.platform === 'darwin' && {
+      titleBarStyle: 'hiddenInset' as const,
+      trafficLightPosition: { x: 16, y: 16 },
       vibrancy: 'sidebar' as const,
       visualEffectState: 'active' as const,
     }),
@@ -356,8 +356,9 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
-  // On macOS, keep app running until explicitly quit
-  if (process.platform !== 'darwin') {
+  // On macOS and Windows, keep app running in the background (system tray)
+  // On Linux, quit when all windows are closed
+  if (process.platform === 'linux') {
     app.quit()
   }
 })

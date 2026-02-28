@@ -23,6 +23,11 @@ export function createTray(
   tray = new Tray(icon)
   tray.setToolTip('Superagent')
 
+  // On Windows, clicking the tray icon should show/focus the window
+  if (process.platform === 'win32') {
+    tray.on('click', () => showWindow())
+  }
+
   // Initial menu build
   updateTrayMenu()
 
@@ -65,6 +70,11 @@ export function setTrayVisible(visible: boolean): void {
       const icon = createTrayIcon()
       tray = new Tray(icon)
       tray.setToolTip('Superagent')
+
+      // On Windows, clicking the tray icon should show/focus the window
+      if (process.platform === 'win32') {
+        tray.on('click', () => showWindow())
+      }
 
       // Set initial simple menu, then update async
       const initialMenu = Menu.buildFromTemplate([
@@ -114,14 +124,20 @@ function getIconDir(): string {
 }
 
 /**
- * Create the tray icon from file
+ * Create the tray icon from file.
+ * On macOS, uses a template image (auto-inverts for light/dark menu bar).
+ * On Windows/Linux, uses the app icon directly.
  */
 function createTrayIcon(): Electron.NativeImage {
-  // Use template image — Electron automatically picks up @2x version for Retina displays
-  const iconPath = path.join(getIconDir(), 'trayTemplate.png')
-  const icon = nativeImage.createFromPath(iconPath)
-  icon.setTemplateImage(true)
-  return icon
+  if (process.platform === 'darwin') {
+    const iconPath = path.join(getIconDir(), 'trayTemplate.png')
+    const icon = nativeImage.createFromPath(iconPath)
+    icon.setTemplateImage(true)
+    return icon
+  }
+  // Windows/Linux: use a dedicated high-res tray icon — the OS handles DPI scaling
+  const iconPath = path.join(getIconDir(), 'trayIcon.png')
+  return nativeImage.createFromPath(iconPath)
 }
 
 /**

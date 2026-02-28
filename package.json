@@ -1,6 +1,6 @@
 {
   "name": "superagent",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "main": "dist/main/index.js",
   "scripts": {
@@ -54,7 +54,7 @@
     "adm-zip": "^0.5.16",
     "archiver": "^7.0.1",
     "better-auth": "^1.4.19",
-    "better-sqlite3": "^11.3.0",
+    "better-sqlite3": "^12.6.2",
     "ccusage": "^15.2.0",
     "chrono-node": "^2.9.0",
     "class-variance-authority": "^0.7.1",
@@ -84,6 +84,9 @@
     "@hono/vite-dev-server": "^0.24.1",
     "@playwright/test": "^1.58.0",
     "@tailwindcss/typography": "^0.5.19",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/adm-zip": "^0.5.7",
     "@types/archiver": "^7.0.0",
     "@types/better-sqlite3": "^7.6.11",
@@ -107,6 +110,7 @@
     "eslint": "^8.0.0",
     "eslint-plugin-react": "^7.37.3",
     "eslint-plugin-react-hooks": "^5.1.0",
+    "jsdom": "^28.1.0",
     "postcss": "^8.4.0",
     "tailwindcss": "^3.4.0",
     "tsup": "^8.3.5",
@@ -134,7 +138,8 @@
         "to": "tray-icons",
         "filter": [
           "tray*",
-          "status_*"
+          "status_*",
+          "icon*"
         ]
       }
     ],
@@ -151,14 +156,31 @@
     },
     "win": {
       "target": [
-        "nsis",
-        "zip"
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
       ],
       "icon": "build/icon.png"
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Superagent",
+      "uninstallDisplayName": "Superagent"
     },
     "publish": {
       "provider": "github",

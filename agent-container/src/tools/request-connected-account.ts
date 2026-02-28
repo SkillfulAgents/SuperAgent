@@ -21,19 +21,7 @@ Authorization: Bearer $PROXY_TOKEN
 
 The CONNECTED_ACCOUNTS env var contains JSON mapping toolkit names to arrays of {name, id} objects.
 
-Supported toolkits include:
-- gmail - Google email service
-- googlecalendar - Google calendar and scheduling
-- googledrive - Google cloud storage
-- slack - Team communication platform
-- github - Code repository and collaboration
-- notion - Workspace and documentation
-- linear - Issue tracking and project management
-- twitter - Social media platform
-- discord - Community chat platform
-- trello - Project boards and task management
-
-Use this when you need to interact with external services on behalf of the user.`,
+Common toolkits include gmail, slack, github, notion, jira, salesforce, and many more. Use search_connected_account_services to discover all available services and their toolkit slugs.`,
   {
     toolkit: z
       .string()

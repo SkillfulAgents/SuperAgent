@@ -7,6 +7,10 @@ import { inputManager } from './input-manager';
 import { setCurrentBrowserSessionId } from './tools/browser';
 import { sanitizeMcpName } from './sanitize-mcp-name';
 
+// Prefix for system-injected user messages that should be hidden in the UI.
+// Keep in sync with SYSTEM_MESSAGE_PREFIX in src/renderer/components/messages/message-list.tsx
+const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] ';
+
 // Load platform system prompt from file
 const PLATFORM_SYSTEM_PROMPT = fs.readFileSync(
   path.join(__dirname, 'system-prompt.md'),
@@ -323,7 +327,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         await this.interrupt();
         console.log(`[ClaudeCodeProcess] Interrupt complete, sending MCP continuation for: ${sanitizedName}`);
         await this.sendMessage(
-          `[The remote MCP server "${name}" has been fully registered and its tools are now available. Please proceed to use them to fulfill the original request. Do not request the MCP server again.]`
+          `${SYSTEM_MESSAGE_PREFIX}The remote MCP server "${name}" has been fully registered and its tools are now available. Please proceed to use them to fulfill the original request. Do not request the MCP server again.`
         );
       } catch (err) {
         console.error(`[ClaudeCodeProcess] MCP injection via interrupt failed:`, err);

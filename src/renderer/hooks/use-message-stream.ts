@@ -38,6 +38,7 @@ interface RemoteMcpRequest {
   url: string
   name?: string
   reason?: string
+  authHint?: 'oauth' | 'bearer'
 }
 
 export interface SubagentInfo {
@@ -410,6 +411,7 @@ function getOrCreateEventSource(
           url: data.url,
           name: data.name,
           reason: data.reason,
+          authHint: data.authHint,
         }
         if (current) {
           streamStates.set(sessionId, {

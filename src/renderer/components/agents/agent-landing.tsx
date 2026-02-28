@@ -5,7 +5,7 @@ import { Input } from '@renderer/components/ui/input'
 import { Textarea } from '@renderer/components/ui/textarea'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Checkbox } from '@renderer/components/ui/checkbox'
-import { Send, Loader2, Sparkles, Paperclip, Search, RefreshCw, ChevronLeft, ChevronRight, Filter, Eye } from 'lucide-react'
+import { Send, Loader2, Sparkles, Paperclip, Search, RefreshCw, ChevronLeft, ChevronRight, Filter, Eye, Maximize2, Minimize2 } from 'lucide-react'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
 import { useAgentSkills, useDiscoverableSkills, useRefreshAgentSkills } from '@renderer/hooks/use-agent-skills'
 import { AgentSkillCard } from './agent-skill-card'
@@ -29,6 +29,8 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [isUploading, setIsUploading] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
+  const [isExpanded, setIsExpanded] = useState(false)
+  const [manuallyCollapsed, setManuallyCollapsed] = useState(false)
   const [skillSearch, setSkillSearch] = useState('')
   const [skillPage, setSkillPage] = useState(0)
   const [selectedSkillsets, setSelectedSkillsets] = useState<Set<string> | null>(null)
@@ -79,6 +81,14 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Auto-expand when message gets long (5+ lines)
+  useEffect(() => {
+    const lineCount = message.split('\n').length
+    if (lineCount >= 5 && !isExpanded && !manuallyCollapsed) {
+      setIsExpanded(true)
+    }
+  }, [message, isExpanded, manuallyCollapsed])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -136,11 +146,8 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
     }
   }
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      handleSubmit(e)
-    }
+  const handleKeyDown = (_e: React.KeyboardEvent) => {
+    // Enter always inserts a newline on the landing page; only the send button submits
   }
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -210,7 +217,7 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
 
   return (
     <div className="flex-1 flex flex-col items-center overflow-y-auto p-8">
-      <div className="w-full max-w-2xl space-y-6 my-auto">
+      <div className={`w-full space-y-6 my-auto transition-[max-width] duration-300 ease-in-out ${isExpanded ? 'max-w-5xl' : 'max-w-2xl'}`}>
         <div className="text-center space-y-2">
           <h1 className="text-2xl font-semibold">
             {isViewOnly ? agent.name : `Start a conversation with ${agent.name}`}
@@ -257,7 +264,7 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  className="min-h-[120px] pr-12 resize-none text-base"
+                  className={`pr-12 resize-none text-base transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh]' : 'min-h-[120px]'}`}
                   disabled={isDisabled}
                   autoFocus
                   data-testid="landing-message-input"
@@ -270,6 +277,22 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
                     className="hidden"
                     onChange={handleFileSelect}
                   />
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    className="h-8 w-8"
+                    onClick={() => {
+                      setIsExpanded((v) => {
+                        if (v) setManuallyCollapsed(true)
+                        else setManuallyCollapsed(false)
+                        return !v
+                      })
+                    }}
+                    title={isExpanded ? 'Collapse input' : 'Expand input'}
+                  >
+                    {isExpanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+                  </Button>
                   <Button
                     type="button"
                     size="icon"
@@ -305,7 +328,7 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
         )}
 
         {/* Agent Skills Section — only shown to owners who can manage skills */}
-        {isOwner && skills.length > 0 && (
+        {isOwner && !isExpanded && skills.length > 0 && (
           <div className="pt-6 border-t">
             <div className="flex items-center gap-2 mb-3">
               <Sparkles className="h-4 w-4 text-muted-foreground" />
@@ -333,7 +356,7 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
         )}
 
         {/* Discover Skills Section — only shown to owners who can install skills */}
-        {isOwner && discoverableSkills.length > 0 && (
+        {isOwner && !isExpanded && discoverableSkills.length > 0 && (
           <div className="pt-6 border-t">
             <div className="flex items-center gap-2 mb-3">
               <Search className="h-4 w-4 text-muted-foreground shrink-0" />

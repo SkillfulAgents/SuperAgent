@@ -258,7 +258,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
         filter={slashFilter ?? ''}
       />
       <AttachmentPreview attachments={attachments} onRemove={removeAttachment} />
-      <div className="flex gap-2">
+      <div className={`flex items-center gap-2 ${attachments.length > 0 ? 'mt-2' : ''}`}>
         <input
           ref={fileInputRef}
           type="file"
@@ -270,6 +270,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
           type="button"
           size="icon"
           variant="ghost"
+          className="h-[34px] w-[34px]"
           onClick={() => fileInputRef.current?.click()}
           disabled={isDisabled}
           title="Attach file"
@@ -291,7 +292,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
                 : 'Type a message...'
           }
           disabled={isDisabled}
-          className="flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 min-h-[40px] max-h-[200px] overflow-y-auto"
+          className="flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 min-h-9 max-h-[200px] overflow-y-auto"
           rows={1}
           data-testid="message-input"
         />
@@ -300,6 +301,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
             type="button"
             size="icon"
             variant="destructive"
+            className="h-[34px] w-[34px]"
             onClick={handleInterrupt}
             disabled={interruptSession.isPending}
             data-testid="stop-button"
@@ -314,6 +316,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
           <Button
             type="submit"
             size="icon"
+            className="h-[34px] w-[34px]"
             disabled={(!message.trim() && attachments.length === 0) || sendMessage.isPending || isUploading}
             data-testid="send-button"
           >

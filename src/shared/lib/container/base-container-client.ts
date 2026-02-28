@@ -1,8 +1,10 @@
 import { exec, execSync, spawn } from 'child_process'
+import path from 'path'
 import { promisify } from 'util'
 import { EventEmitter } from 'events'
 import WebSocket from 'ws'
 import * as fs from 'fs'
+import os from 'os'
 import net from 'net'
 import type {
   ContainerClient,
@@ -21,23 +23,45 @@ const execAsync = promisify(exec)
 
 /**
  * Common paths where Docker/Podman might be installed.
- * Packaged macOS apps don't inherit the user's shell PATH.
+ * Packaged apps don't inherit the user's shell PATH.
  */
-const COMMON_BINARY_PATHS = [
-  '/usr/local/bin',
-  '/opt/homebrew/bin',
-  '/usr/bin',
-  '/opt/podman/bin',
-  '/Applications/Docker.app/Contents/Resources/bin',
-]
+const COMMON_BINARY_PATHS: Record<string, string[]> = {
+  darwin: [
+    '/usr/local/bin',
+    '/opt/homebrew/bin',
+    '/usr/bin',
+    '/opt/podman/bin',
+    '/Applications/Docker.app/Contents/Resources/bin',
+  ],
+  linux: [
+    '/usr/local/bin',
+    '/usr/bin',
+    '/opt/podman/bin',
+  ],
+  win32: [
+    'C:\\Program Files\\Docker\\Docker\\resources\\bin',
+    'C:\\ProgramData\\DockerDesktop\\version-bin',
+  ],
+}
 
 /**
  * Get the PATH environment variable with common binary locations added.
  */
 function getEnhancedPath(): string {
   const currentPath = process.env.PATH || ''
-  const pathsToAdd = COMMON_BINARY_PATHS.filter(p => !currentPath.includes(p))
-  return [...pathsToAdd, currentPath].join(':')
+  const platformPaths = COMMON_BINARY_PATHS[process.platform] || []
+  const pathsToAdd = platformPaths.filter(p => !currentPath.includes(p))
+  return [...pathsToAdd, currentPath].join(path.delimiter)
+}
+
+const isWindows = process.platform === 'win32'
+
+/**
+ * Wrap a value in the platform-appropriate shell quotes.
+ * On Unix, single quotes; on Windows cmd.exe, double quotes.
+ */
+function shellQuote(value: string): string {
+  return isWindows ? `"${value}"` : `'${value}'`
 }
 
 /**
@@ -47,6 +71,18 @@ export async function execWithPath(command: string): Promise<{ stdout: string; s
   return execAsync(command, {
     env: { ...process.env, PATH: getEnhancedPath() },
   })
+}
+
+/**
+ * Execute a command with enhanced PATH, ignoring any errors.
+ * Replacement for the Unix shell idiom `cmd 2>/dev/null || true`.
+ */
+async function execWithPathSilent(command: string): Promise<void> {
+  try {
+    await execWithPath(command)
+  } catch {
+    // Intentionally ignored — container may not exist
+  }
 }
 
 /**
@@ -78,6 +114,29 @@ export async function checkCommandAvailable(command: string): Promise<boolean> {
     return true
   } catch {
     return false
+  }
+}
+
+/**
+ * Write environment variables to a Docker-compatible env file.
+ * Returns the --env-file flag string and a cleanup function to delete the temp file.
+ * Docker env-file format: one KEY=VALUE per line, no shell quoting needed.
+ */
+export function writeEnvFile(
+  envVars: Record<string, string | undefined>,
+  agentId: string
+): { flag: string; cleanup: () => void } {
+  const content = Object.entries(envVars)
+    .filter(([_, value]) => value !== undefined)
+    .map(([key, value]) => `${key}=${value!.replace(/[\r\n]/g, '')}`)
+    .join('\n')
+
+  const envFilePath = path.join(os.tmpdir(), `superagent-env-${agentId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+  fs.writeFileSync(envFilePath, content, { mode: 0o600 })
+
+  return {
+    flag: `--env-file "${envFilePath}"`,
+    cleanup: () => { try { fs.unlinkSync(envFilePath) } catch { /* ignore */ } },
   }
 }
 
@@ -204,12 +263,17 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const runner = this.getRunnerCommand()
     try {
       const { stdout } = await execWithPath(
-        `${runner} inspect --format='{{.State.Running}}|{{range $p, $conf := .NetworkSettings.Ports}}{{if eq $p "${CONTAINER_INTERNAL_PORT}/tcp"}}{{(index $conf 0).HostPort}}{{end}}{{end}}' ${containerName} 2>/dev/null`
+        `${runner} inspect ${containerName}`
       )
-      const [running, port] = stdout.trim().split('|')
+      const inspectData = JSON.parse(stdout.trim())
+      const container = Array.isArray(inspectData) ? inspectData[0] : inspectData
+      const running = container?.State?.Running === true
+      const portKey = `${CONTAINER_INTERNAL_PORT}/tcp`
+      const portBindings = container?.NetworkSettings?.Ports?.[portKey]
+      const hostPort = portBindings?.[0]?.HostPort
       return {
-        status: running === 'true' ? 'running' : 'stopped',
-        port: port ? parseInt(port, 10) : null,
+        status: running ? 'running' : 'stopped',
+        port: hostPort ? parseInt(hostPort, 10) : null,
       }
     } catch {
       return { status: 'stopped', port: null }
@@ -233,7 +297,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const runner = this.getRunnerCommand()
     try {
       const { stdout } = await execWithPath(
-        `${runner} stats ${containerName} --no-stream --format '{{json .}}'`
+        `${runner} stats ${containerName} --no-stream --format ${shellQuote('{{json .}}')}`
       )
       const stats = JSON.parse(stdout.trim())
 
@@ -266,7 +330,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const runner = this.getRunnerCommand()
     try {
       const { stdout } = await execWithPath(
-        `${runner} ps --format '{{.Ports}}' 2>/dev/null`
+        `${runner} ps --format ${shellQuote('{{.Ports}}')}`
       )
 
       const portRegex = /:(\d+)->/g
@@ -315,27 +379,29 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // Find an available port
       const port = await this.findAvailablePort()
 
-      // Build run command with additional env vars from options
-      const envFlags = this.buildEnvFlags(options?.envVars)
+      // Write env vars to a temp file (avoids command length limits on Windows)
+      const { flag: envFileFlag, cleanup: cleanupEnvFile } = this.buildEnvFile(options?.envVars)
       const containerName = this.getContainerName()
 
       // Remove existing container if exists (stop first for runtimes like Apple Container that don't support rm -f)
-      await execWithPath(`${runner} stop ${containerName} 2>/dev/null || true`)
-      await execWithPath(`${runner} rm ${containerName} 2>/dev/null || true`)
+      await execWithPathSilent(`${runner} stop ${containerName}`)
+      await execWithPathSilent(`${runner} rm ${containerName}`)
 
       // Build resource limit flags
       const resourceFlags = this.getResourceFlags(cpu, memory)
       const additionalFlags = this.getAdditionalRunFlags()
 
       // Start container with volume mount for persistent workspace
-      const runCmd = `${runner} run -d \
-          --name ${containerName} \
-          -p ${port}:${CONTAINER_INTERNAL_PORT} \
-          -v "${workspaceDir}:/workspace${this.getVolumeMountSuffix()}" \
-          ${resourceFlags} \
-          ${additionalFlags} \
-          ${envFlags} \
-          ${image}`
+      const runCmd = [
+        runner, 'run', '-d',
+        '--name', containerName,
+        '-p', `${port}:${CONTAINER_INTERNAL_PORT}`,
+        '-v', `"${workspaceDir.replace(/\\/g, '/')}:/workspace${this.getVolumeMountSuffix()}"`,
+        resourceFlags,
+        additionalFlags,
+        envFileFlag,
+        image,
+      ].filter(Boolean).join(' ')
 
       let stdout: string
       try {
@@ -345,9 +411,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         const recovered = await this.handleRunError(runError)
         if (!recovered) throw runError
         // Retry after recovery
-        await execWithPath(`${runner} stop ${containerName} 2>/dev/null || true`)
-        await execWithPath(`${runner} rm ${containerName} 2>/dev/null || true`);
+        await execWithPathSilent(`${runner} stop ${containerName}`)
+        await execWithPathSilent(`${runner} rm ${containerName}`);
         ({ stdout } = await execWithPath(runCmd))
+      } finally {
+        cleanupEnvFile()
       }
 
       console.log(`Started container ${stdout.trim()} on port ${port}`)
@@ -379,8 +447,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // Stop and remove container by name
       const runner = this.getRunnerCommand()
       const containerName = this.getContainerName()
-      await execWithPath(`${runner} stop ${containerName} 2>/dev/null || true`)
-      await execWithPath(`${runner} rm ${containerName} 2>/dev/null || true`)
+      await execWithPathSilent(`${runner} stop ${containerName}`)
+      await execWithPathSilent(`${runner} rm ${containerName}`)
 
       console.log(`Stopped container ${containerName}`)
     } catch (error: any) {
@@ -440,7 +508,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       return false
     }
     try {
-      const response = await fetch(`http://localhost:${info.port}/health`)
+      const response = await fetch(`http://127.0.0.1:${info.port}/health`)
       return response.ok
     } catch {
       return false
@@ -463,7 +531,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    * Subclasses can override for different networking (e.g., cloud containers).
    */
   protected getBaseUrl(port: number): string {
-    return `http://localhost:${port}`
+    return `http://127.0.0.1:${port}`
   }
 
   async fetch(path: string, init?: RequestInit): Promise<Response> {
@@ -492,7 +560,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
 
-      const response = await fetch(`http://localhost:${port}/sessions`, {
+      const response = await fetch(`http://127.0.0.1:${port}/sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -569,7 +637,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const port = await this.getPortOrThrow()
 
     const response = await fetch(
-      `http://localhost:${port}/sessions/${sessionId}`
+      `http://127.0.0.1:${port}/sessions/${sessionId}`
     )
 
     if (response.status === 404) return null
@@ -591,7 +659,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
 
     const response = await fetch(
-      `http://localhost:${port}/sessions/${sessionId}`,
+      `http://127.0.0.1:${port}/sessions/${sessionId}`,
       { method: 'DELETE' }
     )
 
@@ -607,7 +675,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
 
       const response = await fetch(
-        `http://localhost:${port}/sessions/${sessionId}/messages`,
+        `http://127.0.0.1:${port}/sessions/${sessionId}/messages`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -659,7 +727,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const port = await this.getPortOrThrow()
 
     const response = await fetch(
-      `http://localhost:${port}/sessions/${sessionId}/interrupt`,
+      `http://127.0.0.1:${port}/sessions/${sessionId}/interrupt`,
       { method: 'POST' }
     )
 
@@ -670,7 +738,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const port = await this.getPortOrThrow()
 
     const response = await fetch(
-      `http://localhost:${port}/sessions/${sessionId}/messages`
+      `http://127.0.0.1:${port}/sessions/${sessionId}/messages`
     )
 
     if (!response.ok) {
@@ -700,7 +768,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       }
 
       const ws = new WebSocket(
-        `ws://localhost:${port}/sessions/${sessionId}/stream`
+        `ws://127.0.0.1:${port}/sessions/${sessionId}/stream`
       )
 
       ws.on('open', () => {
@@ -798,7 +866,12 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
   }
 
-  private buildEnvFlags(additionalEnvVars?: Record<string, string>): string {
+  /**
+   * Write env vars to a temp file and return the --env-file flag.
+   * This avoids shell quoting issues and Windows command length limits.
+   * The caller must clean up the file after the container starts.
+   */
+  private buildEnvFile(additionalEnvVars?: Record<string, string>): { flag: string; cleanup: () => void } {
     const envVars: Record<string, string | undefined> = {
       ANTHROPIC_API_KEY: getEffectiveAnthropicApiKey(),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
@@ -806,13 +879,6 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       ...additionalEnvVars,
     }
 
-    return Object.entries(envVars)
-      .filter(([_, value]) => value !== undefined)
-      .map(([key, value]) => {
-        // Escape single quotes for shell safety, then wrap in single quotes
-        const escaped = value!.replace(/'/g, "'\\''")
-        return `-e ${key}='${escaped}'`
-      })
-      .join(' ')
+    return writeEnvFile(envVars, this.config.agentId)
   }
 }
