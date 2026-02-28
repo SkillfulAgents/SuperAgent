@@ -38,7 +38,7 @@ const RUNTIME_INFO: Record<string, { name: string; description: string; installU
 }
 
 export function ContainerSetupDialog({ open, onOpenChange }: ContainerSetupDialogProps) {
-  const { data: settings } = useSettings()
+  const { data: settings } = useSettings({ enabled: open })
   const startRunner = useStartRunner()
   const refreshAvailability = useRefreshAvailability()
 

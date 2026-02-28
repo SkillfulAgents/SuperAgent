@@ -21,7 +21,7 @@ import { useSessions, useSession } from '@renderer/hooks/use-sessions'
 import { useScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { useSelection } from '@renderer/context/selection-context'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { isElectron, getPlatform } from '@renderer/lib/env'
 import { useSidebar } from '@renderer/components/ui/sidebar'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
@@ -56,10 +56,11 @@ export function MainContent() {
   const { browserActive, isActive, contextUsage: streamContextUsage } = useMessageStream(sessionId ?? null, agentSlug ?? null)
   const { canUseAgent } = useUser()
   const isViewOnly = agentSlug ? !canUseAgent(agentSlug) : false
-  const { data: settingsData } = useSettings()
-  const readiness = settingsData?.runtimeReadiness
+  const { data: runtimeStatus } = useRuntimeStatus()
+  const readiness = runtimeStatus?.runtimeReadiness
   const isRuntimeReady = readiness?.status === 'READY'
   const isPulling = readiness?.status === 'PULLING_IMAGE'
+  const apiKeyConfigured = runtimeStatus?.apiKeyConfigured !== false
 
   // Context usage: prefer live stream data, fall back to persisted session metadata
   const contextUsage = streamContextUsage ?? session?.lastUsage ?? null
@@ -186,7 +187,7 @@ export function MainContent() {
                           variant="outline"
                           size="sm"
                           onClick={() => startAgent.mutate(agentSlug)}
-                          disabled={startAgent.isPending || !isRuntimeReady}
+                          disabled={startAgent.isPending || !isRuntimeReady || !apiKeyConfigured}
                         >
                           {isPulling ? (
                             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -197,7 +198,12 @@ export function MainContent() {
                         </Button>
                       </span>
                     </TooltipTrigger>
-                    {!isRuntimeReady && readiness && (
+                    {!apiKeyConfigured && (
+                      <TooltipContent>
+                        <p>No API key configured. An administrator needs to set up the LLM API key.</p>
+                      </TooltipContent>
+                    )}
+                    {apiKeyConfigured && !isRuntimeReady && readiness && (
                       <TooltipContent>
                         <p>{readiness.message}</p>
                         {readiness.pullProgress && readiness.pullProgress.percent != null && (

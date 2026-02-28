@@ -10,7 +10,7 @@ import { useCreateSession } from '@renderer/hooks/use-sessions'
 import { useAgentSkills, useDiscoverableSkills, useRefreshAgentSkills } from '@renderer/hooks/use-agent-skills'
 import { AgentSkillCard } from './agent-skill-card'
 import { DiscoverableSkillCard } from './discoverable-skill-card'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { useUser } from '@renderer/context/user-context'
 import { apiFetch } from '@renderer/lib/api'
 import { AttachmentPreview, type Attachment } from '@renderer/components/messages/attachment-preview'
@@ -38,12 +38,13 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
   const { data: skillsData } = useAgentSkills(agent.slug)
   const skills = Array.isArray(skillsData) ? skillsData : []
   const { data: discoverableSkillsData } = useDiscoverableSkills(agent.slug)
-  const discoverableSkills = Array.isArray(discoverableSkillsData) ? discoverableSkillsData : []
+  const discoverableSkills = useMemo(() => Array.isArray(discoverableSkillsData) ? discoverableSkillsData : [], [discoverableSkillsData])
   const refreshSkills = useRefreshAgentSkills()
-  const { data: settingsData } = useSettings()
-  const readiness = settingsData?.runtimeReadiness
+  const { data: runtimeStatus } = useRuntimeStatus()
+  const readiness = runtimeStatus?.runtimeReadiness
   const isRuntimeReady = readiness?.status === 'READY'
   const isPulling = readiness?.status === 'PULLING_IMAGE'
+  const apiKeyConfigured = runtimeStatus?.apiKeyConfigured !== false
 
   const addFiles = useCallback((files: FileList | File[]) => {
     const newAttachments: Attachment[] = Array.from(files).map((file) => {
@@ -205,7 +206,7 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
     setSkillPage(0)
   }, [skillSearch, selectedSkillsets])
 
-  const isDisabled = createSession.isPending || isUploading || !isRuntimeReady
+  const isDisabled = createSession.isPending || isUploading || !isRuntimeReady || !apiKeyConfigured
 
   return (
     <div className="flex-1 flex flex-col items-center overflow-y-auto p-8">
@@ -228,6 +229,11 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
           </div>
         ) : (
           <>
+            {!apiKeyConfigured && (
+              <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+                <span>No API key configured. An administrator needs to set up the LLM API key.</span>
+              </div>
+            )}
             {!isRuntimeReady && readiness && (
               <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
                 {isPulling && <Loader2 className="h-4 w-4 animate-spin" />}

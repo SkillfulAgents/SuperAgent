@@ -17,14 +17,18 @@ usage.use('*', Authenticated())
 usage.get('/', async (c) => {
   const daysParam = c.req.query('days')
   const days = Math.min(Math.max(parseInt(daysParam || '7', 10) || 7, 1), 90)
+  const globalParam = c.req.query('global') === 'true'
+  // Only admins can request global view
+  const user = c.get('user' as never) as { id: string; role?: string } | undefined
+  const globalView = globalParam && (!isAuthMode() || user?.role === 'admin')
 
   const now = new Date()
   const sinceDate = subDays(now, days)
   const since = format(sinceDate, 'yyyyMMdd')
 
-  // In auth mode, only load agents the user has access to
-  let agents
-  if (isAuthMode()) {
+  // In auth mode, only load agents the user has access to (unless admin requests global view)
+  let agents;
+  if (isAuthMode() && !globalView) {
     const userId = getCurrentUserId(c)
     const rows = await db
       .select({ agentSlug: agentAcl.agentSlug })

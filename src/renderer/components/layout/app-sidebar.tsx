@@ -34,6 +34,8 @@ import { useAgents, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useSessions, type ApiSession } from '@renderer/hooks/use-sessions'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSettings } from '@renderer/hooks/use-settings'
+import { useUserSettings } from '@renderer/hooks/use-user-settings'
+import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { CreateAgentDialog } from '@renderer/components/agents/create-agent-dialog'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
@@ -303,17 +305,46 @@ function UserFooter() {
   )
 }
 
+/**
+ * Shows API key warning only for admins (who can actually fix it).
+ * Isolated to avoid calling useSettings() for non-admin users.
+ */
+function ApiKeyWarning({ onOpenSettings }: { onOpenSettings: () => void }) {
+  const { isAuthMode, isAdmin } = useUser()
+  const showAdminInfo = !isAuthMode || isAdmin
+  const { data: settings } = useSettings({ enabled: showAdminInfo })
+
+  if (!settings?.apiKeyStatus?.anthropic || settings.apiKeyStatus.anthropic.isConfigured) return null
+
+  return (
+    <div className="px-2 pt-2">
+      <Alert
+        variant="destructive"
+        className="py-2 cursor-pointer hover:bg-destructive/20 transition-colors"
+        onClick={onOpenSettings}
+      >
+        <AlertTriangle className="h-4 w-4" />
+        <AlertDescription className="text-xs">
+          No API key configured.{' '}
+          <span className="underline">Click to set up</span>
+        </AlertDescription>
+      </Alert>
+    </div>
+  )
+}
+
 export function AppSidebar() {
   const { settingsOpen, setSettingsOpen, settingsTab, createAgentOpen, setCreateAgentOpen, openWizard } = useDialogs()
   const { clearSelection } = useSelection()
   const [containerSetupOpen, setContainerSetupOpen] = useState(false)
   const { data: agents, isLoading, error } = useAgents()
-  const { data: settings } = useSettings()
+  const { data: userSettings } = useUserSettings()
+  const { data: runtimeStatus } = useRuntimeStatus()
   const isFullScreen = useFullScreen()
 
   const isOnline = useIsOnline()
 
-  const readiness = settings?.runtimeReadiness
+  const readiness = runtimeStatus?.runtimeReadiness
   const isRuntimeUnavailable = readiness?.status === 'RUNTIME_UNAVAILABLE' || readiness?.status === 'ERROR'
   const isPullingOrBuilding = readiness?.status === 'PULLING_IMAGE'
 
@@ -323,11 +354,11 @@ export function AppSidebar() {
   // Automatically show the container setup dialog on first load if runtime is unavailable
   // Skip if setup wizard hasn't been completed yet — it already covers runtime setup
   useEffect(() => {
-    if (isRuntimeUnavailable && !hasShownInitialSetup.current && settings?.setupCompleted) {
+    if (isRuntimeUnavailable && !hasShownInitialSetup.current && userSettings?.setupCompleted) {
       hasShownInitialSetup.current = true
       setContainerSetupOpen(true)
     }
-  }, [isRuntimeUnavailable, settings?.setupCompleted])
+  }, [isRuntimeUnavailable, userSettings?.setupCompleted])
 
   // Add left padding for macOS traffic lights in Electron (not in full screen)
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && !isFullScreen
@@ -388,21 +419,7 @@ export function AppSidebar() {
         </div>
       )}
 
-      {settings?.apiKeyStatus?.anthropic && !settings.apiKeyStatus.anthropic.isConfigured && (
-        <div className="px-2 pt-2">
-          <Alert
-            variant="destructive"
-            className="py-2 cursor-pointer hover:bg-destructive/20 transition-colors"
-            onClick={() => setSettingsOpen(true)}
-          >
-            <AlertTriangle className="h-4 w-4" />
-            <AlertDescription className="text-xs">
-              No API key configured.{' '}
-              <span className="underline">Click to set up</span>
-            </AlertDescription>
-          </Alert>
-        </div>
-      )}
+      <ApiKeyWarning onOpenSettings={() => setSettingsOpen(true)} />
 
       <ErrorBoundary compact>
         <SidebarContent>

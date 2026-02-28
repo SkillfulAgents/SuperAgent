@@ -18,6 +18,7 @@ import {
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts'
 import { RefreshCw, Loader2 } from 'lucide-react'
 import { useUsageData } from '@renderer/hooks/use-usage'
+import { useUser } from '@renderer/context/user-context'
 import { format, parseISO } from 'date-fns'
 
 type Segmentation = 'total' | 'byModel' | 'byAgent'
@@ -40,13 +41,15 @@ const COLORS = [
 ]
 
 export function UsageTab() {
+  const { isAuthMode, isAdmin } = useUser()
   const [days, setDays] = useState(7)
+  const [globalView, setGlobalView] = useState(!isAuthMode || isAdmin)
   const [segmentation, setSegmentation] = useState<Segmentation>('total')
-  const { data, isLoading, isFetching, refetch } = useUsageData(days)
+  const { data, isLoading, isFetching, refetch } = useUsageData(days, globalView)
 
   useEffect(() => {
     refetch()
-  }, [days, refetch])
+  }, [days, globalView, refetch])
 
   const segments = useMemo(() => {
     if (segmentation === 'total') return [{ key: 'cost', label: 'Cost' }]
@@ -105,7 +108,7 @@ export function UsageTab() {
       <div>
         <h3 className="text-sm font-medium mb-1">LLM Usage</h3>
         <p className="text-xs text-muted-foreground">
-          Token costs across all agents, computed from session logs.
+          Token costs across {isAuthMode && !globalView ? 'your' : 'all'} agents, computed from session logs.
         </p>
       </div>
 
@@ -136,6 +139,18 @@ export function UsageTab() {
             <SelectItem value="byAgent">By Agent</SelectItem>
           </SelectContent>
         </Select>
+
+        {isAuthMode && isAdmin && (
+          <Select value={globalView ? 'global' : 'mine'} onValueChange={(v) => setGlobalView(v === 'global')}>
+            <SelectTrigger className="w-[140px] h-8">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="mine">My Agents</SelectItem>
+              <SelectItem value="global">All Agents</SelectItem>
+            </SelectContent>
+          </Select>
+        )}
 
         <Button
           size="sm"

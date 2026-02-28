@@ -3,7 +3,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Label } from '@renderer/components/ui/label'
 import { Switch } from '@renderer/components/ui/switch'
 import { Download, RefreshCw, CheckCircle2, Loader2 } from 'lucide-react'
-import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
+import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 
 interface UpdateStatus {
   state: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
@@ -13,8 +13,8 @@ interface UpdateStatus {
 }
 
 export function UpdateSection() {
-  const { data: settings } = useSettings()
-  const updateSettings = useUpdateSettings()
+  const { data: userSettings } = useUserSettings()
+  const updateUserSettings = useUpdateUserSettings()
   const [status, setStatus] = useState<UpdateStatus>({ state: 'idle' })
 
   useEffect(() => {
@@ -94,9 +94,9 @@ export function UpdateSection() {
         </div>
         <Switch
           id="prerelease-updates"
-          checked={!!settings?.app?.allowPrereleaseUpdates}
+          checked={!!userSettings?.allowPrereleaseUpdates}
           onCheckedChange={(checked: boolean) => {
-            updateSettings.mutate({ app: { allowPrereleaseUpdates: checked } })
+            updateUserSettings.mutate({ allowPrereleaseUpdates: checked })
           }}
         />
       </div>

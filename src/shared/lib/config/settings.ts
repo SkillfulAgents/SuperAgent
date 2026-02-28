@@ -113,6 +113,7 @@ export interface GlobalSettingsResponse {
   setupCompleted: boolean
   hostBrowserStatus?: HostBrowserStatus
   runtimeReadiness: RuntimeReadiness
+  auth?: AuthSettings
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -200,6 +201,7 @@ export function loadSettings(): AppSettings {
         agentLimits: loaded.agentLimits,
         customEnvVars: loaded.customEnvVars,
         skillsets: loaded.skillsets,
+        auth: loaded.auth,
       }
     }
   } catch (error) {

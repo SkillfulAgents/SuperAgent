@@ -2,11 +2,13 @@ import { apiFetch } from '@renderer/lib/api'
 import { useQuery } from '@tanstack/react-query'
 import type { UsageResponse } from '@shared/lib/types/usage'
 
-export function useUsageData(days: number) {
+export function useUsageData(days: number, global?: boolean) {
   return useQuery<UsageResponse>({
-    queryKey: ['usage', days],
+    queryKey: ['usage', days, global],
     queryFn: async () => {
-      const res = await apiFetch(`/api/usage?days=${days}`)
+      const params = new URLSearchParams({ days: String(days) })
+      if (global) params.set('global', 'true')
+      const res = await apiFetch(`/api/usage?${params}`)
       if (!res.ok) throw new Error('Failed to fetch usage data')
       return res.json()
     },

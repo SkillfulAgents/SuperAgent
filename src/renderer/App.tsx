@@ -12,22 +12,24 @@ import { TrayNavigationHandler } from './components/tray-navigation-handler'
 import { GlobalNotificationHandler } from './components/notifications/global-notification-handler'
 import { GettingStartedWizard } from './components/wizard/getting-started-wizard'
 import { ErrorBoundary } from './components/ui/error-boundary'
-import { useSettings } from './hooks/use-settings'
+import { useUserSettings } from './hooks/use-user-settings'
 import { useTheme } from './hooks/use-theme'
+import { useUser } from './context/user-context'
 
 function AppContent() {
   useTheme()
   const [wizardOpen, setWizardOpen] = useState(false)
-  const { data: settings } = useSettings()
+  const { data: userSettings } = useUserSettings()
+  const { isAuthMode, isAdmin } = useUser()
   const hasAutoOpened = useRef(false)
 
-  // Auto-open wizard on first launch
+  // Auto-open wizard on first launch (non-admin auth users skip — they can't configure the server)
   useEffect(() => {
-    if (settings && !settings.setupCompleted && !hasAutoOpened.current) {
+    if (userSettings && !userSettings.setupCompleted && !hasAutoOpened.current && (!isAuthMode || isAdmin)) {
       hasAutoOpened.current = true
       setWizardOpen(true)
     }
-  }, [settings])
+  }, [userSettings, isAuthMode, isAdmin])
 
   return (
     <DialogProvider onOpenWizard={() => setWizardOpen(true)}>

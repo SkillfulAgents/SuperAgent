@@ -10,6 +10,7 @@ import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { useSettings, useUpdateSettings, useStartRunner, useRefreshAvailability } from '@renderer/hooks/use-settings'
+import { useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { useCreateAgent } from '@renderer/hooks/use-agents'
 import { useSelection } from '@renderer/context/selection-context'
 import { apiFetch } from '@renderer/lib/api'
@@ -53,7 +54,7 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
   const [currentStep, setCurrentStep] = useState(0)
   const [composioCanProceed, setComposioCanProceed] = useState(false)
   const composioSaveRef = useRef<(() => Promise<void>) | null>(null)
-  const updateSettings = useUpdateSettings()
+  const updateUserSettings = useUpdateUserSettings()
 
   // Reset step when dialog opens
   useEffect(() => {
@@ -63,7 +64,7 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
   }, [open])
 
   const handleFinish = async () => {
-    await updateSettings.mutateAsync({ app: { setupCompleted: true } })
+    await updateUserSettings.mutateAsync({ setupCompleted: true })
     onOpenChange(false)
   }
 

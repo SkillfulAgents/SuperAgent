@@ -12,6 +12,8 @@ import browser from './routes/browser'
 import skillsets from './routes/skillsets'
 import usage from './routes/usage'
 import remoteMcps from './routes/remote-mcps'
+import userSettingsRouter from './routes/user-settings'
+import runtimeStatusRouter from './routes/runtime-status'
 import { initializeServices } from '@shared/lib/startup'
 import { isAuthMode } from '@shared/lib/auth/mode'
 
@@ -49,6 +51,8 @@ app.route('/api/browser', browser)
 app.route('/api/skillsets', skillsets)
 app.route('/api/usage', usage)
 app.route('/api/remote-mcps', remoteMcps)
+app.route('/api/user-settings', userSettingsRouter)
+app.route('/api/runtime-status', runtimeStatusRouter)
 
 // Global error handler
 app.onError((err, c) => {
