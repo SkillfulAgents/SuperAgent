@@ -91,6 +91,7 @@ export function useImportAgentTemplate() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['agents'] })
+      queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
     },
   })
 }
@@ -123,6 +124,7 @@ export function useInstallAgentFromSkillset() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['discoverable-agents'] })
+      queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
     },
   })
 }

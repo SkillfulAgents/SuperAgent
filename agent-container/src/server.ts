@@ -608,9 +608,13 @@ async function launchHostBrowserIfNeeded(): Promise<HostBrowserInfo | undefined>
 
   const agentId = process.env.AGENT_ID;
 
+  const proxyToken = process.env.PROXY_TOKEN;
+  const browserAuthHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (proxyToken) browserAuthHeaders['Authorization'] = `Bearer ${proxyToken}`;
+
   const response = await fetch(`${hostAppUrl}/api/browser/launch-host-browser`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: browserAuthHeaders,
     body: JSON.stringify({ agentId: agentId || 'default' }),
   });
 
@@ -720,9 +724,13 @@ async function stopHostBrowserIfNeeded(): Promise<void> {
   const agentId = process.env.AGENT_ID || 'default';
 
   try {
+    const proxyToken = process.env.PROXY_TOKEN;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (proxyToken) headers['Authorization'] = `Bearer ${proxyToken}`;
+
     await fetch(`${hostAppUrl}/api/browser/stop-host-browser`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ agentId }),
     });
   } catch (error) {
@@ -1447,9 +1455,13 @@ async function findActivePageTarget(): Promise<ActivePageTarget | null> {
   const agentId = process.env.AGENT_ID;
   if (hostAppUrl && agentId) {
     try {
+      const debugHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+      const proxyToken = process.env.PROXY_TOKEN;
+      if (proxyToken) debugHeaders['Authorization'] = `Bearer ${proxyToken}`;
+
       const debugRes = await fetch(`${hostAppUrl}/api/browser/debug-info`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: debugHeaders,
         body: JSON.stringify({ agentId }),
       });
       if (debugRes.ok) {

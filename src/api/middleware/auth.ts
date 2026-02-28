@@ -3,6 +3,7 @@ import { and, eq } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { db } from '@shared/lib/db'
 import { agentAcl, connectedAccounts, remoteMcpServers, notifications } from '@shared/lib/db/schema'
+import { validateProxyToken } from '@shared/lib/proxy/token-store'
 
 // Lazy import to avoid pulling in better-auth ESM at import time
 let _getAuth: (() => ReturnType<typeof import('@shared/lib/auth/index').getAuth>) | null = null
@@ -209,6 +210,24 @@ export function HasNotificationAccess(): MiddlewareHandler {
     const role = await getUserAgentRole(user.id, row[0].agentSlug)
     if (!role) return c.json({ error: 'Forbidden' }, 403)
 
+    return next()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Agent (container) token auth
+// ---------------------------------------------------------------------------
+
+/**
+ * IsAgent — validates synthetic bearer token from a container.
+ * Works in both auth and non-auth modes (containers always use proxy tokens).
+ */
+export function IsAgent(): MiddlewareHandler {
+  return async (c: Context, next: Next) => {
+    const token = c.req.header('Authorization')?.replace('Bearer ', '')
+    if (!token || !(await validateProxyToken(token))) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
     return next()
   }
 }

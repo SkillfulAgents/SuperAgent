@@ -37,7 +37,7 @@ export interface CreateNotificationParams {
 /**
  * Get all agent slugs accessible to a user (via agentAcl entries).
  */
-async function getAccessibleAgentSlugs(userId: string): Promise<string[]> {
+export async function getAccessibleAgentSlugs(userId: string): Promise<string[]> {
   const rows = await db
     .select({ agentSlug: agentAcl.agentSlug })
     .from(agentAcl)

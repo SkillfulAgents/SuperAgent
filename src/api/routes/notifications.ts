@@ -14,6 +14,7 @@ import {
   markAllAsRead,
   markSessionNotificationsRead,
   deleteNotification,
+  getAccessibleAgentSlugs,
 } from '@shared/lib/services/notification-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { isAuthMode } from '@shared/lib/auth/mode'
@@ -38,6 +39,8 @@ function getScopedUserId(c: { get: (key: never) => unknown }): string | undefine
 
 // GET /api/notifications/stream - SSE stream for global notifications (used by Electron main process)
 notificationsRouter.get('/stream', async (c) => {
+  const userId = getScopedUserId(c)
+
   return streamSSE(c, async (stream) => {
     let pingInterval: ReturnType<typeof setInterval> | null = null
     let unsubscribe: (() => void) | null = null
@@ -46,6 +49,15 @@ notificationsRouter.get('/stream', async (c) => {
       // Subscribe to global notifications
       unsubscribe = messagePersister.addGlobalNotificationClient(async (data) => {
         try {
+          // In auth mode, filter events by agent access
+          if (userId) {
+            const agentSlug = (data as Record<string, unknown>)?.agentSlug as string | undefined
+            if (agentSlug) {
+              const accessible = await getAccessibleAgentSlugs(userId)
+              if (!accessible.includes(agentSlug)) return
+            }
+          }
+
           await stream.writeSSE({
             data: JSON.stringify(data),
             event: 'message',
