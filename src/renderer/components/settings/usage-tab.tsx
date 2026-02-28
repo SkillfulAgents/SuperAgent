@@ -186,7 +186,7 @@ export function UsageTab() {
                   />
                 }
               />
-              {segments.length > 1 && (
+              {segmentation !== 'total' && (
                 <ChartLegend content={<ChartLegendContent />} />
               )}
               {segments.map(({ key }) => (
