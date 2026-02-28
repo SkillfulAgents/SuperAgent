@@ -1112,7 +1112,7 @@ class MessagePersister {
     agentSlug?: string
   ): void {
     try {
-      let input: { url: string; name?: string; reason?: string } = { url: '' }
+      let input: { url: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer' } = { url: '' }
       try {
         input = JSON.parse(toolInput)
       } catch {
@@ -1132,6 +1132,7 @@ class MessagePersister {
         url: input.url,
         name: input.name,
         reason: input.reason,
+        authHint: input.authHint,
         agentSlug,
       })
 

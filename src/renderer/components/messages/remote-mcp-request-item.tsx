@@ -12,6 +12,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { cn } from '@shared/lib/utils/cn'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useInitiateMcpOAuth } from '@renderer/hooks/use-remote-mcps'
 
 interface RemoteMcpServer {
   id: string
@@ -27,27 +28,32 @@ interface RemoteMcpRequestItemProps {
   url: string
   name?: string
   reason?: string
+  authHint?: 'oauth' | 'bearer'
   sessionId: string
   agentSlug: string
   onComplete: () => void
 }
 
-type RequestStatus = 'pending' | 'submitting' | 'provided' | 'declined' | 'registering'
+type RequestStatus = 'pending' | 'submitting' | 'provided' | 'declined' | 'registering' | 'oauth_pending'
 
 export function RemoteMcpRequestItem({
   toolUseId,
   url,
   name,
   reason,
+  authHint,
   sessionId,
   agentSlug,
   onComplete,
 }: RemoteMcpRequestItemProps) {
   const queryClient = useQueryClient()
+  const initiateOAuth = useInitiateMcpOAuth()
   const [status, setStatus] = useState<RequestStatus>('pending')
   const [error, setError] = useState<string | null>(null)
   const [selectedMcpId, setSelectedMcpId] = useState<string | null>(null)
   const [newName, setNewName] = useState(name || '')
+  const [showTokenInput, setShowTokenInput] = useState(authHint === 'bearer')
+  const [bearerToken, setBearerToken] = useState('')
 
   // Fetch existing remote MCP servers
   const { data, isLoading, refetch } = useQuery<{ servers: RemoteMcpServer[] }>({
@@ -72,9 +78,70 @@ export function RemoteMcpRequestItem({
     }
   }, [servers, url])
 
+  // Listen for MCP OAuth callback from Electron main process
+  useEffect(() => {
+    if (!window.electronAPI || status !== 'oauth_pending') return
+
+    window.electronAPI.onMcpOAuthCallback((params) => {
+      if (params.success) {
+        setError(null)
+        // Refetch servers to find the newly created one
+        refetch().then(({ data: refreshedData }) => {
+          const refreshedServers = Array.isArray(refreshedData?.servers) ? refreshedData.servers : []
+          const newServer = refreshedServers.find((s) => s.url === url)
+          if (newServer) {
+            setSelectedMcpId(newServer.id)
+          }
+          setStatus('pending')
+        }).catch(() => {
+          setStatus('pending')
+        })
+      } else {
+        setError(params.error || 'OAuth authorization failed')
+        setStatus('pending')
+      }
+    })
+
+    return () => {
+      window.electronAPI?.removeMcpOAuthCallback()
+    }
+  }, [status, url, refetch])
+
+  const startOAuthFlow = async () => {
+    try {
+      const isElectron = !!window.electronAPI
+      const result = await initiateOAuth.mutateAsync({
+        name: newName.trim() || url,
+        url,
+        electron: isElectron,
+      })
+
+      if (result.redirectUrl) {
+        if (window.electronAPI) {
+          await window.electronAPI.openExternal(result.redirectUrl)
+        } else {
+          window.open(result.redirectUrl, '_blank')
+        }
+        setStatus('oauth_pending')
+      } else {
+        setError('OAuth initiation did not return a redirect URL')
+        setStatus('pending')
+      }
+    } catch (oauthErr: any) {
+      setError(oauthErr.message || 'Failed to initiate OAuth')
+      setStatus('pending')
+    }
+  }
+
   const handleRegisterNew = async () => {
     setStatus('registering')
     setError(null)
+
+    // If agent hinted OAuth, go straight to OAuth flow
+    if (authHint === 'oauth') {
+      await startOAuthFlow()
+      return
+    }
 
     try {
       const response = await apiFetch('/api/remote-mcps', {
@@ -83,16 +150,31 @@ export function RemoteMcpRequestItem({
         body: JSON.stringify({
           name: newName.trim() || url,
           url,
-          authType: 'none',
+          authType: bearerToken ? 'bearer' : 'none',
+          accessToken: bearerToken || undefined,
         }),
       })
 
+      const responseData = await response.json()
+
       if (!response.ok) {
-        const data = await response.json()
-        throw new Error(data.error || 'Failed to register MCP server')
+        // Server requires OAuth — automatically initiate OAuth flow
+        if (responseData.needsOAuth) {
+          await startOAuthFlow()
+          return
+        }
+        // Server requires auth but not OAuth — show bearer token input
+        if (responseData.needsAuth) {
+          setShowTokenInput(true)
+          setError(responseData.error || 'This MCP server requires authentication.')
+          setStatus('pending')
+          return
+        }
+        throw new Error(responseData.error || 'Failed to register MCP server')
       }
 
-      const { server } = await response.json()
+      // Success — server registered without auth
+      const { server } = responseData
       queryClient.invalidateQueries({ queryKey: ['remote-mcps'] })
       await refetch()
       setSelectedMcpId(server.id)
@@ -199,7 +281,7 @@ export function RemoteMcpRequestItem({
     )
   }
 
-  // Pending/submitting/registering state
+  // Pending/submitting/registering/oauth_pending state
   return (
     <div className="border rounded-md bg-purple-50 dark:bg-purple-950 border-purple-200 dark:border-purple-800 text-sm">
       <div className="flex items-start gap-3 p-3">
@@ -269,34 +351,58 @@ export function RemoteMcpRequestItem({
 
           {/* Register new MCP server */}
           {!servers.find((s) => s.url === url) && (
-            <div className="space-y-2">
-              <p className="text-xs text-purple-600 dark:text-purple-400 font-medium">
-                Register this MCP server:
-              </p>
-              <div className="flex gap-2">
-                <Input
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  placeholder="Display name"
-                  className="h-8 text-sm flex-1"
-                  disabled={status !== 'pending'}
-                />
-                <Button
-                  onClick={handleRegisterNew}
-                  disabled={status !== 'pending'}
-                  variant="outline"
-                  size="sm"
-                  className="border-purple-200 dark:border-purple-700 text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900"
-                >
-                  {status === 'registering' ? (
-                    <Loader2 className="h-4 w-4 animate-spin mr-1" />
-                  ) : (
-                    <Plus className="h-4 w-4 mr-1" />
-                  )}
-                  Register
-                </Button>
+            status === 'oauth_pending' ? (
+              <div className="flex items-center gap-3 p-2 rounded border border-purple-200 dark:border-purple-700 bg-purple-50 dark:bg-purple-900/50">
+                <Loader2 className="h-4 w-4 animate-spin text-purple-600 dark:text-purple-400 shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-purple-900 dark:text-purple-100">
+                    Waiting for authorization...
+                  </p>
+                  <p className="text-xs text-purple-600 dark:text-purple-400">
+                    Complete the OAuth flow in your browser to connect this MCP server.
+                  </p>
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="space-y-2">
+                <p className="text-xs text-purple-600 dark:text-purple-400 font-medium">
+                  Register this MCP server:
+                </p>
+                <div className="flex gap-2">
+                  <Input
+                    value={newName}
+                    onChange={(e) => setNewName(e.target.value)}
+                    placeholder="Display name"
+                    className="h-8 text-sm flex-1"
+                    disabled={status !== 'pending'}
+                  />
+                  <Button
+                    onClick={handleRegisterNew}
+                    disabled={status !== 'pending'}
+                    variant="outline"
+                    size="sm"
+                    className="border-purple-200 dark:border-purple-700 text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900"
+                  >
+                    {status === 'registering' ? (
+                      <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                    ) : (
+                      <Plus className="h-4 w-4 mr-1" />
+                    )}
+                    Register
+                  </Button>
+                </div>
+                {showTokenInput && (
+                  <Input
+                    type="password"
+                    value={bearerToken}
+                    onChange={(e) => setBearerToken(e.target.value)}
+                    placeholder="Bearer token"
+                    className="h-8 text-sm"
+                    disabled={status !== 'pending'}
+                  />
+                )}
+              </div>
+            )
           )}
 
           {/* Action buttons */}
@@ -317,7 +423,7 @@ export function RemoteMcpRequestItem({
 
             <Button
               onClick={handleDecline}
-              disabled={status !== 'pending'}
+              disabled={status !== 'pending' && status !== 'oauth_pending'}
               variant="outline"
               size="sm"
               className="border-purple-200 dark:border-purple-700 text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900"

@@ -141,6 +141,15 @@ remoteMcps.post('/', async (c) => {
   try {
     tools = await discoverTools(body.url.trim(), body.accessToken || null)
   } catch (error: any) {
+    // Check if the failure is a 401 — the server likely requires authentication
+    if (error.message?.includes('401')) {
+      const discovery = await discoverOAuthMetadata(body.url.trim())
+      if (discovery) {
+        return c.json({ error: 'This MCP server requires OAuth authentication', needsOAuth: true }, 401)
+      }
+      // No OAuth metadata — server likely needs a bearer token
+      return c.json({ error: 'This MCP server requires authentication. Try adding a bearer token.', needsAuth: true }, 401)
+    }
     return c.json({ error: `Failed to connect to MCP server: ${error.message}` }, 502)
   }
 

@@ -23,6 +23,10 @@ import { useEffect, useRef, useCallback, useMemo, Fragment } from 'react'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import type { ApiMessage, ApiCompactBoundary } from '@shared/lib/types/api'
 
+// Prefix for system-injected user messages that should be hidden in the UI.
+// Keep in sync with SYSTEM_MESSAGE_PREFIX in agent-container/src/claude-code.ts
+const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] '
+
 interface PendingMessage {
   text: string
   sentAt: number
@@ -102,7 +106,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
       }>
     }[] = []
     const fileRequests: { toolUseId: string; description: string; fileTypes?: string }[] = []
-    const remoteMcpRequests: { toolUseId: string; url: string; name?: string; reason?: string }[] = []
+    const remoteMcpRequests: { toolUseId: string; url: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer' }[] = []
 
     if (!messages) return { secretRequests, connectedAccountRequests, questionRequests, fileRequests, remoteMcpRequests }
 
@@ -154,13 +158,14 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
             })
           }
         } else if (toolCall.name === 'mcp__user-input__request_remote_mcp') {
-          const input = toolCall.input as { url?: string; name?: string; reason?: string }
+          const input = toolCall.input as { url?: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer' }
           if (input.url) {
             remoteMcpRequests.push({
               toolUseId: toolCall.id,
               url: input.url,
               name: input.name,
               reason: input.reason,
+              authHint: input.authHint,
             })
           }
         } else if (toolCall.name === 'mcp__user-input__request_file') {
@@ -262,7 +267,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
 
   const pendingRemoteMcpRequests = useMemo(() => {
     const seen = new Set<string>()
-    const merged: { toolUseId: string; url: string; name?: string; reason?: string }[] = []
+    const merged: { toolUseId: string; url: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer' }[] = []
 
     const messageBased = isActive ? messagesBasedPendingRequests.remoteMcpRequests : []
     for (const req of [...sseRemoteMcpRequests, ...messageBased]) {
@@ -469,7 +474,14 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
   return (
     <div className="overflow-y-auto" ref={scrollRef} onScroll={handleScroll} data-testid="message-list">
       <div className="p-4 space-y-4">
-        {messages?.map((item) => (
+        {messages?.filter((item) => {
+          // Hide system-injected user messages (e.g., MCP registration continuation)
+          if (item.type === 'user') {
+            const msg = item as ApiMessage
+            if (msg.content?.text?.startsWith(SYSTEM_MESSAGE_PREFIX)) return false
+          }
+          return true
+        }).map((item) => (
           <Fragment key={item.id}>
             {item.type === 'compact_boundary' ? (
               <CompactBoundaryItem boundary={item as ApiCompactBoundary} />
@@ -590,6 +602,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
             url={request.url}
             name={request.name}
             reason={request.reason}
+            authHint={request.authHint}
             sessionId={sessionId}
             agentSlug={agentSlug}
             onComplete={() => handleRemoteMcpRequestComplete(request.toolUseId)}

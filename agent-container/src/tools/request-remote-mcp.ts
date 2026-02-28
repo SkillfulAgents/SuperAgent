@@ -29,6 +29,10 @@ Use this when you need to interact with an MCP server that hasn't been configure
       .string()
       .optional()
       .describe('Explain why you need access to this MCP server'),
+    authHint: z
+      .enum(['oauth', 'bearer'])
+      .optional()
+      .describe('Authentication type hint if known (e.g., from reading the MCP server docs). Use "oauth" for servers requiring OAuth authorization, "bearer" for servers requiring a bearer token.'),
   },
   async (args) => {
     console.log(
@@ -61,7 +65,7 @@ Use this when you need to interact with an MCP server that hasn't been configure
       const remoteMcpId = await inputManager.createPendingWithType<string>(
         toolUseId,
         'remote_mcp',
-        { url: args.url, name: args.name, reason: args.reason }
+        { url: args.url, name: args.name, reason: args.reason, authHint: args.authHint }
       )
 
       // If we get here, the user approved - read updated REMOTE_MCPS
