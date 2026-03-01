@@ -86,3 +86,6 @@ jobs:
 
       - name: Run E2E tests
         run: npm run test:e2e
+
+      - name: Run Auth E2E tests
+        run: npm run test:e2e:auth

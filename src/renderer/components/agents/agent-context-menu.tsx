@@ -146,6 +146,7 @@ export function AgentContextMenu({
               <ContextMenuItem
                 className="text-destructive focus:text-destructive"
                 onClick={() => setShowLeaveDialog(true)}
+                data-testid="leave-agent-item"
               >
                 <LogOut className="h-4 w-4 mr-2" />
                 Leave Agent
@@ -185,7 +186,7 @@ export function AgentContextMenu({
       </AlertDialog>
 
       <AlertDialog open={showLeaveDialog} onOpenChange={setShowLeaveDialog}>
-        <AlertDialogContent>
+        <AlertDialogContent data-testid="confirm-leave-agent-dialog">
           <AlertDialogHeader>
             <AlertDialogTitle>Leave Agent</AlertDialogTitle>
             <AlertDialogDescription>
@@ -199,6 +200,7 @@ export function AgentContextMenu({
               onClick={handleLeave}
               disabled={isLeaving}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              data-testid="confirm-leave-agent-button"
             >
               {isLeaving ? 'Leaving...' : 'Leave'}
             </AlertDialogAction>

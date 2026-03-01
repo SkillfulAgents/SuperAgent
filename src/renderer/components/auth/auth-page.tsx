@@ -88,12 +88,12 @@ function SignInForm({ onSwitchToSignUp }: { onSwitchToSignUp: () => void }) {
       </div>
 
       {serverError && (
-        <Alert variant="destructive">
+        <Alert variant="destructive" data-testid="signin-error">
           <AlertDescription>{serverError}</AlertDescription>
         </Alert>
       )}
 
-      <Button type="submit" className="w-full" disabled={isSubmitting}>
+      <Button type="submit" className="w-full" disabled={isSubmitting} data-testid="signin-submit">
         {isSubmitting ? (
           <>
             <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -197,12 +197,12 @@ function SignUpForm({ onSwitchToSignIn }: { onSwitchToSignIn: () => void }) {
       </div>
 
       {serverError && (
-        <Alert variant="destructive">
+        <Alert variant="destructive" data-testid="signup-error">
           <AlertDescription>{serverError}</AlertDescription>
         </Alert>
       )}
 
-      <Button type="submit" className="w-full" disabled={isSubmitting}>
+      <Button type="submit" className="w-full" disabled={isSubmitting} data-testid="signup-submit">
         {isSubmitting ? (
           <>
             <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -227,7 +227,7 @@ export function AuthPage() {
   const [tab, setTab] = useState<string>('signin')
 
   return (
-    <div className="flex items-center justify-center h-screen bg-background">
+    <div className="flex items-center justify-center h-screen bg-background" data-testid="auth-page">
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
           <h1 className="text-2xl font-bold">SuperAgent</h1>
@@ -235,8 +235,8 @@ export function AuthPage() {
         <CardContent>
           <Tabs value={tab} onValueChange={setTab}>
             <TabsList className="w-full mb-4">
-              <TabsTrigger value="signin" className="flex-1">Sign In</TabsTrigger>
-              <TabsTrigger value="signup" className="flex-1">Sign Up</TabsTrigger>
+              <TabsTrigger value="signin" className="flex-1" data-testid="auth-tab-signin">Sign In</TabsTrigger>
+              <TabsTrigger value="signup" className="flex-1" data-testid="auth-tab-signup">Sign Up</TabsTrigger>
             </TabsList>
             <TabsContent value="signin">
               <SignInForm onSwitchToSignUp={() => setTab('signup')} />

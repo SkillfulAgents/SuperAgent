@@ -285,7 +285,7 @@ function UserFooter() {
     <div className="px-2 flex items-center justify-between">
       <Popover>
         <PopoverTrigger asChild>
-          <button className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
+          <button className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors" data-testid="user-menu-trigger">
             <User className="h-3 w-3" />
             <span className="truncate max-w-[140px]">{user.name}</span>
           </button>
@@ -294,6 +294,7 @@ function UserFooter() {
           <button
             onClick={signOut}
             className="flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent transition-colors"
+            data-testid="sign-out-button"
           >
             <LogOut className="h-4 w-4" />
             Sign out
@@ -462,7 +463,7 @@ export function AppSidebar() {
         <SidebarMenu>
           <SidebarMenuItem>
             <div className="flex items-center justify-between w-full">
-              <SidebarMenuButton onClick={() => setSettingsOpen(true)} className="flex-1">
+              <SidebarMenuButton onClick={() => setSettingsOpen(true)} className="flex-1" data-testid="settings-button">
                 <Settings className="h-4 w-4" />
                 <span>Settings</span>
               </SidebarMenuButton>

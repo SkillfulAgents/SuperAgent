@@ -111,7 +111,7 @@ export function GlobalSettingsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="overflow-hidden p-0 md:max-h-[500px] md:max-w-[700px] lg:max-w-[800px]">
+      <DialogContent className="overflow-hidden p-0 md:max-h-[500px] md:max-w-[700px] lg:max-w-[800px]" data-testid="global-settings-dialog">
         <DialogTitle className="sr-only">Settings</DialogTitle>
         <DialogDescription className="sr-only">
           Configure global application settings
@@ -131,6 +131,7 @@ export function GlobalSettingsDialog({
                           <SidebarMenuButton
                             isActive={activeSection === item.id}
                             onClick={() => setActiveSection(item.id)}
+                            data-testid={`settings-nav-${item.id}`}
                           >
                             <item.icon className="h-4 w-4" />
                             <span>{item.name}</span>

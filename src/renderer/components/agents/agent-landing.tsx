@@ -230,7 +230,7 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
         </div>
 
         {isViewOnly ? (
-          <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground border rounded-lg p-6">
+          <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground border rounded-lg p-6" data-testid="view-only-banner">
             <Eye className="h-5 w-5" />
             <span>Select a session from the sidebar to view its messages</span>
           </div>

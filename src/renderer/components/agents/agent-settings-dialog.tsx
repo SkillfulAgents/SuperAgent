@@ -90,7 +90,7 @@ export function AgentSettingsDialog({
           Configure settings for {agent.name}
         </DialogDescription>
         {isAuthMode && rolesReady && !isOwner && (
-          <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm rounded-lg">
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm rounded-lg" data-testid="agent-settings-no-permission">
             <div className="text-center space-y-2">
               <p className="text-sm font-medium">You don&apos;t have permission to edit settings</p>
               <p className="text-xs text-muted-foreground">Only agent owners can modify settings.</p>
@@ -108,6 +108,7 @@ export function AgentSettingsDialog({
                         <SidebarMenuButton
                           isActive={activeSection === item.id}
                           onClick={() => setActiveSection(item.id)}
+                          data-testid={`agent-settings-nav-${item.id}`}
                         >
                           <item.icon className="h-4 w-4" />
                           <span>{item.name}</span>

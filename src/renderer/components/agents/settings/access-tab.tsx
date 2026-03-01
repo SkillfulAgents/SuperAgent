@@ -141,7 +141,7 @@ export function AccessTab({ agentSlug }: AccessTabProps) {
         <p className="text-sm text-muted-foreground">
           Manage who has access to this agent and their permissions.
         </p>
-        <Button size="sm" variant="outline" onClick={() => setIsInviting(true)} className={isInviting ? 'invisible' : ''}>
+        <Button size="sm" variant="outline" onClick={() => setIsInviting(true)} className={isInviting ? 'invisible' : ''} data-testid="invite-user-button">
           <UserPlus className="h-4 w-4 mr-1" />
           Invite
         </Button>
@@ -172,6 +172,7 @@ export function AccessTab({ agentSlug }: AccessTabProps) {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 autoFocus
+                data-testid="invite-search-input"
               />
               {searchResults && searchResults.length > 0 && (
                 <div className="border rounded-md max-h-32 overflow-y-auto">
@@ -180,6 +181,7 @@ export function AccessTab({ agentSlug }: AccessTabProps) {
                       key={user.id}
                       className="w-full px-3 py-2 text-left text-sm hover:bg-accent flex items-center justify-between"
                       onClick={() => setSelectedUser(user)}
+                      data-testid={`invite-user-result-${user.id}`}
                     >
                       <span>{user.name}</span>
                       <span className="text-muted-foreground text-xs">{user.email}</span>
@@ -202,7 +204,7 @@ export function AccessTab({ agentSlug }: AccessTabProps) {
               </div>
               <div className="flex items-center gap-2">
                 <Select value={inviteRole} onValueChange={(v) => setInviteRole(v as AgentRole)}>
-                  <SelectTrigger className="w-32">
+                  <SelectTrigger className="w-32" data-testid="invite-role-select">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -215,6 +217,7 @@ export function AccessTab({ agentSlug }: AccessTabProps) {
                   size="sm"
                   onClick={() => inviteUser.mutate({ userId: selectedUser.id, role: inviteRole })}
                   disabled={inviteUser.isPending}
+                  data-testid="invite-add-button"
                 >
                   {inviteUser.isPending ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -241,7 +244,7 @@ export function AccessTab({ agentSlug }: AccessTabProps) {
           accessList.map((entry) => {
             const isLastOwner = entry.role === 'owner' && ownerCount <= 1
             return (
-              <div key={entry.userId} className="flex items-center justify-between px-3 py-2">
+              <div key={entry.userId} className="flex items-center justify-between px-3 py-2" data-testid={`access-entry-${entry.userId}`}>
                 <div className="min-w-0">
                   <div className="text-sm font-medium truncate">{entry.userName}</div>
                   <div className="text-xs text-muted-foreground truncate">{entry.userEmail}</div>
@@ -252,7 +255,7 @@ export function AccessTab({ agentSlug }: AccessTabProps) {
                     onValueChange={(role) => changeRole.mutate({ userId: entry.userId, role: role as AgentRole })}
                     disabled={isLastOwner}
                   >
-                    <SelectTrigger className="w-24 h-8 text-xs">
+                    <SelectTrigger className="w-24 h-8 text-xs" data-testid={`access-role-${entry.userId}`}>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -271,6 +274,7 @@ export function AccessTab({ agentSlug }: AccessTabProps) {
                             className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
                             onClick={() => removeAccess.mutate(entry.userId)}
                             disabled={isLastOwner || removeAccess.isPending}
+                            data-testid={`access-remove-${entry.userId}`}
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>

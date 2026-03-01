@@ -137,6 +137,7 @@ export function UsersTab() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="pl-9 h-8"
+          data-testid="users-search"
         />
       </div>
 
@@ -170,6 +171,7 @@ export function UsersTab() {
             return (
               <div
                 key={user.id}
+                data-testid={`user-row-${user.email}`}
                 className={cn(
                   'grid grid-cols-[1fr_1fr_100px_80px_80px] gap-2 items-center px-2 py-1.5 rounded text-sm',
                   user.banned && 'opacity-60',
@@ -206,7 +208,7 @@ export function UsersTab() {
                       value={user.role || 'user'}
                       onValueChange={(value) => handleRoleChange(user.id, value as 'admin' | 'user')}
                     >
-                      <SelectTrigger className="h-6 text-xs w-[85px]">
+                      <SelectTrigger className="h-6 text-xs w-[85px]" data-testid={`user-role-${user.email}`}>
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
