@@ -10,14 +10,14 @@ import {
 
 // Mock containerManager before importing the service
 // Use vi.hoisted to ensure mock variables are available when vi.mock is hoisted
-const { mockGetCachedInfo, mockStopContainer, mockGetInfo, mockGetClient } = vi.hoisted(() => {
+const { mockGetCachedInfo, mockStopContainer, mockGetClient } = vi.hoisted(() => {
   const mockGetCachedInfo = vi.fn((): { status: string; port: number | null } => ({ status: 'stopped', port: null }))
   const mockStopContainer = vi.fn(() => Promise.resolve())
   const mockGetInfo = vi.fn(() => Promise.resolve({ status: 'stopped', port: null }))
   const mockGetClient = vi.fn(() => ({
     getInfo: mockGetInfo,
   }))
-  return { mockGetCachedInfo, mockStopContainer, mockGetInfo, mockGetClient }
+  return { mockGetCachedInfo, mockStopContainer, mockGetClient }
 })
 
 vi.mock('@shared/lib/container/container-manager', () => ({
@@ -42,7 +42,6 @@ import {
   getAgentClaudeMdContent,
   setAgentClaudeMdContent,
 } from './agent-service'
-import { containerManager } from '@shared/lib/container/container-manager'
 
 describe('agent-service', () => {
   let testDir: string

@@ -269,7 +269,7 @@ describe('writeEnvFile', () => {
   })
 
   it('cleanup does not throw if called multiple times', () => {
-    const { flag, cleanup } = writeEnvFile({ KEY: 'val' }, 'test-agent')
+    const { cleanup } = writeEnvFile({ KEY: 'val' }, 'test-agent')
     cleanups.push(cleanup)
 
     // Call cleanup twice — second call should be a no-op

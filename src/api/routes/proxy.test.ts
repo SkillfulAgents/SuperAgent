@@ -5,8 +5,6 @@ import { Hono } from 'hono'
 const mockValidateProxyToken = vi.fn()
 const mockIsHostAllowed = vi.fn()
 const mockGetConnectionToken = vi.fn()
-const mockDbSelect = vi.fn()
-const mockDbInsert = vi.fn()
 
 vi.mock('@shared/lib/proxy/token-store', () => ({
   validateProxyToken: (...args: unknown[]) => mockValidateProxyToken(...args),

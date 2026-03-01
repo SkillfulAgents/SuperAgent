@@ -3,7 +3,7 @@ import { getActiveProvider, setOnExternalClose } from '../../main/host-browser'
 import { getSettings } from '@shared/lib/config/settings'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { messagePersister } from '@shared/lib/container/message-persister'
-import { Authenticated, IsAdmin, IsAgent } from '../middleware/auth'
+import { IsAgent } from '../middleware/auth'
 
 const browser = new Hono()
 
