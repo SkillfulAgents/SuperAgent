@@ -1,6 +1,7 @@
 import { render, type RenderOptions } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ConnectivityProvider } from '@renderer/context/connectivity-context'
+import { UserProvider } from '@renderer/context/user-context'
 import type { ReactElement, ReactNode } from 'react'
 
 export { screen, waitFor, within, act } from '@testing-library/react'
@@ -22,7 +23,9 @@ function AllProviders({ children }: { children: ReactNode }) {
   return (
     <QueryClientProvider client={queryClient}>
       <ConnectivityProvider>
-        {children}
+        <UserProvider>
+          {children}
+        </UserProvider>
       </ConnectivityProvider>
     </QueryClientProvider>
   )

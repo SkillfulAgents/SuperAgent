@@ -1,7 +1,14 @@
 import { defineConfig } from 'vitest/config'
 import path from 'path'
+import { readFileSync } from 'fs'
+
+const pkg = JSON.parse(readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8'))
 
 export default defineConfig({
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+    __AUTH_MODE__: JSON.stringify(process.env.AUTH_MODE === 'true'),
+  },
   test: {
     globals: true,
     environment: 'node',

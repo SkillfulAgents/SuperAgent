@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { screen } from '@testing-library/react'
 import { MessageList } from './message-list'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { createUserMessage, createAssistantMessage, createToolCall, createCompactBoundary } from '@renderer/test/factories'
@@ -483,7 +483,7 @@ describe('MessageList', () => {
     // Start with no boundaries
     mockMessagesData.data = []
 
-    const { rerender } = render(
+    const { rerender } = renderWithProviders(
       <MessageList sessionId="s-1" agentSlug="agent-1" />
     )
 
@@ -501,7 +501,7 @@ describe('MessageList', () => {
     mockMessagesData.data = [createCompactBoundary({ summary: 'Old boundary' }) as any]
     mockStreamState.isCompacting = false
 
-    const { rerender } = render(
+    const { rerender } = renderWithProviders(
       <MessageList sessionId="s-1" agentSlug="agent-1" />
     )
 
