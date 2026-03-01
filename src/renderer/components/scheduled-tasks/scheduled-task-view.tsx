@@ -13,6 +13,7 @@ import {
   useScheduledTaskSessions,
 } from '@renderer/hooks/use-scheduled-tasks'
 import { useSelection } from '@renderer/context/selection-context'
+import { useUser } from '@renderer/context/user-context'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -35,6 +36,8 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const { data: sessions = [] } = useScheduledTaskSessions(taskId)
   const cancelTask = useCancelScheduledTask()
   const { handleScheduledTaskDeleted, selectSession } = useSelection()
+  const { canUseAgent } = useUser()
+  const canCancel = canUseAgent(agentSlug)
 
   const handleCancel = async () => {
     try {
@@ -89,7 +92,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
             </div>
           </div>
 
-          {task.status === 'pending' && (
+          {task.status === 'pending' && canCancel && (
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button variant="destructive" size="sm">

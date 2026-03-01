@@ -10,6 +10,7 @@ import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { useSettings, useUpdateSettings, useStartRunner, useRefreshAvailability } from '@renderer/hooks/use-settings'
+import { useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { useCreateAgent } from '@renderer/hooks/use-agents'
 import { useSelection } from '@renderer/context/selection-context'
 import { apiFetch } from '@renderer/lib/api'
@@ -35,6 +36,7 @@ import {
 } from '@renderer/hooks/use-connected-accounts'
 import { useQuery } from '@tanstack/react-query'
 import type { Provider } from '@shared/lib/composio/providers'
+import { useUser } from '@renderer/context/user-context'
 
 const STEPS = [
   { label: 'Welcome' },
@@ -53,7 +55,7 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
   const [currentStep, setCurrentStep] = useState(0)
   const [composioCanProceed, setComposioCanProceed] = useState(false)
   const composioSaveRef = useRef<(() => Promise<void>) | null>(null)
-  const updateSettings = useUpdateSettings()
+  const updateUserSettings = useUpdateUserSettings()
 
   // Reset step when dialog opens
   useEffect(() => {
@@ -63,7 +65,7 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
   }, [open])
 
   const handleFinish = async () => {
-    await updateSettings.mutateAsync({ app: { setupCompleted: true } })
+    await updateUserSettings.mutateAsync({ setupCompleted: true })
     onOpenChange(false)
   }
 
@@ -447,6 +449,7 @@ interface ComposioStepProps {
 function ComposioStep({ onCanProceedChange, saveRef }: ComposioStepProps) {
   const { data: settings } = useSettings()
   const updateSettings = useUpdateSettings()
+  const { isAuthMode, user } = useUser()
 
   const [composioApiKeyInput, setComposioApiKeyInput] = useState('')
   const [composioUserIdInput, setComposioUserIdInput] = useState('')
@@ -454,21 +457,22 @@ function ComposioStep({ onCanProceedChange, saveRef }: ComposioStepProps) {
   const [isSaving, setIsSaving] = useState(false)
 
   const composioApiKeyStatus = settings?.apiKeyStatus?.composio
-  const hasComposioUserId = !!settings?.composioUserId
+  // In auth mode, user ID is automatic (from the logged-in user)
+  const hasComposioUserId = isAuthMode ? !!user?.id : !!settings?.composioUserId
   const isComposioConfigured = composioApiKeyStatus?.isConfigured && hasComposioUserId
-  const hasInput = !!(composioApiKeyInput.trim() || composioUserIdInput.trim())
+  const hasInput = !!(composioApiKeyInput.trim() || (!isAuthMode && composioUserIdInput.trim()))
 
   useEffect(() => {
     onCanProceedChange(!!(isComposioConfigured || hasInput) && !isSaving)
   }, [isComposioConfigured, hasInput, isSaving, onCanProceedChange])
 
   const handleSave = async () => {
-    if (!composioApiKeyInput.trim() && !composioUserIdInput.trim()) return
+    if (!composioApiKeyInput.trim() && (isAuthMode || !composioUserIdInput.trim())) return
     setIsSaving(true)
     try {
       const updates: { composioApiKey?: string; composioUserId?: string } = {}
       if (composioApiKeyInput.trim()) updates.composioApiKey = composioApiKeyInput.trim()
-      if (composioUserIdInput.trim()) updates.composioUserId = composioUserIdInput.trim()
+      if (!isAuthMode && composioUserIdInput.trim()) updates.composioUserId = composioUserIdInput.trim()
       await updateSettings.mutateAsync({ apiKeys: updates })
       setComposioApiKeyInput('')
       setComposioUserIdInput('')
@@ -539,12 +543,15 @@ function ComposioStep({ onCanProceedChange, saveRef }: ComposioStepProps) {
             <Input
               id="wizard-composio-userid"
               type="text"
-              value={composioUserIdInput}
+              value={isAuthMode ? (user?.id ?? '') : composioUserIdInput}
               onChange={(e) => setComposioUserIdInput(e.target.value)}
               placeholder="Enter your Composio user ID (e.g., your email)"
+              disabled={isAuthMode}
             />
             <p className="text-xs text-muted-foreground">
-              Your unique identifier in Composio. Can be any string.
+              {isAuthMode
+                ? 'Automatically set from your account.'
+                : 'Your unique identifier in Composio. Can be any string.'}
             </p>
           </div>
         </>

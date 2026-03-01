@@ -21,12 +21,13 @@ import { useSessions, useSession } from '@renderer/hooks/use-sessions'
 import { useScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { useSelection } from '@renderer/context/selection-context'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { isElectron, getPlatform } from '@renderer/lib/env'
 import { useSidebar } from '@renderer/components/ui/sidebar'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import { useMarkSessionNotificationsRead } from '@renderer/hooks/use-notifications'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
+import { useUser } from '@renderer/context/user-context'
 import { computeContextPercent } from '@shared/lib/utils/context-usage'
 
 export function MainContent() {
@@ -53,10 +54,13 @@ export function MainContent() {
   const isFullScreen = useFullScreen()
   const markSessionNotificationsRead = useMarkSessionNotificationsRead()
   const { browserActive, isActive, contextUsage: streamContextUsage } = useMessageStream(sessionId ?? null, agentSlug ?? null)
-  const { data: settingsData } = useSettings()
-  const readiness = settingsData?.runtimeReadiness
-  const isRuntimeReady = readiness?.status === 'READY'
+  const { canUseAgent } = useUser()
+  const isViewOnly = agentSlug ? !canUseAgent(agentSlug) : false
+  const { data: runtimeStatus, isPending: isRuntimePending } = useRuntimeStatus()
+  const readiness = runtimeStatus?.runtimeReadiness
+  const isRuntimeReady = isRuntimePending || readiness?.status === 'READY'
   const isPulling = readiness?.status === 'PULLING_IMAGE'
+  const apiKeyConfigured = runtimeStatus?.apiKeyConfigured !== false
 
   // Context usage: prefer live stream data, fall back to persisted session metadata
   const contextUsage = streamContextUsage ?? session?.lastUsage ?? null
@@ -162,55 +166,64 @@ export function MainContent() {
               onClick={() => setContextBarExpanded(v => !v)}
             />
           )}
-          {agent?.status === 'running' ? (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => stopAgent.mutate(agentSlug)}
-              disabled={stopAgent.isPending}
-            >
-              <Square className="mr-2 h-4 w-4" />
-              Stop
-            </Button>
-          ) : (
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => startAgent.mutate(agentSlug)}
-                      disabled={startAgent.isPending || !isRuntimeReady}
-                    >
-                      {isPulling ? (
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      ) : (
-                        <Play className="mr-2 h-4 w-4" />
-                      )}
-                      Start
-                    </Button>
-                  </span>
-                </TooltipTrigger>
-                {!isRuntimeReady && readiness && (
-                  <TooltipContent>
-                    <p>{readiness.message}</p>
-                    {readiness.pullProgress && readiness.pullProgress.percent != null && (
-                      <p className="text-xs opacity-80">{readiness.pullProgress.status} ({readiness.pullProgress.percent}%)</p>
+          {!isViewOnly && (
+            <>
+              {agent?.status === 'running' ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => stopAgent.mutate(agentSlug)}
+                  disabled={stopAgent.isPending}
+                >
+                  <Square className="mr-2 h-4 w-4" />
+                  Stop
+                </Button>
+              ) : (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => startAgent.mutate(agentSlug)}
+                          disabled={startAgent.isPending || !isRuntimeReady}
+                        >
+                          {isPulling ? (
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          ) : (
+                            <Play className="mr-2 h-4 w-4" />
+                          )}
+                          Start
+                        </Button>
+                      </span>
+                    </TooltipTrigger>
+                    {!apiKeyConfigured && (
+                      <TooltipContent>
+                        <p>No API key configured. An administrator needs to set up the LLM API key.</p>
+                      </TooltipContent>
                     )}
-                  </TooltipContent>
-                )}
-              </Tooltip>
-            </TooltipProvider>
+                    {apiKeyConfigured && !isRuntimeReady && readiness && (
+                      <TooltipContent>
+                        <p>{readiness.message}</p>
+                        {readiness.pullProgress && readiness.pullProgress.percent != null && (
+                          <p className="text-xs opacity-80">{readiness.pullProgress.status} ({readiness.pullProgress.percent}%)</p>
+                        )}
+                      </TooltipContent>
+                    )}
+                  </Tooltip>
+                </TooltipProvider>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => selectSession(null)}
+              >
+                <Plus className="mr-2 h-4 w-4" />
+                New Session
+              </Button>
+            </>
           )}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => selectSession(null)}
-          >
-            <Plus className="mr-2 h-4 w-4" />
-            New Session
-          </Button>
           <Button
             variant="ghost"
             size="icon"

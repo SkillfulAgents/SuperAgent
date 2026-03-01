@@ -14,6 +14,7 @@ coverage/
 
 # Playwright E2E test artifacts
 .e2e-data/
+.e2e-data-auth/
 playwright-report/
 test-results/
 

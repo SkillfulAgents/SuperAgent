@@ -5,6 +5,7 @@ import { useSendMessage, useUploadFile, useInterruptSession } from '@renderer/ho
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { Send, Loader2, StopCircle, Paperclip, WifiOff } from 'lucide-react'
 import { useIsOnline } from '@renderer/context/connectivity-context'
+import { useUser } from '@renderer/context/user-context'
 import { AttachmentPreview, type Attachment } from './attachment-preview'
 import { SlashCommandMenu } from './slash-command-menu'
 
@@ -15,6 +16,8 @@ interface MessageInputProps {
 }
 
 export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInputProps) {
+  const { canUseAgent } = useUser()
+  const isViewOnly = !canUseAgent(agentSlug)
   const [message, setMessage] = useState('')
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [isUploading, setIsUploading] = useState(false)
@@ -234,6 +237,10 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
   }
 
   const isDisabled = sendMessage.isPending || isActive || isUploading || isOffline
+
+  if (isViewOnly) {
+    return null
+  }
 
   return (
     <form

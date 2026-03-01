@@ -13,7 +13,8 @@ import {
   createNotification,
   type NotificationType,
 } from '@shared/lib/services/notification-service'
-import { getSettings } from '@shared/lib/config/settings'
+import { getUserSettings } from '@shared/lib/services/user-settings-service'
+import { isAuthMode } from '@shared/lib/auth/mode'
 import { getAgent } from '@shared/lib/services/agent-service'
 
 class NotificationManager {
@@ -30,16 +31,18 @@ class NotificationManager {
   }
 
   /**
-   * Check if notifications are enabled for a given type
+   * Check if notifications are enabled for a given type.
+   * In non-auth mode, checks the single user's settings.
+   * In auth mode, always returns true — each client checks its own user's
+   * settings before showing the OS notification (see GlobalNotificationHandler).
    */
   private isNotificationTypeEnabled(type: NotificationType): boolean {
-    const settings = getSettings()
-    const notificationSettings = settings.app?.notifications
-
-    // If no settings defined, default to enabled
-    if (!notificationSettings) {
+    if (isAuthMode()) {
       return true
     }
+
+    const settings = getUserSettings('local')
+    const notificationSettings = settings.notifications
 
     // Check global toggle first
     if (!notificationSettings.enabled) {

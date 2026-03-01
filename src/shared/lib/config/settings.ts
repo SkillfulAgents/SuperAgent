@@ -56,6 +56,10 @@ export interface AppPreferences {
   theme?: 'system' | 'light' | 'dark'
 }
 
+export interface AuthSettings {
+  trustedOrigins?: string[]
+}
+
 export interface AppSettings {
   container: ContainerSettings
   apiKeys?: ApiKeySettings
@@ -64,6 +68,7 @@ export interface AppSettings {
   agentLimits?: AgentLimitsSettings
   customEnvVars?: Record<string, string>
   skillsets?: SkillsetConfig[]
+  auth?: AuthSettings
 }
 
 // API key source types
@@ -108,6 +113,7 @@ export interface GlobalSettingsResponse {
   setupCompleted: boolean
   hostBrowserStatus?: HostBrowserStatus
   runtimeReadiness: RuntimeReadiness
+  auth?: AuthSettings
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -195,6 +201,7 @@ export function loadSettings(): AppSettings {
         agentLimits: loaded.agentLimits,
         customEnvVars: loaded.customEnvVars,
         skillsets: loaded.skillsets,
+        auth: loaded.auth,
       }
     }
   } catch (error) {

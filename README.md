@@ -109,6 +109,79 @@ The image is published to `ghcr.io/iddogino/superagent` on every push to main an
 | `CONTAINER_STATUS_SYNC_INTERVAL_SECONDS` | How often to sync container status with Docker (seconds) | `300` |
 | `RUNNER_AVAILABILITY_CACHE_TTL_SECONDS` | How long to cache Docker/Podman availability checks (seconds) | `60` |
 
+## Auth Mode (Multi-User)
+
+Superagent can run in **auth mode** for multi-user deployments with role-based access control. When enabled, users sign up and sign in with email/password, and agents are isolated per user via ACLs.
+
+### How it works
+
+- The first user to sign up is automatically promoted to **admin**.
+- Subsequent users sign up as regular users.
+- Admins can manage users and access global settings (LLM keys, runtime config).
+- Each agent has an **owner** (the creator) who can invite other users as **user** (can chat) or **viewer** (read-only).
+- Auth mode is **web-only** — the Electron desktop app always runs in single-user mode.
+
+### Enabling auth mode
+
+`AUTH_MODE` is a **compile-time setting** for the frontend (Vite injects it as `__AUTH_MODE__`), so it must be set at build time.
+
+**Using the published Docker image:**
+
+Pre-built auth images are published with the `-auth` suffix:
+
+```bash
+SUPERAGENT_IMAGE=ghcr.io/iddogino/superagent:main-auth \
+ANTHROPIC_API_KEY=your-api-key \
+docker compose up
+```
+
+**From source:**
+
+```bash
+AUTH_MODE=true npm run dev
+```
+
+**Building Docker locally:**
+
+```bash
+AUTH_MODE=true docker compose up --build
+```
+
+### Docker image tags
+
+Both regular and auth-enabled images are published on every push to `main` and on version tags:
+
+| Tag | Description |
+|-----|-------------|
+| `main` | Latest from main branch (single-user) |
+| `main-auth` | Latest from main branch (multi-user auth) |
+| `X.Y.Z` | Version release (single-user) |
+| `X.Y.Z-auth` | Version release (multi-user auth) |
+| `X.Y` | Major.minor release (single-user) |
+| `X.Y-auth` | Major.minor release (multi-user auth) |
+
+### Auth environment variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `BETTER_AUTH_SECRET` | Secret key for signing session cookies (min 32 chars). If not set, a secret is auto-generated and persisted to `$SUPERAGENT_DATA_DIR/.auth-secret`. | Auto-generated |
+| `TRUSTED_ORIGINS` | Comma-separated list of allowed origins for CORS and CSRF protection. The first origin is also used as the app's base URL for OAuth callbacks. Example: `https://superagent.example.com` | None (permissive CORS) |
+| `HOST` | Server hostname, used to construct the auth base URL when `TRUSTED_ORIGINS` is not set. | `localhost` |
+| `PORT` | Server port, used to construct the auth base URL when `TRUSTED_ORIGINS` is not set. | `47891` |
+| `USE_HTTPS` | Use `https` protocol in the auth base URL when `TRUSTED_ORIGINS` is not set. | `false` |
+
+### Example: production deployment
+
+```bash
+SUPERAGENT_IMAGE=ghcr.io/iddogino/superagent:main-auth \
+ANTHROPIC_API_KEY=your-api-key \
+TRUSTED_ORIGINS=https://superagent.example.com \
+BETTER_AUTH_SECRET=your-secret-key-at-least-32-characters-long \
+docker compose up
+```
+
+The runtime variables (`TRUSTED_ORIGINS`, `BETTER_AUTH_SECRET`, etc.) are passed through automatically by the compose file.
+
 ### Optional: Composio OAuth setup
 
 If you connect accounts through Composio (Slack/Gmail/GitHub, etc.), make sure token masking is disabled in your Composio project settings, otherwise SuperAgent cannot read usable access tokens and proxy calls may fail.

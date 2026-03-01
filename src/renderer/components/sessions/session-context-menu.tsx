@@ -18,6 +18,7 @@ import {
 } from '@renderer/components/ui/alert-dialog'
 import { useDeleteSession } from '@renderer/hooks/use-sessions'
 import { useSelection } from '@renderer/context/selection-context'
+import { useUser } from '@renderer/context/user-context'
 import { Trash2, ClipboardCopy } from 'lucide-react'
 import { apiFetch } from '@renderer/lib/api'
 
@@ -38,6 +39,8 @@ export function SessionContextMenu({
   const [isDeleting, setIsDeleting] = useState(false)
   const deleteSession = useDeleteSession()
   const { handleSessionDeleted } = useSelection()
+  const { canAdminAgent } = useUser()
+  const isOwner = canAdminAgent(agentSlug)
 
   const handleDelete = async () => {
     setIsDeleting(true)
@@ -76,14 +79,16 @@ export function SessionContextMenu({
             <ClipboardCopy className="h-4 w-4 mr-2" />
             Copy Raw Log
           </ContextMenuItem>
-          <ContextMenuItem
-            className="text-destructive focus:text-destructive"
-            onClick={() => setShowDeleteDialog(true)}
-            data-testid="delete-session-item"
-          >
-            <Trash2 className="h-4 w-4 mr-2" />
-            Delete Session
-          </ContextMenuItem>
+          {isOwner && (
+            <ContextMenuItem
+              className="text-destructive focus:text-destructive"
+              onClick={() => setShowDeleteDialog(true)}
+              data-testid="delete-session-item"
+            >
+              <Trash2 className="h-4 w-4 mr-2" />
+              Delete Session
+            </ContextMenuItem>
+          )}
         </ContextMenuContent>
       </ContextMenu>
 

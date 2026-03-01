@@ -146,6 +146,7 @@ const pendingOAuthFlows = new Map<
     clientSecret?: string
     mcpId?: string
     newServer?: { name: string; url: string }
+    userId?: string
   }
 >()
 
@@ -259,6 +260,7 @@ export async function initiateNewServerOAuth(
   mcpUrl: string,
   name: string,
   redirectUri: string,
+  userId?: string,
 ): Promise<{
   authorizationUrl: string
   state: string
@@ -305,6 +307,7 @@ export async function initiateNewServerOAuth(
     clientId,
     clientSecret,
     newServer: { name, url: mcpUrl },
+    userId,
   })
 
   const authUrl = new URL(metadata.authorization_endpoint)
@@ -376,6 +379,7 @@ export async function completeOAuthFlow(
         id,
         name: flow.newServer.name,
         url: flow.newServer.url,
+        userId: flow.userId,
         authType: 'oauth',
         accessToken: tokens.access_token,
         refreshToken: tokens.refresh_token || null,

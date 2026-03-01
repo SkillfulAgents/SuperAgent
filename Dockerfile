@@ -16,6 +16,11 @@ RUN npm ci
 # Copy source code
 COPY . .
 
+# AUTH_MODE is a compile-time setting for the frontend.
+# Build with: docker build --build-arg AUTH_MODE=true .
+ARG AUTH_MODE=false
+ENV AUTH_MODE=${AUTH_MODE}
+
 # Build the application
 RUN npm run build
 

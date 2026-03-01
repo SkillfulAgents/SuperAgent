@@ -5,12 +5,13 @@ import { Input } from '@renderer/components/ui/input'
 import { Textarea } from '@renderer/components/ui/textarea'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Checkbox } from '@renderer/components/ui/checkbox'
-import { Send, Loader2, Sparkles, Paperclip, Search, RefreshCw, ChevronLeft, ChevronRight, Filter, Maximize2, Minimize2 } from 'lucide-react'
+import { Send, Loader2, Sparkles, Paperclip, Search, RefreshCw, ChevronLeft, ChevronRight, Filter, Eye, Maximize2, Minimize2 } from 'lucide-react'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
 import { useAgentSkills, useDiscoverableSkills, useRefreshAgentSkills } from '@renderer/hooks/use-agent-skills'
 import { AgentSkillCard } from './agent-skill-card'
 import { DiscoverableSkillCard } from './discoverable-skill-card'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
+import { useUser } from '@renderer/context/user-context'
 import { apiFetch } from '@renderer/lib/api'
 import { AttachmentPreview, type Attachment } from '@renderer/components/messages/attachment-preview'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
@@ -21,6 +22,9 @@ interface AgentLandingProps {
 }
 
 export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
+  const { canUseAgent, canAdminAgent } = useUser()
+  const isViewOnly = !canUseAgent(agent.slug)
+  const isOwner = canAdminAgent(agent.slug)
   const [message, setMessage] = useState('')
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [isUploading, setIsUploading] = useState(false)
@@ -36,12 +40,13 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
   const { data: skillsData } = useAgentSkills(agent.slug)
   const skills = Array.isArray(skillsData) ? skillsData : []
   const { data: discoverableSkillsData } = useDiscoverableSkills(agent.slug)
-  const discoverableSkills = Array.isArray(discoverableSkillsData) ? discoverableSkillsData : []
+  const discoverableSkills = useMemo(() => Array.isArray(discoverableSkillsData) ? discoverableSkillsData : [], [discoverableSkillsData])
   const refreshSkills = useRefreshAgentSkills()
-  const { data: settingsData } = useSettings()
-  const readiness = settingsData?.runtimeReadiness
-  const isRuntimeReady = readiness?.status === 'READY'
+  const { data: runtimeStatus, isPending: isRuntimePending } = useRuntimeStatus()
+  const readiness = runtimeStatus?.runtimeReadiness
+  const isRuntimeReady = isRuntimePending || readiness?.status === 'READY'
   const isPulling = readiness?.status === 'PULLING_IMAGE'
+  const apiKeyConfigured = runtimeStatus?.apiKeyConfigured !== false
 
   const addFiles = useCallback((files: FileList | File[]) => {
     const newAttachments: Attachment[] = Array.from(files).map((file) => {
@@ -215,99 +220,115 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
       <div className={`w-full space-y-6 my-auto transition-[max-width] duration-300 ease-in-out ${isExpanded ? 'max-w-5xl' : 'max-w-2xl'}`}>
         <div className="text-center space-y-2">
           <h1 className="text-2xl font-semibold">
-            Start a conversation with {agent.name}
+            {isViewOnly ? agent.name : `Start a conversation with ${agent.name}`}
           </h1>
           <p className="text-muted-foreground">
-            Send a message to begin a new session
+            {isViewOnly
+              ? 'You have view-only access to this agent'
+              : 'Send a message to begin a new session'}
           </p>
         </div>
 
-        {!isRuntimeReady && readiness && (
-          <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
-            {isPulling && <Loader2 className="h-4 w-4 animate-spin" />}
-            <span>{readiness.message}</span>
-            {readiness.pullProgress?.percent != null && (
-              <span>({readiness.pullProgress.status} - {readiness.pullProgress.percent}%)</span>
-            )}
+        {isViewOnly ? (
+          <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground border rounded-lg p-6" data-testid="view-only-banner">
+            <Eye className="h-5 w-5" />
+            <span>Select a session from the sidebar to view its messages</span>
           </div>
+        ) : (
+          <>
+            {!apiKeyConfigured && (
+              <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+                <span>No API key configured. An administrator needs to set up the LLM API key.</span>
+              </div>
+            )}
+            {!isRuntimeReady && readiness && (
+              <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+                {isPulling && <Loader2 className="h-4 w-4 animate-spin" />}
+                <span>{readiness.message}</span>
+                {readiness.pullProgress?.percent != null && (
+                  <span>({readiness.pullProgress.status} - {readiness.pullProgress.percent}%)</span>
+                )}
+              </div>
+            )}
+
+            <form
+              onSubmit={handleSubmit}
+              className={`space-y-4 ${isDragOver ? 'ring-2 ring-primary rounded-lg' : ''}`}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+            >
+              <div className="relative">
+                <Textarea
+                  placeholder="Type your message..."
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  className={`pr-12 resize-none text-base transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh]' : 'min-h-[120px]'}`}
+                  disabled={isDisabled}
+                  autoFocus
+                  data-testid="landing-message-input"
+                />
+                <div className="absolute bottom-3 right-3 flex gap-1">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    className="hidden"
+                    onChange={handleFileSelect}
+                  />
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    className="h-8 w-8"
+                    onClick={() => {
+                      setIsExpanded((v) => {
+                        if (v) setManuallyCollapsed(true)
+                        else setManuallyCollapsed(false)
+                        return !v
+                      })
+                    }}
+                    title={isExpanded ? 'Collapse input' : 'Expand input'}
+                  >
+                    {isExpanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    className="h-8 w-8"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isDisabled}
+                    title="Attach file"
+                  >
+                    <Paperclip className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    type="submit"
+                    size="icon"
+                    className="h-8 w-8"
+                    disabled={(!message.trim() && attachments.length === 0) || isDisabled}
+                    data-testid="landing-send-button"
+                  >
+                    {isDisabled ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Send className="h-4 w-4" />
+                    )}
+                  </Button>
+                </div>
+              </div>
+              <AttachmentPreview attachments={attachments} onRemove={removeAttachment} />
+              <p className="text-xs text-muted-foreground text-center">
+                Press Enter to send, Shift+Enter for new line
+              </p>
+            </form>
+          </>
         )}
 
-        <form
-          onSubmit={handleSubmit}
-          className={`space-y-4 ${isDragOver ? 'ring-2 ring-primary rounded-lg' : ''}`}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-        >
-          <div className="relative">
-            <Textarea
-              placeholder="Type your message..."
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              onKeyDown={handleKeyDown}
-              className={`pr-12 resize-none text-base transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh]' : 'min-h-[120px]'}`}
-              disabled={isDisabled}
-              autoFocus
-              data-testid="landing-message-input"
-            />
-            <div className="absolute bottom-3 right-3 flex gap-1">
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                className="hidden"
-                onChange={handleFileSelect}
-              />
-              <Button
-                type="button"
-                size="icon"
-                variant="ghost"
-                className="h-8 w-8"
-                onClick={() => {
-                  setIsExpanded((v) => {
-                    if (v) setManuallyCollapsed(true)
-                    else setManuallyCollapsed(false)
-                    return !v
-                  })
-                }}
-                title={isExpanded ? 'Collapse input' : 'Expand input'}
-              >
-                {isExpanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-              </Button>
-              <Button
-                type="button"
-                size="icon"
-                variant="ghost"
-                className="h-8 w-8"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={isDisabled}
-                title="Attach file"
-              >
-                <Paperclip className="h-4 w-4" />
-              </Button>
-              <Button
-                type="submit"
-                size="icon"
-                className="h-8 w-8"
-                disabled={(!message.trim() && attachments.length === 0) || isDisabled}
-                data-testid="landing-send-button"
-              >
-                {isDisabled ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Send className="h-4 w-4" />
-                )}
-              </Button>
-            </div>
-          </div>
-          <AttachmentPreview attachments={attachments} onRemove={removeAttachment} />
-          <p className="text-xs text-muted-foreground text-center">
-            Click Send to submit
-          </p>
-        </form>
-
-        {/* Agent Skills Section */}
-        {!isExpanded && skills.length > 0 && (
+        {/* Agent Skills Section — only shown to owners who can manage skills */}
+        {isOwner && !isExpanded && skills.length > 0 && (
           <div className="pt-6 border-t">
             <div className="flex items-center gap-2 mb-3">
               <Sparkles className="h-4 w-4 text-muted-foreground" />
@@ -334,8 +355,8 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
           </div>
         )}
 
-        {/* Discover Skills Section */}
-        {!isExpanded && discoverableSkills.length > 0 && (
+        {/* Discover Skills Section — only shown to owners who can install skills */}
+        {isOwner && !isExpanded && discoverableSkills.length > 0 && (
           <div className="pt-6 border-t">
             <div className="flex items-center gap-2 mb-3">
               <Search className="h-4 w-4 text-muted-foreground shrink-0" />

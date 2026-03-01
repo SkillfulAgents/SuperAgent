@@ -17,10 +17,12 @@ import { Eye, EyeOff, Plus, Trash2, ExternalLink, Loader2, Pencil, Check, X, Sea
 import { useQuery } from '@tanstack/react-query'
 import type { Provider } from '@shared/lib/composio/providers'
 import { formatDistanceToNow } from 'date-fns'
+import { useUser } from '@renderer/context/user-context'
 
 export function ComposioTab() {
   const { data: settings, isLoading } = useSettings()
   const updateSettings = useUpdateSettings()
+  const { isAuthMode, user } = useUser()
 
   // Composio settings state
   const [composioApiKeyInput, setComposioApiKeyInput] = useState('')
@@ -29,7 +31,7 @@ export function ComposioTab() {
   const [isSavingComposio, setIsSavingComposio] = useState(false)
 
   const composioApiKeyStatus = settings?.apiKeyStatus?.composio
-  const hasComposioUserId = !!settings?.composioUserId
+  const hasComposioUserId = isAuthMode ? !!user?.id : !!settings?.composioUserId
 
   const handleSaveComposioSettings = async () => {
     setIsSavingComposio(true)
@@ -38,7 +40,7 @@ export function ComposioTab() {
       if (composioApiKeyInput.trim()) {
         updates.composioApiKey = composioApiKeyInput.trim()
       }
-      if (composioUserIdInput.trim()) {
+      if (!isAuthMode && composioUserIdInput.trim()) {
         updates.composioUserId = composioUserIdInput.trim()
       }
       if (Object.keys(updates).length > 0) {
@@ -87,7 +89,7 @@ export function ComposioTab() {
       <div>
         <h3 className="text-sm font-medium">Composio Integration</h3>
         <p className="text-xs text-muted-foreground mt-1">
-          Connect external OAuth accounts (Gmail, Slack, GitHub, etc.) via Composio.
+          Configure the Composio account provider for OAuth connections (Gmail, Slack, GitHub, etc.).
         </p>
       </div>
 
@@ -163,7 +165,7 @@ export function ComposioTab() {
         <Label htmlFor="composio-user-id">Composio User ID</Label>
 
         {/* Current value indicator */}
-        {hasComposioUserId && (
+        {!isAuthMode && hasComposioUserId && (
           <div className="flex items-center gap-2">
             <span className="text-xs px-2 py-0.5 rounded-full bg-green-500/10 text-green-700 dark:text-green-400">
               Configured
@@ -174,18 +176,20 @@ export function ComposioTab() {
         <Input
           id="composio-user-id"
           type="text"
-          value={composioUserIdInput}
+          value={isAuthMode ? (user?.id ?? '') : composioUserIdInput}
           onChange={(e) => setComposioUserIdInput(e.target.value)}
           placeholder={hasComposioUserId ? 'Enter new user ID to replace' : 'Enter your Composio user ID'}
-          disabled={isLoading}
+          disabled={isAuthMode || isLoading}
         />
 
         <p className="text-xs text-muted-foreground">
-          Your unique identifier in Composio. Can be any string (e.g., your email).
+          {isAuthMode
+            ? 'Automatically set from your account.'
+            : 'Your unique identifier in Composio. Can be any string (e.g., your email).'}
         </p>
 
         {/* Remove button */}
-        {hasComposioUserId && (
+        {!isAuthMode && hasComposioUserId && (
           <Button
             size="sm"
             variant="outline"
@@ -198,11 +202,12 @@ export function ComposioTab() {
       </div>
 
       {/* Save button for Composio settings */}
-      {(composioApiKeyInput.trim() || composioUserIdInput.trim()) && (
+      {(composioApiKeyInput.trim() || (!isAuthMode && composioUserIdInput.trim())) && (
         <Button size="sm" onClick={handleSaveComposioSettings} disabled={isSavingComposio}>
           {isSavingComposio ? 'Saving...' : 'Save Composio Settings'}
         </Button>
       )}
+
 
       {/* Connected Accounts Section - only show if Composio is configured */}
       {composioApiKeyStatus?.isConfigured && hasComposioUserId && (

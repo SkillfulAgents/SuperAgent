@@ -6,6 +6,7 @@ const e2eDataDir = path.join(__dirname, '.e2e-data')
 
 export default defineConfig({
   testDir: './e2e',
+  testIgnore: ['**/auth/**'],  // Auth tests use separate config (playwright.auth.config.ts)
   fullyParallel: false,  // Run tests serially for more reliable state management
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,

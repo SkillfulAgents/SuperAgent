@@ -1,20 +1,44 @@
 import { Hono } from 'hono'
-import { listAgents } from '@shared/lib/services/agent-service'
+import { listAgents, getAgent } from '@shared/lib/services/agent-service'
 import { getAgentClaudeConfigDir } from '@shared/lib/utils/file-storage'
 import { subDays, format, addDays } from 'date-fns'
 import type { DailyUsageEntry, UsageResponse } from '@shared/lib/types/usage'
+import { Authenticated } from '../middleware/auth'
+import { isAuthMode } from '@shared/lib/auth/mode'
+import { getCurrentUserId } from '@shared/lib/auth/config'
+import { db } from '@shared/lib/db'
+import { agentAcl } from '@shared/lib/db/schema'
+import { eq } from 'drizzle-orm'
 
 const usage = new Hono()
+
+usage.use('*', Authenticated())
 
 usage.get('/', async (c) => {
   const daysParam = c.req.query('days')
   const days = Math.min(Math.max(parseInt(daysParam || '7', 10) || 7, 1), 90)
+  const globalParam = c.req.query('global') === 'true'
+  // Only admins can request global view
+  const user = isAuthMode() ? c.get('user' as never) as { id: string; role?: string } | undefined : undefined
+  const globalView = globalParam && (!isAuthMode() || user?.role === 'admin')
 
   const now = new Date()
   const sinceDate = subDays(now, days)
   const since = format(sinceDate, 'yyyyMMdd')
 
-  const agents = await listAgents()
+  // In auth mode, only load agents the user has access to (unless admin requests global view)
+  let agents;
+  if (isAuthMode() && !globalView) {
+    const userId = getCurrentUserId(c)
+    const rows = await db
+      .select({ agentSlug: agentAcl.agentSlug })
+      .from(agentAcl)
+      .where(eq(agentAcl.userId, userId))
+    const results = await Promise.all(rows.map((r) => getAgent(r.agentSlug)))
+    agents = results.filter(Boolean) as Awaited<ReturnType<typeof listAgents>>
+  } else {
+    agents = await listAgents()
+  }
 
   // Dynamic import — ccusage is ESM-only
   // Suppress ccusage's consola logging

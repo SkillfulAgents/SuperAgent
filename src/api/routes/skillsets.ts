@@ -3,6 +3,7 @@ import {
   getSettings,
   updateSettings,
 } from '@shared/lib/config/settings'
+import { Authenticated, IsAdmin } from '../middleware/auth'
 import {
   validateSkillsetUrl,
   urlToSkillsetId,
@@ -14,6 +15,8 @@ import type { SkillsetConfig } from '@shared/lib/types/skillset'
 import type { ApiSkillsetConfig } from '@shared/lib/types/api'
 
 const skillsets = new Hono()
+
+skillsets.use('*', Authenticated())
 
 function configToApiResponse(config: SkillsetConfig, skillCount: number, agentCount: number = 0): ApiSkillsetConfig {
   return {
@@ -47,7 +50,7 @@ skillsets.get('/', async (c) => {
 })
 
 // POST /api/skillsets/validate - Validate a skillset URL
-skillsets.post('/validate', async (c) => {
+skillsets.post('/validate', IsAdmin(), async (c) => {
   try {
     const { url } = await c.req.json()
     if (!url || typeof url !== 'string') {
@@ -63,7 +66,7 @@ skillsets.post('/validate', async (c) => {
 })
 
 // POST /api/skillsets - Add a skillset (validates first)
-skillsets.post('/', async (c) => {
+skillsets.post('/', IsAdmin(), async (c) => {
   try {
     const { url } = await c.req.json()
     if (!url || typeof url !== 'string') {
@@ -106,7 +109,7 @@ skillsets.post('/', async (c) => {
 })
 
 // DELETE /api/skillsets/:id - Remove a skillset
-skillsets.delete('/:id', async (c) => {
+skillsets.delete('/:id', IsAdmin(), async (c) => {
   try {
     const id = c.req.param('id')
     const settings = getSettings()
@@ -131,7 +134,7 @@ skillsets.delete('/:id', async (c) => {
 })
 
 // POST /api/skillsets/:id/refresh - Refresh a skillset (git pull)
-skillsets.post('/:id/refresh', async (c) => {
+skillsets.post('/:id/refresh', IsAdmin(), async (c) => {
   try {
     const id = c.req.param('id')
     const settings = getSettings()

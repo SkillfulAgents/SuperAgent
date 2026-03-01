@@ -19,6 +19,7 @@ import { QuestionRequestItem } from './question-request-item'
 import { FileRequestItem } from './file-request-item'
 import { Loader2, Wrench, WifiOff } from 'lucide-react'
 import { useIsOnline } from '@renderer/context/connectivity-context'
+import { useUser } from '@renderer/context/user-context'
 import { useEffect, useRef, useCallback, useMemo, Fragment } from 'react'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import type { ApiMessage, ApiCompactBoundary } from '@shared/lib/types/api'
@@ -43,6 +44,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
   const { data: messages, isLoading } = useMessages(sessionId, agentSlug)
   const deleteMessage = useDeleteMessage()
   const deleteToolCall = useDeleteToolCall()
+  const { canUseAgent } = useUser()
+  const isViewOnly = !canUseAgent(agentSlug)
 
   const handleRemoveMessage = useCallback(
     (messageId: string) => {
@@ -568,7 +571,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
           <CompactBoundaryItem isCompacting />
         )}
 
-        {/* Pending secret requests from the agent */}
+        {/* Pending interactive requests — read-only for viewers */}
         {pendingSecretRequests.map((request) => (
           <SecretRequestItem
             key={request.toolUseId}
@@ -577,11 +580,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
             reason={request.reason}
             sessionId={sessionId}
             agentSlug={agentSlug}
+            readOnly={isViewOnly}
             onComplete={() => handleSecretRequestComplete(request.toolUseId)}
           />
         ))}
-
-        {/* Pending connected account requests from the agent */}
         {pendingConnectedAccountRequests.map((request) => (
           <ConnectedAccountRequestItem
             key={request.toolUseId}
@@ -590,11 +592,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
             reason={request.reason}
             sessionId={sessionId}
             agentSlug={agentSlug}
+            readOnly={isViewOnly}
             onComplete={() => handleConnectedAccountRequestComplete(request.toolUseId)}
           />
         ))}
-
-        {/* Pending remote MCP requests from the agent */}
         {pendingRemoteMcpRequests.map((request) => (
           <RemoteMcpRequestItem
             key={request.toolUseId}
@@ -605,11 +606,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
             authHint={request.authHint}
             sessionId={sessionId}
             agentSlug={agentSlug}
+            readOnly={isViewOnly}
             onComplete={() => handleRemoteMcpRequestComplete(request.toolUseId)}
           />
         ))}
-
-        {/* Pending question requests from the agent */}
         {pendingQuestionRequests.map((request) => (
           <QuestionRequestItem
             key={request.toolUseId}
@@ -617,11 +617,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
             questions={request.questions}
             sessionId={sessionId}
             agentSlug={agentSlug}
+            readOnly={isViewOnly}
             onComplete={() => handleQuestionRequestComplete(request.toolUseId)}
           />
         ))}
-
-        {/* Pending file requests from the agent */}
         {pendingFileRequests.map((request) => (
           <FileRequestItem
             key={request.toolUseId}
@@ -630,6 +629,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
             fileTypes={request.fileTypes}
             sessionId={sessionId}
             agentSlug={agentSlug}
+            readOnly={isViewOnly}
             onComplete={() => handleFileRequestComplete(request.toolUseId)}
           />
         ))}

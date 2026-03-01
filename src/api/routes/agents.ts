@@ -1,6 +1,8 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import Anthropic from '@anthropic-ai/sdk'
+import { randomUUID } from 'crypto'
+import { Authenticated, AgentRead, AgentUser, AgentAdmin } from '../middleware/auth'
 import {
   listAgentsWithStatus,
   createAgent,
@@ -38,8 +40,10 @@ import {
   listPendingScheduledTasks,
 } from '@shared/lib/services/scheduled-task-service'
 import { db } from '@shared/lib/db'
-import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog } from '@shared/lib/db/schema'
-import { eq, and, inArray, desc, count } from 'drizzle-orm'
+import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, user as userTable } from '@shared/lib/db/schema'
+import { eq, and, inArray, desc, count, like, or } from 'drizzle-orm'
+import { isAuthMode } from '@shared/lib/auth/mode'
+import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getProvider } from '@shared/lib/composio/providers'
 // getAgentSkills is superseded by getAgentSkillsWithStatus from skillset-service
 // import { getAgentSkills } from '@shared/lib/skills'
@@ -83,6 +87,8 @@ import * as path from 'path'
 
 const agents = new Hono()
 
+agents.use('*', Authenticated())
+
 // ============================================================
 // Routes that must be registered BEFORE /:id middleware
 // (paths like /import-template would otherwise match as :id)
@@ -103,6 +109,7 @@ agents.post('/import-template', async (c) => {
     const zipBuffer = Buffer.from(arrayBuffer)
 
     const agent = await importAgentFromTemplate(zipBuffer, nameOverride || undefined)
+    await createOwnerAcl(c, agent.slug)
     const hasOnboarding = await hasOnboardingSkill(agent.slug)
     const requiredEnvVars = await collectAgentRequiredEnvVars(agent.slug)
     return c.json({ ...agent, hasOnboarding, requiredEnvVars }, 201)
@@ -156,6 +163,7 @@ agents.post('/install-from-skillset', async (c) => {
       agentVersion || '0.0.0',
     )
 
+    await createOwnerAcl(c, agent.slug)
     const hasOnboarding = await hasOnboardingSkill(agent.slug)
     const requiredEnvVars = await collectAgentRequiredEnvVars(agent.slug)
     return c.json({ ...agent, hasOnboarding, requiredEnvVars }, 201)
@@ -163,6 +171,48 @@ agents.post('/install-from-skillset', async (c) => {
     const message = error instanceof Error ? error.message : 'Failed to install agent from skillset'
     console.error('Failed to install agent from skillset:', error)
     return c.json({ error: message }, 500)
+  }
+})
+
+// GET /api/agents/my-roles - Get current user's roles on all agents (with member counts)
+agents.get('/my-roles', async (c) => {
+  try {
+    if (!isAuthMode()) {
+      return c.json({ roles: {} })
+    }
+    const userId = getCurrentUserId(c)
+
+    // Get user's roles
+    const rows = await db
+      .select({ agentSlug: agentAcl.agentSlug, role: agentAcl.role })
+      .from(agentAcl)
+      .where(eq(agentAcl.userId, userId))
+
+    if (rows.length === 0) {
+      return c.json({ roles: {} })
+    }
+
+    // Get member counts for those agents in one query
+    const slugs = rows.map((r) => r.agentSlug)
+    const counts = await db
+      .select({ agentSlug: agentAcl.agentSlug, memberCount: count() })
+      .from(agentAcl)
+      .where(inArray(agentAcl.agentSlug, slugs))
+      .groupBy(agentAcl.agentSlug)
+
+    const countMap = new Map(counts.map((c) => [c.agentSlug, c.memberCount]))
+
+    const roles: Record<string, { role: string; memberCount: number }> = {}
+    for (const row of rows) {
+      roles[row.agentSlug] = {
+        role: row.role,
+        memberCount: countMap.get(row.agentSlug) ?? 1,
+      }
+    }
+    return c.json({ roles })
+  } catch (error) {
+    console.error('Failed to fetch agent roles:', error)
+    return c.json({ error: 'Failed to fetch agent roles' }, 500)
   }
 })
 
@@ -174,6 +224,19 @@ agents.use('/:id/*', async (c, next) => {
   }
   await next()
 })
+
+// Create owner ACL entry when an agent is created in auth mode
+async function createOwnerAcl(c: Context, agentSlug: string) {
+  if (!isAuthMode()) return
+  const userId = getCurrentUserId(c)
+  await db.insert(agentAcl).values({
+    id: randomUUID(),
+    userId,
+    agentSlug,
+    role: 'owner',
+    createdAt: new Date(),
+  })
+}
 
 // Create Anthropic client lazily to use API key from settings
 function getAnthropicClient(): Anthropic {
@@ -227,18 +290,35 @@ Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
   }
 }
 
-// GET /api/agents - List all agents with status
+// GET /api/agents - List agents with status (filtered by ACL in auth mode)
 agents.get('/', async (c) => {
   try {
-    const agentList = await listAgentsWithStatus()
-    return c.json(agentList)
+    // In auth mode, only return agents the user has explicit ACL entries for.
+    // Note: Admins do NOT get implicit access to all agents in the listing.
+    // This is intentional — admin privileges grant bypass access to individual
+    // agent routes (via middleware), but agents must be explicitly shared with
+    // admins for them to appear in the sidebar. This prevents admins from
+    // seeing every agent in large deployments.
+    if (isAuthMode()) {
+      const userId = getCurrentUserId(c)
+      const rows = await db
+        .select({ agentSlug: agentAcl.agentSlug })
+        .from(agentAcl)
+        .where(eq(agentAcl.userId, userId))
+      const agents = await Promise.all(
+        rows.map((r) => getAgentWithStatus(r.agentSlug))
+      )
+      return c.json(agents.filter(Boolean))
+    }
+
+    return c.json(await listAgentsWithStatus())
   } catch (error) {
     console.error('Failed to fetch agents:', error)
     return c.json({ error: 'Failed to fetch agents' }, 500)
   }
 })
 
-// POST /api/agents - Create a new agent
+// POST /api/agents - Create a new agent (with owner ACL in auth mode)
 agents.post('/', async (c) => {
   try {
     const body = await c.req.json()
@@ -253,6 +333,8 @@ agents.post('/', async (c) => {
       description: description?.trim(),
     })
 
+    await createOwnerAcl(c, agent.slug)
+
     return c.json(agent, 201)
   } catch (error) {
     console.error('Failed to create agent:', error)
@@ -261,7 +343,7 @@ agents.post('/', async (c) => {
 })
 
 // GET /api/agents/:id - Get a single agent
-agents.get('/:id', async (c) => {
+agents.get('/:id', AgentRead(), async (c) => {
   try {
     const slug = c.req.param('id')
     const agent = await getAgentWithStatus(slug)
@@ -278,7 +360,7 @@ agents.get('/:id', async (c) => {
 })
 
 // PUT /api/agents/:id - Update an agent
-agents.put('/:id', async (c) => {
+agents.put('/:id', AgentAdmin(), async (c) => {
   try {
     const slug = c.req.param('id')
     const body = await c.req.json()
@@ -302,7 +384,7 @@ agents.put('/:id', async (c) => {
 })
 
 // DELETE /api/agents/:id - Delete an agent
-agents.delete('/:id', async (c) => {
+agents.delete('/:id', AgentAdmin(), async (c) => {
   try {
     const slug = c.req.param('id')
     const deleted = await deleteAgent(slug)
@@ -320,6 +402,9 @@ agents.delete('/:id', async (c) => {
       console.error('Failed to revoke proxy token:', error)
     }
 
+    // Clean up ACL entries
+    await db.delete(agentAcl).where(eq(agentAcl.agentSlug, slug))
+
     return c.body(null, 204)
   } catch (error) {
     console.error('Failed to delete agent:', error)
@@ -327,8 +412,257 @@ agents.delete('/:id', async (c) => {
   }
 })
 
+// ============================================================
+// Agent Access (ACL) endpoints
+// ============================================================
+
+// GET /api/agents/:id/access - List users with roles on this agent
+agents.get('/:id/access', AgentAdmin(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const rows = await db
+      .select({
+        userId: agentAcl.userId,
+        role: agentAcl.role,
+        createdAt: agentAcl.createdAt,
+        userName: userTable.name,
+        userEmail: userTable.email,
+      })
+      .from(agentAcl)
+      .innerJoin(userTable, eq(agentAcl.userId, userTable.id))
+      .where(eq(agentAcl.agentSlug, slug))
+    return c.json(rows)
+  } catch (error) {
+    console.error('Failed to fetch agent access:', error)
+    return c.json({ error: 'Failed to fetch agent access' }, 500)
+  }
+})
+
+// POST /api/agents/:id/access - Invite user (assign role)
+agents.post('/:id/access', AgentAdmin(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const { userId, role } = await c.req.json()
+
+    if (!userId || !role) {
+      return c.json({ error: 'userId and role are required' }, 400)
+    }
+    if (!['owner', 'user', 'viewer'].includes(role)) {
+      return c.json({ error: 'Invalid role. Must be owner, user, or viewer' }, 400)
+    }
+
+    // Check user exists
+    const [targetUser] = await db
+      .select({ id: userTable.id })
+      .from(userTable)
+      .where(eq(userTable.id, userId))
+      .limit(1)
+    if (!targetUser) {
+      return c.json({ error: 'User not found' }, 404)
+    }
+
+    // Check if ACL already exists
+    const [existing] = await db
+      .select({ id: agentAcl.id })
+      .from(agentAcl)
+      .where(and(eq(agentAcl.userId, userId), eq(agentAcl.agentSlug, slug)))
+      .limit(1)
+    if (existing) {
+      return c.json({ error: 'User already has access to this agent' }, 409)
+    }
+
+    await db.insert(agentAcl).values({
+      id: randomUUID(),
+      userId,
+      agentSlug: slug,
+      role,
+      createdAt: new Date(),
+    })
+
+    return c.json({ ok: true }, 201)
+  } catch (error) {
+    console.error('Failed to add agent access:', error)
+    return c.json({ error: 'Failed to add agent access' }, 500)
+  }
+})
+
+// PATCH /api/agents/:id/access/:userId - Change user's role
+agents.patch('/:id/access/:userId', AgentAdmin(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const targetUserId = c.req.param('userId')
+    const { role } = await c.req.json()
+
+    if (!role || !['owner', 'user', 'viewer'].includes(role)) {
+      return c.json({ error: 'Invalid role. Must be owner, user, or viewer' }, 400)
+    }
+
+    // Transaction to prevent TOCTOU race on last-owner check
+    // Note: better-sqlite3 transactions are synchronous — no async/await inside
+    const error = db.transaction((tx) => {
+      const [currentAcl] = tx
+        .select({ role: agentAcl.role })
+        .from(agentAcl)
+        .where(and(eq(agentAcl.userId, targetUserId), eq(agentAcl.agentSlug, slug)))
+        .limit(1)
+        .all()
+
+      if (!currentAcl) return 'User does not have access to this agent'
+
+      if (currentAcl.role === 'owner' && role !== 'owner') {
+        const [{ ownerCount }] = tx
+          .select({ ownerCount: count() })
+          .from(agentAcl)
+          .where(and(eq(agentAcl.agentSlug, slug), eq(agentAcl.role, 'owner')))
+          .all()
+        if (ownerCount <= 1) return 'Cannot change role: agent must have at least one owner'
+      }
+
+      tx
+        .update(agentAcl)
+        .set({ role })
+        .where(and(eq(agentAcl.userId, targetUserId), eq(agentAcl.agentSlug, slug)))
+        .run()
+
+      return null
+    })
+
+    if (error) {
+      const status = error.includes('does not have access') ? 404 : 400
+      return c.json({ error }, status)
+    }
+    return c.json({ ok: true })
+  } catch (error) {
+    console.error('Failed to update agent access:', error)
+    return c.json({ error: 'Failed to update agent access' }, 500)
+  }
+})
+
+// DELETE /api/agents/:id/access/:userId - Remove user's access
+agents.delete('/:id/access/:userId', AgentAdmin(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const targetUserId = c.req.param('userId')
+
+    // Transaction to prevent TOCTOU race on last-owner check
+    // Note: better-sqlite3 transactions are synchronous — no async/await inside
+    const error = db.transaction((tx) => {
+      const [currentAcl] = tx
+        .select({ role: agentAcl.role })
+        .from(agentAcl)
+        .where(and(eq(agentAcl.userId, targetUserId), eq(agentAcl.agentSlug, slug)))
+        .limit(1)
+        .all()
+
+      if (!currentAcl) return 'User does not have access to this agent'
+
+      if (currentAcl.role === 'owner') {
+        const [{ ownerCount }] = tx
+          .select({ ownerCount: count() })
+          .from(agentAcl)
+          .where(and(eq(agentAcl.agentSlug, slug), eq(agentAcl.role, 'owner')))
+          .all()
+        if (ownerCount <= 1) return 'Cannot remove access: agent must have at least one owner'
+      }
+
+      tx
+        .delete(agentAcl)
+        .where(and(eq(agentAcl.userId, targetUserId), eq(agentAcl.agentSlug, slug)))
+        .run()
+
+      return null
+    })
+
+    if (error) {
+      const status = error.includes('does not have access') ? 404 : 400
+      return c.json({ error }, status)
+    }
+    return c.body(null, 204)
+  } catch (error) {
+    console.error('Failed to remove agent access:', error)
+    return c.json({ error: 'Failed to remove agent access' }, 500)
+  }
+})
+
+// POST /api/agents/:id/leave - Remove yourself from an agent's ACL
+agents.post('/:id/leave', AgentRead(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const userId = getCurrentUserId(c)
+
+    const error = db.transaction((tx) => {
+      const [currentAcl] = tx
+        .select({ role: agentAcl.role })
+        .from(agentAcl)
+        .where(and(eq(agentAcl.userId, userId), eq(agentAcl.agentSlug, slug)))
+        .limit(1)
+        .all()
+
+      if (!currentAcl) return 'You do not have access to this agent'
+
+      if (currentAcl.role === 'owner') {
+        const [{ ownerCount }] = tx
+          .select({ ownerCount: count() })
+          .from(agentAcl)
+          .where(and(eq(agentAcl.agentSlug, slug), eq(agentAcl.role, 'owner')))
+          .all()
+        if (ownerCount <= 1) return 'Cannot leave: you are the only owner'
+      }
+
+      tx
+        .delete(agentAcl)
+        .where(and(eq(agentAcl.userId, userId), eq(agentAcl.agentSlug, slug)))
+        .run()
+
+      return null
+    })
+
+    if (error) {
+      return c.json({ error }, 400)
+    }
+    return c.body(null, 204)
+  } catch (error) {
+    console.error('Failed to leave agent:', error)
+    return c.json({ error: 'Failed to leave agent' }, 500)
+  }
+})
+
+// GET /api/agents/:id/access/search-users - Search users for invite
+agents.get('/:id/access/search-users', AgentAdmin(), async (c) => {
+  try {
+    const query = c.req.query('q')?.trim()
+    if (!query || query.length < 2) {
+      return c.json([])
+    }
+
+    const slug = c.req.param('id')
+
+    // Get users who already have access
+    const existingUserIds = await db
+      .select({ userId: agentAcl.userId })
+      .from(agentAcl)
+      .where(eq(agentAcl.agentSlug, slug))
+
+    const excludeIds = new Set(existingUserIds.map((r) => r.userId))
+
+    // Search users by name or email (SQLite LIKE is case-insensitive by default)
+    // Escape LIKE wildcards to prevent pattern injection (e.g. searching "%" matching all users)
+    const escaped = query.replace(/%/g, '\\%').replace(/_/g, '\\_')
+    const users = await db
+      .select({ id: userTable.id, name: userTable.name, email: userTable.email })
+      .from(userTable)
+      .where(or(like(userTable.name, `%${escaped}%`), like(userTable.email, `%${escaped}%`)))
+      .limit(20)
+
+    return c.json(users.filter((u) => !excludeIds.has(u.id)))
+  } catch (error) {
+    console.error('Failed to search users:', error)
+    return c.json({ error: 'Failed to search users' }, 500)
+  }
+})
+
 // POST /api/agents/:id/start - Start an agent's container
-agents.post('/:id/start', async (c) => {
+agents.post('/:id/start', AgentUser(), async (c) => {
   try {
     const slug = c.req.param('id')
 
@@ -347,7 +681,7 @@ agents.post('/:id/start', async (c) => {
 })
 
 // POST /api/agents/:id/stop - Stop an agent's container
-agents.post('/:id/stop', async (c) => {
+agents.post('/:id/stop', AgentUser(), async (c) => {
   try {
     const slug = c.req.param('id')
     const agent = await getAgent(slug)
@@ -388,7 +722,7 @@ agents.post('/:id/stop', async (c) => {
 })
 
 // POST /api/agents/:id/open-directory - Get workspace path, optionally open in system file manager
-agents.post('/:id/open-directory', async (c) => {
+agents.post('/:id/open-directory', AgentAdmin(), async (c) => {
   try {
     const slug = c.req.param('id')
     const workspaceDir = getAgentWorkspaceDir(slug)
@@ -416,7 +750,7 @@ agents.post('/:id/open-directory', async (c) => {
 })
 
 // GET /api/agents/:id/sessions - List sessions for an agent
-agents.get('/:id/sessions', async (c) => {
+agents.get('/:id/sessions', AgentRead(), async (c) => {
   try {
     const slug = c.req.param('id')
 
@@ -435,7 +769,7 @@ agents.get('/:id/sessions', async (c) => {
 })
 
 // POST /api/agents/:id/sessions - Create a new session with initial message
-agents.post('/:id/sessions', async (c) => {
+agents.post('/:id/sessions', AgentUser(), async (c) => {
   try {
     const slug = c.req.param('id')
     const body = await c.req.json()
@@ -503,7 +837,7 @@ agents.post('/:id/sessions', async (c) => {
 })
 
 // GET /api/agents/:id/sessions/:sessionId/messages - Get messages for a session
-agents.get('/:id/sessions/:sessionId/messages', async (c) => {
+agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const sessionId = c.req.param('sessionId')
@@ -521,7 +855,7 @@ agents.get('/:id/sessions/:sessionId/messages', async (c) => {
 })
 
 // DELETE /api/agents/:id/sessions/:sessionId/messages/:messageId - Remove a message from history
-agents.delete('/:id/sessions/:sessionId/messages/:messageId', async (c) => {
+agents.delete('/:id/sessions/:sessionId/messages/:messageId', AgentUser(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const sessionId = c.req.param('sessionId')
@@ -541,7 +875,7 @@ agents.delete('/:id/sessions/:sessionId/messages/:messageId', async (c) => {
 })
 
 // DELETE /api/agents/:id/sessions/:sessionId/tool-calls/:toolCallId - Remove a tool call from history
-agents.delete('/:id/sessions/:sessionId/tool-calls/:toolCallId', async (c) => {
+agents.delete('/:id/sessions/:sessionId/tool-calls/:toolCallId', AgentUser(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const sessionId = c.req.param('sessionId')
@@ -561,7 +895,7 @@ agents.delete('/:id/sessions/:sessionId/tool-calls/:toolCallId', async (c) => {
 })
 
 // GET /api/agents/:id/sessions/:sessionId/subagent/:agentId/messages - Get subagent messages
-agents.get('/:id/sessions/:sessionId/subagent/:agentId/messages', async (c) => {
+agents.get('/:id/sessions/:sessionId/subagent/:agentId/messages', AgentRead(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const sessionId = c.req.param('sessionId')
@@ -583,7 +917,7 @@ agents.get('/:id/sessions/:sessionId/subagent/:agentId/messages', async (c) => {
 })
 
 // GET /api/agents/:id/sessions/:sessionId/raw-log - Get raw JSONL log for a session
-agents.get('/:id/sessions/:sessionId/raw-log', async (c) => {
+agents.get('/:id/sessions/:sessionId/raw-log', AgentRead(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const sessionId = c.req.param('sessionId')
@@ -604,7 +938,7 @@ agents.get('/:id/sessions/:sessionId/raw-log', async (c) => {
 })
 
 // POST /api/agents/:id/sessions/:sessionId/messages - Send a message
-agents.post('/:id/sessions/:sessionId/messages', async (c) => {
+agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const sessionId = c.req.param('sessionId')
@@ -645,7 +979,7 @@ agents.post('/:id/sessions/:sessionId/messages', async (c) => {
 })
 
 // GET /api/agents/:id/sessions/:sessionId - Get a single session
-agents.get('/:id/sessions/:sessionId', async (c) => {
+agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const sessionId = c.req.param('sessionId')
@@ -677,7 +1011,7 @@ agents.get('/:id/sessions/:sessionId', async (c) => {
 })
 
 // PATCH /api/agents/:id/sessions/:sessionId - Update a session (e.g., rename)
-agents.patch('/:id/sessions/:sessionId', async (c) => {
+agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const sessionId = c.req.param('sessionId')
@@ -712,7 +1046,7 @@ agents.patch('/:id/sessions/:sessionId', async (c) => {
 })
 
 // DELETE /api/agents/:id/sessions/:sessionId - Delete a session
-agents.delete('/:id/sessions/:sessionId', async (c) => {
+agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const sessionId = c.req.param('sessionId')
@@ -735,7 +1069,7 @@ agents.delete('/:id/sessions/:sessionId', async (c) => {
 })
 
 // GET /api/agents/:id/sessions/:sessionId/stream - SSE stream for real-time message updates
-agents.get('/:id/sessions/:sessionId/stream', async (c) => {
+agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
   const sessionId = c.req.param('sessionId')
 
   return streamSSE(c, async (stream) => {
@@ -803,7 +1137,7 @@ agents.get('/:id/sessions/:sessionId/stream', async (c) => {
 })
 
 // POST /api/agents/:id/sessions/:sessionId/interrupt - Interrupt an active session
-agents.post('/:id/sessions/:sessionId/interrupt', async (c) => {
+agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const sessionId = c.req.param('sessionId')
@@ -847,7 +1181,7 @@ agents.post('/:id/sessions/:sessionId/interrupt', async (c) => {
 })
 
 // POST /api/agents/:id/sessions/:sessionId/provide-secret - Provide or decline a secret request
-agents.post('/:id/sessions/:sessionId/provide-secret', async (c) => {
+agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const body = await c.req.json()
@@ -954,7 +1288,7 @@ agents.post('/:id/sessions/:sessionId/provide-secret', async (c) => {
 })
 
 // POST /api/agents/:id/sessions/:sessionId/provide-connected-account - Provide or decline a connected account request
-agents.post('/:id/sessions/:sessionId/provide-connected-account', async (c) => {
+agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const body = await c.req.json()
@@ -999,11 +1333,15 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', async (c) => {
       )
     }
 
-    // Get the selected accounts
+    // Get the selected accounts (scoped to user in auth mode)
+    const userId = getCurrentUserId(c)
     const accounts = await db
       .select()
       .from(connectedAccounts)
-      .where(inArray(connectedAccounts.id, accountIds))
+      .where(and(
+        inArray(connectedAccounts.id, accountIds),
+        isAuthMode() ? eq(connectedAccounts.userId, userId) : undefined
+      ))
 
     if (accounts.length === 0) {
       return c.json({ error: 'No valid accounts found' }, 400)
@@ -1136,7 +1474,7 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', async (c) => {
 })
 
 // POST /api/agents/:id/sessions/:sessionId/answer-question - Answer or decline a question request
-agents.post('/:id/sessions/:sessionId/answer-question', async (c) => {
+agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const body = await c.req.json()
@@ -1206,7 +1544,7 @@ agents.post('/:id/sessions/:sessionId/answer-question', async (c) => {
 })
 
 // GET /api/agents/:id/scheduled-tasks - List scheduled tasks for an agent
-agents.get('/:id/scheduled-tasks', async (c) => {
+agents.get('/:id/scheduled-tasks', AgentRead(), async (c) => {
   try {
     const slug = c.req.param('id')
     const status = c.req.query('status') // Optional: filter by status (e.g., 'pending')
@@ -1227,7 +1565,7 @@ agents.get('/:id/scheduled-tasks', async (c) => {
 })
 
 // GET /api/agents/:id/secrets - List secrets for an agent
-agents.get('/:id/secrets', async (c) => {
+agents.get('/:id/secrets', AgentRead(), async (c) => {
   try {
     const slug = c.req.param('id')
 
@@ -1248,7 +1586,7 @@ agents.get('/:id/secrets', async (c) => {
 })
 
 // POST /api/agents/:id/secrets - Create or update a secret
-agents.post('/:id/secrets', async (c) => {
+agents.post('/:id/secrets', AgentUser(), async (c) => {
   try {
     const slug = c.req.param('id')
     const body = await c.req.json()
@@ -1279,7 +1617,7 @@ agents.post('/:id/secrets', async (c) => {
 })
 
 // PUT /api/agents/:id/secrets/:secretId - Update a secret
-agents.put('/:id/secrets/:secretId', async (c) => {
+agents.put('/:id/secrets/:secretId', AgentUser(), async (c) => {
   try {
     const slug = c.req.param('id')
     const envVar = c.req.param('secretId')
@@ -1314,7 +1652,7 @@ agents.put('/:id/secrets/:secretId', async (c) => {
 })
 
 // DELETE /api/agents/:id/secrets/:secretId - Delete a secret
-agents.delete('/:id/secrets/:secretId', async (c) => {
+agents.delete('/:id/secrets/:secretId', AgentUser(), async (c) => {
   try {
     const slug = c.req.param('id')
     const envVar = c.req.param('secretId')
@@ -1334,7 +1672,7 @@ agents.delete('/:id/secrets/:secretId', async (c) => {
 })
 
 // GET /api/agents/:id/connected-accounts - List agent's connected accounts
-agents.get('/:id/connected-accounts', async (c) => {
+agents.get('/:id/connected-accounts', AgentRead(), async (c) => {
   try {
     const slug = c.req.param('id')
 
@@ -1366,7 +1704,7 @@ agents.get('/:id/connected-accounts', async (c) => {
 })
 
 // POST /api/agents/:id/connected-accounts - Map account(s) to agent
-agents.post('/:id/connected-accounts', async (c) => {
+agents.post('/:id/connected-accounts', AgentUser(), async (c) => {
   try {
     const slug = c.req.param('id')
     const body = await c.req.json()
@@ -1379,9 +1717,24 @@ agents.post('/:id/connected-accounts', async (c) => {
       )
     }
 
+    // Verify ownership of accounts in auth mode
+    const userId = getCurrentUserId(c)
+    const ownedAccounts = await db
+      .select()
+      .from(connectedAccounts)
+      .where(and(
+        inArray(connectedAccounts.id, accountIds),
+        isAuthMode() ? eq(connectedAccounts.userId, userId) : undefined
+      ))
+    const ownedAccountIds = new Set(ownedAccounts.map(a => a.id))
+    const validAccountIds = accountIds.filter(id => ownedAccountIds.has(id))
+
+    if (validAccountIds.length === 0) {
+      return c.json({ error: 'No valid accounts found' }, 400)
+    }
 
     const now = new Date()
-    const newMappings = accountIds.map((accountId) => ({
+    const newMappings = validAccountIds.map((accountId) => ({
       id: crypto.randomUUID(),
       agentSlug: slug,
       connectedAccountId: accountId,
@@ -1426,7 +1779,7 @@ agents.post('/:id/connected-accounts', async (c) => {
 })
 
 // DELETE /api/agents/:id/connected-accounts/:accountId - Remove account mapping from agent
-agents.delete('/:id/connected-accounts/:accountId', async (c) => {
+agents.delete('/:id/connected-accounts/:accountId', AgentUser(), async (c) => {
   try {
     const slug = c.req.param('id')
     const accountId = c.req.param('accountId')
@@ -1454,7 +1807,7 @@ agents.delete('/:id/connected-accounts/:accountId', async (c) => {
 })
 
 // GET /api/agents/:id/remote-mcps - List remote MCP servers assigned to this agent
-agents.get('/:id/remote-mcps', async (c) => {
+agents.get('/:id/remote-mcps', AgentRead(), async (c) => {
   try {
     const slug = c.req.param('id')
     const mappings = await db
@@ -1486,7 +1839,7 @@ agents.get('/:id/remote-mcps', async (c) => {
 })
 
 // POST /api/agents/:id/remote-mcps - Assign remote MCP server(s) to agent
-agents.post('/:id/remote-mcps', async (c) => {
+agents.post('/:id/remote-mcps', AgentUser(), async (c) => {
   try {
     const slug = c.req.param('id')
     const body = await c.req.json<{ mcpIds: string[] }>()
@@ -1513,7 +1866,7 @@ agents.post('/:id/remote-mcps', async (c) => {
 })
 
 // DELETE /api/agents/:id/remote-mcps/:mcpId - Remove remote MCP from agent
-agents.delete('/:id/remote-mcps/:mcpId', async (c) => {
+agents.delete('/:id/remote-mcps/:mcpId', AgentUser(), async (c) => {
   try {
     const slug = c.req.param('id')
     const mcpId = c.req.param('mcpId')
@@ -1542,7 +1895,7 @@ agents.delete('/:id/remote-mcps/:mcpId', async (c) => {
 })
 
 // POST /api/agents/:id/sessions/:sessionId/provide-remote-mcp - Handle user approval of runtime MCP request
-agents.post('/:id/sessions/:sessionId/provide-remote-mcp', async (c) => {
+agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c) => {
   try {
     const slug = c.req.param('id')
     const body = await c.req.json<{
@@ -1653,7 +2006,7 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', async (c) => {
 })
 
 // GET /api/agents/:id/mcp-audit-log - Get MCP audit log for an agent
-agents.get('/:id/mcp-audit-log', async (c) => {
+agents.get('/:id/mcp-audit-log', AgentAdmin(), async (c) => {
   try {
     const slug = c.req.param('id')
     const limit = Math.min(parseInt(c.req.query('limit') || '50', 10), 100)
@@ -1685,7 +2038,7 @@ agents.get('/:id/mcp-audit-log', async (c) => {
 })
 
 // GET /api/agents/:id/skills - Get skills for an agent (with status info)
-agents.get('/:id/skills', async (c) => {
+agents.get('/:id/skills', AgentRead(), async (c) => {
   try {
     const id = c.req.param('id')
     const { skillsets } = getSettings()
@@ -1698,7 +2051,7 @@ agents.get('/:id/skills', async (c) => {
 })
 
 // GET /api/agents/:id/discoverable-skills - Get available skills from skillsets
-agents.get('/:id/discoverable-skills', async (c) => {
+agents.get('/:id/discoverable-skills', AgentRead(), async (c) => {
   try {
     const id = c.req.param('id')
     const { skillsets } = getSettings()
@@ -1711,7 +2064,7 @@ agents.get('/:id/discoverable-skills', async (c) => {
 })
 
 // POST /api/agents/:id/skills/install - Install a skill from a skillset
-agents.post('/:id/skills/install', async (c) => {
+agents.post('/:id/skills/install', AgentAdmin(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const { skillsetId, skillPath, skillName, skillVersion, envVars } = await c.req.json()
@@ -1754,7 +2107,7 @@ agents.post('/:id/skills/install', async (c) => {
 })
 
 // POST /api/agents/:id/skills/:dir/update - Update an installed skill
-agents.post('/:id/skills/:dir/update', async (c) => {
+agents.post('/:id/skills/:dir/update', AgentAdmin(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const skillDir = c.req.param('dir')
@@ -1768,7 +2121,7 @@ agents.post('/:id/skills/:dir/update', async (c) => {
 })
 
 // GET /api/agents/:id/skills/:dir/pr-info - Get info for PR dialog
-agents.get('/:id/skills/:dir/pr-info', async (c) => {
+agents.get('/:id/skills/:dir/pr-info', AgentAdmin(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const skillDir = c.req.param('dir')
@@ -1782,7 +2135,7 @@ agents.get('/:id/skills/:dir/pr-info', async (c) => {
 })
 
 // POST /api/agents/:id/skills/:dir/create-pr - Create PR for local changes
-agents.post('/:id/skills/:dir/create-pr', async (c) => {
+agents.post('/:id/skills/:dir/create-pr', AgentAdmin(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const skillDir = c.req.param('dir')
@@ -1802,7 +2155,7 @@ agents.post('/:id/skills/:dir/create-pr', async (c) => {
 })
 
 // GET /api/agents/:id/skills/:dir/publish-info - Get info for publishing a local skill
-agents.get('/:id/skills/:dir/publish-info', async (c) => {
+agents.get('/:id/skills/:dir/publish-info', AgentAdmin(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const skillDir = c.req.param('dir')
@@ -1828,7 +2181,7 @@ agents.get('/:id/skills/:dir/publish-info', async (c) => {
 })
 
 // POST /api/agents/:id/skills/:dir/publish - Publish a local skill to a skillset
-agents.post('/:id/skills/:dir/publish', async (c) => {
+agents.post('/:id/skills/:dir/publish', AgentAdmin(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const skillDir = c.req.param('dir')
@@ -1860,7 +2213,7 @@ agents.post('/:id/skills/:dir/publish', async (c) => {
 // ============================================================
 
 // POST /api/agents/:id/export-template - Export agent as ZIP download
-agents.post('/:id/export-template', async (c) => {
+agents.post('/:id/export-template', AgentAdmin(), async (c) => {
   try {
     const slug = c.req.param('id')
     const zipBuffer = await exportAgentTemplate(slug)
@@ -1881,7 +2234,7 @@ agents.post('/:id/export-template', async (c) => {
 })
 
 // GET /api/agents/:id/template-status - Get skillset status
-agents.get('/:id/template-status', async (c) => {
+agents.get('/:id/template-status', AgentRead(), async (c) => {
   try {
     const slug = c.req.param('id')
     const { skillsets } = getSettings()
@@ -1894,7 +2247,7 @@ agents.get('/:id/template-status', async (c) => {
 })
 
 // POST /api/agents/:id/template-update - Update from skillset
-agents.post('/:id/template-update', async (c) => {
+agents.post('/:id/template-update', AgentAdmin(), async (c) => {
   try {
     const slug = c.req.param('id')
     const result = await updateAgentFromSkillset(slug)
@@ -1907,7 +2260,7 @@ agents.post('/:id/template-update', async (c) => {
 })
 
 // GET /api/agents/:id/template-pr-info - Get AI-suggested PR info
-agents.get('/:id/template-pr-info', async (c) => {
+agents.get('/:id/template-pr-info', AgentRead(), async (c) => {
   try {
     const slug = c.req.param('id')
     const info = await getAgentPRInfo(slug)
@@ -1920,7 +2273,7 @@ agents.get('/:id/template-pr-info', async (c) => {
 })
 
 // POST /api/agents/:id/template-create-pr - Create PR for modifications
-agents.post('/:id/template-create-pr', async (c) => {
+agents.post('/:id/template-create-pr', AgentAdmin(), async (c) => {
   try {
     const slug = c.req.param('id')
     const { title, body, newVersion } = await c.req.json()
@@ -1939,7 +2292,7 @@ agents.post('/:id/template-create-pr', async (c) => {
 })
 
 // GET /api/agents/:id/template-publish-info - Get publish info
-agents.get('/:id/template-publish-info', async (c) => {
+agents.get('/:id/template-publish-info', AgentRead(), async (c) => {
   try {
     const slug = c.req.param('id')
     const skillsetId = c.req.query('skillsetId')
@@ -1964,7 +2317,7 @@ agents.get('/:id/template-publish-info', async (c) => {
 })
 
 // POST /api/agents/:id/template-publish - Publish to skillset
-agents.post('/:id/template-publish', async (c) => {
+agents.post('/:id/template-publish', AgentAdmin(), async (c) => {
   try {
     const slug = c.req.param('id')
     const { skillsetId, title, body, newVersion } = await c.req.json()
@@ -1989,7 +2342,7 @@ agents.post('/:id/template-publish', async (c) => {
 })
 
 // POST /api/agents/:id/template-refresh - Refresh status
-agents.post('/:id/template-refresh', async (c) => {
+agents.post('/:id/template-refresh', AgentUser(), async (c) => {
   try {
     const settings = getSettings()
     const skillsets = settings.skillsets || []
@@ -2005,7 +2358,7 @@ agents.post('/:id/template-refresh', async (c) => {
 })
 
 // POST /api/agents/:id/skills/refresh - Refresh skillset caches and reconcile skill status
-agents.post('/:id/skills/refresh', async (c) => {
+agents.post('/:id/skills/refresh', AgentUser(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const settings = getSettings()
@@ -2021,7 +2374,7 @@ agents.post('/:id/skills/refresh', async (c) => {
 })
 
 // GET /api/agents/:id/skills/:dir/files - List all files in a skill directory
-agents.get('/:id/skills/:dir/files', async (c) => {
+agents.get('/:id/skills/:dir/files', AgentAdmin(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const dir = c.req.param('dir')
@@ -2065,7 +2418,7 @@ agents.get('/:id/skills/:dir/files', async (c) => {
 })
 
 // GET /api/agents/:id/skills/:dir/files/content - Read a skill file
-agents.get('/:id/skills/:dir/files/content', async (c) => {
+agents.get('/:id/skills/:dir/files/content', AgentAdmin(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const dir = c.req.param('dir')
@@ -2097,7 +2450,7 @@ agents.get('/:id/skills/:dir/files/content', async (c) => {
 })
 
 // PUT /api/agents/:id/skills/:dir/files/content - Write a skill file
-agents.put('/:id/skills/:dir/files/content', async (c) => {
+agents.put('/:id/skills/:dir/files/content', AgentAdmin(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const dir = c.req.param('dir')
@@ -2126,7 +2479,7 @@ agents.put('/:id/skills/:dir/files/content', async (c) => {
 })
 
 // GET /api/agents/:id/audit-log - Get combined proxy + MCP audit log for agent
-agents.get('/:id/audit-log', async (c) => {
+agents.get('/:id/audit-log', AgentAdmin(), async (c) => {
   try {
     const slug = c.req.param('id')
 
@@ -2221,7 +2574,7 @@ async function handleFileUpload(agentSlug: string, file: File) {
 }
 
 // POST /api/agents/:id/upload-file - Upload a file to the agent workspace (no session required)
-agents.post('/:id/upload-file', async (c) => {
+agents.post('/:id/upload-file', AgentUser(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
 
@@ -2242,7 +2595,7 @@ agents.post('/:id/upload-file', async (c) => {
 })
 
 // POST /api/agents/:id/sessions/:sessionId/upload-file - Upload a file to the agent workspace
-agents.post('/:id/sessions/:sessionId/upload-file', async (c) => {
+agents.post('/:id/sessions/:sessionId/upload-file', AgentUser(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
 
@@ -2263,7 +2616,7 @@ agents.post('/:id/sessions/:sessionId/upload-file', async (c) => {
 })
 
 // GET /api/agents/:id/files/* - Download a file from the agent workspace
-agents.get('/:id/files/*', async (c) => {
+agents.get('/:id/files/*', AgentRead(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     // Extract file path from URL - wildcard param can be unreliable in sub-routers
@@ -2308,7 +2661,7 @@ agents.get('/:id/files/*', async (c) => {
 })
 
 // POST /api/agents/:id/sessions/:sessionId/provide-file - Provide or decline a file request
-agents.post('/:id/sessions/:sessionId/provide-file', async (c) => {
+agents.post('/:id/sessions/:sessionId/provide-file', AgentUser(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const body = await c.req.json()
@@ -2382,7 +2735,7 @@ agents.post('/:id/sessions/:sessionId/provide-file', async (c) => {
 // ============================================================
 
 // GET /api/agents/:id/artifacts - List dashboards for an agent
-agents.get('/:id/artifacts', async (c) => {
+agents.get('/:id/artifacts', AgentRead(), async (c) => {
   try {
     const slug = c.req.param('id')
 
@@ -2458,7 +2811,7 @@ async function proxyArtifactRequest(c: any) {
 }
 
 // ALL /api/agents/:id/artifacts/:slug/* - Proxy all methods to dashboard server
-agents.all('/:id/artifacts/:artifactSlug/*', async (c) => {
+agents.all('/:id/artifacts/:artifactSlug/*', AgentRead(), async (c) => {
   try {
     return await proxyArtifactRequest(c)
   } catch (error: any) {
@@ -2468,7 +2821,7 @@ agents.all('/:id/artifacts/:artifactSlug/*', async (c) => {
 })
 
 // Also handle without trailing path
-agents.all('/:id/artifacts/:artifactSlug', async (c) => {
+agents.all('/:id/artifacts/:artifactSlug', AgentRead(), async (c) => {
   try {
     return await proxyArtifactRequest(c)
   } catch (error: any) {
@@ -2482,7 +2835,7 @@ agents.all('/:id/artifacts/:artifactSlug', async (c) => {
 // ============================================================
 
 // GET /api/agents/:id/browser/status - Check browser state
-agents.get('/:id/browser/status', async (c) => {
+agents.get('/:id/browser/status', AgentRead(), async (c) => {
   try {
     const slug = c.req.param('id')
 
@@ -2504,7 +2857,7 @@ agents.get('/:id/browser/status', async (c) => {
 })
 
 // POST /api/agents/:id/browser/:action - Proxy browser tool actions
-agents.post('/:id/browser/:action', async (c) => {
+agents.post('/:id/browser/:action', AgentUser(), async (c) => {
   try {
     const slug = c.req.param('id')
     const action = c.req.param('action')

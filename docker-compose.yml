@@ -1,7 +1,10 @@
 services:
   superagent:
     image: ${SUPERAGENT_IMAGE:-ghcr.io/iddogino/superagent:main}
-    build: .
+    build:
+      context: .
+      args:
+        AUTH_MODE: ${AUTH_MODE:-false}
     ports:
       - "47891:47891"
     volumes:
@@ -15,3 +18,7 @@ services:
       - SUPERAGENT_DATA_DIR=${HOME}/.superagent
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - PORT=47891
+      # Auth mode (requires building with AUTH_MODE=true)
+      - AUTH_MODE=${AUTH_MODE:-false}
+      - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET:-}
+      - TRUSTED_ORIGINS=${TRUSTED_ORIGINS:-}

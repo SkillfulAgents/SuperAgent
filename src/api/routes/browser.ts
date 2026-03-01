@@ -3,11 +3,12 @@ import { getActiveProvider, setOnExternalClose } from '../../main/host-browser'
 import { getSettings } from '@shared/lib/config/settings'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { Authenticated, IsAdmin, IsAgent } from '../middleware/auth'
 
 const browser = new Hono()
 
 // POST /api/browser/launch-host-browser - Launch browser on host for CDP connection
-browser.post('/launch-host-browser', async (c) => {
+browser.post('/launch-host-browser', IsAgent(), async (c) => {
   try {
     const body = await c.req.json<{ agentId?: string }>().catch(() => ({} as { agentId?: string }))
     // Fall back to 'default' for backward compat with containers that don't send agentId yet
@@ -34,7 +35,7 @@ browser.post('/launch-host-browser', async (c) => {
 })
 
 // POST /api/browser/stop-host-browser - Stop the host browser process for a specific agent
-browser.post('/stop-host-browser', async (c) => {
+browser.post('/stop-host-browser', IsAgent(), async (c) => {
   try {
     const body = await c.req.json<{ agentId?: string }>().catch(() => ({} as { agentId?: string }))
     // Fall back to 'default' for backward compat with containers that don't send agentId yet
@@ -53,7 +54,7 @@ browser.post('/stop-host-browser', async (c) => {
 })
 
 // POST /api/browser/debug-info - Get fresh debug/screencast connection info for an active browser session
-browser.post('/debug-info', async (c) => {
+browser.post('/debug-info', IsAgent(), async (c) => {
   try {
     const body = await c.req.json<{ agentId?: string }>().catch(() => ({} as { agentId?: string }))
     const agentId = body.agentId || 'default'

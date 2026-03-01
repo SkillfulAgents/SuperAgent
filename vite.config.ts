@@ -9,6 +9,7 @@ const pkg = JSON.parse(readFileSync(path.resolve(__dirname, 'package.json'), 'ut
 export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
+    __AUTH_MODE__: JSON.stringify(process.env.AUTH_MODE === 'true'),
   },
   plugins: [
     react(),
@@ -17,8 +18,16 @@ export default defineConfig({
       exclude: [/^(?!\/api).*/], // Only handle /api/* routes
     }),
     {
-      name: 'container-shutdown',
+      name: 'server-lifecycle',
       configureServer(server) {
+        // Sync process.env.PORT to the actual bound port so that
+        // getAppPort() returns the right value even when Vite auto-assigns.
+        server.httpServer?.on('listening', () => {
+          const addr = server.httpServer?.address()
+          if (addr && typeof addr === 'object') {
+            process.env.PORT = String(addr.port)
+          }
+        })
         server.httpServer?.on('close', async () => {
           const { containerManager } = await import('./src/shared/lib/container/container-manager')
           await containerManager.stopAll()

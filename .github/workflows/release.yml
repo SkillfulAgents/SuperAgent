@@ -65,12 +65,21 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # Build and push app container with version tag
+  # Build and push app containers with version tags (regular + auth)
   build-app-container:
     runs-on: ubuntu-latest
     needs: prepare
     env:
       IMAGE_NAME: ${{ github.repository_owner }}/superagent
+
+    strategy:
+      matrix:
+        include:
+          - auth_mode: "false"
+            tag_suffix: ""
+          - auth_mode: "true"
+            tag_suffix: "-auth"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -94,8 +103,10 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{version}},suffix=${{ matrix.tag_suffix }}
+            type=semver,pattern={{major}}.{{minor}},suffix=${{ matrix.tag_suffix }}
+          flavor: |
+            latest=false
 
       - name: Build and push container image
         uses: docker/build-push-action@v5
@@ -105,8 +116,9 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          build-args: AUTH_MODE=${{ matrix.auth_mode }}
+          cache-from: type=gha,scope=app-${{ matrix.auth_mode }}
+          cache-to: type=gha,mode=max,scope=app-${{ matrix.auth_mode }}
 
   # Build macOS Electron app (signed + notarized)
   build-mac:

@@ -11,7 +11,7 @@ import type { RunnerAvailability } from '@shared/lib/container/client-factory'
 
 export type { GlobalSettingsResponse, ContainerSettings, AppPreferences, ModelSettings, AgentLimitsSettings, RunnerAvailability }
 
-export function useSettings() {
+export function useSettings(options?: { enabled?: boolean }) {
   return useQuery<GlobalSettingsResponse>({
     queryKey: ['settings'],
     queryFn: async () => {
@@ -20,6 +20,7 @@ export function useSettings() {
       return res.json()
     },
     refetchInterval: 60000, // Poll less frequently - container status is cached server-side
+    enabled: options?.enabled,
   })
 }
 
@@ -36,6 +37,7 @@ export interface UpdateSettingsParams {
   models?: Partial<ModelSettings>
   agentLimits?: Partial<AgentLimitsSettings>
   customEnvVars?: Record<string, string>
+  auth?: { trustedOrigins?: string[] }
 }
 
 export interface UpdateSettingsError {

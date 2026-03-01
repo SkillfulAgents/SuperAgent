@@ -214,9 +214,10 @@ interface ListConnectedAccountsResponse {
  * List all connected accounts for the current user.
  */
 export async function listConnections(
-  toolkit?: string
+  toolkit?: string,
+  userIdOverride?: string
 ): Promise<ComposioConnection[]> {
-  const userId = getComposioUserId()
+  const userId = userIdOverride || getComposioUserId()
   if (!userId) {
     throw new ComposioApiError('Composio User ID is not configured', 401)
   }
@@ -244,9 +245,10 @@ interface InitiateConnectionResponse {
  */
 export async function initiateConnection(
   authConfigId: string,
-  callbackUrl: string
+  callbackUrl: string,
+  userIdOverride?: string
 ): Promise<InitiateConnectionResponse> {
-  const userId = getComposioUserId()
+  const userId = userIdOverride || getComposioUserId()
   if (!userId) {
     throw new ComposioApiError('Composio User ID is not configured', 401)
   }

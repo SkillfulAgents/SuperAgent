@@ -2,6 +2,7 @@ import path from 'path'
 import { Hono } from 'hono'
 import Anthropic from '@anthropic-ai/sdk'
 import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
+import { Authenticated, IsAdmin } from '../middleware/auth'
 import {
   getSettings,
   updateSettings,
@@ -24,6 +25,8 @@ import { proxyAuditLog, proxyTokens, agentConnectedAccounts, scheduledTasks, not
 import fs from 'fs'
 
 const settings = new Hono()
+
+settings.use('*', Authenticated(), IsAdmin())
 
 // GET /api/settings - Get global settings
 settings.get('/', async (c) => {
@@ -51,6 +54,7 @@ settings.get('/', async (c) => {
       setupCompleted: !!currentSettings.app?.setupCompleted,
       hostBrowserStatus: { providers: detectAllProviders() },
       runtimeReadiness: containerManager.getReadiness(),
+      auth: currentSettings.auth,
     }
 
     return c.json(response)
@@ -124,6 +128,9 @@ settings.put('/', async (c) => {
         ? body.customEnvVars
         : currentSettings.customEnvVars,
       skillsets: currentSettings.skillsets,
+      auth: body.auth !== undefined
+        ? { ...currentSettings.auth, ...body.auth }
+        : currentSettings.auth,
     }
 
     // Handle API key updates
@@ -231,6 +238,7 @@ settings.put('/', async (c) => {
       setupCompleted: !!newSettings.app?.setupCompleted,
       hostBrowserStatus: { providers: detectAllProviders() },
       runtimeReadiness: containerManager.getReadiness(),
+      auth: newSettings.auth,
     })
   } catch (error) {
     console.error('Failed to update settings:', error)

@@ -1,9 +1,9 @@
 import { useEffect } from 'react'
-import { useSettings } from './use-settings'
+import { useUserSettings } from './use-user-settings'
 
 export function useTheme() {
-  const { data: settings } = useSettings()
-  const themeSetting = settings?.app?.theme ?? 'system'
+  const { data: userSettings } = useUserSettings()
+  const themeSetting = userSettings?.theme ?? 'system'
 
   // Apply dark class to document based on theme setting + system preference
   useEffect(() => {

@@ -47,6 +47,7 @@ export function useCreateAgent() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['agents'] })
+      queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
     },
   })
 }
@@ -62,6 +63,7 @@ export function useDeleteAgent() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['agents'] })
+      queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
     },
   })
 }

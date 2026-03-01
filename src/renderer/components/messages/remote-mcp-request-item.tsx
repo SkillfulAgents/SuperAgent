@@ -1,6 +1,6 @@
 import { apiFetch } from '@renderer/lib/api'
 
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import {
   Plug,
   Check,
@@ -31,6 +31,7 @@ interface RemoteMcpRequestItemProps {
   authHint?: 'oauth' | 'bearer'
   sessionId: string
   agentSlug: string
+  readOnly?: boolean
   onComplete: () => void
 }
 
@@ -44,6 +45,7 @@ export function RemoteMcpRequestItem({
   authHint,
   sessionId,
   agentSlug,
+  readOnly,
   onComplete,
 }: RemoteMcpRequestItemProps) {
   const queryClient = useQueryClient()
@@ -78,34 +80,53 @@ export function RemoteMcpRequestItem({
     }
   }, [servers, url])
 
+  // Handle OAuth completion (shared by Electron IPC and web postMessage)
+  const handleOAuthComplete = useCallback((success: boolean, errorMessage?: string) => {
+    if (success) {
+      setError(null)
+      // Refetch servers to find the newly created one
+      refetch().then(({ data: refreshedData }) => {
+        const refreshedServers = Array.isArray(refreshedData?.servers) ? refreshedData.servers : []
+        const newServer = refreshedServers.find((s) => s.url === url)
+        if (newServer) {
+          setSelectedMcpId(newServer.id)
+        }
+        setStatus('pending')
+      }).catch(() => {
+        setStatus('pending')
+      })
+    } else {
+      setError(errorMessage || 'OAuth authorization failed')
+      setStatus('pending')
+    }
+  }, [url, refetch])
+
   // Listen for MCP OAuth callback from Electron main process
   useEffect(() => {
     if (!window.electronAPI || status !== 'oauth_pending') return
 
     window.electronAPI.onMcpOAuthCallback((params) => {
-      if (params.success) {
-        setError(null)
-        // Refetch servers to find the newly created one
-        refetch().then(({ data: refreshedData }) => {
-          const refreshedServers = Array.isArray(refreshedData?.servers) ? refreshedData.servers : []
-          const newServer = refreshedServers.find((s) => s.url === url)
-          if (newServer) {
-            setSelectedMcpId(newServer.id)
-          }
-          setStatus('pending')
-        }).catch(() => {
-          setStatus('pending')
-        })
-      } else {
-        setError(params.error || 'OAuth authorization failed')
-        setStatus('pending')
-      }
+      handleOAuthComplete(params.success, params.error)
     })
 
     return () => {
       window.electronAPI?.removeMcpOAuthCallback()
     }
-  }, [status, url, refetch])
+  }, [status, handleOAuthComplete])
+
+  // Listen for MCP OAuth callback via postMessage (web mode)
+  useEffect(() => {
+    if (status !== 'oauth_pending') return
+
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'mcp-oauth-callback') {
+        handleOAuthComplete(event.data.success, event.data.error)
+      }
+    }
+
+    window.addEventListener('message', handleMessage)
+    return () => window.removeEventListener('message', handleMessage)
+  }, [status, handleOAuthComplete])
 
   const startOAuthFlow = async () => {
     try {
@@ -276,6 +297,28 @@ export function RemoteMcpRequestItem({
           >
             {status === 'provided' ? 'Access Granted' : 'Declined'}
           </span>
+        </div>
+      </div>
+    )
+  }
+
+  // Read-only state for viewers
+  if (readOnly) {
+    return (
+      <div className="border rounded-md bg-purple-50 dark:bg-purple-950 border-purple-200 dark:border-purple-800 text-sm">
+        <div className="flex items-center gap-3 p-3">
+          <div className="h-8 w-8 rounded-full bg-purple-100 dark:bg-purple-900 flex items-center justify-center shrink-0">
+            <Plug className="h-4 w-4 text-purple-600 dark:text-purple-400" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="font-medium text-purple-900 dark:text-purple-100">
+              MCP Server Requested: {name || url}
+            </div>
+            {reason && (
+              <p className="text-sm text-purple-700 dark:text-purple-300 mt-1">{reason}</p>
+            )}
+          </div>
+          <span className="text-xs text-purple-600 dark:text-purple-400 shrink-0">Waiting for response</span>
         </div>
       </div>
     )

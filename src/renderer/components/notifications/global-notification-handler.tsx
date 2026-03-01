@@ -13,15 +13,38 @@ import { useQueryClient } from '@tanstack/react-query'
 import { getApiBaseUrl, isElectron } from '@renderer/lib/env'
 import { showOSNotification } from '@renderer/lib/os-notifications'
 import { useSelection } from '@renderer/context/selection-context'
+import { useUser } from '@renderer/context/user-context'
 import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
+import { useUserSettings } from '@renderer/hooks/use-user-settings'
+import type { UserSettingsData } from '@shared/lib/services/user-settings-service'
+
+function isNotificationTypeEnabled(
+  settings: UserSettingsData | undefined,
+  notificationType: string
+): boolean {
+  const n = settings?.notifications
+  if (!n?.enabled) return n === undefined // no settings loaded yet → allow; explicitly disabled → block
+  switch (notificationType) {
+    case 'session_complete': return n.sessionComplete !== false
+    case 'session_waiting': return n.sessionWaiting !== false
+    case 'session_scheduled': return n.sessionScheduled !== false
+    default: return true
+  }
+}
 
 export function GlobalNotificationHandler() {
   const queryClient = useQueryClient()
   const { selectedSessionId } = useSelection()
   const { data: unreadData } = useUnreadNotificationCount()
-  // Use ref to avoid recreating EventSource when selectedSessionId changes
+  const { data: userSettings } = useUserSettings()
+  const { canAccessAgent } = useUser()
+  // Use refs to avoid recreating EventSource when reactive values change
   const selectedSessionIdRef = useRef(selectedSessionId)
   selectedSessionIdRef.current = selectedSessionId
+  const userSettingsRef = useRef(userSettings)
+  userSettingsRef.current = userSettings
+  const canAccessAgentRef = useRef(canAccessAgent)
+  canAccessAgentRef.current = canAccessAgent
 
   // Sync dock badge count with unread notifications (macOS Electron only)
   useEffect(() => {
@@ -45,12 +68,23 @@ export function GlobalNotificationHandler() {
             // Refresh notification list (for badge/dropdown)
             queryClient.invalidateQueries({ queryKey: ['notifications'] })
 
+            // Skip if user doesn't have access to the notification's agent
+            const agentSlug = data.agentSlug as string | undefined
+            if (agentSlug && !canAccessAgentRef.current(agentSlug)) break
+
             const notificationSessionId = data.sessionId as string | undefined
             const isViewingNotificationSession = notificationSessionId === selectedSessionIdRef.current
             const isTabVisible = document.visibilityState === 'visible'
 
-            // Show notification if tab is hidden OR not viewing the notification's session
-            if (!isTabVisible || !isViewingNotificationSession) {
+            // Show OS notification if:
+            // 1. User has access to the notification's agent
+            // 2. User's notification settings allow this type
+            // 3. Tab is hidden OR not viewing the notification's session
+            const notificationType = data.notificationType as string | undefined
+            if (
+              isNotificationTypeEnabled(userSettingsRef.current, notificationType ?? '') &&
+              (!isTabVisible || !isViewingNotificationSession)
+            ) {
               const { title, body } = data as { title: string; body: string }
               showOSNotification(title, body)
             }
@@ -89,6 +123,7 @@ export function GlobalNotificationHandler() {
           case 'runtime_readiness_changed':
             // Runtime readiness changed (e.g., image pull started/completed)
             queryClient.invalidateQueries({ queryKey: ['settings'] })
+            queryClient.invalidateQueries({ queryKey: ['runtime-status'] })
             break
         }
       } catch {

@@ -18,15 +18,15 @@ test.describe('Getting Started Wizard', () => {
 
   test.afterEach(async ({ request }) => {
     // Restore setupCompleted to true so subsequent test files don't see the wizard
-    await request.put('http://localhost:3000/api/settings', {
-      data: { app: { setupCompleted: true } },
+    await request.put('http://localhost:3000/api/user-settings', {
+      data: { setupCompleted: true },
     })
   })
 
   test('auto-opens when setupCompleted is false', async ({ page, request }) => {
     // Reset setupCompleted via API so the wizard will auto-open on next load
-    await request.put('http://localhost:3000/api/settings', {
-      data: { app: { setupCompleted: false } },
+    await request.put('http://localhost:3000/api/user-settings', {
+      data: { setupCompleted: false },
     })
 
     await appPage.goto()
@@ -47,8 +47,8 @@ test.describe('Getting Started Wizard', () => {
 
   test('does not auto-open when setupCompleted is true', async ({ page, request }) => {
     // Ensure setupCompleted is true
-    await request.put('http://localhost:3000/api/settings', {
-      data: { app: { setupCompleted: true } },
+    await request.put('http://localhost:3000/api/user-settings', {
+      data: { setupCompleted: true },
     })
 
     await appPage.goto()
@@ -60,8 +60,8 @@ test.describe('Getting Started Wizard', () => {
 
   test('navigates through all steps with Next and Back', async ({ page, request }) => {
     // Reset to trigger wizard
-    await request.put('http://localhost:3000/api/settings', {
-      data: { app: { setupCompleted: false } },
+    await request.put('http://localhost:3000/api/user-settings', {
+      data: { setupCompleted: false },
     })
 
     await appPage.goto()
@@ -108,8 +108,8 @@ test.describe('Getting Started Wizard', () => {
   })
 
   test('skip buttons work on optional steps', async ({ page, request }) => {
-    await request.put('http://localhost:3000/api/settings', {
-      data: { app: { setupCompleted: false } },
+    await request.put('http://localhost:3000/api/user-settings', {
+      data: { setupCompleted: false },
     })
 
     await appPage.goto()
@@ -132,8 +132,8 @@ test.describe('Getting Started Wizard', () => {
   })
 
   test('sets setupCompleted after finishing', async ({ page, request }) => {
-    await request.put('http://localhost:3000/api/settings', {
-      data: { app: { setupCompleted: false } },
+    await request.put('http://localhost:3000/api/user-settings', {
+      data: { setupCompleted: false },
     })
 
     await appPage.goto()
@@ -149,7 +149,7 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.expectNotVisible()
 
     // Verify setupCompleted is now true via API
-    const response = await request.get('http://localhost:3000/api/settings')
+    const response = await request.get('http://localhost:3000/api/user-settings')
     const settings = await response.json()
     expect(settings.setupCompleted).toBe(true)
 
@@ -159,8 +159,8 @@ test.describe('Getting Started Wizard', () => {
   })
 
   test('can create an agent in the wizard', async ({ page, request }) => {
-    await request.put('http://localhost:3000/api/settings', {
-      data: { app: { setupCompleted: false } },
+    await request.put('http://localhost:3000/api/user-settings', {
+      data: { setupCompleted: false },
     })
 
     await appPage.goto()
@@ -196,8 +196,8 @@ test.describe('Getting Started Wizard', () => {
 
   test('re-run wizard button opens wizard from settings', async ({ page, request }) => {
     // Ensure setup is completed so wizard doesn't auto-open
-    await request.put('http://localhost:3000/api/settings', {
-      data: { app: { setupCompleted: true } },
+    await request.put('http://localhost:3000/api/user-settings', {
+      data: { setupCompleted: true },
     })
 
     await appPage.goto()

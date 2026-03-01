@@ -3,11 +3,14 @@
  *
  * Database operations for user notifications.
  * Handles creating, listing, and marking notifications as read.
+ *
+ * In auth mode, list/count/mark-read queries are scoped to the user's
+ * accessible agents (via agentAcl). Pass userId to scope; omit for all.
  */
 
 import { db } from '@shared/lib/db'
-import { notifications, type Notification, type NewNotification } from '@shared/lib/db/schema'
-import { eq, desc, and, lt } from 'drizzle-orm'
+import { notifications, agentAcl, type Notification, type NewNotification } from '@shared/lib/db/schema'
+import { eq, desc, and, lt, inArray } from 'drizzle-orm'
 import { count } from 'drizzle-orm'
 
 // Re-export types for external use
@@ -25,6 +28,21 @@ export interface CreateNotificationParams {
   agentSlug: string
   title: string
   body: string
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+/**
+ * Get all agent slugs accessible to a user (via agentAcl entries).
+ */
+export async function getAccessibleAgentSlugs(userId: string): Promise<string[]> {
+  const rows = await db
+    .select({ agentSlug: agentAcl.agentSlug })
+    .from(agentAcl)
+    .where(eq(agentAcl.userId, userId))
+  return rows.map((r) => r.agentSlug)
 }
 
 // ============================================================================
@@ -60,9 +78,20 @@ export async function createNotification(
 // ============================================================================
 
 /**
- * List notifications, ordered by creation time (newest first)
+ * List notifications, ordered by creation time (newest first).
+ * When userId is provided, only returns notifications for agents the user has access to.
  */
-export async function listNotifications(limit: number = 50): Promise<Notification[]> {
+export async function listNotifications(limit: number = 50, userId?: string): Promise<Notification[]> {
+  if (userId) {
+    const slugs = await getAccessibleAgentSlugs(userId)
+    if (slugs.length === 0) return []
+    return db
+      .select()
+      .from(notifications)
+      .where(inArray(notifications.agentSlug, slugs))
+      .orderBy(desc(notifications.createdAt))
+      .limit(limit)
+  }
   return db
     .select()
     .from(notifications)
@@ -71,9 +100,20 @@ export async function listNotifications(limit: number = 50): Promise<Notificatio
 }
 
 /**
- * List unread notifications
+ * List unread notifications.
+ * When userId is provided, only returns notifications for agents the user has access to.
  */
-export async function listUnreadNotifications(limit: number = 50): Promise<Notification[]> {
+export async function listUnreadNotifications(limit: number = 50, userId?: string): Promise<Notification[]> {
+  if (userId) {
+    const slugs = await getAccessibleAgentSlugs(userId)
+    if (slugs.length === 0) return []
+    return db
+      .select()
+      .from(notifications)
+      .where(and(eq(notifications.isRead, false), inArray(notifications.agentSlug, slugs)))
+      .orderBy(desc(notifications.createdAt))
+      .limit(limit)
+  }
   return db
     .select()
     .from(notifications)
@@ -83,9 +123,19 @@ export async function listUnreadNotifications(limit: number = 50): Promise<Notif
 }
 
 /**
- * Get unread notification count
+ * Get unread notification count.
+ * When userId is provided, only counts notifications for agents the user has access to.
  */
-export async function getUnreadCount(): Promise<number> {
+export async function getUnreadCount(userId?: string): Promise<number> {
+  if (userId) {
+    const slugs = await getAccessibleAgentSlugs(userId)
+    if (slugs.length === 0) return 0
+    const result = await db
+      .select({ count: count() })
+      .from(notifications)
+      .where(and(eq(notifications.isRead, false), inArray(notifications.agentSlug, slugs)))
+    return result[0]?.count ?? 0
+  }
   const result = await db
     .select({ count: count() })
     .from(notifications)
@@ -126,29 +176,50 @@ export async function markAsRead(notificationId: string): Promise<boolean> {
 }
 
 /**
- * Mark all notifications for a session as read
+ * Mark all notifications for a session as read.
+ * When userId is provided, only marks notifications for agents the user has access to.
  */
-export async function markSessionNotificationsRead(sessionId: string): Promise<number> {
+export async function markSessionNotificationsRead(sessionId: string, userId?: string): Promise<number> {
+  const conditions = [
+    eq(notifications.sessionId, sessionId),
+    eq(notifications.isRead, false),
+  ]
+
+  if (userId) {
+    const slugs = await getAccessibleAgentSlugs(userId)
+    if (slugs.length === 0) return 0
+    conditions.push(inArray(notifications.agentSlug, slugs))
+  }
+
   const result = await db
     .update(notifications)
     .set({
       isRead: true,
       readAt: new Date(),
     })
-    .where(
-      and(
-        eq(notifications.sessionId, sessionId),
-        eq(notifications.isRead, false)
-      )
-    )
+    .where(and(...conditions))
 
   return result.changes ?? 0
 }
 
 /**
- * Mark all notifications as read
+ * Mark all notifications as read.
+ * When userId is provided, only marks notifications for agents the user has access to.
  */
-export async function markAllAsRead(): Promise<number> {
+export async function markAllAsRead(userId?: string): Promise<number> {
+  if (userId) {
+    const slugs = await getAccessibleAgentSlugs(userId)
+    if (slugs.length === 0) return 0
+    const result = await db
+      .update(notifications)
+      .set({
+        isRead: true,
+        readAt: new Date(),
+      })
+      .where(and(eq(notifications.isRead, false), inArray(notifications.agentSlug, slugs)))
+    return result.changes ?? 0
+  }
+
   const result = await db
     .update(notifications)
     .set({

@@ -570,6 +570,20 @@ export function RuntimeTab() {
         </div>
       </div>
 
+      {/* Data Location - Read Only */}
+      <div className="space-y-2">
+        <Label htmlFor="data-location">Data Location</Label>
+        <Input
+          id="data-location"
+          value={isLoading ? 'Loading...' : settings?.dataDir ?? ''}
+          readOnly
+          className="bg-muted"
+        />
+        <p className="text-xs text-muted-foreground">
+          Configure via <code className="bg-muted px-1 rounded">SUPERAGENT_DATA_DIR</code> environment variable.
+        </p>
+      </div>
+
       {/* Save/Reset buttons */}
       {hasChanges && (
         <div className="flex items-center justify-end gap-2 pt-4 border-t">

@@ -12,7 +12,10 @@ import browser from './routes/browser'
 import skillsets from './routes/skillsets'
 import usage from './routes/usage'
 import remoteMcps from './routes/remote-mcps'
+import userSettingsRouter from './routes/user-settings'
+import runtimeStatusRouter from './routes/runtime-status'
 import { initializeServices } from '@shared/lib/startup'
+import { isAuthMode } from '@shared/lib/auth/mode'
 
 const app = new Hono()
 
@@ -25,7 +28,50 @@ if (process.type !== 'browser') {
 }
 
 // Enable CORS for all routes
-app.use('*', cors())
+const trustedOrigins = process.env.TRUSTED_ORIGINS?.split(',').map(o => o.trim()).filter(Boolean)
+app.use('*', cors(trustedOrigins?.length ? { origin: trustedOrigins } : undefined))
+
+// Simple rate limiter for auth endpoints
+const authAttempts = new Map<string, { count: number; resetAt: number }>()
+const RATE_LIMIT_MAX = 20
+const RATE_LIMIT_WINDOW = 15 * 60 * 1000 // 15 minutes
+
+if (isAuthMode()) {
+  app.use('/api/auth/*', async (c, next) => {
+    // Only rate-limit POST requests (sign-in, sign-up attempts)
+    if (c.req.method !== 'POST') return next()
+
+    const ip = c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown'
+    const now = Date.now()
+    const entry = authAttempts.get(ip)
+
+    if (entry && now < entry.resetAt) {
+      if (entry.count >= RATE_LIMIT_MAX) {
+        return c.json({ error: 'Too many attempts. Please try again later.' }, 429)
+      }
+      entry.count++
+    } else {
+      authAttempts.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW })
+    }
+
+    // Clean up old entries periodically
+    if (authAttempts.size > 1000) {
+      for (const [key, val] of authAttempts) {
+        if (now >= val.resetAt) authAttempts.delete(key)
+      }
+    }
+
+    return next()
+  })
+}
+
+// Mount Better Auth handler (only when AUTH_MODE is enabled)
+if (isAuthMode()) {
+  app.on(['POST', 'GET'], '/api/auth/*', async (c) => {
+    const { getAuth } = await import('@shared/lib/auth/index')
+    return getAuth().handler(c.req.raw)
+  })
+}
 
 // Mount route handlers
 app.route('/api/agents', agents)
@@ -40,6 +86,8 @@ app.route('/api/browser', browser)
 app.route('/api/skillsets', skillsets)
 app.route('/api/usage', usage)
 app.route('/api/remote-mcps', remoteMcps)
+app.route('/api/user-settings', userSettingsRouter)
+app.route('/api/runtime-status', runtimeStatusRouter)
 
 // Global error handler
 app.onError((err, c) => {

@@ -33,6 +33,7 @@ export default defineConfig({
     plugins: [react()],
     define: {
       __APP_VERSION__: JSON.stringify(pkg.version),
+      __AUTH_MODE__: JSON.stringify(false),
     },
     root: './src/renderer',
     build: {

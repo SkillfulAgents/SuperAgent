@@ -10,16 +10,28 @@ import {
   deleteConnection,
   getAccountDisplayName,
 } from '@shared/lib/composio/client'
+import { getAppBaseUrlFromRequest, getCurrentUserId } from '@shared/lib/auth/config'
+import { isAuthMode } from '@shared/lib/auth/mode'
+import { Authenticated, OwnsAccount, IsAdmin, Or } from '../middleware/auth'
 
 const connectedAccountsRouter = new Hono()
 
-// GET /api/connected-accounts - List all app-level connected accounts
+connectedAccountsRouter.use('*', Authenticated())
+
+// GET /api/connected-accounts - List connected accounts (scoped to user in auth mode)
 connectedAccountsRouter.get('/', async (c) => {
   try {
-    const accounts = await db
+    let query = db
       .select()
       .from(connectedAccounts)
       .orderBy(desc(connectedAccounts.createdAt))
+      .$dynamic()
+
+    if (isAuthMode()) {
+      query = query.where(eq(connectedAccounts.userId, getCurrentUserId(c)))
+    }
+
+    const accounts = await query
 
     const enriched = accounts.map((account) => ({
       ...account,
@@ -57,6 +69,7 @@ connectedAccountsRouter.post('/', async (c) => {
       composioConnectionId,
       toolkitSlug,
       displayName,
+      userId: getCurrentUserId(c),
       status: 'active',
       createdAt: now,
       updatedAt: now,
@@ -110,13 +123,15 @@ connectedAccountsRouter.post('/initiate', async (c) => {
       callbackUrl = `${protocol}://oauth-callback?toolkit=${encodeURIComponent(providerSlug)}`
     } else {
       // Web: use HTTP callback endpoint
-      const origin = c.req.header('origin') || new URL(c.req.url).origin
+      const origin = getAppBaseUrlFromRequest(c)
       callbackUrl = `${origin}/api/connected-accounts/callback?toolkit=${encodeURIComponent(providerSlug)}`
     }
 
+    const composioUserId = isAuthMode() ? getCurrentUserId(c) : undefined
     const { connectionId, redirectUrl } = await initiateConnection(
       authConfig.id,
-      callbackUrl
+      callbackUrl,
+      composioUserId
     )
 
     return c.json({
@@ -142,9 +157,12 @@ connectedAccountsRouter.post('/initiate', async (c) => {
       )
     }
 
+    // Never forward upstream 401s as our own — 401 is reserved for session auth
+    // and triggers auto-sign-out on the frontend.
+    const status = error.statusCode === 401 ? 502 : (error.statusCode || 500)
     return c.json(
       { error: error.message || 'Failed to initiate connection' },
-      error.statusCode || 500
+      status
     )
   }
 })
@@ -184,6 +202,7 @@ connectedAccountsRouter.post('/complete', async (c) => {
       composioConnectionId: connectionId,
       toolkitSlug,
       displayName,
+      userId: getCurrentUserId(c),
       status: 'active',
       createdAt: now,
       updatedAt: now,
@@ -254,6 +273,7 @@ connectedAccountsRouter.get('/callback', async (c) => {
       composioConnectionId: connectionId,
       toolkitSlug,
       displayName,
+      userId: getCurrentUserId(c),
       status: 'active',
       createdAt: now,
       updatedAt: now,
@@ -289,7 +309,7 @@ connectedAccountsRouter.get('/callback', async (c) => {
 })
 
 // PATCH /api/connected-accounts/:id - Update a connected account (rename)
-connectedAccountsRouter.patch('/:id', async (c) => {
+connectedAccountsRouter.patch('/:id', Or(OwnsAccount(), IsAdmin()), async (c) => {
   try {
     const id = c.req.param('id')
     const body = await c.req.json()
@@ -330,7 +350,7 @@ connectedAccountsRouter.patch('/:id', async (c) => {
 })
 
 // DELETE /api/connected-accounts/:id - Delete a connected account
-connectedAccountsRouter.delete('/:id', async (c) => {
+connectedAccountsRouter.delete('/:id', Or(OwnsAccount(), IsAdmin()), async (c) => {
   try {
     const id = c.req.param('id')
 

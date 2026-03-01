@@ -3,7 +3,7 @@ import { Label } from '@renderer/components/ui/label'
 import { Switch } from '@renderer/components/ui/switch'
 import { Button } from '@renderer/components/ui/button'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
-import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
+import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { Bell, BellOff, Info } from 'lucide-react'
 import { isElectron } from '@renderer/lib/env'
 import {
@@ -13,8 +13,8 @@ import {
 } from '@renderer/lib/os-notifications'
 
 export function NotificationsTab() {
-  const { data: settings, isLoading } = useSettings()
-  const updateSettings = useUpdateSettings()
+  const { data: userSettings, isLoading } = useUserSettings()
+  const updateUserSettings = useUpdateUserSettings()
 
   // Local state for optimistic UI updates
   const [localSettings, setLocalSettings] = useState<{
@@ -31,12 +31,12 @@ export function NotificationsTab() {
 
   // Reset local state when settings update
   useEffect(() => {
-    if (settings) {
+    if (userSettings) {
       setLocalSettings(null)
     }
-  }, [settings])
+  }, [userSettings])
 
-  const notificationSettings = localSettings ?? settings?.app?.notifications ?? {
+  const notificationSettings = localSettings ?? userSettings?.notifications ?? {
     enabled: true,
     sessionComplete: true,
     sessionWaiting: true,
@@ -46,7 +46,7 @@ export function NotificationsTab() {
   const updateNotificationSetting = (key: string, value: boolean) => {
     const newSettings = { ...notificationSettings, [key]: value }
     setLocalSettings(newSettings)
-    updateSettings.mutate({ app: { notifications: newSettings } })
+    updateUserSettings.mutate({ notifications: newSettings })
   }
 
   const handleRequestPermission = async () => {
