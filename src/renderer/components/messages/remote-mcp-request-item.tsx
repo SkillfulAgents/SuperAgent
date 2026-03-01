@@ -106,7 +106,7 @@ export function RemoteMcpRequestItem({
     if (!window.electronAPI || status !== 'oauth_pending') return
 
     window.electronAPI.onMcpOAuthCallback((params) => {
-      handleOAuthComplete(params.success, params.error)
+      handleOAuthComplete(params.success, params.error ?? undefined)
     })
 
     return () => {
