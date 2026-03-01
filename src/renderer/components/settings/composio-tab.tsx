@@ -13,66 +13,41 @@ import {
   useInvalidateConnectedAccounts,
   type ConnectedAccount,
 } from '@renderer/hooks/use-connected-accounts'
-import { Eye, EyeOff, Plus, Trash2, ExternalLink, Loader2, Pencil, Check, X, Search } from 'lucide-react'
+import { Plus, Trash2, ExternalLink, Loader2, Pencil, Check, X, Search } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import type { Provider } from '@shared/lib/composio/providers'
 import { formatDistanceToNow } from 'date-fns'
 import { useUser } from '@renderer/context/user-context'
+import { ComposioApiKeyInput } from '@renderer/components/settings/composio-api-key-input'
 
 export function ComposioTab() {
   const { data: settings, isLoading } = useSettings()
   const updateSettings = useUpdateSettings()
   const { isAuthMode, user } = useUser()
 
-  // Composio settings state
-  const [composioApiKeyInput, setComposioApiKeyInput] = useState('')
-  const [showComposioApiKey, setShowComposioApiKey] = useState(false)
   const [composioUserIdInput, setComposioUserIdInput] = useState('')
-  const [isSavingComposio, setIsSavingComposio] = useState(false)
+  const [isSavingUserId, setIsSavingUserId] = useState(false)
 
   const composioApiKeyStatus = settings?.apiKeyStatus?.composio
   const hasComposioUserId = isAuthMode ? !!user?.id : !!settings?.composioUserId
 
-  const handleSaveComposioSettings = async () => {
-    setIsSavingComposio(true)
-    try {
-      const updates: { composioApiKey?: string; composioUserId?: string } = {}
-      if (composioApiKeyInput.trim()) {
-        updates.composioApiKey = composioApiKeyInput.trim()
-      }
-      if (!isAuthMode && composioUserIdInput.trim()) {
-        updates.composioUserId = composioUserIdInput.trim()
-      }
-      if (Object.keys(updates).length > 0) {
-        await updateSettings.mutateAsync({
-          apiKeys: updates,
-        })
-        setComposioApiKeyInput('')
-        setComposioUserIdInput('')
-        setShowComposioApiKey(false)
-      }
-    } catch (error) {
-      console.error('Failed to save Composio settings:', error)
-    } finally {
-      setIsSavingComposio(false)
-    }
-  }
-
-  const handleRemoveComposioApiKey = async () => {
-    setIsSavingComposio(true)
+  const handleSaveUserId = async () => {
+    if (isAuthMode || !composioUserIdInput.trim()) return
+    setIsSavingUserId(true)
     try {
       await updateSettings.mutateAsync({
-        apiKeys: { composioApiKey: '' },
+        apiKeys: { composioUserId: composioUserIdInput.trim() },
       })
+      setComposioUserIdInput('')
     } catch (error) {
-      console.error('Failed to remove Composio API key:', error)
+      console.error('Failed to save Composio user ID:', error)
     } finally {
-      setIsSavingComposio(false)
+      setIsSavingUserId(false)
     }
   }
 
   const handleRemoveComposioUserId = async () => {
-    setIsSavingComposio(true)
+    setIsSavingUserId(true)
     try {
       await updateSettings.mutateAsync({
         apiKeys: { composioUserId: '' },
@@ -80,7 +55,7 @@ export function ComposioTab() {
     } catch (error) {
       console.error('Failed to remove Composio user ID:', error)
     } finally {
-      setIsSavingComposio(false)
+      setIsSavingUserId(false)
     }
   }
 
@@ -93,72 +68,7 @@ export function ComposioTab() {
         </p>
       </div>
 
-      {/* Composio API Key */}
-      <div className="space-y-2">
-        <Label htmlFor="composio-api-key">Composio API Key</Label>
-
-        {/* Source indicator */}
-        {composioApiKeyStatus?.isConfigured && (
-          <div className="flex items-center gap-2">
-            <span
-              className={`text-xs px-2 py-0.5 rounded-full ${
-                composioApiKeyStatus.source === 'settings'
-                  ? 'bg-green-500/10 text-green-700 dark:text-green-400'
-                  : 'bg-blue-500/10 text-blue-700 dark:text-blue-400'
-              }`}
-            >
-              {composioApiKeyStatus.source === 'settings'
-                ? 'Using saved setting'
-                : 'Using environment variable'}
-            </span>
-          </div>
-        )}
-
-        {/* Input with show/hide toggle */}
-        <div className="relative">
-          <Input
-            id="composio-api-key"
-            type={showComposioApiKey ? 'text' : 'password'}
-            value={composioApiKeyInput}
-            onChange={(e) => setComposioApiKeyInput(e.target.value)}
-            placeholder={composioApiKeyStatus?.isConfigured ? '••••••••••••••••' : 'Enter Composio API key'}
-            className="pr-10"
-            disabled={isLoading}
-          />
-          <button
-            type="button"
-            onClick={() => setShowComposioApiKey(!showComposioApiKey)}
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-            disabled={isLoading}
-          >
-            {showComposioApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-          </button>
-        </div>
-
-        <p className="text-xs text-muted-foreground">
-          Get your API key from{' '}
-          <a
-            href="https://app.composio.dev/settings"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-primary underline underline-offset-4"
-          >
-            Composio Dashboard
-          </a>
-        </p>
-
-        {/* Remove button */}
-        {composioApiKeyStatus?.source === 'settings' && (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={handleRemoveComposioApiKey}
-            disabled={isSavingComposio}
-          >
-            {isSavingComposio ? 'Removing...' : 'Remove Saved Key'}
-          </Button>
-        )}
-      </div>
+      <ComposioApiKeyInput disabled={isLoading} />
 
       {/* Composio User ID */}
       <div className="space-y-2">
@@ -194,20 +104,19 @@ export function ComposioTab() {
             size="sm"
             variant="outline"
             onClick={handleRemoveComposioUserId}
-            disabled={isSavingComposio}
+            disabled={isSavingUserId}
           >
-            {isSavingComposio ? 'Removing...' : 'Remove User ID'}
+            {isSavingUserId ? 'Removing...' : 'Remove User ID'}
           </Button>
         )}
       </div>
 
-      {/* Save button for Composio settings */}
-      {(composioApiKeyInput.trim() || (!isAuthMode && composioUserIdInput.trim())) && (
-        <Button size="sm" onClick={handleSaveComposioSettings} disabled={isSavingComposio}>
-          {isSavingComposio ? 'Saving...' : 'Save Composio Settings'}
+      {/* Save button for User ID */}
+      {!isAuthMode && composioUserIdInput.trim() && (
+        <Button size="sm" onClick={handleSaveUserId} disabled={isSavingUserId}>
+          {isSavingUserId ? 'Saving...' : 'Save User ID'}
         </Button>
       )}
-
 
       {/* Connected Accounts Section - only show if Composio is configured */}
       {composioApiKeyStatus?.isConfigured && hasComposioUserId && (

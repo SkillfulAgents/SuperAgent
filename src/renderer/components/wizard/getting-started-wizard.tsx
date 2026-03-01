@@ -15,9 +15,8 @@ import { useCreateAgent } from '@renderer/hooks/use-agents'
 import { useSelection } from '@renderer/context/selection-context'
 import { apiFetch } from '@renderer/lib/api'
 import { AnthropicApiKeyInput } from '@renderer/components/settings/anthropic-api-key-input'
+import { ComposioApiKeyInput } from '@renderer/components/settings/composio-api-key-input'
 import {
-  Eye,
-  EyeOff,
   Loader2,
   Check,
   Play,
@@ -451,39 +450,32 @@ function ComposioStep({ onCanProceedChange, saveRef }: ComposioStepProps) {
   const updateSettings = useUpdateSettings()
   const { isAuthMode, user } = useUser()
 
-  const [composioApiKeyInput, setComposioApiKeyInput] = useState('')
   const [composioUserIdInput, setComposioUserIdInput] = useState('')
-  const [showComposioApiKey, setShowComposioApiKey] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
 
   const composioApiKeyStatus = settings?.apiKeyStatus?.composio
   // In auth mode, user ID is automatic (from the logged-in user)
   const hasComposioUserId = isAuthMode ? !!user?.id : !!settings?.composioUserId
   const isComposioConfigured = composioApiKeyStatus?.isConfigured && hasComposioUserId
-  const hasInput = !!(composioApiKeyInput.trim() || (!isAuthMode && composioUserIdInput.trim()))
+  const hasUserIdInput = !isAuthMode && !!composioUserIdInput.trim()
 
   useEffect(() => {
-    onCanProceedChange(!!(isComposioConfigured || hasInput) && !isSaving)
-  }, [isComposioConfigured, hasInput, isSaving, onCanProceedChange])
+    onCanProceedChange(!!(isComposioConfigured || hasUserIdInput) && !isSaving)
+  }, [isComposioConfigured, hasUserIdInput, isSaving, onCanProceedChange])
 
-  const handleSave = async () => {
-    if (!composioApiKeyInput.trim() && (isAuthMode || !composioUserIdInput.trim())) return
+  const handleSaveUserId = async () => {
+    if (isAuthMode || !composioUserIdInput.trim()) return
     setIsSaving(true)
     try {
-      const updates: { composioApiKey?: string; composioUserId?: string } = {}
-      if (composioApiKeyInput.trim()) updates.composioApiKey = composioApiKeyInput.trim()
-      if (!isAuthMode && composioUserIdInput.trim()) updates.composioUserId = composioUserIdInput.trim()
-      await updateSettings.mutateAsync({ apiKeys: updates })
-      setComposioApiKeyInput('')
+      await updateSettings.mutateAsync({ apiKeys: { composioUserId: composioUserIdInput.trim() } })
       setComposioUserIdInput('')
-      setShowComposioApiKey(false)
     } finally {
       setIsSaving(false)
     }
   }
 
   // Keep save ref in sync for parent to call on Next
-  saveRef.current = (hasInput && !isComposioConfigured) ? handleSave : null
+  saveRef.current = (hasUserIdInput && !isComposioConfigured) ? handleSaveUserId : null
 
   return (
     <div className="space-y-4">
@@ -506,37 +498,11 @@ function ComposioStep({ onCanProceedChange, saveRef }: ComposioStepProps) {
 
       {!isComposioConfigured && (
         <>
-          <div className="space-y-2">
-            <Label htmlFor="wizard-composio-key">Composio API Key</Label>
-            <div className="relative">
-              <Input
-                id="wizard-composio-key"
-                type={showComposioApiKey ? 'text' : 'password'}
-                value={composioApiKeyInput}
-                onChange={(e) => setComposioApiKeyInput(e.target.value)}
-                placeholder={composioApiKeyStatus?.isConfigured ? '••••••••••••••••' : 'Enter Composio API key'}
-                className="pr-10"
-              />
-              <button
-                type="button"
-                onClick={() => setShowComposioApiKey(!showComposioApiKey)}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              >
-                {showComposioApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Get your API key from{' '}
-              <a
-                href="https://app.composio.dev/settings"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary underline underline-offset-4"
-              >
-                Composio Dashboard
-              </a>
-            </p>
-          </div>
+          <ComposioApiKeyInput
+            idPrefix="wizard-composio-key"
+            showRemoveButton={false}
+            showSourceIndicator={false}
+          />
 
           <div className="space-y-2">
             <Label htmlFor="wizard-composio-userid">Composio User ID</Label>

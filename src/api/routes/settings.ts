@@ -372,6 +372,34 @@ settings.post('/validate-browserbase', async (c) => {
   }
 })
 
+// POST /api/settings/validate-composio-key - Validate a Composio API key
+settings.post('/validate-composio-key', async (c) => {
+  try {
+    const { apiKey } = await c.req.json()
+    if (!apiKey || typeof apiKey !== 'string') {
+      return c.json({ valid: false, error: 'API key is required' }, 400)
+    }
+
+    const response = await fetch('https://backend.composio.dev/api/v3/auth_configs', {
+      headers: {
+        'x-api-key': apiKey,
+      },
+    })
+
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        return c.json({ valid: false, error: 'Invalid API key' })
+      }
+      return c.json({ valid: false, error: `Composio API error: ${response.status}` })
+    }
+
+    return c.json({ valid: true })
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Validation failed'
+    return c.json({ valid: false, error: message })
+  }
+})
+
 // POST /api/settings/factory-reset - Reset all data
 settings.post('/factory-reset', async (c) => {
   try {
