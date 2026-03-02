@@ -1,5 +1,11 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, shell, Notification } from 'electron'
 import path from 'path'
+import { config as loadEnv } from 'dotenv'
+
+// Load .env.local from project root (dist/main/ -> ../../.env.local)
+// override: false ensures CLI env vars take precedence
+loadEnv({ path: path.resolve(app.getAppPath(), '.env.local'), override: false })
+
 import { EventSource } from 'eventsource'
 import { createTray, destroyTray, updateTrayWindow, setTrayVisible } from './tray'
 import { createAppMenu, updateAppMenuWindow, destroyAppMenu } from './app-menu'

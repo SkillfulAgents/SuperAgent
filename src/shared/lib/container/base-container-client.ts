@@ -801,7 +801,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   private buildEnvFlags(additionalEnvVars?: Record<string, string>): string {
     const envVars: Record<string, string | undefined> = {
       ANTHROPIC_API_KEY: getEffectiveAnthropicApiKey(),
-      ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL,
+      ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL?.replace('localhost', 'host.docker.internal'),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
       ...this.config.envVars,
       ...additionalEnvVars,
