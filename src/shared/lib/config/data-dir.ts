@@ -1,4 +1,5 @@
 import path from 'path'
+import fs from 'fs'
 import os from 'os'
 
 /**
@@ -39,4 +40,14 @@ export function getAgentsDataDir(): string {
  */
 export function getAgentWorkspaceDir(agentId: string): string {
   return path.join(getAgentsDataDir(), agentId, 'workspace')
+}
+
+/**
+ * Get the downloads directory for a specific agent's workspace.
+ * Creates the directory if it doesn't exist.
+ */
+export function getAgentDownloadsDir(agentId: string): string {
+  const dir = path.join(getAgentWorkspaceDir(agentId), 'downloads')
+  fs.mkdirSync(dir, { recursive: true })
+  return dir
 }

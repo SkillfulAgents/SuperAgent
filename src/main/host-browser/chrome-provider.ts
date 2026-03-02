@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'child_process'
 import fs from 'fs'
 import path from 'path'
 import net from 'net'
-import { getDataDir, getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
+import { getDataDir, getAgentDownloadsDir } from '@shared/lib/config/data-dir'
 import { listChromeProfiles, copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo } from './types'
 
@@ -102,6 +102,25 @@ export class ChromeProvider implements HostBrowserProvider {
       }
     }
 
+    // Set Chrome download preferences so files go to the agent's workspace
+    // instead of the user's ~/Downloads folder.
+    const downloadDir = getAgentDownloadsDir(instanceId)
+    const prefsDir = path.join(userDataDir, 'Default')
+    const prefsPath = path.join(prefsDir, 'Preferences')
+    fs.mkdirSync(prefsDir, { recursive: true })
+    let prefs: Record<string, unknown> = {}
+    try {
+      prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf-8'))
+    } catch {
+      // No existing preferences file
+    }
+    prefs.download = {
+      ...(prefs.download as Record<string, unknown> | undefined),
+      default_directory: downloadDir,
+      prompt_for_download: false,
+    }
+    fs.writeFileSync(prefsPath, JSON.stringify(prefs, null, 2))
+
     const browserProcess = spawn(
       this.detectedPath!,
       [
@@ -145,7 +164,6 @@ export class ChromeProvider implements HostBrowserProvider {
       throw err
     }
 
-    const downloadDir = path.join(getAgentWorkspaceDir(instanceId), 'downloads')
     return { port, downloadDir }
   }
 
