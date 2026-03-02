@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   transformMessages,
   isToolResultOnlyMessage,
+  isTaskNotificationMessage,
   parseCommandMessage,
   TransformedMessage,
 } from './message-transform'
@@ -99,6 +100,47 @@ describe('isToolResultOnlyMessage', () => {
       { type: 'tool_result', tool_use_id: 'tool-1', content: 'result' },
     ])
     expect(isToolResultOnlyMessage(entry)).toBe(false)
+  })
+})
+
+// ============================================================================
+// isTaskNotificationMessage Tests
+// ============================================================================
+
+describe('isTaskNotificationMessage', () => {
+  it('returns true for a task-notification user message', () => {
+    const entry = createUserMessage(
+      'uuid-tn',
+      '<task-notification>\n<task-id>a757381349f434a74</task-id>\n<tool-use-id>toolu_123</tool-use-id>\n<status>completed</status>\n<summary>Agent "Research" completed</summary>\n<result>Some result</result>\n</task-notification>'
+    )
+    expect(isTaskNotificationMessage(entry)).toBe(true)
+  })
+
+  it('returns true with leading whitespace', () => {
+    const entry = createUserMessage(
+      'uuid-tn2',
+      '  \n<task-notification>\n<task-id>abc</task-id>\n</task-notification>'
+    )
+    expect(isTaskNotificationMessage(entry)).toBe(true)
+  })
+
+  it('returns false for a regular user message', () => {
+    const entry = createUserMessage('uuid-reg', 'Hello, please help me')
+    expect(isTaskNotificationMessage(entry)).toBe(false)
+  })
+
+  it('returns false for assistant messages', () => {
+    const entry = createAssistantMessage('uuid-a', 'msg-1', [
+      { type: 'text', text: '<task-notification>fake</task-notification>' },
+    ])
+    expect(isTaskNotificationMessage(entry)).toBe(false)
+  })
+
+  it('returns false for array content user messages', () => {
+    const entry = createUserMessage('uuid-arr', [
+      { type: 'text', text: '<task-notification>inside block</task-notification>' },
+    ])
+    expect(isTaskNotificationMessage(entry)).toBe(false)
   })
 })
 
@@ -425,6 +467,43 @@ describe('transformMessages', () => {
 
       expect(result).toHaveLength(1)
       expect(asMessage(result[0]).content.text).toBe('Here is the result:')
+    })
+
+    it('filters out task-notification user messages', () => {
+      const entries: JsonlMessageEntry[] = [
+        createUserMessage('uuid-1', 'Hello'),
+        createAssistantMessage('uuid-2', 'msg-1', [
+          { type: 'text', text: 'Let me research that.' },
+          { type: 'tool_use', id: 'tool-agent', name: 'Task', input: { description: 'Research' } },
+        ]),
+        // SDK-injected task notification delivering sub-agent result
+        createUserMessage(
+          'uuid-3',
+          '<task-notification>\n<task-id>a757381349f434a74</task-id>\n<tool-use-id>tool-agent</tool-use-id>\n<status>completed</status>\n<summary>Agent "Research" completed</summary>\n<result>Found the answer</result>\n</task-notification>'
+        ),
+        createAssistantMessage('uuid-4', 'msg-2', [
+          { type: 'text', text: 'Based on the research...' },
+        ]),
+      ]
+
+      const result = transformMessages(entries)
+
+      expect(result.map((m) => m.id)).toEqual(['uuid-1', 'uuid-2', 'uuid-4'])
+      // The task-notification message (uuid-3) should be completely absent
+      expect(result.find((m) => m.id === 'uuid-3')).toBeUndefined()
+    })
+
+    it('keeps regular user messages that mention task-notification mid-text', () => {
+      const entries: JsonlMessageEntry[] = [
+        createUserMessage('uuid-1', 'I got a <task-notification> in the UI, is that a bug?'),
+      ]
+
+      const result = transformMessages(entries)
+
+      expect(result).toHaveLength(1)
+      expect(asMessage(result[0]).content.text).toBe(
+        'I got a <task-notification> in the UI, is that a bug?'
+      )
     })
   })
 

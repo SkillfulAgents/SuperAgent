@@ -96,6 +96,20 @@ export function isToolResultOnlyMessage(entry: JsonlMessageEntry): boolean {
 }
 
 /**
+ * Check if a user message is an SDK-injected task notification (sub-agent result).
+ * These are internal messages that deliver sub-agent results back to the main agent
+ * and should not be displayed as user messages.
+ */
+export function isTaskNotificationMessage(entry: JsonlMessageEntry): boolean {
+  if (entry.type !== 'user') return false
+
+  const content = entry.message.content
+  if (typeof content !== 'string') return false
+
+  return content.trimStart().startsWith('<task-notification>')
+}
+
+/**
  * Transform JSONL messages to API response format
  *
  * This handles several complexities of the Claude SDK JSONL format:
@@ -261,6 +275,9 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
 
     // Skip user messages that only contain tool results
     if (isToolResultOnlyMessage(entry)) continue
+
+    // Skip SDK-injected task notification messages (sub-agent results)
+    if (isTaskNotificationMessage(entry)) continue
 
     const content = entry.message.content
     let text = ''
