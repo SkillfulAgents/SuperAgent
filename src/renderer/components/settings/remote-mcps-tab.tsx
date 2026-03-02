@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
@@ -18,7 +18,10 @@ import {
   useInitiateMcpOAuth,
   useInvalidateRemoteMcps,
 } from '@renderer/hooks/use-remote-mcps'
-import { Plus, Trash2, Loader2, RefreshCw, Plug, Wrench, AlertCircle, CheckCircle } from 'lucide-react'
+import { Plus, Trash2, Loader2, RefreshCw, Plug, Wrench, AlertCircle, CheckCircle, Search } from 'lucide-react'
+import { apiFetch } from '@renderer/lib/api'
+import { useQuery } from '@tanstack/react-query'
+import type { CommonMcpServer } from '@shared/lib/mcp/common-servers'
 
 export function RemoteMcpsTab() {
   const { data, isLoading } = useRemoteMcps()
@@ -27,8 +30,16 @@ export function RemoteMcpsTab() {
   const discoverTools = useDiscoverMcpTools()
   const testConnection = useTestMcpConnection()
   const initiateOAuth = useInitiateMcpOAuth()
-
   const invalidateRemoteMcps = useInvalidateRemoteMcps()
+
+  const { data: commonData } = useQuery<{ servers: CommonMcpServer[] }>({
+    queryKey: ['common-mcp-servers'],
+    queryFn: async () => {
+      const res = await apiFetch('/api/common-mcp-servers')
+      if (!res.ok) throw new Error('Failed to fetch common MCP servers')
+      return res.json()
+    },
+  })
 
   // Listen for MCP OAuth callback from main process
   useEffect(() => {
@@ -54,10 +65,34 @@ export function RemoteMcpsTab() {
   const [newUrl, setNewUrl] = useState('')
   const [newAuthType, setNewAuthType] = useState<'none' | 'oauth' | 'bearer'>('none')
   const [newToken, setNewToken] = useState('')
-  const [oAuthPending, setOAuthPending] = useState<string | null>(null) // name of server being added via OAuth
+  const [oAuthPending, setOAuthPending] = useState<string | null>(null)
   const [oAuthError, setOAuthError] = useState<string | null>(null)
+  const [searchQuery, setSearchQuery] = useState('')
+  const addFormRef = useRef<HTMLDivElement>(null)
 
   const servers = Array.isArray(data?.servers) ? data.servers : []
+  const commonServers = useMemo(() => commonData?.servers || [], [commonData?.servers])
+
+  const filteredCommon = useMemo(() => {
+    if (!searchQuery.trim()) return commonServers
+    const term = searchQuery.toLowerCase()
+    return commonServers.filter(
+      (s) =>
+        s.displayName.toLowerCase().includes(term) ||
+        s.slug.includes(term) ||
+        s.category.toLowerCase().includes(term) ||
+        s.description.toLowerCase().includes(term)
+    )
+  }, [commonServers, searchQuery])
+
+  const groupedCommon = useMemo(() => {
+    const groups: Record<string, CommonMcpServer[]> = {}
+    for (const server of filteredCommon) {
+      if (!groups[server.category]) groups[server.category] = []
+      groups[server.category].push(server)
+    }
+    return groups
+  }, [filteredCommon])
 
   const resetForm = () => {
     setNewName('')
@@ -65,6 +100,24 @@ export function RemoteMcpsTab() {
     setNewAuthType('none')
     setNewToken('')
     setIsAdding(false)
+  }
+
+  const openAddForm = (server?: CommonMcpServer) => {
+    if (server) {
+      setNewName(server.displayName)
+      setNewUrl(server.url)
+      setNewAuthType(server.authType)
+    } else {
+      setNewName('')
+      setNewUrl('')
+      setNewAuthType('none')
+    }
+    setNewToken('')
+    setIsAdding(true)
+    // Scroll to form after React renders it
+    setTimeout(() => {
+      addFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    }, 0)
   }
 
   const openAuthUrl = async (redirectUrl: string) => {
@@ -83,7 +136,6 @@ export function RemoteMcpsTab() {
     }
 
     if (newAuthType === 'oauth') {
-      // OAuth-first: initiate OAuth immediately, server created after token exchange
       try {
         const serverName = newName.trim()
         const isElectronApp = !!window.electronAPI
@@ -157,15 +209,37 @@ export function RemoteMcpsTab() {
     }
   }
 
+  const authBadge = (authType: string) => {
+    switch (authType) {
+      case 'oauth':
+        return <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300">OAuth</span>
+      case 'bearer':
+        return <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300">API Key</span>
+      default:
+        return <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">No auth</span>
+    }
+  }
+
   return (
     <div className="space-y-6">
-      <div>
-        <h3 className="text-sm font-medium">Remote MCP Servers</h3>
-        <p className="text-xs text-muted-foreground mt-1">
-          Manage remote MCP servers that agents can connect to for additional tools and capabilities.
-        </p>
+      <div className="flex items-start justify-between">
+        <div>
+          <h3 className="text-sm font-medium">Remote MCP Servers</h3>
+          <p className="text-xs text-muted-foreground mt-1">
+            Manage remote MCP servers that agents can connect to for additional tools and capabilities.
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => openAddForm()}
+        >
+          <Plus className="h-4 w-4 mr-2" />
+          Add Custom Server
+        </Button>
       </div>
 
+      {/* Registered servers */}
       {isLoading ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />
@@ -280,7 +354,7 @@ export function RemoteMcpsTab() {
         </div>
       ) : !oAuthPending ? (
         <p className="text-sm text-muted-foreground">
-          No MCP servers registered yet.
+          No MCP servers registered yet. Browse the directory below or add a custom server.
         </p>
       ) : null}
 
@@ -302,17 +376,8 @@ export function RemoteMcpsTab() {
       )}
 
       {/* Add MCP server form */}
-      {!isAdding ? (
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setIsAdding(true)}
-        >
-          <Plus className="h-4 w-4 mr-2" />
-          Add MCP Server
-        </Button>
-      ) : (
-        <div className="space-y-4 p-4 border rounded-md">
+      {isAdding && (
+        <div ref={addFormRef} className="space-y-4 p-4 border rounded-md">
           <div className="flex items-center justify-between">
             <Label className="text-sm font-medium">Add MCP Server</Label>
             <Button
@@ -396,6 +461,59 @@ export function RemoteMcpsTab() {
           )}
         </div>
       )}
+
+      {/* Common MCP servers directory */}
+      <div className="space-y-3">
+        <div>
+          <Label className="text-sm font-medium">Server Directory</Label>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Browse common MCP servers. Click to add one.
+          </p>
+        </div>
+
+        <div className="relative">
+          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+          <Input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search MCP servers..."
+            className="pl-9"
+          />
+        </div>
+
+        {Object.keys(groupedCommon).length === 0 ? (
+          <p className="text-sm text-muted-foreground">No servers match your search.</p>
+        ) : (
+          <div className="space-y-4">
+            {Object.entries(groupedCommon).map(([category, categoryServers]) => (
+              <div key={category}>
+                <p className="text-xs font-medium text-muted-foreground mb-2">{category}</p>
+                <div className="grid grid-cols-2 gap-2">
+                  {categoryServers.map((server) => (
+                    <button
+                      key={server.slug}
+                      type="button"
+                      className="flex items-start gap-2.5 p-2.5 rounded-md border bg-card text-left hover:bg-accent/50 transition-colors"
+                      onClick={() => openAddForm(server)}
+                    >
+                      <div className="h-7 w-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
+                        <Plug className="h-3.5 w-3.5 text-primary" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <p className="text-sm font-medium truncate">{server.displayName}</p>
+                          {authBadge(server.authType)}
+                        </div>
+                        <p className="text-xs text-muted-foreground line-clamp-1 mt-0.5">{server.description}</p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
