@@ -39,6 +39,7 @@ process.on('unhandledRejection', (reason: unknown) => {
 
 const app = new Hono();
 const sessionManager = new SessionManager();
+const WORKSPACE_DOWNLOADS_DIR = '/workspace/downloads';
 
 // Health check endpoint
 app.get('/health', (c) => {
@@ -784,7 +785,7 @@ app.post('/browser/open', async (c) => {
     const profile = process.env.AGENT_BROWSER_PROFILE || '/workspace/.browser-profile';
 
     // Configure Chrome to save downloads to /workspace/downloads so the agent can access them
-    await ensureBrowserDownloadPreferences(profile, '/workspace/downloads');
+    await ensureBrowserDownloadPreferences(profile, WORKSPACE_DOWNLOADS_DIR);
 
     const result = await execBrowser(['open', body.url, '--profile', profile], cdpUrl);
 
@@ -795,7 +796,7 @@ app.post('/browser/open', async (c) => {
     // Override Playwright's download interception via CDP so downloads go to workspace.
     // For host browser: use the host-filesystem path (volume-mounted as /workspace).
     // For container browser: use /workspace/downloads directly.
-    const downloadPath = hostBrowser?.hostDownloadDir || '/workspace/downloads';
+    const downloadPath = hostBrowser?.hostDownloadDir || WORKSPACE_DOWNLOADS_DIR;
     if (cdpUrl) {
       try {
         await setDownloadBehaviorViaCDP(cdpUrl, downloadPath);
