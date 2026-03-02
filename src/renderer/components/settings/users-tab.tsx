@@ -21,7 +21,20 @@ import {
 import { authClient } from '@renderer/lib/auth-client'
 import { useUser } from '@renderer/context/user-context'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2, Search, Ban, Trash2, ShieldCheck, ShieldAlert, UserPlus } from 'lucide-react'
+import {
+  Loader2,
+  Search,
+  Ban,
+  Trash2,
+  ShieldCheck,
+  ShieldAlert,
+  UserPlus,
+  ChevronUp,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsUpDown,
+} from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { InviteUserDialog } from './invite-user-dialog'
@@ -44,10 +57,16 @@ export function UsersTab() {
   const [debouncedSearch, setDebouncedSearch] = useState('')
 
   useEffect(() => {
-    const timer = setTimeout(() => setDebouncedSearch(search), 300)
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search)
+      setPage(0)
+    }, 300)
     return () => clearTimeout(timer)
   }, [search])
 
+  const [page, setPage] = useState(0)
+  const [sortBy, setSortBy] = useState<'createdAt' | 'name'>('createdAt')
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc')
   const [inviteOpen, setInviteOpen] = useState(false)
 
   const [confirmAction, setConfirmAction] = useState<{
@@ -56,13 +75,16 @@ export function UsersTab() {
   } | null>(null)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
 
+  const PAGE_SIZE = 10
+
   const { data, isLoading, error } = useQuery({
-    queryKey: ['admin-users', debouncedSearch],
+    queryKey: ['admin-users', debouncedSearch, page, sortBy, sortDirection],
     queryFn: async () => {
       const params: Record<string, string> = {
-        sortBy: 'createdAt',
-        sortDirection: 'desc',
-        limit: '100',
+        sortBy,
+        sortDirection,
+        limit: String(PAGE_SIZE),
+        offset: String(page * PAGE_SIZE),
       }
       if (debouncedSearch.trim()) {
         params.searchValue = debouncedSearch.trim()
@@ -73,6 +95,27 @@ export function UsersTab() {
       return res.data as { users: AdminUser[]; total: number } | undefined
     },
   })
+
+  const totalPages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1
+
+  const toggleSort = (column: 'createdAt' | 'name') => {
+    if (sortBy === column) {
+      setSortDirection((d) => (d === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortBy(column)
+      setSortDirection(column === 'name' ? 'asc' : 'desc')
+    }
+    setPage(0)
+  }
+
+  const SortIcon = ({ column }: { column: 'createdAt' | 'name' }) => {
+    if (sortBy !== column) return <ChevronsUpDown className="h-3 w-3 ml-0.5" />
+    return sortDirection === 'asc' ? (
+      <ChevronUp className="h-3 w-3 ml-0.5" />
+    ) : (
+      <ChevronDown className="h-3 w-3 ml-0.5" />
+    )
+  }
 
   const users = data?.users ?? []
   const adminCount = users.filter((u) => u.role === 'admin').length
@@ -176,10 +219,22 @@ export function UsersTab() {
         <div className="space-y-1">
           {/* Header */}
           <div className="grid grid-cols-[1fr_1fr_100px_80px_80px] gap-2 px-2 py-1 text-xs font-medium text-muted-foreground">
-            <span>Name</span>
+            <button
+              className="flex items-center hover:text-foreground transition-colors cursor-pointer"
+              onClick={() => toggleSort('name')}
+            >
+              Name
+              <SortIcon column="name" />
+            </button>
             <span>Email</span>
             <span>Role</span>
-            <span>Joined</span>
+            <button
+              className="flex items-center hover:text-foreground transition-colors cursor-pointer"
+              onClick={() => toggleSort('createdAt')}
+            >
+              Joined
+              <SortIcon column="createdAt" />
+            </button>
             <span className="text-right">Actions</span>
           </div>
 
@@ -219,7 +274,16 @@ export function UsersTab() {
                 </div>
 
                 {/* Email */}
-                <span className="truncate text-muted-foreground">{user.email}</span>
+                <span className="truncate text-muted-foreground">
+                  {debouncedSearch.trim() ? (() => {
+                    const idx = user.email.toLowerCase().indexOf(debouncedSearch.trim().toLowerCase())
+                    if (idx === -1) return user.email
+                    const before = user.email.slice(0, idx)
+                    const match = user.email.slice(idx, idx + debouncedSearch.trim().length)
+                    const after = user.email.slice(idx + debouncedSearch.trim().length)
+                    return <>{before}<mark className="bg-yellow-200 dark:bg-yellow-800 rounded-sm">{match}</mark>{after}</>
+                  })() : user.email}
+                </span>
 
                 {/* Role */}
                 <div>
@@ -296,11 +360,38 @@ export function UsersTab() {
         </div>
       )}
 
-      {/* Total count */}
+      {/* Total count & pagination */}
       {data && (
-        <p className="text-xs text-muted-foreground">
-          {data.total} user{data.total !== 1 ? 's' : ''} total
-        </p>
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-muted-foreground">
+            {data.total} user{data.total !== 1 ? 's' : ''} total
+          </p>
+          {totalPages > 1 && (
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 w-7 p-0"
+                disabled={page === 0}
+                onClick={() => setPage((p) => p - 1)}
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <span className="text-xs text-muted-foreground">
+                Page {page + 1} of {totalPages}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 w-7 p-0"
+                disabled={page >= totalPages - 1}
+                onClick={() => setPage((p) => p + 1)}
+              >
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          )}
+        </div>
       )}
 
       {/* Invite Dialog */}
