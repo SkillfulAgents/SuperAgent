@@ -2,7 +2,6 @@ import { apiFetch } from '@renderer/lib/api'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
-  Link2,
   Check,
   X,
   Loader2,
@@ -10,6 +9,7 @@ import {
   ExternalLink,
   Pencil,
 } from 'lucide-react'
+import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { Button } from '@renderer/components/ui/button'
 import { Checkbox } from '@renderer/components/ui/checkbox'
 import { Input } from '@renderer/components/ui/input'
@@ -254,7 +254,9 @@ export function ConnectedAccountRequestItem({
     return (
       <div className="border rounded-md bg-muted/30 text-sm">
         <div className="flex items-center gap-2 px-3 py-2">
-          <Link2
+          <ServiceIcon
+            slug={toolkit}
+            fallback="request"
             className={cn(
               'h-4 w-4 shrink-0',
               status === 'provided' ? 'text-green-500' : 'text-red-500'
@@ -282,7 +284,7 @@ export function ConnectedAccountRequestItem({
       <div className="border rounded-md bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800 text-sm">
         <div className="flex items-center gap-3 p-3">
           <div className="h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center shrink-0">
-            <Link2 className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+            <ServiceIcon slug={toolkit} fallback="request" className="h-4 w-4 text-blue-600 dark:text-blue-400" />
           </div>
           <div className="flex-1 min-w-0">
             <div className="font-medium text-blue-900 dark:text-blue-100">
@@ -305,7 +307,7 @@ export function ConnectedAccountRequestItem({
       <div className="flex items-start gap-3 p-3">
         {/* Icon */}
         <div className="h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center shrink-0">
-          <Link2 className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+          <ServiceIcon slug={toolkit} fallback="request" className="h-4 w-4 text-blue-600 dark:text-blue-400" />
         </div>
 
         {/* Content */}

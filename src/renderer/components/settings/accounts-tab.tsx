@@ -22,7 +22,8 @@ import {
   useInvalidateConnectedAccounts,
   type ConnectedAccount,
 } from '@renderer/hooks/use-connected-accounts'
-import { Plus, Trash2, ExternalLink, Loader2, Pencil, Check, X } from 'lucide-react'
+import { Trash2, Loader2, Pencil, Check, X } from 'lucide-react'
+import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { useQuery } from '@tanstack/react-query'
 import type { Provider } from '@shared/lib/composio/providers'
 import { formatDistanceToNow } from 'date-fns'
@@ -203,7 +204,7 @@ function ConnectedAccountsSection() {
               >
                 <div className="flex items-center gap-3">
                   <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center">
-                    <ExternalLink className="h-4 w-4 text-primary" />
+                    <ServiceIcon slug={account.toolkitSlug} fallback="oauth" className="h-4 w-4 text-primary" />
                   </div>
                   <div className="flex-1 min-w-0">
                     {isEditing ? (
@@ -305,7 +306,7 @@ function ConnectedAccountsSection() {
               {connectingProvider === provider.slug ? (
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />
               ) : (
-                <Plus className="h-4 w-4 mr-2" />
+                <ServiceIcon slug={provider.slug} fallback="oauth" className="h-4 w-4 mr-2" />
               )}
               {provider.displayName}
             </Button>

@@ -2,12 +2,13 @@ import { apiFetch } from '@renderer/lib/api'
 
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import {
-  Plug,
   Check,
   X,
   Loader2,
   Plus,
 } from 'lucide-react'
+import { ServiceIcon } from '@renderer/components/ui/service-icon'
+import { COMMON_MCP_SERVERS } from '@shared/lib/mcp/common-servers'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { cn } from '@shared/lib/utils/cn'
@@ -50,6 +51,7 @@ export function RemoteMcpRequestItem({
 }: RemoteMcpRequestItemProps) {
   const queryClient = useQueryClient()
   const initiateOAuth = useInitiateMcpOAuth()
+  const mcpSlug = COMMON_MCP_SERVERS.find((cs) => cs.url === url)?.slug || ''
   const [status, setStatus] = useState<RequestStatus>('pending')
   const [error, setError] = useState<string | null>(null)
   const [selectedMcpId, setSelectedMcpId] = useState<string | null>(null)
@@ -282,7 +284,9 @@ export function RemoteMcpRequestItem({
     return (
       <div className="border rounded-md bg-muted/30 text-sm">
         <div className="flex items-center gap-2 px-3 py-2">
-          <Plug
+          <ServiceIcon
+            slug={mcpSlug}
+            fallback="mcp"
             className={cn(
               'h-4 w-4 shrink-0',
               status === 'provided' ? 'text-green-500' : 'text-red-500'
@@ -308,7 +312,7 @@ export function RemoteMcpRequestItem({
       <div className="border rounded-md bg-purple-50 dark:bg-purple-950 border-purple-200 dark:border-purple-800 text-sm">
         <div className="flex items-center gap-3 p-3">
           <div className="h-8 w-8 rounded-full bg-purple-100 dark:bg-purple-900 flex items-center justify-center shrink-0">
-            <Plug className="h-4 w-4 text-purple-600 dark:text-purple-400" />
+            <ServiceIcon slug={mcpSlug} fallback="mcp" className="h-4 w-4 text-purple-600 dark:text-purple-400" />
           </div>
           <div className="flex-1 min-w-0">
             <div className="font-medium text-purple-900 dark:text-purple-100">
@@ -329,7 +333,7 @@ export function RemoteMcpRequestItem({
     <div className="border rounded-md bg-purple-50 dark:bg-purple-950 border-purple-200 dark:border-purple-800 text-sm">
       <div className="flex items-start gap-3 p-3">
         <div className="h-8 w-8 rounded-full bg-purple-100 dark:bg-purple-900 flex items-center justify-center shrink-0">
-          <Plug className="h-4 w-4 text-purple-600 dark:text-purple-400" />
+          <ServiceIcon slug={mcpSlug} fallback="mcp" className="h-4 w-4 text-purple-600 dark:text-purple-400" />
         </div>
 
         <div className="flex-1 min-w-0 space-y-3">

@@ -9,7 +9,9 @@ import {
   useRemoveMcpFromAgent,
 } from '@renderer/hooks/use-remote-mcps'
 import { useDialogs } from '@renderer/context/dialog-context'
-import { Plus, Trash2, Loader2, Plug } from 'lucide-react'
+import { Plus, Trash2, Loader2 } from 'lucide-react'
+import { ServiceIcon } from '@renderer/components/ui/service-icon'
+import { COMMON_MCP_SERVERS } from '@shared/lib/mcp/common-servers'
 import { cn } from '@shared/lib/utils/cn'
 
 interface RemoteMcpsTabProps {
@@ -100,7 +102,7 @@ export function RemoteMcpsTab({ agentSlug, onClose }: RemoteMcpsTabProps) {
             >
               <div className="flex items-center gap-3">
                 <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center">
-                  <Plug className="h-4 w-4 text-primary" />
+                  <ServiceIcon slug={COMMON_MCP_SERVERS.find((cs) => cs.url === mcp.url)?.slug || ''} fallback="mcp" className="h-4 w-4 text-primary" />
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
