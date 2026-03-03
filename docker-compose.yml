@@ -5,8 +5,11 @@ services:
       context: .
       args:
         AUTH_MODE: ${AUTH_MODE:-false}
-    ports:
-      - "47891:47891"
+    # Host networking is required for DooD (Docker-outside-of-Docker) on Linux.
+    # Agent containers publish ports on the host, and the main app connects to
+    # them via 127.0.0.1. Without host networking, 127.0.0.1 inside the main
+    # container is its own loopback, not the host's.
+    network_mode: host
     volumes:
       # DooD - mount Docker socket for sibling container creation
       - /var/run/docker.sock:/var/run/docker.sock
