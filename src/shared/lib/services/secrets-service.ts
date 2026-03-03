@@ -188,7 +188,7 @@ export async function setSecret(agentSlug: string, secret: AgentSecret): Promise
   // Write back
   const envPath = getAgentEnvPath(agentSlug)
   const content = serializeEnvFile(secrets)
-  await writeFile(envPath, content, { mode: 0o600 }) // Restrictive permissions
+  await writeFile(envPath, content, { mode: 0o666 })
 }
 
 /**
@@ -206,10 +206,10 @@ export async function deleteSecret(agentSlug: string, envVar: string): Promise<b
 
   if (filtered.length === 0) {
     // No secrets left, could delete file or leave empty
-    await writeFile(envPath, '# Superagent Secrets\n', { mode: 0o600 })
+    await writeFile(envPath, '# Superagent Secrets\n', { mode: 0o666 })
   } else {
     const content = serializeEnvFile(filtered)
-    await writeFile(envPath, content, { mode: 0o600 })
+    await writeFile(envPath, content, { mode: 0o666 })
   }
 
   return true
