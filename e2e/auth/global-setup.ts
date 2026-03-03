@@ -15,17 +15,8 @@ async function globalSetup() {
     console.log('[E2E Auth Setup] Created data directory:', e2eDataDir)
   }
 
-  // Remove the database files to start fresh
-  const dbPath = path.join(e2eDataDir, 'superagent.db')
-  const walPath = path.join(e2eDataDir, 'superagent.db-wal')
-  const shmPath = path.join(e2eDataDir, 'superagent.db-shm')
-
-  for (const file of [dbPath, walPath, shmPath]) {
-    if (fs.existsSync(file)) {
-      fs.unlinkSync(file)
-      console.log('[E2E Auth Setup] Removed:', file)
-    }
-  }
+  // DB files are cleaned in the webServer command (before the server starts)
+  // to avoid a race condition where the server opens the DB before globalSetup deletes it.
 
   // Remove agents directory
   const agentsDir = path.join(e2eDataDir, 'agents')

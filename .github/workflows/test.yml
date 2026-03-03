@@ -88,4 +88,5 @@ jobs:
         run: npm run test:e2e
 
       - name: Run Auth E2E tests
+        if: always()
         run: npm run test:e2e:auth

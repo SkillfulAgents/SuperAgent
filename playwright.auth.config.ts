@@ -28,7 +28,7 @@ export default defineConfig({
   ],
 
   webServer: {
-    command: `SUPERAGENT_DATA_DIR="${e2eDataDir}" E2E_MOCK=true AUTH_MODE=true ANTHROPIC_API_KEY=sk-ant-e2e-mock PORT=3001 npm run dev:web`,
+    command: `rm -f "${e2eDataDir}/superagent.db" "${e2eDataDir}/superagent.db-wal" "${e2eDataDir}/superagent.db-shm" && SUPERAGENT_DATA_DIR="${e2eDataDir}" E2E_MOCK=true AUTH_MODE=true ANTHROPIC_API_KEY=sk-ant-e2e-mock PORT=3001 npm run dev:web`,
     url: 'http://localhost:3001/api/settings',
     reuseExistingServer: false,
     timeout: 120000,
