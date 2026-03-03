@@ -229,7 +229,7 @@ export interface ApiScheduledTask {
   scheduleExpression: string
   prompt: string
   name: string | null
-  status: 'pending' | 'executed' | 'cancelled' | 'failed'
+  status: 'pending' | 'paused' | 'executed' | 'cancelled' | 'failed'
   nextExecutionAt: Date
   lastExecutedAt: Date | null
   isRecurring: boolean

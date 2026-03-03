@@ -259,7 +259,8 @@ name: "Meeting Reminder"
 
 **Important:**
 - Scheduled tasks run in new sessions with full access to your skills and tools
-- Users can view and cancel scheduled tasks from the UI
+- Users can view, pause, resume, and cancel scheduled tasks from the UI
+- Paused tasks retain their schedule but skip execution until resumed
 - One-time tasks are removed after execution; recurring tasks continue until cancelled
 
 ## File Handling

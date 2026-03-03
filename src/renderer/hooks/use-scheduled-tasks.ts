@@ -14,7 +14,7 @@ export type { ApiScheduledTask }
 /**
  * Fetch all scheduled tasks for an agent
  */
-export function useScheduledTasks(agentSlug: string | null, status?: 'pending') {
+export function useScheduledTasks(agentSlug: string | null, status?: 'pending' | 'active') {
   return useQuery<ApiScheduledTask[]>({
     queryKey: ['scheduled-tasks', agentSlug, status],
     queryFn: async () => {
@@ -61,6 +61,44 @@ export function useCancelScheduledTask() {
       // Invalidate all scheduled tasks queries for this agent
       queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', variables.agentSlug] })
       // Invalidate the specific task query
+      queryClient.invalidateQueries({ queryKey: ['scheduled-task', variables.taskId] })
+    },
+  })
+}
+
+/**
+ * Pause a scheduled task
+ */
+export function usePauseScheduledTask() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ taskId, agentSlug }: { taskId: string; agentSlug: string }) => {
+      const res = await apiFetch(`/api/scheduled-tasks/${taskId}/pause`, { method: 'POST' })
+      if (!res.ok) throw new Error('Failed to pause scheduled task')
+      return { taskId, agentSlug }
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', variables.agentSlug] })
+      queryClient.invalidateQueries({ queryKey: ['scheduled-task', variables.taskId] })
+    },
+  })
+}
+
+/**
+ * Resume a paused scheduled task
+ */
+export function useResumeScheduledTask() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ taskId, agentSlug }: { taskId: string; agentSlug: string }) => {
+      const res = await apiFetch(`/api/scheduled-tasks/${taskId}/resume`, { method: 'POST' })
+      if (!res.ok) throw new Error('Failed to resume scheduled task')
+      return { taskId, agentSlug }
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', variables.agentSlug] })
       queryClient.invalidateQueries({ queryKey: ['scheduled-task', variables.taskId] })
     },
   })

@@ -11,6 +11,8 @@ import { and, eq } from 'drizzle-orm'
 import {
   getScheduledTask,
   cancelScheduledTask,
+  pauseScheduledTask,
+  resumeScheduledTask,
   resetScheduledTask,
 } from '@shared/lib/services/scheduled-task-service'
 import { getSessionsByScheduledTask } from '@shared/lib/services/session-service'
@@ -95,6 +97,42 @@ scheduledTasksRouter.delete('/:taskId', TaskAgentRole('user'), async (c) => {
   } catch (error) {
     console.error('Failed to cancel scheduled task:', error)
     return c.json({ error: 'Failed to cancel scheduled task' }, 500)
+  }
+})
+
+// POST /api/scheduled-tasks/:taskId/pause - Pause a pending scheduled task
+scheduledTasksRouter.post('/:taskId/pause', TaskAgentRole('user'), async (c) => {
+  try {
+    const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
+    const paused = await pauseScheduledTask(task!.id)
+
+    if (!paused) {
+      return c.json({ error: 'Scheduled task not found or not in pending state' }, 404)
+    }
+
+    const updated = await getScheduledTask(task!.id)
+    return c.json(updated)
+  } catch (error) {
+    console.error('Failed to pause scheduled task:', error)
+    return c.json({ error: 'Failed to pause scheduled task' }, 500)
+  }
+})
+
+// POST /api/scheduled-tasks/:taskId/resume - Resume a paused scheduled task
+scheduledTasksRouter.post('/:taskId/resume', TaskAgentRole('user'), async (c) => {
+  try {
+    const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
+    const resumed = await resumeScheduledTask(task!.id)
+
+    if (!resumed) {
+      return c.json({ error: 'Scheduled task not found or not in paused state' }, 404)
+    }
+
+    const updated = await getScheduledTask(task!.id)
+    return c.json(updated)
+  } catch (error) {
+    console.error('Failed to resume scheduled task:', error)
+    return c.json({ error: 'Failed to resume scheduled task' }, 500)
   }
 })
 

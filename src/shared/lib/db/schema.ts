@@ -142,8 +142,8 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   prompt: text('prompt').notNull(),
   name: text('name'),
 
-  // Status: pending, executed, cancelled, failed
-  status: text('status', { enum: ['pending', 'executed', 'cancelled', 'failed'] })
+  // Status: pending, paused, executed, cancelled, failed
+  status: text('status', { enum: ['pending', 'paused', 'executed', 'cancelled', 'failed'] })
     .notNull()
     .default('pending'),
 

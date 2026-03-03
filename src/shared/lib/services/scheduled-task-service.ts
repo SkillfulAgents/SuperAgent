@@ -7,7 +7,7 @@
 
 import { db } from '@shared/lib/db'
 import { scheduledTasks, type ScheduledTask, type NewScheduledTask } from '@shared/lib/db/schema'
-import { eq, and, lte } from 'drizzle-orm'
+import { eq, and, or, lte } from 'drizzle-orm'
 import { getNextCronTime, parseAtSyntax } from './schedule-parser'
 
 // Re-export the ScheduledTask type for external use
@@ -114,6 +114,24 @@ export async function listPendingScheduledTasks(agentSlug: string): Promise<Sche
 }
 
 /**
+ * List active scheduled tasks for an agent (pending + paused)
+ */
+export async function listActiveScheduledTasks(agentSlug: string): Promise<ScheduledTask[]> {
+  return db
+    .select()
+    .from(scheduledTasks)
+    .where(
+      and(
+        eq(scheduledTasks.agentSlug, agentSlug),
+        or(
+          eq(scheduledTasks.status, 'pending'),
+          eq(scheduledTasks.status, 'paused')
+        )
+      )
+    )
+}
+
+/**
  * Get all tasks that are due for execution
  * (nextExecutionAt <= now and status = 'pending')
  */
@@ -146,7 +164,64 @@ export async function cancelScheduledTask(taskId: string): Promise<boolean> {
     .where(
       and(
         eq(scheduledTasks.id, taskId),
+        or(
+          eq(scheduledTasks.status, 'pending'),
+          eq(scheduledTasks.status, 'paused')
+        )
+      )
+    )
+
+  return (result.changes ?? 0) > 0
+}
+
+/**
+ * Pause a scheduled task (keeps schedule, stops execution until resumed)
+ */
+export async function pauseScheduledTask(taskId: string): Promise<boolean> {
+  const result = await db
+    .update(scheduledTasks)
+    .set({
+      status: 'paused',
+    })
+    .where(
+      and(
+        eq(scheduledTasks.id, taskId),
         eq(scheduledTasks.status, 'pending')
+      )
+    )
+
+  return (result.changes ?? 0) > 0
+}
+
+/**
+ * Resume a paused scheduled task back to pending
+ */
+export async function resumeScheduledTask(taskId: string): Promise<boolean> {
+  const task = await getScheduledTask(taskId)
+  if (!task || task.status !== 'paused') return false
+
+  // Recalculate next execution time if the original one has passed
+  let nextExecutionAt = task.nextExecutionAt
+  const now = new Date()
+  if (new Date(nextExecutionAt) < now) {
+    if (task.scheduleType === 'cron') {
+      nextExecutionAt = getNextCronTime(task.scheduleExpression)
+    } else {
+      // For 'at' tasks, recalculate from the expression
+      nextExecutionAt = parseAtSyntax(task.scheduleExpression)
+    }
+  }
+
+  const result = await db
+    .update(scheduledTasks)
+    .set({
+      status: 'pending',
+      nextExecutionAt,
+    })
+    .where(
+      and(
+        eq(scheduledTasks.id, taskId),
+        eq(scheduledTasks.status, 'paused')
       )
     )
 

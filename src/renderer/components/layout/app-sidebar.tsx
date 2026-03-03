@@ -1,5 +1,5 @@
 
-import { ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard, Loader2, WifiOff, LogOut, User, Users } from 'lucide-react'
+import { ChevronRight, Plus, Settings, AlertTriangle, Clock, Pause, LayoutDashboard, Loader2, WifiOff, LogOut, User, Users } from 'lucide-react'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { useState, useEffect, useRef } from 'react'
 import { isElectron, getPlatform } from '@renderer/lib/env'
@@ -113,19 +113,20 @@ function ScheduledTaskSubItem({
   // Format next execution time for tooltip
   const nextExecution = new Date(task.nextExecutionAt)
   const timeString = nextExecution.toLocaleString()
+  const isPaused = task.status === 'paused'
 
   return (
     <SidebarMenuSubItem>
       <SidebarMenuSubButton
         asChild
         isActive={isSelected}
-        title={`Scheduled for: ${timeString}`}
+        title={isPaused ? 'Paused' : `Scheduled for: ${timeString}`}
       >
         <button
           onClick={handleClick}
-          className="flex items-center gap-2 w-full text-muted-foreground opacity-70"
+          className={`flex items-center gap-2 w-full text-muted-foreground ${isPaused ? 'opacity-50' : 'opacity-70'}`}
         >
-          <Clock className="h-3 w-3 shrink-0" />
+          {isPaused ? <Pause className="h-3 w-3 shrink-0" /> : <Clock className="h-3 w-3 shrink-0" />}
           <span className="truncate">{task.name || 'Scheduled Task'}</span>
         </button>
       </SidebarMenuSubButton>
@@ -173,7 +174,7 @@ function AgentMenuItem({ agent }: { agent: ApiAgent }) {
   const { selectedAgentSlug, selectAgent } = useSelection()
   const { agentMemberCount } = useUser()
   const { data: sessions } = useSessions(agent.slug)
-  const { data: scheduledTasks } = useScheduledTasks(agent.slug, 'pending')
+  const { data: scheduledTasks } = useScheduledTasks(agent.slug, 'active')
   const { data: artifacts } = useArtifacts(agent.slug)
   const isSelected = agent.slug === selectedAgentSlug
   const [isOpen, setIsOpen] = useState(isSelected)
@@ -182,7 +183,7 @@ function AgentMenuItem({ agent }: { agent: ApiAgent }) {
 
   const visibleSessions = showAll ? sessions : sessions?.slice(0, 5)
   const hasMore = (sessions?.length ?? 0) > 5
-  const pendingTasks = scheduledTasks || []
+  const activeTasks = scheduledTasks || []
   const dashboards = Array.isArray(artifacts) ? artifacts : []
 
   const handleClick = () => {
@@ -210,7 +211,7 @@ function AgentMenuItem({ agent }: { agent: ApiAgent }) {
             />
           </SidebarMenuButton>
         </AgentContextMenu>
-        {(sessions?.length || pendingTasks.length || dashboards.length) ? (
+        {(sessions?.length || activeTasks.length || dashboards.length) ? (
           <>
             <CollapsibleTrigger asChild>
               <SidebarMenuAction className="data-[state=open]:rotate-90">
@@ -229,7 +230,7 @@ function AgentMenuItem({ agent }: { agent: ApiAgent }) {
                   />
                 ))}
                 {/* Pending scheduled tasks */}
-                {pendingTasks.map((task) => (
+                {activeTasks.map((task) => (
                   <ScheduledTaskSubItem
                     key={task.id}
                     task={task}

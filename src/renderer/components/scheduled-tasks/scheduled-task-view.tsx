@@ -5,11 +5,13 @@
  * that will be executed and options to cancel the task.
  */
 
-import { Clock, Calendar, Repeat, Trash2, MessageSquare } from 'lucide-react'
+import { Clock, Calendar, Repeat, Trash2, Pause, Play, MessageSquare } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import {
   useScheduledTask,
   useCancelScheduledTask,
+  usePauseScheduledTask,
+  useResumeScheduledTask,
   useScheduledTaskSessions,
 } from '@renderer/hooks/use-scheduled-tasks'
 import { useSelection } from '@renderer/context/selection-context'
@@ -35,9 +37,27 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const { data: task, isLoading, error } = useScheduledTask(taskId)
   const { data: sessions = [] } = useScheduledTaskSessions(taskId)
   const cancelTask = useCancelScheduledTask()
+  const pauseTask = usePauseScheduledTask()
+  const resumeTask = useResumeScheduledTask()
   const { handleScheduledTaskDeleted, selectSession } = useSelection()
   const { canUseAgent } = useUser()
   const canCancel = canUseAgent(agentSlug)
+
+  const handlePause = async () => {
+    try {
+      await pauseTask.mutateAsync({ taskId, agentSlug })
+    } catch (err) {
+      console.error('Failed to pause scheduled task:', err)
+    }
+  }
+
+  const handleResume = async () => {
+    try {
+      await resumeTask.mutateAsync({ taskId, agentSlug })
+    } catch (err) {
+      console.error('Failed to resume scheduled task:', err)
+    }
+  }
 
   const handleCancel = async () => {
     try {
@@ -92,33 +112,59 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
             </div>
           </div>
 
-          {task.status === 'pending' && canCancel && (
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button variant="destructive" size="sm">
-                  <Trash2 className="h-4 w-4 mr-2" />
-                  Cancel Task
+          {canCancel && (
+            <div className="flex items-center gap-2">
+              {task.status === 'pending' && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePause}
+                  disabled={pauseTask.isPending}
+                >
+                  <Pause className="h-4 w-4 mr-2" />
+                  {pauseTask.isPending ? 'Pausing...' : 'Pause'}
                 </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Cancel Scheduled Task</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    Are you sure you want to cancel this scheduled task? This action cannot be undone.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Keep Task</AlertDialogCancel>
-                  <AlertDialogAction
-                    onClick={handleCancel}
-                    disabled={cancelTask.isPending}
-                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                  >
-                    {cancelTask.isPending ? 'Cancelling...' : 'Cancel Task'}
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
+              )}
+              {task.status === 'paused' && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleResume}
+                  disabled={resumeTask.isPending}
+                >
+                  <Play className="h-4 w-4 mr-2" />
+                  {resumeTask.isPending ? 'Resuming...' : 'Resume'}
+                </Button>
+              )}
+              {(task.status === 'pending' || task.status === 'paused') && (
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="destructive" size="sm">
+                      <Trash2 className="h-4 w-4 mr-2" />
+                      Cancel Task
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Cancel Scheduled Task</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        Are you sure you want to cancel this scheduled task? This action cannot be undone.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Keep Task</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={handleCancel}
+                        disabled={cancelTask.isPending}
+                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                      >
+                        {cancelTask.isPending ? 'Cancelling...' : 'Cancel Task'}
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              )}
+            </div>
           )}
         </div>
       </div>
@@ -133,6 +179,10 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
           {task.status === 'pending' ? (
             <div className="text-lg">
               {nextExecution.toLocaleString()}
+            </div>
+          ) : task.status === 'paused' ? (
+            <div className="text-lg text-yellow-600">
+              Paused — will resume from {nextExecution.toLocaleString()}
             </div>
           ) : (
             <div className="text-lg capitalize">{task.status}</div>
