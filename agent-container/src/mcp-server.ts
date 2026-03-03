@@ -21,31 +21,32 @@ import { listDashboardsTool } from './tools/list-dashboards'
 import { getDashboardLogsTool } from './tools/get-dashboard-logs'
 
 /**
- * MCP server for user input tools.
- * Tools will be available as mcp__user-input__<tool_name>
+ * Factory functions for MCP servers.
+ * Each query() call needs fresh instances because the MCP protocol only allows
+ * one transport connection per server at a time. Reusing singletons across
+ * sessions causes "Already connected to a transport" errors.
  */
-export const userInputMcpServer = createSdkMcpServer({
-  name: 'user-input',
-  version: '1.0.0',
-  tools: [requestSecretTool, requestConnectedAccountTool, searchConnectedAccountServicesTool, requestRemoteMcpTool, searchRemoteMcpServicesTool, scheduleTaskTool, deliverFileTool, requestFileTool],
-})
 
-/**
- * MCP server for browser automation tools.
- * Tools will be available as mcp__browser__<tool_name>
- */
-export const browserMcpServer = createSdkMcpServer({
-  name: 'browser',
-  version: '1.0.0',
-  tools: browserTools,
-})
+export function createUserInputMcpServer() {
+  return createSdkMcpServer({
+    name: 'user-input',
+    version: '1.0.0',
+    tools: [requestSecretTool, requestConnectedAccountTool, searchConnectedAccountServicesTool, requestRemoteMcpTool, searchRemoteMcpServicesTool, scheduleTaskTool, deliverFileTool, requestFileTool],
+  })
+}
 
-/**
- * MCP server for dashboard management tools.
- * Tools will be available as mcp__dashboards__<tool_name>
- */
-export const dashboardsMcpServer = createSdkMcpServer({
-  name: 'dashboards',
-  version: '1.0.0',
-  tools: [createDashboardTool, startDashboardTool, listDashboardsTool, getDashboardLogsTool],
-})
+export function createBrowserMcpServer() {
+  return createSdkMcpServer({
+    name: 'browser',
+    version: '1.0.0',
+    tools: browserTools,
+  })
+}
+
+export function createDashboardsMcpServer() {
+  return createSdkMcpServer({
+    name: 'dashboards',
+    version: '1.0.0',
+    tools: [createDashboardTool, startDashboardTool, listDashboardsTool, getDashboardLogsTool],
+  })
+}

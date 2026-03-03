@@ -2,7 +2,7 @@ import { query, Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
-import { userInputMcpServer, browserMcpServer, dashboardsMcpServer } from './mcp-server';
+import { createUserInputMcpServer, createBrowserMcpServer, createDashboardsMcpServer } from './mcp-server';
 import { inputManager } from './input-manager';
 import { setCurrentBrowserSessionId } from './tools/browser';
 import { sanitizeMcpName } from './sanitize-mcp-name';
@@ -386,9 +386,9 @@ export class ClaudeCodeProcess extends EventEmitter {
           },
         }),
         mcpServers: {
-          'user-input': userInputMcpServer,
-          'browser': browserMcpServer,
-          'dashboards': dashboardsMcpServer,
+          'user-input': createUserInputMcpServer(),
+          'browser': createBrowserMcpServer(),
+          'dashboards': createDashboardsMcpServer(),
           ...remoteMcpConfigs,
         },
         agents: {
