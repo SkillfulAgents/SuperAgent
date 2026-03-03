@@ -37,4 +37,8 @@ EXPOSE 47891
 
 ENV NODE_ENV=production
 
-CMD ["node", "dist/web/server.mjs"]
+# Set umask 000 so all files/dirs created by the (root) app process are
+# world-readable/writable. This allows the agent container's non-root
+# "claude" user (UID 1000) to access bind-mounted workspace directories.
+# Files with explicit modes (e.g. secrets with 0o600) are unaffected.
+CMD ["sh", "-c", "umask 000 && exec node dist/web/server.mjs"]
