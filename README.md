@@ -130,7 +130,7 @@ Superagent can run in **auth mode** for multi-user deployments with role-based a
 Pre-built auth images are published with the `-auth` suffix:
 
 ```bash
-SUPERAGENT_IMAGE=ghcr.io/iddogino/superagent:main-auth \
+SUPERAGENT_IMAGE=ghcr.io/skillfulagents/superagent:main-auth \
 ANTHROPIC_API_KEY=your-api-key \
 docker compose up
 ```

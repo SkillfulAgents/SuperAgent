@@ -56,7 +56,7 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
       {/* Avatar */}
       <div
         className={cn(
-          'h-8 w-8 rounded-full flex items-center justify-center shrink-0',
+          'h-8 w-8 rounded-full items-center justify-center shrink-0 hidden md:flex',
           isUser && 'bg-primary text-primary-foreground',
           isAssistant && 'bg-muted'
         )}

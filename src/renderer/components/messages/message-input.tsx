@@ -245,7 +245,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
   return (
     <form
       onSubmit={handleSubmit}
-      className={`relative p-4 border-t bg-background ${isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
+      className={`relative px-4 py-[18px] border-t bg-background ${isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
