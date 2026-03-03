@@ -100,7 +100,11 @@ export function getAuth() {
 
                 // If admin approval is required and this is NOT the first user,
                 // auto-ban them pending admin review.
-                if (result.changes === 0 && authSettings.requireAdminApproval) {
+                // Read fresh settings so runtime changes are picked up without
+                // needing to recreate the Better Auth singleton.
+                const currentSettings = getSettings()
+                const currentAuth = { ...DEFAULT_AUTH_SETTINGS, ...currentSettings.auth }
+                if (result.changes === 0 && currentAuth.requireAdminApproval) {
                   db.update(schema.user)
                     .set({ banned: true, banReason: 'Pending admin approval' })
                     .where(eq(schema.user.id, createdUser.id))
@@ -142,7 +146,9 @@ export function getAuth() {
           create: {
             after: async (session) => {
               try {
-                enforceMaxConcurrentSessions(session.userId, authSettings.maxConcurrentSessions ?? 5)
+                const sessSettings = getSettings()
+                const sessAuth = { ...DEFAULT_AUTH_SETTINGS, ...sessSettings.auth }
+                enforceMaxConcurrentSessions(session.userId, sessAuth.maxConcurrentSessions ?? 5)
               } catch (err) {
                 console.error('Failed to enforce max concurrent sessions:', err)
               }

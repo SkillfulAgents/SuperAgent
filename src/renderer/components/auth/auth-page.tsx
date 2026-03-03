@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { signIn, signUp } from '@renderer/lib/auth-client'
+import { signIn, signUp, signOut } from '@renderer/lib/auth-client'
 import { apiFetch } from '@renderer/lib/api'
 import { Card, CardContent, CardHeader } from '@renderer/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@renderer/components/ui/tabs'
@@ -198,7 +198,10 @@ function SignUpForm({ onSwitchToSignIn, config }: { onSwitchToSignIn: () => void
           setServerError(msg)
         }
       } else if (config.requireAdminApproval && config.hasUsers) {
-        // Signup succeeded but user may be auto-banned (only for non-first users)
+        // Signup succeeded but user is auto-banned pending admin review.
+        // Sign out the auto-created session so AuthGate keeps showing the
+        // auth page instead of navigating to the main app.
+        try { await signOut() } catch { /* session cleanup is best-effort */ }
         setPendingApproval(true)
       }
     } catch {
