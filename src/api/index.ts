@@ -18,6 +18,10 @@ import runtimeStatusRouter from './routes/runtime-status'
 import adminUsersRouter from './routes/admin-users'
 import { initializeServices } from '@shared/lib/startup'
 import { isAuthMode } from '@shared/lib/auth/mode'
+import { sql } from 'drizzle-orm'
+import { db } from '@shared/lib/db'
+import { user as userTable } from '@shared/lib/db/schema'
+import { authEnforcementMiddleware, getAuthSettings } from './middleware/auth-enforcement'
 
 const app = new Hono()
 
@@ -67,11 +71,43 @@ if (isAuthMode()) {
   })
 }
 
+// Auth enforcement middleware (signup mode, password policy, account lockout)
+if (isAuthMode()) {
+  app.use('/api/auth/*', authEnforcementMiddleware)
+}
+
 // Mount Better Auth handler (only when AUTH_MODE is enabled)
 if (isAuthMode()) {
   app.on(['POST', 'GET'], '/api/auth/*', async (c) => {
     const { getAuth } = await import('@shared/lib/auth/index')
     return getAuth().handler(c.req.raw)
+  })
+}
+
+// Public auth config endpoint (no auth required) — exposes non-sensitive
+// settings so the auth page can adapt (hide signup tab, show password policy, etc.)
+if (isAuthMode()) {
+  app.get('/api/auth-config', (c) => {
+    const authSettings = getAuthSettings()
+
+    // Check if any users exist (first-user signup bypass)
+    let hasUsers = true
+    try {
+      const result = db.select({ count: sql<number>`count(*)` }).from(userTable).get()
+      hasUsers = !!result && result.count > 0
+    } catch {
+      hasUsers = false
+    }
+
+    return c.json({
+      signupMode: authSettings.signupMode,
+      allowLocalAuth: authSettings.allowLocalAuth,
+      allowSocialAuth: authSettings.allowSocialAuth,
+      passwordMinLength: authSettings.passwordMinLength,
+      passwordRequireComplexity: authSettings.passwordRequireComplexity,
+      requireAdminApproval: authSettings.requireAdminApproval,
+      hasUsers,
+    })
   })
 }
 

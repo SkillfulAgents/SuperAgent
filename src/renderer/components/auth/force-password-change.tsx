@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { authClient } from '@renderer/lib/auth-client'
+import { apiFetch } from '@renderer/lib/api'
 import { Card, CardContent, CardHeader } from '@renderer/components/ui/card'
 import { Input } from '@renderer/components/ui/input'
 import { Button } from '@renderer/components/ui/button'
@@ -10,32 +11,77 @@ import { Label } from '@renderer/components/ui/label'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Loader2 } from 'lucide-react'
 
-const changePasswordSchema = z
-  .object({
-    currentPassword: z.string().min(1, 'Current password is required'),
-    newPassword: z.string().min(8, 'Password must be at least 8 characters'),
-    confirmPassword: z.string(),
-  })
-  .refine((data) => data.newPassword === data.confirmPassword, {
-    message: 'Passwords do not match',
-    path: ['confirmPassword'],
-  })
-  .refine((data) => data.currentPassword !== data.newPassword, {
-    message: 'New password must be different from current password',
-    path: ['newPassword'],
+interface PasswordPolicy {
+  passwordMinLength: number
+  passwordRequireComplexity: boolean
+}
+
+function usePasswordPolicy(): PasswordPolicy {
+  const [policy, setPolicy] = useState<PasswordPolicy>({
+    passwordMinLength: 12,
+    passwordRequireComplexity: true,
   })
 
-type ChangePasswordValues = z.infer<typeof changePasswordSchema>
+  useEffect(() => {
+    apiFetch('/api/auth-config')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data) {
+          setPolicy({
+            passwordMinLength: data.passwordMinLength ?? 12,
+            passwordRequireComplexity: data.passwordRequireComplexity ?? true,
+          })
+        }
+      })
+      .catch(() => {})
+  }, [])
+
+  return policy
+}
+
+function makeChangePasswordSchema(minLength: number, requireComplexity: boolean) {
+  let newPasswordSchema = z.string().min(minLength, `Password must be at least ${minLength} characters`)
+  if (requireComplexity) {
+    newPasswordSchema = newPasswordSchema
+      .refine((p) => /[a-z]/.test(p), 'Must contain a lowercase letter')
+      .refine((p) => /[A-Z]/.test(p), 'Must contain an uppercase letter')
+      .refine((p) => /[0-9]/.test(p), 'Must contain a number')
+      .refine((p) => /[^a-zA-Z0-9]/.test(p), 'Must contain a symbol') as unknown as z.ZodString
+  }
+
+  return z
+    .object({
+      currentPassword: z.string().min(1, 'Current password is required'),
+      newPassword: newPasswordSchema,
+      confirmPassword: z.string(),
+    })
+    .refine((data) => data.newPassword === data.confirmPassword, {
+      message: 'Passwords do not match',
+      path: ['confirmPassword'],
+    })
+    .refine((data) => data.currentPassword !== data.newPassword, {
+      message: 'New password must be different from current password',
+      path: ['newPassword'],
+    })
+}
+
+type ChangePasswordValues = { currentPassword: string; newPassword: string; confirmPassword: string }
 
 export function ForcePasswordChange() {
   const [serverError, setServerError] = useState<string | null>(null)
+  const policy = usePasswordPolicy()
+
+  const schema = useMemo(
+    () => makeChangePasswordSchema(policy.passwordMinLength, policy.passwordRequireComplexity),
+    [policy.passwordMinLength, policy.passwordRequireComplexity]
+  )
 
   const {
     register,
     handleSubmit,
     formState: { errors, isSubmitting },
   } = useForm<ChangePasswordValues>({
-    resolver: zodResolver(changePasswordSchema),
+    resolver: zodResolver(schema),
   })
 
   async function onSubmit(data: ChangePasswordValues) {
@@ -57,6 +103,10 @@ export function ForcePasswordChange() {
       setServerError('Password change failed. Please try again.')
     }
   }
+
+  const placeholder = policy.passwordRequireComplexity
+    ? `At least ${policy.passwordMinLength} chars, mixed case + number + symbol`
+    : `At least ${policy.passwordMinLength} characters`
 
   return (
     <div className="flex items-center justify-center h-screen bg-background">
@@ -90,7 +140,7 @@ export function ForcePasswordChange() {
               <Input
                 id="new-password"
                 type="password"
-                placeholder="At least 8 characters"
+                placeholder={placeholder}
                 autoComplete="new-password"
                 className={errors.newPassword ? 'border-destructive' : ''}
                 {...register('newPassword')}

@@ -3,6 +3,7 @@ import { Hono } from 'hono'
 import Anthropic from '@anthropic-ai/sdk'
 import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
 import { Authenticated, IsAdmin } from '../middleware/auth'
+import { isAuthMode } from '@shared/lib/auth/mode'
 import {
   getSettings,
   updateSettings,
@@ -200,6 +201,11 @@ settings.put('/', async (c) => {
     }
 
     updateSettings(newSettings)
+
+    // If auth settings changed, reset the Better Auth singleton so it picks up new config
+    if (body.auth !== undefined && isAuthMode()) {
+      import('@shared/lib/auth/index').then(({ resetAuth }) => resetAuth()).catch(() => {})
+    }
 
     // If container runner changed, clear cached clients so new ones use the updated runner
     if (

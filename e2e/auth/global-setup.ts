@@ -35,6 +35,8 @@ async function globalSetup() {
   }
 
   // Write settings.json with setupCompleted: true (skip wizard)
+  // Auth settings use permissive defaults so existing auth-flow tests work
+  // (open signup, no complexity requirement, no admin approval).
   const settingsPath = path.join(e2eDataDir, 'settings.json')
   const settings = {
     container: {
@@ -47,6 +49,12 @@ async function globalSetup() {
     },
     app: {
       setupCompleted: true,
+    },
+    auth: {
+      signupMode: 'open',
+      passwordRequireComplexity: false,
+      requireAdminApproval: false,
+      passwordMinLength: 8,
     },
   }
   fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2))

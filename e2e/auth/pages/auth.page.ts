@@ -23,8 +23,11 @@ export class AuthPage {
 
   /** Sign in an existing user */
   async signIn(email: string, password: string) {
-    // Make sure we're on sign-in tab
-    await this.page.locator('[data-testid="auth-tab-signin"]').click()
+    // Switch to sign-in tab if tabs are visible (they may not be when signup is disabled)
+    const signinTab = this.page.locator('[data-testid="auth-tab-signin"]')
+    if (await signinTab.isVisible()) {
+      await signinTab.click()
+    }
 
     // Fill in the form
     await this.page.locator('#signin-email').fill(email)
@@ -42,5 +45,25 @@ export class AuthPage {
   /** Assert the auth page is not visible */
   async expectNotVisible() {
     await expect(this.page.locator('[data-testid="auth-page"]')).not.toBeVisible()
+  }
+
+  /** Assert the signup tab IS visible */
+  async expectSignupTabVisible() {
+    await expect(this.page.locator('[data-testid="auth-tab-signup"]')).toBeVisible()
+  }
+
+  /** Assert the signup tab is NOT visible */
+  async expectSignupTabNotVisible() {
+    await expect(this.page.locator('[data-testid="auth-tab-signup"]')).not.toBeVisible()
+  }
+
+  /** Assert the pending approval message is shown */
+  async expectPendingApproval() {
+    await expect(this.page.locator('[data-testid="pending-approval"]')).toBeVisible()
+  }
+
+  /** Assert a signup error is shown */
+  async expectSignupError() {
+    await expect(this.page.locator('[data-testid="signup-error"]')).toBeVisible()
   }
 }

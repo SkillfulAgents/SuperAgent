@@ -29,6 +29,7 @@ import {
   ShieldCheck,
   ShieldAlert,
   UserPlus,
+  UserCheck,
   ChevronUp,
   ChevronDown,
   ChevronLeft,
@@ -243,6 +244,7 @@ export function UsersTab() {
             const isSelf = user.id === currentUser?.id
             const isOnlyAdmin = user.role === 'admin' && adminCount <= 1
             const isRowLoading = actionLoading === user.id
+            const isPendingApproval = user.banned && user.banReason === 'Pending admin approval'
 
             return (
               <div
@@ -260,8 +262,10 @@ export function UsersTab() {
                   {isSelf && (
                     <span className="text-[10px] text-muted-foreground shrink-0">(you)</span>
                   )}
-                  {user.banned && (
-                    <span className="text-[10px] text-destructive shrink-0">banned</span>
+                  {isPendingApproval ? (
+                    <span className="text-[10px] text-amber-500 shrink-0">Pending Approval</span>
+                  ) : user.banned && (
+                    <span className="text-[10px] text-destructive shrink-0">Banned</span>
                   )}
                   {user.mustChangePassword && (
                     <Tooltip>
@@ -321,13 +325,25 @@ export function UsersTab() {
                 <div className="flex items-center justify-end gap-1">
                   {!isSelf && (
                     <>
-                      {user.banned ? (
+                      {isPendingApproval ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 w-6 p-0"
+                          onClick={() => handleUnban(user.id)}
+                          title="Approve user"
+                          data-testid={`user-approve-${user.email}`}
+                        >
+                          <UserCheck className="h-3.5 w-3.5 text-green-600" />
+                        </Button>
+                      ) : user.banned ? (
                         <Button
                           variant="ghost"
                           size="sm"
                           className="h-6 w-6 p-0"
                           onClick={() => handleUnban(user.id)}
                           title="Unban user"
+                          data-testid={`user-unban-${user.email}`}
                         >
                           <Ban className="h-3.5 w-3.5 text-green-600" />
                         </Button>
@@ -338,6 +354,7 @@ export function UsersTab() {
                           className="h-6 w-6 p-0"
                           onClick={() => setConfirmAction({ type: 'ban', user })}
                           title="Ban user"
+                          data-testid={`user-ban-${user.email}`}
                         >
                           <Ban className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
                         </Button>

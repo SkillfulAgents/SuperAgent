@@ -6,6 +6,8 @@ import { db } from '@shared/lib/db'
 import * as schema from '@shared/lib/db/schema'
 import { getOrCreateAuthSecret } from './secret'
 import { getAppBaseUrl, getTrustedOrigins } from './config'
+import { getSettings, DEFAULT_AUTH_SETTINGS } from '@shared/lib/config/settings'
+import { enforceMaxConcurrentSessions } from './session-enforcement'
 
 // Re-export isAuthMode from its own file (no better-auth imports)
 // so consumers that only need the check don't pull in ESM deps.
@@ -15,12 +17,22 @@ export { isAuthMode } from './mode'
 let _auth: ReturnType<typeof betterAuth> | null = null
 
 /**
+ * Reset the Better Auth singleton so the next getAuth() call
+ * picks up new settings (session duration, password policy, etc.).
+ */
+export function resetAuth() {
+  _auth = null
+}
+
+/**
  * Get the Better Auth instance. Lazily created on first call.
  * Only valid when isAuthMode() is true.
  */
 export function getAuth() {
   if (!_auth) {
     const trustedOrigins = getTrustedOrigins()
+    const settings = getSettings()
+    const authSettings = { ...DEFAULT_AUTH_SETTINGS, ...settings.auth }
 
     _auth = betterAuth({
       database: drizzleAdapter(db, {
@@ -34,6 +46,12 @@ export function getAuth() {
       }),
       emailAndPassword: {
         enabled: true,
+        minPasswordLength: authSettings.passwordMinLength,
+        maxPasswordLength: authSettings.passwordMaxLength,
+      },
+      session: {
+        expiresIn: (authSettings.sessionMaxLifetimeHrs ?? 24) * 3600,
+        updateAge: (authSettings.sessionIdleTimeoutMin ?? 60) * 60,
       },
       user: {
         additionalFields: {
@@ -46,7 +64,9 @@ export function getAuth() {
         },
       },
       plugins: [
-        admin(),
+        admin({
+          defaultRole: authSettings.defaultUserRole === 'admin' ? 'admin' : 'user',
+        }),
       ],
       secret: getOrCreateAuthSecret(),
       baseURL: getAppBaseUrl(),
@@ -77,6 +97,16 @@ export function getAuth() {
                 if (result.changes > 0) {
                   console.log(`First user ${createdUser.email} promoted to admin`)
                 }
+
+                // If admin approval is required and this is NOT the first user,
+                // auto-ban them pending admin review.
+                if (result.changes === 0 && authSettings.requireAdminApproval) {
+                  db.update(schema.user)
+                    .set({ banned: true, banReason: 'Pending admin approval' })
+                    .where(eq(schema.user.id, createdUser.id))
+                    .run()
+                  console.log(`User ${createdUser.email} requires admin approval`)
+                }
               } catch (err) {
                 console.error('Failed to check/set admin role:', err)
               }
@@ -104,6 +134,17 @@ export function getAuth() {
                 }
               } catch (err) {
                 console.error('Failed to clear mustChangePassword:', err)
+              }
+            },
+          },
+        },
+        session: {
+          create: {
+            after: async (session) => {
+              try {
+                enforceMaxConcurrentSessions(session.userId, authSettings.maxConcurrentSessions ?? 5)
+              } catch (err) {
+                console.error('Failed to enforce max concurrent sessions:', err)
               }
             },
           },

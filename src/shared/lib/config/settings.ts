@@ -58,6 +58,47 @@ export interface AppPreferences {
 
 export interface AuthSettings {
   trustedOrigins?: string[]
+
+  // Signup & Access
+  signupMode?: 'open' | 'domain_restricted' | 'invitation_only' | 'closed'
+  allowedSignupDomains?: string[]
+  requireAdminApproval?: boolean
+  defaultUserRole?: 'member' | 'admin'
+
+  // Auth Methods
+  allowLocalAuth?: boolean
+  allowSocialAuth?: boolean
+
+  // Password Policy
+  passwordMinLength?: number
+  passwordMaxLength?: number
+  passwordRequireComplexity?: boolean
+
+  // Session
+  sessionMaxLifetimeHrs?: number
+  sessionIdleTimeoutMin?: number
+  maxConcurrentSessions?: number
+
+  // Lockout
+  accountLockoutThreshold?: number
+  accountLockoutDurationMin?: number
+}
+
+export const DEFAULT_AUTH_SETTINGS: AuthSettings = {
+  signupMode: 'invitation_only',
+  allowedSignupDomains: [],
+  requireAdminApproval: true,
+  defaultUserRole: 'member',
+  allowLocalAuth: true,
+  allowSocialAuth: false,
+  passwordMinLength: 12,
+  passwordMaxLength: 128,
+  passwordRequireComplexity: true,
+  sessionMaxLifetimeHrs: 24,
+  sessionIdleTimeoutMin: 60,
+  maxConcurrentSessions: 5,
+  accountLockoutThreshold: 10,
+  accountLockoutDurationMin: 30,
 }
 
 export interface AppSettings {
@@ -201,7 +242,10 @@ export function loadSettings(): AppSettings {
         agentLimits: loaded.agentLimits,
         customEnvVars: loaded.customEnvVars,
         skillsets: loaded.skillsets,
-        auth: loaded.auth,
+        auth: {
+          ...DEFAULT_AUTH_SETTINGS,
+          ...loaded.auth,
+        },
       }
     }
   } catch (error) {
