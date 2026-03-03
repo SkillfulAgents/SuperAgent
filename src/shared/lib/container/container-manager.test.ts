@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // ============================================================================
 // Mocks — must be set up before importing container-manager
@@ -232,5 +232,407 @@ describe('containerManager.ensureRunning — env var construction', () => {
     expect(metadata.gmail).toHaveLength(1)
     expect(metadata.gmail[0].name).toBe('active@gmail.com')
     expect(metadata.slack).toBeUndefined()
+  })
+})
+
+// ============================================================================
+// Status caching — getCachedInfo / updateCachedStatus / markAsStopped
+// ============================================================================
+
+describe('containerManager — status caching', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    containerManager.clearClients()
+  })
+
+  it('getCachedInfo returns stopped when agent has no cached status', () => {
+    const info = containerManager.getCachedInfo('unknown-agent')
+    expect(info).toEqual({ status: 'stopped', port: null })
+  })
+
+  it('getCachedInfo returns cached status after updateCachedStatus', () => {
+    containerManager.updateCachedStatus('agent-1', 'running', 4001)
+    const info = containerManager.getCachedInfo('agent-1')
+    expect(info).toEqual({ status: 'running', port: 4001 })
+  })
+
+  it('updateCachedStatus overwrites previous status', () => {
+    containerManager.updateCachedStatus('agent-1', 'running', 4001)
+    containerManager.updateCachedStatus('agent-1', 'stopped', null)
+    const info = containerManager.getCachedInfo('agent-1')
+    expect(info).toEqual({ status: 'stopped', port: null })
+  })
+
+  it('markAsStopped sets status to stopped with null port', () => {
+    containerManager.updateCachedStatus('agent-1', 'running', 4001)
+    containerManager.markAsStopped('agent-1')
+    const info = containerManager.getCachedInfo('agent-1')
+    expect(info).toEqual({ status: 'stopped', port: null })
+  })
+
+  it('clearClients removes all cached statuses', () => {
+    containerManager.updateCachedStatus('agent-1', 'running', 4001)
+    containerManager.updateCachedStatus('agent-2', 'running', 4002)
+    containerManager.clearClients()
+    expect(containerManager.getCachedInfo('agent-1')).toEqual({ status: 'stopped', port: null })
+    expect(containerManager.getCachedInfo('agent-2')).toEqual({ status: 'stopped', port: null })
+  })
+
+  it('removeClient clears cache for specific agent only', () => {
+    containerManager.updateCachedStatus('agent-1', 'running', 4001)
+    containerManager.updateCachedStatus('agent-2', 'running', 4002)
+    containerManager.removeClient('agent-1')
+    expect(containerManager.getCachedInfo('agent-1')).toEqual({ status: 'stopped', port: null })
+    expect(containerManager.getCachedInfo('agent-2')).toEqual({ status: 'running', port: 4002 })
+  })
+})
+
+// ============================================================================
+// hasRunningAgents / getRunningAgentIds
+// ============================================================================
+
+describe('containerManager — hasRunningAgents / getRunningAgentIds', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    containerManager.clearClients()
+  })
+
+  it('hasRunningAgents returns false when no agents are cached', () => {
+    expect(containerManager.hasRunningAgents()).toBe(false)
+  })
+
+  it('hasRunningAgents returns false when all agents are stopped', () => {
+    containerManager.updateCachedStatus('agent-1', 'stopped', null)
+    containerManager.updateCachedStatus('agent-2', 'stopped', null)
+    expect(containerManager.hasRunningAgents()).toBe(false)
+  })
+
+  it('hasRunningAgents returns true when at least one agent is running', () => {
+    containerManager.updateCachedStatus('agent-1', 'stopped', null)
+    containerManager.updateCachedStatus('agent-2', 'running', 4002)
+    expect(containerManager.hasRunningAgents()).toBe(true)
+  })
+
+  it('getRunningAgentIds returns empty array when none are running', () => {
+    containerManager.updateCachedStatus('agent-1', 'stopped', null)
+    expect(containerManager.getRunningAgentIds()).toEqual([])
+  })
+
+  it('getRunningAgentIds returns only running agent IDs', () => {
+    containerManager.updateCachedStatus('agent-1', 'stopped', null)
+    containerManager.updateCachedStatus('agent-2', 'running', 4002)
+    containerManager.updateCachedStatus('agent-3', 'running', 4003)
+    const running = containerManager.getRunningAgentIds()
+    expect(running).toHaveLength(2)
+    expect(running).toContain('agent-2')
+    expect(running).toContain('agent-3')
+  })
+
+  it('getRunningAgentIds reflects status changes', () => {
+    containerManager.updateCachedStatus('agent-1', 'running', 4001)
+    expect(containerManager.getRunningAgentIds()).toContain('agent-1')
+
+    containerManager.markAsStopped('agent-1')
+    expect(containerManager.getRunningAgentIds()).not.toContain('agent-1')
+  })
+})
+
+// ============================================================================
+// Health warning change detection
+// ============================================================================
+
+import { healthMonitor } from './health-monitor'
+import { messagePersister } from './message-persister'
+
+describe('containerManager — health warnings', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    containerManager.clearClients()
+  })
+
+  it('getHealthWarnings returns empty array for unknown agent', () => {
+    expect(containerManager.getHealthWarnings('unknown')).toEqual([])
+  })
+
+  it('getHealthWarnings returns empty array after clearClients', () => {
+    // We can't directly set healthWarnings, but clearClients clears them
+    containerManager.clearClients()
+    expect(containerManager.getHealthWarnings('any-agent')).toEqual([])
+  })
+
+  it('removeClient clears health warnings for that agent', () => {
+    // Create a client first (so it registers internally)
+    containerManager.getClient('health-agent')
+    containerManager.updateCachedStatus('health-agent', 'running', 4001)
+
+    // Run health checks with a warning
+    const mockWarning = { checkName: 'memory', status: 'warning' as const, message: 'High mem' }
+    vi.mocked(healthMonitor.checkAll).mockReturnValue([mockWarning])
+    mockGetStats.mockResolvedValue({
+      memoryUsageBytes: 400_000_000,
+      memoryLimitBytes: 512_000_000,
+      memoryPercent: 78,
+      cpuPercent: 50,
+    })
+
+    containerManager.removeClient('health-agent')
+    expect(containerManager.getHealthWarnings('health-agent')).toEqual([])
+  })
+})
+
+// ============================================================================
+// ensureImageReady — state machine (CHECKING -> READY / ERROR / RUNTIME_UNAVAILABLE)
+// ============================================================================
+
+import { checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage } from './client-factory'
+
+describe('containerManager.ensureImageReady — state machine', () => {
+  const originalE2eMock = process.env.E2E_MOCK
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    containerManager.clearClients()
+    delete process.env.E2E_MOCK
+  })
+
+  afterEach(() => {
+    // Restore E2E_MOCK
+    if (originalE2eMock !== undefined) {
+      process.env.E2E_MOCK = originalE2eMock
+    } else {
+      delete process.env.E2E_MOCK
+    }
+  })
+
+  it('sets READY immediately in E2E mock mode', async () => {
+    process.env.E2E_MOCK = 'true'
+
+    await containerManager.ensureImageReady()
+
+    const readiness = containerManager.getReadiness()
+    expect(readiness.status).toBe('READY')
+    expect(readiness.message).toContain('E2E mock')
+
+    // Should NOT have called any real runner checks
+    expect(checkAllRunnersAvailability).not.toHaveBeenCalled()
+  })
+
+  it('transitions to READY when runner is available and image exists', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+    ])
+    vi.mocked(checkImageExists).mockResolvedValue(true)
+
+    await containerManager.ensureImageReady()
+
+    const readiness = containerManager.getReadiness()
+    expect(readiness.status).toBe('READY')
+    expect(readiness.pullProgress).toBeNull()
+  })
+
+  it('transitions to RUNTIME_UNAVAILABLE when configured runner is not available', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'docker', installed: false, running: false, available: false, canStart: false },
+    ])
+
+    await containerManager.ensureImageReady()
+
+    const readiness = containerManager.getReadiness()
+    expect(readiness.status).toBe('RUNTIME_UNAVAILABLE')
+    expect(readiness.message).toContain('docker')
+  })
+
+  it('pulls image when runner available but image does not exist', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+    ])
+    vi.mocked(checkImageExists).mockResolvedValue(false)
+    vi.mocked(canBuildImage).mockReturnValue(false)
+    vi.mocked(pullImage).mockImplementation(async (_runner, _image, _onProgress) => {
+      // Simulate successful pull
+    })
+
+    await containerManager.ensureImageReady()
+
+    expect(pullImage).toHaveBeenCalled()
+    const readiness = containerManager.getReadiness()
+    expect(readiness.status).toBe('READY')
+  })
+
+  it('builds image when canBuildImage is true and image does not exist', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+    ])
+    vi.mocked(checkImageExists).mockResolvedValue(false)
+    vi.mocked(canBuildImage).mockReturnValue(true)
+    vi.mocked(buildImage).mockImplementation(async (_runner, _image, _onProgress) => {
+      // Simulate successful build
+    })
+
+    await containerManager.ensureImageReady()
+
+    expect(buildImage).toHaveBeenCalled()
+    expect(pullImage).not.toHaveBeenCalled()
+    const readiness = containerManager.getReadiness()
+    expect(readiness.status).toBe('READY')
+  })
+
+  it('transitions to ERROR when pull fails', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+    ])
+    vi.mocked(checkImageExists).mockResolvedValue(false)
+    vi.mocked(canBuildImage).mockReturnValue(false)
+    vi.mocked(pullImage).mockRejectedValue(new Error('Network timeout pulling image'))
+
+    await containerManager.ensureImageReady()
+
+    const readiness = containerManager.getReadiness()
+    expect(readiness.status).toBe('ERROR')
+    expect(readiness.message).toContain('Network timeout pulling image')
+  })
+
+  it('transitions to ERROR when build fails', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+    ])
+    vi.mocked(checkImageExists).mockResolvedValue(false)
+    vi.mocked(canBuildImage).mockReturnValue(true)
+    vi.mocked(buildImage).mockRejectedValue(new Error('Dockerfile not found'))
+
+    await containerManager.ensureImageReady()
+
+    const readiness = containerManager.getReadiness()
+    expect(readiness.status).toBe('ERROR')
+    expect(readiness.message).toContain('Dockerfile not found')
+  })
+
+  it('broadcasts readiness changes via SSE', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+    ])
+    vi.mocked(checkImageExists).mockResolvedValue(true)
+
+    await containerManager.ensureImageReady()
+
+    // Should have broadcasted at least: CHECKING and READY
+    const broadcasts = vi.mocked(messagePersister.broadcastGlobal).mock.calls
+    const readinessEvents = broadcasts
+      .filter(([msg]: any) => msg.type === 'runtime_readiness_changed')
+      .map(([msg]: any) => msg.readiness.status)
+
+    expect(readinessEvents).toContain('CHECKING')
+    expect(readinessEvents).toContain('READY')
+  })
+
+  it('auto-switches runner when configured runner unavailable but alternative exists', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'docker', installed: false, running: false, available: false, canStart: false },
+      { runner: 'podman', installed: true, running: true, available: true, canStart: false },
+    ])
+    vi.mocked(checkImageExists).mockResolvedValue(true)
+
+    await containerManager.ensureImageReady()
+
+    const readiness = containerManager.getReadiness()
+    expect(readiness.status).toBe('READY')
+
+    // Should have called checkImageExists with the alternative runner
+    expect(checkImageExists).toHaveBeenCalledWith('podman', 'test-image')
+  })
+
+  it('reports RUNTIME_UNAVAILABLE when runner installed but not running and no alternative', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'docker', installed: true, running: false, available: false, canStart: false },
+    ])
+
+    await containerManager.ensureImageReady()
+
+    const readiness = containerManager.getReadiness()
+    expect(readiness.status).toBe('RUNTIME_UNAVAILABLE')
+    expect(readiness.message).toContain('not running')
+  })
+
+  it('invokes progress callback during pull', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+    ])
+    vi.mocked(checkImageExists).mockResolvedValue(false)
+    vi.mocked(canBuildImage).mockReturnValue(false)
+    vi.mocked(pullImage).mockImplementation(async (_runner, _image, onProgress) => {
+      // Simulate progress callbacks
+      if (onProgress) {
+        onProgress({ status: 'Layer 1/3', percent: 33, completedLayers: 1, totalLayers: 3 })
+        onProgress({ status: 'Layer 2/3', percent: 66, completedLayers: 2, totalLayers: 3 })
+        onProgress({ status: 'Layer 3/3', percent: 100, completedLayers: 3, totalLayers: 3 })
+      }
+    })
+
+    await containerManager.ensureImageReady()
+
+    // Broadcasts should include PULLING_IMAGE with progress
+    const broadcasts = vi.mocked(messagePersister.broadcastGlobal).mock.calls
+    const pullEvents = broadcasts
+      .filter(([msg]: any) => msg.type === 'runtime_readiness_changed' && msg.readiness.status === 'PULLING_IMAGE')
+
+    expect(pullEvents.length).toBeGreaterThan(0)
+  })
+})
+
+// ============================================================================
+// syncAgentStatus — broadcasts on status change
+// ============================================================================
+
+describe('containerManager.syncAgentStatus', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    containerManager.clearClients()
+  })
+
+  it('updates cached status from runtime', async () => {
+    containerManager.getClient('sync-agent')
+    containerManager.updateCachedStatus('sync-agent', 'stopped', null)
+    mockGetInfoFromRuntime.mockResolvedValue({ status: 'running', port: 4005 })
+
+    await containerManager.syncAgentStatus('sync-agent')
+
+    expect(containerManager.getCachedInfo('sync-agent')).toEqual({
+      status: 'running',
+      port: 4005,
+    })
+  })
+
+  it('broadcasts status change when runtime status differs from cache', async () => {
+    containerManager.getClient('sync-agent')
+    containerManager.updateCachedStatus('sync-agent', 'running', 4005)
+    mockGetInfoFromRuntime.mockResolvedValue({ status: 'stopped', port: null })
+
+    await containerManager.syncAgentStatus('sync-agent')
+
+    expect(messagePersister.broadcastGlobal).toHaveBeenCalledWith({
+      type: 'agent_status_changed',
+      agentSlug: 'sync-agent',
+      status: 'stopped',
+    })
+  })
+
+  it('does not broadcast when status has not changed', async () => {
+    containerManager.getClient('sync-agent')
+    containerManager.updateCachedStatus('sync-agent', 'running', 4005)
+    mockGetInfoFromRuntime.mockResolvedValue({ status: 'running', port: 4005 })
+
+    await containerManager.syncAgentStatus('sync-agent')
+
+    expect(messagePersister.broadcastGlobal).not.toHaveBeenCalled()
+  })
+
+  it('marks sessions inactive when container transitions to stopped', async () => {
+    containerManager.getClient('sync-agent')
+    containerManager.updateCachedStatus('sync-agent', 'running', 4005)
+    mockGetInfoFromRuntime.mockResolvedValue({ status: 'stopped', port: null })
+
+    await containerManager.syncAgentStatus('sync-agent')
+
+    expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('sync-agent')
   })
 })

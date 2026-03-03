@@ -82,6 +82,9 @@ import {
   publishSkillToSkillset,
   getSkillPublishInfo,
   validateSkillsetUrl,
+  createSkillPR,
+  getInstalledSkillMetadata,
+  getSkillsetRepoDir,
 } from './skillset-service'
 
 // ============================================================================
@@ -844,6 +847,1019 @@ metadata:
       expect(urlToSkillsetId('https://github.com/Org/repo.git')).toBe(
         'github-com-org-repo',
       )
+    })
+  })
+
+  // ============================================================================
+  // TIER 1 — Extensive Pure Function Tests
+  // ============================================================================
+
+  // --------------------------------------------------------------------------
+  // urlToSkillsetId — URL normalization edge cases
+  // --------------------------------------------------------------------------
+
+  describe('urlToSkillsetId — extensive', () => {
+    it('handles http:// (not https)', () => {
+      expect(urlToSkillsetId('http://github.com/Org/repo')).toBe(
+        'github-com-org-repo',
+      )
+    })
+
+    it('lowercases the entire ID', () => {
+      expect(urlToSkillsetId('https://GitHub.COM/MyOrg/MyRepo')).toBe(
+        'github-com-myorg-myrepo',
+      )
+    })
+
+    it('handles trailing slash on HTTPS URL (trailing dash gets stripped)', () => {
+      // Trailing "/" becomes "-" after replacement, then /^-+|-+$/g strips it
+      expect(urlToSkillsetId('https://github.com/Org/repo/')).toBe(
+        'github-com-org-repo',
+      )
+    })
+
+    it('strips leading/trailing dashes from result', () => {
+      // A URL that starts with https:// and ends with .git
+      const id = urlToSkillsetId('https://github.com/Org/repo.git')
+      expect(id).not.toMatch(/^-/)
+      expect(id).not.toMatch(/-$/)
+    })
+
+    it('handles SSH URL without .git suffix', () => {
+      expect(urlToSkillsetId('git@github.com:Org/repo')).toBe(
+        'github-com-org-repo',
+      )
+    })
+
+    it('produces the same ID for https with and without .git', () => {
+      const id1 = urlToSkillsetId('https://github.com/Org/repo')
+      const id2 = urlToSkillsetId('https://github.com/Org/repo.git')
+      expect(id1).toBe(id2)
+    })
+
+    it('produces the same ID for SSH and HTTPS of the same repo', () => {
+      const idSsh = urlToSkillsetId('git@github.com:Org/repo.git')
+      const idHttps = urlToSkillsetId('https://github.com/Org/repo')
+      expect(idSsh).toBe(idHttps)
+    })
+
+    it('handles GitLab URLs', () => {
+      expect(urlToSkillsetId('https://gitlab.com/my-group/my-project')).toBe(
+        'gitlab-com-my-group-my-project',
+      )
+    })
+
+    it('handles Bitbucket URLs', () => {
+      expect(urlToSkillsetId('https://bitbucket.org/team/repo')).toBe(
+        'bitbucket-org-team-repo',
+      )
+    })
+
+    it('handles URLs with deep paths (more than org/repo)', () => {
+      expect(urlToSkillsetId('https://github.com/Org/repo/tree/main')).toBe(
+        'github-com-org-repo-tree-main',
+      )
+    })
+
+    it('replaces special characters with dashes', () => {
+      // The regex [^a-zA-Z0-9/]+ becomes dashes
+      expect(urlToSkillsetId('https://github.com/my_org/my_repo')).toBe(
+        'github-com-my-org-my-repo',
+      )
+    })
+
+    it('handles URL with query parameters', () => {
+      const id = urlToSkillsetId('https://github.com/Org/repo?tab=code')
+      // ? and = are not alphanumeric, so they become dashes
+      expect(id).toBe('github-com-org-repo-tab-code')
+    })
+
+    it('handles URL with fragments', () => {
+      const id = urlToSkillsetId('https://github.com/Org/repo#readme')
+      expect(id).toBe('github-com-org-repo-readme')
+    })
+
+    it('handles empty string', () => {
+      expect(urlToSkillsetId('')).toBe('')
+    })
+
+    it('handles plain string (non-URL)', () => {
+      expect(urlToSkillsetId('just-a-name')).toBe('just-a-name')
+    })
+
+    it('handles string with only special characters', () => {
+      const id = urlToSkillsetId('!@#$%^&*()')
+      // All replaced with dashes, then leading/trailing dashes stripped
+      expect(id).not.toMatch(/^-/)
+      expect(id).not.toMatch(/-$/)
+    })
+
+    it('collapses consecutive special characters into a single dash', () => {
+      // The regex [^a-zA-Z0-9/]+ uses + so "___" becomes single "-"
+      expect(urlToSkillsetId('https://github.com/org___repo')).toBe(
+        'github-com-org-repo',
+      )
+    })
+
+    it('handles SSH URL with custom port notation', () => {
+      // git@host:port/path format — colon becomes /
+      const id = urlToSkillsetId('git@gitlab.example.com:2222/group/project.git')
+      expect(id).toBe('gitlab-example-com-2222-group-project')
+    })
+
+    it('is deterministic (same input always gives same output)', () => {
+      const url = 'https://github.com/StableOrg/stable-repo'
+      const results = Array.from({ length: 10 }, () => urlToSkillsetId(url))
+      expect(new Set(results).size).toBe(1)
+    })
+  })
+
+  // --------------------------------------------------------------------------
+  // parseSkillFrontmatter — extensive edge cases
+  // --------------------------------------------------------------------------
+
+  describe('parseSkillFrontmatter — extensive', () => {
+    it('returns empty object for empty string', () => {
+      expect(parseSkillFrontmatter('')).toEqual({})
+    })
+
+    it('returns empty object when content is just whitespace', () => {
+      expect(parseSkillFrontmatter('   \n  \n  ')).toEqual({})
+    })
+
+    it('returns empty object when frontmatter has no closing ---', () => {
+      const content = `---
+metadata:
+  version: "1.0.0"
+
+# Skill content without closing frontmatter`
+      expect(parseSkillFrontmatter(content)).toEqual({})
+    })
+
+    it('returns empty object for only the --- delimiters with nothing between', () => {
+      const content = `---
+---
+
+# Skill`
+      expect(parseSkillFrontmatter(content)).toEqual({})
+    })
+
+    it('returns metadata when file is only frontmatter (no body)', () => {
+      const content = `---
+metadata:
+  version: "3.0.0"
+---`
+      expect(parseSkillFrontmatter(content).version).toBe('3.0.0')
+    })
+
+    it('parses the name field from frontmatter', () => {
+      const content = `---
+name: My Custom Skill
+metadata:
+  version: "1.0.0"
+---
+
+# Skill`
+      const result = parseSkillFrontmatter(content)
+      expect(result.name).toBe('My Custom Skill')
+      expect(result.version).toBe('1.0.0')
+    })
+
+    it('does not include name when it is not a string', () => {
+      const content = `---
+name: 42
+metadata:
+  version: "1.0.0"
+---
+
+# Skill`
+      const result = parseSkillFrontmatter(content)
+      expect(result.name).toBeUndefined()
+    })
+
+    it('handles version as a number (converts to string)', () => {
+      const content = `---
+metadata:
+  version: 2
+---
+
+# Skill`
+      expect(parseSkillFrontmatter(content).version).toBe('2')
+    })
+
+    it('handles version as a float (converts to string)', () => {
+      const content = `---
+metadata:
+  version: 1.5
+---
+
+# Skill`
+      expect(parseSkillFrontmatter(content).version).toBe('1.5')
+    })
+
+    it('returns empty object when YAML parses to null', () => {
+      const content = `---
+~
+---
+
+# Skill`
+      // YAML `~` is null
+      expect(parseSkillFrontmatter(content)).toEqual({})
+    })
+
+    it('returns empty object when YAML parses to a scalar (not object)', () => {
+      const content = `---
+just a string
+---
+
+# Skill`
+      expect(parseSkillFrontmatter(content)).toEqual({})
+    })
+
+    it('handles metadata with empty required_env_vars array', () => {
+      const content = `---
+metadata:
+  version: "1.0.0"
+  required_env_vars: []
+---
+
+# Skill`
+      const result = parseSkillFrontmatter(content)
+      expect(result.version).toBe('1.0.0')
+      expect(result.required_env_vars).toEqual([])
+    })
+
+    it('handles required_env_vars entry with missing description', () => {
+      const content = `---
+metadata:
+  version: "1.0.0"
+  required_env_vars:
+    - name: MY_VAR
+---
+
+# Skill`
+      const result = parseSkillFrontmatter(content)
+      expect(result.required_env_vars).toEqual([
+        { name: 'MY_VAR', description: '' },
+      ])
+    })
+
+    it('filters out null entries in required_env_vars', () => {
+      const content = `---
+metadata:
+  required_env_vars:
+    - name: VALID
+      description: Good
+    -
+    - name: ALSO_VALID
+      description: Also good
+---
+
+# Skill`
+      const result = parseSkillFrontmatter(content)
+      // The null entry should be filtered out (falsy check)
+      expect(result.required_env_vars).toHaveLength(2)
+    })
+
+    it('filters out entries without name property in required_env_vars', () => {
+      const content = `---
+metadata:
+  required_env_vars:
+    - description: Only description, no name
+    - name: HAS_NAME
+      description: Has both
+---
+
+# Skill`
+      const result = parseSkillFrontmatter(content)
+      expect(result.required_env_vars).toHaveLength(1)
+      expect(result.required_env_vars![0].name).toBe('HAS_NAME')
+    })
+
+    it('converts non-string name/description to strings in required_env_vars', () => {
+      const content = `---
+metadata:
+  required_env_vars:
+    - name: 123
+      description: true
+---
+
+# Skill`
+      const result = parseSkillFrontmatter(content)
+      expect(result.required_env_vars![0].name).toBe('123')
+      expect(result.required_env_vars![0].description).toBe('true')
+    })
+
+    it('does not return version when metadata section exists but has no version key', () => {
+      const content = `---
+metadata:
+  author: someone
+  tags:
+    - test
+---
+
+# Skill`
+      const result = parseSkillFrontmatter(content)
+      expect(result).toEqual({})
+    })
+
+    it('returns version when version is empty string', () => {
+      const content = `---
+metadata:
+  version: ""
+---
+
+# Skill`
+      expect(parseSkillFrontmatter(content).version).toBe('')
+    })
+
+    it('handles frontmatter with extra whitespace around delimiters', () => {
+      const content = `---
+metadata:
+  version: "1.0.0"
+---
+
+# Skill`
+      // The regex uses /^---\s*\n/ so "---   \n" should match
+      expect(parseSkillFrontmatter(content).version).toBe('1.0.0')
+    })
+
+    it('does not parse --- that appears mid-file (not at start)', () => {
+      const content = `# Skill
+
+---
+metadata:
+  version: "1.0.0"
+---`
+      // Frontmatter must be at the very start (^---)
+      expect(parseSkillFrontmatter(content)).toEqual({})
+    })
+
+    it('handles complex nested metadata with extra fields ignored', () => {
+      const content = `---
+name: Complex Skill
+description: A complex skill
+metadata:
+  version: "2.0.0"
+  author: test
+  tags:
+    - ai
+    - automation
+  required_env_vars:
+    - name: API_KEY
+      description: Main API key
+---
+
+# Complex Skill
+Instructions here.`
+      const result = parseSkillFrontmatter(content)
+      expect(result.name).toBe('Complex Skill')
+      expect(result.version).toBe('2.0.0')
+      expect(result.required_env_vars).toEqual([
+        { name: 'API_KEY', description: 'Main API key' },
+      ])
+    })
+
+    it('handles version: 0 (falsy but defined)', () => {
+      const content = `---
+metadata:
+  version: 0
+---
+
+# Skill`
+      // version is 0. Since `metadata.version !== undefined`, it should be stringified
+      expect(parseSkillFrontmatter(content).version).toBe('0')
+    })
+
+    it('handles required_env_vars that is not an array (e.g. object)', () => {
+      const content = `---
+metadata:
+  version: "1.0.0"
+  required_env_vars:
+    API_KEY: some key
+---
+
+# Skill`
+      const result = parseSkillFrontmatter(content)
+      // Array.isArray check fails, so required_env_vars not set
+      expect(result.version).toBe('1.0.0')
+      expect(result.required_env_vars).toBeUndefined()
+    })
+  })
+
+  // --------------------------------------------------------------------------
+  // contentHash — extensive tests
+  // --------------------------------------------------------------------------
+
+  describe('contentHash — extensive', () => {
+    it('returns the known SHA-256 for empty string', () => {
+      // SHA-256 of empty string is well-known
+      expect(contentHash('')).toBe(
+        'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+      )
+    })
+
+    it('is case-sensitive', () => {
+      expect(contentHash('Hello')).not.toBe(contentHash('hello'))
+    })
+
+    it('is whitespace-sensitive', () => {
+      expect(contentHash('hello ')).not.toBe(contentHash('hello'))
+      expect(contentHash(' hello')).not.toBe(contentHash('hello'))
+      expect(contentHash('hello\n')).not.toBe(contentHash('hello'))
+    })
+
+    it('handles multi-line content', () => {
+      const multiline = 'line1\nline2\nline3'
+      const hash = contentHash(multiline)
+      expect(hash).toMatch(/^[a-f0-9]{64}$/)
+      expect(hash).toBe(contentHash(multiline)) // consistent
+    })
+
+    it('handles unicode content', () => {
+      const hash = contentHash('Hello World')
+      expect(hash).toMatch(/^[a-f0-9]{64}$/)
+    })
+
+    it('handles very long content', () => {
+      const longContent = 'a'.repeat(100000)
+      const hash = contentHash(longContent)
+      expect(hash).toMatch(/^[a-f0-9]{64}$/)
+    })
+
+    it('different by a single character produces different hash', () => {
+      expect(contentHash('abc')).not.toBe(contentHash('abd'))
+    })
+
+    it('produces unique hashes for structurally different SKILL.md content', () => {
+      const content1 = '---\nmetadata:\n  version: "1.0.0"\n---\n# Skill A'
+      const content2 = '---\nmetadata:\n  version: "1.0.1"\n---\n# Skill A'
+      expect(contentHash(content1)).not.toBe(contentHash(content2))
+    })
+  })
+
+  // --------------------------------------------------------------------------
+  // sanitizeDirName — tested indirectly through exported functions
+  // --------------------------------------------------------------------------
+
+  describe('sanitizeDirName — indirect (via getInstalledSkillMetadata)', () => {
+    it('rejects directory name with forward slash', async () => {
+      await expect(
+        getInstalledSkillMetadata('agent', 'some/path'),
+      ).rejects.toThrow(/Invalid directory name/)
+    })
+
+    it('rejects directory name with backslash', async () => {
+      await expect(
+        getInstalledSkillMetadata('agent', 'some\\path'),
+      ).rejects.toThrow(/Invalid directory name/)
+    })
+
+    it('rejects directory name with ..', async () => {
+      await expect(
+        getInstalledSkillMetadata('agent', '..'),
+      ).rejects.toThrow(/Invalid directory name/)
+    })
+
+    it('rejects directory name with embedded ..', async () => {
+      await expect(
+        getInstalledSkillMetadata('agent', 'foo/../bar'),
+      ).rejects.toThrow(/Invalid directory name/)
+    })
+
+    it('rejects empty string directory name', async () => {
+      await expect(
+        getInstalledSkillMetadata('agent', ''),
+      ).rejects.toThrow(/Invalid directory name/)
+    })
+
+    it('allows normal kebab-case names', async () => {
+      // Should not throw — just returns null since no metadata file exists
+      const result = await getInstalledSkillMetadata('agent', 'valid-skill-name')
+      expect(result).toBeNull()
+    })
+
+    it('allows names with dots (not ..)', async () => {
+      const result = await getInstalledSkillMetadata('agent', 'skill.v2')
+      expect(result).toBeNull()
+    })
+
+    it('allows names with hyphens and numbers', async () => {
+      const result = await getInstalledSkillMetadata('agent', 'my-skill-123')
+      expect(result).toBeNull()
+    })
+
+    it('allows single character names', async () => {
+      const result = await getInstalledSkillMetadata('agent', 'a')
+      expect(result).toBeNull()
+    })
+  })
+
+  // --------------------------------------------------------------------------
+  // getDisplayName — tested indirectly through getAgentSkillsWithStatus
+  // --------------------------------------------------------------------------
+
+  describe('getDisplayName — indirect (via getAgentSkillsWithStatus)', () => {
+    it('converts single-word kebab to title case', async () => {
+      await createSkillDir('test-agent', 'analytics', SKILL_MD_PLAIN)
+      const result = await getAgentSkillsWithStatus('test-agent', [])
+      expect(result[0].name).toBe('Analytics')
+    })
+
+    it('converts multi-word kebab-case to Title Case', async () => {
+      await createSkillDir('test-agent', 'data-pipeline-builder', SKILL_MD_PLAIN)
+      const result = await getAgentSkillsWithStatus('test-agent', [])
+      expect(result[0].name).toBe('Data Pipeline Builder')
+    })
+
+    it('handles name with numbers', async () => {
+      await createSkillDir('test-agent', 'gpt-4-helper', SKILL_MD_PLAIN)
+      const result = await getAgentSkillsWithStatus('test-agent', [])
+      expect(result[0].name).toBe('Gpt 4 Helper')
+    })
+
+    it('handles single character segments', async () => {
+      await createSkillDir('test-agent', 'a-b-c', SKILL_MD_PLAIN)
+      const result = await getAgentSkillsWithStatus('test-agent', [])
+      expect(result[0].name).toBe('A B C')
+    })
+
+    it('prefers skillName from metadata over display name', async () => {
+      const meta = buildMetadata({ skillName: 'Custom Skill Name' })
+      await createSkillDir('test-agent', 'my-skill', SKILL_MD_PLAIN, meta)
+      await createSkillsetCache(meta.skillsetId, buildIndex())
+      const config = buildSkillsetConfig()
+
+      const result = await getAgentSkillsWithStatus('test-agent', [config])
+      expect(result[0].name).toBe('Custom Skill Name')
+    })
+
+    it('prefers name from frontmatter when no metadata', async () => {
+      const skillMd = `---
+name: Frontmatter Skill Name
+---
+
+# My Skill`
+      await createSkillDir('test-agent', 'my-skill', skillMd)
+
+      const result = await getAgentSkillsWithStatus('test-agent', [])
+      expect(result[0].name).toBe('Frontmatter Skill Name')
+    })
+
+    it('falls back to display name when metadata has no skillName and no frontmatter name', async () => {
+      await createSkillDir('test-agent', 'fallback-name', SKILL_MD_PLAIN)
+      const result = await getAgentSkillsWithStatus('test-agent', [])
+      expect(result[0].name).toBe('Fallback Name')
+    })
+  })
+
+  // --------------------------------------------------------------------------
+  // updateFrontmatterVersion — tested indirectly through createSkillPR
+  // --------------------------------------------------------------------------
+
+  describe('updateFrontmatterVersion — indirect (via createSkillPR)', () => {
+    beforeEach(() => {
+      setupPublishMocks()
+    })
+
+    it('updates existing version in frontmatter when newVersion is specified', async () => {
+      const skillMd = `---
+metadata:
+  version: "1.0.0"
+---
+
+# Versioned Skill
+Content here`
+      const skillPath = 'skills/versioned-skill/SKILL.md'
+      const meta = buildMetadata({
+        originalContentHash: contentHash('original'),
+        skillPath,
+      })
+      const config = buildSkillsetConfig()
+      await createSkillDir('test-agent', 'versioned-skill', skillMd, meta)
+      // Create cache with the skill directory so writeFile has a parent dir
+      await createSkillsetCache(config.id, buildIndex(), {
+        [skillPath]: 'placeholder',
+      })
+
+      await createSkillPR('test-agent', 'versioned-skill', {
+        title: 'Update skill',
+        body: 'Updated',
+        newVersion: '2.0.0',
+      })
+
+      // The file written to the repo dir should have updated version
+      const repoDir = getSkillsetRepoDir(config.id)
+      const writtenContent = await fs.promises.readFile(
+        path.join(repoDir, skillPath),
+        'utf-8',
+      )
+      expect(writtenContent).toContain('version: 2.0.0')
+      expect(writtenContent).not.toContain('version: "1.0.0"')
+    })
+
+    it('preserves content when no newVersion is specified', async () => {
+      const skillMd = `---
+metadata:
+  version: "1.0.0"
+---
+
+# Skill
+Content here`
+      const skillPath = 'skills/no-update/SKILL.md'
+      const meta = buildMetadata({
+        originalContentHash: contentHash('original'),
+        skillPath,
+      })
+      const config = buildSkillsetConfig()
+      await createSkillDir('test-agent', 'no-update', skillMd, meta)
+      await createSkillsetCache(config.id, buildIndex(), {
+        [skillPath]: 'placeholder',
+      })
+
+      await createSkillPR('test-agent', 'no-update', {
+        title: 'Update skill',
+        body: 'Updated',
+        // no newVersion
+      })
+
+      const repoDir = getSkillsetRepoDir(config.id)
+      const writtenContent = await fs.promises.readFile(
+        path.join(repoDir, skillPath),
+        'utf-8',
+      )
+      expect(writtenContent).toContain('version: "1.0.0"')
+    })
+
+    it('preserves body content after frontmatter when version is updated', async () => {
+      const skillMd = `---
+description: My skill
+metadata:
+  version: "1.0.0"
+---
+
+# My Skill
+Detailed instructions go here.
+Multiple lines of content.`
+      const skillPath = 'skills/body-test/SKILL.md'
+      const meta = buildMetadata({
+        originalContentHash: contentHash('original'),
+        skillPath,
+      })
+      const config = buildSkillsetConfig()
+      await createSkillDir('test-agent', 'body-test', skillMd, meta)
+      await createSkillsetCache(config.id, buildIndex(), {
+        [skillPath]: 'placeholder',
+      })
+
+      await createSkillPR('test-agent', 'body-test', {
+        title: 'Update',
+        body: 'Updated',
+        newVersion: '1.1.0',
+      })
+
+      const repoDir = getSkillsetRepoDir(config.id)
+      const writtenContent = await fs.promises.readFile(
+        path.join(repoDir, skillPath),
+        'utf-8',
+      )
+      expect(writtenContent).toContain('# My Skill')
+      expect(writtenContent).toContain('Detailed instructions go here.')
+      expect(writtenContent).toContain('Multiple lines of content.')
+      expect(writtenContent).toContain('version: 1.1.0')
+    })
+
+    it('leaves content unchanged if no frontmatter exists and newVersion is set', async () => {
+      const skillMd = `# No Frontmatter Skill
+Just content, no frontmatter at all.`
+      const skillPath = 'skills/no-fm/SKILL.md'
+      const meta = buildMetadata({
+        originalContentHash: contentHash('original'),
+        skillPath,
+      })
+      const config = buildSkillsetConfig()
+      await createSkillDir('test-agent', 'no-fm', skillMd, meta)
+      await createSkillsetCache(config.id, buildIndex(), {
+        [skillPath]: 'placeholder',
+      })
+
+      await createSkillPR('test-agent', 'no-fm', {
+        title: 'Update',
+        body: 'Updated',
+        newVersion: '2.0.0',
+      })
+
+      const repoDir = getSkillsetRepoDir(config.id)
+      const writtenContent = await fs.promises.readFile(
+        path.join(repoDir, skillPath),
+        'utf-8',
+      )
+      // Content should be unchanged since there is no frontmatter to update
+      expect(writtenContent).toBe(skillMd)
+    })
+  })
+
+  // --------------------------------------------------------------------------
+  // parseDescription — tested indirectly through getAgentSkillsWithStatus
+  // --------------------------------------------------------------------------
+
+  describe('parseDescription — indirect (via getAgentSkillsWithStatus)', () => {
+    it('extracts description from frontmatter', async () => {
+      const skillMd = `---
+description: Analyzes customer data
+---
+
+# Analytics Skill`
+      await createSkillDir('test-agent', 'analytics', skillMd)
+      const result = await getAgentSkillsWithStatus('test-agent', [])
+      expect(result[0].description).toBe('Analyzes customer data')
+    })
+
+    it('returns default when frontmatter has no description key', async () => {
+      const skillMd = `---
+metadata:
+  version: "1.0.0"
+---
+
+# No Desc`
+      await createSkillDir('test-agent', 'no-desc', skillMd)
+      const result = await getAgentSkillsWithStatus('test-agent', [])
+      expect(result[0].description).toBe('No description provided')
+    })
+
+    it('returns default when description is not a string', async () => {
+      const skillMd = `---
+description:
+  nested: value
+---
+
+# Nested Desc`
+      await createSkillDir('test-agent', 'nested-desc', skillMd)
+      const result = await getAgentSkillsWithStatus('test-agent', [])
+      expect(result[0].description).toBe('No description provided')
+    })
+
+    it('returns default when YAML is invalid', async () => {
+      const skillMd = `---
+  invalid: yaml: [broken
+---
+
+# Bad YAML`
+      await createSkillDir('test-agent', 'bad-yaml', skillMd)
+      const result = await getAgentSkillsWithStatus('test-agent', [])
+      expect(result[0].description).toBe('No description provided')
+    })
+
+    it('returns default for empty file content', async () => {
+      // An empty SKILL.md means the directory gets skipped (no skillMdContent)
+      // Let's test with minimal content (no frontmatter)
+      await createSkillDir('test-agent', 'minimal', '# Minimal')
+      const result = await getAgentSkillsWithStatus('test-agent', [])
+      expect(result[0].description).toBe('No description provided')
+    })
+  })
+
+  // --------------------------------------------------------------------------
+  // getAgentSkillsWithStatus — additional edge cases
+  // --------------------------------------------------------------------------
+
+  describe('getAgentSkillsWithStatus — additional edge cases', () => {
+    it('skips directories without SKILL.md', async () => {
+      // Create a directory without SKILL.md
+      const skillsDir = path.join(
+        testDir, 'agents', 'test-agent', 'workspace', '.claude', 'skills', 'empty-dir',
+      )
+      await fs.promises.mkdir(skillsDir, { recursive: true })
+      // No SKILL.md file
+
+      const result = await getAgentSkillsWithStatus('test-agent', [])
+      expect(result).toEqual([])
+    })
+
+    it('skips non-directory entries', async () => {
+      const skillsDir = path.join(
+        testDir, 'agents', 'test-agent', 'workspace', '.claude', 'skills',
+      )
+      await fs.promises.mkdir(skillsDir, { recursive: true })
+      // Create a file instead of a directory
+      await fs.promises.writeFile(path.join(skillsDir, 'not-a-dir.txt'), 'content')
+
+      const result = await getAgentSkillsWithStatus('test-agent', [])
+      expect(result).toEqual([])
+    })
+
+    it('returns up_to_date when skillset index has no matching skill entry (same version)', async () => {
+      const skillContent = '# Test Skill\nOriginal content'
+      const meta = buildMetadata({ originalContentHash: contentHash(skillContent) })
+      const config = buildSkillsetConfig()
+      // Index with NO skills — skill not found in index
+      const index = buildIndex({ skills: [] })
+
+      await createSkillDir('test-agent', 'test-skill', skillContent, meta)
+      await createSkillsetCache(config.id, index)
+
+      const result = await getAgentSkillsWithStatus('test-agent', [config])
+      // No matching skill entry means skillEntry is undefined, so no version mismatch => up_to_date
+      expect(result[0].status.type).toBe('up_to_date')
+    })
+
+    it('uses skillsetId as skillsetName when config name is not found', async () => {
+      const skillContent = '# Test Skill\nOriginal content'
+      const meta = buildMetadata({
+        originalContentHash: contentHash(skillContent),
+        skillsetId: 'unknown-skillset',
+      })
+      // No config for this skillset, but we do have metadata pointing to it
+      await createSkillDir('test-agent', 'orphan-skill', skillContent, meta)
+
+      const result = await getAgentSkillsWithStatus('test-agent', [])
+      // With no config, the name map has no entry — falls back to skillsetId
+      expect(result[0].status).toEqual({
+        type: 'up_to_date',
+        skillsetId: 'unknown-skillset',
+        skillsetName: 'unknown-skillset',
+      })
+    })
+
+    it('handles multiple skills with mixed statuses', async () => {
+      const originalContent = '# Test Skill\nOriginal content'
+      const config = buildSkillsetConfig()
+      const index = buildIndex({
+        skills: [
+          { name: 'Skill A', path: 'skills/skill-a/SKILL.md', description: 'A', version: '1.0.0' },
+          { name: 'Skill B', path: 'skills/skill-b/SKILL.md', description: 'B', version: '2.0.0' },
+        ],
+      })
+
+      // skill-a: up_to_date
+      const metaA = buildMetadata({
+        skillName: 'Skill A',
+        skillPath: 'skills/skill-a/SKILL.md',
+        originalContentHash: contentHash(originalContent),
+        installedVersion: '1.0.0',
+      })
+      await createSkillDir('test-agent', 'skill-a', originalContent, metaA)
+
+      // skill-b: update_available (installed 1.0.0, index has 2.0.0)
+      const metaB = buildMetadata({
+        skillName: 'Skill B',
+        skillPath: 'skills/skill-b/SKILL.md',
+        originalContentHash: contentHash(originalContent),
+        installedVersion: '1.0.0',
+      })
+      await createSkillDir('test-agent', 'skill-b', originalContent, metaB)
+
+      // skill-c: local (no metadata)
+      await createSkillDir('test-agent', 'skill-c', SKILL_MD_PLAIN)
+
+      await createSkillsetCache(config.id, index)
+
+      const result = await getAgentSkillsWithStatus('test-agent', [config])
+      expect(result).toHaveLength(3)
+
+      const statusMap = new Map(result.map((s) => [s.name, s.status.type]))
+      expect(statusMap.get('Skill A')).toBe('up_to_date')
+      expect(statusMap.get('Skill B')).toBe('update_available')
+      expect(statusMap.get('Skill C')).toBe('local')
+    })
+  })
+
+  // --------------------------------------------------------------------------
+  // getSkillsetRepoDir — simple path composition test
+  // --------------------------------------------------------------------------
+
+  describe('getSkillsetRepoDir', () => {
+    it('returns path under skillset-cache in data dir', () => {
+      const result = getSkillsetRepoDir('github-com-org-repo')
+      expect(result).toBe(path.join(testDir, 'skillset-cache', 'github-com-org-repo'))
+    })
+
+    it('handles skillset IDs with dashes and numbers', () => {
+      const result = getSkillsetRepoDir('gitlab-com-team-project-123')
+      expect(result).toBe(path.join(testDir, 'skillset-cache', 'gitlab-com-team-project-123'))
+    })
+  })
+
+  // --------------------------------------------------------------------------
+  // getInstalledSkillMetadata — reads and parses metadata
+  // --------------------------------------------------------------------------
+
+  describe('getInstalledSkillMetadata', () => {
+    it('returns null when metadata file does not exist', async () => {
+      await createSkillDir('test-agent', 'no-meta', SKILL_MD_PLAIN)
+      const result = await getInstalledSkillMetadata('test-agent', 'no-meta')
+      expect(result).toBeNull()
+    })
+
+    it('returns parsed metadata when file exists', async () => {
+      const meta = buildMetadata({ skillName: 'Parse Test Skill' })
+      await createSkillDir('test-agent', 'meta-skill', SKILL_MD_PLAIN, meta)
+      const result = await getInstalledSkillMetadata('test-agent', 'meta-skill')
+      expect(result).not.toBeNull()
+      expect(result!.skillName).toBe('Parse Test Skill')
+      expect(result!.skillsetId).toBe('test-skillset')
+      expect(result!.installedVersion).toBe('1.0.0')
+    })
+
+    it('returns null for invalid JSON metadata', async () => {
+      const skillDir = path.join(
+        testDir, 'agents', 'test-agent', 'workspace', '.claude', 'skills', 'bad-json',
+      )
+      await fs.promises.mkdir(skillDir, { recursive: true })
+      await fs.promises.writeFile(path.join(skillDir, 'SKILL.md'), SKILL_MD_PLAIN)
+      await fs.promises.writeFile(
+        path.join(skillDir, '.skillset-metadata.json'),
+        'not valid json {{{',
+        'utf-8',
+      )
+
+      const result = await getInstalledSkillMetadata('test-agent', 'bad-json')
+      expect(result).toBeNull()
+    })
+  })
+
+  // --------------------------------------------------------------------------
+  // publishSkillToSkillset — version update through publish
+  // --------------------------------------------------------------------------
+
+  describe('publishSkillToSkillset — version handling', () => {
+    beforeEach(() => {
+      setupPublishMocks()
+    })
+
+    it('uses version from frontmatter when no newVersion specified', async () => {
+      const skillMd = `---
+description: A skill
+metadata:
+  version: "3.5.0"
+---
+
+# Versioned Skill`
+      const config = buildSkillsetConfig()
+      await createSkillDir('test-agent', 'ver-skill', skillMd)
+      await createSkillsetCache(config.id, buildIndex({ skills: [] }))
+
+      await publishSkillToSkillset('test-agent', 'ver-skill', config, {
+        title: 'Add ver-skill',
+        body: 'Adding',
+      })
+
+      // Read updated index.json to verify version
+      const repoDir = getSkillsetRepoDir(config.id)
+      const indexContent = JSON.parse(
+        await fs.promises.readFile(path.join(repoDir, 'index.json'), 'utf-8'),
+      )
+      const entry = indexContent.skills.find(
+        (s: { path: string }) => s.path === 'skills/ver-skill/SKILL.md',
+      )
+      expect(entry.version).toBe('3.5.0')
+    })
+
+    it('uses newVersion when specified, overriding frontmatter', async () => {
+      const skillMd = `---
+metadata:
+  version: "1.0.0"
+---
+
+# Skill`
+      const config = buildSkillsetConfig()
+      await createSkillDir('test-agent', 'override-ver', skillMd)
+      await createSkillsetCache(config.id, buildIndex({ skills: [] }))
+
+      await publishSkillToSkillset('test-agent', 'override-ver', config, {
+        title: 'Add skill',
+        body: 'Adding',
+        newVersion: '5.0.0',
+      })
+
+      const repoDir = getSkillsetRepoDir(config.id)
+      const indexContent = JSON.parse(
+        await fs.promises.readFile(path.join(repoDir, 'index.json'), 'utf-8'),
+      )
+      const entry = indexContent.skills.find(
+        (s: { path: string }) => s.path === 'skills/override-ver/SKILL.md',
+      )
+      expect(entry.version).toBe('5.0.0')
+    })
+
+    it('defaults to 1.0.0 when no frontmatter version and no newVersion', async () => {
+      const config = buildSkillsetConfig()
+      await createSkillDir('test-agent', 'default-ver', SKILL_MD_PLAIN)
+      await createSkillsetCache(config.id, buildIndex({ skills: [] }))
+
+      await publishSkillToSkillset('test-agent', 'default-ver', config, {
+        title: 'Add skill',
+        body: 'Adding',
+      })
+
+      const repoDir = getSkillsetRepoDir(config.id)
+      const indexContent = JSON.parse(
+        await fs.promises.readFile(path.join(repoDir, 'index.json'), 'utf-8'),
+      )
+      const entry = indexContent.skills.find(
+        (s: { path: string }) => s.path === 'skills/default-ver/SKILL.md',
+      )
+      expect(entry.version).toBe('1.0.0')
     })
   })
 })

@@ -47,7 +47,7 @@ const COMMON_BINARY_PATHS: Record<string, string[]> = {
 /**
  * Get the PATH environment variable with common binary locations added.
  */
-function getEnhancedPath(): string {
+export function getEnhancedPath(): string {
   const currentPath = process.env.PATH || ''
   const platformPaths = COMMON_BINARY_PATHS[process.platform] || []
   const pathsToAdd = platformPaths.filter(p => !currentPath.includes(p))
@@ -60,7 +60,7 @@ const isWindows = process.platform === 'win32'
  * Wrap a value in the platform-appropriate shell quotes.
  * On Unix, single quotes; on Windows cmd.exe, double quotes.
  */
-function shellQuote(value: string): string {
+export function shellQuote(value: string): string {
   return isWindows ? `"${value}"` : `'${value}'`
 }
 
@@ -140,6 +140,18 @@ export function writeEnvFile(
   }
 }
 
+/**
+ * Check if an error is a connection error (container not reachable).
+ */
+export function isConnectionError(err: Error): boolean {
+  return (
+    err.message.includes('ECONNREFUSED') ||
+    err.message.includes('ECONNRESET') ||
+    err.message.includes('ETIMEDOUT') ||
+    err.message.includes('fetch failed')
+  )
+}
+
 export const AGENT_CONTAINER_PATH = './agent-container'
 export const CONTAINER_INTERNAL_PORT = 3000
 const BASE_PORT = 4000
@@ -147,7 +159,7 @@ const BASE_PORT = 4000
 /**
  * Parse a memory value string (e.g., "231.2MiB", "1.5GiB", "512MB") to bytes.
  */
-function parseMemoryValue(value: string): number {
+export function parseMemoryValue(value: string): number {
   const match = value.match(/^([\d.]+)\s*(B|KiB|MiB|GiB|TiB|KB|MB|GB|TB|kB)?$/i)
   if (!match) return 0
   const num = parseFloat(match[1])
@@ -195,12 +207,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    * Check if an error is a connection error (container not reachable).
    */
   private isConnectionError(err: Error): boolean {
-    return (
-      err.message.includes('ECONNREFUSED') ||
-      err.message.includes('ECONNRESET') ||
-      err.message.includes('ETIMEDOUT') ||
-      err.message.includes('fetch failed')
-    )
+    return isConnectionError(err)
   }
 
   /**
