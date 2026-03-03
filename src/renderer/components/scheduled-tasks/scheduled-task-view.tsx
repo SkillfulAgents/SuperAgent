@@ -182,7 +182,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
             </div>
           ) : task.status === 'paused' ? (
             <div className="text-lg text-yellow-600">
-              Paused — will resume from {nextExecution.toLocaleString()}
+              Paused
             </div>
           ) : (
             <div className="text-lg capitalize">{task.status}</div>
@@ -211,7 +211,9 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
                 This prompt will be sent to the agent{' '}
                 {task.status === 'pending'
                   ? `on ${nextExecution.toLocaleString()}`
-                  : 'when executed'}
+                  : task.status === 'paused'
+                    ? 'when resumed'
+                    : 'when executed'}
               </span>
             </div>
             <div className="whitespace-pre-wrap text-sm">{task.prompt}</div>
