@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { eq } from 'drizzle-orm'
+import { eq, and } from 'drizzle-orm'
 import { Authenticated, IsAdmin } from '../middleware/auth'
 import { db } from '@shared/lib/db'
 import { user, authAccount } from '@shared/lib/db/schema'
@@ -57,6 +57,51 @@ adminUsersRouter.post('/invite', async (c) => {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Failed to create user'
     return c.json({ error: message }, 400)
+  }
+})
+
+// POST /api/admin/users/reset-password - Reset user password with mustChangePassword=true
+adminUsersRouter.post('/reset-password', async (c) => {
+  const body = await c.req.json<{ userId: string; password: string }>()
+  const { userId, password } = body
+
+  if (!userId?.trim() || !password) {
+    return c.json({ error: 'userId and password are required' }, 400)
+  }
+
+  // Verify the target user exists
+  const targetUser = db.select({ id: user.id }).from(user).where(eq(user.id, userId)).get()
+  if (!targetUser) {
+    return c.json({ error: 'User not found' }, 404)
+  }
+
+  // Verify the target user has a credential account
+  const credentialAccount = db
+    .select({ id: authAccount.id })
+    .from(authAccount)
+    .where(and(eq(authAccount.userId, userId), eq(authAccount.providerId, 'credential')))
+    .get()
+  if (!credentialAccount) {
+    return c.json({ error: 'User does not have a credential account' }, 400)
+  }
+
+  try {
+    const hashedPassword = await hashPassword(password)
+
+    db.update(authAccount)
+      .set({ password: hashedPassword })
+      .where(and(eq(authAccount.userId, userId), eq(authAccount.providerId, 'credential')))
+      .run()
+
+    db.update(user)
+      .set({ mustChangePassword: true })
+      .where(eq(user.id, userId))
+      .run()
+
+    return c.json({ success: true })
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Failed to reset password'
+    return c.json({ error: message }, 500)
   }
 })
 

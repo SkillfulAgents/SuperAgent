@@ -35,10 +35,12 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronsUpDown,
+  KeyRound,
 } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { InviteUserDialog } from './invite-user-dialog'
+import { ResetPasswordDialog } from './reset-password-dialog'
 
 interface AdminUser {
   id: string
@@ -69,6 +71,7 @@ export function UsersTab() {
   const [sortBy, setSortBy] = useState<'createdAt' | 'name'>('createdAt')
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc')
   const [inviteOpen, setInviteOpen] = useState(false)
+  const [resetPasswordUser, setResetPasswordUser] = useState<AdminUser | null>(null)
 
   const [confirmAction, setConfirmAction] = useState<{
     type: 'delete' | 'ban'
@@ -359,6 +362,20 @@ export function UsersTab() {
                           <Ban className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
                         </Button>
                       )}
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 w-6 p-0"
+                            onClick={() => setResetPasswordUser(user)}
+                            title="Reset password"
+                          >
+                            <KeyRound className="h-3.5 w-3.5 text-muted-foreground" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Reset password</TooltipContent>
+                      </Tooltip>
                       <Button
                         variant="ghost"
                         size="sm"
@@ -416,6 +433,14 @@ export function UsersTab() {
         open={inviteOpen}
         onOpenChange={setInviteOpen}
         onInvited={invalidateUsers}
+      />
+
+      {/* Reset Password Dialog */}
+      <ResetPasswordDialog
+        open={!!resetPasswordUser}
+        onOpenChange={(open) => !open && setResetPasswordUser(null)}
+        user={resetPasswordUser}
+        onReset={invalidateUsers}
       />
 
       {/* Confirmation Dialog */}
