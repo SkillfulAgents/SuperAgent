@@ -3,22 +3,7 @@ import * as React from 'react'
 import { Settings, FileText, KeyRound, Sparkles, Link2, ScrollText, Plug, Users } from 'lucide-react'
 import { useUser } from '@renderer/context/user-context'
 import { Button } from '@renderer/components/ui/button'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from '@renderer/components/ui/dialog'
-import {
-  Sidebar,
-  SidebarContent,
-  SidebarGroup,
-  SidebarGroupContent,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
-  SidebarProvider,
-} from '@renderer/components/ui/sidebar'
+import { SettingsDialog, SettingsDialogTab } from '@renderer/components/ui/settings-dialog'
 import { useUpdateAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { GeneralTab } from './settings/general-tab'
 import { SystemPromptTab } from './settings/system-prompt-tab'
@@ -28,20 +13,6 @@ import { ConnectedAccountsTab } from './settings/connected-accounts-tab'
 import { RemoteMcpsTab } from './settings/remote-mcps-tab'
 import { AuditLogTab } from './settings/audit-log-tab'
 import { AccessTab } from './settings/access-tab'
-
-type SettingsSection = 'general' | 'system-prompt' | 'secrets' | 'skills' | 'connected-accounts' | 'remote-mcps' | 'audit-log' | 'access'
-
-const baseNavItems = [
-  { id: 'general' as const, name: 'General', icon: Settings },
-  { id: 'system-prompt' as const, name: 'System Prompt', icon: FileText },
-  { id: 'secrets' as const, name: 'Secrets', icon: KeyRound },
-  { id: 'skills' as const, name: 'Skills', icon: Sparkles },
-  { id: 'connected-accounts' as const, name: 'Accounts', icon: Link2 },
-  { id: 'remote-mcps' as const, name: 'MCPs', icon: Plug },
-  { id: 'audit-log' as const, name: 'API Log', icon: ScrollText },
-]
-
-const accessNavItem = { id: 'access' as const, name: 'Access', icon: Users }
 
 interface AgentSettingsDialogProps {
   agent: ApiAgent
@@ -54,20 +25,17 @@ export function AgentSettingsDialog({
   open,
   onOpenChange,
 }: AgentSettingsDialogProps) {
-  const [activeSection, setActiveSection] = React.useState<SettingsSection>('general')
   const [name, setName] = React.useState(agent.name)
   const [instructions, setInstructions] = React.useState(agent.instructions || '')
   const updateAgent = useUpdateAgent()
   const { isAuthMode, canAdminAgent, rolesReady } = useUser()
   const isOwner = canAdminAgent(agent.slug)
-  const navItems = isAuthMode ? [...baseNavItems, accessNavItem] : baseNavItems
 
   // Reset form when dialog opens with new agent data
   React.useEffect(() => {
     if (open) {
       setName(agent.name)
       setInstructions(agent.instructions || '')
-      setActiveSection('general')
     }
   }, [open, agent.name, agent.instructions])
 
@@ -82,102 +50,74 @@ export function AgentSettingsDialog({
 
   const hasChanges = name !== agent.name || instructions !== (agent.instructions || '')
 
+  const saveFooter = (
+    <div className="flex items-center justify-end gap-2 border-t p-4">
+      <Button variant="outline" onClick={() => onOpenChange(false)}>
+        Cancel
+      </Button>
+      <Button
+        onClick={handleSave}
+        disabled={!hasChanges || updateAgent.isPending}
+      >
+        {updateAgent.isPending ? 'Saving...' : 'Save'}
+      </Button>
+    </div>
+  )
+
+  const permissionOverlay = isAuthMode && rolesReady && !isOwner ? (
+    <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm rounded-lg" data-testid="agent-settings-no-permission">
+      <div className="text-center space-y-2">
+        <p className="text-sm font-medium">You don&apos;t have permission to edit settings</p>
+        <p className="text-xs text-muted-foreground">Only agent owners can modify settings.</p>
+      </div>
+    </div>
+  ) : undefined
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="overflow-hidden p-0 md:max-h-[500px] md:max-w-[700px] lg:max-w-[800px]" data-testid="agent-settings-dialog">
-        <DialogTitle className="sr-only">Agent Settings</DialogTitle>
-        <DialogDescription className="sr-only">
-          Configure settings for {agent.name}
-        </DialogDescription>
-        {isAuthMode && rolesReady && !isOwner && (
-          <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm rounded-lg" data-testid="agent-settings-no-permission">
-            <div className="text-center space-y-2">
-              <p className="text-sm font-medium">You don&apos;t have permission to edit settings</p>
-              <p className="text-xs text-muted-foreground">Only agent owners can modify settings.</p>
-            </div>
-          </div>
-        )}
-        <SidebarProvider className="items-start min-h-0" {...(isAuthMode && rolesReady && !isOwner ? { inert: '' } : {})}>
-          <Sidebar collapsible="none" className="hidden md:flex w-48">
-            <SidebarContent>
-              <SidebarGroup>
-                <SidebarGroupContent>
-                  <SidebarMenu>
-                    {navItems.map((item) => (
-                      <SidebarMenuItem key={item.id}>
-                        <SidebarMenuButton
-                          isActive={activeSection === item.id}
-                          onClick={() => setActiveSection(item.id)}
-                          data-testid={`agent-settings-nav-${item.id}`}
-                        >
-                          <item.icon className="h-4 w-4" />
-                          <span>{item.name}</span>
-                        </SidebarMenuButton>
-                      </SidebarMenuItem>
-                    ))}
-                  </SidebarMenu>
-                </SidebarGroupContent>
-              </SidebarGroup>
-            </SidebarContent>
-          </Sidebar>
-          <main className="flex h-[480px] flex-1 flex-col overflow-hidden">
-            <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
-              <span className="text-sm text-muted-foreground">Settings</span>
-              <span className="text-sm text-muted-foreground">/</span>
-              <span className="text-sm font-medium">
-                {navItems.find((item) => item.id === activeSection)?.name}
-              </span>
-            </header>
-            <div className="flex flex-1 flex-col gap-4 overflow-y-auto p-4">
-              {activeSection === 'general' && (
-                <GeneralTab
-                  name={name}
-                  agentSlug={agent.slug}
-                  onNameChange={setName}
-                  onDialogClose={() => onOpenChange(false)}
-                />
-              )}
-              {activeSection === 'system-prompt' && (
-                <SystemPromptTab
-                  systemPrompt={instructions}
-                  onSystemPromptChange={setInstructions}
-                />
-              )}
-              {activeSection === 'secrets' && (
-                <SecretsTab agentSlug={agent.slug} isOpen={open} />
-              )}
-              {activeSection === 'skills' && (
-                <SkillsTab agentSlug={agent.slug} />
-              )}
-              {activeSection === 'connected-accounts' && (
-                <ConnectedAccountsTab agentSlug={agent.slug} />
-              )}
-              {activeSection === 'remote-mcps' && (
-                <RemoteMcpsTab agentSlug={agent.slug} onClose={() => onOpenChange(false)} />
-              )}
-              {activeSection === 'audit-log' && (
-                <AuditLogTab agentSlug={agent.slug} />
-              )}
-              {activeSection === 'access' && (
-                <AccessTab agentSlug={agent.slug} />
-              )}
-            </div>
-            {activeSection !== 'secrets' && activeSection !== 'skills' && activeSection !== 'connected-accounts' && activeSection !== 'remote-mcps' && activeSection !== 'audit-log' && activeSection !== 'access' && (
-              <div className="flex items-center justify-end gap-2 border-t p-4">
-                <Button variant="outline" onClick={() => onOpenChange(false)}>
-                  Cancel
-                </Button>
-                <Button
-                  onClick={handleSave}
-                  disabled={!hasChanges || updateAgent.isPending}
-                >
-                  {updateAgent.isPending ? 'Saving...' : 'Save'}
-                </Button>
-              </div>
-            )}
-          </main>
-        </SidebarProvider>
-      </DialogContent>
-    </Dialog>
+    <SettingsDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Settings"
+      description={`Configure settings for ${agent.name}`}
+      overlay={permissionOverlay}
+      inert={isAuthMode && rolesReady && !isOwner}
+      data-testid="agent-settings-dialog"
+      navTestIdPrefix="agent-settings"
+    >
+      <SettingsDialogTab id="general" label="General" icon={<Settings className="h-4 w-4" />} footer={saveFooter}>
+        <GeneralTab
+          name={name}
+          agentSlug={agent.slug}
+          onNameChange={setName}
+          onDialogClose={() => onOpenChange(false)}
+        />
+      </SettingsDialogTab>
+      <SettingsDialogTab id="system-prompt" label="System Prompt" icon={<FileText className="h-4 w-4" />} footer={saveFooter}>
+        <SystemPromptTab
+          systemPrompt={instructions}
+          onSystemPromptChange={setInstructions}
+        />
+      </SettingsDialogTab>
+      <SettingsDialogTab id="secrets" label="Secrets" icon={<KeyRound className="h-4 w-4" />}>
+        <SecretsTab agentSlug={agent.slug} isOpen={open} />
+      </SettingsDialogTab>
+      <SettingsDialogTab id="skills" label="Skills" icon={<Sparkles className="h-4 w-4" />}>
+        <SkillsTab agentSlug={agent.slug} />
+      </SettingsDialogTab>
+      <SettingsDialogTab id="connected-accounts" label="Accounts" icon={<Link2 className="h-4 w-4" />}>
+        <ConnectedAccountsTab agentSlug={agent.slug} />
+      </SettingsDialogTab>
+      <SettingsDialogTab id="remote-mcps" label="MCPs" icon={<Plug className="h-4 w-4" />}>
+        <RemoteMcpsTab agentSlug={agent.slug} onClose={() => onOpenChange(false)} />
+      </SettingsDialogTab>
+      <SettingsDialogTab id="audit-log" label="API Log" icon={<ScrollText className="h-4 w-4" />}>
+        <AuditLogTab agentSlug={agent.slug} />
+      </SettingsDialogTab>
+      {isAuthMode && (
+        <SettingsDialogTab id="access" label="Access" icon={<Users className="h-4 w-4" />}>
+          <AccessTab agentSlug={agent.slug} />
+        </SettingsDialogTab>
+      )}
+    </SettingsDialog>
   )
 }
