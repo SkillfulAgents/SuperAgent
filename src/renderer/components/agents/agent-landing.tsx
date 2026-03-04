@@ -236,6 +236,7 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
     onTranscriptUpdate: useCallback((text: string) => {
       setMessage(text)
     }, []),
+    agentSlug: agent.slug,
   })
 
   const handleVoiceToggle = useCallback(() => {

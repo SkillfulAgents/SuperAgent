@@ -45,19 +45,33 @@ vi.mock('../middleware/auth', () => ({
 // Mock DB
 const mockDbWhere = vi.fn()
 const mockDbFrom = vi.fn()
+const mockSttGroupBy = vi.fn().mockResolvedValue([])
+const mockSttWhere = vi.fn().mockReturnValue({ groupBy: mockSttGroupBy })
+const mockSttFrom = vi.fn().mockReturnValue({ where: mockSttWhere })
+const mockSttSelect = vi.fn().mockReturnValue({ from: mockSttFrom })
 
 vi.mock('@shared/lib/db', () => ({
   db: {
-    select: () => ({ from: mockDbFrom }),
+    select: (...args: unknown[]) => {
+      // If called with stt-shaped fields (has 'date' key), route to STT mock chain
+      if (args.length > 0 && typeof args[0] === 'object' && args[0] !== null && 'date' in (args[0] as Record<string, unknown>)) {
+        return mockSttSelect(...args)
+      }
+      return { from: mockDbFrom }
+    },
   },
 }))
 
 vi.mock('@shared/lib/db/schema', () => ({
   agentAcl: { userId: 'user_id', agentSlug: 'agent_slug' },
+  sttUsage: { createdAt: 'created_at', model: 'model', agentSlug: 'agent_slug', cost: 'cost_micro', userId: 'user_id' },
 }))
 
 vi.mock('drizzle-orm', () => ({
   eq: (col: string, val: string) => ({ col, val }),
+  gte: (col: string, val: unknown) => ({ col, val, op: 'gte' }),
+  and: (...conditions: unknown[]) => conditions,
+  sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values, as: () => 'sql' }),
 }))
 
 import usage from './usage'

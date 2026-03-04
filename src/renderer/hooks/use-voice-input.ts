@@ -6,6 +6,7 @@ export type VoiceInputState = 'idle' | 'connecting' | 'recording' | 'stopping'
 
 interface UseVoiceInputOptions {
   onTranscriptUpdate: (text: string) => void
+  agentSlug?: string
 }
 
 interface SttCredentials {
@@ -13,7 +14,7 @@ interface SttCredentials {
   token: string
 }
 
-export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {
+export function useVoiceInput({ onTranscriptUpdate, agentSlug }: UseVoiceInputOptions) {
   const [state, setState] = useState<VoiceInputState>('idle')
   const [error, setError] = useState<string | null>(null)
 
@@ -26,6 +27,10 @@ export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {
   const prefixRef = useRef('')
   const finalizedRef = useRef('')
   const interimRef = useRef('')
+
+  // Track recording duration for usage reporting
+  const recordingStartRef = useRef<number>(0)
+  const providerRef = useRef<SttProvider | null>(null)
 
   const isSupported = typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia
 
@@ -46,6 +51,22 @@ export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {
   const stopRecording = useCallback(() => {
     if (state !== 'recording' && state !== 'connecting') return
     setState('stopping')
+
+    // Report usage before cleanup
+    const provider = providerRef.current
+    const durationMs = recordingStartRef.current > 0
+      ? Date.now() - recordingStartRef.current
+      : 0
+    if (provider && durationMs > 0) {
+      apiFetch('/api/stt/usage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider, durationMs, agentSlug }),
+      }).catch((err) => console.error('Failed to report STT usage:', err))
+    }
+    providerRef.current = null
+    recordingStartRef.current = 0
+
     cleanup()
     // Drop interim text — keep only finalized content in the textarea
     const finalText = prefixRef.current + finalizedRef.current
@@ -54,7 +75,7 @@ export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {
     interimRef.current = ''
     onTranscriptUpdate(finalText)
     setState('idle')
-  }, [state, cleanup, onTranscriptUpdate])
+  }, [state, cleanup, onTranscriptUpdate, agentSlug])
 
   const startRecording = useCallback(async (existingText: string) => {
     if (state !== 'idle') return
@@ -115,6 +136,9 @@ export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {
       })
 
       await adapter.connect(apiKey)
+
+      providerRef.current = provider
+      recordingStartRef.current = Date.now()
 
       // 4. Set up audio processing to send PCM chunks
       const audioContext = new AudioContext({ sampleRate })

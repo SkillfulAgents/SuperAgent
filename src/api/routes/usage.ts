@@ -7,8 +7,8 @@ import { Authenticated } from '../middleware/auth'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { db } from '@shared/lib/db'
-import { agentAcl } from '@shared/lib/db/schema'
-import { eq } from 'drizzle-orm'
+import { agentAcl, sttUsage } from '@shared/lib/db/schema'
+import { eq, gte, and, sql } from 'drizzle-orm'
 
 const usage = new Hono()
 
@@ -93,6 +93,58 @@ usage.get('/', async (c) => {
       for (const mb of day.modelBreakdowns) {
         const prev = entry.byModel.get(mb.modelName) || 0
         entry.byModel.set(mb.modelName, prev + mb.cost)
+      }
+    }
+  }
+
+  // Merge STT usage from the database
+  const sttConditions = [gte(sttUsage.createdAt, sinceDate)]
+  if (isAuthMode() && !globalView) {
+    const userId = getCurrentUserId(c)
+    sttConditions.push(eq(sttUsage.userId, userId))
+  }
+
+  const sttRows = await db
+    .select({
+      date: sql<string>`date(${sttUsage.createdAt} / 1000, 'unixepoch')`.as('date'),
+      model: sttUsage.model,
+      agentSlug: sttUsage.agentSlug,
+      totalCostMicro: sql<number>`sum(${sttUsage.cost})`.as('total_cost_micro'),
+    })
+    .from(sttUsage)
+    .where(and(...sttConditions))
+    .groupBy(sql`date(${sttUsage.createdAt} / 1000, 'unixepoch')`, sttUsage.model, sttUsage.agentSlug)
+
+  // Build a name cache for agent slugs referenced by STT rows
+  const sttAgentSlugs = new Set(sttRows.map(r => r.agentSlug).filter(Boolean) as string[])
+  const agentNameMap = new Map<string, string>()
+  await Promise.all(Array.from(sttAgentSlugs).map(async (slug) => {
+    const a = await getAgent(slug)
+    agentNameMap.set(slug, a ? a.frontmatter.name : slug)
+  }))
+
+  for (const row of sttRows) {
+    const costUsd = row.totalCostMicro / 1_000_000
+    let entry = dateMap.get(row.date)
+    if (!entry) {
+      entry = { totalCost: 0, byAgent: new Map(), byModel: new Map() }
+      dateMap.set(row.date, entry)
+    }
+    entry.totalCost += costUsd
+
+    const prev = entry.byModel.get(row.model) || 0
+    entry.byModel.set(row.model, prev + costUsd)
+
+    if (row.agentSlug) {
+      const existing = entry.byAgent.get(row.agentSlug)
+      if (existing) {
+        existing.cost += costUsd
+      } else {
+        entry.byAgent.set(row.agentSlug, {
+          agentSlug: row.agentSlug,
+          agentName: agentNameMap.get(row.agentSlug) || row.agentSlug,
+          cost: costUsd,
+        })
       }
     }
   }

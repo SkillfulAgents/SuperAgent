@@ -278,6 +278,22 @@ export const userSettings = sqliteTable('user_settings', {
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 })
 
+// STT usage - tracks speech-to-text API usage for cost reporting
+export const sttUsage = sqliteTable('stt_usage', {
+  id: text('id').primaryKey(),
+  provider: text('provider', { enum: ['deepgram', 'openai'] }).notNull(),
+  model: text('model').notNull(), // e.g. 'nova-3', 'gpt-4o-mini-transcribe'
+  durationMs: integer('duration_ms').notNull(),
+  cost: integer('cost_micro').notNull(), // cost in micro-dollars (1/1,000,000 USD)
+  agentSlug: text('agent_slug'), // which agent's chat triggered this STT session
+  userId: text('user_id').references(() => user.id, { onDelete: 'set null' }),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  createdAtIdx: index('stt_usage_created_at_idx').on(table.createdAt),
+  userIdIdx: index('stt_usage_user_id_idx').on(table.userId),
+  agentSlugIdx: index('stt_usage_agent_slug_idx').on(table.agentSlug),
+}))
+
 // Type exports for convenience
 export type ConnectedAccount = typeof connectedAccounts.$inferSelect
 export type NewConnectedAccount = typeof connectedAccounts.$inferInsert
@@ -301,6 +317,8 @@ export type AgentAcl = typeof agentAcl.$inferSelect
 export type NewAgentAcl = typeof agentAcl.$inferInsert
 export type UserSettingsRow = typeof userSettings.$inferSelect
 export type NewUserSettingsRow = typeof userSettings.$inferInsert
+export type SttUsageEntry = typeof sttUsage.$inferSelect
+export type NewSttUsageEntry = typeof sttUsage.$inferInsert
 export type User = typeof user.$inferSelect
 export type AuthSession = typeof authSession.$inferSelect
 export type AuthAccount = typeof authAccount.$inferSelect

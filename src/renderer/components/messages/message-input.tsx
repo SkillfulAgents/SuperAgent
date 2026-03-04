@@ -47,6 +47,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
     onTranscriptUpdate: useCallback((text: string) => {
       setMessage(text)
     }, []),
+    agentSlug,
   })
 
   const handleVoiceToggle = useCallback(() => {

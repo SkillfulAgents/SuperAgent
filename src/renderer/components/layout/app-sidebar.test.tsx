@@ -110,6 +110,7 @@ const mockDialogContext = {
 }
 vi.mock('@renderer/context/dialog-context', () => ({
   useDialogs: () => mockDialogContext,
+  DialogProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
 // Mock selection context

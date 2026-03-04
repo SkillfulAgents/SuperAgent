@@ -17,8 +17,20 @@ import { createSttAdapter } from '@renderer/lib/stt'
 import type { ApiKeyStatus, SttProvider } from '@shared/lib/config/settings'
 
 const STT_PROVIDERS = [
-  { value: 'deepgram' as const, label: 'Deepgram', model: 'Nova 3' },
-  { value: 'openai' as const, label: 'OpenAI', model: 'GPT-4o Mini Transcribe' },
+  {
+    value: 'deepgram' as const,
+    label: 'Deepgram',
+    model: 'Nova 3',
+    docsUrl: 'https://developers.deepgram.com/docs/models-languages-overview',
+    note: 'Lowest latency (~200ms). 47 languages — Chinese not yet supported.',
+  },
+  {
+    value: 'openai' as const,
+    label: 'OpenAI',
+    model: 'GPT-4o Mini Transcribe',
+    docsUrl: 'https://platform.openai.com/docs/guides/speech-to-text#supported-languages',
+    note: 'Most accurate & affordable. 57 languages including Chinese.',
+  },
 ]
 
 const PROVIDER_CONFIG: Record<SttProvider, {
@@ -317,8 +329,20 @@ function VoiceTest({ provider }: { provider: SttProvider }) {
   const audioCtxRef = useRef<AudioContext | null>(null)
   const processorRef = useRef<ScriptProcessorNode | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
+  const testStartRef = useRef<number>(0)
 
   const stopTest = useCallback(() => {
+    // Report usage
+    const durationMs = testStartRef.current > 0 ? Date.now() - testStartRef.current : 0
+    if (durationMs > 0) {
+      apiFetch('/api/stt/usage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider, durationMs }),
+      }).catch((err) => console.error('Failed to report STT usage:', err))
+    }
+    testStartRef.current = 0
+
     processorRef.current?.disconnect()
     processorRef.current = null
     analyserRef.current = null
@@ -331,7 +355,7 @@ function VoiceTest({ provider }: { provider: SttProvider }) {
     setTestState('idle')
     setInterimText('')
     setSegments([])
-  }, [])
+  }, [provider])
 
   const startTest = useCallback(async () => {
     setTestState('connecting')
@@ -412,6 +436,7 @@ function VoiceTest({ provider }: { provider: SttProvider }) {
       source.connect(processor)
       processor.connect(audioContext.destination)
 
+      testStartRef.current = Date.now()
       setTestState('recording')
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Test failed'
@@ -530,8 +555,26 @@ export function VoiceTab() {
             </SelectContent>
           </Select>
           <p className="text-xs text-muted-foreground">
-            Choose which service to use for voice-to-text transcription. A microphone button will appear in the message input once configured.
+            Choose which service to use for voice-to-text transcription.
           </p>
+          {selectedProvider && (() => {
+            const info = STT_PROVIDERS.find(p => p.value === selectedProvider)
+            if (!info) return null
+            return (
+              <p className="text-xs text-muted-foreground">
+                {info.note}{' '}
+                <a
+                  href={info.docsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary hover:underline inline-flex items-center gap-0.5"
+                >
+                  View details
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              </p>
+            )
+          })()}
         </div>
       </div>
 
