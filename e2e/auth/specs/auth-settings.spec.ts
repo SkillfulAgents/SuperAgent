@@ -16,9 +16,22 @@ const approvalUser = { name: 'Frank Pending', email: 'frank@test.com', password:
 test.describe('Auth Settings Enforcement', () => {
   // ── Setup: admin signs in ───────────────────────────────────────────
 
-  test('admin signs in', async ({ user1Page }) => {
+  test('admin signs in', async ({ user1Page, user2Page, user3Page }) => {
     const authPage = new AuthPage(user1Page)
     const appPage = new AppPage(user1Page)
+
+    // Users may still be signed in from auth-flow.spec.ts (shared worker).
+    // Clear all cookies and navigate to the base URL so every context starts fresh.
+    await Promise.all([
+      user1Page.context().clearCookies(),
+      user2Page.context().clearCookies(),
+      user3Page.context().clearCookies(),
+    ])
+    await Promise.all([
+      user1Page.goto('http://localhost:3001'),
+      user2Page.goto('http://localhost:3001'),
+      user3Page.goto('http://localhost:3001'),
+    ])
 
     await authPage.expectVisible()
     await authPage.signIn(admin.email, admin.password)

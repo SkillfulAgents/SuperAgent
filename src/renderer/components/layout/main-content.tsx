@@ -123,41 +123,43 @@ export function MainContent() {
     <div className="h-full flex flex-col" data-testid="main-content">
       {/* Fixed header - draggable region for Electron */}
       <header
-        className={`shrink-0 flex h-12 items-center gap-2 border-b bg-background px-4 ${isElectron() ? 'app-drag-region' : ''}`}
+        className={`shrink-0 flex min-h-12 py-1.5 md:py-0 md:h-12 items-center gap-2 border-b bg-background px-4 ${isElectron() ? 'app-drag-region' : ''}`}
       >
         <SidebarTrigger
           className={`app-no-drag ${needsTrafficLightPadding ? 'ml-16' : '-ml-1'}`}
         />
-        <div className="flex items-center gap-2 min-w-0 flex-1">
-          <span className="font-semibold truncate">{agent?.name || 'Loading...'}</span>
-          {agent && <AgentStatus status={agent.status} hasActiveSessions={hasActiveSessions} />}
+        <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-2 min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-sm md:text-base font-semibold truncate">{agent?.name || 'Loading...'}</span>
+            {agent && <AgentStatus status={agent.status} hasActiveSessions={hasActiveSessions} />}
+          </div>
           {sessionId && session?.agentSlug === agentSlug && (
-            <>
-              <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
+            <div className="flex items-center gap-2 min-w-0">
+              <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0 hidden md:block" />
               <SessionContextMenu
                 sessionId={sessionId}
                 sessionName={session?.name || 'Session'}
                 agentSlug={agentSlug}
               >
-                <span className="text-muted-foreground truncate cursor-context-menu app-no-drag">
+                <span className="text-xs md:text-sm text-muted-foreground truncate cursor-context-menu app-no-drag">
                   {session?.name || 'Loading...'}
                 </span>
               </SessionContextMenu>
-            </>
+            </div>
           )}
           {scheduledTaskId && scheduledTask && (
-            <>
-              <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
+            <div className="flex items-center gap-2 min-w-0">
+              <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0 hidden md:block" />
               <div className="flex items-center gap-1 text-muted-foreground">
                 <Clock className="h-4 w-4" />
-                <span className="truncate">
+                <span className="truncate text-xs md:text-sm">
                   {scheduledTask.name || 'Scheduled Task'}
                 </span>
               </div>
-            </>
+            </div>
           )}
         </div>
-        <div className="flex items-center gap-2 shrink-0 app-no-drag">
+        <div className="flex items-center gap-0 md:gap-2 shrink-0 app-no-drag">
           {sessionId && contextPercent != null && (
             <DonutChart
               percent={contextPercent}
@@ -167,7 +169,7 @@ export function MainContent() {
             />
           )}
           {!isViewOnly && (
-            <>
+            <div className="hidden md:flex items-center gap-2">
               {agent?.status === 'running' ? (
                 <Button
                   variant="outline"
@@ -222,7 +224,7 @@ export function MainContent() {
                 <Plus className="mr-2 h-4 w-4" />
                 New Session
               </Button>
-            </>
+            </div>
           )}
           <Button
             variant="ghost"

@@ -146,8 +146,11 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
     }
   }
 
-  const handleKeyDown = (_e: React.KeyboardEvent) => {
-    // Enter always inserts a newline on the landing page; only the send button submits
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault()
+      handleSubmit(e)
+    }
   }
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -321,7 +324,7 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
               </div>
               <AttachmentPreview attachments={attachments} onRemove={removeAttachment} />
               <p className="text-xs text-muted-foreground text-center">
-                Press Enter to send, Shift+Enter for new line
+                Press Cmd+Enter to send
               </p>
             </form>
           </>

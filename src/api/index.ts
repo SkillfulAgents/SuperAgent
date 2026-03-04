@@ -39,7 +39,7 @@ app.use('*', cors(trustedOrigins?.length ? { origin: trustedOrigins } : undefine
 
 // Simple rate limiter for auth endpoints
 const authAttempts = new Map<string, { count: number; resetAt: number }>()
-const RATE_LIMIT_MAX = 20
+const RATE_LIMIT_MAX = 100
 const RATE_LIMIT_WINDOW = 15 * 60 * 1000 // 15 minutes
 
 if (isAuthMode()) {

@@ -163,7 +163,7 @@ function SignInForm({ onSwitchToSignUp, showSignupLink }: { onSwitchToSignUp: ()
   )
 }
 
-function SignUpForm({ onSwitchToSignIn, config }: { onSwitchToSignIn: () => void; config: AuthConfig }) {
+function SignUpForm({ onSwitchToSignIn, config, onPendingApproval }: { onSwitchToSignIn: () => void; config: AuthConfig; onPendingApproval?: (pending?: boolean) => void }) {
   const [serverError, setServerError] = useState<string | null>(null)
   const [pendingApproval, setPendingApproval] = useState(false)
 
@@ -183,28 +183,50 @@ function SignUpForm({ onSwitchToSignIn, config }: { onSwitchToSignIn: () => void
   async function onSubmit(data: SignUpValues) {
     setServerError(null)
     setPendingApproval(false)
+
+    const needsApproval = config.requireAdminApproval && config.hasUsers
+
+    // Pre-set pending state BEFORE the signup call to prevent a race condition:
+    // signUp.email() creates a session internally, which triggers useSession() →
+    // isAuthenticated=true → AuthGate unmounts AuthPage before we can set pending state.
+    // By setting it first, AuthGate keeps showing AuthPage via the pendingApproval check.
+    if (needsApproval) {
+      onPendingApproval?.(true)
+      setPendingApproval(true)
+    }
+
     try {
       const res = await signUp.email({
         name: data.name,
         email: data.email,
         password: data.password,
       })
-      if (res.error) {
+      if (needsApproval) {
+        signOut().catch(() => {}) // clean up any session (fire-and-forget)
+        // If signup failed for a real reason (not the expected ban), revert
+        if (res.error) {
+          const msg = (res.error.message || '').toLowerCase()
+          if (!msg.includes('banned') && !msg.includes('suspended') && !msg.includes('user')) {
+            onPendingApproval?.(false)
+            setPendingApproval(false)
+            setServerError(res.error.message || 'Sign up failed')
+          }
+        }
+      } else if (res.error) {
         const msg = res.error.message || 'Sign up failed'
-        // Better Auth returns a specific error when user is banned
         if (msg.toLowerCase().includes('banned') || msg.toLowerCase().includes('suspended')) {
+          onPendingApproval?.(true)
           setPendingApproval(true)
         } else {
           setServerError(msg)
         }
-      } else if (config.requireAdminApproval && config.hasUsers) {
-        // Signup succeeded but user is auto-banned pending admin review.
-        // Sign out the auto-created session so AuthGate keeps showing the
-        // auth page instead of navigating to the main app.
-        try { await signOut() } catch { /* session cleanup is best-effort */ }
-        setPendingApproval(true)
       }
     } catch {
+      if (needsApproval) {
+        // Network error — revert pending state
+        onPendingApproval?.(false)
+        setPendingApproval(false)
+      }
       setServerError('Sign up failed. Please try again.')
     }
   }
@@ -310,7 +332,7 @@ function SignUpForm({ onSwitchToSignIn, config }: { onSwitchToSignIn: () => void
   )
 }
 
-export function AuthPage() {
+export function AuthPage({ onPendingApproval }: { onPendingApproval?: (pending?: boolean) => void } = {}) {
   const config = useAuthConfig()
   const [tab, setTab] = useState<string>('signin')
 
@@ -334,7 +356,7 @@ export function AuthPage() {
                 <SignInForm onSwitchToSignUp={() => setTab('signup')} showSignupLink={true} />
               </TabsContent>
               <TabsContent value="signup">
-                <SignUpForm onSwitchToSignIn={() => setTab('signin')} config={config} />
+                <SignUpForm onSwitchToSignIn={() => setTab('signin')} config={config} onPendingApproval={onPendingApproval} />
               </TabsContent>
             </Tabs>
           ) : (

@@ -1,6 +1,7 @@
 
-import { Settings, Link2, Container, Bell, Globe, Library, BarChart3, Plug, Brain, Users, Shield, ShieldEllipsis } from 'lucide-react'
+import { Settings, Link2, Container, Bell, Globe, Library, BarChart3, Plug, Brain, Users, Shield, ShieldEllipsis, User } from 'lucide-react'
 import { SettingsDialog, SettingsDialogTab, SettingsDialogGroup } from '@renderer/components/ui/settings-dialog'
+import { ProfileTab } from './profile-tab'
 import { GeneralTab } from './general-tab'
 import { RuntimeTab } from './runtime-tab'
 import { ComposioTab } from './composio-tab'
@@ -36,6 +37,11 @@ export function GlobalSettingsDialog({
 
   const userTabs = (
     <>
+      {isAuthMode && (
+        <SettingsDialogTab id="profile" label="Profile & Login" icon={<User className="h-4 w-4" />}>
+          <ProfileTab />
+        </SettingsDialogTab>
+      )}
       <SettingsDialogTab id="general" label="General" icon={<Settings className="h-4 w-4" />}>
         <GeneralTab onOpenWizard={onOpenWizard} />
       </SettingsDialogTab>

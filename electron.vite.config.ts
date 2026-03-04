@@ -12,6 +12,7 @@ export default defineConfig({
     },
     build: {
       outDir: 'dist/main',
+      externalizeDeps: { exclude: ['better-auth'] },
       rollupOptions: { external: ['better-sqlite3', 'ws', 'electron-updater'] },
     },
     resolve: {
