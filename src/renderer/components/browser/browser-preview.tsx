@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Globe, ChevronUp, ChevronDown, GripHorizontal, X } from 'lucide-react'
+import { Globe, ChevronUp, ChevronDown, X } from 'lucide-react'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { clearBrowserActive } from '@renderer/hooks/use-message-stream'
 import { useUser } from '@renderer/context/user-context'
@@ -19,6 +19,15 @@ const HEADER_HEIGHT = 32
 const MIN_WIDTH = 240
 const EDGE_OFFSET = 16
 const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta'])
+
+type Corner = 'nw' | 'ne' | 'sw' | 'se'
+const CORNERS: Corner[] = ['nw', 'ne', 'sw', 'se']
+const CORNER_CONFIG: Record<Corner, { position: string; cursor: string; rotation: number }> = {
+  nw: { position: '-top-2.5 -left-2.5', cursor: 'cursor-nw-resize', rotation: 180 },
+  ne: { position: '-top-2.5 -right-2.5', cursor: 'cursor-ne-resize', rotation: -90 },
+  sw: { position: '-bottom-2.5 -left-2.5', cursor: 'cursor-sw-resize', rotation: 90 },
+  se: { position: '-bottom-2.5 -right-2.5', cursor: 'cursor-se-resize', rotation: 0 },
+}
 
 interface BrowserPreviewProps {
   agentSlug: string
@@ -53,8 +62,18 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
 
   // Drag state
   const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null)
+
   // Resize state
-  const resizeRef = useRef<{ startX: number; startY: number; origW: number; origH: number } | null>(null)
+  const resizeRef = useRef<{
+    startX: number; startY: number;
+    origW: number; origH: number;
+    origX: number; origY: number;
+    corner: Corner;
+  } | null>(null)
+  const sizeRef = useRef(size)
+  sizeRef.current = size
+  const posRef = useRef(pos)
+  posRef.current = pos
 
   // Initialize position to bottom-right of parent on first render
   useEffect(() => {
@@ -98,22 +117,36 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
   }, [])
 
   // --- Resize handlers ---
-  const handleResizeStart = useCallback((e: React.PointerEvent) => {
+  const handleResizeStart = useCallback((corner: Corner) => (e: React.PointerEvent) => {
     e.preventDefault()
     e.stopPropagation()
     ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
-    resizeRef.current = { startX: e.clientX, startY: e.clientY, origW: size.width, origH: size.height }
-  }, [size])
+    resizeRef.current = {
+      startX: e.clientX, startY: e.clientY,
+      origW: sizeRef.current.width, origH: sizeRef.current.height,
+      origX: posRef.current?.x ?? 0, origY: posRef.current?.y ?? 0,
+      corner,
+    }
+  }, [])
 
   const handleResizeMove = useCallback((e: React.PointerEvent) => {
     if (!resizeRef.current) return
-    const dx = e.clientX - resizeRef.current.startX
+    const { startX, origW, origH, origX, origY, corner } = resizeRef.current
+    const dx = e.clientX - startX
     const ratio = metadataRef.current.deviceWidth / metadataRef.current.deviceHeight
-    const newWidth = Math.max(MIN_WIDTH, resizeRef.current.origW + dx)
-    const canvasHeight = newWidth / ratio
-    setSize({
-      width: newWidth,
-      height: canvasHeight + HEADER_HEIGHT,
+
+    const isLeft = corner === 'nw' || corner === 'sw'
+    const isTop = corner === 'nw' || corner === 'ne'
+
+    const newWidth = Math.max(MIN_WIDTH, isLeft ? origW - dx : origW + dx)
+    const newHeight = newWidth / ratio + HEADER_HEIGHT
+    const deltaW = newWidth - origW
+    const deltaH = newHeight - origH
+
+    setSize({ width: newWidth, height: newHeight })
+    setPos({
+      x: isLeft ? origX - deltaW : origX,
+      y: isTop ? origY - deltaH : origY,
     })
   }, [])
 
@@ -450,11 +483,11 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
     <div
       ref={containerRef}
       style={floatStyle}
-      className="flex flex-col rounded-lg border bg-background shadow-lg overflow-hidden"
+      className="flex flex-col rounded-lg border bg-background shadow-lg overflow-visible"
     >
       {/* Drag handle / header bar */}
       <div
-        className="flex items-center gap-2 px-3 py-1.5 text-sm text-muted-foreground bg-muted/50 select-none shrink-0"
+        className="flex items-center gap-2 px-3 py-1.5 text-sm text-muted-foreground bg-muted/50 select-none shrink-0 rounded-t-lg"
         style={{ cursor: dragRef.current ? 'grabbing' : 'grab' }}
         onPointerDown={handleDragStart}
         onPointerMove={handleDragMove}
@@ -489,7 +522,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
 
       {/* Canvas viewport */}
       {expanded && (
-        <div className="relative flex-1 min-h-0 bg-black">
+        <div className="relative flex-1 min-h-0 bg-black rounded-b-lg overflow-hidden">
           <canvas
             ref={canvasRef}
             className={`w-full h-full object-contain ${isViewOnly ? 'cursor-not-allowed' : 'cursor-default'}`}
@@ -508,17 +541,28 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
             </div>
           )}
 
-          {/* Resize grip */}
+        </div>
+      )}
+
+      {/* Corner resize handles — diagonal grip lines */}
+      {expanded && CORNERS.map((corner) => {
+        const { position, cursor, rotation } = CORNER_CONFIG[corner]
+        return (
           <div
-            className="absolute bottom-0 right-0 w-5 h-5 flex items-center justify-center cursor-se-resize opacity-60 hover:opacity-100 transition-opacity"
-            onPointerDown={handleResizeStart}
+            key={corner}
+            className={`absolute z-[51] w-5 h-5 flex items-center justify-center opacity-60 hover:opacity-100 transition-opacity ${position} ${cursor}`}
+            onPointerDown={handleResizeStart(corner)}
             onPointerMove={handleResizeMove}
             onPointerUp={handleResizeEnd}
           >
-            <GripHorizontal className="h-3 w-3 text-white rotate-[-45deg]" />
+            <svg width="10" height="10" viewBox="0 0 10 10" style={{ transform: `rotate(${rotation}deg)` }}>
+              <line x1="2" y1="10" x2="10" y2="2" stroke="currentColor" strokeWidth="1.2" className="text-white" />
+              <line x1="5" y1="10" x2="10" y2="5" stroke="currentColor" strokeWidth="1.2" className="text-white" />
+              <line x1="8" y1="10" x2="10" y2="8" stroke="currentColor" strokeWidth="1.2" className="text-white" />
+            </svg>
           </div>
-        </div>
-      )}
+        )
+      })}
     </div>
 
     <AlertDialog open={showCloseWarning} onOpenChange={setShowCloseWarning}>
