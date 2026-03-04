@@ -24,6 +24,7 @@ export interface CreateScheduledTaskParams {
   prompt: string
   name?: string
   createdBySessionId?: string
+  targetSessionId?: string
 }
 
 export interface UpdateNextExecutionParams {
@@ -65,6 +66,7 @@ export async function createScheduledTask(
     executionCount: 0,
     createdAt: new Date(),
     createdBySessionId: params.createdBySessionId,
+    targetSessionId: params.targetSessionId,
   }
 
   await db.insert(scheduledTasks).values(newTask)

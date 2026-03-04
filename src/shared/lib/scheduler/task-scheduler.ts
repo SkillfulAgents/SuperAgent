@@ -23,10 +23,6 @@ import {
 } from '@shared/lib/services/session-service'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
-import {
-  getDuePauses,
-  markPauseCompleted,
-} from '@shared/lib/services/session-pause-service'
 
 
 class TaskScheduler {
@@ -51,16 +47,10 @@ class TaskScheduler {
     // Execute overdue tasks immediately on startup
     await this.executeOverdueTasks()
 
-    // Resume any overdue pauses immediately on startup
-    await this.resumeDuePauses()
-
     // Start periodic polling
     this.intervalId = setInterval(() => {
       this.executeOverdueTasks().catch((error) => {
         console.error('[TaskScheduler] Error in polling cycle:', error)
-      })
-      this.resumeDuePauses().catch((error) => {
-        console.error('[TaskScheduler] Error resuming pauses:', error)
       })
     }, this.pollIntervalMs)
 
@@ -164,93 +154,80 @@ class TaskScheduler {
     // Start the container if not running
     const client = await containerManager.ensureRunning(task.agentSlug)
 
-    // Get available env vars for the agent
-    const availableEnvVars = await getSecretEnvVars(task.agentSlug)
+    let sessionId: string
 
-    // Create a new session with the scheduled prompt
-    const containerSession = await client.createSession({
-      availableEnvVars:
-        availableEnvVars.length > 0 ? availableEnvVars : undefined,
-      initialMessage: task.prompt,
-      model: getEffectiveModels().agentModel,
-      browserModel: getEffectiveModels().browserModel,
-    })
+    if (task.targetSessionId) {
+      sessionId = task.targetSessionId
 
-    const sessionId = containerSession.id
-    const sessionName = task.name || 'Scheduled Task'
+      if (!messagePersister.isSubscribed(sessionId)) {
+        await messagePersister.subscribeToSession(
+          sessionId,
+          client,
+          sessionId,
+          task.agentSlug
+        )
+      }
 
-    // Register the session
-    await registerSession(task.agentSlug, sessionId, sessionName)
+      messagePersister.markSessionActive(sessionId, task.agentSlug)
+      await client.sendMessage(task.targetSessionId, task.prompt)
 
-    // Update session metadata to mark it as created from a scheduled task
-    await updateSessionMetadata(task.agentSlug, sessionId, {
-      isScheduledExecution: true,
-      scheduledTaskId: task.id,
-      scheduledTaskName: task.name || undefined,
-    })
+      console.log(
+        `[TaskScheduler] Task ${task.id} resumed in session ${sessionId}`
+      )
+    } else {
+      // Create a new session
+      const availableEnvVars = await getSecretEnvVars(task.agentSlug)
 
-    // Subscribe to the session for SSE updates
-    await messagePersister.subscribeToSession(
-      sessionId,
-      client,
-      sessionId,
-      task.agentSlug
-    )
-    messagePersister.markSessionActive(sessionId, task.agentSlug)
+      const containerSession = await client.createSession({
+        availableEnvVars:
+          availableEnvVars.length > 0 ? availableEnvVars : undefined,
+        initialMessage: task.prompt,
+        model: getEffectiveModels().agentModel,
+        browserModel: getEffectiveModels().browserModel,
+      })
 
-    console.log(
-      `[TaskScheduler] Task ${task.id} started, session: ${sessionId}`
-    )
+      sessionId = containerSession.id
+      const sessionName = task.name || 'Scheduled Task'
 
-    // Trigger scheduled session started notification
-    notificationManager.triggerScheduledSessionStarted(
-      sessionId,
-      task.agentSlug,
-      task.name || undefined
-    ).catch((err) => {
-      console.error('[TaskScheduler] Failed to trigger scheduled notification:', err)
-    })
+      await registerSession(task.agentSlug, sessionId, sessionName)
+
+      await updateSessionMetadata(task.agentSlug, sessionId, {
+        isScheduledExecution: true,
+        scheduledTaskId: task.id,
+        scheduledTaskName: task.name || undefined,
+      })
+
+      await messagePersister.subscribeToSession(
+        sessionId,
+        client,
+        sessionId,
+        task.agentSlug
+      )
+      messagePersister.markSessionActive(sessionId, task.agentSlug)
+
+      console.log(
+        `[TaskScheduler] Task ${task.id} started, session: ${sessionId}`
+      )
+
+      notificationManager.triggerScheduledSessionStarted(
+        sessionId,
+        task.agentSlug,
+        task.name || undefined
+      ).catch((err) => {
+        console.error('[TaskScheduler] Failed to trigger scheduled notification:', err)
+      })
+    }
 
     // Update task status
     if (task.isRecurring) {
-      // Update next execution time for recurring tasks
       const nextTime = getNextCronTime(task.scheduleExpression)
       await updateNextExecution(task.id, nextTime, sessionId)
       console.log(
         `[TaskScheduler] Recurring task ${task.id} next execution: ${nextTime.toISOString()}`
       )
     } else {
-      // Mark one-time task as executed
       await markTaskExecuted(task.id, sessionId)
       console.log(`[TaskScheduler] One-time task ${task.id} marked as executed`)
-    }
-  }
-
-  /**
-   * Resume all session pauses whose resumeAt has passed.
-   */
-  private async resumeDuePauses(): Promise<void> {
-    const duePauses = await getDuePauses()
-    if (duePauses.length === 0) return
-
-    console.log(`[TaskScheduler] Found ${duePauses.length} due pause(s) to resume`)
-
-    for (const pause of duePauses) {
-      const client = await containerManager.ensureRunning(pause.agentSlug)
-
-      await client.fetch(
-        `/inputs/${encodeURIComponent(pause.toolUseId)}/resolve`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            value: `Pause complete (${pause.duration}). Continue with your task.`,
-          }),
-        }
-      )
-
-      await markPauseCompleted(pause.id)
-      console.log(`[TaskScheduler] Pause ${pause.id} resumed`)
     }
   }
 

@@ -159,30 +159,12 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   lastSessionId: text('last_session_id'),
   createdBySessionId: text('created_by_session_id'),
   createdByUserId: text('created_by_user_id'), // For ACL purposes in auth mode
+  targetSessionId: text('target_session_id'), // When set, sends message to this session instead of creating a new one
 
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   cancelledAt: integer('cancelled_at', { mode: 'timestamp_ms' }),
 })
-
-// Session pauses - agent-initiated conversation pauses with scheduled resume
-export const sessionPauses = sqliteTable('session_pauses', {
-  id: text('id').primaryKey(),
-  sessionId: text('session_id').notNull(),
-  agentSlug: text('agent_slug').notNull(),
-  toolUseId: text('tool_use_id').notNull(),
-  duration: text('duration').notNull(),
-  reason: text('reason'),
-  resumeAt: integer('resume_at', { mode: 'timestamp_ms' }).notNull(),
-  status: text('status', { enum: ['pending', 'completed', 'cancelled', 'failed'] })
-    .notNull()
-    .default('pending'),
-  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
-  completedAt: integer('completed_at', { mode: 'timestamp_ms' }),
-}, (table) => ({
-  statusResumeAtIdx: index('session_pauses_status_resume_at_idx').on(table.status, table.resumeAt),
-  sessionIdIdx: index('session_pauses_session_id_idx').on(table.sessionId),
-}))
 
 // Notifications - user notifications for session events
 export const notifications = sqliteTable('notifications', {
@@ -304,8 +286,6 @@ export type AgentConnectedAccount = typeof agentConnectedAccounts.$inferSelect
 export type NewAgentConnectedAccount = typeof agentConnectedAccounts.$inferInsert
 export type ScheduledTask = typeof scheduledTasks.$inferSelect
 export type NewScheduledTask = typeof scheduledTasks.$inferInsert
-export type SessionPause = typeof sessionPauses.$inferSelect
-export type NewSessionPause = typeof sessionPauses.$inferInsert
 export type Notification = typeof notifications.$inferSelect
 export type NewNotification = typeof notifications.$inferInsert
 export type ProxyToken = typeof proxyTokens.$inferSelect

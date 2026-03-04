@@ -12,8 +12,9 @@ import {
   getScheduledTask,
   cancelScheduledTask,
   resetScheduledTask,
+  deleteScheduledTask,
 } from '@shared/lib/services/scheduled-task-service'
-import { getSessionsByScheduledTask } from '@shared/lib/services/session-service'
+import { getSessionsByScheduledTask, getSession } from '@shared/lib/services/session-service'
 import { Authenticated } from '../middleware/auth'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
@@ -69,11 +70,18 @@ scheduledTasksRouter.get('/:taskId', TaskAgentRole('viewer'), async (c) => {
   }
 })
 
-// GET /api/scheduled-tasks/:taskId/sessions - Get all sessions created by this scheduled task
+// GET /api/scheduled-tasks/:taskId/sessions - Get all sessions related to this scheduled task
 scheduledTasksRouter.get('/:taskId/sessions', TaskAgentRole('viewer'), async (c) => {
   try {
     const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
     const sessions = await getSessionsByScheduledTask(task!.agentSlug, task!.id)
+    const sessionIds = new Set(sessions.map((s) => s.id))
+
+    if (task!.targetSessionId && !sessionIds.has(task!.targetSessionId)) {
+      const targetSession = await getSession(task!.agentSlug, task!.targetSessionId)
+      if (targetSession) sessions.unshift(targetSession)
+    }
+
     return c.json(sessions)
   } catch (error) {
     console.error('Failed to fetch sessions for scheduled task:', error)
@@ -81,20 +89,27 @@ scheduledTasksRouter.get('/:taskId/sessions', TaskAgentRole('viewer'), async (c)
   }
 })
 
-// DELETE /api/scheduled-tasks/:taskId - Cancel a scheduled task
+// DELETE /api/scheduled-tasks/:taskId - Cancel or delete a scheduled task
 scheduledTasksRouter.delete('/:taskId', TaskAgentRole('user'), async (c) => {
   try {
     const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
-    const cancelled = await cancelScheduledTask(task!.id)
 
-    if (!cancelled) {
-      return c.json({ error: 'Scheduled task not found or already cancelled' }, 404)
+    if (task!.status === 'pending') {
+      const cancelled = await cancelScheduledTask(task!.id)
+      if (!cancelled) {
+        return c.json({ error: 'Scheduled task not found or already cancelled' }, 404)
+      }
+    } else {
+      const deleted = await deleteScheduledTask(task!.id)
+      if (!deleted) {
+        return c.json({ error: 'Scheduled task not found' }, 404)
+      }
     }
 
     return c.body(null, 204)
   } catch (error) {
-    console.error('Failed to cancel scheduled task:', error)
-    return c.json({ error: 'Failed to cancel scheduled task' }, 500)
+    console.error('Failed to cancel/delete scheduled task:', error)
+    return c.json({ error: 'Failed to cancel/delete scheduled task' }, 500)
   }
 })
 

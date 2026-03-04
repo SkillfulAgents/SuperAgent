@@ -5,7 +5,7 @@
  * that will be executed and options to cancel the task.
  */
 
-import { Clock, Calendar, Repeat, Trash2, MessageSquare } from 'lucide-react'
+import { Clock, Timer, Calendar, Repeat, Trash2, MessageSquare } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import {
   useScheduledTask,
@@ -81,7 +81,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
                 {isRecurring ? (
                   <Repeat className="h-4 w-4" />
                 ) : (
-                  <Clock className="h-4 w-4" />
+                  <Timer className="h-4 w-4" />
                 )}
                 <span>{isRecurring ? 'Recurring' : 'One-time'}</span>
               </div>
@@ -92,19 +92,23 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
             </div>
           </div>
 
-          {task.status === 'pending' && canCancel && (
+          {canCancel && (
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button variant="destructive" size="sm">
                   <Trash2 className="h-4 w-4 mr-2" />
-                  Cancel Task
+                  {task.status === 'pending' ? 'Cancel Task' : 'Delete Task'}
                 </Button>
               </AlertDialogTrigger>
               <AlertDialogContent>
                 <AlertDialogHeader>
-                  <AlertDialogTitle>Cancel Scheduled Task</AlertDialogTitle>
+                  <AlertDialogTitle>
+                    {task.status === 'pending' ? 'Cancel Scheduled Task' : 'Delete Scheduled Task'}
+                  </AlertDialogTitle>
                   <AlertDialogDescription>
-                    Are you sure you want to cancel this scheduled task? This action cannot be undone.
+                    {task.status === 'pending'
+                      ? 'Are you sure you want to cancel this scheduled task? This action cannot be undone.'
+                      : 'Are you sure you want to delete this scheduled task? This action cannot be undone.'}
                   </AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>
@@ -114,7 +118,9 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
                     disabled={cancelTask.isPending}
                     className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                   >
-                    {cancelTask.isPending ? 'Cancelling...' : 'Cancel Task'}
+                    {cancelTask.isPending
+                      ? (task.status === 'pending' ? 'Cancelling...' : 'Deleting...')
+                      : (task.status === 'pending' ? 'Cancel Task' : 'Delete Task')}
                   </AlertDialogAction>
                 </AlertDialogFooter>
               </AlertDialogContent>

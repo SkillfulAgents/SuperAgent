@@ -44,8 +44,11 @@ For recurring tasks, use cron syntax (5 fields: minute hour day-of-month month d
 - "*/15 * * * *" - Every 15 minutes
 - "0 0 1 * *" - First day of every month at midnight
 
-The prompt you provide will be sent to the agent as a new conversation at the scheduled time.
-The task will be executed in a new session, and the agent will have full access to tools and capabilities.
+The prompt you provide will be sent to the agent at the scheduled time.
+By default, a new session is created. Set resumeInCurrentSession to true to send the prompt
+to the current conversation instead — useful for "wait and check back" patterns like:
+- Post to Slack, wait 1 hour, then check for replies
+- Deploy a change, wait 30 minutes, then verify monitoring
 
 Note: One-time tasks ('at') will execute once and complete. Recurring tasks ('cron') will continue executing on schedule until cancelled.`,
   {
@@ -67,6 +70,12 @@ Note: One-time tasks ('at') will execute once and complete. Recurring tasks ('cr
       .optional()
       .describe(
         'Optional display name for this scheduled task (e.g., "Daily backup", "Send weekly report")'
+      ),
+    resumeInCurrentSession: z
+      .boolean()
+      .optional()
+      .describe(
+        'If true, the prompt will be sent to the current session instead of creating a new one. Useful for "wait and check back" patterns.'
       ),
   },
   async (args) => {
@@ -128,9 +137,11 @@ Schedule: ${args.scheduleExpression}
 Task: ${args.prompt.substring(0, 100)}${args.prompt.length > 100 ? '...' : ''}
 
 The task has been registered and will be executed according to the schedule. ${
-            args.scheduleType === 'cron'
-              ? 'This recurring task will continue until cancelled.'
-              : 'This one-time task will be removed after execution.'
+            args.resumeInCurrentSession
+              ? 'The prompt will be sent to this conversation.'
+              : args.scheduleType === 'cron'
+                ? 'This recurring task will continue until cancelled.'
+                : 'This one-time task will be removed after execution.'
           }`,
         },
       ],

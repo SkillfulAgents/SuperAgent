@@ -1,7 +1,6 @@
 import type { ContainerClient, StreamMessage, SlashCommandInfo } from './types'
 import type { SessionUsage } from '@shared/lib/types/agent'
 import { createScheduledTask } from '@shared/lib/services/scheduled-task-service'
-import { createSessionPause } from '@shared/lib/services/session-pause-service'
 import { updateSessionMetadata } from '@shared/lib/services/session-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
@@ -841,16 +840,6 @@ class MessagePersister {
             )
           }
 
-          // Check if this is a long pause tool
-          if (state.currentToolUse.name === 'mcp__user-input__long_pause') {
-            this.handleLongPauseTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
           // Track Task tool for subagent correlation
           if (state.currentToolUse.name === 'Task') {
             state.pendingTaskToolId = state.currentToolUse.id
@@ -975,6 +964,7 @@ class MessagePersister {
           scheduleExpression: string
           prompt: string
           name?: string
+          resumeInCurrentSession?: boolean
         }
         try {
           input = JSON.parse(toolInput)
@@ -1001,6 +991,7 @@ class MessagePersister {
           prompt: input.prompt,
           name: input.name,
           createdBySessionId: sessionId,
+          targetSessionId: input.resumeInCurrentSession ? sessionId : undefined,
         })
 
         // Broadcast the scheduled task created event to session-specific SSE clients
@@ -1022,68 +1013,6 @@ class MessagePersister {
         })
       } catch (error) {
         console.error('[MessagePersister] Error handling schedule task:', error)
-      }
-    })()
-  }
-
-  // Handle long pause tool - save to database and broadcast pause event
-  private handleLongPauseTool(
-    sessionId: string,
-    toolUseId: string,
-    toolInput: string,
-    agentSlug?: string
-  ): void {
-    ;(async () => {
-      try {
-        let input: { duration: string; reason?: string }
-        try {
-          input = JSON.parse(toolInput)
-        } catch {
-          console.error('[MessagePersister] Failed to parse long_pause input:', toolInput)
-          return
-        }
-
-        if (!input.duration) {
-          console.error('[MessagePersister] long_pause missing duration')
-          return
-        }
-
-        if (!agentSlug) {
-          console.error('[MessagePersister] long_pause missing agentSlug')
-          return
-        }
-
-        const { id: pauseId, resumeAt } = await createSessionPause({
-          sessionId,
-          agentSlug,
-          toolUseId,
-          duration: input.duration,
-          reason: input.reason,
-        })
-
-        console.log(
-          `[MessagePersister] Session ${sessionId} paused until ${resumeAt.toISOString()} (pause ${pauseId})`
-        )
-
-        this.broadcastToSSE(sessionId, {
-          type: 'session_paused',
-          toolUseId,
-          pauseId,
-          duration: input.duration,
-          reason: input.reason,
-          resumeAt: resumeAt.toISOString(),
-          agentSlug,
-        })
-
-        this.broadcastGlobal({
-          type: 'session_paused',
-          sessionId,
-          pauseId,
-          agentSlug,
-          resumeAt: resumeAt.toISOString(),
-        })
-      } catch (error) {
-        console.error('[MessagePersister] Error handling long pause:', error)
       }
     })()
   }
