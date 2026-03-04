@@ -22,14 +22,14 @@ const STT_PROVIDERS = [
     label: 'Deepgram',
     model: 'Nova 3',
     docsUrl: 'https://developers.deepgram.com/docs/models-languages-overview',
-    note: 'Lowest latency (~200ms). 47 languages — Chinese not yet supported.',
+    note: 'Lowest latency (~200ms). 47 languages supported.',
   },
   {
     value: 'openai' as const,
     label: 'OpenAI',
     model: 'GPT-4o Mini Transcribe',
     docsUrl: 'https://platform.openai.com/docs/guides/speech-to-text#supported-languages',
-    note: 'Most accurate & affordable. 57 languages including Chinese.',
+    note: 'Most accurate & affordable. 57 languages supported.',
   },
 ]
 
