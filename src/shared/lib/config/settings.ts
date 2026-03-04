@@ -19,6 +19,14 @@ export interface ApiKeySettings {
   composioUserId?: string
   browserbaseApiKey?: string
   browserbaseProjectId?: string
+  deepgramApiKey?: string
+  openaiApiKey?: string
+}
+
+export type SttProvider = 'deepgram' | 'openai'
+
+export interface VoiceSettings {
+  sttProvider?: SttProvider
 }
 
 export interface NotificationSettings {
@@ -110,6 +118,7 @@ export interface AppSettings {
   customEnvVars?: Record<string, string>
   skillsets?: SkillsetConfig[]
   auth?: AuthSettings
+  voice?: VoiceSettings
 }
 
 // API key source types
@@ -146,8 +155,11 @@ export interface GlobalSettingsResponse {
   apiKeyStatus: {
     anthropic: ApiKeyStatus
     composio: ApiKeyStatus
+    deepgram: ApiKeyStatus
+    openai: ApiKeyStatus
   }
   composioUserId?: string
+  voice?: VoiceSettings
   models: ModelSettings
   agentLimits: AgentLimitsSettings
   customEnvVars: Record<string, string>
@@ -246,6 +258,7 @@ export function loadSettings(): AppSettings {
           ...DEFAULT_AUTH_SETTINGS,
           ...loaded.auth,
         },
+        voice: loaded.voice,
       }
     }
   } catch (error) {
@@ -391,6 +404,49 @@ export function getEffectiveAgentLimits(): AgentLimitsSettings {
 export function getCustomEnvVars(): Record<string, string> {
   const settings = getSettings()
   return settings.customEnvVars ?? {}
+}
+
+export function getDeepgramApiKeyStatus(): ApiKeyStatus {
+  const settings = getSettings()
+  if (settings.apiKeys?.deepgramApiKey) {
+    return { isConfigured: true, source: 'settings' }
+  }
+  if (process.env.DEEPGRAM_API_KEY) {
+    return { isConfigured: true, source: 'env' }
+  }
+  return { isConfigured: false, source: 'none' }
+}
+
+export function getEffectiveDeepgramApiKey(): string | undefined {
+  const settings = getSettings()
+  if (settings.apiKeys?.deepgramApiKey) {
+    return settings.apiKeys.deepgramApiKey
+  }
+  return process.env.DEEPGRAM_API_KEY
+}
+
+export function getOpenaiApiKeyStatus(): ApiKeyStatus {
+  const settings = getSettings()
+  if (settings.apiKeys?.openaiApiKey) {
+    return { isConfigured: true, source: 'settings' }
+  }
+  if (process.env.OPENAI_API_KEY) {
+    return { isConfigured: true, source: 'env' }
+  }
+  return { isConfigured: false, source: 'none' }
+}
+
+export function getEffectiveOpenaiApiKey(): string | undefined {
+  const settings = getSettings()
+  if (settings.apiKeys?.openaiApiKey) {
+    return settings.apiKeys.openaiApiKey
+  }
+  return process.env.OPENAI_API_KEY
+}
+
+export function getVoiceSettings(): VoiceSettings {
+  const settings = getSettings()
+  return settings.voice ?? {}
 }
 
 export { DEFAULT_SETTINGS }

@@ -11,6 +11,9 @@ import {
   getAnthropicApiKeyStatus,
   getComposioApiKeyStatus,
   getComposioUserId,
+  getDeepgramApiKeyStatus,
+  getOpenaiApiKeyStatus,
+  getVoiceSettings,
   getEffectiveModels,
   getEffectiveAgentLimits,
   getCustomEnvVars,
@@ -47,6 +50,8 @@ settings.get('/', async (c) => {
       apiKeyStatus: {
         anthropic: getAnthropicApiKeyStatus(),
         composio: getComposioApiKeyStatus(),
+        deepgram: getDeepgramApiKeyStatus(),
+        openai: getOpenaiApiKeyStatus(),
       },
       models: getEffectiveModels(),
       agentLimits: getEffectiveAgentLimits(),
@@ -56,6 +61,7 @@ settings.get('/', async (c) => {
       hostBrowserStatus: { providers: detectAllProviders() },
       runtimeReadiness: containerManager.getReadiness(),
       auth: currentSettings.auth,
+      voice: getVoiceSettings(),
     }
 
     return c.json(response)
@@ -132,6 +138,9 @@ settings.put('/', async (c) => {
       auth: body.auth !== undefined
         ? { ...currentSettings.auth, ...body.auth }
         : currentSettings.auth,
+      voice: body.voice !== undefined
+        ? { ...currentSettings.voice, ...body.voice }
+        : currentSettings.voice,
     }
 
     // Handle API key updates
@@ -191,6 +200,28 @@ settings.put('/', async (c) => {
         }
       }
 
+      // Handle Deepgram API key
+      if (body.apiKeys.deepgramApiKey === '') {
+        newSettings.apiKeys = { ...newSettings.apiKeys }
+        delete newSettings.apiKeys.deepgramApiKey
+      } else if (body.apiKeys.deepgramApiKey) {
+        newSettings.apiKeys = {
+          ...newSettings.apiKeys,
+          deepgramApiKey: body.apiKeys.deepgramApiKey,
+        }
+      }
+
+      // Handle OpenAI API key
+      if (body.apiKeys.openaiApiKey === '') {
+        newSettings.apiKeys = { ...newSettings.apiKeys }
+        delete newSettings.apiKeys.openaiApiKey
+      } else if (body.apiKeys.openaiApiKey) {
+        newSettings.apiKeys = {
+          ...newSettings.apiKeys,
+          openaiApiKey: body.apiKeys.openaiApiKey,
+        }
+      }
+
       // Clean up empty object
       if (
         newSettings.apiKeys &&
@@ -236,6 +267,8 @@ settings.put('/', async (c) => {
       apiKeyStatus: {
         anthropic: getAnthropicApiKeyStatus(),
         composio: getComposioApiKeyStatus(),
+        deepgram: getDeepgramApiKeyStatus(),
+        openai: getOpenaiApiKeyStatus(),
       },
       models: getEffectiveModels(),
       agentLimits: getEffectiveAgentLimits(),
@@ -245,6 +278,7 @@ settings.put('/', async (c) => {
       hostBrowserStatus: { providers: detectAllProviders() },
       runtimeReadiness: containerManager.getReadiness(),
       auth: newSettings.auth,
+      voice: getVoiceSettings(),
     })
   } catch (error) {
     console.error('Failed to update settings:', error)
@@ -397,6 +431,58 @@ settings.post('/validate-composio-key', async (c) => {
         return c.json({ valid: false, error: 'Invalid API key' })
       }
       return c.json({ valid: false, error: `Composio API error: ${response.status}` })
+    }
+
+    return c.json({ valid: true })
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Validation failed'
+    return c.json({ valid: false, error: message })
+  }
+})
+
+// POST /api/settings/validate-deepgram-key - Validate a Deepgram API key
+settings.post('/validate-deepgram-key', async (c) => {
+  try {
+    const { apiKey } = await c.req.json()
+    if (!apiKey || typeof apiKey !== 'string') {
+      return c.json({ valid: false, error: 'API key is required' }, 400)
+    }
+
+    const response = await fetch('https://api.deepgram.com/v1/projects', {
+      headers: { Authorization: `Token ${apiKey}` },
+    })
+
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        return c.json({ valid: false, error: 'Invalid API key' })
+      }
+      return c.json({ valid: false, error: `Deepgram API error: ${response.status}` })
+    }
+
+    return c.json({ valid: true })
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Validation failed'
+    return c.json({ valid: false, error: message })
+  }
+})
+
+// POST /api/settings/validate-openai-key - Validate an OpenAI API key
+settings.post('/validate-openai-key', async (c) => {
+  try {
+    const { apiKey } = await c.req.json()
+    if (!apiKey || typeof apiKey !== 'string') {
+      return c.json({ valid: false, error: 'API key is required' }, 400)
+    }
+
+    const response = await fetch('https://api.openai.com/v1/models', {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    })
+
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        return c.json({ valid: false, error: 'Invalid API key' })
+      }
+      return c.json({ valid: false, error: `OpenAI API error: ${response.status}` })
     }
 
     return c.json({ valid: true })

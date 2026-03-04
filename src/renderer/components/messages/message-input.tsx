@@ -3,9 +3,12 @@ import { Button } from '@renderer/components/ui/button'
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { useSendMessage, useUploadFile, useInterruptSession } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
-import { Send, Loader2, StopCircle, Paperclip, WifiOff } from 'lucide-react'
+import { Send, Loader2, StopCircle, Paperclip, WifiOff, Mic, MicOff } from 'lucide-react'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
+import { useDialogs } from '@renderer/context/dialog-context'
+import { useSettings } from '@renderer/hooks/use-settings'
+import { useVoiceInput } from '@renderer/hooks/use-voice-input'
 import { AttachmentPreview, type Attachment } from './attachment-preview'
 import { SlashCommandMenu } from './slash-command-menu'
 
@@ -32,6 +35,31 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
   const { isActive, slashCommands } = useMessageStream(sessionId, agentSlug)
   const isOnline = useIsOnline()
   const isOffline = !isOnline
+  const { data: settingsData } = useSettings()
+  const { openSettings } = useDialogs()
+
+  const hasVoiceConfigured = settingsData?.voice?.sttProvider && (
+    (settingsData.voice.sttProvider === 'deepgram' && settingsData.apiKeyStatus?.deepgram?.isConfigured) ||
+    (settingsData.voice.sttProvider === 'openai' && settingsData.apiKeyStatus?.openai?.isConfigured)
+  )
+
+  const voiceInput = useVoiceInput({
+    onTranscriptUpdate: useCallback((text: string) => {
+      setMessage(text)
+    }, []),
+  })
+
+  const handleVoiceToggle = useCallback(() => {
+    if (!hasVoiceConfigured) {
+      openSettings('voice')
+      return
+    }
+    if (voiceInput.isRecording || voiceInput.isConnecting) {
+      voiceInput.stopRecording()
+    } else {
+      voiceInput.startRecording(message)
+    }
+  }, [hasVoiceConfigured, openSettings, voiceInput, message])
 
   // Extract the slash command prefix being typed (e.g. "co" from "/co")
   const slashFilter = useMemo(() => {
@@ -156,6 +184,11 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
       setIsUploading(false)
     }
 
+    // Stop voice recording if active
+    if (voiceInput.isRecording || voiceInput.isConnecting) {
+      voiceInput.stopRecording()
+    }
+
     // Clear state before sending
     onMessageSent?.(content)
     setMessage('')
@@ -277,6 +310,31 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
         >
           <Paperclip className="h-4 w-4" />
         </Button>
+        {voiceInput.isSupported && (
+          <Button
+            type="button"
+            size="icon"
+            variant={voiceInput.isRecording ? 'destructive' : 'ghost'}
+            className={`h-[34px] w-[34px] ${voiceInput.isRecording ? 'animate-pulse' : ''}`}
+            onClick={handleVoiceToggle}
+            disabled={isDisabled && !voiceInput.isRecording}
+            title={
+              !hasVoiceConfigured
+                ? 'Set up voice input'
+                : voiceInput.isRecording
+                  ? 'Stop recording'
+                  : 'Voice input'
+            }
+          >
+            {voiceInput.isConnecting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : voiceInput.isRecording ? (
+              <MicOff className="h-4 w-4" />
+            ) : (
+              <Mic className="h-4 w-4" />
+            )}
+          </Button>
+        )}
         <textarea
           ref={textareaRef}
           value={message}

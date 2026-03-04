@@ -5,8 +5,11 @@ import { Input } from '@renderer/components/ui/input'
 import { Textarea } from '@renderer/components/ui/textarea'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Checkbox } from '@renderer/components/ui/checkbox'
-import { Send, Loader2, Sparkles, Paperclip, Search, RefreshCw, ChevronLeft, ChevronRight, Filter, Eye, Maximize2, Minimize2 } from 'lucide-react'
+import { Send, Loader2, Sparkles, Paperclip, Search, RefreshCw, ChevronLeft, ChevronRight, Filter, Eye, Maximize2, Minimize2, Mic, MicOff } from 'lucide-react'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
+import { useSettings } from '@renderer/hooks/use-settings'
+import { useDialogs } from '@renderer/context/dialog-context'
+import { useVoiceInput } from '@renderer/hooks/use-voice-input'
 import { useAgentSkills, useDiscoverableSkills, useRefreshAgentSkills } from '@renderer/hooks/use-agent-skills'
 import { AgentSkillCard } from './agent-skill-card'
 import { DiscoverableSkillCard } from './discoverable-skill-card'
@@ -129,6 +132,11 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
         setIsUploading(false)
       }
 
+      // Stop voice recording if active
+      if (voiceInput.isRecording || voiceInput.isConnecting) {
+        voiceInput.stopRecording()
+      }
+
       // Create session with the message (including file paths)
       const session = await createSession.mutateAsync({
         agentSlug: agent.slug,
@@ -215,6 +223,32 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
   useEffect(() => {
     setSkillPage(0)
   }, [skillSearch, selectedSkillsets])
+
+  const { data: settingsData } = useSettings()
+  const { openSettings } = useDialogs()
+
+  const hasVoiceConfigured = settingsData?.voice?.sttProvider && (
+    (settingsData.voice.sttProvider === 'deepgram' && settingsData.apiKeyStatus?.deepgram?.isConfigured) ||
+    (settingsData.voice.sttProvider === 'openai' && settingsData.apiKeyStatus?.openai?.isConfigured)
+  )
+
+  const voiceInput = useVoiceInput({
+    onTranscriptUpdate: useCallback((text: string) => {
+      setMessage(text)
+    }, []),
+  })
+
+  const handleVoiceToggle = useCallback(() => {
+    if (!hasVoiceConfigured) {
+      openSettings('voice')
+      return
+    }
+    if (voiceInput.isRecording || voiceInput.isConnecting) {
+      voiceInput.stopRecording()
+    } else {
+      voiceInput.startRecording(message)
+    }
+  }, [hasVoiceConfigured, openSettings, voiceInput, message])
 
   const isDisabled = createSession.isPending || isUploading || !isRuntimeReady
 
@@ -307,6 +341,31 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
                   >
                     <Paperclip className="h-4 w-4" />
                   </Button>
+                  {voiceInput.isSupported && (
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant={voiceInput.isRecording ? 'destructive' : 'ghost'}
+                      className={`h-8 w-8 ${voiceInput.isRecording ? 'animate-pulse' : ''}`}
+                      onClick={handleVoiceToggle}
+                      disabled={isDisabled && !voiceInput.isRecording}
+                      title={
+                        !hasVoiceConfigured
+                          ? 'Set up voice input'
+                          : voiceInput.isRecording
+                            ? 'Stop recording'
+                            : 'Voice input'
+                      }
+                    >
+                      {voiceInput.isConnecting ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : voiceInput.isRecording ? (
+                        <MicOff className="h-4 w-4" />
+                      ) : (
+                        <Mic className="h-4 w-4" />
+                      )}
+                    </Button>
+                  )}
                   <Button
                     type="submit"
                     size="icon"
