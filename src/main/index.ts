@@ -30,7 +30,7 @@ import { serve } from '@hono/node-server'
 import api from '../api'
 import { initializeServices, shutdownServices } from '@shared/lib/startup'
 import { findAvailablePort } from './find-port'
-import { setupBrowserStreamProxy } from './browser-stream-proxy'
+import { setupServerHandlers } from '@shared/lib/startup'
 
 // Set the app name (shows in macOS menu bar instead of "Electron" during dev)
 app.name = 'SuperAgent'
@@ -318,8 +318,8 @@ async function startApp() {
     startNotificationListener()
   })
 
-  // Set up WebSocket upgrade handler for browser stream proxy
-  setupBrowserStreamProxy(apiServer)
+  // Set up server-level handlers (WebSocket proxies, etc.)
+  setupServerHandlers(apiServer)
 
   // Wait for app to be ready, then create window
   await app.whenReady()

@@ -1,3 +1,4 @@
+import type { ServerType } from '@hono/node-server'
 import { containerManager } from './container/container-manager'
 import { taskScheduler } from './scheduler/task-scheduler'
 import { autoSleepMonitor } from './scheduler/auto-sleep-monitor'
@@ -5,6 +6,7 @@ import { stopAllProviders } from '../../main/host-browser'
 import { listAgents } from './services/agent-service'
 import { isAuthMode } from './auth/mode'
 import { validateAuthModeStartup } from './auth/startup-validation'
+import { setupBrowserStreamProxy } from '../../main/browser-stream-proxy'
 
 /**
  * Initialize all background services.
@@ -41,6 +43,18 @@ export async function initializeServices() {
   autoSleepMonitor.start().catch((error) => {
     console.error('Failed to start auto-sleep monitor:', error)
   })
+}
+
+/**
+ * Set up server-level handlers that require the HTTP server instance.
+ *
+ * Called from all entry points after creating the HTTP server:
+ * - main/index.ts: Electron
+ * - web/server.ts: standalone web server (Docker)
+ * - vite.config.ts: Vite dev server
+ */
+export function setupServerHandlers(server: ServerType): void {
+  setupBrowserStreamProxy(server)
 }
 
 /**

@@ -28,10 +28,10 @@ export default defineConfig({
             process.env.PORT = String(addr.port)
           }
         })
-        // Set up WebSocket upgrade handler for browser stream proxy
+        // Set up server-level handlers (WebSocket proxies, etc.)
         if (server.httpServer) {
-          server.ssrLoadModule(path.resolve(__dirname, 'src/main/browser-stream-proxy.ts')).then(({ setupBrowserStreamProxy }) => {
-            setupBrowserStreamProxy(server.httpServer as any)
+          server.ssrLoadModule(path.resolve(__dirname, 'src/shared/lib/startup.ts')).then(({ setupServerHandlers }) => {
+            setupServerHandlers(server.httpServer as any)
           })
         }
         server.httpServer?.on('close', async () => {

@@ -3,9 +3,8 @@ import { serveStatic } from '@hono/node-server/serve-static'
 import { Hono } from 'hono'
 import { existsSync } from 'fs'
 import api from '../api'
-import { shutdownServices } from '@shared/lib/startup'
+import { shutdownServices, setupServerHandlers } from '@shared/lib/startup'
 import { findAvailablePort } from '../main/find-port'
-
 const app = new Hono()
 
 // Mount API routes
@@ -64,6 +63,9 @@ async function start() {
     // Services are initialized by api/index.ts (which we import above).
     // No need to call initializeServices() here — it already ran at module load.
   })
+
+  // Set up server-level handlers (WebSocket proxies, etc.)
+  setupServerHandlers(server)
 }
 
 start()
