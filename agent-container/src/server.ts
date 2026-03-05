@@ -12,7 +12,6 @@ import * as dns from 'dns';
 import * as net from 'net';
 import { inputManager } from './input-manager';
 import { dashboardManager } from './dashboard-manager';
-import { getCurrentProcess } from './claude-code';
 
 // Global error handlers to prevent crashes from AbortError during interrupts
 // The SDK throws AbortError when queries are aborted, which can propagate uncaught
@@ -753,16 +752,9 @@ function broadcastBrowserEvent(active: boolean): void {
   });
 }
 
-// Validate that the requesting session owns the browser (or browser is not active).
-// If the owning session's process is no longer running, release the stale lock.
+// Validate that the requesting session owns the browser (or browser is not active)
 function validateBrowserSession(requestSessionId: string): string | null {
   if (browserState.active && browserState.sessionId !== requestSessionId) {
-    const owningProcess = getCurrentProcess();
-    if (!owningProcess || !owningProcess.isRunning()) {
-      console.log(`[Browser] Releasing stale browser lock from session ${browserState.sessionId}`);
-      browserState = { active: false, sessionId: null, cdpUrl: null };
-      return null;
-    }
     return `Browser is owned by session ${browserState.sessionId}`;
   }
   return null;
@@ -787,9 +779,6 @@ app.post('/browser/open', async (c) => {
     if (validationError) {
       return c.json({ error: validationError }, 409);
     }
-
-    // Always start with a fresh host browser to avoid stale CDP connections
-    await stopHostBrowserIfNeeded();
 
     const hostBrowser = await launchHostBrowserIfNeeded();
     const cdpUrl = hostBrowser?.cdpUrl;
