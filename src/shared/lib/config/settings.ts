@@ -130,7 +130,7 @@ export interface HostBrowserProviderInfo {
   name: string
   available: boolean
   reason?: string
-  profiles?: Array<{ id: string; name: string }>
+  profiles?: Array<{ id: string; name: string; avatarUrl?: string }>
 }
 
 export interface HostBrowserStatus {

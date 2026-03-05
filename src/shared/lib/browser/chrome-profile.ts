@@ -26,7 +26,7 @@ export function getChromeUserDataDir(): string | null {
 /**
  * Lists Chrome profiles by reading Local State JSON.
  */
-export function listChromeProfiles(): Array<{ id: string; name: string }> {
+export function listChromeProfiles(): Array<{ id: string; name: string; avatarUrl?: string }> {
   const dataDir = getChromeUserDataDir()
   if (!dataDir) return []
 
@@ -41,6 +41,7 @@ export function listChromeProfiles(): Array<{ id: string; name: string }> {
     return Object.entries(infoCache).map(([id, info]) => ({
       id,
       name: (info as { name?: string }).name || id,
+      avatarUrl: (info as { last_downloaded_gaia_picture_url_with_size?: string }).last_downloaded_gaia_picture_url_with_size || undefined,
     }))
   } catch {
     return []

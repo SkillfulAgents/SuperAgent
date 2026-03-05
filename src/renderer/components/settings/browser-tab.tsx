@@ -14,6 +14,7 @@ import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { apiFetch } from '@renderer/lib/api'
 import { AlertTriangle, Check, Loader2 } from 'lucide-react'
 import type { HostBrowserProviderId } from '@shared/lib/config/settings'
+import { ChromeProfileSelect } from '@renderer/components/settings/chrome-profile-select'
 
 const MODEL_OPTIONS = [
   { value: 'claude-haiku-4-5', label: 'Claude 4.5 Haiku' },
@@ -114,35 +115,16 @@ export function BrowserTab() {
 
       {/* Chrome-specific: Profile selector */}
       {effectiveProvider === 'chrome' && chromeProfiles.length > 0 && (
-        <div className="space-y-2">
-          <Label htmlFor="chrome-profile">Chrome Profile</Label>
-          <Select
-            value={effectiveChromeProfileId || '__none__'}
-            onValueChange={(value) => {
-              const profileId = value === '__none__' ? '' : value
-              setChromeProfileId(profileId)
-              updateSettings.mutate({
-                app: { chromeProfileId: profileId },
-              })
-            }}
-            disabled={isLoading}
-          >
-            <SelectTrigger id="chrome-profile">
-              <SelectValue placeholder="Select a Chrome profile" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__none__">None (clean profile)</SelectItem>
-              {chromeProfiles.map((profile) => (
-                <SelectItem key={profile.id} value={profile.id}>
-                  {profile.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="text-xs text-muted-foreground">
-            Use cookies and login sessions from a Chrome profile. Data is copied fresh each time the browser launches.
-          </p>
-        </div>
+        <ChromeProfileSelect
+          profiles={chromeProfiles}
+          value={effectiveChromeProfileId}
+          onValueChange={(profileId) => {
+            setChromeProfileId(profileId)
+            updateSettings.mutate({ app: { chromeProfileId: profileId } })
+          }}
+          idPrefix="chrome-profile"
+          disabled={isLoading}
+        />
       )}
 
       {/* Browserbase-specific settings */}
@@ -214,18 +196,7 @@ export function BrowserTab() {
   )
 }
 
-function BrowserbaseSettings({
-  apiKey,
-  projectId,
-  onApiKeyChange,
-  onProjectIdChange,
-  isValidating,
-  validationResult,
-  hasSavedCredentials,
-  disabled,
-  onValidateAndSave,
-  onRemove,
-}: {
+export interface BrowserbaseSettingsProps {
   apiKey: string
   projectId: string
   onApiKeyChange: (value: string) => void
@@ -236,7 +207,20 @@ function BrowserbaseSettings({
   disabled: boolean
   onValidateAndSave: () => void
   onRemove: () => void
-}) {
+}
+
+export function BrowserbaseSettings({
+  apiKey,
+  projectId,
+  onApiKeyChange,
+  onProjectIdChange,
+  isValidating,
+  validationResult,
+  hasSavedCredentials,
+  disabled,
+  onValidateAndSave,
+  onRemove,
+}: BrowserbaseSettingsProps) {
   const hasInput = apiKey.trim().length > 0 && projectId.trim().length > 0
 
   return (
