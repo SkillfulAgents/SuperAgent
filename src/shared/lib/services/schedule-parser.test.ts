@@ -282,3 +282,74 @@ describe('formatScheduleDescription', () => {
     expect(result).toBe('One-time: invalid')
   })
 })
+
+// ============================================================================
+// Timezone-aware parsing Tests
+// ============================================================================
+
+describe('timezone-aware parsing', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2024-06-15T12:30:00.000Z'))
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  describe('getNextCronTime with timezone', () => {
+    it('respects timezone for "daily at 9am" cron', () => {
+      // "0 9 * * *" in Asia/Shanghai (UTC+8) should fire at 01:00 UTC
+      const shanghai = getNextCronTime('0 9 * * *', 'Asia/Shanghai')
+      expect(shanghai.getUTCHours()).toBe(1)
+      expect(shanghai.getUTCMinutes()).toBe(0)
+
+      // Same cron in UTC should fire at 09:00 UTC
+      const utc = getNextCronTime('0 9 * * *', 'UTC')
+      expect(utc.getUTCHours()).toBe(9)
+      expect(utc.getUTCMinutes()).toBe(0)
+    })
+
+    it('returns different absolute times for different timezones', () => {
+      const utcTime = getNextCronTime('0 9 * * *', 'UTC')
+      const tokyoTime = getNextCronTime('0 9 * * *', 'Asia/Tokyo')
+      // Tokyo is UTC+9, so 9am Tokyo = 0am UTC (previous day or same day)
+      expect(utcTime.getTime()).not.toBe(tokyoTime.getTime())
+    })
+
+    it('works without timezone parameter (backward compat)', () => {
+      const result = getNextCronTime('*/15 * * * *')
+      expect(result.getMinutes()).toBe(45)
+    })
+  })
+
+  describe('parseAtSyntax with timezone', () => {
+    it('"at now + N" is timezone-agnostic', () => {
+      const utcResult = parseAtSyntax('at now + 1 hour', 'UTC')
+      const shanghaiResult = parseAtSyntax('at now + 1 hour', 'Asia/Shanghai')
+      // Both should produce the same absolute timestamp
+      expect(utcResult.getTime()).toBe(shanghaiResult.getTime())
+    })
+
+    it('works without timezone parameter (backward compat)', () => {
+      const result = parseAtSyntax('at now + 1 hour')
+      expect(result.getTime()).toBe(new Date('2024-06-15T13:30:00.000Z').getTime())
+    })
+  })
+
+  describe('validateScheduleExpression with timezone', () => {
+    it('passes timezone to "at" validation', () => {
+      const result = validateScheduleExpression('at', 'at now + 1 hour', 'Asia/Shanghai')
+      expect(result.valid).toBe(true)
+      expect(result.nextTime).toBeDefined()
+    })
+
+    it('passes timezone to "cron" validation', () => {
+      const result = validateScheduleExpression('cron', '0 9 * * *', 'Asia/Shanghai')
+      expect(result.valid).toBe(true)
+      expect(result.nextTime).toBeDefined()
+      // Should be 1am UTC (9am Shanghai)
+      expect(result.nextTime!.getUTCHours()).toBe(1)
+    })
+  })
+})

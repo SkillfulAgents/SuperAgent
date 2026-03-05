@@ -24,6 +24,11 @@ vi.mock('../db', async () => {
   }
 })
 
+const mockGetSettings = vi.fn()
+vi.mock('@shared/lib/config/settings', () => ({
+  getSettings: (...args: unknown[]) => mockGetSettings(...args),
+}))
+
 // Import after mocking
 import {
   createScheduledTask,
@@ -57,6 +62,8 @@ describe('scheduled-task-service', () => {
     // Mock timers for predictable dates
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2024-06-15T12:00:00.000Z'))
+
+    mockGetSettings.mockReturnValue({ app: { timezone: 'UTC' } })
   })
 
   afterEach(async () => {
@@ -131,6 +138,21 @@ describe('scheduled-task-service', () => {
 
       const task = await getScheduledTask(taskId)
       expect(task!.createdBySessionId).toBe('session-123')
+    })
+
+    it('uses global timezone for cron nextExecutionAt calculation', async () => {
+      mockGetSettings.mockReturnValue({ app: { timezone: 'Asia/Shanghai' } })
+
+      const taskId = await createScheduledTask({
+        agentSlug: 'test-agent',
+        scheduleType: 'cron',
+        scheduleExpression: '0 9 * * *',
+        prompt: 'Shanghai 9am',
+      })
+
+      const task = await getScheduledTask(taskId)
+      // Shanghai 9am = UTC 1am
+      expect(task!.nextExecutionAt.getUTCHours()).toBe(1)
     })
   })
 
