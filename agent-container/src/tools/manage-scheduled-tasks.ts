@@ -19,14 +19,15 @@ function hostFetch(path: string, method = 'GET'): Promise<Response> {
 
 export const manageScheduledTasksTool = tool(
   'manage_scheduled_tasks',
-  `Manage your scheduled tasks. You can list all active tasks, pause a running task, resume a paused task, or cancel a task entirely.
+  `Manage your scheduled tasks. You can list all active tasks, pause/resume recurring tasks, or cancel any task.
 
 Actions:
 - "list" — List all active (pending + paused) scheduled tasks for this agent. No taskId needed.
-- "pause" — Pause a pending task so it stops executing until resumed. Requires taskId.
-- "resume" — Resume a paused task so it starts executing again. Requires taskId.
-- "cancel" — Cancel a task permanently. Requires taskId.
+- "pause" — Pause a recurring task so it stops executing until resumed. Requires taskId. Only works on recurring (cron) tasks.
+- "resume" — Resume a paused recurring task so it starts executing again. Requires taskId. Only works on recurring (cron) tasks.
+- "cancel" — Cancel a task permanently. Requires taskId. Works on both one-time and recurring tasks.
 
+Note: One-time tasks cannot be paused or resumed — use cancel instead.
 Use "list" first to see available tasks and their IDs before performing other actions.`,
   {
     action: z
