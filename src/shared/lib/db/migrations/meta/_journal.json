@@ -64,6 +64,13 @@
       "when": 1772490382333,
       "tag": "0008_short_ultimatum",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1772660738199,
+      "tag": "0010_amused_sumo",
+      "breakpoints": true
     }
   ]
 }
