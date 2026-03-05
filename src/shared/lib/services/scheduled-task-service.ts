@@ -175,9 +175,15 @@ export async function cancelScheduledTask(taskId: string): Promise<boolean> {
 }
 
 /**
- * Pause a scheduled task (keeps schedule, stops execution until resumed)
+ * Pause a recurring scheduled task (keeps schedule, stops execution until resumed).
+ * One-time tasks cannot be paused — use cancel instead.
  */
-export async function pauseScheduledTask(taskId: string): Promise<boolean> {
+export async function pauseScheduledTask(taskId: string): Promise<{ success: boolean; error?: string }> {
+  const task = await getScheduledTask(taskId)
+  if (!task) return { success: false, error: 'Task not found' }
+  if (!task.isRecurring) return { success: false, error: 'Cannot pause a one-time task. Use cancel instead.' }
+  if (task.status !== 'pending') return { success: false, error: `Task is ${task.status}, only pending tasks can be paused` }
+
   const result = await db
     .update(scheduledTasks)
     .set({
@@ -190,15 +196,18 @@ export async function pauseScheduledTask(taskId: string): Promise<boolean> {
       )
     )
 
-  return (result.changes ?? 0) > 0
+  return { success: (result.changes ?? 0) > 0 }
 }
 
 /**
- * Resume a paused scheduled task back to pending
+ * Resume a paused recurring task back to pending.
+ * One-time tasks cannot be resumed — use cancel instead.
  */
-export async function resumeScheduledTask(taskId: string): Promise<boolean> {
+export async function resumeScheduledTask(taskId: string): Promise<{ success: boolean; error?: string }> {
   const task = await getScheduledTask(taskId)
-  if (!task || task.status !== 'paused') return false
+  if (!task) return { success: false, error: 'Task not found' }
+  if (!task.isRecurring) return { success: false, error: 'Cannot resume a one-time task. Use cancel instead.' }
+  if (task.status !== 'paused') return { success: false, error: `Task is ${task.status}, only paused tasks can be resumed` }
 
   const result = await db
     .update(scheduledTasks)
@@ -210,7 +219,7 @@ export async function resumeScheduledTask(taskId: string): Promise<boolean> {
       )
     )
 
-  return (result.changes ?? 0) > 0
+  return { success: (result.changes ?? 0) > 0 }
 }
 
 /**

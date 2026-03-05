@@ -114,7 +114,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
 
           {canCancel && (
             <div className="flex items-center gap-2">
-              {task.status === 'pending' && (
+              {task.status === 'pending' && isRecurring && (
                 <Button
                   variant="outline"
                   size="sm"

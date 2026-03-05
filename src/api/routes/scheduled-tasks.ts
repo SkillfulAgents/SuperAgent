@@ -100,14 +100,14 @@ scheduledTasksRouter.delete('/:taskId', TaskAgentRole('user'), async (c) => {
   }
 })
 
-// POST /api/scheduled-tasks/:taskId/pause - Pause a pending scheduled task
+// POST /api/scheduled-tasks/:taskId/pause - Pause a pending recurring task
 scheduledTasksRouter.post('/:taskId/pause', TaskAgentRole('user'), async (c) => {
   try {
     const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
-    const paused = await pauseScheduledTask(task!.id)
+    const result = await pauseScheduledTask(task!.id)
 
-    if (!paused) {
-      return c.json({ error: 'Scheduled task not found or not in pending state' }, 404)
+    if (!result.success) {
+      return c.json({ error: result.error }, 400)
     }
 
     const updated = await getScheduledTask(task!.id)
@@ -118,14 +118,14 @@ scheduledTasksRouter.post('/:taskId/pause', TaskAgentRole('user'), async (c) => 
   }
 })
 
-// POST /api/scheduled-tasks/:taskId/resume - Resume a paused scheduled task
+// POST /api/scheduled-tasks/:taskId/resume - Resume a paused recurring task
 scheduledTasksRouter.post('/:taskId/resume', TaskAgentRole('user'), async (c) => {
   try {
     const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
-    const resumed = await resumeScheduledTask(task!.id)
+    const result = await resumeScheduledTask(task!.id)
 
-    if (!resumed) {
-      return c.json({ error: 'Scheduled task not found or not in paused state' }, 404)
+    if (!result.success) {
+      return c.json({ error: result.error }, 400)
     }
 
     const updated = await getScheduledTask(task!.id)
