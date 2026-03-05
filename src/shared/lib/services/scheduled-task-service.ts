@@ -9,6 +9,7 @@ import { db } from '@shared/lib/db'
 import { scheduledTasks, type ScheduledTask, type NewScheduledTask } from '@shared/lib/db/schema'
 import { eq, and, lte } from 'drizzle-orm'
 import { getNextCronTime, parseAtSyntax } from './schedule-parser'
+import { getSettings } from '@shared/lib/config/settings'
 
 // Re-export the ScheduledTask type for external use
 export type { ScheduledTask, NewScheduledTask }
@@ -44,12 +45,13 @@ export async function createScheduledTask(
 ): Promise<string> {
   const id = crypto.randomUUID()
 
-  // Calculate next execution time based on schedule type
+  const tz = getSettings().app?.timezone || 'UTC'
+
   let nextExecutionAt: Date
   if (params.scheduleType === 'at') {
-    nextExecutionAt = parseAtSyntax(params.scheduleExpression)
+    nextExecutionAt = parseAtSyntax(params.scheduleExpression, tz)
   } else {
-    nextExecutionAt = getNextCronTime(params.scheduleExpression)
+    nextExecutionAt = getNextCronTime(params.scheduleExpression, tz)
   }
 
   const newTask: NewScheduledTask = {
@@ -213,13 +215,13 @@ export async function resetScheduledTask(taskId: string): Promise<boolean> {
   const task = await getScheduledTask(taskId)
   if (!task) return false
 
-  // Calculate next execution time
+  const tz = getSettings().app?.timezone || 'UTC'
+
   let nextExecutionAt: Date
   if (task.scheduleType === 'at') {
-    // For 'at' tasks, use the original expression to recalculate
-    nextExecutionAt = parseAtSyntax(task.scheduleExpression)
+    nextExecutionAt = parseAtSyntax(task.scheduleExpression, tz)
   } else {
-    nextExecutionAt = getNextCronTime(task.scheduleExpression)
+    nextExecutionAt = getNextCronTime(task.scheduleExpression, tz)
   }
 
   const result = await db

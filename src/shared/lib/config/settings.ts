@@ -54,6 +54,7 @@ export interface AppPreferences {
   chromeProfileId?: string
   allowPrereleaseUpdates?: boolean
   theme?: 'system' | 'light' | 'dark'
+  timezone?: string
 }
 
 export interface AuthSettings {

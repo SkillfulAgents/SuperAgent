@@ -3,6 +3,7 @@
  *
  * Parses and validates schedule expressions for the scheduled task system.
  * Supports both "at" syntax for one-time tasks and cron syntax for recurring tasks.
+ * All parsing is timezone-aware via an optional IANA timezone parameter.
  */
 
 import { CronExpressionParser } from 'cron-parser'
@@ -15,6 +16,20 @@ export interface ParseResult {
 }
 
 /**
+ * Get the UTC offset in minutes for a given IANA timezone at the current moment.
+ * Returns a positive number for timezones east of UTC (e.g. +480 for Asia/Shanghai).
+ * chrono-node expects offsets in this sign convention.
+ */
+function getTimezoneOffsetMinutes(timezone: string): number {
+  const now = new Date()
+  const utcStr = now.toLocaleString('en-US', { timeZone: 'UTC' })
+  const tzStr = now.toLocaleString('en-US', { timeZone: timezone })
+  const utcDate = new Date(utcStr)
+  const tzDate = new Date(tzStr)
+  return Math.round((tzDate.getTime() - utcDate.getTime()) / 60000)
+}
+
+/**
  * Parse "at" syntax for one-time scheduled tasks.
  *
  * Supported formats:
@@ -23,12 +38,13 @@ export interface ParseResult {
  * - "at next monday"
  * - "at 2024-03-15 14:00"
  * - Natural language dates via chrono-node
+ *
+ * @param timezone IANA timezone identifier (e.g. "Asia/Shanghai"). Defaults to UTC.
  */
-export function parseAtSyntax(expression: string): Date {
-  // Normalize the expression
+export function parseAtSyntax(expression: string, timezone?: string): Date {
   const normalized = expression.trim().toLowerCase()
 
-  // Handle "at now + N unit" format
+  // "at now + N unit" is timezone-agnostic (pure offset from current instant)
   const nowPlusMatch = normalized.match(
     /^at\s+now\s*\+\s*(\d+)\s*(second|minute|hour|day|week|month)s?$/i
   )
@@ -56,13 +72,18 @@ export function parseAtSyntax(expression: string): Date {
     }
   }
 
-  // Try natural language parsing with chrono
-  // Remove "at " prefix if present
   const dateString = normalized.replace(/^at\s+/i, '')
-  const parsed = chrono.parseDate(dateString)
+
+  const refDate = new Date()
+  const tz = timezone && timezone !== 'UTC' ? timezone : undefined
+  const offsetMinutes = tz ? getTimezoneOffsetMinutes(tz) : undefined
+
+  const parsed = chrono.parseDate(dateString, {
+    instant: refDate,
+    timezone: offsetMinutes,
+  }, { forwardDate: true })
 
   if (parsed) {
-    // Ensure the time is in the future
     if (parsed.getTime() <= Date.now()) {
       throw new Error(`Scheduled time "${expression}" is in the past`)
     }
@@ -75,9 +96,9 @@ export function parseAtSyntax(expression: string): Date {
 /**
  * Validate "at" syntax and return the next execution time.
  */
-export function validateAtSyntax(expression: string): ParseResult {
+export function validateAtSyntax(expression: string, timezone?: string): ParseResult {
   try {
-    const nextTime = parseAtSyntax(expression)
+    const nextTime = parseAtSyntax(expression, timezone)
     return { valid: true, nextTime }
   } catch (error) {
     return { valid: false, error: String(error) }
@@ -86,18 +107,21 @@ export function validateAtSyntax(expression: string): ParseResult {
 
 /**
  * Get the next execution time for a cron expression.
+ * @param timezone IANA timezone identifier (e.g. "Asia/Shanghai"). Defaults to UTC.
  */
-export function getNextCronTime(cronExpression: string): Date {
-  const interval = CronExpressionParser.parse(cronExpression)
+export function getNextCronTime(cronExpression: string, timezone?: string): Date {
+  const options = timezone ? { tz: timezone } : undefined
+  const interval = CronExpressionParser.parse(cronExpression, options)
   return interval.next().toDate()
 }
 
 /**
  * Validate a cron expression and return the next execution time.
  */
-export function validateCronExpression(cronExpression: string): ParseResult {
+export function validateCronExpression(cronExpression: string, timezone?: string): ParseResult {
   try {
-    const interval = CronExpressionParser.parse(cronExpression)
+    const options = timezone ? { tz: timezone } : undefined
+    const interval = CronExpressionParser.parse(cronExpression, options)
     const nextTime = interval.next().toDate()
     return { valid: true, nextTime }
   } catch (error) {
@@ -110,12 +134,13 @@ export function validateCronExpression(cronExpression: string): ParseResult {
  */
 export function validateScheduleExpression(
   scheduleType: 'at' | 'cron',
-  expression: string
+  expression: string,
+  timezone?: string
 ): ParseResult {
   if (scheduleType === 'at') {
-    return validateAtSyntax(expression)
+    return validateAtSyntax(expression, timezone)
   } else {
-    return validateCronExpression(expression)
+    return validateCronExpression(expression, timezone)
   }
 }
 
@@ -124,12 +149,13 @@ export function validateScheduleExpression(
  */
 export function formatScheduleDescription(
   scheduleType: 'at' | 'cron',
-  expression: string
+  expression: string,
+  timezone?: string
 ): string {
   if (scheduleType === 'at') {
     try {
-      const nextTime = parseAtSyntax(expression)
-      return `One-time: ${nextTime.toLocaleString()}`
+      const nextTime = parseAtSyntax(expression, timezone)
+      return `One-time: ${nextTime.toLocaleString(undefined, { timeZone: timezone })}`
     } catch {
       return `One-time: ${expression}`
     }

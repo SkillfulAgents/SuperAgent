@@ -6,7 +6,7 @@
  */
 
 import { containerManager } from '@shared/lib/container/container-manager'
-import { getEffectiveModels } from '@shared/lib/config/settings'
+import { getEffectiveModels, getSettings } from '@shared/lib/config/settings'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import {
@@ -112,7 +112,7 @@ class TaskScheduler {
           // For one-time tasks, mark as failed
           if (task.isRecurring) {
             try {
-              const nextTime = getNextCronTime(task.scheduleExpression)
+              const nextTime = getNextCronTime(task.scheduleExpression, getSettings().app?.timezone || 'UTC')
               await updateNextExecution(task.id, nextTime, '')
               console.log(
                 `[TaskScheduler] Recurring task ${task.id} failed but scheduled next: ${nextTime.toISOString()}`
@@ -203,8 +203,7 @@ class TaskScheduler {
 
     // Update task status
     if (task.isRecurring) {
-      // Update next execution time for recurring tasks
-      const nextTime = getNextCronTime(task.scheduleExpression)
+      const nextTime = getNextCronTime(task.scheduleExpression, getSettings().app?.timezone || 'UTC')
       await updateNextExecution(task.id, nextTime, sessionId)
       console.log(
         `[TaskScheduler] Recurring task ${task.id} next execution: ${nextTime.toISOString()}`
