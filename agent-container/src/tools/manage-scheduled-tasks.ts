@@ -38,35 +38,53 @@ Use "list" first to see available tasks and their IDs before performing other ac
       .describe('The ID of the task to act on. Required for pause, resume, and cancel actions.'),
   },
   async (args) => {
+    const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] })
+    const fail = (t: string) => ({ content: [{ type: 'text' as const, text: t }], isError: true as const })
+
     if (args.action !== 'list' && !args.taskId) {
-      return {
-        content: [{ type: 'text' as const, text: `Action "${args.action}" requires a taskId. Use "list" first.` }],
-        isError: true,
-      }
+      return fail(`Action "${args.action}" requires a taskId. Use "list" first.`)
     }
 
     const agentId = process.env.AGENT_ID
-    if (!agentId) {
-      return { content: [{ type: 'text' as const, text: 'AGENT_ID not configured.' }], isError: true }
-    }
+    if (!agentId) return fail('AGENT_ID not configured.')
 
     try {
       if (args.action === 'list') {
         const res = await hostFetch(`/api/agents/${agentId}/scheduled-tasks?status=active`)
-        if (!res.ok) return { content: [{ type: 'text' as const, text: `Failed to list tasks: ${res.statusText}` }], isError: true }
-        const tasks = await res.json() as Array<{ id: string; name: string; scheduleType: string; scheduleExpression: string; status: string; executionCount: number; nextExecutionAt: string | null }>
-        if (tasks.length === 0) return { content: [{ type: 'text' as const, text: 'No active scheduled tasks.' }] }
-        const lines = tasks.map(t => `- ${t.name} (ID: ${t.id}) [${t.status}] ${t.scheduleType}="${t.scheduleExpression}" executions=${t.executionCount}${t.nextExecutionAt ? ` next=${t.nextExecutionAt}` : ''}`)
-        return { content: [{ type: 'text' as const, text: lines.join('\n') }] }
+        if (!res.ok) return fail(`Failed to list tasks: ${res.statusText}`)
+
+        interface TaskSummary {
+          id: string; name: string; scheduleType: string
+          scheduleExpression: string; status: string
+          executionCount: number; nextExecutionAt: string | null
+        }
+        const tasks = await res.json() as TaskSummary[]
+        if (tasks.length === 0) return text('No active scheduled tasks.')
+
+        const lines = tasks.map(t =>
+          `- ${t.name} (ID: ${t.id}) [${t.status}] ` +
+          `${t.scheduleType}="${t.scheduleExpression}" executions=${t.executionCount}` +
+          (t.nextExecutionAt ? ` next=${t.nextExecutionAt}` : '')
+        )
+        return text(lines.join('\n'))
       }
 
-      const actionMap = { pause: ['POST', `/api/scheduled-tasks/${args.taskId}/pause`], resume: ['POST', `/api/scheduled-tasks/${args.taskId}/resume`], cancel: ['DELETE', `/api/scheduled-tasks/${args.taskId}`] } as const
-      const [method, path] = actionMap[args.action as keyof typeof actionMap]
+      let method: string
+      let path: string
+      switch (args.action) {
+        case 'pause':
+          method = 'POST'; path = `/api/scheduled-tasks/${args.taskId}/pause`; break
+        case 'resume':
+          method = 'POST'; path = `/api/scheduled-tasks/${args.taskId}/resume`; break
+        case 'cancel':
+          method = 'DELETE'; path = `/api/scheduled-tasks/${args.taskId}`; break
+      }
+
       const res = await hostFetch(path, method)
-      if (!res.ok) return { content: [{ type: 'text' as const, text: `Failed to ${args.action} task: ${res.statusText}` }], isError: true }
-      return { content: [{ type: 'text' as const, text: `Successfully ${args.action}d task ${args.taskId}.` }] }
+      if (!res.ok) return fail(`Failed to ${args.action} task: ${res.statusText}`)
+      return text(`Successfully ${args.action}d task ${args.taskId}.`)
     } catch (err) {
-      return { content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : err}` }], isError: true }
+      return fail(`Error: ${err instanceof Error ? err.message : err}`)
     }
   }
 )

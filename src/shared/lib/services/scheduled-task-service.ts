@@ -200,24 +200,9 @@ export async function resumeScheduledTask(taskId: string): Promise<boolean> {
   const task = await getScheduledTask(taskId)
   if (!task || task.status !== 'paused') return false
 
-  // Recalculate next execution time if the original one has passed
-  let nextExecutionAt = task.nextExecutionAt
-  const now = new Date()
-  if (new Date(nextExecutionAt) < now) {
-    if (task.scheduleType === 'cron') {
-      nextExecutionAt = getNextCronTime(task.scheduleExpression)
-    } else {
-      // For 'at' tasks, recalculate from the expression
-      nextExecutionAt = parseAtSyntax(task.scheduleExpression)
-    }
-  }
-
   const result = await db
     .update(scheduledTasks)
-    .set({
-      status: 'pending',
-      nextExecutionAt,
-    })
+    .set({ status: 'pending' })
     .where(
       and(
         eq(scheduledTasks.id, taskId),
