@@ -398,12 +398,13 @@ class ContainerManager {
         envVars['REMOTE_MCPS'] = JSON.stringify(mcpConfigs)
       }
 
+      envVars['HOST_APP_URL'] = `http://${hostUrl}:${appPort}`
+      envVars['AGENT_ID'] = agentId
+
       // Pass host browser env vars if a host browser provider is selected
       const settings = getSettings()
       if (settings.app?.hostBrowserProvider) {
         envVars['AGENT_BROWSER_USE_HOST'] = '1'
-        envVars['HOST_APP_URL'] = `http://${hostUrl}:${appPort}`
-        envVars['AGENT_ID'] = agentId
       }
 
       // Copy Chrome profile data into workspace if configured
