@@ -14,6 +14,9 @@ const mockGetComposioUserId = vi.fn()
 const mockGetEffectiveModels = vi.fn()
 const mockGetEffectiveAgentLimits = vi.fn()
 const mockGetCustomEnvVars = vi.fn()
+const mockGetDeepgramApiKeyStatus = vi.fn()
+const mockGetOpenaiApiKeyStatus = vi.fn()
+const mockGetVoiceSettings = vi.fn()
 
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: (...args: unknown[]) => mockGetSettings(...args),
@@ -25,6 +28,9 @@ vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveModels: (...args: unknown[]) => mockGetEffectiveModels(...args),
   getEffectiveAgentLimits: (...args: unknown[]) => mockGetEffectiveAgentLimits(...args),
   getCustomEnvVars: (...args: unknown[]) => mockGetCustomEnvVars(...args),
+  getDeepgramApiKeyStatus: (...args: unknown[]) => mockGetDeepgramApiKeyStatus(...args),
+  getOpenaiApiKeyStatus: (...args: unknown[]) => mockGetOpenaiApiKeyStatus(...args),
+  getVoiceSettings: (...args: unknown[]) => mockGetVoiceSettings(...args),
 }))
 
 const mockHasRunningAgents = vi.fn()
@@ -139,6 +145,9 @@ function setupDefaults() {
   mockGetEffectiveModels.mockReturnValue({ summarizerModel: 'claude-3-haiku', agentModel: 'claude-sonnet-4-20250514', browserModel: 'claude-3-haiku' })
   mockGetEffectiveAgentLimits.mockReturnValue({ maxTurns: 100 })
   mockGetCustomEnvVars.mockReturnValue({ FOO: 'bar' })
+  mockGetDeepgramApiKeyStatus.mockReturnValue({ isConfigured: false, source: 'none' })
+  mockGetOpenaiApiKeyStatus.mockReturnValue({ isConfigured: false, source: 'none' })
+  mockGetVoiceSettings.mockReturnValue({})
   mockGetReadiness.mockReturnValue({ ready: true })
   mockEnsureImageReady.mockResolvedValue(undefined)
   mockClearClients.mockReturnValue(undefined)
