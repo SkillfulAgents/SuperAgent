@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { listAgents, getAgent } from '@shared/lib/services/agent-service'
 import { getAgentClaudeConfigDir } from '@shared/lib/utils/file-storage'
-import { subDays, addDays } from 'date-fns'
+import { subDays, format, addDays } from 'date-fns'
 import type { DailyUsageEntry, UsageResponse } from '@shared/lib/types/usage'
 import { Authenticated } from '../middleware/auth'
 import { isAuthMode } from '@shared/lib/auth/mode'
@@ -9,8 +9,6 @@ import { getCurrentUserId } from '@shared/lib/auth/config'
 import { db } from '@shared/lib/db'
 import { agentAcl } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
-import { getSettings } from '@shared/lib/config/settings'
-import { formatDateKeyInTimezone } from '@shared/lib/utils/timezone'
 
 const usage = new Hono()
 
@@ -24,11 +22,9 @@ usage.get('/', async (c) => {
   const user = isAuthMode() ? c.get('user' as never) as { id: string; role?: string } | undefined : undefined
   const globalView = globalParam && (!isAuthMode() || user?.role === 'admin')
 
-  const timezone = getSettings().app?.timezone || 'UTC'
-
   const now = new Date()
   const sinceDate = subDays(now, days)
-  const since = formatDateKeyInTimezone(sinceDate, timezone)
+  const since = format(sinceDate, 'yyyyMMdd')
 
   // In auth mode, only load agents the user has access to (unless admin requests global view)
   let agents;
@@ -101,9 +97,9 @@ usage.get('/', async (c) => {
     }
   }
 
-  // Fill in missing dates with zero-cost entries (using user's timezone for boundaries)
+  // Fill in missing dates with zero-cost entries
   for (let d = sinceDate; d <= now; d = addDays(d, 1)) {
-    const dateStr = formatDateKeyInTimezone(d, timezone, '-')
+    const dateStr = format(d, 'yyyy-MM-dd')
     if (!dateMap.has(dateStr)) {
       dateMap.set(dateStr, { totalCost: 0, byAgent: new Map(), byModel: new Map() })
     }

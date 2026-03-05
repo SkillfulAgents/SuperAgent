@@ -60,12 +60,6 @@ vi.mock('drizzle-orm', () => ({
   eq: (col: string, val: string) => ({ col, val }),
 }))
 
-const mockGetSettings = vi.fn()
-
-vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: (...args: unknown[]) => mockGetSettings(...args),
-}))
-
 import usage from './usage'
 
 // ---------------------------------------------------------------------------
@@ -109,7 +103,6 @@ describe('usage route', () => {
     mockIsAuthMode.mockReturnValue(false)
     mockListAgents.mockResolvedValue([])
     mockLoadDailyUsageData.mockResolvedValue([])
-    mockGetSettings.mockReturnValue({ app: { timezone: 'UTC' } })
     app = createApp()
   })
 
@@ -553,21 +546,6 @@ describe('usage route', () => {
       expect(dayEntry.totalCost).toBe(2.00)
       expect(dayEntry.byAgent).toHaveLength(1)
       expect(dayEntry.byAgent[0].agentSlug).toBe('agent-1')
-    })
-  })
-
-  // =========================================================================
-  // Timezone support
-  // =========================================================================
-  describe('timezone support', () => {
-    it('uses global settings timezone for date boundaries', async () => {
-      mockGetSettings.mockReturnValue({ app: { timezone: 'America/New_York' } })
-      mockListAgents.mockResolvedValue([])
-      mockLoadDailyUsageData.mockResolvedValue([])
-
-      const res = await getUsage('days=7')
-      expect(res.status).toBe(200)
-      expect(mockGetSettings).toHaveBeenCalled()
     })
   })
 })
