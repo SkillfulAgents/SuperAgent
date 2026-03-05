@@ -49,6 +49,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui
 import { useUser } from '@renderer/context/user-context'
 import { NotificationBell } from '@renderer/components/notifications/notification-bell'
 import { useIsOnline } from '@renderer/context/connectivity-context'
+import { useTimezone, formatDateWithTimezone } from '@renderer/hooks/use-timezone'
 
 // Session sub-item that tracks its streaming state
 function SessionSubItem({
@@ -104,6 +105,7 @@ function ScheduledTaskSubItem({
 }) {
   const { selectedScheduledTaskId, selectAgent, selectScheduledTask } = useSelection()
   const isSelected = task.id === selectedScheduledTaskId
+  const timezone = useTimezone()
 
   const handleClick = () => {
     selectAgent(agentSlug)
@@ -112,7 +114,7 @@ function ScheduledTaskSubItem({
 
   // Format next execution time for tooltip
   const nextExecution = new Date(task.nextExecutionAt)
-  const timeString = nextExecution.toLocaleString()
+  const timeString = formatDateWithTimezone(nextExecution, timezone)
 
   return (
     <SidebarMenuSubItem>

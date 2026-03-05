@@ -41,6 +41,7 @@ import { cn } from '@shared/lib/utils/cn'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { InviteUserDialog } from './invite-user-dialog'
 import { ResetPasswordDialog } from './reset-password-dialog'
+import { useTimezone, formatDateOnlyWithTimezone } from '@renderer/hooks/use-timezone'
 
 interface AdminUser {
   id: string
@@ -56,6 +57,7 @@ interface AdminUser {
 export function UsersTab() {
   const { user: currentUser } = useUser()
   const queryClient = useQueryClient()
+  const timezone = useTimezone()
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
 
@@ -321,7 +323,7 @@ export function UsersTab() {
 
                 {/* Joined */}
                 <span className="text-xs text-muted-foreground">
-                  {new Date(user.createdAt).toLocaleDateString()}
+                  {formatDateOnlyWithTimezone(user.createdAt, timezone)}
                 </span>
 
                 {/* Actions */}

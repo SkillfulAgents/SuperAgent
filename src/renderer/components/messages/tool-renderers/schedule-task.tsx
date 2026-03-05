@@ -1,6 +1,15 @@
-
 import { Clock, Repeat, CalendarClock } from 'lucide-react'
 import type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps } from './types'
+import { useTimezone } from '@renderer/hooks/use-timezone'
+
+function getTimezoneAbbreviation(timezone: string): string {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: timezone, timeZoneName: 'short' }).formatToParts(new Date())
+    return parts.find(p => p.type === 'timeZoneName')?.value || ''
+  } catch {
+    return ''
+  }
+}
 
 interface ScheduleTaskInput {
   scheduleType?: 'at' | 'cron'
@@ -17,20 +26,23 @@ function parseScheduleTaskInput(input: unknown): ScheduleTaskInput {
 }
 
 /**
- * Convert a cron expression to a human-readable string
+ * Convert a cron expression to a human-readable string.
+ * The hour/minute in cron are in the task's creation timezone,
+ * so we display them with that timezone's abbreviation.
  */
-function cronToHuman(cron: string): string {
+function cronToHuman(cron: string, tzAbbr?: string): string {
   const parts = cron.trim().split(/\s+/)
   if (parts.length !== 5) return cron
 
   const [minute, hour, dayOfMonth, month, dayOfWeek] = parts
+  const tzSuffix = tzAbbr ? ` ${tzAbbr}` : ''
 
   // Common patterns
   if (cron === '* * * * *') return 'Every minute'
   if (cron === '0 * * * *') return 'Every hour'
-  if (cron === '0 0 * * *') return 'Daily at midnight'
-  if (cron === '0 0 * * 0') return 'Weekly on Sunday'
-  if (cron === '0 0 1 * *') return 'Monthly on the 1st'
+  if (cron === '0 0 * * *') return `Daily at midnight${tzSuffix}`
+  if (cron === '0 0 * * 0') return `Weekly on Sunday${tzSuffix}`
+  if (cron === '0 0 1 * *') return `Monthly on the 1st${tzSuffix}`
 
   // */N patterns
   if (minute.startsWith('*/') && hour === '*' && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
@@ -48,9 +60,9 @@ function cronToHuman(cron: string): string {
     const m = parseInt(minute, 10)
     const time = `${h % 12 || 12}:${m.toString().padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`
 
-    if (dayOfWeek === '*') return `Daily at ${time}`
-    if (dayOfWeek === '1-5') return `Weekdays at ${time}`
-    if (dayOfWeek === '0,6') return `Weekends at ${time}`
+    if (dayOfWeek === '*') return `Daily at ${time}${tzSuffix}`
+    if (dayOfWeek === '1-5') return `Weekdays at ${time}${tzSuffix}`
+    if (dayOfWeek === '0,6') return `Weekends at ${time}${tzSuffix}`
   }
 
   return cron
@@ -118,6 +130,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
   const { scheduleType, scheduleExpression, prompt, name } = parseScheduleTaskInput(input)
   const displayResult = parseResult(result ?? null)
   const isRecurring = scheduleType === 'cron'
+  const tzAbbr = getTimezoneAbbreviation(useTimezone())
 
   return (
     <div className="space-y-3">
@@ -135,7 +148,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
         </div>
         {scheduleExpression && (
           <div className="text-muted-foreground">
-            {isRecurring ? cronToHuman(scheduleExpression) : scheduleExpression.replace(/^at\s+/i, '')}
+            {isRecurring ? cronToHuman(scheduleExpression, tzAbbr) : scheduleExpression.replace(/^at\s+/i, '')}
           </div>
         )}
       </div>
@@ -182,6 +195,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
 }
 
 function StreamingView({ partialInput }: StreamingToolRendererProps) {
+  const tzAbbr = getTimezoneAbbreviation(useTimezone())
   let parsed: ScheduleTaskInput = {}
   try {
     parsed = JSON.parse(partialInput)
@@ -207,7 +221,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
             </span>
             {parsed.scheduleExpression && (
               <span className="text-muted-foreground">
-                {isRecurring ? cronToHuman(parsed.scheduleExpression) : parsed.scheduleExpression.replace(/^at\s+/i, '')}
+                {isRecurring ? cronToHuman(parsed.scheduleExpression, tzAbbr) : parsed.scheduleExpression.replace(/^at\s+/i, '')}
               </span>
             )}
           </>

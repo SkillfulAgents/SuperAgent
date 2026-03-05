@@ -14,6 +14,7 @@ import {
 } from '@renderer/hooks/use-scheduled-tasks'
 import { useSelection } from '@renderer/context/selection-context'
 import { useUser } from '@renderer/context/user-context'
+import { useTimezone, formatDateWithTimezone } from '@renderer/hooks/use-timezone'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -38,6 +39,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const { handleScheduledTaskDeleted, selectSession } = useSelection()
   const { canUseAgent } = useUser()
   const canCancel = canUseAgent(agentSlug)
+  const timezone = useTimezone()
 
   const handleCancel = async () => {
     try {
@@ -132,7 +134,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
           </h3>
           {task.status === 'pending' ? (
             <div className="text-lg">
-              {nextExecution.toLocaleString()}
+              {formatDateWithTimezone(nextExecution, timezone)}
             </div>
           ) : (
             <div className="text-lg capitalize">{task.status}</div>
@@ -160,7 +162,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
               <span>
                 This prompt will be sent to the agent{' '}
                 {task.status === 'pending'
-                  ? `on ${nextExecution.toLocaleString()}`
+                  ? `on ${formatDateWithTimezone(nextExecution, timezone)}`
                   : 'when executed'}
               </span>
             </div>
@@ -185,7 +187,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
                   <div className="flex-1 min-w-0">
                     <div className="font-medium truncate">{session.name}</div>
                     <div className="text-xs text-muted-foreground">
-                      {new Date(session.createdAt).toLocaleString()}
+                      {formatDateWithTimezone(session.createdAt, timezone)}
                       {session.messageCount > 0 && (
                         <span className="ml-2">• {session.messageCount} messages</span>
                       )}
@@ -204,7 +206,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
               Last Executed
             </h3>
             <div className="text-sm">
-              {new Date(task.lastExecutedAt).toLocaleString()}
+              {formatDateWithTimezone(task.lastExecutedAt, timezone)}
               {task.lastSessionId && (
                 <span className="text-muted-foreground ml-2">
                   (Session: {task.lastSessionId.slice(0, 8)}...)
@@ -220,7 +222,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
             Created
           </h3>
           <div className="text-sm">
-            {new Date(task.createdAt).toLocaleString()}
+            {formatDateWithTimezone(task.createdAt, timezone)}
           </div>
         </div>
       </div>
