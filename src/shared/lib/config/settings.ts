@@ -19,6 +19,14 @@ export interface ApiKeySettings {
   composioUserId?: string
   browserbaseApiKey?: string
   browserbaseProjectId?: string
+  deepgramApiKey?: string
+  openaiApiKey?: string
+}
+
+export type SttProvider = 'deepgram' | 'openai'
+
+export interface VoiceSettings {
+  sttProvider?: SttProvider
 }
 
 export interface NotificationSettings {
@@ -110,6 +118,7 @@ export interface AppSettings {
   customEnvVars?: Record<string, string>
   skillsets?: SkillsetConfig[]
   auth?: AuthSettings
+  voice?: VoiceSettings
 }
 
 // API key source types
@@ -130,7 +139,7 @@ export interface HostBrowserProviderInfo {
   name: string
   available: boolean
   reason?: string
-  profiles?: Array<{ id: string; name: string }>
+  profiles?: Array<{ id: string; name: string; avatarUrl?: string }>
 }
 
 export interface HostBrowserStatus {
@@ -146,8 +155,11 @@ export interface GlobalSettingsResponse {
   apiKeyStatus: {
     anthropic: ApiKeyStatus
     composio: ApiKeyStatus
+    deepgram: ApiKeyStatus
+    openai: ApiKeyStatus
   }
   composioUserId?: string
+  voice?: VoiceSettings
   models: ModelSettings
   agentLimits: AgentLimitsSettings
   customEnvVars: Record<string, string>
@@ -246,6 +258,7 @@ export function loadSettings(): AppSettings {
           ...DEFAULT_AUTH_SETTINGS,
           ...loaded.auth,
         },
+        voice: loaded.voice,
       }
     }
   } catch (error) {
@@ -391,6 +404,11 @@ export function getEffectiveAgentLimits(): AgentLimitsSettings {
 export function getCustomEnvVars(): Record<string, string> {
   const settings = getSettings()
   return settings.customEnvVars ?? {}
+}
+
+export function getVoiceSettings(): VoiceSettings {
+  const settings = getSettings()
+  return settings.voice ?? {}
 }
 
 export { DEFAULT_SETTINGS }

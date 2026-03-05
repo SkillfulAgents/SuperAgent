@@ -5,6 +5,10 @@
 
 SuperAgent is a super app for building and running personal agents. You can create custom agents, let them develop the skills they need to do task for you, and have them run automatocally in the background for you.
 
+| Windows | Mac |
+|:-------:|:---:|
+| [Download for Windows](https://github.com/SkillfulAgents/SuperAgent/releases/latest/download/Superagent-Setup.exe) | [Download for Mac](https://github.com/SkillfulAgents/SuperAgent/releases/latest/download/Superagent-arm64.dmg) |
+
 **Features:**
 
 - **Containerized Agents** - SuperAgents spins up a containerized sandbox per agent - keeping your computer secure. 
@@ -35,9 +39,7 @@ To get strated with Superagent, you need:
 # Getting Started
 
 ## Desktop App
-Download the latest release of the App here (MacOC only, Linux and Windows coming soon).
-
-[[Insert Download Links for Latest Stable Release]]
+Download the latest release from the links above, or visit the [releases page](https://github.com/SkillfulAgents/SuperAgent/releases/latest).
 
 ## Running with Docker
 

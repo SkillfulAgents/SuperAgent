@@ -14,6 +14,7 @@ const mockGetComposioUserId = vi.fn()
 const mockGetEffectiveModels = vi.fn()
 const mockGetEffectiveAgentLimits = vi.fn()
 const mockGetCustomEnvVars = vi.fn()
+const mockGetVoiceSettings = vi.fn()
 
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: (...args: unknown[]) => mockGetSettings(...args),
@@ -25,6 +26,7 @@ vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveModels: (...args: unknown[]) => mockGetEffectiveModels(...args),
   getEffectiveAgentLimits: (...args: unknown[]) => mockGetEffectiveAgentLimits(...args),
   getCustomEnvVars: (...args: unknown[]) => mockGetCustomEnvVars(...args),
+  getVoiceSettings: (...args: unknown[]) => mockGetVoiceSettings(...args),
 }))
 
 const mockHasRunningAgents = vi.fn()
@@ -62,6 +64,16 @@ vi.mock('@shared/lib/config/data-dir', () => ({
 
 vi.mock('../../main/host-browser', () => ({
   detectAllProviders: () => [],
+}))
+
+const mockSttGetApiKeyStatus = vi.fn()
+const mockSttValidateKey = vi.fn()
+
+vi.mock('@shared/lib/stt', () => ({
+  getSttProvider: (id: string) => ({
+    getApiKeyStatus: () => mockSttGetApiKeyStatus(id),
+    validateKey: (...args: unknown[]) => mockSttValidateKey(id, ...args),
+  }),
 }))
 
 // Auth middleware: no-op in tests (non-auth mode)
@@ -139,6 +151,13 @@ function setupDefaults() {
   mockGetEffectiveModels.mockReturnValue({ summarizerModel: 'claude-3-haiku', agentModel: 'claude-sonnet-4-20250514', browserModel: 'claude-3-haiku' })
   mockGetEffectiveAgentLimits.mockReturnValue({ maxTurns: 100 })
   mockGetCustomEnvVars.mockReturnValue({ FOO: 'bar' })
+  mockSttGetApiKeyStatus.mockImplementation((id: string) => {
+    if (id === 'deepgram') return { isConfigured: false, source: 'none' }
+    if (id === 'openai') return { isConfigured: false, source: 'none' }
+    return { isConfigured: false, source: 'none' }
+  })
+  mockSttValidateKey.mockResolvedValue({ valid: true })
+  mockGetVoiceSettings.mockReturnValue({})
   mockGetReadiness.mockReturnValue({ ready: true })
   mockEnsureImageReady.mockResolvedValue(undefined)
   mockClearClients.mockReturnValue(undefined)
@@ -537,6 +556,130 @@ describe('settings route', () => {
       expect(res.status).toBe(200)
       const saved = mockUpdateSettings.mock.calls[0][0]
       expect(saved.auth.signupMode).toBe('closed')
+    })
+
+    it('merges voice settings with existing', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        voice: { sttProvider: 'deepgram' },
+      })
+
+      const res = await putSettings({
+        voice: { sttProvider: 'openai' },
+      })
+
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.voice.sttProvider).toBe('openai')
+    })
+
+    it('preserves voice settings when not provided', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        voice: { sttProvider: 'deepgram' },
+      })
+
+      const res = await putSettings({
+        app: { showMenuBarIcon: false },
+      })
+
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.voice).toEqual({ sttProvider: 'deepgram' })
+    })
+  })
+
+  // =========================================================================
+  // STT key validation
+  // =========================================================================
+  describe('POST /validate-stt-key', () => {
+    async function validateSttKey(body: Record<string, unknown>): Promise<Response> {
+      return app.request('http://localhost/api/settings/validate-stt-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    }
+
+    it('returns 400 when apiKey is missing', async () => {
+      const res = await validateSttKey({ provider: 'deepgram' })
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toContain('API key is required')
+    })
+
+    it('returns 400 when provider is missing', async () => {
+      const res = await validateSttKey({ apiKey: 'test-key' })
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toContain('Invalid provider')
+    })
+
+    it('returns 400 when provider is invalid', async () => {
+      const res = await validateSttKey({ provider: 'foobar', apiKey: 'test-key' })
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toContain('Invalid provider')
+    })
+
+    it('returns valid: true for a valid deepgram key', async () => {
+      mockSttValidateKey.mockResolvedValue({ valid: true })
+
+      const res = await validateSttKey({ provider: 'deepgram', apiKey: 'dg-test-key' })
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.valid).toBe(true)
+      expect(mockSttValidateKey).toHaveBeenCalledWith('deepgram', 'dg-test-key')
+    })
+
+    it('returns valid: true for a valid openai key', async () => {
+      mockSttValidateKey.mockResolvedValue({ valid: true })
+
+      const res = await validateSttKey({ provider: 'openai', apiKey: 'sk-test-key' })
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.valid).toBe(true)
+      expect(mockSttValidateKey).toHaveBeenCalledWith('openai', 'sk-test-key')
+    })
+
+    it('returns valid: false with error for an invalid key', async () => {
+      mockSttValidateKey.mockResolvedValue({ valid: false, error: 'Invalid API key' })
+
+      const res = await validateSttKey({ provider: 'deepgram', apiKey: 'bad-key' })
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.valid).toBe(false)
+      expect(body.error).toBe('Invalid API key')
+    })
+
+    it('handles validateKey throwing an error', async () => {
+      mockSttValidateKey.mockRejectedValue(new Error('Network timeout'))
+
+      const res = await validateSttKey({ provider: 'openai', apiKey: 'test-key' })
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.valid).toBe(false)
+      expect(body.error).toBe('Network timeout')
+    })
+  })
+
+  // =========================================================================
+  // GET settings includes per-provider STT key status
+  // =========================================================================
+  describe('GET settings STT key status', () => {
+    it('calls getSttProvider with correct provider ids', async () => {
+      mockSttGetApiKeyStatus.mockImplementation((id: string) => {
+        if (id === 'deepgram') return { isConfigured: true, source: 'settings' }
+        if (id === 'openai') return { isConfigured: false, source: 'none' }
+        return { isConfigured: false, source: 'none' }
+      })
+
+      const res = await app.request('http://localhost/api/settings')
+      expect(res.status).toBe(200)
+      const body = await res.json()
+
+      expect(body.apiKeyStatus.deepgram).toEqual({ isConfigured: true, source: 'settings' })
+      expect(body.apiKeyStatus.openai).toEqual({ isConfigured: false, source: 'none' })
     })
   })
 })

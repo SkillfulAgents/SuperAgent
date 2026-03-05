@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, nativeTheme, shell, Notification } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeTheme, session, shell, Notification } from 'electron'
 import path from 'path'
 import { EventSource } from 'eventsource'
 import { createTray, destroyTray, updateTrayWindow, setTrayVisible } from './tray'
@@ -78,6 +78,17 @@ function createWindow() {
       vibrancy: 'sidebar' as const,
       visualEffectState: 'active' as const,
     }),
+  })
+
+  // Grant microphone (and camera) permissions for the renderer.
+  // Production loads from file:// where Chromium blocks getUserMedia by default.
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    const allowed = ['media', 'audioCapture', 'mediaKeySystem']
+    callback(allowed.includes(permission))
+  })
+  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
+    const allowed = ['media', 'audioCapture', 'mediaKeySystem']
+    return allowed.includes(permission)
   })
 
   // Handle window.open() calls - prevent popup windows
