@@ -150,6 +150,7 @@
         "dmg",
         "zip"
       ],
+      "artifactName": "Superagent-${arch}.${ext}",
       "category": "public.app-category.developer-tools",
       "icon": "build/icon.icon",
       "hardenedRuntime": true,
@@ -182,7 +183,8 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Superagent",
-      "uninstallDisplayName": "Superagent"
+      "uninstallDisplayName": "Superagent",
+      "artifactName": "Superagent-Setup.${ext}"
     },
     "publish": {
       "provider": "github",
