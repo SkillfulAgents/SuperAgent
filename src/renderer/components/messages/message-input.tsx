@@ -6,6 +6,8 @@ import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { Send, Loader2, StopCircle, Paperclip, WifiOff } from 'lucide-react'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
+import { useVoiceInput } from '@renderer/hooks/use-voice-input'
+import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { AttachmentPreview, type Attachment } from './attachment-preview'
 import { SlashCommandMenu } from './slash-command-menu'
 
@@ -32,6 +34,12 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
   const { isActive, slashCommands } = useMessageStream(sessionId, agentSlug)
   const isOnline = useIsOnline()
   const isOffline = !isOnline
+
+  const voiceInput = useVoiceInput({
+    onTranscriptUpdate: useCallback((text: string) => {
+      setMessage(text)
+    }, []),
+  })
 
   // Extract the slash command prefix being typed (e.g. "co" from "/co")
   const slashFilter = useMemo(() => {
@@ -126,10 +134,18 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    const hasContent = message.trim() || attachments.length > 0
+
+    // Stop voice recording first — use returned text since React state won't update synchronously
+    let voiceText: string | undefined
+    if (voiceInput.isRecording || voiceInput.isConnecting) {
+      voiceText = voiceInput.stopRecording()
+    }
+
+    const effectiveMessage = voiceText ?? message
+    const hasContent = effectiveMessage.trim() || attachments.length > 0
     if (!hasContent || sendMessage.isPending || isActive || isUploading) return
 
-    let content = message.trim()
+    let content = effectiveMessage.trim()
 
     // Upload attachments first
     if (attachments.length > 0) {
@@ -245,7 +261,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
   return (
     <form
       onSubmit={handleSubmit}
-      className={`relative px-4 py-[18px] border-t bg-background ${isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
+      className={`relative pl-2 pr-4 py-[18px] border-t bg-background ${isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -258,7 +274,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
         filter={slashFilter ?? ''}
       />
       <AttachmentPreview attachments={attachments} onRemove={removeAttachment} />
-      <div className={`flex items-center gap-2 ${attachments.length > 0 ? 'mt-2' : ''}`}>
+      <div className={`flex items-center gap-1 ${attachments.length > 0 ? 'mt-2' : ''}`}>
         <input
           ref={fileInputRef}
           type="file"
@@ -277,6 +293,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
         >
           <Paperclip className="h-4 w-4" />
         </Button>
+        <VoiceInputButton voiceInput={voiceInput} message={message} disabled={isDisabled} />
         <textarea
           ref={textareaRef}
           value={message}
@@ -317,7 +334,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
             type="submit"
             size="icon"
             className="h-[34px] w-[34px]"
-            disabled={(!message.trim() && attachments.length === 0) || sendMessage.isPending || isUploading}
+            disabled={(!message.trim() && attachments.length === 0 && !voiceInput.isRecording) || sendMessage.isPending || isUploading}
             data-testid="send-button"
           >
             {sendMessage.isPending || isUploading ? (
@@ -334,6 +351,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
           <span>No internet connection. Messages cannot be sent.</span>
         </div>
       )}
+      <VoiceInputError error={voiceInput.error} onDismiss={voiceInput.clearError} className="mt-2" />
     </form>
   )
 }

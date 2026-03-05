@@ -1,5 +1,5 @@
 
-import { Settings, Link2, Container, Bell, Globe, Library, BarChart3, Plug, Brain, Users, Shield, ShieldEllipsis, User } from 'lucide-react'
+import { Settings, Link2, Container, Bell, Globe, Library, BarChart3, Plug, Brain, Users, Shield, ShieldEllipsis, User, Mic } from 'lucide-react'
 import { SettingsDialog, SettingsDialogTab, SettingsDialogGroup } from '@renderer/components/ui/settings-dialog'
 import { ProfileTab } from './profile-tab'
 import { GeneralTab } from './general-tab'
@@ -15,6 +15,7 @@ import { AccountsTab } from './accounts-tab'
 import { UsersTab } from './users-tab'
 import { AuthTab } from './auth-tab'
 import { AdminTab } from './admin-tab'
+import { VoiceTab } from './voice-tab'
 import { useUser } from '@renderer/context/user-context'
 
 interface GlobalSettingsDialogProps {
@@ -73,6 +74,9 @@ export function GlobalSettingsDialog({
       </SettingsDialogTab>
       <SettingsDialogTab id="composio" label="Account Provider" icon={<ShieldEllipsis className="h-4 w-4" />}>
         <ComposioTab />
+      </SettingsDialogTab>
+      <SettingsDialogTab id="voice" label="Voice" icon={<Mic className="h-4 w-4" />}>
+        <VoiceTab />
       </SettingsDialogTab>
       <SettingsDialogTab id="skillsets" label="Skillsets" icon={<Library className="h-4 w-4" />}>
         <SkillsetsTab />

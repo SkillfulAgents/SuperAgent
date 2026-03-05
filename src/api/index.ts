@@ -15,6 +15,7 @@ import remoteMcps from './routes/remote-mcps'
 import commonMcpServers from './routes/common-mcp-servers'
 import userSettingsRouter from './routes/user-settings'
 import runtimeStatusRouter from './routes/runtime-status'
+import sttRouter from './routes/stt'
 import adminUsersRouter from './routes/admin-users'
 import { initializeServices } from '@shared/lib/startup'
 import { isAuthMode } from '@shared/lib/auth/mode'
@@ -128,6 +129,7 @@ app.route('/api/common-mcp-servers', commonMcpServers)
 app.route('/api/user-settings', userSettingsRouter)
 app.route('/api/runtime-status', runtimeStatusRouter)
 app.route('/api/admin/users', adminUsersRouter)
+app.route('/api/stt', sttRouter)
 
 // Global error handler
 app.onError((err, c) => {

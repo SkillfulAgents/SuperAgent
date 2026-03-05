@@ -7,6 +7,8 @@ import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui
 import { Checkbox } from '@renderer/components/ui/checkbox'
 import { Send, Loader2, Sparkles, Paperclip, Search, RefreshCw, ChevronLeft, ChevronRight, Filter, Eye, Maximize2, Minimize2 } from 'lucide-react'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
+import { useVoiceInput } from '@renderer/hooks/use-voice-input'
+import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { useAgentSkills, useDiscoverableSkills, useRefreshAgentSkills } from '@renderer/hooks/use-agent-skills'
 import { AgentSkillCard } from './agent-skill-card'
 import { DiscoverableSkillCard } from './discoverable-skill-card'
@@ -92,11 +94,19 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    const hasContent = message.trim() || attachments.length > 0
+
+    // Stop voice recording first — use returned text since React state won't update synchronously
+    let voiceText: string | undefined
+    if (voiceInput.isRecording || voiceInput.isConnecting) {
+      voiceText = voiceInput.stopRecording()
+    }
+
+    const effectiveMessage = voiceText ?? message
+    const hasContent = effectiveMessage.trim() || attachments.length > 0
     if (!hasContent || createSession.isPending || isUploading) return
 
     try {
-      let content = message.trim()
+      let content = effectiveMessage.trim()
 
       // Upload attachments first (using agent-level endpoint, no session needed)
       if (attachments.length > 0) {
@@ -216,6 +226,12 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
     setSkillPage(0)
   }, [skillSearch, selectedSkillsets])
 
+  const voiceInput = useVoiceInput({
+    onTranscriptUpdate: useCallback((text: string) => {
+      setMessage(text)
+    }, []),
+  })
+
   const isDisabled = createSession.isPending || isUploading || !isRuntimeReady
 
   return (
@@ -307,11 +323,12 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
                   >
                     <Paperclip className="h-4 w-4" />
                   </Button>
+                  <VoiceInputButton voiceInput={voiceInput} message={message} disabled={isDisabled} size="sm" />
                   <Button
                     type="submit"
                     size="icon"
                     className="h-8 w-8"
-                    disabled={(!message.trim() && attachments.length === 0) || isDisabled}
+                    disabled={(!message.trim() && attachments.length === 0 && !voiceInput.isRecording) || isDisabled}
                     data-testid="landing-send-button"
                   >
                     {isDisabled ? (
@@ -323,6 +340,7 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
                 </div>
               </div>
               <AttachmentPreview attachments={attachments} onRemove={removeAttachment} />
+              <VoiceInputError error={voiceInput.error} onDismiss={voiceInput.clearError} className="justify-center" />
               <p className="text-xs text-muted-foreground text-center">
                 Press Cmd+Enter to send
               </p>
