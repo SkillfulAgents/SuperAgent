@@ -69,10 +69,15 @@ export function useVoiceInput({ onTranscriptUpdate, agentSlug }: UseVoiceInputOp
 
     cleanup()
     // Drop interim text — keep only finalized content in the textarea
-    const finalText = prefixRef.current + finalizedRef.current
+    const prefix = prefixRef.current
+    const finalized = finalizedRef.current
     prefixRef.current = ''
     finalizedRef.current = ''
     interimRef.current = ''
+    // If nothing was transcribed, restore original text (prefix without trailing space)
+    const finalText = finalized
+      ? prefix + finalized
+      : prefix.trimEnd()
     onTranscriptUpdate(finalText)
     setState('idle')
   }, [state, cleanup, onTranscriptUpdate, agentSlug])
@@ -170,6 +175,11 @@ export function useVoiceInput({ onTranscriptUpdate, agentSlug }: UseVoiceInputOp
       console.error('Voice input error:', err)
       setError(message)
       cleanup()
+      // Restore original text that was in the textarea before recording started
+      onTranscriptUpdate(existingText)
+      prefixRef.current = ''
+      finalizedRef.current = ''
+      interimRef.current = ''
       setState('idle')
     }
   }, [state, cleanup, onTranscriptUpdate, stopRecording])
