@@ -23,10 +23,10 @@ const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta'])
 type Corner = 'nw' | 'ne' | 'sw' | 'se'
 const CORNERS: Corner[] = ['nw', 'ne', 'sw', 'se']
 const CORNER_CONFIG: Record<Corner, { position: string; cursor: string; rotation: number }> = {
-  nw: { position: '-top-2.5 -left-2.5', cursor: 'cursor-nw-resize', rotation: 180 },
-  ne: { position: '-top-2.5 -right-2.5', cursor: 'cursor-ne-resize', rotation: -90 },
-  sw: { position: '-bottom-2.5 -left-2.5', cursor: 'cursor-sw-resize', rotation: 90 },
-  se: { position: '-bottom-2.5 -right-2.5', cursor: 'cursor-se-resize', rotation: 0 },
+  nw: { position: '-top-0.5 -left-0.5', cursor: 'cursor-nw-resize', rotation: 180 },
+  ne: { position: '-top-0.5 -right-0.5', cursor: 'cursor-ne-resize', rotation: -90 },
+  sw: { position: '-bottom-0.5 -left-0.5', cursor: 'cursor-sw-resize', rotation: 90 },
+  se: { position: '-bottom-0.5 -right-0.5', cursor: 'cursor-se-resize', rotation: 0 },
 }
 
 interface BrowserPreviewProps {
@@ -556,9 +556,9 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
             onPointerUp={handleResizeEnd}
           >
             <svg width="10" height="10" viewBox="0 0 10 10" style={{ transform: `rotate(${rotation}deg)` }}>
-              <line x1="2" y1="10" x2="10" y2="2" stroke="currentColor" strokeWidth="1.2" className="text-white" />
-              <line x1="5" y1="10" x2="10" y2="5" stroke="currentColor" strokeWidth="1.2" className="text-white" />
-              <line x1="8" y1="10" x2="10" y2="8" stroke="currentColor" strokeWidth="1.2" className="text-white" />
+              <line x1="2" y1="10" x2="10" y2="2" stroke="currentColor" strokeWidth="1.2" className="text-gray-400 dark:text-white" />
+              <line x1="5" y1="10" x2="10" y2="5" stroke="currentColor" strokeWidth="1.2" className="text-gray-400 dark:text-white" />
+              <line x1="8" y1="10" x2="10" y2="8" stroke="currentColor" strokeWidth="1.2" className="text-gray-400 dark:text-white" />
             </svg>
           </div>
         )
