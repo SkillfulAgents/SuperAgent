@@ -7,10 +7,11 @@ import type {
   ModelSettings,
   AgentLimitsSettings,
   AuthSettings,
+  VoiceSettings,
 } from '@shared/lib/config/settings'
 import type { RunnerAvailability } from '@shared/lib/container/client-factory'
 
-export type { GlobalSettingsResponse, ContainerSettings, AppPreferences, ModelSettings, AgentLimitsSettings, AuthSettings, RunnerAvailability }
+export type { GlobalSettingsResponse, ContainerSettings, AppPreferences, ModelSettings, AgentLimitsSettings, AuthSettings, VoiceSettings, RunnerAvailability }
 
 export function useSettings(options?: { enabled?: boolean }) {
   return useQuery<GlobalSettingsResponse>({
@@ -34,11 +35,14 @@ export interface UpdateSettingsParams {
     composioUserId?: string
     browserbaseApiKey?: string
     browserbaseProjectId?: string
+    deepgramApiKey?: string
+    openaiApiKey?: string
   }
   models?: Partial<ModelSettings>
   agentLimits?: Partial<AgentLimitsSettings>
   customEnvVars?: Record<string, string>
   auth?: Partial<AuthSettings>
+  voice?: Partial<VoiceSettings>
 }
 
 export interface UpdateSettingsError {
