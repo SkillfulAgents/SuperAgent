@@ -2,6 +2,9 @@
  * Timezone formatting utilities shared across frontend and backend.
  */
 
+/** The host system's IANA timezone identifier (e.g. "America/Los_Angeles"). */
+export const systemTimezone: string = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+
 export function formatDateWithTimezone(date: Date | string | number, timezone: string): string {
   return new Date(date).toLocaleString(undefined, { timeZone: timezone, timeZoneName: 'short' })
 }

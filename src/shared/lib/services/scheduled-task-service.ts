@@ -10,6 +10,7 @@ import { scheduledTasks, type ScheduledTask, type NewScheduledTask } from '@shar
 import { eq, and, lte } from 'drizzle-orm'
 import { getNextCronTime, parseAtSyntax } from './schedule-parser'
 import { getSettings } from '@shared/lib/config/settings'
+import { systemTimezone } from '@shared/lib/utils/timezone'
 
 // Re-export the ScheduledTask type for external use
 export type { ScheduledTask, NewScheduledTask }
@@ -45,7 +46,7 @@ export async function createScheduledTask(
 ): Promise<string> {
   const id = crypto.randomUUID()
 
-  const tz = getSettings().app?.timezone || 'UTC'
+  const tz = getSettings().app?.timezone || systemTimezone
 
   let nextExecutionAt: Date
   if (params.scheduleType === 'at') {
@@ -215,7 +216,7 @@ export async function resetScheduledTask(taskId: string): Promise<boolean> {
   const task = await getScheduledTask(taskId)
   if (!task) return false
 
-  const tz = getSettings().app?.timezone || 'UTC'
+  const tz = getSettings().app?.timezone || systemTimezone
 
   let nextExecutionAt: Date
   if (task.scheduleType === 'at') {
