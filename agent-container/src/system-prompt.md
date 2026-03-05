@@ -260,16 +260,13 @@ name: "Meeting Reminder"
 ### Managing Scheduled Tasks
 
 You can also manage existing scheduled tasks using `mcp__user-input__manage_scheduled_tasks`:
-- `action: "list"` — List all active (pending + paused) tasks for this agent
-- `action: "pause", taskId: "<id>"` — Pause a pending task
-- `action: "resume", taskId: "<id>"` — Resume a paused task
+- `action: "list"` — List all pending scheduled tasks for this agent
 - `action: "cancel", taskId: "<id>"` — Cancel a task permanently
 
-Use "list" first to get task IDs before performing pause/resume/cancel.
+Use "list" first to get task IDs before cancelling.
 
 **Important:**
 - Scheduled tasks run in new sessions with full access to your skills and tools
-- Paused tasks retain their schedule but skip execution until resumed
 - One-time tasks are removed after execution; recurring tasks continue until cancelled
 
 ## File Handling

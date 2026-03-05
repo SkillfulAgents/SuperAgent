@@ -1,7 +1,7 @@
 /**
  * Manage Scheduled Tasks Tool
  *
- * Allows agents to list, pause, resume, and cancel their own scheduled tasks
+ * Allows agents to list and cancel their own scheduled tasks
  * by calling the host app API. The message-persister also intercepts this tool
  * call to broadcast SSE events for frontend UI refresh.
  */
@@ -19,30 +19,28 @@ function hostFetch(path: string, method = 'GET'): Promise<Response> {
 
 export const manageScheduledTasksTool = tool(
   'manage_scheduled_tasks',
-  `Manage your scheduled tasks. You can list all active tasks, pause a running task, resume a paused task, or cancel a task entirely.
+  `Manage your scheduled tasks. You can list all active tasks or cancel a task.
 
 Actions:
-- "list" — List all active (pending + paused) scheduled tasks for this agent. No taskId needed.
-- "pause" — Pause a pending task so it stops executing until resumed. Requires taskId.
-- "resume" — Resume a paused task so it starts executing again. Requires taskId.
+- "list" — List all pending scheduled tasks for this agent. No taskId needed.
 - "cancel" — Cancel a task permanently. Requires taskId.
 
-Use "list" first to see available tasks and their IDs before performing other actions.`,
+Use "list" first to see available tasks and their IDs before cancelling.`,
   {
     action: z
-      .enum(['list', 'pause', 'resume', 'cancel'])
+      .enum(['list', 'cancel'])
       .describe('The action to perform on scheduled tasks'),
     taskId: z
       .string()
       .optional()
-      .describe('The ID of the task to act on. Required for pause, resume, and cancel actions.'),
+      .describe('The ID of the task to cancel. Required for cancel action.'),
   },
   async (args) => {
     const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] })
     const fail = (t: string) => ({ content: [{ type: 'text' as const, text: t }], isError: true as const })
 
-    if (args.action !== 'list' && !args.taskId) {
-      return fail(`Action "${args.action}" requires a taskId. Use "list" first.`)
+    if (args.action === 'cancel' && !args.taskId) {
+      return fail('Action "cancel" requires a taskId. Use "list" first.')
     }
 
     const agentId = process.env.AGENT_ID
@@ -69,20 +67,9 @@ Use "list" first to see available tasks and their IDs before performing other ac
         return text(lines.join('\n'))
       }
 
-      let method: string
-      let path: string
-      switch (args.action) {
-        case 'pause':
-          method = 'POST'; path = `/api/scheduled-tasks/${args.taskId}/pause`; break
-        case 'resume':
-          method = 'POST'; path = `/api/scheduled-tasks/${args.taskId}/resume`; break
-        case 'cancel':
-          method = 'DELETE'; path = `/api/scheduled-tasks/${args.taskId}`; break
-      }
-
-      const res = await hostFetch(path, method)
-      if (!res.ok) return fail(`Failed to ${args.action} task: ${res.statusText}`)
-      return text(`Successfully ${args.action}d task ${args.taskId}.`)
+      const res = await hostFetch(`/api/scheduled-tasks/${args.taskId}`, 'DELETE')
+      if (!res.ok) return fail(`Failed to cancel task: ${res.statusText}`)
+      return text(`Successfully cancelled task ${args.taskId}.`)
     } catch (err) {
       return fail(`Error: ${err instanceof Error ? err.message : err}`)
     }
