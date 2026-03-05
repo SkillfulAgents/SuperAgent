@@ -12,6 +12,7 @@ import { searchConnectedAccountServicesTool } from './tools/search-connected-acc
 import { requestRemoteMcpTool } from './tools/request-remote-mcp'
 import { searchRemoteMcpServicesTool } from './tools/search-remote-mcp-services'
 import { scheduleTaskTool } from './tools/schedule-task'
+import { manageScheduledTasksTool } from './tools/manage-scheduled-tasks'
 import { deliverFileTool } from './tools/deliver-file'
 import { requestFileTool } from './tools/request-file'
 import { browserTools } from './tools/browser'
@@ -31,7 +32,7 @@ export function createUserInputMcpServer() {
   return createSdkMcpServer({
     name: 'user-input',
     version: '1.0.0',
-    tools: [requestSecretTool, requestConnectedAccountTool, searchConnectedAccountServicesTool, requestRemoteMcpTool, searchRemoteMcpServicesTool, scheduleTaskTool, deliverFileTool, requestFileTool],
+    tools: [requestSecretTool, requestConnectedAccountTool, searchConnectedAccountServicesTool, requestRemoteMcpTool, searchRemoteMcpServicesTool, scheduleTaskTool, manageScheduledTasksTool, deliverFileTool, requestFileTool],
   })
 }
 

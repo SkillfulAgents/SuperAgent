@@ -1,6 +1,8 @@
 import type { ContainerClient, StreamMessage, SlashCommandInfo } from './types'
 import type { SessionUsage } from '@shared/lib/types/agent'
-import { createScheduledTask } from '@shared/lib/services/scheduled-task-service'
+import {
+  createScheduledTask,
+} from '@shared/lib/services/scheduled-task-service'
 import { updateSessionMetadata } from '@shared/lib/services/session-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
@@ -22,6 +24,7 @@ interface StreamingState {
   lastContextWindow: number // Last known context window size (default 200k)
   lastAssistantUsage: SessionUsage | null // Per-call usage from most recent assistant message
   pendingTaskToolId: string | null // tool_use ID of the currently executing Task tool
+  pendingManageTasksToolIds: Map<string, { action: string; taskId?: string }> // tool_use IDs for manage_scheduled_tasks awaiting result
   activeSubagentId: string | null // agentId of the running subagent
   completedSubagentIds: Set<string> // agentIds of subagents that have completed (to avoid re-discovery)
   // Subagent streaming state (separate from main agent to avoid corruption)
@@ -66,6 +69,7 @@ class MessagePersister {
       lastContextWindow: 200_000,
       lastAssistantUsage: null,
       pendingTaskToolId: null,
+      pendingManageTasksToolIds: new Map(),
       activeSubagentId: null,
       completedSubagentIds: new Set(),
       subagentCurrentText: '',
@@ -210,6 +214,7 @@ class MessagePersister {
       state.currentToolUse = null
       state.currentToolInput = ''
       state.pendingTaskToolId = null
+      state.pendingManageTasksToolIds.clear()
       state.activeSubagentId = null
       state.subagentCurrentText = ''
       state.subagentCurrentToolUse = null
@@ -267,6 +272,7 @@ class MessagePersister {
         lastContextWindow: 200_000,
         lastAssistantUsage: null,
         pendingTaskToolId: null,
+        pendingManageTasksToolIds: new Map(),
         activeSubagentId: null,
         completedSubagentIds: new Set(),
         subagentCurrentText: '',
@@ -373,7 +379,7 @@ class MessagePersister {
           break
         }
         // Tool results come as 'user' type messages
-        this.handleToolResults(sessionId, content)
+        this.handleToolResults(sessionId, content, state)
         break
 
       case 'system':
@@ -529,6 +535,7 @@ class MessagePersister {
     state.currentToolUse = null
     state.currentToolInput = ''
     state.pendingTaskToolId = null
+    state.pendingManageTasksToolIds.clear()
     state.activeSubagentId = null
     state.subagentCurrentText = ''
     state.subagentCurrentToolUse = null
@@ -810,6 +817,10 @@ class MessagePersister {
             )
           }
 
+          if (state.currentToolUse.name === 'mcp__user-input__manage_scheduled_tasks') {
+            this.trackManageScheduledTasksTool(state, state.currentToolInput)
+          }
+
           // Check if this is an AskUserQuestion tool
           if (state.currentToolUse.name === 'AskUserQuestion') {
             this.handleAskUserQuestionTool(
@@ -1015,6 +1026,28 @@ class MessagePersister {
     })()
   }
 
+  /**
+   * Record pending manage_scheduled_tasks tool call so we can broadcast the
+   * SSE event once the tool_result arrives (guaranteeing the DB write is done).
+   */
+  private trackManageScheduledTasksTool(state: StreamingState, toolInput: string): void {
+    if (!state.currentToolUse) return
+
+    let input: { action: string; taskId?: string }
+    try {
+      input = JSON.parse(toolInput)
+    } catch {
+      return
+    }
+
+    if (input.action === 'list') return
+
+    state.pendingManageTasksToolIds.set(state.currentToolUse.id, {
+      action: input.action,
+      taskId: input.taskId,
+    })
+  }
+
   // Handle AskUserQuestion tool - broadcast to SSE clients so they can show the UI
   private handleAskUserQuestionTool(
     sessionId: string,
@@ -1206,23 +1239,32 @@ class MessagePersister {
     }
   }
 
-  // Handle tool results - broadcast to SSE clients
   private handleToolResults(
     sessionId: string,
-    content: { message?: { content?: Array<{ type: string; tool_use_id?: string; content?: unknown; is_error?: boolean }> } }
+    content: { message?: { content?: Array<{ type: string; tool_use_id?: string; content?: unknown; is_error?: boolean }> } },
+    state: StreamingState
   ): void {
     try {
       const messageContent = content.message?.content || []
 
       for (const block of messageContent) {
         if (block.type === 'tool_result' && block.tool_use_id) {
-          // Broadcast update to SSE clients
           this.broadcastToSSE(sessionId, {
             type: 'tool_result',
             toolUseId: block.tool_use_id,
             result: block.content,
             isError: block.is_error || false,
           })
+
+          const pending = state.pendingManageTasksToolIds.get(block.tool_use_id)
+          if (pending && state.agentSlug && !block.is_error) {
+            state.pendingManageTasksToolIds.delete(block.tool_use_id)
+            this.broadcastGlobal({
+              type: 'scheduled_task_updated',
+              taskId: pending.taskId,
+              agentSlug: state.agentSlug,
+            })
+          }
         }
       }
     } catch (error) {
