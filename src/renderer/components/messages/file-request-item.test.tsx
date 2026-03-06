@@ -87,7 +87,7 @@ describe('FileRequestItem', () => {
     expect(defaultProps.onComplete).toHaveBeenCalled()
   })
 
-  it('decline flow shows reason input then confirms', async () => {
+  it('decline button sends decline request', async () => {
     const user = userEvent.setup()
     mockApiFetch.mockResolvedValueOnce({
       ok: true,
@@ -96,16 +96,8 @@ describe('FileRequestItem', () => {
 
     render(<FileRequestItem {...defaultProps} />)
 
-    // Click decline to show reason input
+    // Click the Decline button (left side of the split button)
     await user.click(screen.getByText('Decline'))
-
-    // Reason input appears
-    const reasonInput = screen.getByPlaceholderText('Reason (optional)')
-    expect(reasonInput).toBeInTheDocument()
-
-    // Type a reason and confirm
-    await user.type(reasonInput, 'No file available')
-    await user.click(screen.getByText('Confirm'))
 
     await waitFor(() => {
       expect(screen.getByText('Declined')).toBeInTheDocument()

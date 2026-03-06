@@ -1,9 +1,10 @@
 import { apiFetch } from '@renderer/lib/api'
 
 import { useState } from 'react'
-import { HelpCircle, Check, X, Loader2 } from 'lucide-react'
+import { HelpCircle, Check, Loader2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
+import { DeclineButton } from './decline-button'
 import { cn } from '@shared/lib/utils/cn'
 
 interface Question {
@@ -163,7 +164,7 @@ export function QuestionRequestItem({
     }
   }
 
-  const handleDecline = async () => {
+  const handleDecline = async (reason?: string) => {
     setStatus('submitting')
     setError(null)
 
@@ -176,7 +177,7 @@ export function QuestionRequestItem({
           body: JSON.stringify({
             toolUseId,
             decline: true,
-            declineReason: 'User declined to answer',
+            declineReason: reason || 'User declined to answer',
           }),
         }
       )
@@ -354,17 +355,12 @@ export function QuestionRequestItem({
               <span className="ml-1">Submit</span>
             </Button>
 
-            <Button
-              onClick={handleDecline}
+            <DeclineButton
+              onDecline={handleDecline}
               disabled={status === 'submitting'}
-              variant="outline"
-              size="sm"
               className="border-blue-200 dark:border-blue-700 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900"
               data-testid="question-decline-btn"
-            >
-              <X className="h-4 w-4" />
-              <span className="ml-1">Decline</span>
-            </Button>
+            />
           </div>
 
           {/* Error message */}

@@ -13,6 +13,7 @@ import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { Button } from '@renderer/components/ui/button'
 import { Checkbox } from '@renderer/components/ui/checkbox'
 import { Input } from '@renderer/components/ui/input'
+import { DeclineButton } from './decline-button'
 import { cn } from '@shared/lib/utils/cn'
 import {
   useConnectedAccountsByToolkit,
@@ -217,7 +218,7 @@ export function ConnectedAccountRequestItem({
     }
   }
 
-  const handleDecline = async () => {
+  const handleDecline = async (reason?: string) => {
     setStatus('submitting')
     setError(null)
 
@@ -231,7 +232,7 @@ export function ConnectedAccountRequestItem({
             toolUseId,
             toolkit,
             decline: true,
-            declineReason: 'User declined to provide access',
+            declineReason: reason || 'User declined to provide access',
           }),
         }
       )
@@ -414,16 +415,11 @@ export function ConnectedAccountRequestItem({
               </span>
             </Button>
 
-            <Button
-              onClick={handleDecline}
+            <DeclineButton
+              onDecline={handleDecline}
               disabled={status !== 'pending'}
-              variant="outline"
-              size="sm"
               className="border-blue-200 dark:border-blue-700 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900"
-            >
-              <X className="h-4 w-4" />
-              <span className="ml-1">Decline</span>
-            </Button>
+            />
           </div>
 
           {/* Error message */}

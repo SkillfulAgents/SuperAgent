@@ -3,7 +3,6 @@ import { apiFetch } from '@renderer/lib/api'
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import {
   Check,
-  X,
   Loader2,
   Plus,
 } from 'lucide-react'
@@ -11,6 +10,7 @@ import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { COMMON_MCP_SERVERS } from '@shared/lib/mcp/common-servers'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
+import { DeclineButton } from './decline-button'
 import { cn } from '@shared/lib/utils/cn'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useInitiateMcpOAuth } from '@renderer/hooks/use-remote-mcps'
@@ -248,7 +248,7 @@ export function RemoteMcpRequestItem({
     }
   }
 
-  const handleDecline = async () => {
+  const handleDecline = async (reason?: string) => {
     setStatus('submitting')
     setError(null)
 
@@ -261,7 +261,7 @@ export function RemoteMcpRequestItem({
           body: JSON.stringify({
             toolUseId,
             decline: true,
-            declineReason: 'User declined to provide MCP access',
+            declineReason: reason || 'User declined to provide MCP access',
           }),
         }
       )
@@ -468,16 +468,11 @@ export function RemoteMcpRequestItem({
               <span className="ml-1">Grant Access</span>
             </Button>
 
-            <Button
-              onClick={handleDecline}
+            <DeclineButton
+              onDecline={handleDecline}
               disabled={status !== 'pending' && status !== 'oauth_pending'}
-              variant="outline"
-              size="sm"
               className="border-purple-200 dark:border-purple-700 text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900"
-            >
-              <X className="h-4 w-4" />
-              <span className="ml-1">Decline</span>
-            </Button>
+            />
           </div>
 
           {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}

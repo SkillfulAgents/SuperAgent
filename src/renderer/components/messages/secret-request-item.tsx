@@ -1,9 +1,10 @@
 import { apiFetch } from '@renderer/lib/api'
 
 import { useState } from 'react'
-import { Key, Eye, EyeOff, Check, X, Loader2 } from 'lucide-react'
+import { Key, Eye, EyeOff, Check, Loader2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
+import { DeclineButton } from './decline-button'
 import { cn } from '@shared/lib/utils/cn'
 
 interface SecretRequestItemProps {
@@ -62,7 +63,7 @@ export function SecretRequestItem({
     }
   }
 
-  const handleDecline = async () => {
+  const handleDecline = async (reason?: string) => {
     setStatus('submitting')
     setError(null)
 
@@ -74,7 +75,7 @@ export function SecretRequestItem({
           toolUseId,
           secretName,
           decline: true,
-          declineReason: 'User declined to provide the secret',
+          declineReason: reason || 'User declined to provide the secret',
         }),
       })
 
@@ -210,17 +211,12 @@ export function SecretRequestItem({
               <span className="ml-1">Provide</span>
             </Button>
 
-            <Button
-              onClick={handleDecline}
+            <DeclineButton
+              onDecline={handleDecline}
               disabled={status === 'submitting'}
-              variant="outline"
-              size="sm"
               className="border-amber-200 dark:border-amber-700 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900"
               data-testid="secret-decline-btn"
-            >
-              <X className="h-4 w-4" />
-              <span className="ml-1">Decline</span>
-            </Button>
+            />
           </div>
 
           {/* Error message */}
