@@ -131,6 +131,10 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
 
   const handleResizeMove = useCallback((e: React.PointerEvent) => {
     if (!resizeRef.current) return
+    const parent = containerRef.current?.parentElement
+    if (!parent) return
+    const parentRect = parent.getBoundingClientRect()
+
     const { startX, origW, origH, origX, origY, corner } = resizeRef.current
     const dx = e.clientX - startX
     const ratio = metadataRef.current.deviceWidth / metadataRef.current.deviceHeight
@@ -138,16 +142,24 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
     const isLeft = corner === 'nw' || corner === 'sw'
     const isTop = corner === 'nw' || corner === 'ne'
 
-    const newWidth = Math.max(MIN_WIDTH, isLeft ? origW - dx : origW + dx)
-    const newHeight = newWidth / ratio + HEADER_HEIGHT
-    const deltaW = newWidth - origW
-    const deltaH = newHeight - origH
+    let newWidth = Math.max(MIN_WIDTH, isLeft ? origW - dx : origW + dx)
+    let newX = isLeft ? origX - (newWidth - origW) : origX
+    let newY = isTop ? origY - (newWidth / ratio + HEADER_HEIGHT - origH) : origY
 
-    setSize({ width: newWidth, height: newHeight })
-    setPos({
-      x: isLeft ? origX - deltaW : origX,
-      y: isTop ? origY - deltaH : origY,
-    })
+    // Clamp so the window stays within the parent container
+    if (newX < 0) { newWidth += newX; newX = 0 }
+    if (newY < 0) { newWidth += newY * ratio; newY = 0 }
+    if (newX + newWidth > parentRect.width) newWidth = parentRect.width - newX
+    newWidth = Math.max(MIN_WIDTH, newWidth)
+
+    const newHeight = newWidth / ratio + HEADER_HEIGHT
+    if (newY + newHeight > parentRect.height) {
+      newWidth = (parentRect.height - newY - HEADER_HEIGHT) * ratio
+      newWidth = Math.max(MIN_WIDTH, newWidth)
+    }
+
+    setSize({ width: newWidth, height: newWidth / ratio + HEADER_HEIGHT })
+    setPos({ x: newX, y: newY })
   }, [])
 
   const handleResizeEnd = useCallback(() => {
