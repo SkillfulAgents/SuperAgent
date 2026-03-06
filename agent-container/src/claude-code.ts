@@ -307,32 +307,37 @@ export class ClaudeCodeProcess extends EventEmitter {
   }
 
   /**
-   * Interrupt and restart the query after MCP approval.
-   * Called by request_remote_mcp tool after user approval. The env var REMOTE_MCPS
-   * is already updated by the host. We can't inject tools into the running query
-   * mid-stream, so we interrupt the current query and restart. The new query
-   * picks up the MCP server from the env var, and we send a continuation message
-   * so the model proceeds with the original request using the newly available tools.
+   * Called by request_remote_mcp tool after user approval.
+   * Tools are already hot-swapped via /mcp/sync → setMcpServers() by the time
+   * this is called, so this is now a no-op kept for compatibility.
    */
   addRemoteMcpServer(name: string): void {
-    const sanitizedName = sanitizeMcpName(name);
-    console.log(`[ClaudeCodeProcess] MCP server "${sanitizedName}" approved, scheduling interrupt to inject tools`);
+    console.log(`[ClaudeCodeProcess] MCP server "${sanitizeMcpName(name)}" approved — tools already injected via /mcp/sync`);
+  }
 
-    // Defer to run after the tool result is delivered back to the CLI.
-    // interrupt() aborts the current query, waits for it to stop, then restarts
-    // with a new query that includes the MCP from the REMOTE_MCPS env var.
-    setTimeout(async () => {
-      try {
-        console.log(`[ClaudeCodeProcess] Interrupting for MCP injection: ${sanitizedName}`);
-        await this.interrupt();
-        console.log(`[ClaudeCodeProcess] Interrupt complete, sending MCP continuation for: ${sanitizedName}`);
-        await this.sendMessage(
-          `${SYSTEM_MESSAGE_PREFIX}The remote MCP server "${name}" has been fully registered and its tools are now available. Please proceed to use them to fulfill the original request. Do not request the MCP server again.`
-        );
-      } catch (err) {
-        console.error(`[ClaudeCodeProcess] MCP injection via interrupt failed:`, err);
-      }
-    }, 0);
+  /**
+   * Hot-swap remote MCP servers using the SDK's setMcpServers().
+   * Updates the tool set without interrupting the current query.
+   */
+  async syncMcpServers(): Promise<void> {
+    if (!this.queryInstance) {
+      console.log('[MCP-SYNC] No active query — env updated, will take effect on next message');
+      return;
+    }
+
+    const remoteMcpConfigs = this.buildRemoteMcpServers();
+    const allServers: Record<string, any> = {
+      'user-input': createUserInputMcpServer(),
+      'browser': createBrowserMcpServer(),
+      'dashboards': createDashboardsMcpServer(),
+      ...remoteMcpConfigs,
+    };
+
+    const result = await this.queryInstance.setMcpServers(allServers);
+    console.log(`[ClaudeCodeProcess] setMcpServers complete — added: [${result.added.join(', ')}], removed: [${result.removed.join(', ')}]`);
+    if (Object.keys(result.errors).length > 0) {
+      console.error(`[ClaudeCodeProcess] setMcpServers errors:`, result.errors);
+    }
   }
 
   /**

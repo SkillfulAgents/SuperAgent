@@ -1,13 +1,14 @@
 import { Hono } from 'hono'
 import crypto from 'crypto'
 import { db } from '@shared/lib/db'
-import { remoteMcpServers } from '@shared/lib/db/schema'
+import { remoteMcpServers, agentRemoteMcps } from '@shared/lib/db/schema'
 import { eq, and } from 'drizzle-orm'
 import { initiateOAuthFlow, initiateNewServerOAuth, completeOAuthFlow, discoverOAuthMetadata } from '@shared/lib/mcp/oauth'
 import type { McpToolInfo } from '@shared/lib/mcp/types'
 import { getAppBaseUrlFromRequest, getCurrentUserId } from '@shared/lib/auth/config'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { Authenticated, UsersMcpServer, IsAdmin, Or } from '../middleware/auth'
+import { pushRemoteMcpsToContainer } from './agents'
 
 /**
  * Escape a string for safe inclusion in HTML content
@@ -431,7 +432,19 @@ remoteMcps.delete('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
     return c.json({ error: 'MCP server not found' }, 404)
   }
 
+  // Find all agents using this MCP before cascade-deleting
+  const affectedAgents = await db
+    .select({ agentSlug: agentRemoteMcps.agentSlug })
+    .from(agentRemoteMcps)
+    .where(eq(agentRemoteMcps.remoteMcpId, id))
+
   await db.delete(remoteMcpServers).where(eq(remoteMcpServers.id, id))
+
+  // Push updated REMOTE_MCPS to each affected agent's running container
+  for (const { agentSlug } of affectedAgents) {
+    try { await pushRemoteMcpsToContainer(agentSlug) } catch { /* container may not be running */ }
+  }
+
   return c.json({ success: true })
 })
 
