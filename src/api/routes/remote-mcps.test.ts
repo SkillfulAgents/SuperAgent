@@ -77,8 +77,9 @@ vi.mock('@shared/lib/db/schema', () => ({
   },
 }))
 
+const mockPushRemoteMcpsToContainer = vi.fn().mockResolvedValue(undefined)
 vi.mock('./agents', () => ({
-  pushRemoteMcpsToContainer: vi.fn().mockResolvedValue(undefined),
+  pushRemoteMcpsToContainer: (...args: unknown[]) => mockPushRemoteMcpsToContainer(...args),
 }))
 
 vi.mock('drizzle-orm', () => ({

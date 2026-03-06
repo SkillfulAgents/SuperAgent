@@ -321,22 +321,25 @@ export class ClaudeCodeProcess extends EventEmitter {
    */
   async syncMcpServers(): Promise<void> {
     if (!this.queryInstance) {
-      console.log('[MCP-SYNC] No active query — env updated, will take effect on next message');
       return;
     }
 
-    const remoteMcpConfigs = this.buildRemoteMcpServers();
-    const allServers: Record<string, any> = {
-      'user-input': createUserInputMcpServer(),
-      'browser': createBrowserMcpServer(),
-      'dashboards': createDashboardsMcpServer(),
-      ...remoteMcpConfigs,
-    };
+    try {
+      const remoteMcpConfigs = this.buildRemoteMcpServers();
+      const allServers: Record<string, any> = {
+        'user-input': createUserInputMcpServer(),
+        'browser': createBrowserMcpServer(),
+        'dashboards': createDashboardsMcpServer(),
+        ...remoteMcpConfigs,
+      };
 
-    const result = await this.queryInstance.setMcpServers(allServers);
-    console.log(`[ClaudeCodeProcess] setMcpServers complete — added: [${result.added.join(', ')}], removed: [${result.removed.join(', ')}]`);
-    if (Object.keys(result.errors).length > 0) {
-      console.error(`[ClaudeCodeProcess] setMcpServers errors:`, result.errors);
+      const result = await this.queryInstance.setMcpServers(allServers);
+      console.log(`[ClaudeCodeProcess] setMcpServers complete — added: [${result.added.join(', ')}], removed: [${result.removed.join(', ')}]`);
+      if (Object.keys(result.errors).length > 0) {
+        console.error(`[ClaudeCodeProcess] setMcpServers errors:`, result.errors);
+      }
+    } catch (err) {
+      console.error('[ClaudeCodeProcess] syncMcpServers failed (env var already updated, will take effect on next query):', err);
     }
   }
 

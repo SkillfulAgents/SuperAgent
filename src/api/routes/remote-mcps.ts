@@ -441,9 +441,13 @@ remoteMcps.delete('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
   await db.delete(remoteMcpServers).where(eq(remoteMcpServers.id, id))
 
   // Push updated REMOTE_MCPS to each affected agent's running container
-  for (const { agentSlug } of affectedAgents) {
-    try { await pushRemoteMcpsToContainer(agentSlug) } catch { /* container may not be running */ }
-  }
+  await Promise.allSettled(
+    affectedAgents.map(({ agentSlug }) =>
+      pushRemoteMcpsToContainer(agentSlug).catch((err) =>
+        console.warn(`[MCP] Failed to push to ${agentSlug}:`, err)
+      )
+    )
+  )
 
   return c.json({ success: true })
 })

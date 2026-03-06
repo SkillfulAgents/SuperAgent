@@ -1990,7 +1990,7 @@ agents.delete('/:id/remote-mcps/:mcpId', AgentUser(), async (c) => {
 
     await db.delete(agentRemoteMcps).where(eq(agentRemoteMcps.id, mapping.id))
 
-    try { await pushRemoteMcpsToContainer(slug) } catch { /* container may not be running */ }
+    try { await pushRemoteMcpsToContainer(slug) } catch (err) { console.warn(`[MCP] Failed to push to ${slug}:`, err) }
 
     return c.body(null, 204)
   } catch (error) {
@@ -2057,7 +2057,7 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
     }
 
     // Hot-swap MCP tools in the running container via /mcp/sync
-    await pushRemoteMcpsToContainer(slug)
+    try { await pushRemoteMcpsToContainer(slug) } catch (err) { console.warn(`[MCP] Failed to push to ${slug}:`, err) }
 
     // Resolve the pending input request
     const resolveResponse = await client.fetch(`/inputs/${encodeURIComponent(body.toolUseId)}/resolve`, {
