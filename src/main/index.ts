@@ -83,11 +83,11 @@ function createWindow() {
   // Grant microphone (and camera) permissions for the renderer.
   // Production loads from file:// where Chromium blocks getUserMedia by default.
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-    const allowed = ['media', 'audioCapture', 'mediaKeySystem']
+    const allowed = ['media', 'audioCapture', 'mediaKeySystem', 'clipboard-read', 'clipboard-sanitized-write']
     callback(allowed.includes(permission))
   })
   session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
-    const allowed = ['media', 'audioCapture', 'mediaKeySystem']
+    const allowed = ['media', 'audioCapture', 'mediaKeySystem', 'clipboard-read', 'clipboard-sanitized-write']
     return allowed.includes(permission)
   })
 
