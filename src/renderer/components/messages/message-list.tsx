@@ -17,8 +17,8 @@ import { ConnectedAccountRequestItem } from './connected-account-request-item'
 import { RemoteMcpRequestItem } from './remote-mcp-request-item'
 import { QuestionRequestItem } from './question-request-item'
 import { FileRequestItem } from './file-request-item'
-import { Download, Loader2, Wrench, WifiOff } from 'lucide-react'
-import { getApiBaseUrl } from '@renderer/lib/env'
+import { Loader2, Wrench, WifiOff } from 'lucide-react'
+import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { useEffect, useRef, useCallback, useMemo, Fragment } from 'react'
@@ -38,16 +38,7 @@ function DeliveredFiles({ files, agentSlug }: { files: { filePath: string }[]; a
   return (
     <div className="flex flex-wrap gap-1.5 ml-11 -mt-1 pb-1">
       {files.map((file, idx) => (
-        <a
-          key={idx}
-          href={`${getApiBaseUrl()}/api/agents/${agentSlug}/files/${file.filePath.replace(/^\/workspace\//, '')}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-        >
-          <Download className="h-3 w-3" />
-          {file.filePath.split('/').pop()}
-        </a>
+        <FileDownloadPill key={idx} filePath={file.filePath} agentSlug={agentSlug} />
       ))}
     </div>
   )

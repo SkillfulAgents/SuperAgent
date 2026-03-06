@@ -1,5 +1,7 @@
 import { Download } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
+import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
+import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps, CollapsedContentProps } from './types'
 
@@ -34,6 +36,7 @@ function ExpandedView({ input, result, isError, agentSlug }: ToolRendererProps) 
       )}
       {filePath && (
         <div className="flex items-center gap-2">
+          <FileTypeIcon filename={getFilename(filePath)} size={20} />
           <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
             {getFilename(filePath)}
           </code>
@@ -81,21 +84,12 @@ function CollapsedContent({ input, isError, agentSlug }: CollapsedContentProps) 
   const { filePath } = input as DeliverFileInput
   if (!filePath || !agentSlug || isError) return null
 
-  const relativePath = getRelativePath(filePath)
-  const baseUrl = getApiBaseUrl()
-  const downloadUrl = `${baseUrl}/api/agents/${agentSlug}/files/${relativePath}`
-
   return (
-    <a
-      href={downloadUrl}
-      target="_blank"
-      rel="noopener noreferrer"
+    <FileDownloadPill
+      filePath={filePath}
+      agentSlug={agentSlug}
       onClick={(e) => e.stopPropagation()}
-      className="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-    >
-      <Download className="h-3 w-3" />
-      Download
-    </a>
+    />
   )
 }
 

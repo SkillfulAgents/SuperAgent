@@ -1,4 +1,5 @@
-import { X, FileIcon, ImageIcon, FolderIcon } from 'lucide-react'
+import { X, FolderIcon } from 'lucide-react'
+import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
 
 export interface FileAttachment {
   type: 'file'
@@ -58,10 +59,8 @@ export function AttachmentPreview({ attachments, onRemove }: AttachmentPreviewPr
                   alt={attachment.file.name}
                   className="h-8 w-8 rounded object-cover"
                 />
-              ) : attachment.file.type.startsWith('image/') ? (
-                <ImageIcon className="h-4 w-4 text-muted-foreground" />
               ) : (
-                <FileIcon className="h-4 w-4 text-muted-foreground" />
+                <FileTypeIcon filename={attachment.file.name} size={24} />
               )}
               <div className="flex flex-col min-w-0">
                 <span className="truncate max-w-[160px] font-medium" title={attachment.file.name}>
