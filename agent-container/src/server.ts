@@ -12,6 +12,7 @@ import * as dns from 'dns';
 import * as net from 'net';
 import { inputManager } from './input-manager';
 import { dashboardManager } from './dashboard-manager';
+import { getCurrentProcess } from './claude-code';
 
 // Global error handlers to prevent crashes from AbortError during interrupts
 // The SDK throws AbortError when queries are aborted, which can propagate uncaught
@@ -392,6 +393,29 @@ app.post('/env', async (c) => {
   } catch (error: any) {
     console.error('[ENV] Error setting env var:', error);
     return c.json({ error: error.message || 'Failed to set environment variable' }, 500);
+  }
+});
+
+// POST /mcp/sync - Update REMOTE_MCPS and hot-swap MCP tools.
+// Called by the host when MCP servers are added/removed via the UI.
+// Uses setMcpServers() for a non-disruptive tool update (no interrupt needed).
+app.post('/mcp/sync', async (c) => {
+  try {
+    const body = await c.req.json<{ value: string }>();
+    const newValue = body.value ?? '[]';
+
+    process.env.REMOTE_MCPS = newValue;
+    await updateEnvFile('REMOTE_MCPS', newValue);
+
+    const proc = getCurrentProcess();
+    if (proc) {
+      await proc.syncMcpServers();
+    }
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    console.error('[MCP-SYNC] Error:', error);
+    return c.json({ error: error.message || 'Failed to sync MCP servers' }, 500);
   }
 });
 

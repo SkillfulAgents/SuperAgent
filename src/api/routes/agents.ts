@@ -301,6 +301,45 @@ async function createOwnerAcl(c: Context, agentSlug: string) {
   })
 }
 
+/**
+ * Push the current REMOTE_MCPS env var to a running container.
+ * No-ops silently if the container is not running.
+ */
+export async function pushRemoteMcpsToContainer(agentSlug: string): Promise<void> {
+  const client = containerManager.getClient(agentSlug)
+  const hostUrl = getContainerHostUrl()
+  const appPort = getAppPort()
+  const mcpMappings = await db
+    .select({ mcp: remoteMcpServers })
+    .from(agentRemoteMcps)
+    .innerJoin(remoteMcpServers, eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id))
+    .where(eq(agentRemoteMcps.agentSlug, agentSlug))
+
+  const mcpConfigs = mcpMappings
+    .filter(({ mcp }) => mcp.status === 'active')
+    .map(({ mcp }) => {
+      let toolNames: Array<{ name: string }> = []
+      if (mcp.toolsJson) {
+        try { toolNames = JSON.parse(mcp.toolsJson).map((t: any) => ({ name: t.name })) } catch { /* ignore */ }
+      }
+      return {
+        id: mcp.id,
+        name: mcp.name,
+        proxyUrl: `http://${hostUrl}:${appPort}/api/mcp-proxy/${agentSlug}/${mcp.id}`,
+        tools: toolNames,
+      }
+    })
+
+  const res = await client.fetch('/mcp/sync', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: JSON.stringify(mcpConfigs) }),
+  })
+  if (!res.ok) {
+    throw new Error(`/mcp/sync returned ${res.status}`)
+  }
+}
+
 // Create Anthropic client lazily to use API key from settings
 function getAnthropicClient(): Anthropic {
   const apiKey = getEffectiveAnthropicApiKey()
@@ -1953,6 +1992,9 @@ agents.delete('/:id/remote-mcps/:mcpId', AgentUser(), async (c) => {
     }
 
     await db.delete(agentRemoteMcps).where(eq(agentRemoteMcps.id, mapping.id))
+
+    try { await pushRemoteMcpsToContainer(slug) } catch (err) { console.warn(`[MCP] Failed to push to ${slug}:`, err) }
+
     return c.body(null, 204)
   } catch (error) {
     console.error('Failed to remove remote MCP from agent:', error)
@@ -2017,41 +2059,8 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
       })
     }
 
-    // Fetch updated remote MCPs for this agent
-    const hostUrl = getContainerHostUrl()
-    const appPort = getAppPort()
-    const mcpMappings = await db
-      .select({ mcp: remoteMcpServers })
-      .from(agentRemoteMcps)
-      .innerJoin(remoteMcpServers, eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id))
-      .where(eq(agentRemoteMcps.agentSlug, slug))
-
-    const mcpConfigs = mcpMappings
-      .filter(({ mcp }) => mcp.status === 'active')
-      .map(({ mcp }) => {
-        // Only pass tool names (not full schemas) to keep env var size small
-        let toolNames: Array<{ name: string }> = []
-        if (mcp.toolsJson) {
-          try { toolNames = JSON.parse(mcp.toolsJson).map((t: any) => ({ name: t.name })) } catch { /* ignore */ }
-        }
-        return {
-          id: mcp.id,
-          name: mcp.name,
-          proxyUrl: `http://${hostUrl}:${appPort}/api/mcp-proxy/${slug}/${mcp.id}`,
-          tools: toolNames,
-        }
-      })
-
-    // Update container env var
-    const envResponse = await client.fetch('/env', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key: 'REMOTE_MCPS', value: JSON.stringify(mcpConfigs) }),
-    })
-    if (!envResponse.ok) {
-      console.error('Failed to update REMOTE_MCPS env var:', await envResponse.text())
-      return c.json({ error: 'Failed to update container environment' }, 502)
-    }
+    // Hot-swap MCP tools in the running container via /mcp/sync
+    try { await pushRemoteMcpsToContainer(slug) } catch (err) { console.warn(`[MCP] Failed to push to ${slug}:`, err) }
 
     // Resolve the pending input request
     const resolveResponse = await client.fetch(`/inputs/${encodeURIComponent(body.toolUseId)}/resolve`, {
