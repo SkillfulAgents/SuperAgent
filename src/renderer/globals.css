@@ -83,6 +83,15 @@
     @apply bg-background text-foreground h-screen;
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   }
+  /* Disable text selection globally, re-enable on content areas */
+  * {
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .prose, .prose *, [contenteditable], input, textarea, pre, code {
+    user-select: text;
+    -webkit-user-select: text;
+  }
 }
 
 /* Fix Radix ScrollArea viewport using display: table which causes content to expand */
