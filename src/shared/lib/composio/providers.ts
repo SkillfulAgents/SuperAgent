@@ -70,7 +70,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     description: 'Microsoft email and calendar',
   },
   {
-    slug: 'microsoftteams',
+    slug: 'microsoft_teams',
     displayName: 'Microsoft Teams',
     icon: 'message-square',
     description: 'Microsoft team communication',
