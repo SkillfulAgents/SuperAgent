@@ -297,7 +297,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
           const resultContent =
             toolResult?.toolUseResult?.stdout ?? toolResult?.content ?? undefined
 
-          const subagent = (block.name === 'Task' && toolResult?.toolUseResult?.agentId)
+          const subagent = ((block.name === 'Task' || block.name === 'Agent') && toolResult?.toolUseResult?.agentId)
             ? {
                 agentId: toolResult.toolUseResult.agentId!,
                 status: toolResult.toolUseResult.status || 'completed',

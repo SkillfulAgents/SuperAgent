@@ -192,7 +192,7 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
             {toolCalls.map((toolCall) => (
               <MessageContextMenu key={toolCall.id} text={toolCall.name} onRemove={onRemoveToolCall ? () => onRemoveToolCall(toolCall.id) : undefined}>
                 <div>
-                  {toolCall.name === 'Task' && sessionId ? (
+                  {(toolCall.name === 'Task' || toolCall.name === 'Agent') && sessionId ? (
                     <SubAgentBlock
                       toolCall={toolCall}
                       sessionId={sessionId}

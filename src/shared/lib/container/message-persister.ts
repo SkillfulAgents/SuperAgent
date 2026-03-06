@@ -841,7 +841,7 @@ class MessagePersister {
           }
 
           // Track Task tool for subagent correlation
-          if (state.currentToolUse.name === 'Task') {
+          if (state.currentToolUse.name === 'Task' || state.currentToolUse.name === 'Agent') {
             state.pendingTaskToolId = state.currentToolUse.id
           }
 

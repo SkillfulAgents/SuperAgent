@@ -102,7 +102,7 @@ export async function resolveInterruptedSubagents(
     if (item.type !== 'assistant') continue
     const msg = item as TransformedMessage
     for (const tc of msg.toolCalls) {
-      if (tc.name !== 'Task') continue
+      if (tc.name !== 'Task' && tc.name !== 'Agent') continue
       if (tc.subagent?.agentId) {
         resolvedAgentIds.add(tc.subagent.agentId)
       } else {
