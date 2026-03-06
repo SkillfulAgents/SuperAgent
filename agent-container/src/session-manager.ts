@@ -280,6 +280,41 @@ export class SessionManager extends EventEmitter {
       }
     }
 
+    // Reattach process if it was released after going idle
+    if (!sessionData.process.isRunning()) {
+      const persisted = this.persistence.getSession(sessionId);
+      if (!persisted) throw new Error(`No persisted data for session ${sessionId}`);
+
+      const process = new ClaudeCodeProcess({
+        sessionId,
+        workingDirectory: persisted.workingDirectory,
+        claudeSessionId: persisted.claudeSessionId,
+        userSystemPrompt: persisted.systemPrompt,
+        availableEnvVars: persisted.availableEnvVars,
+        model: persisted.model,
+        browserModel: persisted.browserModel,
+        maxOutputTokens: persisted.maxOutputTokens,
+        maxThinkingTokens: persisted.maxThinkingTokens,
+        maxTurns: persisted.maxTurns,
+        maxBudgetUsd: persisted.maxBudgetUsd,
+        customEnvVars: persisted.customEnvVars,
+      });
+
+      process.on('message', (message: SDKMessage) => {
+        this.handleMessage(sessionId, message);
+      });
+      process.on('stderr', (error: string) => {
+        console.error(`[Session ${sessionId}] stderr:`, error);
+      });
+      process.on('exit', (code: number | null) => {
+        console.log(`[Session ${sessionId}] exited with code ${code}`);
+      });
+
+      sessionData.process = process;
+      await process.start();
+      console.log(`[SessionManager] Session ${sessionId} process reattached`);
+    }
+
     // Update last activity
     sessionData.session.lastActivity = new Date();
     this.persistence.updateLastActivity(sessionId);
@@ -340,6 +375,12 @@ export class SessionManager extends EventEmitter {
 
     // Update last activity
     sessionData.session.lastActivity = new Date();
+
+    // Release the process when a query completes to free SDK resources.
+    // The next sendMessage call will reattach a fresh process.
+    if ((message as any).type === 'result') {
+      this.releaseProcess(sessionId);
+    }
   }
 
   getAllSessions(): Session[] {
@@ -385,5 +426,22 @@ export class SessionManager extends EventEmitter {
 
     this.sessions.clear();
     console.log('All sessions stopped.');
+  }
+
+  /**
+   * Stop the process to free SDK resources (MessageQueue, API connection)
+   * while keeping session data and WebSocket subscribers intact.
+   * The next sendMessage will reattach a fresh process.
+   */
+  private async releaseProcess(sessionId: string): Promise<void> {
+    const sessionData = this.sessions.get(sessionId);
+    if (!sessionData) return;
+
+    try {
+      await sessionData.process.stop();
+      console.log(`[SessionManager] Session ${sessionId} process released`);
+    } catch (e) {
+      console.error(`[SessionManager] Error releasing session ${sessionId}:`, e);
+    }
   }
 }
