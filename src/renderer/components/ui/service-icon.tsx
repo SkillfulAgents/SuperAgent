@@ -33,7 +33,7 @@ export function ServiceIcon({ slug, fallback = 'oauth', className }: ServiceIcon
 
   return (
     <img
-      src={`/service-icons/${slug}.svg`}
+      src={`${import.meta.env.BASE_URL}service-icons/${slug}.svg`}
       alt=""
       aria-hidden="true"
       className={cn('object-contain', className)}
