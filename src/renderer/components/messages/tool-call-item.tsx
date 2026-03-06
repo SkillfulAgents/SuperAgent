@@ -1,6 +1,6 @@
 
 import { cn } from '@shared/lib/utils/cn'
-import { Circle, CheckCircle, XCircle, ChevronDown, ChevronRight, Loader2, Wrench, StopCircle } from 'lucide-react'
+import { CheckCircle, XCircle, ChevronDown, ChevronRight, Loader2, Wrench, StopCircle } from 'lucide-react'
 import { useState, useRef } from 'react'
 import { getToolRenderer } from './tool-renderers'
 import { parseToolResult } from '@renderer/lib/parse-tool-result'
@@ -63,7 +63,7 @@ export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug, isSessionA
   const elapsed = useElapsedTimer(status === 'running' && !isPendingUserInput ? (messageCreatedAt ?? null) : null)
 
   const StatusIcon = {
-    running: Circle,
+    running: Loader2,
     success: CheckCircle,
     error: XCircle,
     cancelled: StopCircle,
@@ -107,7 +107,7 @@ export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug, isSessionA
           className={cn(
             'h-4 w-4 shrink-0',
             statusColor,
-            status === 'running' && 'animate-pulse'
+            status === 'running' && 'animate-spin'
           )}
         />
 
