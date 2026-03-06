@@ -39,7 +39,9 @@ function getScopedUserId(c: { get: (key: never) => unknown }): string | undefine
 
 // GET /api/notifications/stream - SSE stream for global notifications (used by Electron main process)
 notificationsRouter.get('/stream', async (c) => {
-  const userId = getScopedUserId(c)
+  const user = isAuthMode()
+    ? (c.get('user' as never) as { id: string; role?: string } | undefined)
+    : undefined
 
   return streamSSE(c, async (stream) => {
     let pingInterval: ReturnType<typeof setInterval> | null = null
@@ -49,11 +51,11 @@ notificationsRouter.get('/stream', async (c) => {
       // Subscribe to global notifications
       unsubscribe = messagePersister.addGlobalNotificationClient(async (data) => {
         try {
-          // In auth mode, filter events by agent access
-          if (userId) {
+          // In auth mode, filter events by agent access (admins included)
+          if (isAuthMode() && user) {
             const agentSlug = (data as Record<string, unknown>)?.agentSlug as string | undefined
             if (agentSlug) {
-              const accessible = await getAccessibleAgentSlugs(userId)
+              const accessible = await getAccessibleAgentSlugs(user.id)
               if (!accessible.includes(agentSlug)) return
             }
           }

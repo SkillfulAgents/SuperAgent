@@ -159,15 +159,9 @@ class MessagePersister {
     return (clients?.size ?? 0) > 0
   }
 
-  // Broadcast to all sessions (for global notifications)
+  // Broadcast to global notification clients only (e.g., sidebar updates, Electron main process)
+  // Does NOT broadcast to session-specific SSE clients — use broadcastToSSE for that.
   broadcastGlobal(data: unknown): void {
-    // Broadcast to session-specific clients
-    const sessionIds = Array.from(this.sseClients.keys())
-    for (const sessionId of sessionIds) {
-      this.broadcastToSSE(sessionId, data)
-    }
-
-    // Broadcast to global notification clients (e.g., Electron main process)
     for (const client of this.globalNotificationClients) {
       try {
         client(data)
@@ -221,12 +215,14 @@ class MessagePersister {
 
     // Also broadcast globally so sidebar updates regardless of which session is being viewed
     const agentSlug = state?.agentSlug
-    this.broadcastGlobal({
-      type: 'session_idle',
-      sessionId,
-      agentSlug,
-      isActive: false,
-    })
+    if (agentSlug) {
+      this.broadcastGlobal({
+        type: 'session_idle',
+        sessionId,
+        agentSlug,
+        isActive: false,
+      })
+    }
   }
 
   // Add SSE client for real-time updates
