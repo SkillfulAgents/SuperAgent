@@ -84,8 +84,15 @@ export function QuestionRequestItem({
     }
   }
 
-  const handleOtherTextChange = (questionIndex: number, text: string) => {
+  const handleOtherTextChange = (questionIndex: number, text: string, multiSelect: boolean) => {
     setOtherTexts({ ...otherTexts, [questionIndex]: text })
+    // Auto-select "Other" when user types something
+    if (text && !otherSelected[questionIndex]) {
+      setOtherSelected({ ...otherSelected, [questionIndex]: true })
+      if (!multiSelect) {
+        setSelections({ ...selections, [questionIndex]: '__other__' })
+      }
+    }
   }
 
   const isQuestionAnswered = (questionIndex: number, question: Question): boolean => {
@@ -315,17 +322,15 @@ export function QuestionRequestItem({
                   />
                   <div className="flex-1 min-w-0">
                     <div className="font-medium text-blue-900 dark:text-blue-100">Other</div>
-                    {otherSelected[questionIndex] && (
-                      <Input
-                        type="text"
-                        placeholder="Enter your answer..."
-                        value={otherTexts[questionIndex] || ''}
-                        onChange={(e) => handleOtherTextChange(questionIndex, e.target.value)}
-                        disabled={status === 'submitting'}
-                        className="mt-1 bg-white dark:bg-blue-950/30 border-blue-200 dark:border-blue-700 focus:border-blue-400 dark:focus:border-blue-500 text-sm"
-                        onClick={(e) => e.stopPropagation()}
-                      />
-                    )}
+                    <Input
+                      type="text"
+                      placeholder="Enter your answer..."
+                      value={otherTexts[questionIndex] || ''}
+                      onChange={(e) => handleOtherTextChange(questionIndex, e.target.value, question.multiSelect)}
+                      disabled={status === 'submitting'}
+                      className="mt-1 bg-white dark:bg-blue-950/30 border-blue-200 dark:border-blue-700 focus:border-blue-400 dark:focus:border-blue-500 text-sm"
+                      onClick={(e) => e.stopPropagation()}
+                    />
                   </div>
                 </label>
               </div>
