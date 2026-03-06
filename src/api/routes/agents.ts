@@ -330,11 +330,14 @@ export async function pushRemoteMcpsToContainer(agentSlug: string): Promise<void
       }
     })
 
-  await client.fetch('/mcp/sync', {
+  const res = await client.fetch('/mcp/sync', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ value: JSON.stringify(mcpConfigs) }),
   })
+  if (!res.ok) {
+    throw new Error(`/mcp/sync returned ${res.status}`)
+  }
 }
 
 // Create Anthropic client lazily to use API key from settings
