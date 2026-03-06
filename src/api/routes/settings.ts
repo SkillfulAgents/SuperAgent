@@ -117,6 +117,11 @@ settings.put('/', async (c) => {
       app: {
         ...currentSettings.app,
         ...body.app,
+        // If hostBrowserProvider was explicitly set to null (meaning "use container"),
+        // remove it from settings so consumers treat it as "no host provider"
+        ...(body.app && 'hostBrowserProvider' in body.app && body.app.hostBrowserProvider == null
+          ? { hostBrowserProvider: undefined }
+          : {}),
       },
       apiKeys: currentSettings.apiKeys,
       models: body.models

@@ -78,10 +78,10 @@ export function BrowserTab() {
         <Select
           value={effectiveProvider}
           onValueChange={(value) => {
-            const providerId = value === CONTAINER_VALUE ? undefined : value as HostBrowserProviderId
+            const providerId = value === CONTAINER_VALUE ? null : value as HostBrowserProviderId
             setHostProvider(value)
             updateSettings.mutate({
-              app: { hostBrowserProvider: providerId },
+              app: { hostBrowserProvider: providerId as HostBrowserProviderId | undefined },
             })
           }}
           disabled={isLoading}
