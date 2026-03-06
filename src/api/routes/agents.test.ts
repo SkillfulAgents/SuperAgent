@@ -313,6 +313,13 @@ async function getReq(app: Hono, url: string): Promise<Response> {
   return app.request(`http://localhost${url}`, { method: 'GET' })
 }
 
+async function postFormData(app: Hono, url: string, body: FormData): Promise<Response> {
+  return app.request(`http://localhost${url}`, {
+    method: 'POST',
+    body,
+  })
+}
+
 // ============================================================================
 // ACL Role Management Tests
 // ============================================================================
@@ -1414,5 +1421,87 @@ describe('agent existence middleware — /:id/*', () => {
     expect(res.status).toBe(404)
     const body = await res.json()
     expect(body.error).toBe('Agent not found')
+  })
+})
+
+// ============================================================================
+// File Upload with relativePath — POST /:id/upload-file
+// ============================================================================
+
+describe('file upload with relativePath — POST /:id/upload-file', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockFsMkdir.mockResolvedValue(undefined)
+    mockFsWriteFile.mockResolvedValue(undefined)
+  })
+
+  it('uploads file with relativePath preserving directory structure', async () => {
+    const formData = new FormData()
+    formData.append('file', new File(['hello'], 'test.txt', { type: 'text/plain' }))
+    formData.append('relativePath', 'myfolder/sub/test.txt')
+
+    const res = await postFormData(app, '/api/agents/test-agent/upload-file', formData)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.path).toBe('/workspace/uploads/myfolder/sub/test.txt')
+    expect(body.success).toBe(true)
+    expect(body.filename).toBe('test.txt')
+
+    // Verify mkdir was called with the parent directory
+    expect(mockFsMkdir).toHaveBeenCalledWith(
+      expect.stringContaining('myfolder/sub'),
+      { recursive: true }
+    )
+    // Verify writeFile was called
+    expect(mockFsWriteFile).toHaveBeenCalled()
+  })
+
+  it('uploads file without relativePath uses timestamped name', async () => {
+    const formData = new FormData()
+    formData.append('file', new File(['hello'], 'test.txt', { type: 'text/plain' }))
+
+    const res = await postFormData(app, '/api/agents/test-agent/upload-file', formData)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.path).toMatch(/\/workspace\/uploads\/\d+-test\.txt/)
+    expect(body.success).toBe(true)
+  })
+
+  it('sanitizes path traversal via relativePath (strips leading ..)', async () => {
+    const formData = new FormData()
+    formData.append('file', new File(['malicious'], 'passwd', { type: 'text/plain' }))
+    formData.append('relativePath', '../../etc/passwd')
+
+    const res = await postFormData(app, '/api/agents/test-agent/upload-file', formData)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    // The leading ../../ is stripped, so file lands safely inside uploads/
+    expect(body.path).toBe('/workspace/uploads/etc/passwd')
+  })
+
+  it('sanitizes absolute path in relativePath (stays within uploads)', async () => {
+    const formData = new FormData()
+    formData.append('file', new File(['malicious'], 'passwd', { type: 'text/plain' }))
+    formData.append('relativePath', '/etc/passwd')
+
+    const res = await postFormData(app, '/api/agents/test-agent/upload-file', formData)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    // /etc/passwd is kept as-is by normalize (no leading ..), so uploadPath
+    // becomes 'uploads//etc/passwd'. The double slash is cosmetic — the resolved
+    // fullPath is still within the uploads directory, so the security check passes.
+    expect(body.path).toBe('/workspace/uploads//etc/passwd')
+  })
+
+  it('returns 400 when no file is provided', async () => {
+    const formData = new FormData()
+
+    const res = await postFormData(app, '/api/agents/test-agent/upload-file', formData)
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error).toBe('No file provided')
   })
 })

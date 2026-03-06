@@ -1,18 +1,25 @@
-import { X, FileIcon, ImageIcon } from 'lucide-react'
+import { X, FileIcon, ImageIcon, FolderIcon } from 'lucide-react'
 
-export interface Attachment {
-  file: File
+export interface FileAttachment {
+  type: 'file'
   id: string
+  file: File
   preview?: string
 }
+
+export interface FolderAttachment {
+  type: 'folder'
+  id: string
+  folderName: string
+  files: { file: File; relativePath: string }[]
+  totalSize: number
+}
+
+export type Attachment = FileAttachment | FolderAttachment
 
 interface AttachmentPreviewProps {
   attachments: Attachment[]
   onRemove: (id: string) => void
-}
-
-function isImageFile(file: File): boolean {
-  return file.type.startsWith('image/')
 }
 
 function formatFileSize(bytes: number): string {
@@ -31,25 +38,41 @@ export function AttachmentPreview({ attachments, onRemove }: AttachmentPreviewPr
           key={attachment.id}
           className="flex items-center gap-2 rounded-md border bg-muted/50 px-2 py-1.5 text-xs"
         >
-          {isImageFile(attachment.file) && attachment.preview ? (
-            <img
-              src={attachment.preview}
-              alt={attachment.file.name}
-              className="h-8 w-8 rounded object-cover"
-            />
-          ) : isImageFile(attachment.file) ? (
-            <ImageIcon className="h-4 w-4 text-muted-foreground" />
+          {attachment.type === 'folder' ? (
+            <>
+              <FolderIcon className="h-4 w-4 text-muted-foreground" />
+              <div className="flex flex-col min-w-0">
+                <span className="truncate max-w-[160px] font-medium" title={attachment.folderName}>
+                  {attachment.folderName}
+                </span>
+                <span className="text-muted-foreground">
+                  {attachment.files.length} file{attachment.files.length !== 1 ? 's' : ''} &middot; {formatFileSize(attachment.totalSize)}
+                </span>
+              </div>
+            </>
           ) : (
-            <FileIcon className="h-4 w-4 text-muted-foreground" />
+            <>
+              {attachment.file.type.startsWith('image/') && attachment.preview ? (
+                <img
+                  src={attachment.preview}
+                  alt={attachment.file.name}
+                  className="h-8 w-8 rounded object-cover"
+                />
+              ) : attachment.file.type.startsWith('image/') ? (
+                <ImageIcon className="h-4 w-4 text-muted-foreground" />
+              ) : (
+                <FileIcon className="h-4 w-4 text-muted-foreground" />
+              )}
+              <div className="flex flex-col min-w-0">
+                <span className="truncate max-w-[160px] font-medium" title={attachment.file.name}>
+                  {attachment.file.name}
+                </span>
+                <span className="text-muted-foreground">
+                  {formatFileSize(attachment.file.size)}
+                </span>
+              </div>
+            </>
           )}
-          <div className="flex flex-col min-w-0">
-            <span className="truncate max-w-[120px] font-medium">
-              {attachment.file.name}
-            </span>
-            <span className="text-muted-foreground">
-              {formatFileSize(attachment.file.size)}
-            </span>
-          </div>
           <button
             type="button"
             onClick={() => onRemove(attachment.id)}
