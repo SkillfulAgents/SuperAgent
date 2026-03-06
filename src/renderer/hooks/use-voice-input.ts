@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
 import { createSttAdapter, startAudioCapture, type SttAdapter, type SttProvider, type AudioCaptureHandle } from '@renderer/lib/stt'
-import type { GlobalSettingsResponse } from '@shared/lib/config/settings'
 
 export type VoiceInputState = 'idle' | 'connecting' | 'recording' | 'stopping'
 
@@ -14,13 +14,18 @@ interface SttCredentials {
   token: string
 }
 
-/** Check whether voice input is fully configured (provider + API key). */
-export function isVoiceConfigured(settings: GlobalSettingsResponse | undefined): boolean {
-  const provider = settings?.voice?.sttProvider
-  if (!provider) return false
-  if (provider === 'deepgram') return !!settings?.apiKeyStatus?.deepgram?.isConfigured
-  if (provider === 'openai') return !!settings?.apiKeyStatus?.openai?.isConfigured
-  return false
+/** Hook to check whether voice input is fully configured (provider + API key). */
+export function useIsVoiceConfigured(): boolean {
+  const { data } = useQuery({
+    queryKey: ['stt-configured'],
+    queryFn: async () => {
+      const res = await apiFetch('/api/stt/configured')
+      if (!res.ok) return { configured: false }
+      return res.json() as Promise<{ configured: boolean }>
+    },
+    staleTime: 60_000,
+  })
+  return data?.configured ?? false
 }
 
 export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {

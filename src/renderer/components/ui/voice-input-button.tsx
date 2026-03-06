@@ -3,10 +3,9 @@ import { Button } from '@renderer/components/ui/button'
 import { MiniWaveform } from '@renderer/components/ui/mini-waveform'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { Loader2, Mic, MicOff, Square, X } from 'lucide-react'
-import { useSettings } from '@renderer/hooks/use-settings'
 import { useDialogs } from '@renderer/context/dialog-context'
 import { useUser } from '@renderer/context/user-context'
-import { isVoiceConfigured } from '@renderer/hooks/use-voice-input'
+import { useIsVoiceConfigured } from '@renderer/hooks/use-voice-input'
 import type { useVoiceInput } from '@renderer/hooks/use-voice-input'
 
 type VoiceInputSize = 'default' | 'sm'
@@ -34,10 +33,9 @@ interface VoiceInputButtonProps {
  * Returns null if voice input is not supported by the browser.
  */
 export function VoiceInputButton({ voiceInput, message, disabled, size = 'default' }: VoiceInputButtonProps) {
-  const { data: settingsData } = useSettings()
   const { openSettings } = useDialogs()
   const { isAuthMode, isAdmin } = useUser()
-  const hasVoiceConfigured = isVoiceConfigured(settingsData)
+  const hasVoiceConfigured = useIsVoiceConfigured()
   const config = SIZE_CONFIG[size]
 
   // In auth mode, only admins can configure voice settings

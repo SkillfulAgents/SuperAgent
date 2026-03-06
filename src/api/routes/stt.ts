@@ -7,6 +7,15 @@ const stt = new Hono()
 
 stt.use('*', Authenticated())
 
+// GET /api/stt/configured - Check if voice input is configured (available to all authenticated users)
+stt.get('/configured', (c) => {
+  const voiceSettings = getVoiceSettings()
+  const provider = voiceSettings.sttProvider
+  if (!provider) return c.json({ configured: false })
+  const status = getSttProvider(provider).getApiKeyStatus()
+  return c.json({ configured: status.isConfigured })
+})
+
 stt.get('/token', async (c) => {
   try {
     const providerParam = c.req.query('provider')
