@@ -1,6 +1,7 @@
 import type { ContainerClient, StreamMessage, SlashCommandInfo } from './types'
 import type { SessionUsage } from '@shared/lib/types/agent'
 import { createScheduledTask } from '@shared/lib/services/scheduled-task-service'
+import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { updateSessionMetadata } from '@shared/lib/services/session-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
@@ -960,6 +961,7 @@ class MessagePersister {
           scheduleExpression: string
           prompt: string
           name?: string
+          timezone?: string
         }
         try {
           input = JSON.parse(toolInput)
@@ -978,6 +980,9 @@ class MessagePersister {
           return
         }
 
+        // Resolve timezone: agent tool override > agent owner's timezone
+        const timezone = input.timezone || resolveTimezoneForAgent(agentSlug)
+
         // Create the scheduled task in the database
         const taskId = await createScheduledTask({
           agentSlug,
@@ -986,6 +991,7 @@ class MessagePersister {
           prompt: input.prompt,
           name: input.name,
           createdBySessionId: sessionId,
+          timezone,
         })
 
         // Broadcast the scheduled task created event to session-specific SSE clients

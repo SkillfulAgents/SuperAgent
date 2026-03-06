@@ -68,6 +68,12 @@ Note: One-time tasks ('at') will execute once and complete. Recurring tasks ('cr
       .describe(
         'Optional display name for this scheduled task (e.g., "Daily backup", "Send weekly report")'
       ),
+    timezone: z
+      .string()
+      .optional()
+      .describe(
+        'Optional IANA timezone for interpreting the schedule (e.g., "America/New_York", "Europe/London"). If not specified, uses the creating user\'s timezone.'
+      ),
   },
   async (args) => {
     console.log(`[schedule_task] Scheduling ${args.scheduleType} task: ${args.scheduleExpression}`)

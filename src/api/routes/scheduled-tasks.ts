@@ -12,6 +12,7 @@ import {
   getScheduledTask,
   cancelScheduledTask,
   resetScheduledTask,
+  updateTaskTimezone,
 } from '@shared/lib/services/scheduled-task-service'
 import { getSessionsByScheduledTask } from '@shared/lib/services/session-service'
 import { Authenticated } from '../middleware/auth'
@@ -113,6 +114,36 @@ scheduledTasksRouter.post('/:taskId/reset', TaskAgentRole('user'), async (c) => 
   } catch (error) {
     console.error('Failed to reset scheduled task:', error)
     return c.json({ error: 'Failed to reset scheduled task' }, 500)
+  }
+})
+
+// PATCH /api/scheduled-tasks/:taskId/timezone - Update a task's timezone
+scheduledTasksRouter.patch('/:taskId/timezone', TaskAgentRole('user'), async (c) => {
+  try {
+    const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
+    const body = await c.req.json<{ timezone: string }>()
+
+    if (!body.timezone || typeof body.timezone !== 'string') {
+      return c.json({ error: 'timezone is required and must be a string' }, 400)
+    }
+
+    // Validate IANA timezone name
+    try {
+      Intl.DateTimeFormat(undefined, { timeZone: body.timezone })
+    } catch {
+      return c.json({ error: 'Invalid timezone identifier' }, 400)
+    }
+
+    const updated = await updateTaskTimezone(task!.id, body.timezone)
+    if (!updated) {
+      return c.json({ error: 'Task not found or not pending' }, 404)
+    }
+
+    const refreshed = await getScheduledTask(task!.id)
+    return c.json(refreshed)
+  } catch (error) {
+    console.error('Failed to update scheduled task timezone:', error)
+    return c.json({ error: 'Failed to update timezone' }, 500)
   }
 })
 

@@ -8,6 +8,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@renderer/components/ui/select'
+import { TimezonePicker } from '@renderer/components/ui/timezone-picker'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { useUser } from '@renderer/context/user-context'
 import { Wand2 } from 'lucide-react'
@@ -46,6 +47,21 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
         </Select>
         <p className="text-xs text-muted-foreground">
           Choose light or dark theme, or follow your system setting
+        </p>
+      </div>
+
+      {/* Timezone */}
+      <div className="space-y-2">
+        <Label>Timezone</Label>
+        <TimezonePicker
+          value={userSettings?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone}
+          onValueChange={(value) => {
+            updateUserSettings.mutate({ timezone: value })
+          }}
+          disabled={isUserSettingsLoading}
+        />
+        <p className="text-xs text-muted-foreground">
+          Used for interpreting scheduled task times
         </p>
       </div>
 

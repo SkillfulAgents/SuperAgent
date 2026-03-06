@@ -113,6 +113,10 @@ vi.mock('@shared/lib/browser/chrome-profile', () => ({
 
 vi.mock('@shared/lib/services/agent-service', () => ({}))
 
+vi.mock('@shared/lib/services/timezone-resolver', () => ({
+  resolveTimezoneForAgent: () => 'America/New_York',
+}))
+
 import { containerManager } from './container-manager'
 
 describe('containerManager.ensureRunning — env var construction', () => {
@@ -232,6 +236,15 @@ describe('containerManager.ensureRunning — env var construction', () => {
     expect(metadata.gmail).toHaveLength(1)
     expect(metadata.gmail[0].name).toBe('active@gmail.com')
     expect(metadata.slack).toBeUndefined()
+  })
+
+  it('sets TZ env var from resolveTimezoneForAgent', async () => {
+    setupAccountMocks([])
+
+    await containerManager.ensureRunning('test-agent')
+
+    const startOpts = mockStart.mock.calls[0][0]
+    expect(startOpts.envVars.TZ).toBe('America/New_York')
   })
 })
 

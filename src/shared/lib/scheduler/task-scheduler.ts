@@ -112,7 +112,7 @@ class TaskScheduler {
           // For one-time tasks, mark as failed
           if (task.isRecurring) {
             try {
-              const nextTime = getNextCronTime(task.scheduleExpression)
+              const nextTime = getNextCronTime(task.scheduleExpression, task.timezone || undefined)
               await updateNextExecution(task.id, nextTime, '')
               console.log(
                 `[TaskScheduler] Recurring task ${task.id} failed but scheduled next: ${nextTime.toISOString()}`
@@ -204,7 +204,7 @@ class TaskScheduler {
     // Update task status
     if (task.isRecurring) {
       // Update next execution time for recurring tasks
-      const nextTime = getNextCronTime(task.scheduleExpression)
+      const nextTime = getNextCronTime(task.scheduleExpression, task.timezone || undefined)
       await updateNextExecution(task.id, nextTime, sessionId)
       console.log(
         `[TaskScheduler] Recurring task ${task.id} next execution: ${nextTime.toISOString()}`

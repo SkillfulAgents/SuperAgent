@@ -1,5 +1,5 @@
 
-import { Clock, Repeat, CalendarClock } from 'lucide-react'
+import { Clock, Repeat, CalendarClock, Globe } from 'lucide-react'
 import type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps } from './types'
 
 interface ScheduleTaskInput {
@@ -7,6 +7,7 @@ interface ScheduleTaskInput {
   scheduleExpression?: string
   prompt?: string
   name?: string
+  timezone?: string
 }
 
 function parseScheduleTaskInput(input: unknown): ScheduleTaskInput {
@@ -57,7 +58,7 @@ function cronToHuman(cron: string): string {
 }
 
 function getSummary(input: unknown): string | null {
-  const { name, scheduleType, scheduleExpression } = parseScheduleTaskInput(input)
+  const { name, scheduleType, scheduleExpression, timezone } = parseScheduleTaskInput(input)
   const isRecurring = scheduleType === 'cron'
   const prefix = isRecurring ? '🔁' : '📅'
 
@@ -69,16 +70,18 @@ function getSummary(input: unknown): string | null {
     schedule = scheduleExpression.replace(/^at\s+/i, '')
   }
 
+  const tzSuffix = timezone ? ` (${timezone.replace(/_/g, ' ')})` : ''
+
   if (name && schedule) {
-    return `${prefix} ${name} · ${schedule}`
+    return `${prefix} ${name} · ${schedule}${tzSuffix}`
   }
 
   if (name) {
-    return `${prefix} ${name}`
+    return `${prefix} ${name}${tzSuffix}`
   }
 
   if (schedule) {
-    return `${prefix} ${schedule}`
+    return `${prefix} ${schedule}${tzSuffix}`
   }
 
   return null
@@ -115,7 +118,7 @@ function parseResult(result: unknown): string | null {
 }
 
 function ExpandedView({ input, result, isError }: ToolRendererProps) {
-  const { scheduleType, scheduleExpression, prompt, name } = parseScheduleTaskInput(input)
+  const { scheduleType, scheduleExpression, prompt, name, timezone } = parseScheduleTaskInput(input)
   const displayResult = parseResult(result ?? null)
   const isRecurring = scheduleType === 'cron'
 
@@ -136,6 +139,12 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
         {scheduleExpression && (
           <div className="text-muted-foreground">
             {isRecurring ? cronToHuman(scheduleExpression) : scheduleExpression.replace(/^at\s+/i, '')}
+          </div>
+        )}
+        {timezone && (
+          <div className="flex items-center gap-1 text-muted-foreground">
+            <Globe className="h-3.5 w-3.5" />
+            <span>{timezone.replace(/_/g, ' ')}</span>
           </div>
         )}
       </div>

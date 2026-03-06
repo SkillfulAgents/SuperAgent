@@ -11,6 +11,8 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     ca-certificates \
     gnupg \
+    # Timezone data (required for TZ env var to resolve IANA names)
+    tzdata \
     # Network/DNS utilities
     dnsutils \
     iputils-ping \
