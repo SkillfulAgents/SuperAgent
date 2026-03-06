@@ -117,6 +117,31 @@ export async function authEnforcementMiddleware(c: Context, next: Next) {
         // Lockout expired — reset
         accountLockouts.delete(email)
       }
+
+      // Pre-check ban status so we return a meaningful message
+      // instead of Better Auth's generic "No reason"
+      try {
+        const bannedUser = db
+          .select({ banned: user.banned, banReason: user.banReason })
+          .from(user)
+          .where(sql`lower(${user.email}) = ${email}`)
+          .get()
+        if (bannedUser?.banned) {
+          const reason = bannedUser.banReason
+          if (reason === 'Pending admin approval') {
+            return c.json({
+              code: 'PENDING_APPROVAL',
+              message: 'Your account is pending admin approval. Please wait for an admin to activate your account.',
+            }, 403)
+          }
+          return c.json({
+            code: 'BANNED',
+            message: 'Your account has been banned. Please contact an administrator.',
+          }, 403)
+        }
+      } catch {
+        // DB error — let Better Auth handle it
+      }
     }
   }
 
@@ -138,7 +163,8 @@ export async function authEnforcementMiddleware(c: Context, next: Next) {
   // Call next handler (Better Auth)
   await next()
 
-  // After sign-in: track failed/successful attempts for lockout
+  // After sign-in: track failed/successful attempts for lockout,
+  // and replace generic "banned" errors with the actual ban reason.
   if (path === '/api/auth/sign-in/email' && body?.email) {
     const email = String(body.email).toLowerCase()
     const status = c.res.status
