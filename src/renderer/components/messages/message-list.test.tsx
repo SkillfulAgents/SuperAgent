@@ -61,6 +61,13 @@ vi.mock('@renderer/hooks/use-elapsed-timer', () => ({
   useElapsedTimer: () => null,
 }))
 
+// Mock getApiBaseUrl
+vi.mock('@renderer/lib/env', () => ({
+  getApiBaseUrl: () => 'http://test-api',
+  isElectron: () => false,
+  getPlatform: () => 'web',
+}))
+
 // Mock child components that are complex
 vi.mock('./tool-call-item', () => ({
   ToolCallItem: ({ toolCall }: any) => <div data-testid={`tool-call-${toolCall.name}`}>{toolCall.name}</div>,
@@ -636,6 +643,119 @@ describe('MessageList', () => {
     expect(screen.queryByText('Agent took 60s')).not.toBeInTheDocument()
   })
 
+  it('keeps last turn elapsed time visible when user sends a new message (pendingUserMessage)', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = [
+      createUserMessage({
+        content: { text: 'Hello' },
+        createdAt: new Date('2025-01-01T00:00:00Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'Response' },
+        createdAt: new Date('2025-01-01T00:01:00Z'),
+      }),
+    ]
+
+    renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessage={{ text: 'Follow up', sentAt: Date.now() }}
+      />
+    )
+
+    // Even though isActive=true, pendingUserMessage closes the previous turn
+    expect(screen.getByText('Agent took 60s')).toBeInTheDocument()
+  })
+
+  it('does not defer elapsed/files after streaming when pendingUserMessage exists', () => {
+    mockStreamState.isActive = true
+    mockStreamState.streamingMessage = 'New turn streaming...'
+    mockStreamState.isStreaming = true
+
+    mockMessagesData.data = [
+      createUserMessage({
+        content: { text: 'Hello' },
+        createdAt: new Date('2025-01-01T00:00:00Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'Done' },
+        createdAt: new Date('2025-01-01T00:01:00Z'),
+        toolCalls: [
+          createToolCall({
+            name: 'mcp__user-input__deliver_file',
+            input: { filePath: '/workspace/result.csv' },
+            result: 'File delivered',
+          }),
+        ],
+      }),
+    ]
+
+    const { container } = renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessage={{ text: 'Follow up', sentAt: Date.now() }}
+      />
+    )
+
+    // Elapsed + files should render inline (not deferred after streaming)
+    expect(screen.getByText('Agent took 60s')).toBeInTheDocument()
+    expect(screen.getByText('result.csv')).toBeInTheDocument()
+
+    // Verify order: files and elapsed appear BEFORE the streaming message
+    const allText = container.textContent || ''
+    const filesPos = allText.indexOf('result.csv')
+    const elapsedPos = allText.indexOf('Agent took 60s')
+    const streamingPos = allText.indexOf('New turn streaming...')
+    expect(filesPos).toBeLessThan(streamingPos)
+    expect(elapsedPos).toBeLessThan(streamingPos)
+  })
+
+  it('does not defer previous turn elapsed/files when user message is last in messages array', () => {
+    // This simulates the state AFTER pendingUserMessage is cleared:
+    // user message is persisted, streaming belongs to new turn
+    mockStreamState.isActive = true
+    mockStreamState.streamingMessage = 'New response...'
+    mockStreamState.isStreaming = true
+
+    mockMessagesData.data = [
+      createUserMessage({
+        content: { text: 'First' },
+        createdAt: new Date('2025-01-01T00:00:00Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'Done' },
+        createdAt: new Date('2025-01-01T00:01:00Z'),
+        toolCalls: [
+          createToolCall({
+            name: 'mcp__user-input__deliver_file',
+            input: { filePath: '/workspace/output.csv' },
+            result: 'File delivered',
+          }),
+        ],
+      }),
+      createUserMessage({
+        content: { text: 'Follow up' },
+        createdAt: new Date('2025-01-01T00:02:00Z'),
+      }),
+    ]
+
+    const { container } = renderWithProviders(
+      <MessageList sessionId="s-1" agentSlug="agent-1" />
+    )
+
+    // Previous turn's files and elapsed should render inline (not deferred)
+    expect(screen.getByText('output.csv')).toBeInTheDocument()
+    expect(screen.getByText('Agent took 60s')).toBeInTheDocument()
+
+    // They should appear BEFORE the streaming content
+    const allText = container.textContent || ''
+    const filesPos = allText.indexOf('output.csv')
+    const streamingPos = allText.indexOf('New response...')
+    expect(filesPos).toBeLessThan(streamingPos)
+  })
+
   // ---- canHaveRunningToolCalls excludes when pendingUserMessage exists ----
 
   it('does not mark tools as running when pendingUserMessage exists', () => {
@@ -840,36 +960,62 @@ describe('MessageList', () => {
 
   // ---- Deferred elapsed time ----
 
-  it('defers elapsed time rendering when streaming content is not yet persisted', () => {
+  it('does not defer elapsed time when streaming belongs to a new turn', () => {
     mockStreamState.streamingMessage = 'Streaming text...'
     mockStreamState.isStreaming = true
 
-    const userMsg = createUserMessage({
-      id: 'u-1',
-      content: { text: 'Hello' },
-      createdAt: new Date('2025-01-01T00:00:00Z'),
-    })
-    const assistantMsg = createAssistantMessage({
-      id: 'a-1',
-      content: { text: 'First response' },
-      createdAt: new Date('2025-01-01T00:01:00Z'),
-    })
-    const userMsg2 = createUserMessage({
-      id: 'u-2',
-      content: { text: 'Follow up' },
-      createdAt: new Date('2025-01-01T00:02:00Z'),
-    })
+    mockMessagesData.data = [
+      createUserMessage({
+        content: { text: 'Hello' },
+        createdAt: new Date('2025-01-01T00:00:00Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'First response' },
+        createdAt: new Date('2025-01-01T00:01:00Z'),
+      }),
+      createUserMessage({
+        content: { text: 'Follow up' },
+        createdAt: new Date('2025-01-01T00:02:00Z'),
+      }),
+    ]
 
-    mockMessagesData.data = [userMsg, assistantMsg, userMsg2]
-
-    renderWithProviders(
+    const { container } = renderWithProviders(
       <MessageList sessionId="s-1" agentSlug="agent-1" />
     )
 
-    // First turn elapsed shown
+    // Elapsed renders inline (before streaming), not deferred
     expect(screen.getByText('Agent took 60s')).toBeInTheDocument()
-    // Streaming message shown below
-    expect(screen.getByText('Streaming text...')).toBeInTheDocument()
+    const allText = container.textContent || ''
+    expect(allText.indexOf('Agent took 60s')).toBeLessThan(allText.indexOf('Streaming text...'))
+  })
+
+  it('defers elapsed time when streaming continues the same turn', () => {
+    mockStreamState.streamingMessage = 'Still going...'
+    mockStreamState.isStreaming = true
+
+    mockMessagesData.data = [
+      createUserMessage({
+        content: { text: 'Hello' },
+        createdAt: new Date('2025-01-01T00:00:00Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'Partial response' },
+        createdAt: new Date('2025-01-01T00:01:00Z'),
+      }),
+      // No user message after — streaming is same turn
+    ]
+
+    // Session idle so the turn closes
+    mockStreamState.isActive = false
+
+    const { container } = renderWithProviders(
+      <MessageList sessionId="s-1" agentSlug="agent-1" />
+    )
+
+    // Elapsed is deferred (after streaming), not inline
+    expect(screen.getByText('Agent took 60s')).toBeInTheDocument()
+    const allText = container.textContent || ''
+    expect(allText.indexOf('Still going...')).toBeLessThan(allText.indexOf('Agent took 60s'))
   })
 
   // ---- Shows loading spinner only when no pending message ----
@@ -916,5 +1062,273 @@ describe('MessageList', () => {
 
     expect(screen.getByTestId('remote-mcp-request')).toBeInTheDocument()
     expect(screen.getByText('https://mcp.test.com')).toBeInTheDocument()
+  })
+
+  // ---- Delivered files summary ----
+
+  it('shows delivered files for a completed turn', () => {
+    mockMessagesData.data = [
+      createUserMessage({
+        content: { text: 'Generate report' },
+        createdAt: new Date('2025-01-01T00:00:00Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'Here is your report' },
+        createdAt: new Date('2025-01-01T00:01:00Z'),
+        toolCalls: [
+          createToolCall({
+            name: 'mcp__user-input__deliver_file',
+            input: { filePath: '/workspace/output/report.pdf', description: 'Monthly report' },
+            result: 'File delivered',
+          }),
+        ],
+      }),
+    ]
+
+    renderWithProviders(
+      <MessageList sessionId="s-1" agentSlug="agent-1" />
+    )
+
+    const link = screen.getByText('report.pdf')
+    expect(link).toBeInTheDocument()
+    expect(link.closest('a')).toHaveAttribute(
+      'href',
+      'http://test-api/api/agents/agent-1/files/output/report.pdf'
+    )
+  })
+
+  it('shows multiple delivered files from a single turn', () => {
+    mockMessagesData.data = [
+      createUserMessage({
+        content: { text: 'Generate files' },
+        createdAt: new Date('2025-01-01T00:00:00Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'First file' },
+        createdAt: new Date('2025-01-01T00:00:30Z'),
+        toolCalls: [
+          createToolCall({
+            name: 'mcp__user-input__deliver_file',
+            input: { filePath: '/workspace/data.csv' },
+            result: 'File delivered',
+          }),
+        ],
+      }),
+      createAssistantMessage({
+        content: { text: 'Second file' },
+        createdAt: new Date('2025-01-01T00:01:00Z'),
+        toolCalls: [
+          createToolCall({
+            name: 'mcp__user-input__deliver_file',
+            input: { filePath: '/workspace/summary.pdf' },
+            result: 'File delivered',
+          }),
+        ],
+      }),
+    ]
+
+    renderWithProviders(
+      <MessageList sessionId="s-1" agentSlug="agent-1" />
+    )
+
+    expect(screen.getByText('data.csv')).toBeInTheDocument()
+    expect(screen.getByText('summary.pdf')).toBeInTheDocument()
+  })
+
+  it('keeps delivered files visible when user sends a new message (pendingUserMessage)', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = [
+      createUserMessage({
+        content: { text: 'Generate report' },
+        createdAt: new Date('2025-01-01T00:00:00Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'Here is your report' },
+        createdAt: new Date('2025-01-01T00:01:00Z'),
+        toolCalls: [
+          createToolCall({
+            name: 'mcp__user-input__deliver_file',
+            input: { filePath: '/workspace/report.pdf' },
+            result: 'File delivered',
+          }),
+        ],
+      }),
+    ]
+
+    renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessage={{ text: 'Now do X', sentAt: Date.now() }}
+      />
+    )
+
+    // Even though isActive=true, pendingUserMessage keeps the previous turn closed
+    expect(screen.getByText('report.pdf')).toBeInTheDocument()
+  })
+
+  it('does not show delivered files for the last turn when session is active', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = [
+      createUserMessage({
+        content: { text: 'Generate report' },
+        createdAt: new Date('2025-01-01T00:00:00Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'Here is your report' },
+        createdAt: new Date('2025-01-01T00:01:00Z'),
+        toolCalls: [
+          createToolCall({
+            name: 'mcp__user-input__deliver_file',
+            input: { filePath: '/workspace/report.pdf' },
+            result: 'File delivered',
+          }),
+        ],
+      }),
+    ]
+
+    renderWithProviders(
+      <MessageList sessionId="s-1" agentSlug="agent-1" />
+    )
+
+    expect(screen.queryByText('report.pdf')).not.toBeInTheDocument()
+  })
+
+  it('does not show delivered files when tool call had an error', () => {
+    mockMessagesData.data = [
+      createUserMessage({
+        content: { text: 'Generate report' },
+        createdAt: new Date('2025-01-01T00:00:00Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'Failed' },
+        createdAt: new Date('2025-01-01T00:01:00Z'),
+        toolCalls: [
+          createToolCall({
+            name: 'mcp__user-input__deliver_file',
+            input: { filePath: '/workspace/report.pdf' },
+            result: 'Error delivering file',
+            isError: true,
+          }),
+        ],
+      }),
+    ]
+
+    renderWithProviders(
+      <MessageList sessionId="s-1" agentSlug="agent-1" />
+    )
+
+    // The file chip should not appear for errored deliveries
+    expect(screen.queryByText('report.pdf')).not.toBeInTheDocument()
+  })
+
+  it('shows delivered files per turn independently', () => {
+    mockMessagesData.data = [
+      // Turn 1
+      createUserMessage({
+        content: { text: 'First task' },
+        createdAt: new Date('2025-01-01T00:00:00Z'),
+      }),
+      createAssistantMessage({
+        id: 'a-turn1',
+        content: { text: 'Done with first' },
+        createdAt: new Date('2025-01-01T00:01:00Z'),
+        toolCalls: [
+          createToolCall({
+            name: 'mcp__user-input__deliver_file',
+            input: { filePath: '/workspace/first.txt' },
+            result: 'File delivered',
+          }),
+        ],
+      }),
+      // Turn 2
+      createUserMessage({
+        content: { text: 'Second task' },
+        createdAt: new Date('2025-01-01T00:02:00Z'),
+      }),
+      createAssistantMessage({
+        id: 'a-turn2',
+        content: { text: 'Done with second' },
+        createdAt: new Date('2025-01-01T00:03:00Z'),
+        toolCalls: [
+          createToolCall({
+            name: 'mcp__user-input__deliver_file',
+            input: { filePath: '/workspace/second.txt' },
+            result: 'File delivered',
+          }),
+        ],
+      }),
+    ]
+
+    renderWithProviders(
+      <MessageList sessionId="s-1" agentSlug="agent-1" />
+    )
+
+    expect(screen.getByText('first.txt')).toBeInTheDocument()
+    expect(screen.getByText('second.txt')).toBeInTheDocument()
+  })
+
+  it('does not show delivered files section when turn has no file deliveries', () => {
+    mockMessagesData.data = [
+      createUserMessage({
+        content: { text: 'Hello' },
+        createdAt: new Date('2025-01-01T00:00:00Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'Just text, no files' },
+        createdAt: new Date('2025-01-01T00:01:00Z'),
+        toolCalls: [
+          createToolCall({
+            name: 'Bash',
+            input: { command: 'echo hi' },
+            result: 'hi',
+          }),
+        ],
+      }),
+    ]
+
+    renderWithProviders(
+      <MessageList sessionId="s-1" agentSlug="agent-1" />
+    )
+
+    // No download links should appear
+    const links = screen.queryAllByRole('link')
+    const downloadLinks = links.filter(l => l.getAttribute('href')?.includes('/files/'))
+    expect(downloadLinks).toHaveLength(0)
+  })
+
+  it('defers delivered files rendering when streaming content is not yet persisted', () => {
+    mockStreamState.streamingMessage = 'Still streaming...'
+    mockStreamState.isStreaming = true
+
+    const userMsg = createUserMessage({
+      content: { text: 'Generate' },
+      createdAt: new Date('2025-01-01T00:00:00Z'),
+    })
+    const assistantMsg = createAssistantMessage({
+      id: 'a-deferred',
+      content: { text: 'Here are files' },
+      createdAt: new Date('2025-01-01T00:01:00Z'),
+      toolCalls: [
+        createToolCall({
+          name: 'mcp__user-input__deliver_file',
+          input: { filePath: '/workspace/deferred.csv' },
+          result: 'File delivered',
+        }),
+      ],
+    })
+    const userMsg2 = createUserMessage({
+      content: { text: 'Follow up' },
+      createdAt: new Date('2025-01-01T00:02:00Z'),
+    })
+
+    mockMessagesData.data = [userMsg, assistantMsg, userMsg2]
+
+    renderWithProviders(
+      <MessageList sessionId="s-1" agentSlug="agent-1" />
+    )
+
+    // The file should still render (deferred position, after streaming content)
+    expect(screen.getByText('deferred.csv')).toBeInTheDocument()
   })
 })

@@ -17,7 +17,8 @@ import { ConnectedAccountRequestItem } from './connected-account-request-item'
 import { RemoteMcpRequestItem } from './remote-mcp-request-item'
 import { QuestionRequestItem } from './question-request-item'
 import { FileRequestItem } from './file-request-item'
-import { Loader2, Wrench, WifiOff } from 'lucide-react'
+import { Download, Loader2, Wrench, WifiOff } from 'lucide-react'
+import { getApiBaseUrl } from '@renderer/lib/env'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { useEffect, useRef, useCallback, useMemo, Fragment } from 'react'
@@ -31,6 +32,25 @@ const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] '
 interface PendingMessage {
   text: string
   sentAt: number
+}
+
+function DeliveredFiles({ files, agentSlug }: { files: { filePath: string }[]; agentSlug: string }) {
+  return (
+    <div className="flex flex-wrap gap-1.5 ml-11 -mt-1 pb-1">
+      {files.map((file, idx) => (
+        <a
+          key={idx}
+          href={`${getApiBaseUrl()}/api/agents/${agentSlug}/files/${file.filePath.replace(/^\/workspace\//, '')}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+        >
+          <Download className="h-3 w-3" />
+          {file.filePath.split('/').pop()}
+        </a>
+      ))}
+    </div>
+  )
 }
 
 interface MessageListProps {
@@ -411,28 +431,69 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
       }
     }
 
-    // Close the last turn only if session is idle
-    if (!isActive && lastUserMessageTime && lastAssistantMessageId && lastAssistantMessageTime) {
+    // Close the last turn if session is idle, or if the user has sent a new message
+    // (pendingUserMessage means a new turn started, so the previous one is complete)
+    if ((!isActive || pendingUserMessage) && lastUserMessageTime && lastAssistantMessageId && lastAssistantMessageTime) {
       elapsed.set(lastAssistantMessageId, lastAssistantMessageTime - lastUserMessageTime)
     }
 
     return elapsed
-  }, [messages, isActive])
+  }, [messages, isActive, pendingUserMessage])
+
+  // Collect delivered files for each completed turn (same turn boundaries as turnElapsedTimes)
+  const turnDeliveredFiles = useMemo(() => {
+    const filesMap = new Map<string, { filePath: string }[]>()
+    if (!messages) return filesMap
+
+    let turnFiles: { filePath: string }[] = []
+    let lastAssistantMessageId: string | null = null
+
+    for (const msg of messages) {
+      if (msg.type === 'user') {
+        if (lastAssistantMessageId && turnFiles.length > 0) {
+          filesMap.set(lastAssistantMessageId, turnFiles)
+        }
+        turnFiles = []
+        lastAssistantMessageId = null
+      } else if (msg.type === 'assistant') {
+        lastAssistantMessageId = msg.id
+        for (const tc of msg.toolCalls) {
+          if (tc.name === 'mcp__user-input__deliver_file' && !tc.isError) {
+            const input = tc.input as { filePath?: string }
+            if (input.filePath) {
+              turnFiles.push({ filePath: input.filePath })
+            }
+          }
+        }
+      }
+    }
+
+    if ((!isActive || pendingUserMessage) && lastAssistantMessageId && turnFiles.length > 0) {
+      filesMap.set(lastAssistantMessageId, turnFiles)
+    }
+
+    return filesMap
+  }, [messages, isActive, pendingUserMessage])
 
   // If there's unpersisted streaming content, defer the last turn's elapsed time
   // to render after the streaming section (otherwise it appears above the streaming message).
+  // Exception: if pendingUserMessage exists, streaming belongs to the NEW turn, so the
+  // previous turn's elapsed/files should render inline (not deferred after new streaming).
   const deferredElapsedMessageId = useMemo(() => {
-    if (!messages) return null
+    if (!messages || pendingUserMessage) return null
     const hasUnpersistedStreaming =
       (streamingMessage && !isStreamingMessagePersisted) ||
       (streamingToolUse && !isStreamingToolUsePersisted)
     if (!hasUnpersistedStreaming) return null
-    // Find the last persisted assistant message — that's where the elapsed time would wrongly appear
+    // Find the last persisted assistant message — that's where the elapsed time would wrongly appear.
+    // But if we hit a user message first, the streaming belongs to a NEW turn and we
+    // shouldn't defer the previous turn's elapsed/files.
     for (let i = messages.length - 1; i >= 0; i--) {
       if (messages[i].type === 'assistant') return messages[i].id
+      if (messages[i].type === 'user') return null
     }
     return null
-  }, [messages, streamingMessage, isStreamingMessagePersisted, streamingToolUse, isStreamingToolUsePersisted])
+  }, [messages, pendingUserMessage, streamingMessage, isStreamingMessagePersisted, streamingToolUse, isStreamingToolUsePersisted])
 
   // Determine which messages could have tool calls that are still running.
   // Only the trailing assistant messages (after the last user message) can have running tools,
@@ -491,6 +552,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
             ) : (
               <>
                 <MessageItem message={item as ApiMessage} agentSlug={agentSlug} sessionId={sessionId} isSessionActive={canHaveRunningToolCalls.has(item.id)} activeSubagent={activeSubagent} onRemoveMessage={handleRemoveMessage} onRemoveToolCall={handleRemoveToolCall} />
+                {turnDeliveredFiles.has(item.id) && item.id !== deferredElapsedMessageId && (
+                  <DeliveredFiles files={turnDeliveredFiles.get(item.id)!} agentSlug={agentSlug} />
+                )}
                 {turnElapsedTimes.has(item.id) && item.id !== deferredElapsedMessageId && (
                   <div className="text-xs text-muted-foreground pb-1 -mt-1 tabular-nums ml-11 italic">
                     Agent took {formatElapsed(turnElapsedTimes.get(item.id)!)}
@@ -543,7 +607,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
           </div>
         )}
 
-        {/* Deferred turn elapsed time — shown after streaming content so it appears below, not above */}
+        {/* Deferred delivered files + elapsed time — shown after streaming content */}
+        {deferredElapsedMessageId && turnDeliveredFiles.has(deferredElapsedMessageId) && (
+          <DeliveredFiles files={turnDeliveredFiles.get(deferredElapsedMessageId)!} agentSlug={agentSlug} />
+        )}
         {deferredElapsedMessageId && turnElapsedTimes.has(deferredElapsedMessageId) && (
           <div className="text-xs text-muted-foreground pb-1 -mt-1 tabular-nums ml-11 italic">
             Agent took {formatElapsed(turnElapsedTimes.get(deferredElapsedMessageId)!)}
