@@ -257,9 +257,16 @@ prompt: "Remind the user about their 3pm meeting with the design team"
 name: "Meeting Reminder"
 ```
 
+### Managing Scheduled Tasks
+
+You can also manage existing scheduled tasks using `mcp__user-input__manage_scheduled_tasks`:
+- `action: "list"` — List all pending scheduled tasks for this agent
+- `action: "cancel", taskId: "<id>"` — Cancel a task permanently
+
+Use "list" first to get task IDs before cancelling.
+
 **Important:**
 - Scheduled tasks run in new sessions with full access to your skills and tools
-- Users can view and cancel scheduled tasks from the UI
 - One-time tasks are removed after execution; recurring tasks continue until cancelled
 
 ## File Handling
