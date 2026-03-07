@@ -23,14 +23,6 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
     category: 'CRM & Sales',
   },
   {
-    slug: 'hubspot',
-    displayName: 'HubSpot',
-    description: 'CRM platform — contacts, companies, deals, tickets',
-    url: 'https://app.hubspot.com/mcp/v1/http',
-    authType: 'oauth',
-    category: 'CRM & Sales',
-  },
-  {
     slug: 'close',
     displayName: 'Close CRM',
     description: 'Sales CRM — leads, contacts, opportunities, activities',
@@ -48,14 +40,6 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
   },
 
   // Project Management & Productivity
-  {
-    slug: 'asana',
-    displayName: 'Asana',
-    description: 'Project management — tasks, projects, workspace',
-    url: 'https://mcp.asana.com/v2/mcp',
-    authType: 'oauth',
-    category: 'Project Management',
-  },
   {
     slug: 'linear',
     displayName: 'Linear',
@@ -101,7 +85,7 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
     displayName: 'Airtable',
     description: 'Record CRUD, base/table listing, search, schema inspection',
     url: 'https://mcp.airtable.com/mcp',
-    authType: 'oauth',
+    authType: 'none',
     category: 'Project Management',
   },
   {
@@ -123,26 +107,10 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
 
   // Communication & Meetings
   {
-    slug: 'slack',
-    displayName: 'Slack',
-    description: 'Search messages/files, send messages, read threads, canvases',
-    url: 'https://mcp.slack.com/mcp',
-    authType: 'oauth',
-    category: 'Communication',
-  },
-  {
     slug: 'granola',
     displayName: 'Granola',
     description: 'AI meeting notes — search meetings, topics, action items',
     url: 'https://mcp.granola.ai/mcp',
-    authType: 'oauth',
-    category: 'Communication',
-  },
-  {
-    slug: 'fireflies',
-    displayName: 'Fireflies.ai',
-    description: 'Meeting transcription — search/retrieve notes and transcripts',
-    url: 'https://api.fireflies.ai/mcp',
     authType: 'oauth',
     category: 'Communication',
   },
@@ -164,14 +132,6 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
   },
 
   // Developer Tools & Infrastructure
-  {
-    slug: 'github',
-    displayName: 'GitHub',
-    description: 'Repos, issues, PRs, code search, Actions, security scanning',
-    url: 'https://api.githubcopilot.com/mcp/',
-    authType: 'oauth',
-    category: 'Developer Tools',
-  },
   {
     slug: 'sentry',
     displayName: 'Sentry',
@@ -197,14 +157,6 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
     category: 'Developer Tools',
   },
   {
-    slug: 'cloudflare-docs',
-    displayName: 'Cloudflare Docs',
-    description: 'Search Cloudflare documentation',
-    url: 'https://docs.mcp.cloudflare.com/sse',
-    authType: 'none',
-    category: 'Developer Tools',
-  },
-  {
     slug: 'cloudflare-workers',
     displayName: 'Cloudflare Workers',
     description: 'Build Workers apps with KV/R2/D1/AI',
@@ -225,14 +177,6 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
     displayName: 'Cloudflare Radar',
     description: 'Global internet traffic insights',
     url: 'https://radar.mcp.cloudflare.com/mcp',
-    authType: 'oauth',
-    category: 'Developer Tools',
-  },
-  {
-    slug: 'netlify',
-    displayName: 'Netlify',
-    description: 'Build, deploy, manage environments, team workflows',
-    url: 'https://netlify-mcp.netlify.app/mcp',
     authType: 'oauth',
     category: 'Developer Tools',
   },
@@ -285,19 +229,11 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
     category: 'Developer Tools',
   },
   {
-    slug: 'stackoverflow',
-    displayName: 'Stack Overflow',
-    description: 'Developer Q&A and knowledge base',
-    url: 'https://mcp.stackoverflow.com',
-    authType: 'oauth',
-    category: 'Developer Tools',
-  },
-  {
     slug: 'semgrep',
     displayName: 'Semgrep',
     description: 'Code vulnerability and security scanning',
     url: 'https://mcp.semgrep.ai/mcp',
-    authType: 'none',
+    authType: 'oauth',
     category: 'Developer Tools',
   },
   {
@@ -317,14 +253,6 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
     category: 'Developer Tools',
   },
   {
-    slug: 'socket',
-    displayName: 'Socket',
-    description: 'Dependency vulnerability scanning',
-    url: 'https://mcp.socket.dev/',
-    authType: 'oauth',
-    category: 'Developer Tools',
-  },
-  {
     slug: 'cortex',
     displayName: 'Cortex',
     description: 'Internal developer portal',
@@ -337,14 +265,6 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
     displayName: 'Stytch',
     description: 'Authentication platform',
     url: 'http://mcp.stytch.dev/mcp',
-    authType: 'oauth',
-    category: 'Developer Tools',
-  },
-  {
-    slug: 'instantdb',
-    displayName: 'InstantDB',
-    description: 'Real-time database',
-    url: 'https://mcp.instantdb.com/mcp',
     authType: 'oauth',
     category: 'Developer Tools',
   },
@@ -433,14 +353,6 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
     category: 'Analytics & Marketing',
   },
   {
-    slug: 'ahrefs',
-    displayName: 'Ahrefs',
-    description: 'SEO analysis — site audits, keyword research, backlinks',
-    url: 'https://api.ahrefs.com/mcp/mcp',
-    authType: 'oauth',
-    category: 'Analytics & Marketing',
-  },
-  {
     slug: 'thoughtspot',
     displayName: 'ThoughtSpot',
     description: 'Data analytics and business intelligence',
@@ -456,14 +368,6 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
     authType: 'oauth',
     category: 'Analytics & Marketing',
   },
-  {
-    slug: 'octagon',
-    displayName: 'Octagon',
-    description: 'Market intelligence',
-    url: 'https://mcp.octagonagents.com/mcp',
-    authType: 'oauth',
-    category: 'Analytics & Marketing',
-  },
 
   // Document Management & Content
   {
@@ -471,14 +375,6 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
     displayName: 'Dropbox',
     description: 'File operations — list, search, download, upload',
     url: 'https://mcp.dropbox.com/mcp',
-    authType: 'oauth',
-    category: 'Documents & Content',
-  },
-  {
-    slug: 'box',
-    displayName: 'Box',
-    description: 'Enterprise document management',
-    url: 'https://mcp.box.com',
     authType: 'oauth',
     category: 'Documents & Content',
   },
@@ -503,14 +399,6 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
     displayName: 'Cloudinary',
     description: 'Digital asset management',
     url: 'https://asset-management.mcp.cloudinary.com/sse',
-    authType: 'oauth',
-    category: 'Documents & Content',
-  },
-  {
-    slug: 'invideo',
-    displayName: 'InVideo',
-    description: 'AI video creation platform',
-    url: 'https://mcp.invideo.io/sse',
     authType: 'oauth',
     category: 'Documents & Content',
   },
@@ -599,30 +487,6 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
     category: 'Aggregators',
   },
   {
-    slug: 'pipedream',
-    displayName: 'Pipedream',
-    description: '2,500+ APIs with per-app static URLs',
-    url: 'https://mcp.pipedream.com',
-    authType: 'oauth',
-    category: 'Aggregators',
-  },
-  {
-    slug: 'composio',
-    displayName: 'Composio',
-    description: '100+ dedicated app endpoints with built-in auth',
-    url: 'https://mcp.composio.dev',
-    authType: 'oauth',
-    category: 'Aggregators',
-  },
-  {
-    slug: 'make',
-    displayName: 'Make',
-    description: 'Turn Make Scenarios into MCP tools',
-    url: 'https://developers.make.com/mcp-server',
-    authType: 'bearer',
-    category: 'Aggregators',
-  },
-  {
     slug: 'waystation',
     displayName: 'WayStation',
     description: 'Universal connector for Notion, Slack, Monday, Airtable',
@@ -645,7 +509,7 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
     displayName: 'Backdocket',
     description: 'Legal data — claims, matters, contacts, tasks',
     url: 'https://ai.backdocket.com/mcp',
-    authType: 'bearer',
+    authType: 'oauth',
     category: 'Other',
   },
   {
@@ -662,14 +526,6 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
     description: 'Product barcode and data lookup',
     url: 'https://www.ean-search.org/mcp',
     authType: 'oauth',
-    category: 'Other',
-  },
-  {
-    slug: 'supermemory',
-    displayName: 'Supermemory',
-    description: 'Personal memory layer across AI platforms',
-    url: 'https://mcp.supermemory.ai/',
-    authType: 'bearer',
     category: 'Other',
   },
   {
