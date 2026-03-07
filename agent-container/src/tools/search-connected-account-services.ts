@@ -32,18 +32,14 @@ const SERVICES: ServiceInfo[] = [
   { slug: 'slack', displayName: 'Slack', category: 'Communication', description: 'Team communication platform' },
   { slug: 'discord', displayName: 'Discord', category: 'Communication', description: 'Community chat platform' },
   { slug: 'zoom', displayName: 'Zoom', category: 'Communication', description: 'Video conferencing' },
-  { slug: 'gong', displayName: 'Gong', category: 'Communication', description: 'Revenue intelligence platform' },
   // Developer Tools
   { slug: 'github', displayName: 'GitHub', category: 'Developer Tools', description: 'Code repository and collaboration' },
   { slug: 'gitlab', displayName: 'GitLab', category: 'Developer Tools', description: 'Code repository and CI/CD' },
   { slug: 'bitbucket', displayName: 'Bitbucket', category: 'Developer Tools', description: 'Code repository and pipelines' },
   { slug: 'sentry', displayName: 'Sentry', category: 'Developer Tools', description: 'Error tracking and monitoring' },
-  { slug: 'datadog', displayName: 'Datadog', category: 'Developer Tools', description: 'Infrastructure monitoring' },
-  { slug: 'pagerduty', displayName: 'PagerDuty', category: 'Developer Tools', description: 'Incident management' },
   // Project Management
   { slug: 'notion', displayName: 'Notion', category: 'Project Management', description: 'Workspace and documentation' },
   { slug: 'linear', displayName: 'Linear', category: 'Project Management', description: 'Issue tracking and project management' },
-  { slug: 'jira', displayName: 'Jira', category: 'Project Management', description: 'Issue tracking and agile project management' },
   { slug: 'confluence', displayName: 'Confluence', category: 'Project Management', description: 'Team documentation and wiki' },
   { slug: 'asana', displayName: 'Asana', category: 'Project Management', description: 'Project and task management' },
   { slug: 'monday', displayName: 'Monday.com', category: 'Project Management', description: 'Work management platform' },
@@ -52,23 +48,19 @@ const SERVICES: ServiceInfo[] = [
   // CRM & Sales
   { slug: 'hubspot', displayName: 'HubSpot', category: 'CRM & Sales', description: 'CRM and marketing platform' },
   { slug: 'salesforce', displayName: 'Salesforce', category: 'CRM & Sales', description: 'CRM and sales platform' },
-  { slug: 'pipedrive', displayName: 'Pipedrive', category: 'CRM & Sales', description: 'Sales CRM and pipeline management' },
   { slug: 'zendesk', displayName: 'Zendesk', category: 'CRM & Sales', description: 'Customer support and ticketing' },
   { slug: 'intercom', displayName: 'Intercom', category: 'CRM & Sales', description: 'Customer messaging platform' },
   // Cloud Storage & Documents
   { slug: 'airtable', displayName: 'Airtable', category: 'Cloud Storage & Documents', description: 'Spreadsheet-database hybrid' },
   { slug: 'dropbox', displayName: 'Dropbox', category: 'Cloud Storage & Documents', description: 'Cloud file storage' },
   { slug: 'box', displayName: 'Box', category: 'Cloud Storage & Documents', description: 'Cloud content management' },
-  { slug: 'docusign', displayName: 'DocuSign', category: 'Cloud Storage & Documents', description: 'Electronic signature and agreements' },
   // Social Media
-  { slug: 'twitter', displayName: 'Twitter/X', category: 'Social Media', description: 'Social media platform' },
   { slug: 'linkedin', displayName: 'LinkedIn', category: 'Social Media', description: 'Professional networking' },
   { slug: 'instagram', displayName: 'Instagram', category: 'Social Media', description: 'Photo and video sharing' },
-  // E-Commerce & Finance
-  { slug: 'shopify', displayName: 'Shopify', category: 'E-Commerce & Finance', description: 'E-commerce platform' },
-  { slug: 'stripe', displayName: 'Stripe', category: 'E-Commerce & Finance', description: 'Payment processing' },
-  { slug: 'quickbooks', displayName: 'QuickBooks', category: 'E-Commerce & Finance', description: 'Accounting and bookkeeping' },
-  { slug: 'xero', displayName: 'Xero', category: 'E-Commerce & Finance', description: 'Accounting software' },
+  // Finance
+  { slug: 'stripe', displayName: 'Stripe', category: 'Finance', description: 'Payment processing' },
+  { slug: 'quickbooks', displayName: 'QuickBooks', category: 'Finance', description: 'Accounting and bookkeeping' },
+  { slug: 'xero', displayName: 'Xero', category: 'Finance', description: 'Accounting software' },
   // Marketing
   { slug: 'mailchimp', displayName: 'Mailchimp', category: 'Marketing', description: 'Email marketing platform' },
   // Design

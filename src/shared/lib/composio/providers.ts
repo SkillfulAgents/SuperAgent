@@ -115,18 +115,6 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     icon: 'bug',
     description: 'Error tracking and monitoring',
   },
-  {
-    slug: 'datadog',
-    displayName: 'Datadog',
-    icon: 'activity',
-    description: 'Infrastructure monitoring',
-  },
-  {
-    slug: 'pagerduty',
-    displayName: 'PagerDuty',
-    icon: 'bell',
-    description: 'Incident management',
-  },
 
   // Project Management
   {
@@ -140,12 +128,6 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Linear',
     icon: 'check-square',
     description: 'Issue tracking and project management',
-  },
-  {
-    slug: 'jira',
-    displayName: 'Jira',
-    icon: 'clipboard-list',
-    description: 'Issue tracking and agile project management',
   },
   {
     slug: 'confluence',
@@ -192,12 +174,6 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     description: 'CRM and sales platform',
   },
   {
-    slug: 'pipedrive',
-    displayName: 'Pipedrive',
-    icon: 'trending-up',
-    description: 'Sales CRM and pipeline management',
-  },
-  {
     slug: 'zendesk',
     displayName: 'Zendesk',
     icon: 'headphones',
@@ -229,20 +205,8 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     icon: 'box',
     description: 'Cloud content management',
   },
-  {
-    slug: 'docusign',
-    displayName: 'DocuSign',
-    icon: 'pen-tool',
-    description: 'Electronic signature and agreements',
-  },
 
   // Social Media
-  {
-    slug: 'twitter',
-    displayName: 'Twitter/X',
-    icon: 'twitter',
-    description: 'Social media platform',
-  },
   {
     slug: 'linkedin',
     displayName: 'LinkedIn',
@@ -256,13 +220,7 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     description: 'Photo and video sharing',
   },
 
-  // E-Commerce & Finance
-  {
-    slug: 'shopify',
-    displayName: 'Shopify',
-    icon: 'shopping-cart',
-    description: 'E-commerce platform',
-  },
+  // Finance
   {
     slug: 'stripe',
     displayName: 'Stripe',
@@ -320,13 +278,6 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     description: 'Video conferencing',
   },
 
-  // Communication (sales)
-  {
-    slug: 'gong',
-    displayName: 'Gong',
-    icon: 'phone',
-    description: 'Revenue intelligence platform',
-  },
 ]
 
 /**

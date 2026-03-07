@@ -20,33 +20,26 @@ interface McpServiceInfo {
 const SERVICES: McpServiceInfo[] = [
   // CRM & Sales
   { slug: 'attio', displayName: 'Attio', description: 'AI-native CRM — deals, tasks, lists, people, companies', url: 'https://mcp.attio.com/mcp', authType: 'oauth', category: 'CRM & Sales' },
-  { slug: 'hubspot', displayName: 'HubSpot', description: 'CRM platform — contacts, companies, deals, tickets', url: 'https://app.hubspot.com/mcp/v1/http', authType: 'oauth', category: 'CRM & Sales' },
   { slug: 'close', displayName: 'Close CRM', description: 'Sales CRM — leads, contacts, opportunities, activities', url: 'https://mcp.close.com/mcp', authType: 'oauth', category: 'CRM & Sales' },
   { slug: 'intercom', displayName: 'Intercom', description: 'Customer support — conversations, contacts, tickets', url: 'https://mcp.intercom.com/mcp', authType: 'oauth', category: 'CRM & Sales' },
   // Project Management
-  { slug: 'asana', displayName: 'Asana', description: 'Project management — tasks, projects, workspace', url: 'https://mcp.asana.com/v2/mcp', authType: 'oauth', category: 'Project Management' },
   { slug: 'linear', displayName: 'Linear', description: 'Engineering project management — issues, projects, milestones', url: 'https://mcp.linear.app/mcp', authType: 'oauth', category: 'Project Management' },
   { slug: 'atlassian', displayName: 'Atlassian (Jira/Confluence)', description: 'Jira issues, Confluence pages, JSM', url: 'https://mcp.atlassian.com/v1/mcp', authType: 'oauth', category: 'Project Management' },
   { slug: 'notion', displayName: 'Notion', description: 'Pages, docs, databases, tasks, universal search', url: 'https://mcp.notion.com/mcp', authType: 'oauth', category: 'Project Management' },
   { slug: 'clickup', displayName: 'ClickUp', description: 'Tasks, lists, folders, spaces, docs, time tracking', url: 'https://mcp.clickup.com/mcp', authType: 'oauth', category: 'Project Management' },
   { slug: 'monday', displayName: 'Monday.com', description: 'Board management, item operations, GraphQL access', url: 'https://mcp.monday.com/mcp', authType: 'oauth', category: 'Project Management' },
-  { slug: 'airtable', displayName: 'Airtable', description: 'Record CRUD, base/table listing, search, schema inspection', url: 'https://mcp.airtable.com/mcp', authType: 'oauth', category: 'Project Management' },
+  { slug: 'airtable', displayName: 'Airtable', description: 'Record CRUD, base/table listing, search, schema inspection', url: 'https://mcp.airtable.com/mcp', authType: 'none', category: 'Project Management' },
   // Communication
-  { slug: 'slack', displayName: 'Slack', description: 'Search messages/files, send messages, read threads, canvases', url: 'https://mcp.slack.com/mcp', authType: 'oauth', category: 'Communication' },
   { slug: 'granola', displayName: 'Granola', description: 'AI meeting notes — search meetings, topics, action items', url: 'https://mcp.granola.ai/mcp', authType: 'oauth', category: 'Communication' },
-  { slug: 'fireflies', displayName: 'Fireflies.ai', description: 'Meeting transcription — search/retrieve notes and transcripts', url: 'https://api.fireflies.ai/mcp', authType: 'oauth', category: 'Communication' },
   // Developer Tools
-  { slug: 'github', displayName: 'GitHub', description: 'Repos, issues, PRs, code search, Actions, security scanning', url: 'https://api.githubcopilot.com/mcp/', authType: 'oauth', category: 'Developer Tools' },
   { slug: 'sentry', displayName: 'Sentry', description: 'Error monitoring — issues, stack traces, AI analysis', url: 'https://mcp.sentry.dev/mcp', authType: 'oauth', category: 'Developer Tools' },
   { slug: 'vercel', displayName: 'Vercel', description: 'Deployments, environment variables, domains, project controls', url: 'https://mcp.vercel.com/', authType: 'oauth', category: 'Developer Tools' },
   { slug: 'cloudflare', displayName: 'Cloudflare API', description: 'Full Cloudflare API — 2,500+ endpoints', url: 'https://mcp.cloudflare.com/mcp', authType: 'oauth', category: 'Developer Tools' },
-  { slug: 'cloudflare-docs', displayName: 'Cloudflare Docs', description: 'Search Cloudflare documentation', url: 'https://docs.mcp.cloudflare.com/sse', authType: 'none', category: 'Developer Tools' },
-  { slug: 'netlify', displayName: 'Netlify', description: 'Build, deploy, manage environments, team workflows', url: 'https://netlify-mcp.netlify.app/mcp', authType: 'oauth', category: 'Developer Tools' },
   { slug: 'neon', displayName: 'Neon', description: 'Serverless PostgreSQL database management', url: 'https://mcp.neon.tech/sse', authType: 'oauth', category: 'Developer Tools' },
   { slug: 'supabase', displayName: 'Supabase', description: 'Database access and platform integration', url: 'https://mcp.supabase.com/mcp', authType: 'oauth', category: 'Developer Tools' },
   { slug: 'prisma', displayName: 'Prisma', description: 'Database management via Prisma ORM', url: 'https://mcp.prisma.io/mcp', authType: 'oauth', category: 'Developer Tools' },
   { slug: 'figma', displayName: 'Figma', description: 'Design context extraction, code generation from frames', url: 'https://mcp.figma.com/mcp', authType: 'oauth', category: 'Developer Tools' },
-  { slug: 'semgrep', displayName: 'Semgrep', description: 'Code vulnerability and security scanning', url: 'https://mcp.semgrep.ai/mcp', authType: 'none', category: 'Developer Tools' },
+  { slug: 'semgrep', displayName: 'Semgrep', description: 'Code vulnerability and security scanning', url: 'https://mcp.semgrep.ai/mcp', authType: 'oauth', category: 'Developer Tools' },
   // Payments & Finance
   { slug: 'stripe', displayName: 'Stripe', description: 'Payments, customers, subscriptions, invoices', url: 'https://mcp.stripe.com/', authType: 'oauth', category: 'Payments & Finance' },
   { slug: 'paypal', displayName: 'PayPal', description: 'Commerce, payments, inventory, shipping, refunds', url: 'https://mcp.paypal.com/mcp', authType: 'oauth', category: 'Payments & Finance' },
@@ -55,10 +48,8 @@ const SERVICES: McpServiceInfo[] = [
   { slug: 'ramp', displayName: 'Ramp', description: 'Corporate card and expense management', url: 'https://ramp-mcp-remote.ramp.com/mcp', authType: 'oauth', category: 'Payments & Finance' },
   // Analytics & Marketing
   { slug: 'amplitude', displayName: 'Amplitude', description: 'Charts, dashboards, experiments, feature flags', url: 'https://mcp.amplitude.com/mcp', authType: 'oauth', category: 'Analytics & Marketing' },
-  { slug: 'ahrefs', displayName: 'Ahrefs', description: 'SEO analysis — site audits, keyword research, backlinks', url: 'https://api.ahrefs.com/mcp/mcp', authType: 'oauth', category: 'Analytics & Marketing' },
   // Documents & Content
   { slug: 'dropbox', displayName: 'Dropbox', description: 'File operations — list, search, download, upload', url: 'https://mcp.dropbox.com/mcp', authType: 'oauth', category: 'Documents & Content' },
-  { slug: 'box', displayName: 'Box', description: 'Enterprise document management', url: 'https://mcp.box.com', authType: 'oauth', category: 'Documents & Content' },
   { slug: 'canva', displayName: 'Canva', description: 'Design — search, create, autofill templates, export', url: 'https://mcp.canva.com/mcp', authType: 'oauth', category: 'Documents & Content' },
   // Search & AI
   { slug: 'exa', displayName: 'Exa Search', description: 'AI-powered web search', url: 'https://mcp.exa.ai/mcp', authType: 'none', category: 'Search & AI' },
@@ -68,8 +59,7 @@ const SERVICES: McpServiceInfo[] = [
   { slug: 'context7', displayName: 'Context7', description: 'Up-to-date library/framework docs (9,000+ libraries)', url: 'https://mcp.context7.com/mcp', authType: 'none', category: 'Search & AI' },
   // Aggregators
   { slug: 'zapier', displayName: 'Zapier', description: 'Workflow automation across 7,000+ apps', url: 'https://mcp.zapier.com/api/mcp/mcp', authType: 'bearer', category: 'Aggregators' },
-  { slug: 'pipedream', displayName: 'Pipedream', description: '2,500+ APIs with per-app static URLs', url: 'https://mcp.pipedream.com', authType: 'oauth', category: 'Aggregators' },
-  { slug: 'composio', displayName: 'Composio', description: '100+ dedicated app endpoints with built-in auth', url: 'https://mcp.composio.dev', authType: 'oauth', category: 'Aggregators' },
+  { slug: 'waystation', displayName: 'WayStation', description: 'Universal connector for Notion, Slack, Monday, Airtable', url: 'https://waystation.ai/mcp', authType: 'oauth', category: 'Aggregators' },
 ]
 
 const PARTIAL_LIST_NOTE = `\nNote: This is a partial list of well-known MCP servers. Many more exist — if you don't find what you need here, search the web for "<service name> MCP server" to find additional endpoints.`
