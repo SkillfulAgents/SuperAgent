@@ -56,6 +56,10 @@ export default defineConfig({
   server: {
     port: parseInt(process.env.PORT || '47891', 10),
     host: '0.0.0.0',
-    allowedHosts: ['host.docker.internal', 'host.containers.internal'],
+    allowedHosts: [
+      'host.docker.internal',
+      'host.containers.internal',
+      ...((process.env.TRUSTED_ORIGINS || '').split(',').map(o => { try { return new URL(o.trim()).hostname } catch { return '' } }).filter(Boolean)),
+    ],
   },
 })
