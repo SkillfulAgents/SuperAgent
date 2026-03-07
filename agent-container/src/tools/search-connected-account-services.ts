@@ -27,7 +27,7 @@ const SERVICES: ServiceInfo[] = [
   { slug: 'youtube', displayName: 'YouTube', category: 'Google Workspace', description: 'Video platform' },
   // Microsoft
   { slug: 'outlook', displayName: 'Outlook', category: 'Microsoft', description: 'Microsoft email and calendar' },
-  { slug: 'microsoftteams', displayName: 'Microsoft Teams', category: 'Microsoft', description: 'Microsoft team communication' },
+  { slug: 'microsoft_teams', displayName: 'Microsoft Teams', category: 'Microsoft', description: 'Microsoft team communication' },
   // Communication
   { slug: 'slack', displayName: 'Slack', category: 'Communication', description: 'Team communication platform' },
   { slug: 'discord', displayName: 'Discord', category: 'Communication', description: 'Community chat platform' },

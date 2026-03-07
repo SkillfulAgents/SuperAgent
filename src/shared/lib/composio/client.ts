@@ -457,7 +457,7 @@ export async function getAccountDisplayName(
     'googletasks',
     'youtube',
   ]
-  const microsoftToolkits = ['outlook', 'microsoftteams']
+  const microsoftToolkits = ['outlook', 'microsoft_teams']
 
   const slug = toolkitSlug.toLowerCase()
 
