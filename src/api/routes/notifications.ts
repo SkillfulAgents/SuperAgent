@@ -26,14 +26,15 @@ notificationsRouter.use('*', Authenticated())
 
 /**
  * Get the userId to scope notification queries.
- * Returns undefined for non-auth mode or admin users (see all).
- * Returns the user's ID for regular auth mode users.
+ * Returns undefined for non-auth mode (see all).
+ * Returns the user's ID for auth mode users (including admins — admins
+ * only see notifications for agents explicitly shared with them, matching
+ * the agent-listing behavior).
  */
 function getScopedUserId(c: { get: (key: never) => unknown }): string | undefined {
   if (!isAuthMode()) return undefined
   const user = c.get('user' as never) as { id: string; role?: string } | undefined
   if (!user) return undefined
-  if (user.role === 'admin') return undefined // admin sees all
   return user.id
 }
 
