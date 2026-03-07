@@ -1,4 +1,5 @@
 import { apiFetch } from '@renderer/lib/api'
+import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
 
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import {
@@ -132,7 +133,7 @@ export function RemoteMcpRequestItem({
     return () => window.removeEventListener('message', handleMessage)
   }, [status, handleOAuthComplete])
 
-  const startOAuthFlow = async () => {
+  const startOAuthFlow = async (popup: ReturnType<typeof prepareOAuthPopup>) => {
     try {
       const isElectron = !!window.electronAPI
       const result = await initiateOAuth.mutateAsync({
@@ -142,17 +143,15 @@ export function RemoteMcpRequestItem({
       })
 
       if (result.redirectUrl) {
-        if (window.electronAPI) {
-          await window.electronAPI.openExternal(result.redirectUrl)
-        } else {
-          window.open(result.redirectUrl, '_blank')
-        }
+        await popup.navigate(result.redirectUrl)
         setStatus('oauth_pending')
       } else {
+        popup.close()
         setError('OAuth initiation did not return a redirect URL')
         setStatus('pending')
       }
     } catch (oauthErr: any) {
+      popup.close()
       setError(oauthErr.message || 'Failed to initiate OAuth')
       setStatus('pending')
     }
@@ -163,9 +162,11 @@ export function RemoteMcpRequestItem({
     setError(null)
     track('mcp_added', { url, authType: authHint || (bearerToken ? 'bearer' : 'none'), location: 'session' })
 
+    const popup = prepareOAuthPopup()
+
     // If agent hinted OAuth, go straight to OAuth flow
     if (authHint === 'oauth') {
-      await startOAuthFlow()
+      await startOAuthFlow(popup)
       return
     }
 
@@ -186,18 +187,22 @@ export function RemoteMcpRequestItem({
       if (!response.ok) {
         // Server requires OAuth — automatically initiate OAuth flow
         if (responseData.needsOAuth) {
-          await startOAuthFlow()
+          await startOAuthFlow(popup)
           return
         }
         // Server requires auth but not OAuth — show bearer token input
         if (responseData.needsAuth) {
+          popup.close()
           setShowTokenInput(true)
           setError(responseData.error || 'This MCP server requires authentication.')
           setStatus('pending')
           return
         }
+        popup.close()
         throw new Error(responseData.error || 'Failed to register MCP server')
       }
+
+      popup.close()
 
       // Success — server registered without auth
       const { server } = responseData
@@ -213,6 +218,7 @@ export function RemoteMcpRequestItem({
 
       setStatus('pending')
     } catch (err: any) {
+      popup.close()
       setError(err.message || 'Failed to register MCP server')
       setStatus('pending')
     }

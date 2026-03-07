@@ -1,4 +1,5 @@
 import { apiFetch } from '@renderer/lib/api'
+import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
@@ -159,8 +160,9 @@ export function ConnectedAccountRequestItem({
     // Track current account IDs before OAuth to detect new account later
     accountIdsBeforeOAuth.current = new Set(accounts.map((a) => a.id))
 
+    const popup = prepareOAuthPopup()
+
     try {
-      // Pass electron flag to get correct callback URL
       const isElectronApp = !!window.electronAPI
       const response = await apiFetch('/api/connected-accounts/initiate', {
         method: 'POST',
@@ -174,15 +176,10 @@ export function ConnectedAccountRequestItem({
       }
 
       const { redirectUrl } = await response.json()
-
-      // Open OAuth in system browser (Electron) or new tab (web)
-      if (window.electronAPI) {
-        await window.electronAPI.openExternal(redirectUrl)
-      } else {
-        window.open(redirectUrl, '_blank')
-      }
+      await popup.navigate(redirectUrl)
       setStatus('pending')
     } catch (err: any) {
+      popup.close()
       setError(err.message || 'Failed to connect account')
       setStatus('pending')
     }

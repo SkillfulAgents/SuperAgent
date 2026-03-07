@@ -1,4 +1,5 @@
 import { apiFetch } from '@renderer/lib/api'
+import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
 
 import { useState, useEffect } from 'react'
 import { Input } from '@renderer/components/ui/input'
@@ -111,16 +112,15 @@ export function ConnectedAccountsSection() {
   const handleConnect = async (providerSlug: string) => {
     setConnectingProvider(providerSlug)
     setConnectionError(null)
+
+    const popup = prepareOAuthPopup()
+
     try {
       const isElectronApp = !!window.electronAPI
       const result = await initiateConnection.mutateAsync({ providerSlug, electron: isElectronApp })
-
-      if (window.electronAPI) {
-        await window.electronAPI.openExternal(result.redirectUrl)
-      } else {
-        window.open(result.redirectUrl, '_blank')
-      }
+      await popup.navigate(result.redirectUrl)
     } catch (error: any) {
+      popup.close()
       console.error('Failed to initiate connection:', error)
       setConnectionError(error.message || 'Failed to connect. Please try again.')
       setConnectingProvider(null)
