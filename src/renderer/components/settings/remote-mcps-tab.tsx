@@ -20,6 +20,7 @@ import {
 } from '@renderer/hooks/use-remote-mcps'
 import { Plus, Trash2, Loader2, RefreshCw, Plug, Wrench, AlertCircle, CheckCircle, Search } from 'lucide-react'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery } from '@tanstack/react-query'
 import type { CommonMcpServer } from '@shared/lib/mcp/common-servers'
@@ -32,6 +33,7 @@ export function RemoteMcpsTab() {
   const testConnection = useTestMcpConnection()
   const initiateOAuth = useInitiateMcpOAuth()
   const invalidateRemoteMcps = useInvalidateRemoteMcps()
+  const { track } = useAnalyticsTracking()
 
   const { data: commonData } = useQuery<{ servers: CommonMcpServer[] }>({
     queryKey: ['common-mcp-servers'],
@@ -135,6 +137,8 @@ export function RemoteMcpsTab() {
     if (!/^https?:\/\//i.test(trimmedUrl)) {
       return
     }
+
+    track('mcp_added', { url: trimmedUrl, authType: newAuthType, location: 'settings' })
 
     if (newAuthType === 'oauth') {
       try {

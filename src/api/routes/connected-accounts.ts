@@ -13,6 +13,7 @@ import {
 import { getAppBaseUrlFromRequest, getCurrentUserId } from '@shared/lib/auth/config'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { Authenticated, OwnsAccount, IsAdmin, Or } from '../middleware/auth'
+import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 
 const connectedAccountsRouter = new Hono()
 
@@ -208,6 +209,8 @@ connectedAccountsRouter.post('/complete', async (c) => {
       updatedAt: now,
     })
 
+    trackServerEvent('account_oauth_succeeded', { toolkitSlug })
+
     return c.json({
       success: true,
       account: {
@@ -278,6 +281,8 @@ connectedAccountsRouter.get('/callback', async (c) => {
       createdAt: now,
       updatedAt: now,
     })
+
+    trackServerEvent('account_oauth_succeeded', { toolkitSlug })
 
     return c.html(
       generateCallbackHtml({

@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { createSttAdapter, startAudioCapture, type SttAdapter, type SttProvider, type AudioCaptureHandle } from '@renderer/lib/stt'
 
 export type VoiceInputState = 'idle' | 'connecting' | 'recording' | 'stopping'
@@ -31,6 +32,7 @@ export function useIsVoiceConfigured(): boolean {
 export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {
   const [state, setState] = useState<VoiceInputState>('idle')
   const [error, setError] = useState<string | null>(null)
+  const { track } = useAnalyticsTracking()
 
   const adapterRef = useRef<SttAdapter | null>(null)
   const captureRef = useRef<AudioCaptureHandle | null>(null)
@@ -75,9 +77,12 @@ export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {
       ? prefix + transcribed
       : prefix.trimEnd()
     onTranscriptUpdate(finalText)
+    if (transcribed) {
+      track('dictation_used', { length: transcribed.length })
+    }
     setState('idle')
     return finalText
-  }, [cleanup, onTranscriptUpdate])
+  }, [cleanup, onTranscriptUpdate, track])
 
   const startRecording = useCallback(async (existingText: string) => {
     if (stateRef.current !== 'idle') return

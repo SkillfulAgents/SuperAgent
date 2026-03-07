@@ -1,6 +1,7 @@
 import { apiFetch } from '@renderer/lib/api'
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import type { Provider } from '@shared/lib/composio/providers'
 
 export interface ConnectedAccount {
@@ -56,7 +57,9 @@ export function useConnectedAccountsByToolkit(toolkit: string) {
  * Hook to initiate a new OAuth connection
  */
 export function useInitiateConnection() {
-  return useMutation<InitiateConnectionResponse, Error, { providerSlug: string; electron?: boolean }>({
+  const { track } = useAnalyticsTracking()
+
+  return useMutation<InitiateConnectionResponse, Error, { providerSlug: string; electron?: boolean; location?: string }>({
     mutationFn: async ({ providerSlug, electron }) => {
       const res = await apiFetch('/api/connected-accounts/initiate', {
         method: 'POST',
@@ -71,9 +74,8 @@ export function useInitiateConnection() {
 
       return res.json()
     },
-    onSuccess: () => {
-      // Invalidate after OAuth callback completes
-      // The callback component will handle the refresh
+    onSuccess: (_, variables) => {
+      track('account_added', { slug: variables.providerSlug, location: variables.location ?? 'settings' })
     },
   })
 }

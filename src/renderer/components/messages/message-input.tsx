@@ -6,6 +6,7 @@ import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { Send, Loader2, StopCircle, WifiOff } from 'lucide-react'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useVoiceInput } from '@renderer/hooks/use-voice-input'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { AttachmentPreview } from './attachment-preview'
@@ -33,6 +34,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
   const { isActive, slashCommands } = useMessageStream(sessionId, agentSlug)
   const isOnline = useIsOnline()
   const isOffline = !isOnline
+  const { track } = useAnalyticsTracking()
 
   const {
     attachments,
@@ -162,6 +164,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
         agentSlug,
         content,
       })
+      track('message_sent')
     } catch (error) {
       console.error('Failed to send message:', error)
     }

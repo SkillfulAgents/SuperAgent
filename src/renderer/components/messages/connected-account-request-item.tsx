@@ -22,6 +22,7 @@ import {
   type ConnectedAccount,
 } from '@renderer/hooks/use-connected-accounts'
 import { getProvider } from '@shared/lib/composio/providers'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { formatDistanceToNow } from 'date-fns'
 
 interface ConnectedAccountRequestItemProps {
@@ -56,6 +57,7 @@ export function ConnectedAccountRequestItem({
   // Track account IDs before OAuth to detect new accounts
   const accountIdsBeforeOAuth = useRef<Set<string>>(new Set())
 
+  const { track } = useAnalyticsTracking()
   const provider = getProvider(toolkit)
   const accounts = data?.accounts ?? []
 
@@ -152,6 +154,7 @@ export function ConnectedAccountRequestItem({
   const handleConnectNew = async () => {
     setStatus('connecting')
     setError(null)
+    track('account_added', { slug: toolkit, location: 'session' })
 
     // Track current account IDs before OAuth to detect new account later
     accountIdsBeforeOAuth.current = new Set(accounts.map((a) => a.id))

@@ -4,6 +4,7 @@ import { createScheduledTask } from '@shared/lib/services/scheduled-task-service
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { updateSessionMetadata } from '@shared/lib/services/session-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
+import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
 import * as path from 'path'
 import { promises as fsPromises } from 'fs'
@@ -777,6 +778,14 @@ class MessagePersister {
       case 'content_block_stop':
         // Tool use block finished streaming
         if (state.currentToolUse) {
+          // Track agent-emitted user request blocks
+          if (state.currentToolUse.name === 'AskUserQuestion') {
+            trackServerEvent('agent_requested_input', { agentSlug: state.agentSlug })
+          } else if (state.currentToolUse.name.startsWith('mcp__user-input__')) {
+            const action = state.currentToolUse.name.replace('mcp__user-input__', '')
+            trackServerEvent(`agent_${action}`, { agentSlug: state.agentSlug })
+          }
+
           // Check if this is a secret request tool
           if (state.currentToolUse.name === 'mcp__user-input__request_secret') {
             this.handleSecretRequestTool(

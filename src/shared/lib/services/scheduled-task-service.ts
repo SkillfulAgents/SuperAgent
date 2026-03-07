@@ -9,6 +9,7 @@ import { db } from '@shared/lib/db'
 import { scheduledTasks, type ScheduledTask, type NewScheduledTask } from '@shared/lib/db/schema'
 import { eq, and, lte } from 'drizzle-orm'
 import { getNextCronTime, parseAtSyntax } from './schedule-parser'
+import { trackServerEvent } from '../analytics/server-analytics'
 
 // Re-export the ScheduledTask type for external use
 export type { ScheduledTask, NewScheduledTask }
@@ -71,6 +72,13 @@ export async function createScheduledTask(
   }
 
   await db.insert(scheduledTasks).values(newTask)
+
+  trackServerEvent('task_scheduled', {
+    scheduleType: params.scheduleType,
+    isRecurring: params.scheduleType === 'cron',
+    scheduleExpression: params.scheduleExpression,
+    agentSlug: params.agentSlug,
+  })
 
   return id
 }

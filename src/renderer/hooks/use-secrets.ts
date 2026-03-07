@@ -1,5 +1,6 @@
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import type { ApiSecretDisplay } from '@shared/lib/types/api'
 
 // Re-export for convenience
@@ -19,6 +20,7 @@ export function useAgentSecrets(agentSlug: string | null) {
 
 export function useCreateSecret() {
   const queryClient = useQueryClient()
+  const { track } = useAnalyticsTracking()
 
   return useMutation({
     mutationFn: async ({
@@ -42,6 +44,7 @@ export function useCreateSecret() {
       return res.json() as Promise<ApiSecretDisplay>
     },
     onSuccess: (_, variables) => {
+      track('secret_added', { location: 'settings' })
       queryClient.invalidateQueries({
         queryKey: ['agent-secrets', variables.agentSlug],
       })

@@ -14,6 +14,7 @@ import { DeclineButton } from './decline-button'
 import { cn } from '@shared/lib/utils/cn'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useInitiateMcpOAuth } from '@renderer/hooks/use-remote-mcps'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 
 interface RemoteMcpServer {
   id: string
@@ -51,6 +52,7 @@ export function RemoteMcpRequestItem({
 }: RemoteMcpRequestItemProps) {
   const queryClient = useQueryClient()
   const initiateOAuth = useInitiateMcpOAuth()
+  const { track } = useAnalyticsTracking()
   const mcpSlug = COMMON_MCP_SERVERS.find((cs) => cs.url === url)?.slug || ''
   const [status, setStatus] = useState<RequestStatus>('pending')
   const [error, setError] = useState<string | null>(null)
@@ -159,6 +161,7 @@ export function RemoteMcpRequestItem({
   const handleRegisterNew = async () => {
     setStatus('registering')
     setError(null)
+    track('mcp_added', { url, authType: authHint || (bearerToken ? 'bearer' : 'none'), location: 'session' })
 
     // If agent hinted OAuth, go straight to OAuth flow
     if (authHint === 'oauth') {
