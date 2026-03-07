@@ -14,7 +14,7 @@ export const TOOLKIT_ALLOWED_HOSTS: Record<string, string[]> = {
 
   // Microsoft
   outlook: ['graph.microsoft.com'],
-  microsoftteams: ['graph.microsoft.com'],
+  microsoft_teams: ['graph.microsoft.com'],
 
   // Communication
   slack: ['slack.com'],

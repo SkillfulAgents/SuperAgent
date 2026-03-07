@@ -86,7 +86,7 @@ describe('isHostAllowed', () => {
       'youtube',
       // Microsoft
       'outlook',
-      'microsoftteams',
+      'microsoft_teams',
       // Communication
       'slack',
       'discord',
