@@ -566,6 +566,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
               toolCalls: [],
               createdAt: new Date(),
             }}
+            agentSlug={agentSlug}
           />
         )}
 

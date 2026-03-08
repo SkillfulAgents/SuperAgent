@@ -4,6 +4,8 @@ import { User, Bot, Terminal } from 'lucide-react'
 import { ToolCallItem } from './tool-call-item'
 import { SubAgentBlock } from './subagent-block'
 import { MessageContextMenu } from './message-context-menu'
+import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
+import { parseAttachedFiles } from '@shared/lib/utils/attached-files'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
@@ -27,7 +29,9 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
   const isUser = message.type === 'user'
   const isAssistant = message.type === 'assistant'
 
-  const text = message.content.text
+  const rawText = message.content.text
+  const { cleanText, attachedFiles } = isUser && rawText ? parseAttachedFiles(rawText) : { cleanText: rawText, attachedFiles: [] }
+  const text = cleanText
   const hasText = text && text.length > 0
   const toolCalls = message.toolCalls || []
 
@@ -41,9 +45,12 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
     return null
   }
 
-  // Skip rendering the text bubble for assistant messages with only tool calls
-  // (no text) unless streaming. The tool calls will still be rendered below.
-  const showMessageBubble = !isAssistant || hasText || isStreaming
+  // Skip rendering the text bubble for:
+  // - assistant messages with only tool calls (no text) unless streaming
+  // - user messages that only had attached files (text was fully stripped)
+  const showMessageBubble = isUser
+    ? (hasText || attachedFiles.length === 0)
+    : (hasText || isStreaming)
 
   return (
     <div
@@ -184,6 +191,15 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
               )}
             </div>
           </MessageContextMenu>
+        )}
+
+        {/* Attached file chips for user messages */}
+        {isUser && attachedFiles.length > 0 && agentSlug && (
+          <div className="flex flex-wrap gap-1.5 justify-end">
+            {attachedFiles.map((filePath, idx) => (
+              <FileDownloadPill key={idx} filePath={filePath} agentSlug={agentSlug} />
+            ))}
+          </div>
         )}
 
         {/* Tool calls - shown below assistant message */}

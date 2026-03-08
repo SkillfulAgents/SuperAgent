@@ -18,6 +18,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { AttachmentPreview } from '@renderer/components/messages/attachment-preview'
 import { useAttachments } from '@renderer/hooks/use-attachments'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
+import { appendAttachedFiles } from '@shared/lib/utils/attached-files'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 
 interface AgentLandingProps {
@@ -116,12 +117,7 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
           })
           const uploadResults = await Promise.all(uploadPromises)
 
-          const filePaths = uploadResults.map((r) => `- ${r.path}`).join('\n')
-          if (content) {
-            content = `${content}\n\n[Attached files:]\n${filePaths}`
-          } else {
-            content = `[Attached files:]\n${filePaths}`
-          }
+          content = appendAttachedFiles(content, uploadResults.map((r) => r.path))
         } catch (error) {
           console.error('Failed to upload attachments:', error)
           setIsUploading(false)

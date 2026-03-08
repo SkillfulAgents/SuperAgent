@@ -13,6 +13,7 @@ import { AttachmentPreview } from './attachment-preview'
 import { SlashCommandMenu } from './slash-command-menu'
 import { useAttachments } from '@renderer/hooks/use-attachments'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
+import { appendAttachedFiles } from '@shared/lib/utils/attached-files'
 
 interface MessageInputProps {
   sessionId: string
@@ -139,12 +140,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
         const uploadResults = await Promise.all(uploadPromises)
 
         // Append file paths to message
-        const filePaths = uploadResults.map((r) => `- ${r.path}`).join('\n')
-        if (content) {
-          content = `${content}\n\n[Attached files:]\n${filePaths}`
-        } else {
-          content = `[Attached files:]\n${filePaths}`
-        }
+        content = appendAttachedFiles(content, uploadResults.map((r) => r.path))
       } catch (error) {
         console.error('Failed to upload attachments:', error)
         setIsUploading(false)
