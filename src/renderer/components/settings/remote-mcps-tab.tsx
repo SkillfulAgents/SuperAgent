@@ -20,7 +20,9 @@ import {
 } from '@renderer/hooks/use-remote-mcps'
 import { Plus, Trash2, Loader2, RefreshCw, Plug, Wrench, AlertCircle, CheckCircle, Search } from 'lucide-react'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { apiFetch } from '@renderer/lib/api'
+import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
 import { useQuery } from '@tanstack/react-query'
 import type { CommonMcpServer } from '@shared/lib/mcp/common-servers'
 
@@ -32,6 +34,7 @@ export function RemoteMcpsTab() {
   const testConnection = useTestMcpConnection()
   const initiateOAuth = useInitiateMcpOAuth()
   const invalidateRemoteMcps = useInvalidateRemoteMcps()
+  const { track } = useAnalyticsTracking()
 
   const { data: commonData } = useQuery<{ servers: CommonMcpServer[] }>({
     queryKey: ['common-mcp-servers'],
@@ -121,14 +124,6 @@ export function RemoteMcpsTab() {
     }, 0)
   }
 
-  const openAuthUrl = async (redirectUrl: string) => {
-    if (window.electronAPI) {
-      await window.electronAPI.openExternal(redirectUrl)
-    } else {
-      window.open(redirectUrl, '_blank')
-    }
-  }
-
   const handleAdd = async () => {
     if (!newName.trim() || !newUrl.trim()) return
     const trimmedUrl = newUrl.trim()
@@ -136,7 +131,11 @@ export function RemoteMcpsTab() {
       return
     }
 
+    track('mcp_added', { url: trimmedUrl, authType: newAuthType, location: 'settings' })
+
     if (newAuthType === 'oauth') {
+      const popup = prepareOAuthPopup()
+
       try {
         const serverName = newName.trim()
         const isElectronApp = !!window.electronAPI
@@ -148,10 +147,13 @@ export function RemoteMcpsTab() {
         if (result.redirectUrl) {
           setOAuthError(null)
           setOAuthPending(serverName)
-          await openAuthUrl(result.redirectUrl)
+          await popup.navigate(result.redirectUrl)
+        } else {
+          popup.close()
         }
         resetForm()
       } catch {
+        popup.close()
         // Error is handled by mutation — form stays open for retry
       }
     } else {
@@ -182,17 +184,18 @@ export function RemoteMcpsTab() {
   }
 
   const handleInitiateOAuth = async (id: string) => {
+    const popup = prepareOAuthPopup()
+
     try {
       const isElectronApp = !!window.electronAPI
       const result = await initiateOAuth.mutateAsync({ mcpId: id, electron: isElectronApp })
       if (result.redirectUrl) {
-        if (window.electronAPI) {
-          await window.electronAPI.openExternal(result.redirectUrl)
-        } else {
-          window.open(result.redirectUrl, '_blank')
-        }
+        await popup.navigate(result.redirectUrl)
+      } else {
+        popup.close()
       }
     } catch {
+      popup.close()
       // Error is handled by mutation
     }
   }

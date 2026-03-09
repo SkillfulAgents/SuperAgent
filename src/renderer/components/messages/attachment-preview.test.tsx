@@ -2,19 +2,35 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { AttachmentPreview, type Attachment } from './attachment-preview'
+import { AttachmentPreview, type Attachment, type FolderAttachment } from './attachment-preview'
 
 function createFile(name: string, size: number, type: string): File {
   const blob = new Blob(['x'.repeat(size)], { type })
   return new File([blob], name, { type })
 }
 
-function createAttachment(overrides: Partial<Attachment> & { name?: string; size?: number; type?: string } = {}): Attachment {
-  const { name = 'file.txt', size = 1024, type = 'text/plain', ...rest } = overrides
+function createAttachment(overrides: { name?: string; size?: number; type?: string; id?: string; preview?: string } = {}): Attachment {
+  const { name = 'file.txt', size = 1024, type = 'text/plain', id = 'att-1', preview } = overrides
   return {
+    type: 'file',
     file: createFile(name, size, type),
-    id: rest.id ?? 'att-1',
-    preview: rest.preview,
+    id,
+    preview,
+  }
+}
+
+function createFolderAttachment(overrides: { id?: string; folderName?: string; fileCount?: number; totalSize?: number } = {}): FolderAttachment {
+  const { id = 'folder-1', folderName = 'my-folder', fileCount = 3, totalSize = 3072 } = overrides
+  const files = Array.from({ length: fileCount }, (_, i) => ({
+    file: createFile(`file${i}.txt`, Math.floor(totalSize / fileCount), 'text/plain'),
+    relativePath: `${folderName}/file${i}.txt`,
+  }))
+  return {
+    type: 'folder',
+    id,
+    folderName,
+    files,
+    totalSize,
   }
 }
 
@@ -83,5 +99,44 @@ describe('AttachmentPreview', () => {
     render(<AttachmentPreview attachments={attachments} onRemove={vi.fn()} />)
     expect(screen.getByText('file1.txt')).toBeInTheDocument()
     expect(screen.getByText('file2.txt')).toBeInTheDocument()
+  })
+
+  it('renders folder name', () => {
+    const attachments = [createFolderAttachment({ folderName: 'src-utils' })]
+    render(<AttachmentPreview attachments={attachments} onRemove={vi.fn()} />)
+    expect(screen.getByText('src-utils')).toBeInTheDocument()
+  })
+
+  it('renders folder file count and total size', () => {
+    const attachments = [createFolderAttachment({ fileCount: 3, totalSize: 3072 })]
+    render(<AttachmentPreview attachments={attachments} onRemove={vi.fn()} />)
+    expect(screen.getByText('3 files · 3.0 KB')).toBeInTheDocument()
+  })
+
+  it('renders singular "file" for single-file folder', () => {
+    const attachments = [createFolderAttachment({ fileCount: 1, totalSize: 1024 })]
+    render(<AttachmentPreview attachments={attachments} onRemove={vi.fn()} />)
+    expect(screen.getByText('1 file · 1.0 KB')).toBeInTheDocument()
+  })
+
+  it('calls onRemove with folder attachment id when remove button is clicked', async () => {
+    const user = userEvent.setup()
+    const onRemove = vi.fn()
+    const attachments = [createFolderAttachment({ id: 'folder-99' })]
+    render(<AttachmentPreview attachments={attachments} onRemove={onRemove} />)
+
+    const removeButton = screen.getByRole('button')
+    await user.click(removeButton)
+    expect(onRemove).toHaveBeenCalledWith('folder-99')
+  })
+
+  it('renders mixed file and folder attachments', () => {
+    const attachments: Attachment[] = [
+      createAttachment({ id: 'f1', name: 'readme.md' }),
+      createFolderAttachment({ id: 'd1', folderName: 'components' }),
+    ]
+    render(<AttachmentPreview attachments={attachments} onRemove={vi.fn()} />)
+    expect(screen.getByText('readme.md')).toBeInTheDocument()
+    expect(screen.getByText('components')).toBeInTheDocument()
   })
 })

@@ -15,7 +15,7 @@ const OUTPUT_DIR = path.resolve(__dirname, '../src/renderer/public/service-icons
 const ALL_SLUGS = [
   // OAuth providers
   'gmail', 'googlecalendar', 'googledrive', 'googlesheets', 'googledocs',
-  'googlemeet', 'googletasks', 'youtube', 'outlook', 'microsoftteams',
+  'googlemeet', 'googletasks', 'youtube', 'outlook', 'microsoft_teams',
   'slack', 'discord', 'github', 'gitlab', 'bitbucket', 'sentry', 'datadog',
   'pagerduty', 'notion', 'linear', 'jira', 'confluence', 'asana', 'monday',
   'clickup', 'trello', 'hubspot', 'salesforce', 'pipedrive', 'zendesk',
@@ -46,7 +46,7 @@ const SHARED_ICON_SLUGS: Record<string, string> = {
 // Slugs that don't match the Composio API name directly
 const SLUG_TO_API_NAME: Record<string, string> = {
   'atlassian': 'jira',
-  'microsoftteams': 'microsoft-teams',
+  'microsoft_teams': 'microsoft-teams',
   'googlecalendar': 'google-calendar',
   'googledrive': 'google-drive',
   'googlesheets': 'google-sheets',

@@ -4,6 +4,8 @@ import { User, Bot, Terminal } from 'lucide-react'
 import { ToolCallItem } from './tool-call-item'
 import { SubAgentBlock } from './subagent-block'
 import { MessageContextMenu } from './message-context-menu'
+import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
+import { parseAttachedFiles } from '@shared/lib/utils/attached-files'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
@@ -18,16 +20,19 @@ interface MessageItemProps {
   agentSlug?: string
   sessionId?: string
   isSessionActive?: boolean
-  activeSubagent?: SubagentInfo | null
+  activeSubagents?: SubagentInfo[]
+  completedSubagents?: Set<string> | null
   onRemoveMessage?: (messageId: string) => void
   onRemoveToolCall?: (toolCallId: string) => void
 }
 
-export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagent, onRemoveMessage, onRemoveToolCall }: MessageItemProps) {
+export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall }: MessageItemProps) {
   const isUser = message.type === 'user'
   const isAssistant = message.type === 'assistant'
 
-  const text = message.content.text
+  const rawText = message.content.text
+  const { cleanText, attachedFiles } = isUser && rawText ? parseAttachedFiles(rawText) : { cleanText: rawText, attachedFiles: [] }
+  const text = cleanText
   const hasText = text && text.length > 0
   const toolCalls = message.toolCalls || []
 
@@ -41,9 +46,12 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
     return null
   }
 
-  // Skip rendering the text bubble for assistant messages with only tool calls
-  // (no text) unless streaming. The tool calls will still be rendered below.
-  const showMessageBubble = !isAssistant || hasText || isStreaming
+  // Skip rendering the text bubble for:
+  // - assistant messages with only tool calls (no text) unless streaming
+  // - user messages that only had attached files (text was fully stripped)
+  const showMessageBubble = isUser
+    ? (hasText || attachedFiles.length === 0)
+    : (hasText || isStreaming)
 
   return (
     <div
@@ -186,19 +194,29 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
           </MessageContextMenu>
         )}
 
+        {/* Attached file chips for user messages */}
+        {isUser && attachedFiles.length > 0 && agentSlug && (
+          <div className="flex flex-wrap gap-1.5 justify-end">
+            {attachedFiles.map((filePath, idx) => (
+              <FileDownloadPill key={idx} filePath={filePath} agentSlug={agentSlug} />
+            ))}
+          </div>
+        )}
+
         {/* Tool calls - shown below assistant message */}
         {isAssistant && toolCalls.length > 0 && (
           <div className="w-full space-y-2">
             {toolCalls.map((toolCall) => (
               <MessageContextMenu key={toolCall.id} text={toolCall.name} onRemove={onRemoveToolCall ? () => onRemoveToolCall(toolCall.id) : undefined}>
                 <div>
-                  {toolCall.name === 'Task' && sessionId ? (
+                  {(toolCall.name === 'Task' || toolCall.name === 'Agent') && sessionId ? (
                     <SubAgentBlock
                       toolCall={toolCall}
                       sessionId={sessionId}
                       agentSlug={agentSlug!}
                       isSessionActive={isSessionActive}
-                      activeSubagent={activeSubagent}
+                      activeSubagent={activeSubagents?.find(s => s.parentToolId === toolCall.id) ?? null}
+                      isCompleted={completedSubagents?.has(toolCall.id) ?? false}
                     />
                   ) : (
                     <ToolCallItem toolCall={toolCall} messageCreatedAt={message.createdAt} agentSlug={agentSlug} isSessionActive={isSessionActive} />

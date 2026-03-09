@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { QueryProvider } from './providers/query-provider'
 import { UserProvider } from './context/user-context'
+import { AnalyticsProvider } from './context/analytics-context'
 import { AuthGate } from './components/auth/auth-gate'
 import { SelectionProvider } from './context/selection-context'
 import { ConnectivityProvider } from './context/connectivity-context'
@@ -15,13 +16,20 @@ import { ErrorBoundary } from './components/ui/error-boundary'
 import { useUserSettings } from './hooks/use-user-settings'
 import { useTheme } from './hooks/use-theme'
 import { useUser } from './context/user-context'
+import { useAnalyticsTracking } from './context/analytics-context'
 
 function AppContent() {
   useTheme()
   const [wizardOpen, setWizardOpen] = useState(false)
   const { data: userSettings } = useUserSettings()
   const { isAuthMode, isAdmin } = useUser()
+  const { identify } = useAnalyticsTracking()
   const hasAutoOpened = useRef(false)
+
+  // Identify user on app open
+  useEffect(() => {
+    identify()
+  }, [identify])
 
   // Auto-open wizard on first launch (non-admin auth users skip — they can't configure the server)
   useEffect(() => {
@@ -56,13 +64,15 @@ export default function App() {
     <QueryProvider>
       <UserProvider>
         <AuthGate>
-          <SelectionProvider>
-            <ConnectivityProvider>
-              <ErrorBoundary>
-                <AppContent />
-              </ErrorBoundary>
-            </ConnectivityProvider>
-          </SelectionProvider>
+          <AnalyticsProvider>
+            <SelectionProvider>
+              <ConnectivityProvider>
+                <ErrorBoundary>
+                  <AppContent />
+                </ErrorBoundary>
+              </ConnectivityProvider>
+            </SelectionProvider>
+          </AnalyticsProvider>
         </AuthGate>
       </UserProvider>
     </QueryProvider>

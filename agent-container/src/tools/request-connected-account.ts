@@ -21,7 +21,7 @@ Authorization: Bearer $PROXY_TOKEN
 
 The CONNECTED_ACCOUNTS env var contains JSON mapping toolkit names to arrays of {name, id} objects.
 
-Common toolkits include gmail, slack, github, notion, jira, salesforce, and many more. Use search_connected_account_services to discover all available services and their toolkit slugs.`,
+Common toolkits include gmail, slack, github, notion, linear, salesforce, and many more. Use search_connected_account_services to discover all available services and their toolkit slugs.`,
   {
     toolkit: z
       .string()

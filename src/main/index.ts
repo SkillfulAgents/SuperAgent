@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, nativeTheme, session, shell, Notification } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, MenuItem, nativeTheme, session, shell, Notification } from 'electron'
 import path from 'path'
 import { EventSource } from 'eventsource'
 import { createTray, destroyTray, updateTrayWindow, setTrayVisible } from './tray'
@@ -71,6 +71,7 @@ function createWindow() {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      spellcheck: true,
     },
     ...(process.platform === 'darwin' && {
       titleBarStyle: 'hiddenInset' as const,
@@ -89,6 +90,27 @@ function createWindow() {
   session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
     const allowed = ['media', 'audioCapture', 'mediaKeySystem', 'clipboard-read', 'clipboard-sanitized-write']
     return allowed.includes(permission)
+  })
+
+  // Spellcheck context menu — show correction suggestions on right-click
+  mainWindow.webContents.on('context-menu', (_event, params) => {
+    if (params.misspelledWord) {
+      const menu = new Menu()
+      for (const suggestion of params.dictionarySuggestions) {
+        menu.append(new MenuItem({
+          label: suggestion,
+          click: () => mainWindow?.webContents.replaceMisspelling(suggestion),
+        }))
+      }
+      if (params.dictionarySuggestions.length > 0) {
+        menu.append(new MenuItem({ type: 'separator' }))
+      }
+      menu.append(new MenuItem({
+        label: 'Add to Dictionary',
+        click: () => mainWindow?.webContents.session.addWordToSpellCheckerDictionary(params.misspelledWord),
+      }))
+      menu.popup()
+    }
   })
 
   // Handle window.open() calls - prevent popup windows

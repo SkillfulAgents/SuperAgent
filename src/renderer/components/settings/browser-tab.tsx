@@ -11,6 +11,7 @@ import {
   SelectValue,
 } from '@renderer/components/ui/select'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { apiFetch } from '@renderer/lib/api'
 import { AlertTriangle, Check, Loader2 } from 'lucide-react'
 import type { HostBrowserProviderId } from '@shared/lib/config/settings'
@@ -28,6 +29,7 @@ const CONTAINER_VALUE = '__container__'
 export function BrowserTab() {
   const { data: settings, isLoading } = useSettings()
   const updateSettings = useUpdateSettings()
+  const { track } = useAnalyticsTracking()
 
   // Optimistic local state
   const [hostProvider, setHostProvider] = useState<string | null>(null)
@@ -80,6 +82,7 @@ export function BrowserTab() {
           onValueChange={(value) => {
             const providerId = value === CONTAINER_VALUE ? null : value as HostBrowserProviderId
             setHostProvider(value)
+            track('browser_host_changed', { using: value === CONTAINER_VALUE ? 'container' : value })
             updateSettings.mutate({
               app: { hostBrowserProvider: providerId as HostBrowserProviderId | undefined },
             })

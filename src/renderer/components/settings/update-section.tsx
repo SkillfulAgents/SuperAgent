@@ -4,6 +4,7 @@ import { Label } from '@renderer/components/ui/label'
 import { Switch } from '@renderer/components/ui/switch'
 import { Download, RefreshCw, CheckCircle2, Loader2 } from 'lucide-react'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 
 interface UpdateStatus {
   state: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
@@ -15,6 +16,7 @@ interface UpdateStatus {
 export function UpdateSection() {
   const { data: userSettings } = useUserSettings()
   const updateUserSettings = useUpdateUserSettings()
+  const { track } = useAnalyticsTracking()
   const [status, setStatus] = useState<UpdateStatus>({ state: 'idle' })
 
   useEffect(() => {
@@ -26,8 +28,9 @@ export function UpdateSection() {
   }, [])
 
   const handleCheck = useCallback(async () => {
+    track('updates_checked')
     await window.electronAPI?.checkForUpdates()
-  }, [])
+  }, [track])
 
   const handleDownload = useCallback(async () => {
     await window.electronAPI?.downloadUpdate()

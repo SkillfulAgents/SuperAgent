@@ -75,9 +75,10 @@ export async function discoverOAuthMetadata(mcpUrl: string): Promise<{
 
     // Step 3: Fetch Authorization Server Metadata
     // Try RFC 8414 first, then OpenID Connect Discovery
+    const normalizedAuthServer = authServerUrl.replace(/\/+$/, '')
     const wellKnownUrls = [
-      `${authServerUrl}/.well-known/oauth-authorization-server`,
-      `${authServerUrl}/.well-known/openid-configuration`,
+      `${normalizedAuthServer}/.well-known/oauth-authorization-server`,
+      `${normalizedAuthServer}/.well-known/openid-configuration`,
     ]
 
     for (const url of wellKnownUrls) {

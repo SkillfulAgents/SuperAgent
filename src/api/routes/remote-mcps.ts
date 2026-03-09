@@ -9,6 +9,7 @@ import { getAppBaseUrlFromRequest, getCurrentUserId } from '@shared/lib/auth/con
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { Authenticated, UsersMcpServer, IsAdmin, Or } from '../middleware/auth'
 import { pushRemoteMcpsToContainer } from './agents'
+import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 
 /**
  * Escape a string for safe inclusion in HTML content
@@ -304,6 +305,7 @@ remoteMcps.get('/oauth-callback', async (c) => {
   }
 
   // Discover tools to verify the connection works
+  let serverUrl: string | undefined
   try {
     const [server] = await db
       .select()
@@ -312,6 +314,7 @@ remoteMcps.get('/oauth-callback', async (c) => {
       .limit(1)
 
     if (server) {
+      serverUrl = server.url
       const tools = await discoverTools(server.url, server.accessToken)
       await db
         .update(remoteMcpServers)
@@ -335,6 +338,7 @@ remoteMcps.get('/oauth-callback', async (c) => {
     `)
   }
 
+  trackServerEvent('mcp_oauth_succeeded', { url: serverUrl, mcpId: result.mcpId })
   const successPayload = JSON.stringify({ type: 'mcp-oauth-callback', success: true, mcpId: result.mcpId })
   return c.html(`
     <html><body><script>

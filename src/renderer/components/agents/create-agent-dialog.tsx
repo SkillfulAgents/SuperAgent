@@ -22,6 +22,7 @@ import {
   useImportAgentTemplate,
   useInstallAgentFromSkillset,
 } from '@renderer/hooks/use-agent-templates'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronDown, ChevronRight, Loader2, Upload, FileArchive } from 'lucide-react'
@@ -82,6 +83,7 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
   const createAgent = useCreateAgent()
   const createSession = useCreateSession()
   const { selectAgent, selectSession } = useSelection()
+  const { track } = useAnalyticsTracking()
   const { data: skillsetSkills } = useAllSkillsetSkills()
   const installSkill = useInstallSkill()
 
@@ -249,6 +251,7 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
 
     try {
       const newAgent = await createAgent.mutateAsync({ name: name.trim() })
+      track('agent_created', { source: 'new', num_skills_added_at_creation: selectedSkills.size })
 
       if (selectedSkills.size > 0) {
         await installSkillKeys(newAgent.slug, Array.from(selectedSkills))

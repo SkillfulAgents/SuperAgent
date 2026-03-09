@@ -5,12 +5,14 @@
  * that will be executed and options to cancel the task.
  */
 
-import { Clock, Calendar, Repeat, Trash2, MessageSquare } from 'lucide-react'
+import { Clock, Calendar, Repeat, Trash2, MessageSquare, Globe } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
+import { TimezonePicker } from '@renderer/components/ui/timezone-picker'
 import {
   useScheduledTask,
   useCancelScheduledTask,
   useScheduledTaskSessions,
+  useUpdateScheduledTaskTimezone,
 } from '@renderer/hooks/use-scheduled-tasks'
 import { useSelection } from '@renderer/context/selection-context'
 import { useUser } from '@renderer/context/user-context'
@@ -35,9 +37,18 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const { data: task, isLoading, error } = useScheduledTask(taskId)
   const { data: sessions = [] } = useScheduledTaskSessions(taskId)
   const cancelTask = useCancelScheduledTask()
+  const updateTimezone = useUpdateScheduledTaskTimezone()
   const { handleScheduledTaskDeleted, selectSession } = useSelection()
   const { canUseAgent } = useUser()
   const canCancel = canUseAgent(agentSlug)
+
+  const formatInTaskTz = (date: Date | string) => {
+    const d = typeof date === 'string' ? new Date(date) : date
+    const tz = task?.timezone || undefined
+    return d.toLocaleString(undefined, { timeZone: tz })
+  }
+
+  const taskTzLabel = task?.timezone?.replace(/_/g, ' ') || 'UTC'
 
   const handleCancel = async () => {
     try {
@@ -89,6 +100,10 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
                 <Calendar className="h-4 w-4" />
                 <span>{task.scheduleExpression}</span>
               </div>
+              <div className="flex items-center gap-1">
+                <Globe className="h-4 w-4" />
+                <span>{taskTzLabel}</span>
+              </div>
             </div>
           </div>
 
@@ -132,7 +147,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
           </h3>
           {task.status === 'pending' ? (
             <div className="text-lg">
-              {nextExecution.toLocaleString()}
+              {formatInTaskTz(nextExecution)}
             </div>
           ) : (
             <div className="text-lg capitalize">{task.status}</div>
@@ -160,7 +175,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
               <span>
                 This prompt will be sent to the agent{' '}
                 {task.status === 'pending'
-                  ? `on ${nextExecution.toLocaleString()}`
+                  ? `on ${formatInTaskTz(nextExecution)}`
                   : 'when executed'}
               </span>
             </div>
@@ -185,7 +200,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
                   <div className="flex-1 min-w-0">
                     <div className="font-medium truncate">{session.name}</div>
                     <div className="text-xs text-muted-foreground">
-                      {new Date(session.createdAt).toLocaleString()}
+                      {formatInTaskTz(session.createdAt)}
                       {session.messageCount > 0 && (
                         <span className="ml-2">• {session.messageCount} messages</span>
                       )}
@@ -204,7 +219,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
               Last Executed
             </h3>
             <div className="text-sm">
-              {new Date(task.lastExecutedAt).toLocaleString()}
+              {formatInTaskTz(task.lastExecutedAt)}
               {task.lastSessionId && (
                 <span className="text-muted-foreground ml-2">
                   (Session: {task.lastSessionId.slice(0, 8)}...)
@@ -220,9 +235,29 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
             Created
           </h3>
           <div className="text-sm">
-            {new Date(task.createdAt).toLocaleString()}
+            {formatInTaskTz(task.createdAt)}
           </div>
         </div>
+
+        {/* Timezone selector */}
+        {task.status === 'pending' && canCancel && (
+          <div className="mt-6">
+            <h3 className="text-sm font-medium text-muted-foreground mb-2">
+              Timezone
+            </h3>
+            <TimezonePicker
+              value={task.timezone || 'UTC'}
+              onValueChange={(value) => {
+                updateTimezone.mutate({ taskId: task.id, timezone: value })
+              }}
+              disabled={updateTimezone.isPending}
+              className="w-64"
+            />
+            <p className="text-xs text-muted-foreground mt-1">
+              Schedule times are interpreted in this timezone
+            </p>
+          </div>
+        )}
       </div>
     </div>
   )

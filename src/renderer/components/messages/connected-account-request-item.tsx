@@ -1,4 +1,5 @@
 import { apiFetch } from '@renderer/lib/api'
+import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
@@ -13,6 +14,7 @@ import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { Button } from '@renderer/components/ui/button'
 import { Checkbox } from '@renderer/components/ui/checkbox'
 import { Input } from '@renderer/components/ui/input'
+import { DeclineButton } from './decline-button'
 import { cn } from '@shared/lib/utils/cn'
 import {
   useConnectedAccountsByToolkit,
@@ -21,6 +23,7 @@ import {
   type ConnectedAccount,
 } from '@renderer/hooks/use-connected-accounts'
 import { getProvider } from '@shared/lib/composio/providers'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { formatDistanceToNow } from 'date-fns'
 
 interface ConnectedAccountRequestItemProps {
@@ -55,6 +58,7 @@ export function ConnectedAccountRequestItem({
   // Track account IDs before OAuth to detect new accounts
   const accountIdsBeforeOAuth = useRef<Set<string>>(new Set())
 
+  const { track } = useAnalyticsTracking()
   const provider = getProvider(toolkit)
   const accounts = data?.accounts ?? []
 
@@ -151,12 +155,14 @@ export function ConnectedAccountRequestItem({
   const handleConnectNew = async () => {
     setStatus('connecting')
     setError(null)
+    track('account_added', { slug: toolkit, location: 'session' })
 
     // Track current account IDs before OAuth to detect new account later
     accountIdsBeforeOAuth.current = new Set(accounts.map((a) => a.id))
 
+    const popup = prepareOAuthPopup()
+
     try {
-      // Pass electron flag to get correct callback URL
       const isElectronApp = !!window.electronAPI
       const response = await apiFetch('/api/connected-accounts/initiate', {
         method: 'POST',
@@ -170,15 +176,10 @@ export function ConnectedAccountRequestItem({
       }
 
       const { redirectUrl } = await response.json()
-
-      // Open OAuth in system browser (Electron) or new tab (web)
-      if (window.electronAPI) {
-        await window.electronAPI.openExternal(redirectUrl)
-      } else {
-        window.open(redirectUrl, '_blank')
-      }
+      await popup.navigate(redirectUrl)
       setStatus('pending')
     } catch (err: any) {
+      popup.close()
       setError(err.message || 'Failed to connect account')
       setStatus('pending')
     }
@@ -217,7 +218,7 @@ export function ConnectedAccountRequestItem({
     }
   }
 
-  const handleDecline = async () => {
+  const handleDecline = async (reason?: string) => {
     setStatus('submitting')
     setError(null)
 
@@ -231,7 +232,7 @@ export function ConnectedAccountRequestItem({
             toolUseId,
             toolkit,
             decline: true,
-            declineReason: 'User declined to provide access',
+            declineReason: reason || 'User declined to provide access',
           }),
         }
       )
@@ -414,16 +415,11 @@ export function ConnectedAccountRequestItem({
               </span>
             </Button>
 
-            <Button
-              onClick={handleDecline}
+            <DeclineButton
+              onDecline={handleDecline}
               disabled={status !== 'pending'}
-              variant="outline"
-              size="sm"
               className="border-blue-200 dark:border-blue-700 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900"
-            >
-              <X className="h-4 w-4" />
-              <span className="ml-1">Decline</span>
-            </Button>
+            />
           </div>
 
           {/* Error message */}

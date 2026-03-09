@@ -160,6 +160,9 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   createdBySessionId: text('created_by_session_id'),
   createdByUserId: text('created_by_user_id'), // For ACL purposes in auth mode
 
+  // Timezone (IANA identifier, e.g. 'America/New_York')
+  timezone: text('timezone'),
+
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   cancelledAt: integer('cancelled_at', { mode: 'timestamp_ms' }),

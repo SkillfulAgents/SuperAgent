@@ -1,11 +1,22 @@
 import type { ContainerClient, StreamMessage, SlashCommandInfo } from './types'
 import type { SessionUsage } from '@shared/lib/types/agent'
 import { createScheduledTask } from '@shared/lib/services/scheduled-task-service'
+import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { updateSessionMetadata } from '@shared/lib/services/session-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
+import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
 import * as path from 'path'
 import { promises as fsPromises } from 'fs'
+
+// Per-subagent streaming state (supports multiple concurrent background agents)
+interface SubagentStreamingState {
+  agentId: string | null
+  currentText: string
+  currentToolUse: { id: string; name: string } | null
+  currentToolInput: string
+  isBackground: boolean // True for run_in_background agents — completion comes via sidechain 'result', not tool_result
+}
 
 // Tracks streaming state for SSE broadcasts
 // In the file-based model, messages are stored in JSONL files by the Claude SDK.
@@ -21,13 +32,9 @@ interface StreamingState {
   agentSlug?: string // The agent slug for this session
   lastContextWindow: number // Last known context window size (default 200k)
   lastAssistantUsage: SessionUsage | null // Per-call usage from most recent assistant message
-  pendingTaskToolId: string | null // tool_use ID of the currently executing Task tool
-  activeSubagentId: string | null // agentId of the running subagent
   completedSubagentIds: Set<string> // agentIds of subagents that have completed (to avoid re-discovery)
-  // Subagent streaming state (separate from main agent to avoid corruption)
-  subagentCurrentText: string
-  subagentCurrentToolUse: { id: string; name: string } | null
-  subagentCurrentToolInput: string
+  // Per-subagent streaming state, keyed by parent tool_use ID (supports concurrent background agents)
+  activeSubagents: Map<string, SubagentStreamingState>
   slashCommands: SlashCommandInfo[] // Available slash commands from SDK
 }
 
@@ -65,12 +72,8 @@ class MessagePersister {
       agentSlug,
       lastContextWindow: 200_000,
       lastAssistantUsage: null,
-      pendingTaskToolId: null,
-      activeSubagentId: null,
       completedSubagentIds: new Set(),
-      subagentCurrentText: '',
-      subagentCurrentToolUse: null,
-      subagentCurrentToolInput: '',
+      activeSubagents: new Map(),
       slashCommands: [],
     })
 
@@ -159,15 +162,9 @@ class MessagePersister {
     return (clients?.size ?? 0) > 0
   }
 
-  // Broadcast to all sessions (for global notifications)
+  // Broadcast to global notification clients only (e.g., sidebar updates, Electron main process)
+  // Does NOT broadcast to session-specific SSE clients — use broadcastToSSE for that.
   broadcastGlobal(data: unknown): void {
-    // Broadcast to session-specific clients
-    const sessionIds = Array.from(this.sseClients.keys())
-    for (const sessionId of sessionIds) {
-      this.broadcastToSSE(sessionId, data)
-    }
-
-    // Broadcast to global notification clients (e.g., Electron main process)
     for (const client of this.globalNotificationClients) {
       try {
         client(data)
@@ -209,11 +206,7 @@ class MessagePersister {
       state.currentText = ''
       state.currentToolUse = null
       state.currentToolInput = ''
-      state.pendingTaskToolId = null
-      state.activeSubagentId = null
-      state.subagentCurrentText = ''
-      state.subagentCurrentToolUse = null
-      state.subagentCurrentToolInput = ''
+      state.activeSubagents.clear()
     }
 
     // Broadcast to session-specific clients
@@ -221,12 +214,14 @@ class MessagePersister {
 
     // Also broadcast globally so sidebar updates regardless of which session is being viewed
     const agentSlug = state?.agentSlug
-    this.broadcastGlobal({
-      type: 'session_idle',
-      sessionId,
-      agentSlug,
-      isActive: false,
-    })
+    if (agentSlug) {
+      this.broadcastGlobal({
+        type: 'session_idle',
+        sessionId,
+        agentSlug,
+        isActive: false,
+      })
+    }
   }
 
   // Add SSE client for real-time updates
@@ -266,12 +261,8 @@ class MessagePersister {
         agentSlug,
         lastContextWindow: 200_000,
         lastAssistantUsage: null,
-        pendingTaskToolId: null,
-        activeSubagentId: null,
         completedSubagentIds: new Set(),
-        subagentCurrentText: '',
-        subagentCurrentToolUse: null,
-        subagentCurrentToolInput: '',
+        activeSubagents: new Map(),
         slashCommands: [],
       }
       this.streamingStates.set(sessionId, state)
@@ -347,15 +338,41 @@ class MessagePersister {
       }
 
       case 'user':
-        // Detect subagent completion: check if this user message contains a tool_result
-        // for the pending Task tool (meaning the subagent finished and returned its result)
-        if (state.pendingTaskToolId) {
+        // Detect subagent completion: check if this user message contains tool_results
+        // for any active subagent tool calls (meaning the subagent finished and returned its result)
+        if (state.activeSubagents.size > 0) {
           const messageContent = content.message?.content
           if (Array.isArray(messageContent)) {
             for (const block of messageContent) {
-              if (block.type === 'tool_result' && block.tool_use_id === state.pendingTaskToolId) {
-                this.handleSubagentCompletion(sessionId, state)
-                break
+              if (block.type === 'tool_result' && state.activeSubagents.has(block.tool_use_id)) {
+                const sub = state.activeSubagents.get(block.tool_use_id)!
+
+                // Extract agentId from tool result before broadcasting completion.
+                // Try SDK tool_use_result metadata first, then parse from content text.
+                if (!sub.agentId) {
+                  const toolUseResult = content.tool_use_result as Record<string, unknown> | undefined
+                  if (toolUseResult?.agentId && typeof toolUseResult.agentId === 'string') {
+                    sub.agentId = toolUseResult.agentId
+                  } else {
+                    // Parse agentId from the tool result text (SDK includes "agentId: <hex>")
+                    const parts = Array.isArray(block.content) ? block.content : []
+                    for (const part of parts) {
+                      if (part?.type === 'text' && typeof part.text === 'string') {
+                        const match = part.text.match(/\bagentId:\s*([a-f0-9]+)\b/)
+                        if (match) {
+                          sub.agentId = match[1]
+                          break
+                        }
+                      }
+                    }
+                  }
+                }
+
+                // Background agents get an immediate "async_launched" tool_result that is NOT
+                // the real completion — their actual completion comes via sidechain 'result'.
+                if (!sub.isBackground) {
+                  this.handleSubagentCompletion(sessionId, state, block.tool_use_id)
+                }
               }
             }
           }
@@ -528,11 +545,7 @@ class MessagePersister {
     state.currentText = ''
     state.currentToolUse = null
     state.currentToolInput = ''
-    state.pendingTaskToolId = null
-    state.activeSubagentId = null
-    state.subagentCurrentText = ''
-    state.subagentCurrentToolUse = null
-    state.subagentCurrentToolInput = ''
+    state.activeSubagents.clear()
     this.broadcastToSSE(sessionId, { type: 'session_idle', isActive: false })
     this.broadcastGlobal({
       type: 'session_idle',
@@ -544,25 +557,41 @@ class MessagePersister {
 
   // Handle sidechain (subagent) messages — filter them out of main streaming state
   private handleSidechainMessage(sessionId: string, content: any, state: StreamingState): void {
-    // Try to extract agentId directly from the message (available on complete user/assistant messages)
-    const messageAgentId = content.agentId as string | undefined
-    if (messageAgentId && messageAgentId !== state.activeSubagentId) {
-      state.activeSubagentId = messageAgentId
+    const parentToolId = content.parent_tool_use_id as string
+
+    // Look up or create the subagent entry for this parent tool
+    let sub = state.activeSubagents.get(parentToolId)
+    if (!sub) {
+      // Sidechain message arrived before the tool_use was tracked (rare but possible)
+      sub = { agentId: null, currentText: '', currentToolUse: null, currentToolInput: '', isBackground: false }
+      state.activeSubagents.set(parentToolId, sub)
     }
 
-    // Fallback: discover agentId from the subagent JSONL files if not already known
-    if (!state.activeSubagentId && state.agentSlug) {
-      this.discoverSubagentId(sessionId, state).catch(() => {})
+    // Try to extract agentId directly from the message (available on complete user/assistant messages)
+    const messageAgentId = content.agentId as string | undefined
+    if (messageAgentId && messageAgentId !== sub.agentId) {
+      sub.agentId = messageAgentId
+    }
+
+    // Fallback: discover agentIds from the subagent JSONL files using FIFO matching
+    if (!sub.agentId && state.agentSlug) {
+      this.discoverSubagentIds(sessionId, state).catch(() => {})
     }
 
     // Route stream events to the subagent stream handler for real-time streaming
     if (content.type === 'stream_event' && content.event) {
-      this.handleSubagentStreamEvent(sessionId, content.event, state)
+      this.handleSubagentStreamEvent(sessionId, content.event, state, parentToolId)
       return
     }
     // Bare events (sometimes come without wrapper, same as main agent)
     if (content.event && content.type !== 'user' && content.type !== 'assistant') {
-      this.handleSubagentStreamEvent(sessionId, content.event, state)
+      this.handleSubagentStreamEvent(sessionId, content.event, state, parentToolId)
+      return
+    }
+
+    // Sidechain 'result' means the background subagent has finished execution
+    if (content.type === 'result') {
+      this.handleSubagentCompletion(sessionId, state, parentToolId)
       return
     }
 
@@ -572,109 +601,139 @@ class MessagePersister {
     if (content.type === 'user' || content.type === 'assistant') {
       // Clear streaming text since it's now persisted
       if (content.type === 'assistant') {
-        state.subagentCurrentText = ''
+        sub.currentText = ''
       }
       this.broadcastToSSE(sessionId, {
         type: 'subagent_updated',
-        parentToolId: state.pendingTaskToolId,
-        agentId: state.activeSubagentId,
+        parentToolId,
+        agentId: sub.agentId,
       })
     }
   }
 
-  // Discover the active subagent's agentId by scanning the subagents directory
-  private async discoverSubagentId(sessionId: string, state: StreamingState): Promise<void> {
+  // Discover agentIds for all active subagents using FIFO matching.
+  // The SDK executes tool calls in order, so the first registered parentToolId
+  // corresponds to the oldest subagent JSONL file (by modification time).
+  private async discoverSubagentIds(sessionId: string, state: StreamingState): Promise<void> {
     if (!state.agentSlug) return
+
+    // Collect parentToolIds needing agentIds (Map preserves insertion order = registration order)
+    const needingIds: string[] = []
+    for (const [parentToolId, sub] of state.activeSubagents) {
+      if (!sub.agentId) needingIds.push(parentToolId)
+    }
+    if (needingIds.length === 0) return
+
     try {
       const sessionsDir = getAgentSessionsDir(state.agentSlug)
       const subagentsDir = path.join(sessionsDir, sessionId, 'subagents')
       const files = await fsPromises.readdir(subagentsDir)
 
-      // Find the most recently modified agent-*.jsonl file,
-      // skipping files for subagents that have already completed
-      let latest: { name: string; mtime: number } | null = null
+      // Collect known IDs (completed or already assigned)
+      const knownIds = new Set(state.completedSubagentIds)
+      for (const [, s] of state.activeSubagents) {
+        if (s.agentId) knownIds.add(s.agentId)
+      }
+
+      // Find unclaimed files and sort by modification time (oldest first = created first)
+      const unclaimed: { id: string; mtimeMs: number }[] = []
       for (const file of files) {
         if (file.startsWith('agent-') && file.endsWith('.jsonl')) {
           const id = file.replace('agent-', '').replace('.jsonl', '')
-          if (state.completedSubagentIds.has(id)) continue
-          const stat = await fsPromises.stat(path.join(subagentsDir, file))
-          if (!latest || stat.mtimeMs > latest.mtime) {
-            latest = { name: file, mtime: stat.mtimeMs }
+          if (!knownIds.has(id)) {
+            try {
+              const fileStat = await fsPromises.stat(path.join(subagentsDir, file))
+              unclaimed.push({ id, mtimeMs: fileStat.mtimeMs })
+            } catch { /* file may have been removed */ }
           }
         }
       }
+      unclaimed.sort((a, b) => a.mtimeMs - b.mtimeMs)
 
-      if (latest) {
-        state.activeSubagentId = latest.name.replace('agent-', '').replace('.jsonl', '')
-        // Re-broadcast with the discovered agentId
-        this.broadcastToSSE(sessionId, {
-          type: 'subagent_updated',
-          parentToolId: state.pendingTaskToolId,
-          agentId: state.activeSubagentId,
-        })
+      // FIFO: match oldest unclaimed file → first registered parentToolId, etc.
+      const count = Math.min(needingIds.length, unclaimed.length)
+      for (let i = 0; i < count; i++) {
+        const parentToolId = needingIds[i]
+        const sub = state.activeSubagents.get(parentToolId)
+        if (sub && !sub.agentId) {
+          sub.agentId = unclaimed[i].id
+          this.broadcastToSSE(sessionId, {
+            type: 'subagent_updated',
+            parentToolId,
+            agentId: sub.agentId,
+          })
+        }
       }
     } catch {
       // Directory doesn't exist yet — will retry on next sidechain message
     }
   }
 
-  // Handle subagent completion — broadcast and clear state
-  private handleSubagentCompletion(sessionId: string, state: StreamingState): void {
-    // If we never discovered the agentId, try one final time
-    if (!state.activeSubagentId && state.agentSlug) {
-      this.discoverSubagentId(sessionId, state)
-        .finally(() => this.broadcastSubagentCompleted(sessionId, state))
+  // Handle subagent completion — broadcast and clear state for a specific parent tool
+  private handleSubagentCompletion(sessionId: string, state: StreamingState, parentToolId: string): void {
+    const sub = state.activeSubagents.get(parentToolId)
+    // If we never discovered the agentId, try one final time before broadcasting
+    if (sub && !sub.agentId && state.agentSlug) {
+      this.discoverSubagentIds(sessionId, state)
+        .finally(() => this.broadcastSubagentCompleted(sessionId, state, parentToolId))
     } else {
-      this.broadcastSubagentCompleted(sessionId, state)
+      this.broadcastSubagentCompleted(sessionId, state, parentToolId)
     }
   }
 
-  private broadcastSubagentCompleted(sessionId: string, state: StreamingState): void {
+  private broadcastSubagentCompleted(sessionId: string, state: StreamingState, parentToolId: string): void {
+    const sub = state.activeSubagents.get(parentToolId)
+    // Broadcast a final subagent_updated so the frontend refetches subagent messages
+    this.broadcastToSSE(sessionId, {
+      type: 'subagent_updated',
+      parentToolId,
+      agentId: sub?.agentId ?? null,
+    })
     this.broadcastToSSE(sessionId, {
       type: 'subagent_completed',
-      parentToolId: state.pendingTaskToolId,
-      agentId: state.activeSubagentId,
+      parentToolId,
+      agentId: sub?.agentId ?? null,
     })
-    // Track completed subagent ID so it won't be re-discovered for future subagents
-    if (state.activeSubagentId) {
-      state.completedSubagentIds.add(state.activeSubagentId)
+    // Track completed subagent ID so it won't be re-discovered
+    if (sub?.agentId) {
+      state.completedSubagentIds.add(sub.agentId)
     }
-    state.pendingTaskToolId = null
-    state.activeSubagentId = null
-    state.subagentCurrentText = ''
-    state.subagentCurrentToolUse = null
-    state.subagentCurrentToolInput = ''
+    state.activeSubagents.delete(parentToolId)
   }
 
   // Handle subagent stream events — mirrors handleStreamEvent but with subagent_ prefixed SSE events
   private handleSubagentStreamEvent(
     sessionId: string,
     event: { type: string; content_block?: { type: string; id?: string; name?: string }; delta?: { type: string; text?: string; partial_json?: string } },
-    state: StreamingState
+    state: StreamingState,
+    parentToolId: string
   ): void {
+    const sub = state.activeSubagents.get(parentToolId)
+    if (!sub) return
+
     switch (event.type) {
       case 'message_start':
-        state.subagentCurrentText = ''
-        state.subagentCurrentToolUse = null
-        state.subagentCurrentToolInput = ''
+        sub.currentText = ''
+        sub.currentToolUse = null
+        sub.currentToolInput = ''
         this.broadcastToSSE(sessionId, {
           type: 'subagent_stream_start',
-          parentToolId: state.pendingTaskToolId,
-          agentId: state.activeSubagentId,
+          parentToolId,
+          agentId: sub.agentId,
         })
         break
 
       case 'content_block_start':
         if (event.content_block?.type === 'tool_use') {
-          state.subagentCurrentToolUse = {
+          sub.currentToolUse = {
             id: event.content_block.id!,
             name: event.content_block.name!,
           }
-          state.subagentCurrentToolInput = ''
+          sub.currentToolInput = ''
           this.broadcastToSSE(sessionId, {
             type: 'subagent_tool_use_start',
-            parentToolId: state.pendingTaskToolId,
-            agentId: state.activeSubagentId,
+            parentToolId,
+            agentId: sub.agentId,
             toolId: event.content_block.id,
             toolName: event.content_block.name,
             partialInput: '',
@@ -684,44 +743,44 @@ class MessagePersister {
 
       case 'content_block_delta':
         if (event.delta?.type === 'text_delta' && event.delta.text) {
-          state.subagentCurrentText += event.delta.text
+          sub.currentText += event.delta.text
           this.broadcastToSSE(sessionId, {
             type: 'subagent_stream_delta',
-            parentToolId: state.pendingTaskToolId,
-            agentId: state.activeSubagentId,
+            parentToolId,
+            agentId: sub.agentId,
             text: event.delta.text,
           })
         } else if (event.delta?.type === 'input_json_delta') {
           const partialJson = event.delta.partial_json || ''
-          state.subagentCurrentToolInput += partialJson
+          sub.currentToolInput += partialJson
           this.broadcastToSSE(sessionId, {
             type: 'subagent_tool_use_streaming',
-            parentToolId: state.pendingTaskToolId,
-            agentId: state.activeSubagentId,
-            toolId: state.subagentCurrentToolUse?.id,
-            toolName: state.subagentCurrentToolUse?.name,
-            partialInput: state.subagentCurrentToolInput,
+            parentToolId,
+            agentId: sub.agentId,
+            toolId: sub.currentToolUse?.id,
+            toolName: sub.currentToolUse?.name,
+            partialInput: sub.currentToolInput,
           })
         }
         break
 
       case 'content_block_stop':
-        if (state.subagentCurrentToolUse) {
+        if (sub.currentToolUse) {
           this.broadcastToSSE(sessionId, {
             type: 'subagent_tool_use_ready',
-            parentToolId: state.pendingTaskToolId,
-            agentId: state.activeSubagentId,
-            toolId: state.subagentCurrentToolUse.id,
-            toolName: state.subagentCurrentToolUse.name,
+            parentToolId,
+            agentId: sub.agentId,
+            toolId: sub.currentToolUse.id,
+            toolName: sub.currentToolUse.name,
           })
-          state.subagentCurrentToolUse = null
-          state.subagentCurrentToolInput = ''
+          sub.currentToolUse = null
+          sub.currentToolInput = ''
         }
         break
 
       case 'message_stop':
-        state.subagentCurrentToolUse = null
-        state.subagentCurrentToolInput = ''
+        sub.currentToolUse = null
+        sub.currentToolInput = ''
         break
     }
   }
@@ -780,6 +839,14 @@ class MessagePersister {
       case 'content_block_stop':
         // Tool use block finished streaming
         if (state.currentToolUse) {
+          // Track agent-emitted user request blocks
+          if (state.currentToolUse.name === 'AskUserQuestion') {
+            trackServerEvent('agent_requested_input', { agentSlug: state.agentSlug })
+          } else if (state.currentToolUse.name.startsWith('mcp__user-input__')) {
+            const action = state.currentToolUse.name.replace('mcp__user-input__', '')
+            trackServerEvent(`agent_${action}`, { agentSlug: state.agentSlug })
+          }
+
           // Check if this is a secret request tool
           if (state.currentToolUse.name === 'mcp__user-input__request_secret') {
             this.handleSecretRequestTool(
@@ -840,9 +907,20 @@ class MessagePersister {
             )
           }
 
-          // Track Task tool for subagent correlation
-          if (state.currentToolUse.name === 'Task') {
-            state.pendingTaskToolId = state.currentToolUse.id
+          // Track Task/Agent tool for subagent correlation
+          if (state.currentToolUse.name === 'Task' || state.currentToolUse.name === 'Agent') {
+            let isBackground = false
+            try {
+              const parsed = JSON.parse(state.currentToolInput)
+              isBackground = !!parsed.run_in_background
+            } catch { /* partial or invalid JSON — default to foreground */ }
+            state.activeSubagents.set(state.currentToolUse.id, {
+              agentId: null,
+              currentText: '',
+              currentToolUse: null,
+              currentToolInput: '',
+              isBackground,
+            })
           }
 
           this.broadcastToSSE(sessionId, {
@@ -964,6 +1042,7 @@ class MessagePersister {
           scheduleExpression: string
           prompt: string
           name?: string
+          timezone?: string
         }
         try {
           input = JSON.parse(toolInput)
@@ -982,6 +1061,9 @@ class MessagePersister {
           return
         }
 
+        // Resolve timezone: agent tool override > agent owner's timezone
+        const timezone = input.timezone || resolveTimezoneForAgent(agentSlug)
+
         // Create the scheduled task in the database
         const taskId = await createScheduledTask({
           agentSlug,
@@ -990,6 +1072,7 @@ class MessagePersister {
           prompt: input.prompt,
           name: input.name,
           createdBySessionId: sessionId,
+          timezone,
         })
 
         // Broadcast the scheduled task created event to session-specific SSE clients

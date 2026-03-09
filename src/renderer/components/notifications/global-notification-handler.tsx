@@ -93,12 +93,19 @@ export function GlobalNotificationHandler() {
 
           case 'session_active':
           case 'session_idle':
-          case 'session_error':
+          case 'session_error': {
             // Session state changed - update sessions list in sidebar
-            queryClient.invalidateQueries({ queryKey: ['sessions'] })
+            // Scope invalidation to the specific agent to avoid flashing "working" on other agents
+            const eventAgentSlug = data.agentSlug as string | undefined
+            if (eventAgentSlug) {
+              queryClient.invalidateQueries({ queryKey: ['sessions', eventAgentSlug] })
+            } else {
+              queryClient.invalidateQueries({ queryKey: ['sessions'] })
+            }
             // Artifacts may have been created/modified during the session
             queryClient.invalidateQueries({ queryKey: ['artifacts'] })
             break
+          }
 
           case 'agent_status_changed':
             // Agent started/stopped - update agent list and artifacts

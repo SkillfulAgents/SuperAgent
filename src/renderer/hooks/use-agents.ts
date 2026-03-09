@@ -1,5 +1,6 @@
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import type { ApiAgent } from '@shared/lib/types/api'
 
 // Re-export for convenience
@@ -100,6 +101,7 @@ export function useUpdateAgent() {
 
 export function useStartAgent() {
   const queryClient = useQueryClient()
+  const { track } = useAnalyticsTracking()
 
   return useMutation({
     mutationFn: async (slug: string) => {
@@ -111,6 +113,7 @@ export function useStartAgent() {
       return res.json()
     },
     onSuccess: (_, slug) => {
+      track('agent_started')
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['agents', slug] })
     },
@@ -119,6 +122,7 @@ export function useStartAgent() {
 
 export function useStopAgent() {
   const queryClient = useQueryClient()
+  const { track } = useAnalyticsTracking()
 
   return useMutation({
     mutationFn: async (slug: string) => {
@@ -127,6 +131,7 @@ export function useStopAgent() {
       return res.json()
     },
     onSuccess: (_, slug) => {
+      track('agent_stopped')
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['agents', slug] })
     },

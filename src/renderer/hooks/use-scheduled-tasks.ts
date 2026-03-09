@@ -67,6 +67,29 @@ export function useCancelScheduledTask() {
 }
 
 /**
+ * Update a scheduled task's timezone
+ */
+export function useUpdateScheduledTaskTimezone() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ taskId, timezone }: { taskId: string; timezone: string }) => {
+      const res = await apiFetch(`/api/scheduled-tasks/${taskId}/timezone`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ timezone }),
+      })
+      if (!res.ok) throw new Error('Failed to update timezone')
+      return res.json() as Promise<ApiScheduledTask>
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['scheduled-task', data.id] })
+      queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', data.agentSlug] })
+    },
+  })
+}
+
+/**
  * Fetch all sessions created by a scheduled task
  */
 export function useScheduledTaskSessions(taskId: string | null) {

@@ -1,9 +1,9 @@
 import { apiFetch } from '@renderer/lib/api'
+import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
 
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import {
   Check,
-  X,
   Loader2,
   Plus,
 } from 'lucide-react'
@@ -11,9 +11,11 @@ import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { COMMON_MCP_SERVERS } from '@shared/lib/mcp/common-servers'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
+import { DeclineButton } from './decline-button'
 import { cn } from '@shared/lib/utils/cn'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useInitiateMcpOAuth } from '@renderer/hooks/use-remote-mcps'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 
 interface RemoteMcpServer {
   id: string
@@ -51,6 +53,7 @@ export function RemoteMcpRequestItem({
 }: RemoteMcpRequestItemProps) {
   const queryClient = useQueryClient()
   const initiateOAuth = useInitiateMcpOAuth()
+  const { track } = useAnalyticsTracking()
   const mcpSlug = COMMON_MCP_SERVERS.find((cs) => cs.url === url)?.slug || ''
   const [status, setStatus] = useState<RequestStatus>('pending')
   const [error, setError] = useState<string | null>(null)
@@ -130,7 +133,7 @@ export function RemoteMcpRequestItem({
     return () => window.removeEventListener('message', handleMessage)
   }, [status, handleOAuthComplete])
 
-  const startOAuthFlow = async () => {
+  const startOAuthFlow = async (popup: ReturnType<typeof prepareOAuthPopup>) => {
     try {
       const isElectron = !!window.electronAPI
       const result = await initiateOAuth.mutateAsync({
@@ -140,17 +143,15 @@ export function RemoteMcpRequestItem({
       })
 
       if (result.redirectUrl) {
-        if (window.electronAPI) {
-          await window.electronAPI.openExternal(result.redirectUrl)
-        } else {
-          window.open(result.redirectUrl, '_blank')
-        }
+        await popup.navigate(result.redirectUrl)
         setStatus('oauth_pending')
       } else {
+        popup.close()
         setError('OAuth initiation did not return a redirect URL')
         setStatus('pending')
       }
     } catch (oauthErr: any) {
+      popup.close()
       setError(oauthErr.message || 'Failed to initiate OAuth')
       setStatus('pending')
     }
@@ -159,10 +160,13 @@ export function RemoteMcpRequestItem({
   const handleRegisterNew = async () => {
     setStatus('registering')
     setError(null)
+    track('mcp_added', { url, authType: authHint || (bearerToken ? 'bearer' : 'none'), location: 'session' })
+
+    const popup = prepareOAuthPopup()
 
     // If agent hinted OAuth, go straight to OAuth flow
     if (authHint === 'oauth') {
-      await startOAuthFlow()
+      await startOAuthFlow(popup)
       return
     }
 
@@ -183,18 +187,22 @@ export function RemoteMcpRequestItem({
       if (!response.ok) {
         // Server requires OAuth — automatically initiate OAuth flow
         if (responseData.needsOAuth) {
-          await startOAuthFlow()
+          await startOAuthFlow(popup)
           return
         }
         // Server requires auth but not OAuth — show bearer token input
         if (responseData.needsAuth) {
+          popup.close()
           setShowTokenInput(true)
           setError(responseData.error || 'This MCP server requires authentication.')
           setStatus('pending')
           return
         }
+        popup.close()
         throw new Error(responseData.error || 'Failed to register MCP server')
       }
+
+      popup.close()
 
       // Success — server registered without auth
       const { server } = responseData
@@ -210,6 +218,7 @@ export function RemoteMcpRequestItem({
 
       setStatus('pending')
     } catch (err: any) {
+      popup.close()
       setError(err.message || 'Failed to register MCP server')
       setStatus('pending')
     }
@@ -248,7 +257,7 @@ export function RemoteMcpRequestItem({
     }
   }
 
-  const handleDecline = async () => {
+  const handleDecline = async (reason?: string) => {
     setStatus('submitting')
     setError(null)
 
@@ -261,7 +270,7 @@ export function RemoteMcpRequestItem({
           body: JSON.stringify({
             toolUseId,
             decline: true,
-            declineReason: 'User declined to provide MCP access',
+            declineReason: reason || 'User declined to provide MCP access',
           }),
         }
       )
@@ -468,16 +477,11 @@ export function RemoteMcpRequestItem({
               <span className="ml-1">Grant Access</span>
             </Button>
 
-            <Button
-              onClick={handleDecline}
+            <DeclineButton
+              onDecline={handleDecline}
               disabled={status !== 'pending' && status !== 'oauth_pending'}
-              variant="outline"
-              size="sm"
               className="border-purple-200 dark:border-purple-700 text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900"
-            >
-              <X className="h-4 w-4" />
-              <span className="ml-1">Decline</span>
-            </Button>
+            />
           </div>
 
           {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}

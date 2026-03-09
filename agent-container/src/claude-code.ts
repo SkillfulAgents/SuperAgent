@@ -382,7 +382,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         permissionMode: 'bypassPermissions',
         includePartialMessages: true,
         settingSources: ['user', 'project'],
-        allowedTools: ['Skill', 'Task', ...remoteMcpToolPatterns],
+        allowedTools: ['Skill', 'Task', 'Agent', ...remoteMcpToolPatterns],
         ...(this.maxThinkingTokens && { maxThinkingTokens: this.maxThinkingTokens }),
         ...(this.maxTurns && { maxTurns: this.maxTurns }),
         ...(this.maxBudgetUsd && { maxBudgetUsd: this.maxBudgetUsd }),

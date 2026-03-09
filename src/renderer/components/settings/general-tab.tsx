@@ -8,7 +8,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@renderer/components/ui/select'
+import { TimezonePicker } from '@renderer/components/ui/timezone-picker'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
+import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { useUser } from '@renderer/context/user-context'
 import { Wand2 } from 'lucide-react'
 import { UpdateSection } from './update-section'
@@ -20,6 +22,8 @@ interface GeneralTabProps {
 export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
   const { data: userSettings, isLoading: isUserSettingsLoading } = useUserSettings()
   const updateUserSettings = useUpdateUserSettings()
+  const { data: globalSettings } = useSettings()
+  const updateGlobalSettings = useUpdateSettings()
   const { isAuthMode, isAdmin } = useUser()
   const showAdminFeatures = !isAuthMode || isAdmin
 
@@ -46,6 +50,21 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
         </Select>
         <p className="text-xs text-muted-foreground">
           Choose light or dark theme, or follow your system setting
+        </p>
+      </div>
+
+      {/* Timezone */}
+      <div className="space-y-2">
+        <Label>Timezone</Label>
+        <TimezonePicker
+          value={userSettings?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone}
+          onValueChange={(value) => {
+            updateUserSettings.mutate({ timezone: value })
+          }}
+          disabled={isUserSettingsLoading}
+        />
+        <p className="text-xs text-muted-foreground">
+          Used for interpreting scheduled task times
         </p>
       </div>
 
@@ -76,6 +95,28 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
       {window.electronAPI && (
         <div className="pt-4 border-t space-y-4">
           <UpdateSection />
+        </div>
+      )}
+
+      {/* Share Analytics */}
+      {!isAuthMode && (
+        <div className="pt-4 border-t">
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <Label htmlFor="share-analytics">Share Anonymous Analytics</Label>
+              <p className="text-xs text-muted-foreground">
+                Help improve Superagent by sharing anonymous usage data
+              </p>
+            </div>
+            <Switch
+              id="share-analytics"
+              checked={!!globalSettings?.shareAnalytics}
+              onCheckedChange={(checked: boolean) => {
+                updateGlobalSettings.mutate({ shareAnalytics: checked })
+              }}
+              disabled={!globalSettings}
+            />
+          </div>
         </div>
       )}
 

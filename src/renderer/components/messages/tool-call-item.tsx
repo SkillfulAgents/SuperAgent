@@ -1,6 +1,6 @@
 
 import { cn } from '@shared/lib/utils/cn'
-import { Circle, CheckCircle, XCircle, ChevronDown, ChevronRight, Loader2, Wrench, StopCircle } from 'lucide-react'
+import { CheckCircle, XCircle, ChevronDown, ChevronRight, Loader2, Wrench, StopCircle } from 'lucide-react'
 import { useState, useRef } from 'react'
 import { getToolRenderer } from './tool-renderers'
 import { parseToolResult } from '@renderer/lib/parse-tool-result'
@@ -51,14 +51,19 @@ function getStatus(toolCall: ApiToolCall, isSessionActive?: boolean): ToolCallSt
   return 'success'
 }
 
+function isUserInputTool(name: string): boolean {
+  return name === 'AskUserQuestion' || name.startsWith('mcp__user-input__')
+}
+
 export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug, isSessionActive }: ToolCallItemProps) {
   const [expanded, setExpanded] = useState(false)
   const status = getStatus(toolCall, isSessionActive)
   const renderer = getToolRenderer(toolCall.name)
-  const elapsed = useElapsedTimer(status === 'running' ? (messageCreatedAt ?? null) : null)
+  const isPendingUserInput = status === 'running' && isUserInputTool(toolCall.name)
+  const elapsed = useElapsedTimer(status === 'running' && !isPendingUserInput ? (messageCreatedAt ?? null) : null)
 
   const StatusIcon = {
-    running: Circle,
+    running: Loader2,
     success: CheckCircle,
     error: XCircle,
     cancelled: StopCircle,
@@ -102,7 +107,7 @@ export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug, isSessionA
           className={cn(
             'h-4 w-4 shrink-0',
             statusColor,
-            status === 'running' && 'animate-pulse'
+            status === 'running' && 'animate-spin'
           )}
         />
 
@@ -131,7 +136,12 @@ export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug, isSessionA
           />
         )}
 
-        {/* Elapsed timer for running tool calls */}
+        {/* Elapsed timer for running tool calls / waiting label for user input */}
+        {isPendingUserInput && (
+          <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+            waiting for user input
+          </span>
+        )}
         {elapsed && (
           <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">
             {elapsed}
@@ -139,7 +149,7 @@ export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug, isSessionA
         )}
 
         {/* Expand chevron */}
-        <span className={cn('shrink-0', !elapsed && 'ml-auto')}>
+        <span className={cn('shrink-0', !elapsed && !isPendingUserInput && 'ml-auto')}>
           {expanded ? (
             <ChevronDown className="h-4 w-4 text-muted-foreground" />
           ) : (

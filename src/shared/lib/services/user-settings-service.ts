@@ -24,14 +24,23 @@ export const userSettingsSchema = z.object({
   setupCompleted: z.boolean().default(false),
   showMenuBarIcon: z.boolean().default(true),
   allowPrereleaseUpdates: z.boolean().default(false),
+  timezone: z.string().optional(),
 })
 
 export type UserSettingsData = z.infer<typeof userSettingsSchema>
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+function detectSystemTimezone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone
+  } catch {
+    return 'UTC'
+  }
+}
+
 export function getDefaultUserSettings(): UserSettingsData {
-  return userSettingsSchema.parse({})
+  return userSettingsSchema.parse({ timezone: detectSystemTimezone() })
 }
 
 /**
@@ -43,6 +52,7 @@ function seedFromAppSettings(): UserSettingsData {
   const appPrefs = appSettings.app ?? {}
 
   return userSettingsSchema.parse({
+    timezone: detectSystemTimezone(),
     theme: appPrefs.theme ?? 'system',
     notifications: appPrefs.notifications
       ? {
@@ -133,4 +143,12 @@ export function updateUserSettings(
     .run()
 
   return validated
+}
+
+/**
+ * Get a user's timezone, falling back to the system timezone or UTC.
+ */
+export function getUserTimezone(userId: string): string {
+  const settings = getUserSettings(userId)
+  return settings.timezone || detectSystemTimezone()
 }

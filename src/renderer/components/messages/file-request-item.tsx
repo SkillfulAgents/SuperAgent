@@ -1,7 +1,8 @@
 import { apiFetch } from '@renderer/lib/api'
 import { useState, useRef, useCallback } from 'react'
-import { Upload, Check, X, Loader2, FileIcon } from 'lucide-react'
+import { Upload, Check, Loader2, FileIcon } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
+import { DeclineButton } from './decline-button'
 import { cn } from '@shared/lib/utils/cn'
 
 interface FileRequestItemProps {
@@ -29,8 +30,6 @@ export function FileRequestItem({
   const [status, setStatus] = useState<RequestStatus>('pending')
   const [error, setError] = useState<string | null>(null)
   const [isDragOver, setIsDragOver] = useState(false)
-  const [showDeclineReason, setShowDeclineReason] = useState(false)
-  const [declineReason, setDeclineReason] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleFileSelect = useCallback((files: FileList | File[]) => {
@@ -86,7 +85,7 @@ export function FileRequestItem({
     }
   }
 
-  const handleDecline = async () => {
+  const handleDecline = async (reason?: string) => {
     setStatus('submitting')
     setError(null)
 
@@ -99,7 +98,7 @@ export function FileRequestItem({
           body: JSON.stringify({
             toolUseId,
             decline: true,
-            declineReason: declineReason.trim() || 'User declined to provide the file',
+            declineReason: reason || 'User declined to provide the file',
           }),
         }
       )
@@ -266,41 +265,11 @@ export function FileRequestItem({
               <span className="ml-1">Upload</span>
             </Button>
 
-            {showDeclineReason ? (
-              <div className="flex gap-2 flex-1">
-                <input
-                  type="text"
-                  placeholder="Reason (optional)"
-                  value={declineReason}
-                  onChange={(e) => setDeclineReason(e.target.value)}
-                  className="flex-1 rounded-md border border-blue-200 dark:border-blue-700 bg-white dark:bg-blue-950/30 px-2 py-1 text-sm"
-                  disabled={status === 'submitting'}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleDecline()
-                  }}
-                />
-                <Button
-                  onClick={handleDecline}
-                  disabled={status === 'submitting'}
-                  variant="outline"
-                  size="sm"
-                  className="border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900"
-                >
-                  Confirm
-                </Button>
-              </div>
-            ) : (
-              <Button
-                onClick={() => setShowDeclineReason(true)}
-                disabled={status === 'submitting'}
-                variant="outline"
-                size="sm"
-                className="border-blue-200 dark:border-blue-700 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900"
-              >
-                <X className="h-4 w-4" />
-                <span className="ml-1">Decline</span>
-              </Button>
-            )}
+            <DeclineButton
+              onDecline={handleDecline}
+              disabled={status === 'submitting'}
+              className="border-blue-200 dark:border-blue-700 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900"
+            />
           </div>
 
           {/* Error message */}
