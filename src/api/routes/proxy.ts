@@ -3,6 +3,7 @@ import crypto from 'crypto'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { isHostAllowed } from '@shared/lib/proxy/allowed-hosts'
 import { getConnectionToken } from '@shared/lib/composio/client'
+import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { db } from '@shared/lib/db'
 import {
   connectedAccounts,
@@ -64,6 +65,7 @@ async function logAuditEntry(entry: {
       errorMessage: entry.errorMessage ?? null,
       createdAt: new Date(),
     })
+    trackServerEvent('api_called', { slug: entry.toolkit })
   } catch (error) {
     console.error('[proxy] Failed to write audit log:', error)
   }

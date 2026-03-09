@@ -11,6 +11,7 @@ import { getSettings, updateSettings } from '@shared/lib/config/settings'
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
 import { messagePersister } from './message-persister'
+import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 
 /** Interval for syncing container status with reality (in ms). Default: 300 seconds */
 const STATUS_SYNC_INTERVAL_MS = parseInt(
@@ -416,6 +417,10 @@ class ContainerManager {
           console.log(`[ContainerManager] Copied Chrome profile "${chromeProfileId}" to workspace`)
         }
       }
+
+      // Set container timezone to the agent owner's timezone
+      const tz = resolveTimezoneForAgent(agentId)
+      envVars['TZ'] = tz
 
       // Inject user-defined custom env vars (set in global settings)
       if (settings.customEnvVars) {

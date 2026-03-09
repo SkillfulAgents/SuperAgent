@@ -7,6 +7,8 @@ import { listAgents } from './services/agent-service'
 import { isAuthMode } from './auth/mode'
 import { validateAuthModeStartup } from './auth/startup-validation'
 import { setupBrowserStreamProxy } from '../../main/browser-stream-proxy'
+import { setServerAnalyticsVersion } from './analytics/server-analytics'
+import { APP_VERSION } from './config/version'
 
 /**
  * Initialize all background services.
@@ -16,6 +18,9 @@ import { setupBrowserStreamProxy } from '../../main/browser-stream-proxy'
  * - main/index.ts: for Electron, after SUPERAGENT_DATA_DIR is set
  */
 export async function initializeServices() {
+  // Initialize server-side analytics version
+  setServerAnalyticsVersion(APP_VERSION)
+
   // Validate auth mode startup requirements before anything else
   if (isAuthMode()) {
     await validateAuthModeStartup()

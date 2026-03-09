@@ -1,5 +1,6 @@
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import type { ApiSession } from '@shared/lib/types/api'
 
 // Re-export for convenience
@@ -31,6 +32,7 @@ export function useSession(id: string | null, agentSlug: string | null = null) {
 
 export function useCreateSession() {
   const queryClient = useQueryClient()
+  const { track } = useAnalyticsTracking()
 
   return useMutation({
     mutationFn: async (data: { agentSlug: string; message: string }) => {
@@ -43,6 +45,8 @@ export function useCreateSession() {
       return res.json() as Promise<ApiSession>
     },
     onSuccess: (_, variables) => {
+      track('session_created')
+      track('message_sent')
       queryClient.invalidateQueries({ queryKey: ['sessions', variables.agentSlug] })
     },
   })

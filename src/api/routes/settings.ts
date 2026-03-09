@@ -19,6 +19,7 @@ import {
   type ContainerSettings,
   type GlobalSettingsResponse,
 } from '@shared/lib/config/settings'
+import { getTenantId } from '@shared/lib/analytics/tenant-id'
 import { getSttProvider } from '@shared/lib/stt'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
@@ -61,6 +62,9 @@ settings.get('/', async (c) => {
       runtimeReadiness: containerManager.getReadiness(),
       auth: currentSettings.auth,
       voice: getVoiceSettings(),
+      tenantId: getTenantId(),
+      shareAnalytics: !!currentSettings.shareAnalytics,
+      analyticsTargets: currentSettings.analyticsTargets,
     }
 
     return c.json(response)
@@ -117,6 +121,11 @@ settings.put('/', async (c) => {
       app: {
         ...currentSettings.app,
         ...body.app,
+        // If hostBrowserProvider was explicitly set to null (meaning "use container"),
+        // remove it from settings so consumers treat it as "no host provider"
+        ...(body.app && 'hostBrowserProvider' in body.app && body.app.hostBrowserProvider == null
+          ? { hostBrowserProvider: undefined }
+          : {}),
       },
       apiKeys: currentSettings.apiKeys,
       models: body.models
@@ -141,6 +150,12 @@ settings.put('/', async (c) => {
       voice: body.voice !== undefined
         ? { ...currentSettings.voice, ...body.voice }
         : currentSettings.voice,
+      shareAnalytics: body.shareAnalytics !== undefined
+        ? body.shareAnalytics
+        : currentSettings.shareAnalytics,
+      analyticsTargets: body.analyticsTargets !== undefined
+        ? body.analyticsTargets
+        : currentSettings.analyticsTargets,
     }
 
     // Handle API key updates
@@ -279,6 +294,9 @@ settings.put('/', async (c) => {
       runtimeReadiness: containerManager.getReadiness(),
       auth: newSettings.auth,
       voice: getVoiceSettings(),
+      tenantId: getTenantId(),
+      shareAnalytics: !!newSettings.shareAnalytics,
+      analyticsTargets: newSettings.analyticsTargets,
     })
   } catch (error) {
     console.error('Failed to update settings:', error)

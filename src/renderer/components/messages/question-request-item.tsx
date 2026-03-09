@@ -1,9 +1,10 @@
 import { apiFetch } from '@renderer/lib/api'
 
 import { useState } from 'react'
-import { HelpCircle, Check, X, Loader2 } from 'lucide-react'
+import { HelpCircle, Check, Loader2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
+import { DeclineButton } from './decline-button'
 import { cn } from '@shared/lib/utils/cn'
 
 interface Question {
@@ -84,8 +85,15 @@ export function QuestionRequestItem({
     }
   }
 
-  const handleOtherTextChange = (questionIndex: number, text: string) => {
+  const handleOtherTextChange = (questionIndex: number, text: string, multiSelect: boolean) => {
     setOtherTexts({ ...otherTexts, [questionIndex]: text })
+    // Auto-select "Other" when user types something
+    if (text && !otherSelected[questionIndex]) {
+      setOtherSelected({ ...otherSelected, [questionIndex]: true })
+      if (!multiSelect) {
+        setSelections({ ...selections, [questionIndex]: '__other__' })
+      }
+    }
   }
 
   const isQuestionAnswered = (questionIndex: number, question: Question): boolean => {
@@ -156,7 +164,7 @@ export function QuestionRequestItem({
     }
   }
 
-  const handleDecline = async () => {
+  const handleDecline = async (reason?: string) => {
     setStatus('submitting')
     setError(null)
 
@@ -169,7 +177,7 @@ export function QuestionRequestItem({
           body: JSON.stringify({
             toolUseId,
             decline: true,
-            declineReason: 'User declined to answer',
+            declineReason: reason || 'User declined to answer',
           }),
         }
       )
@@ -315,17 +323,15 @@ export function QuestionRequestItem({
                   />
                   <div className="flex-1 min-w-0">
                     <div className="font-medium text-blue-900 dark:text-blue-100">Other</div>
-                    {otherSelected[questionIndex] && (
-                      <Input
-                        type="text"
-                        placeholder="Enter your answer..."
-                        value={otherTexts[questionIndex] || ''}
-                        onChange={(e) => handleOtherTextChange(questionIndex, e.target.value)}
-                        disabled={status === 'submitting'}
-                        className="mt-1 bg-white dark:bg-blue-950/30 border-blue-200 dark:border-blue-700 focus:border-blue-400 dark:focus:border-blue-500 text-sm"
-                        onClick={(e) => e.stopPropagation()}
-                      />
-                    )}
+                    <Input
+                      type="text"
+                      placeholder="Enter your answer..."
+                      value={otherTexts[questionIndex] || ''}
+                      onChange={(e) => handleOtherTextChange(questionIndex, e.target.value, question.multiSelect)}
+                      disabled={status === 'submitting'}
+                      className="mt-1 bg-white dark:bg-blue-950/30 border-blue-200 dark:border-blue-700 focus:border-blue-400 dark:focus:border-blue-500 text-sm"
+                      onClick={(e) => e.stopPropagation()}
+                    />
                   </div>
                 </label>
               </div>
@@ -349,17 +355,12 @@ export function QuestionRequestItem({
               <span className="ml-1">Submit</span>
             </Button>
 
-            <Button
-              onClick={handleDecline}
+            <DeclineButton
+              onDecline={handleDecline}
               disabled={status === 'submitting'}
-              variant="outline"
-              size="sm"
               className="border-blue-200 dark:border-blue-700 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900"
               data-testid="question-decline-btn"
-            >
-              <X className="h-4 w-4" />
-              <span className="ml-1">Decline</span>
-            </Button>
+            />
           </div>
 
           {/* Error message */}

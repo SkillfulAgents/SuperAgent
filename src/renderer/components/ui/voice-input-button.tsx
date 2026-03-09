@@ -1,10 +1,11 @@
 import { useCallback } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { MiniWaveform } from '@renderer/components/ui/mini-waveform'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { Loader2, Mic, MicOff, Square, X } from 'lucide-react'
-import { useSettings } from '@renderer/hooks/use-settings'
 import { useDialogs } from '@renderer/context/dialog-context'
-import { isVoiceConfigured } from '@renderer/hooks/use-voice-input'
+import { useUser } from '@renderer/context/user-context'
+import { useIsVoiceConfigured } from '@renderer/hooks/use-voice-input'
 import type { useVoiceInput } from '@renderer/hooks/use-voice-input'
 
 type VoiceInputSize = 'default' | 'sm'
@@ -32,16 +33,19 @@ interface VoiceInputButtonProps {
  * Returns null if voice input is not supported by the browser.
  */
 export function VoiceInputButton({ voiceInput, message, disabled, size = 'default' }: VoiceInputButtonProps) {
-  const { data: settingsData } = useSettings()
   const { openSettings } = useDialogs()
-  const hasVoiceConfigured = isVoiceConfigured(settingsData)
+  const { isAuthMode, isAdmin } = useUser()
+  const hasVoiceConfigured = useIsVoiceConfigured()
   const config = SIZE_CONFIG[size]
+
+  // In auth mode, only admins can configure voice settings
+  const canConfigureVoice = !isAuthMode || isAdmin
 
   const { isRecording, isConnecting, stopRecording, startRecording } = voiceInput
 
   const handleToggle = useCallback(() => {
     if (!hasVoiceConfigured) {
-      openSettings('voice')
+      if (canConfigureVoice) openSettings('voice')
       return
     }
     if (isRecording || isConnecting) {
@@ -49,9 +53,35 @@ export function VoiceInputButton({ voiceInput, message, disabled, size = 'defaul
     } else {
       startRecording(message)
     }
-  }, [hasVoiceConfigured, openSettings, isRecording, isConnecting, stopRecording, startRecording, message])
+  }, [hasVoiceConfigured, canConfigureVoice, openSettings, isRecording, isConnecting, stopRecording, startRecording, message])
 
   if (!voiceInput.isSupported) return null
+
+  // Non-admin in auth mode without voice configured: show disabled mic-off with tooltip
+  if (!hasVoiceConfigured && !canConfigureVoice) {
+    return (
+      <TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="inline-flex">
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                className={config.button}
+                disabled
+              >
+                <MicOff className="h-4 w-4" />
+              </Button>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>
+            <p>Voice input must be enabled by an admin</p>
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    )
+  }
 
   return isRecording ? (
     <button

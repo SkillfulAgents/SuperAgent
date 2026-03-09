@@ -55,9 +55,9 @@ export function BrowserSetupStep() {
   const hasSavedBrowserbaseCredentials = !!browserbaseProvider?.available
 
   const handleSelectProvider = (id: string) => {
-    const providerId = id === CONTAINER_VALUE ? undefined : id as HostBrowserProviderId
+    const providerId = id === CONTAINER_VALUE ? null : id as HostBrowserProviderId
     setHostProvider(id)
-    updateSettings.mutate({ app: { hostBrowserProvider: providerId } })
+    updateSettings.mutate({ app: { hostBrowserProvider: providerId as HostBrowserProviderId | undefined } })
   }
 
   const handleValidateBrowserbase = async () => {

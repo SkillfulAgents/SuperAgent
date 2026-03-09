@@ -9,6 +9,7 @@ import { db } from '@shared/lib/db'
 import { scheduledTasks, type ScheduledTask, type NewScheduledTask } from '@shared/lib/db/schema'
 import { eq, and, lte } from 'drizzle-orm'
 import { getNextCronTime, parseAtSyntax } from './schedule-parser'
+import { trackServerEvent } from '../analytics/server-analytics'
 
 // Re-export the ScheduledTask type for external use
 export type { ScheduledTask, NewScheduledTask }
@@ -24,6 +25,7 @@ export interface CreateScheduledTaskParams {
   prompt: string
   name?: string
   createdBySessionId?: string
+  timezone?: string
 }
 
 export interface UpdateNextExecutionParams {
@@ -44,12 +46,13 @@ export async function createScheduledTask(
 ): Promise<string> {
   const id = crypto.randomUUID()
 
-  // Calculate next execution time based on schedule type
+  // Calculate next execution time based on schedule type (timezone-aware)
+  const tz = params.timezone || undefined
   let nextExecutionAt: Date
   if (params.scheduleType === 'at') {
-    nextExecutionAt = parseAtSyntax(params.scheduleExpression)
+    nextExecutionAt = parseAtSyntax(params.scheduleExpression, tz)
   } else {
-    nextExecutionAt = getNextCronTime(params.scheduleExpression)
+    nextExecutionAt = getNextCronTime(params.scheduleExpression, tz)
   }
 
   const newTask: NewScheduledTask = {
@@ -65,9 +68,17 @@ export async function createScheduledTask(
     executionCount: 0,
     createdAt: new Date(),
     createdBySessionId: params.createdBySessionId,
+    timezone: params.timezone || null,
   }
 
   await db.insert(scheduledTasks).values(newTask)
+
+  trackServerEvent('task_scheduled', {
+    scheduleType: params.scheduleType,
+    isRecurring: params.scheduleType === 'cron',
+    scheduleExpression: params.scheduleExpression,
+    agentSlug: params.agentSlug,
+  })
 
   return id
 }
@@ -213,13 +224,14 @@ export async function resetScheduledTask(taskId: string): Promise<boolean> {
   const task = await getScheduledTask(taskId)
   if (!task) return false
 
-  // Calculate next execution time
+  // Calculate next execution time (timezone-aware)
+  const tz = task.timezone || undefined
   let nextExecutionAt: Date
   if (task.scheduleType === 'at') {
     // For 'at' tasks, use the original expression to recalculate
-    nextExecutionAt = parseAtSyntax(task.scheduleExpression)
+    nextExecutionAt = parseAtSyntax(task.scheduleExpression, tz)
   } else {
-    nextExecutionAt = getNextCronTime(task.scheduleExpression)
+    nextExecutionAt = getNextCronTime(task.scheduleExpression, tz)
   }
 
   const result = await db
@@ -228,6 +240,29 @@ export async function resetScheduledTask(taskId: string): Promise<boolean> {
       status: 'pending',
       nextExecutionAt,
     })
+    .where(eq(scheduledTasks.id, taskId))
+
+  return (result.changes ?? 0) > 0
+}
+
+/**
+ * Update a task's timezone and recalculate next execution time.
+ */
+export async function updateTaskTimezone(taskId: string, timezone: string): Promise<boolean> {
+  const task = await getScheduledTask(taskId)
+  if (!task || task.status !== 'pending') return false
+
+  const tz = timezone || undefined
+  let nextExecutionAt: Date
+  if (task.scheduleType === 'at') {
+    nextExecutionAt = parseAtSyntax(task.scheduleExpression, tz)
+  } else {
+    nextExecutionAt = getNextCronTime(task.scheduleExpression, tz)
+  }
+
+  const result = await db
+    .update(scheduledTasks)
+    .set({ timezone, nextExecutionAt })
     .where(eq(scheduledTasks.id, taskId))
 
   return (result.changes ?? 0) > 0

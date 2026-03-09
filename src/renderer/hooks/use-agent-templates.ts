@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import type { ApiAgent, ApiDiscoverableAgent, ApiAgentTemplateStatus } from '@shared/lib/types/api'
 
 /**
@@ -44,8 +45,11 @@ export function useDiscoverableAgents() {
 }
 
 export function useExportAgentTemplate() {
+  const { track } = useAnalyticsTracking()
+
   return useMutation<void, Error, { agentSlug: string; agentName: string }>({
     mutationFn: async ({ agentSlug, agentName }) => {
+      track('template_exported')
       const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/export-template`, {
         method: 'POST',
       })
@@ -70,6 +74,7 @@ export function useExportAgentTemplate() {
 
 export function useImportAgentTemplate() {
   const queryClient = useQueryClient()
+  const { track } = useAnalyticsTracking()
 
   return useMutation<ApiAgent & { hasOnboarding?: boolean; requiredEnvVars?: Array<{ name: string; description: string }> }, Error, { file: File; nameOverride?: string }>({
     mutationFn: async ({ file, nameOverride }) => {
@@ -90,6 +95,7 @@ export function useImportAgentTemplate() {
       return res.json()
     },
     onSuccess: () => {
+      track('agent_created', { source: 'file_import' })
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
     },
@@ -98,6 +104,7 @@ export function useImportAgentTemplate() {
 
 export function useInstallAgentFromSkillset() {
   const queryClient = useQueryClient()
+  const { track } = useAnalyticsTracking()
 
   return useMutation<
     ApiAgent & { hasOnboarding?: boolean; requiredEnvVars?: Array<{ name: string; description: string }> },
@@ -122,6 +129,7 @@ export function useInstallAgentFromSkillset() {
       return res.json()
     },
     onSuccess: () => {
+      track('agent_created', { source: 'skillset' })
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['discoverable-agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })

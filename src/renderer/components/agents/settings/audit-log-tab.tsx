@@ -1,6 +1,7 @@
 import { apiFetch } from '@renderer/lib/api'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { Loader2, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { formatDistanceToNow } from 'date-fns'
@@ -65,6 +66,12 @@ function SourceBadge({ source }: { source: 'proxy' | 'mcp' }) {
 
 export function AuditLogTab({ agentSlug }: AuditLogTabProps) {
   const [page, setPage] = useState(0)
+  const { track } = useAnalyticsTracking()
+
+  // Track when the user views the API logs tab
+  useEffect(() => {
+    track('api_logs_viewed')
+  }, [track])
 
   const { data, isLoading, refetch, isRefetching } = useQuery<{ entries: AuditLogEntry[]; total: number }>({
     queryKey: ['agent-audit-log', agentSlug, page],

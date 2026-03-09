@@ -18,7 +18,7 @@ interface AgentActivityIndicatorProps {
 }
 
 export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIndicatorProps) {
-  const { isActive, error, activeStartTime } = useMessageStream(sessionId, agentSlug)
+  const { isActive, error, activeStartTime, activeSubagents, completedSubagents } = useMessageStream(sessionId, agentSlug)
   const { data: messages } = useMessages(sessionId, agentSlug)
 
   // Use activeStartTime from SSE (set when session_active fires) as primary source.
@@ -35,6 +35,29 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
   }, [activeStartTime, messages])
 
   const elapsed = useElapsedTimer(isActive ? timerStartTime : null)
+
+  // Collect subagent display info by matching activeSubagents (SSE-tracked) with tool calls in messages
+  const subagentItems = useMemo(() => {
+    if (!messages || activeSubagents.length === 0) return []
+    const activeIds = new Set(activeSubagents.map(s => s.parentToolId))
+    const items: { id: string; name: string; description: string; status: 'running' | 'completed' }[] = []
+    for (const msg of messages) {
+      if (msg.type === 'compact_boundary') continue
+      for (const tc of msg.toolCalls || []) {
+        if ((tc.name === 'Agent' || tc.name === 'Task') && activeIds.has(tc.id)) {
+          const input = tc.input as { subagent_type?: string; description?: string }
+          const isCompleted = completedSubagents?.has(tc.id) || tc.result != null
+          items.push({
+            id: tc.id,
+            name: input.subagent_type || tc.name,
+            description: input.description || '',
+            status: isCompleted ? 'completed' : 'running',
+          })
+        }
+      }
+    }
+    return items
+  }, [messages, activeSubagents, completedSubagents])
 
   // Show error if present
   if (error) {
@@ -102,6 +125,35 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
           <span className="text-xs text-muted-foreground tabular-nums">{elapsed}</span>
         )}
       </div>
+
+      {/* Active subagents */}
+      {subagentItems.length > 0 && (
+        <ul className="mt-2 space-y-1 text-sm pl-5">
+          {subagentItems.map((item) => (
+            <li key={item.id} className="flex items-center gap-2">
+              {item.status === 'running' ? (
+                <span className="relative flex h-2 w-2 shrink-0">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+                </span>
+              ) : (
+                <span className="text-xs text-green-500 shrink-0">✓</span>
+              )}
+              <span className={cn(
+                'font-mono text-xs',
+                item.status === 'completed' && 'text-muted-foreground'
+              )}>
+                {item.name}
+              </span>
+              {item.description && (
+                <span className="text-xs text-muted-foreground truncate">
+                  {item.description}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
 
       {/* Todo list if available and at least one item is not completed */}
       {todos && todos.length > 0 && todos.some((t) => t.status !== 'completed') && (

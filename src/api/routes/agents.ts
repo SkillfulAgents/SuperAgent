@@ -13,6 +13,7 @@ import {
   agentExists,
 } from '@shared/lib/services/agent-service'
 import { containerManager } from '@shared/lib/container/container-manager'
+import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import {
   listSessions,
@@ -102,7 +103,7 @@ export async function resolveInterruptedSubagents(
     if (item.type !== 'assistant') continue
     const msg = item as TransformedMessage
     for (const tc of msg.toolCalls) {
-      if (tc.name !== 'Task') continue
+      if (tc.name !== 'Task' && tc.name !== 'Agent') continue
       if (tc.subagent?.agentId) {
         resolvedAgentIds.add(tc.subagent.agentId)
       } else {
@@ -1282,6 +1283,7 @@ agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) =>
         return c.json({ error: 'Failed to reject secret request' }, 500)
       }
 
+      trackServerEvent('request_declined', { type: 'secret', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
 
@@ -1389,6 +1391,7 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
         return c.json({ error: 'Failed to reject request' }, 500)
       }
 
+      trackServerEvent('request_declined', { type: 'connected_account', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
 
@@ -1571,6 +1574,7 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
         return c.json({ error: 'Failed to reject question request' }, 500)
       }
 
+      trackServerEvent('request_declined', { type: 'question', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
 
@@ -1993,6 +1997,7 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
         console.error('Failed to reject remote MCP request:', await rejectResponse.text())
         return c.json({ error: 'Failed to decline the request in container' }, 502)
       }
+      trackServerEvent('request_declined', { type: 'remote_mcp', withReason: !!body.declineReason })
       return c.json({ success: true, status: 'declined' })
     }
 
@@ -2619,15 +2624,30 @@ agents.get('/:id/audit-log', AgentAdmin(), async (c) => {
 })
 
 // Shared upload logic - writes file to agent workspace
-async function handleFileUpload(agentSlug: string, file: File) {
+async function handleFileUpload(agentSlug: string, file: File, relativePath?: string) {
   const filename = file.name
-  const uploadPath = `uploads/${Date.now()}-${filename}`
+
+  // If relativePath is provided (folder upload), preserve directory structure
+  let uploadPath: string
+  if (relativePath) {
+    const normalized = path.normalize(relativePath).replace(/^(\.\.[/\\])+/, '')
+    uploadPath = `uploads/${normalized}`
+  } else {
+    uploadPath = `uploads/${Date.now()}-${filename}`
+  }
+
+  const workspaceDir = getAgentWorkspaceDir(agentSlug)
+  const fullPath = path.resolve(workspaceDir, uploadPath)
+
+  // Security: ensure path doesn't escape the uploads directory
+  if (!fullPath.startsWith(path.resolve(workspaceDir, 'uploads'))) {
+    throw new Error('Invalid file path')
+  }
+
   const arrayBuffer = await file.arrayBuffer()
   const buffer = Buffer.from(arrayBuffer)
 
   // Write directly to host filesystem (volume-mounted into container)
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
-  const fullPath = path.join(workspaceDir, uploadPath)
   await fs.promises.mkdir(path.dirname(fullPath), { recursive: true })
   await fs.promises.writeFile(fullPath, buffer)
 
@@ -2647,12 +2667,13 @@ agents.post('/:id/upload-file', AgentUser(), async (c) => {
 
     const formData = await c.req.formData()
     const file = formData.get('file') as File | null
+    const relativePath = formData.get('relativePath') as string | null
 
     if (!file) {
       return c.json({ error: 'No file provided' }, 400)
     }
 
-    const result = await handleFileUpload(agentSlug, file)
+    const result = await handleFileUpload(agentSlug, file, relativePath || undefined)
     return c.json(result)
   } catch (error) {
     console.error('Failed to upload file:', error)
@@ -2668,12 +2689,13 @@ agents.post('/:id/sessions/:sessionId/upload-file', AgentUser(), async (c) => {
 
     const formData = await c.req.formData()
     const file = formData.get('file') as File | null
+    const relativePath = formData.get('relativePath') as string | null
 
     if (!file) {
       return c.json({ error: 'No file provided' }, 400)
     }
 
-    const result = await handleFileUpload(agentSlug, file)
+    const result = await handleFileUpload(agentSlug, file, relativePath || undefined)
     return c.json(result)
   } catch (error) {
     console.error('Failed to upload file:', error)
@@ -2758,6 +2780,7 @@ agents.post('/:id/sessions/:sessionId/provide-file', AgentUser(), async (c) => {
         return c.json({ error: 'Failed to reject file request' }, 500)
       }
 
+      trackServerEvent('request_declined', { type: 'file', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
 

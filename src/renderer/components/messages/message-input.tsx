@@ -3,13 +3,17 @@ import { Button } from '@renderer/components/ui/button'
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { useSendMessage, useUploadFile, useInterruptSession } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
-import { Send, Loader2, StopCircle, Paperclip, WifiOff } from 'lucide-react'
+import { Send, Loader2, StopCircle, WifiOff } from 'lucide-react'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useVoiceInput } from '@renderer/hooks/use-voice-input'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
-import { AttachmentPreview, type Attachment } from './attachment-preview'
+import { AttachmentPreview } from './attachment-preview'
 import { SlashCommandMenu } from './slash-command-menu'
+import { useAttachments } from '@renderer/hooks/use-attachments'
+import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
+import { appendAttachedFiles } from '@shared/lib/utils/attached-files'
 
 interface MessageInputProps {
   sessionId: string
@@ -21,19 +25,27 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
   const { canUseAgent } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
   const [message, setMessage] = useState('')
-  const [attachments, setAttachments] = useState<Attachment[]>([])
-  const [isUploading, setIsUploading] = useState(false)
-  const [isDragOver, setIsDragOver] = useState(false)
   const [slashMenuOpen, setSlashMenuOpen] = useState(false)
   const [slashMenuIndex, setSlashMenuIndex] = useState(0)
+  const [isUploading, setIsUploading] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const sendMessage = useSendMessage()
   const uploadFile = useUploadFile()
   const interruptSession = useInterruptSession()
   const { isActive, slashCommands } = useMessageStream(sessionId, agentSlug)
   const isOnline = useIsOnline()
   const isOffline = !isOnline
+  const { track } = useAnalyticsTracking()
+
+  const {
+    attachments,
+    isDragOver,
+    removeAttachment,
+    clearAttachments,
+    handleFileSelect,
+    handleFolderSelect,
+    dragHandlers,
+  } = useAttachments()
 
   const voiceInput = useVoiceInput({
     onTranscriptUpdate: useCallback((text: string) => {
@@ -98,40 +110,6 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
     }
   }, [message])
 
-  const addFiles = useCallback((files: FileList | File[]) => {
-    const newAttachments: Attachment[] = Array.from(files).map((file) => {
-      const attachment: Attachment = {
-        file,
-        id: crypto.randomUUID(),
-      }
-      if (file.type.startsWith('image/')) {
-        attachment.preview = URL.createObjectURL(file)
-      }
-      return attachment
-    })
-    setAttachments((prev) => [...prev, ...newAttachments])
-  }, [])
-
-  const removeAttachment = useCallback((id: string) => {
-    setAttachments((prev) => {
-      const removed = prev.find((a) => a.id === id)
-      if (removed?.preview) {
-        URL.revokeObjectURL(removed.preview)
-      }
-      return prev.filter((a) => a.id !== id)
-    })
-  }, [])
-
-  // Cleanup object URLs on unmount
-  useEffect(() => {
-    return () => {
-      attachments.forEach((a) => {
-        if (a.preview) URL.revokeObjectURL(a.preview)
-      })
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
 
@@ -151,19 +129,18 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
     if (attachments.length > 0) {
       setIsUploading(true)
       try {
-        const uploadResults = await Promise.all(
-          attachments.map((a) =>
-            uploadFile.mutateAsync({ sessionId, agentSlug, file: a.file })
-          )
-        )
+        const uploadPromises = attachments.flatMap((a) => {
+          if (a.type === 'folder') {
+            return a.files.map((f) =>
+              uploadFile.mutateAsync({ sessionId, agentSlug, file: f.file, relativePath: f.relativePath })
+            )
+          }
+          return [uploadFile.mutateAsync({ sessionId, agentSlug, file: a.file })]
+        })
+        const uploadResults = await Promise.all(uploadPromises)
 
         // Append file paths to message
-        const filePaths = uploadResults.map((r) => `- ${r.path}`).join('\n')
-        if (content) {
-          content = `${content}\n\n[Attached files:]\n${filePaths}`
-        } else {
-          content = `[Attached files:]\n${filePaths}`
-        }
+        content = appendAttachedFiles(content, uploadResults.map((r) => r.path))
       } catch (error) {
         console.error('Failed to upload attachments:', error)
         setIsUploading(false)
@@ -175,11 +152,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
     // Clear state before sending
     onMessageSent?.(content)
     setMessage('')
-    // Cleanup previews
-    attachments.forEach((a) => {
-      if (a.preview) URL.revokeObjectURL(a.preview)
-    })
-    setAttachments([])
+    clearAttachments()
 
     try {
       await sendMessage.mutateAsync({
@@ -187,6 +160,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
         agentSlug,
         content,
       })
+      track('message_sent')
     } catch (error) {
       console.error('Failed to send message:', error)
     }
@@ -223,35 +197,6 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
     }
   }
 
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setIsDragOver(true)
-  }
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setIsDragOver(false)
-  }
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setIsDragOver(false)
-    if (e.dataTransfer.files.length > 0) {
-      addFiles(e.dataTransfer.files)
-    }
-  }
-
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      addFiles(e.target.files)
-      // Reset input so same file can be selected again
-      e.target.value = ''
-    }
-  }
-
   const isDisabled = sendMessage.isPending || isActive || isUploading || isOffline
 
   if (isViewOnly) {
@@ -262,9 +207,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
     <form
       onSubmit={handleSubmit}
       className={`relative pl-2 pr-4 py-[18px] border-t bg-background ${isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
+      {...dragHandlers}
     >
       <SlashCommandMenu
         commands={filteredCommands}
@@ -275,24 +218,11 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
       />
       <AttachmentPreview attachments={attachments} onRemove={removeAttachment} />
       <div className={`flex items-center gap-1 ${attachments.length > 0 ? 'mt-2' : ''}`}>
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          className="hidden"
-          onChange={handleFileSelect}
-        />
-        <Button
-          type="button"
-          size="icon"
-          variant="ghost"
-          className="h-[34px] w-[34px]"
-          onClick={() => fileInputRef.current?.click()}
+        <AttachmentPicker
+          onFileSelect={handleFileSelect}
+          onFolderSelect={handleFolderSelect}
           disabled={isDisabled}
-          title="Attach file"
-        >
-          <Paperclip className="h-4 w-4" />
-        </Button>
+        />
         <VoiceInputButton voiceInput={voiceInput} message={message} disabled={isDisabled} />
         <textarea
           ref={textareaRef}

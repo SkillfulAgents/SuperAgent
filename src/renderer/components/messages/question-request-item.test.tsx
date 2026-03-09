@@ -146,16 +146,35 @@ describe('QuestionRequestItem', () => {
     })
   })
 
-  it('"Other" option shows text input when selected', async () => {
-    const user = userEvent.setup()
+  it('"Other" text input is always visible', () => {
     render(
       <QuestionRequestItem {...defaultProps} questions={singleQuestion} />
     )
 
-    await user.click(screen.getByText('Other'))
-
     const input = screen.getByPlaceholderText('Enter your answer...')
     expect(input).toBeInTheDocument()
+  })
+
+  it('typing in "Other" text input auto-selects the Other option', async () => {
+    const user = userEvent.setup()
+    mockApiFetch.mockResolvedValueOnce({ ok: true, json: () => ({}) })
+
+    render(
+      <QuestionRequestItem {...defaultProps} questions={singleQuestion} />
+    )
+
+    const input = screen.getByPlaceholderText('Enter your answer...')
+    await user.type(input, 'SQLite')
+    await user.click(screen.getByText('Submit'))
+
+    await waitFor(() => {
+      expect(mockApiFetch).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          body: expect.stringContaining('SQLite'),
+        })
+      )
+    })
   })
 
   it('"Other" text input value is submitted', async () => {

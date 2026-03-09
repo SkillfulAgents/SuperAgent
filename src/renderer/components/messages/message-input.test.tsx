@@ -269,7 +269,7 @@ describe('MessageInput', () => {
     renderWithProviders(
       <MessageInput sessionId="s-1" agentSlug="agent-1" />
     )
-    expect(screen.getByTitle('Attach file')).toBeInTheDocument()
+    expect(screen.getByTitle('Attach')).toBeInTheDocument()
   })
 
   // ---- Offline state ----
@@ -313,7 +313,7 @@ describe('MessageInput', () => {
       renderWithProviders(
         <MessageInput sessionId="s-1" agentSlug="agent-1" />
       )
-      expect(screen.getByTitle('Attach file')).toBeDisabled()
+      expect(screen.getByTitle('Attach')).toBeDisabled()
     })
   })
 

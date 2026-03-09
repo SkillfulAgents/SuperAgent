@@ -236,6 +236,7 @@ export interface ApiScheduledTask {
   executionCount: number
   lastSessionId: string | null
   createdBySessionId: string | null
+  timezone: string | null
   createdAt: Date
   cancelledAt: Date | null
 }

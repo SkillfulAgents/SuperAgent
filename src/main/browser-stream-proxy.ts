@@ -10,6 +10,8 @@ import type { Duplex } from 'stream'
 import type { ServerType } from '@hono/node-server'
 import { WebSocketServer, WebSocket } from 'ws'
 import { containerManager } from '@shared/lib/container/container-manager'
+import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
+import { getSettings } from '@shared/lib/config/settings'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { db } from '@shared/lib/db'
 import { agentAcl } from '@shared/lib/db/schema'
@@ -112,6 +114,8 @@ export function setupBrowserStreamProxy(server: ServerType): void {
 
         upstream.on('open', () => {
           console.log(`[BrowserProxy] Connected to container stream for agent ${agentSlug}`)
+          const providerName = getSettings().app?.hostBrowserProvider ?? 'container'
+          trackServerEvent('browser_opened', { using: providerName })
         })
 
         // Forward frames from container to client
@@ -131,6 +135,7 @@ export function setupBrowserStreamProxy(server: ServerType): void {
         })
 
         upstream.on('close', () => {
+          trackServerEvent('browser_closed')
           if (ws.readyState === WebSocket.OPEN) {
             ws.close()
           }

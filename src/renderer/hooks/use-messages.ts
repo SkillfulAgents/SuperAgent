@@ -36,9 +36,12 @@ export function useSendMessage() {
 
 export function useUploadFile() {
   return useMutation({
-    mutationFn: async (data: { sessionId: string; agentSlug: string; file: File }) => {
+    mutationFn: async (data: { sessionId: string; agentSlug: string; file: File; relativePath?: string }) => {
       const formData = new FormData()
       formData.append('file', data.file)
+      if (data.relativePath) {
+        formData.append('relativePath', data.relativePath)
+      }
       const res = await apiFetch(
         `/api/agents/${data.agentSlug}/sessions/${data.sessionId}/upload-file`,
         { method: 'POST', body: formData }

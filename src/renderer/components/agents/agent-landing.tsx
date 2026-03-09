@@ -1,11 +1,11 @@
 
-import { useState, useMemo, useRef, useCallback, useEffect } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Textarea } from '@renderer/components/ui/textarea'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Checkbox } from '@renderer/components/ui/checkbox'
-import { Send, Loader2, Sparkles, Paperclip, Search, RefreshCw, ChevronLeft, ChevronRight, Filter, Eye, Maximize2, Minimize2 } from 'lucide-react'
+import { Send, Loader2, Sparkles, Search, RefreshCw, ChevronLeft, ChevronRight, Filter, Eye, Maximize2, Minimize2 } from 'lucide-react'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
 import { useVoiceInput } from '@renderer/hooks/use-voice-input'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
@@ -15,7 +15,10 @@ import { DiscoverableSkillCard } from './discoverable-skill-card'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { useUser } from '@renderer/context/user-context'
 import { apiFetch } from '@renderer/lib/api'
-import { AttachmentPreview, type Attachment } from '@renderer/components/messages/attachment-preview'
+import { AttachmentPreview } from '@renderer/components/messages/attachment-preview'
+import { useAttachments } from '@renderer/hooks/use-attachments'
+import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
+import { appendAttachedFiles } from '@shared/lib/utils/attached-files'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 
 interface AgentLandingProps {
@@ -23,21 +26,20 @@ interface AgentLandingProps {
   onSessionCreated: (sessionId: string, initialMessage: string) => void
 }
 
+// todo - tons of duplicated code between this and message-input. Should refactor to use it.
+
 export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
   const { canUseAgent, canAdminAgent } = useUser()
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)
   const [message, setMessage] = useState('')
-  const [attachments, setAttachments] = useState<Attachment[]>([])
   const [isUploading, setIsUploading] = useState(false)
-  const [isDragOver, setIsDragOver] = useState(false)
   const [isExpanded, setIsExpanded] = useState(false)
   const [manuallyCollapsed, setManuallyCollapsed] = useState(false)
   const [skillSearch, setSkillSearch] = useState('')
   const [skillPage, setSkillPage] = useState(0)
   const [selectedSkillsets, setSelectedSkillsets] = useState<Set<string> | null>(null)
   const SKILLS_PER_PAGE = 6
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const createSession = useCreateSession()
   const { data: skillsData } = useAgentSkills(agent.slug)
   const skills = Array.isArray(skillsData) ? skillsData : []
@@ -50,39 +52,15 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
   const isPulling = readiness?.status === 'PULLING_IMAGE'
   const apiKeyConfigured = runtimeStatus?.apiKeyConfigured !== false
 
-  const addFiles = useCallback((files: FileList | File[]) => {
-    const newAttachments: Attachment[] = Array.from(files).map((file) => {
-      const attachment: Attachment = {
-        file,
-        id: crypto.randomUUID(),
-      }
-      if (file.type.startsWith('image/')) {
-        attachment.preview = URL.createObjectURL(file)
-      }
-      return attachment
-    })
-    setAttachments((prev) => [...prev, ...newAttachments])
-  }, [])
-
-  const removeAttachment = useCallback((id: string) => {
-    setAttachments((prev) => {
-      const removed = prev.find((a) => a.id === id)
-      if (removed?.preview) {
-        URL.revokeObjectURL(removed.preview)
-      }
-      return prev.filter((a) => a.id !== id)
-    })
-  }, [])
-
-  // Cleanup object URLs on unmount
-  useEffect(() => {
-    return () => {
-      attachments.forEach((a) => {
-        if (a.preview) URL.revokeObjectURL(a.preview)
-      })
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  const {
+    attachments,
+    isDragOver,
+    removeAttachment,
+    clearAttachments,
+    handleFileSelect,
+    handleFolderSelect,
+    dragHandlers,
+  } = useAttachments()
 
   // Auto-expand when message gets long (5+ lines)
   useEffect(() => {
@@ -112,25 +90,34 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
       if (attachments.length > 0) {
         setIsUploading(true)
         try {
-          const uploadResults = await Promise.all(
-            attachments.map(async (a) => {
-              const formData = new FormData()
-              formData.append('file', a.file)
-              const res = await apiFetch(
-                `/api/agents/${agent.slug}/upload-file`,
-                { method: 'POST', body: formData }
-              )
+          const uploadPromises = attachments.flatMap((a) => {
+            if (a.type === 'folder') {
+              return a.files.map((f) => {
+                const formData = new FormData()
+                formData.append('file', f.file)
+                formData.append('relativePath', f.relativePath)
+                return apiFetch(
+                  `/api/agents/${agent.slug}/upload-file`,
+                  { method: 'POST', body: formData }
+                ).then(async (res) => {
+                  if (!res.ok) throw new Error('Failed to upload file')
+                  return res.json() as Promise<{ path: string; filename: string; size: number }>
+                })
+              })
+            }
+            const formData = new FormData()
+            formData.append('file', a.file)
+            return [apiFetch(
+              `/api/agents/${agent.slug}/upload-file`,
+              { method: 'POST', body: formData }
+            ).then(async (res) => {
               if (!res.ok) throw new Error('Failed to upload file')
               return res.json() as Promise<{ path: string; filename: string; size: number }>
-            })
-          )
+            })]
+          })
+          const uploadResults = await Promise.all(uploadPromises)
 
-          const filePaths = uploadResults.map((r) => `- ${r.path}`).join('\n')
-          if (content) {
-            content = `${content}\n\n[Attached files:]\n${filePaths}`
-          } else {
-            content = `[Attached files:]\n${filePaths}`
-          }
+          content = appendAttachedFiles(content, uploadResults.map((r) => r.path))
         } catch (error) {
           console.error('Failed to upload attachments:', error)
           setIsUploading(false)
@@ -146,10 +133,7 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
       })
 
       setMessage('')
-      attachments.forEach((a) => {
-        if (a.preview) URL.revokeObjectURL(a.preview)
-      })
-      setAttachments([])
+      clearAttachments()
       onSessionCreated(session.id, content)
     } catch (error) {
       console.error('Failed to start session:', error)
@@ -160,34 +144,6 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault()
       handleSubmit(e)
-    }
-  }
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setIsDragOver(true)
-  }
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setIsDragOver(false)
-  }
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setIsDragOver(false)
-    if (e.dataTransfer.files.length > 0) {
-      addFiles(e.dataTransfer.files)
-    }
-  }
-
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      addFiles(e.target.files)
-      e.target.value = ''
     }
   }
 
@@ -273,9 +229,7 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
             <form
               onSubmit={handleSubmit}
               className={`space-y-4 ${isDragOver ? 'ring-2 ring-primary rounded-lg' : ''}`}
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
+              {...dragHandlers}
             >
               <div className="relative">
                 <Textarea
@@ -289,13 +243,6 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
                   data-testid="landing-message-input"
                 />
                 <div className="absolute bottom-3 right-3 flex gap-1">
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    multiple
-                    className="hidden"
-                    onChange={handleFileSelect}
-                  />
                   <Button
                     type="button"
                     size="icon"
@@ -312,17 +259,13 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
                   >
                     {isExpanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
                   </Button>
-                  <Button
-                    type="button"
-                    size="icon"
-                    variant="ghost"
-                    className="h-8 w-8"
-                    onClick={() => fileInputRef.current?.click()}
+                  <AttachmentPicker
+                    onFileSelect={handleFileSelect}
+                    onFolderSelect={handleFolderSelect}
                     disabled={isDisabled}
-                    title="Attach file"
-                  >
-                    <Paperclip className="h-4 w-4" />
-                  </Button>
+                    buttonClassName="h-8 w-8"
+                    popoverAlign="end"
+                  />
                   <VoiceInputButton voiceInput={voiceInput} message={message} disabled={isDisabled} size="sm" />
                   <Button
                     type="submit"

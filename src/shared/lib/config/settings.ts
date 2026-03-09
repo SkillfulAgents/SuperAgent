@@ -109,6 +109,14 @@ export const DEFAULT_AUTH_SETTINGS: AuthSettings = {
   accountLockoutDurationMin: 30,
 }
 
+export type AnalyticsTargetType = 'amplitude' | 'google-analytics' | 'mixpanel'
+
+export interface AnalyticsTarget {
+  type: AnalyticsTargetType
+  config: Record<string, string>
+  enabled: boolean
+}
+
 export interface AppSettings {
   container: ContainerSettings
   apiKeys?: ApiKeySettings
@@ -119,6 +127,8 @@ export interface AppSettings {
   skillsets?: SkillsetConfig[]
   auth?: AuthSettings
   voice?: VoiceSettings
+  shareAnalytics?: boolean
+  analyticsTargets?: AnalyticsTarget[]
 }
 
 // API key source types
@@ -167,6 +177,9 @@ export interface GlobalSettingsResponse {
   hostBrowserStatus?: HostBrowserStatus
   runtimeReadiness: RuntimeReadiness
   auth?: AuthSettings
+  tenantId: string
+  shareAnalytics: boolean
+  analyticsTargets?: AnalyticsTarget[]
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -259,6 +272,8 @@ export function loadSettings(): AppSettings {
           ...loaded.auth,
         },
         voice: loaded.voice,
+        shareAnalytics: loaded.shareAnalytics ?? false,
+        analyticsTargets: loaded.analyticsTargets,
       }
     }
   } catch (error) {

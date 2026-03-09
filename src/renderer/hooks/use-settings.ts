@@ -8,10 +8,11 @@ import type {
   AgentLimitsSettings,
   AuthSettings,
   VoiceSettings,
+  AnalyticsTarget,
 } from '@shared/lib/config/settings'
 import type { RunnerAvailability } from '@shared/lib/container/client-factory'
 
-export type { GlobalSettingsResponse, ContainerSettings, AppPreferences, ModelSettings, AgentLimitsSettings, AuthSettings, VoiceSettings, RunnerAvailability }
+export type { GlobalSettingsResponse, ContainerSettings, AppPreferences, ModelSettings, AgentLimitsSettings, AuthSettings, VoiceSettings, AnalyticsTarget, RunnerAvailability }
 
 export function useSettings(options?: { enabled?: boolean }) {
   return useQuery<GlobalSettingsResponse>({
@@ -43,6 +44,8 @@ export interface UpdateSettingsParams {
   customEnvVars?: Record<string, string>
   auth?: Partial<AuthSettings>
   voice?: Partial<VoiceSettings>
+  shareAnalytics?: boolean
+  analyticsTargets?: AnalyticsTarget[]
 }
 
 export interface UpdateSettingsError {

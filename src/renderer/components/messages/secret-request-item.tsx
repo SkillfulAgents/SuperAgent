@@ -1,9 +1,10 @@
 import { apiFetch } from '@renderer/lib/api'
 
 import { useState } from 'react'
-import { Key, Eye, EyeOff, Check, X, Loader2 } from 'lucide-react'
+import { Key, Eye, EyeOff, Check, Loader2, Globe } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
+import { DeclineButton } from './decline-button'
 import { cn } from '@shared/lib/utils/cn'
 
 interface SecretRequestItemProps {
@@ -16,7 +17,7 @@ interface SecretRequestItemProps {
   onComplete: () => void
 }
 
-type RequestStatus = 'pending' | 'submitting' | 'provided' | 'declined'
+type RequestStatus = 'pending' | 'submitting' | 'provided' | 'declined' | 'fetch-requested'
 
 export function SecretRequestItem({
   toolUseId,
@@ -62,7 +63,7 @@ export function SecretRequestItem({
     }
   }
 
-  const handleDecline = async () => {
+  const handleDecline = async (reason?: string) => {
     setStatus('submitting')
     setError(null)
 
@@ -74,7 +75,7 @@ export function SecretRequestItem({
           toolUseId,
           secretName,
           decline: true,
-          declineReason: 'User declined to provide the secret',
+          declineReason: reason || 'User declined to provide the secret',
         }),
       })
 
@@ -91,25 +92,51 @@ export function SecretRequestItem({
     }
   }
 
+  const handleFetchForMe = async () => {
+    setStatus('submitting')
+    setError(null)
+
+    try {
+      const response = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/provide-secret`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          toolUseId,
+          secretName,
+          decline: true,
+          declineReason: `The user wants you to fetch this secret (${secretName}) automatically. Use the browser to navigate to the appropriate website and retrieve the API key or token. If you cannot do this, explain to the user why not and request the secret again. When fetched -- make sure to save it to the .env file with the key name "${secretName}" so it's available for future sessions without needing to request it again.`,
+        }),
+      })
+
+      if (!response.ok) {
+        const data = await response.json()
+        throw new Error(data.error || 'Failed to send request')
+      }
+
+      setStatus('fetch-requested')
+      onComplete()
+    } catch (err: any) {
+      setError(err.message || 'Failed to send request')
+      setStatus('pending')
+    }
+  }
+
   // Completed state - show minimal info
-  if (status === 'provided' || status === 'declined') {
+  if (status === 'provided' || status === 'declined' || status === 'fetch-requested') {
+    const statusConfig = {
+      provided: { icon: Key, color: 'text-green-500', labelColor: 'text-green-600', label: 'Provided' },
+      declined: { icon: Key, color: 'text-red-500', labelColor: 'text-red-600', label: 'Declined' },
+      'fetch-requested': { icon: Globe, color: 'text-blue-500', labelColor: 'text-blue-600', label: 'Agent fetching...' },
+    } as const
+    const config = statusConfig[status as keyof typeof statusConfig]
+
     return (
       <div className="border rounded-md bg-muted/30 text-sm" data-testid="secret-request-completed" data-status={status}>
         <div className="flex items-center gap-2 px-3 py-2">
-          <Key
-            className={cn(
-              'h-4 w-4 shrink-0',
-              status === 'provided' ? 'text-green-500' : 'text-red-500'
-            )}
-          />
+          <config.icon className={cn('h-4 w-4 shrink-0', config.color)} />
           <span className="font-mono text-sm">{secretName}</span>
-          <span
-            className={cn(
-              'ml-auto text-xs',
-              status === 'provided' ? 'text-green-600' : 'text-red-600'
-            )}
-          >
-            {status === 'provided' ? 'Provided' : 'Declined'}
+          <span className={cn('ml-auto text-xs', config.labelColor)}>
+            {config.label}
           </span>
         </div>
       </div>
@@ -210,17 +237,12 @@ export function SecretRequestItem({
               <span className="ml-1">Provide</span>
             </Button>
 
-            <Button
-              onClick={handleDecline}
+            <DeclineButton
+              onDecline={handleDecline}
               disabled={status === 'submitting'}
-              variant="outline"
-              size="sm"
               className="border-amber-200 dark:border-amber-700 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900"
               data-testid="secret-decline-btn"
-            >
-              <X className="h-4 w-4" />
-              <span className="ml-1">Decline</span>
-            </Button>
+            />
           </div>
 
           {/* Error message */}
@@ -229,9 +251,19 @@ export function SecretRequestItem({
           )}
 
           {/* Info text */}
-          <p className="text-xs text-amber-600 dark:text-amber-400">
-            This secret will be saved to your agent and available for future sessions.
-          </p>
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              This secret will be saved to your agent and available for future sessions.
+            </p>
+            <button
+              type="button"
+              onClick={handleFetchForMe}
+              disabled={status === 'submitting'}
+              className="text-xs text-blue-600 dark:text-blue-400 hover:underline disabled:opacity-50 shrink-0 ml-2"
+            >
+              Get it for me
+            </button>
+          </div>
         </div>
       </div>
     </div>

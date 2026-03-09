@@ -18,7 +18,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const onPendingApproval = useCallback((pending = true) => setPendingApproval(pending), [])
 
   if (!isAuthMode) return <>{children}</>
-  if (isPending) return <LoadingScreen />
+  if (isPending && !pendingApproval) return <LoadingScreen />
   if (!isAuthenticated || pendingApproval) return <AuthPage onPendingApproval={onPendingApproval} />
   if (mustChangePassword) return <ForcePasswordChange />
   return <>{children}</>
