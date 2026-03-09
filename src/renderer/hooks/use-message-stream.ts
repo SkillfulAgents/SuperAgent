@@ -155,6 +155,7 @@ function getOrCreateEventSource(
       }
       else if (data.type === 'session_active') {
         // Session became active - user sent a message
+        if (data.sessionId && data.sessionId !== sessionId) return
         streamStates.set(sessionId, {
           isActive: true,
           isStreaming: current?.isStreaming ?? false,
@@ -181,6 +182,7 @@ function getOrCreateEventSource(
         // (isStreamingMessagePersisted in MessageList handles deduplication)
         // Clear streamingToolUse - if the tool was persisted, ToolCallItem renders it;
         // if it wasn't (interrupted mid-stream), it should disappear.
+        if (data.sessionId && data.sessionId !== sessionId) return
         streamStates.set(sessionId, {
           isActive: false,
           isStreaming: false,
