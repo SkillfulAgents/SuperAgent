@@ -78,7 +78,7 @@ export function SubAgentBlock({
   const [expanded, setExpanded] = useState(isRunning)
 
   // Fetch subagent messages — poll while running so concurrent background agents stay updated
-  const { data: subMessages } = useSubagentMessages(sessionId, agentSlug, subagentId, isRunning)
+  const { data: subMessages } = useSubagentMessages(sessionId, agentSlug, subagentId)
 
   // Extract streaming state from activeSubagent (only if this block is the active one)
   const isActiveSubagent = activeSubagent?.parentToolId === toolCall.id
