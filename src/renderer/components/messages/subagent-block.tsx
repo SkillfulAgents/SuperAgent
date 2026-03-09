@@ -4,6 +4,7 @@ import { cn } from '@shared/lib/utils/cn'
 import { Bot, ChevronDown, ChevronRight, CheckCircle, XCircle, Loader2, StopCircle } from 'lucide-react'
 import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
 import { useSubagentMessages } from '@renderer/hooks/use-messages'
+import { parseToolResult } from '@renderer/lib/parse-tool-result'
 import type { ApiToolCall, ApiMessage } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
 import ReactMarkdown from 'react-markdown'
@@ -15,6 +16,7 @@ interface SubAgentBlockProps {
   agentSlug: string
   isSessionActive?: boolean
   activeSubagent?: SubagentInfo | null
+  isCompleted?: boolean // True when subagent_completed SSE has fired for this tool (avoids JSONL stale status)
 }
 
 type SubagentStatus = 'running' | 'completed' | 'error' | 'cancelled'
@@ -39,12 +41,15 @@ export function SubAgentBlock({
   agentSlug,
   isSessionActive,
   activeSubagent,
+  isCompleted,
 }: SubAgentBlockProps) {
-  // Determine subagent ID from completed result or active SSE state.
-  // Latch the ID once resolved — it's a fixed property of this subagent run and should
-  // never revert to null (prevents messages from disappearing during completion transition).
-  const computedSubagentId = toolCall.subagent?.agentId
-    ?? (activeSubagent?.parentToolId === toolCall.id ? activeSubagent.agentId : null)
+  // Determine subagent ID: prefer SSE-discovered agentId (stable, cached once via FIFO)
+  // over API-based agentId (from resolveInterruptedSubagents, which re-sorts by mtime
+  // on every refetch and can flip during active streaming).
+  // Latch the ID once resolved — it should never revert to null.
+  const sseAgentId = activeSubagent?.parentToolId === toolCall.id ? activeSubagent.agentId : null
+  const computedSubagentId = sseAgentId
+    ?? toolCall.subagent?.agentId
     ?? null
   const latchedSubagentIdRef = useRef<string | null>(null)
   if (computedSubagentId) {
@@ -55,7 +60,16 @@ export function SubAgentBlock({
   // Determine status
   let status: SubagentStatus = 'cancelled'
   if (toolCall.result !== null && toolCall.result !== undefined) {
-    status = toolCall.isError ? 'error' : 'completed'
+    // Background agents return an immediate "async_launched" result — don't treat as completed
+    // unless we've received a subagent_completed SSE event (isCompleted) for this tool
+    if (toolCall.subagent?.status === 'async_launched' && isSessionActive && !isCompleted) {
+      status = 'running'
+    } else {
+      status = toolCall.isError ? 'error' : 'completed'
+    }
+  } else if (isCompleted) {
+    // subagent_completed SSE received but tool_result not yet persisted/refetched
+    status = 'completed'
   } else if (isSessionActive && (activeSubagent?.parentToolId === toolCall.id || !toolCall.subagent)) {
     status = 'running'
   }
@@ -63,8 +77,8 @@ export function SubAgentBlock({
   const isRunning = status === 'running'
   const [expanded, setExpanded] = useState(isRunning)
 
-  // Fetch subagent messages
-  const { data: subMessages } = useSubagentMessages(sessionId, agentSlug, subagentId)
+  // Fetch subagent messages — poll while running so concurrent background agents stay updated
+  const { data: subMessages } = useSubagentMessages(sessionId, agentSlug, subagentId, isRunning)
 
   // Extract streaming state from activeSubagent (only if this block is the active one)
   const isActiveSubagent = activeSubagent?.parentToolId === toolCall.id
@@ -106,6 +120,14 @@ export function SubAgentBlock({
   const subagentType = input.subagent_type || 'Agent'
   const description = input.description || ''
 
+  // Extract summary text from the tool result (available immediately from the main messages,
+  // no need to wait for subagent JSONL refetch)
+  const resultText = useMemo(() => {
+    if (toolCall.result == null) return null
+    const parsed = parseToolResult(toolCall.result)
+    return parsed.text
+  }, [toolCall.result])
+
   // Stats from completed subagent
   const stats = toolCall.subagent
 
@@ -143,6 +165,16 @@ export function SubAgentBlock({
     }
     return items
   }, [subMessages])
+
+  // Check if the result text is already present in the persisted flat items (dedup)
+  const isResultInFlatItems = useMemo(() => {
+    if (!resultText || !flatItems.length) return false
+    const lastTextItem = [...flatItems].reverse().find(i => i.kind === 'text')
+    if (!lastTextItem || lastTextItem.kind !== 'text') return false
+    const persistedText = lastTextItem.text.trim()
+    const result = resultText.trim()
+    return persistedText.includes(result) || result.includes(persistedText)
+  }, [resultText, flatItems])
 
   const DEFAULT_VISIBLE = 6
   const [showAll, setShowAll] = useState(false)
@@ -244,6 +276,15 @@ export function SubAgentBlock({
                 name={subagentStreamingToolUse.name}
                 partialInput={subagentStreamingToolUse.partialInput}
               />
+            )}
+
+            {/* Result summary from tool_result (available immediately, no JSONL refetch needed) */}
+            {resultText && !isResultInFlatItems && !isRunning && (
+              <div className="prose prose-sm max-w-none break-words dark:prose-invert text-xs">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {resultText}
+                </ReactMarkdown>
+              </div>
             )}
           </div>
 

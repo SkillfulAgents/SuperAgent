@@ -411,7 +411,7 @@ describe('useMessageStream', () => {
       })
     })
 
-    expect(result.current.activeSubagent).toEqual({
+    expect(result.current.activeSubagents).toContainEqual({
       parentToolId: 'pt-1',
       agentId: 'sub-agent-1',
       streamingMessage: '',
@@ -426,7 +426,7 @@ describe('useMessageStream', () => {
       })
     })
 
-    expect(result.current.activeSubagent?.streamingMessage).toBe('Sub content')
+    expect(result.current.activeSubagents.find(s => s.parentToolId === 'pt-1')?.streamingMessage).toBe('Sub content')
   })
 
   it('handles ping safety net sync', async () => {
@@ -906,7 +906,7 @@ describe('useMessageStream', () => {
 
   // ---- Subagent lifecycle ----
 
-  it('handles subagent_completed — clears subagent and invalidates messages', async () => {
+  it('handles subagent_completed — keeps streaming data and marks as completed', async () => {
     const { useMessageStream } = await getHookModule()
     const wrapper = createWrapper()
     const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
@@ -926,14 +926,28 @@ describe('useMessageStream', () => {
         agentId: 'sub-1',
       })
     })
-    expect(result.current.activeSubagent).not.toBeNull()
+
+    // Add streaming content (e.g., summary text)
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'subagent_stream_delta',
+        parentToolId: 'pt-1',
+        agentId: 'sub-1',
+        text: 'summary text',
+      })
+    })
+    expect(result.current.activeSubagents).toHaveLength(1)
     spy.mockClear()
 
     act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'subagent_completed' })
+      MockEventSource.instances[0].simulateMessage({ type: 'subagent_completed', parentToolId: 'pt-1' })
     })
 
-    expect(result.current.activeSubagent).toBeNull()
+    // Streaming data preserved so summary stays visible until persisted data arrives
+    expect(result.current.activeSubagents).toHaveLength(1)
+    const sub = result.current.activeSubagents[0]
+    expect(sub?.streamingMessage).toBe('summary text')
+    expect(result.current.completedSubagents?.has('pt-1')).toBe(true)
     expect(spy).toHaveBeenCalledWith({ queryKey: ['subagent-messages', 'session-1'] })
     expect(spy).toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
   })
@@ -975,10 +989,11 @@ describe('useMessageStream', () => {
       })
     })
 
-    // Streaming state cleared, but subagent still active
-    expect(result.current.activeSubagent?.streamingMessage).toBeNull()
-    expect(result.current.activeSubagent?.streamingToolUse).toBeNull()
-    expect(result.current.activeSubagent?.parentToolId).toBe('pt-1')
+    // Streaming state preserved (SubAgentBlock dedup handles transition), subagent still active
+    const sub = result.current.activeSubagents.find(s => s.parentToolId === 'pt-1')
+    expect(sub?.streamingMessage).toBe('working...')
+    expect(sub?.streamingToolUse).toBeNull()
+    expect(sub?.parentToolId).toBe('pt-1')
     expect(spy).toHaveBeenCalledWith({ queryKey: ['subagent-messages', 'session-1'] })
   })
 
@@ -1012,7 +1027,7 @@ describe('useMessageStream', () => {
       })
     })
 
-    expect(result.current.activeSubagent?.streamingToolUse).toEqual({
+    expect(result.current.activeSubagents.find(s => s.parentToolId === 'pt-1')?.streamingToolUse).toEqual({
       id: 'sub-tc-1',
       name: 'Read',
       partialInput: '',
@@ -1029,9 +1044,10 @@ describe('useMessageStream', () => {
       })
     })
 
-    expect(result.current.activeSubagent?.streamingToolUse?.partialInput).toBe('{"file": "config.ts"}')
+    const sub = result.current.activeSubagents.find(s => s.parentToolId === 'pt-1')
+    expect(sub?.streamingToolUse?.partialInput).toBe('{"file": "config.ts"}')
     // streamingMessage should be preserved
-    expect(result.current.activeSubagent?.streamingMessage).toBe('')
+    expect(sub?.streamingMessage).toBe('')
   })
 
   // ---- Remove helpers ----
@@ -1361,7 +1377,7 @@ describe('useMessageStream', () => {
     expect(fetchSpy).toHaveBeenCalledWith('/api/agents/agent-1/browser/status')
   })
 
-  it('session_active clears activeSubagent', async () => {
+  it('session_active clears activeSubagents', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(
       () => useMessageStream('session-1', 'agent-1'),
@@ -1378,13 +1394,116 @@ describe('useMessageStream', () => {
         agentId: 'sub-1',
       })
     })
-    expect(result.current.activeSubagent).not.toBeNull()
+    expect(result.current.activeSubagents).toHaveLength(1)
 
-    // New session_active should clear subagent
+    // New session_active should clear subagents
     act(() => {
       MockEventSource.instances[0].simulateMessage({ type: 'session_active' })
     })
-    expect(result.current.activeSubagent).toBeNull()
+    expect(result.current.activeSubagents).toHaveLength(0)
+    expect(result.current.completedSubagents).toBeNull()
+  })
+
+  it('session_active clears completedSubagents', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'subagent_stream_start',
+        parentToolId: 'pt-1',
+        agentId: 'sub-1',
+      })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'subagent_completed', parentToolId: 'pt-1' })
+    })
+    expect(result.current.completedSubagents?.has('pt-1')).toBe(true)
+
+    // New session_active should clear completedSubagents
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_active' })
+    })
+    expect(result.current.completedSubagents).toBeNull()
+  })
+
+  it('completedSubagents survives session_idle', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'subagent_stream_start',
+        parentToolId: 'pt-1',
+        agentId: 'sub-1',
+      })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'subagent_completed', parentToolId: 'pt-1' })
+    })
+    expect(result.current.completedSubagents?.has('pt-1')).toBe(true)
+
+    // session_idle should preserve completedSubagents
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_idle' })
+    })
+    expect(result.current.completedSubagents?.has('pt-1')).toBe(true)
+  })
+
+  it('tracks multiple subagent completions independently', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    // Start two subagents
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'subagent_stream_start',
+        parentToolId: 'pt-1',
+        agentId: 'sub-1',
+      })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'subagent_stream_start',
+        parentToolId: 'pt-2',
+        agentId: 'sub-2',
+      })
+    })
+    expect(result.current.activeSubagents).toHaveLength(2)
+
+    // Complete only the first
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'subagent_completed', parentToolId: 'pt-1' })
+    })
+    expect(result.current.completedSubagents?.has('pt-1')).toBe(true)
+    expect(result.current.completedSubagents?.has('pt-2')).toBeFalsy()
+    // Both still in activeSubagents (streaming data preserved)
+    expect(result.current.activeSubagents).toHaveLength(2)
+
+    // Complete the second
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'subagent_completed', parentToolId: 'pt-2' })
+    })
+    expect(result.current.completedSubagents?.has('pt-1')).toBe(true)
+    expect(result.current.completedSubagents?.has('pt-2')).toBe(true)
   })
 
   it('ping invalidates messages and sessions when correcting active state', async () => {

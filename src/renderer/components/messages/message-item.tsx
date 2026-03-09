@@ -20,12 +20,13 @@ interface MessageItemProps {
   agentSlug?: string
   sessionId?: string
   isSessionActive?: boolean
-  activeSubagent?: SubagentInfo | null
+  activeSubagents?: SubagentInfo[]
+  completedSubagents?: Set<string> | null
   onRemoveMessage?: (messageId: string) => void
   onRemoveToolCall?: (toolCallId: string) => void
 }
 
-export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagent, onRemoveMessage, onRemoveToolCall }: MessageItemProps) {
+export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall }: MessageItemProps) {
   const isUser = message.type === 'user'
   const isAssistant = message.type === 'assistant'
 
@@ -214,7 +215,8 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
                       sessionId={sessionId}
                       agentSlug={agentSlug!}
                       isSessionActive={isSessionActive}
-                      activeSubagent={activeSubagent}
+                      activeSubagent={activeSubagents?.find(s => s.parentToolId === toolCall.id) ?? null}
+                      isCompleted={completedSubagents?.has(toolCall.id) ?? false}
                     />
                   ) : (
                     <ToolCallItem toolCall={toolCall} messageCreatedAt={message.createdAt} agentSlug={agentSlug} isSessionActive={isSessionActive} />
