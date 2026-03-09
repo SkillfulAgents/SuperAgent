@@ -107,6 +107,10 @@ vi.mock('fs', () => ({
   default: { promises: { rm: vi.fn().mockResolvedValue(undefined) } },
 }))
 
+vi.mock('@shared/lib/analytics/tenant-id', () => ({
+  getTenantId: () => 'mock-tenant-id',
+}))
+
 vi.mock('path', () => ({
   default: { join: (...args: string[]) => args.join('/') },
 }))

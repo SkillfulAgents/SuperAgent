@@ -230,8 +230,8 @@ describe('MessagePersister', () => {
       expect(subagentUpdated[0].parentToolId).toBe('task-tool-1')
     })
 
-    it('does not set pendingTaskToolId for non-Task tools', () => {
-      // Start a Bash tool
+    it('uses parent_tool_use_id as parentToolId for any sidechain message', () => {
+      // Start a Bash tool (non-Task)
       mockClient._sendMessage({
         type: 'stream_event',
         event: {
@@ -245,7 +245,7 @@ describe('MessagePersister', () => {
         event: { type: 'content_block_stop' },
       })
 
-      // Sidechain message should have null parentToolId
+      // Sidechain message with parent_tool_use_id should use it as parentToolId
       mockClient._sendMessage({
         type: 'assistant',
         parent_tool_use_id: 'some-id',
@@ -253,9 +253,8 @@ describe('MessagePersister', () => {
       })
 
       const subagentUpdated = sseEvents.filter(e => e.type === 'subagent_updated')
-      if (subagentUpdated.length > 0) {
-        expect(subagentUpdated[0].parentToolId).toBeNull()
-      }
+      expect(subagentUpdated.length).toBeGreaterThanOrEqual(1)
+      expect(subagentUpdated[0].parentToolId).toBe('some-id')
     })
   })
 
