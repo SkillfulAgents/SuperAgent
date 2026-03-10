@@ -6,6 +6,11 @@ import { createUserInputMcpServer, createBrowserMcpServer, createDashboardsMcpSe
 import { inputManager } from './input-manager';
 import { setCurrentBrowserSessionId } from './tools/browser';
 import { sanitizeMcpName } from './sanitize-mcp-name';
+import {
+  extractBrowserWorkflowTrace,
+  scanExistingSkills,
+  shouldTriggerReview,
+} from './browser-workflow-trace';
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in src/renderer/components/messages/message-list.tsx
@@ -20,6 +25,12 @@ const PLATFORM_SYSTEM_PROMPT = fs.readFileSync(
 // Load web-browser subagent prompt from file
 const WEB_BROWSER_AGENT_PROMPT = fs.readFileSync(
   path.join(__dirname, 'web-browser-agent-prompt.md'),
+  'utf-8'
+);
+
+// Load browser workflow reviewer subagent prompt from file
+const BROWSER_WORKFLOW_REVIEWER_PROMPT = fs.readFileSync(
+  path.join(__dirname, 'browser-workflow-reviewer-prompt.md'),
   'utf-8'
 );
 
@@ -282,6 +293,8 @@ export class ClaudeCodeProcess extends EventEmitter {
   private customEnvVars: Record<string, string> | undefined;
   private isReady: boolean = false;
   private isProcessing: boolean = false;
+  private lastBrowserTaskPrompt: string | null = null;
+  private browserAgentPrompts: Map<string, string> = new Map();
   public slashCommands: { name: string; description: string; argumentHint: string }[] = [];
 
   constructor(options: ClaudeCodeProcessOptions) {
@@ -414,6 +427,17 @@ export class ClaudeCodeProcess extends EventEmitter {
             prompt: WEB_BROWSER_AGENT_PROMPT,
             maxTurns: 500,
           },
+          'browser-workflow-reviewer': {
+            description: 'Browser workflow optimization specialist. Analyzes completed browser workflow traces to identify inefficiencies and produce optimized reusable browser skills. Delegate to this agent after a browser task completes when the smart trigger conditions are met.',
+            model: 'sonnet',
+            tools: [
+              'Read',
+              'Write',
+              'Bash',
+            ],
+            prompt: BROWSER_WORKFLOW_REVIEWER_PROMPT,
+            maxTurns: 50,
+          },
         },
         // Handle AskUserQuestion via canUseTool callback (per SDK docs)
         canUseTool: async (toolName: string, toolInput: Record<string, unknown>, options: { toolUseID: string; signal: AbortSignal }) => {
@@ -470,6 +494,54 @@ export class ClaudeCodeProcess extends EventEmitter {
                 async (_input, toolUseId) => {
                   if (toolUseId) {
                     inputManager.setCurrentToolUseId(toolUseId);
+                  }
+                  return {};
+                },
+              ],
+            },
+            {
+              matcher: 'Task',
+              hooks: [
+                async (input: any) => {
+                  if (input.tool_input?.subagent_type === 'web-browser') {
+                    this.lastBrowserTaskPrompt = input.tool_input.prompt || '';
+                    console.log(`[Workflow Review] PreToolUse: captured web-browser Task prompt`);
+                  }
+                  return {};
+                },
+              ],
+            },
+          ],
+          SubagentStart: [
+            {
+              hooks: [
+                async (input: any) => {
+                  if (input.agent_type === 'web-browser' && this.lastBrowserTaskPrompt !== null) {
+                    this.browserAgentPrompts.set(input.agent_id, this.lastBrowserTaskPrompt);
+                    this.lastBrowserTaskPrompt = null;
+                    console.log(`[Workflow Review] SubagentStart: associated prompt with agent ${input.agent_id}`);
+                  }
+                  return {};
+                },
+              ],
+            },
+          ],
+          SubagentStop: [
+            {
+              hooks: [
+                async (input: any) => {
+                  if (input.agent_type === 'web-browser') {
+                    const prompt = this.browserAgentPrompts.get(input.agent_id) || '';
+                    this.browserAgentPrompts.delete(input.agent_id);
+                    console.log(`[Workflow Review] SubagentStop: web-browser agent ${input.agent_id} completed`);
+
+                    this.handleBrowserWorkflowCompletion(
+                      input.agent_id,
+                      prompt,
+                      input.agent_transcript_path,
+                    ).catch(err => {
+                      console.error(`[Workflow Review] Error handling completion:`, err);
+                    });
                   }
                   return {};
                 },
@@ -545,8 +617,6 @@ export class ClaudeCodeProcess extends EventEmitter {
         // Emit the SDK message
         console.log(`[Session ${this.sessionId}] SDK message:`, message.type,
           'subtype' in message ? (message as any).subtype : '');
-
-
 
 
         // Check for result message to know when processing is complete
@@ -702,5 +772,50 @@ export class ClaudeCodeProcess extends EventEmitter {
     console.log(`[Session ${this.sessionId}] Restarting query after interrupt`);
     this.initializeQuery();
     this.processMessages();
+  }
+
+  /**
+   * Handle a completed web-browser Task: extract trace, evaluate trigger, inject system message.
+   * Called from the SubagentStop hook when agent_type === 'web-browser'.
+   */
+  private async handleBrowserWorkflowCompletion(
+    agentId: string,
+    prompt: string,
+    transcriptPath: string,
+  ): Promise<void> {
+    // 1. Verify transcript exists
+    if (!transcriptPath || !fs.existsSync(transcriptPath)) {
+      console.log(`[Workflow Review] Transcript not found: ${transcriptPath}`);
+      return;
+    }
+
+    // 2. Extract trace
+    const trace = extractBrowserWorkflowTrace(transcriptPath, prompt);
+
+    // 3. Scan existing skills
+    const existingSkills = scanExistingSkills(this.workingDirectory);
+
+    // 4. Evaluate trigger
+    const result = await shouldTriggerReview(trace, existingSkills);
+    console.log(`[Workflow Review] ${result.reason} → ${result.shouldReview ? 'REVIEW' : 'SKIP'}`);
+
+    if (!result.shouldReview) return;
+
+    // 5. Write trace to temp file for reviewer to read
+    const claudeDir = path.join(this.workingDirectory, '.claude');
+    if (!fs.existsSync(claudeDir)) {
+      fs.mkdirSync(claudeDir, { recursive: true });
+    }
+    const tracePath = path.join(claudeDir, `workflow-trace-${agentId}.json`);
+    fs.writeFileSync(tracePath, JSON.stringify(trace, null, 2));
+
+    // 6. Inject system message instructing parent to spawn reviewer
+    await this.sendMessage(
+      `${SYSTEM_MESSAGE_PREFIX}A browser workflow just completed and needs review. ` +
+      `EXECUTE NOW: Spawn the browser-workflow-reviewer agent to analyze the trace and create an optimized skill. ` +
+      `Use: Task(subagent_type="browser-workflow-reviewer", prompt="Review the browser workflow trace at ${tracePath}. ` +
+      `The goal was: ${prompt}. Outcome: ${trace.outcome}. Duration: ${trace.totalDurationMs}ms. ` +
+      `Tool uses: ${trace.totalToolUseCount}. Create an optimized skill in /workspace/.claude/skills/.")`
+    );
   }
 }
