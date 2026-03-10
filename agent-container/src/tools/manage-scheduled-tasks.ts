@@ -48,7 +48,7 @@ Use "list" first to see available tasks and their IDs before cancelling.`,
 
     try {
       if (args.action === 'list') {
-        const res = await hostFetch(`/api/agents/${agentId}/scheduled-tasks?status=active`)
+        const res = await hostFetch(`/api/agents/${agentId}/scheduled-tasks?status=pending`)
         if (!res.ok) return fail(`Failed to list tasks: ${res.statusText}`)
 
         interface TaskSummary {
