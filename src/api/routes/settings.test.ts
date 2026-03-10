@@ -15,6 +15,7 @@ const mockGetEffectiveModels = vi.fn()
 const mockGetEffectiveAgentLimits = vi.fn()
 const mockGetCustomEnvVars = vi.fn()
 const mockGetVoiceSettings = vi.fn()
+const mockGetBrowserbaseApiKeyStatus = vi.fn()
 
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: (...args: unknown[]) => mockGetSettings(...args),
@@ -27,6 +28,7 @@ vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveAgentLimits: (...args: unknown[]) => mockGetEffectiveAgentLimits(...args),
   getCustomEnvVars: (...args: unknown[]) => mockGetCustomEnvVars(...args),
   getVoiceSettings: (...args: unknown[]) => mockGetVoiceSettings(...args),
+  getBrowserbaseApiKeyStatus: (...args: unknown[]) => mockGetBrowserbaseApiKeyStatus(...args),
 }))
 
 const mockHasRunningAgents = vi.fn()
@@ -151,6 +153,7 @@ function setupDefaults() {
   mockCheckAllRunnersAvailability.mockResolvedValue([])
   mockGetAnthropicApiKeyStatus.mockReturnValue({ isConfigured: true, source: 'settings' })
   mockGetComposioApiKeyStatus.mockReturnValue({ isConfigured: false, source: 'none' })
+  mockGetBrowserbaseApiKeyStatus.mockReturnValue({ isConfigured: false, source: 'none' })
   mockGetComposioUserId.mockReturnValue(undefined)
   mockGetEffectiveModels.mockReturnValue({ summarizerModel: 'claude-3-haiku', agentModel: 'claude-sonnet-4-20250514', browserModel: 'claude-3-haiku' })
   mockGetEffectiveAgentLimits.mockReturnValue({ maxTurns: 100 })
