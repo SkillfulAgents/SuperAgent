@@ -571,6 +571,21 @@ class MessagePersister {
       // Clear streaming text since it's now persisted
       if (content.type === 'assistant') {
         state.subagentCurrentText = ''
+        // Subagent messages arrive as complete messages (not stream events),
+        // so detect browser input requests from the finished tool_use blocks.
+        const messageContent = content.message?.content
+        if (Array.isArray(messageContent)) {
+          for (const block of messageContent) {
+            if (block.type === 'tool_use' && block.name === 'mcp__user-input__request_browser_input') {
+              this.handleBrowserInputRequestTool(
+                sessionId,
+                block.id,
+                JSON.stringify(block.input || {}),
+                state.agentSlug
+              )
+            }
+          }
+        }
       }
       this.broadcastToSSE(sessionId, {
         type: 'subagent_updated',
@@ -705,6 +720,16 @@ class MessagePersister {
 
       case 'content_block_stop':
         if (state.subagentCurrentToolUse) {
+          // Safety net: detect browser input if stream events arrive for subagents
+          if (state.subagentCurrentToolUse.name === 'mcp__user-input__request_browser_input') {
+            this.handleBrowserInputRequestTool(
+              sessionId,
+              state.subagentCurrentToolUse.id,
+              state.subagentCurrentToolInput,
+              state.agentSlug
+            )
+          }
+
           this.broadcastToSSE(sessionId, {
             type: 'subagent_tool_use_ready',
             parentToolId: state.pendingTaskToolId,
@@ -839,6 +864,15 @@ class MessagePersister {
           // Check if this is a remote MCP request tool
           if (state.currentToolUse.name === 'mcp__user-input__request_remote_mcp') {
             this.handleRemoteMcpRequestTool(
+              sessionId,
+              state.currentToolUse.id,
+              state.currentToolInput,
+              state.agentSlug
+            )
+          }
+
+          if (state.currentToolUse.name === 'mcp__user-input__request_browser_input') {
+            this.handleBrowserInputRequestTool(
               sessionId,
               state.currentToolUse.id,
               state.currentToolInput,
@@ -1155,6 +1189,45 @@ class MessagePersister {
       }
     } catch (error) {
       console.error('[MessagePersister] Error handling remote MCP request:', error)
+    }
+  }
+
+  // Handle browser input request tool - broadcast to SSE clients so they can show the UI
+  private handleBrowserInputRequestTool(
+    sessionId: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug?: string
+  ): void {
+    try {
+      let input: { message: string; requirements?: string[] } = { message: '' }
+      try {
+        input = JSON.parse(toolInput)
+      } catch {
+        console.error('[MessagePersister] Failed to parse browser input request:', toolInput)
+        return
+      }
+
+      if (!input.message) {
+        console.error('[MessagePersister] Browser input request missing message')
+        return
+      }
+
+      this.broadcastToSSE(sessionId, {
+        type: 'browser_input_request',
+        toolUseId,
+        message: input.message,
+        requirements: input.requirements || [],
+        agentSlug,
+      })
+
+      if (agentSlug && !this.hasActiveViewers(sessionId)) {
+        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'browser_input').catch((err) => {
+          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
+        })
+      }
+    } catch (error) {
+      console.error('[MessagePersister] Error handling browser input request:', error)
     }
   }
 
