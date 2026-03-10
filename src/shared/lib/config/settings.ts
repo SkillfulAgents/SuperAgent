@@ -51,6 +51,8 @@ export interface AgentLimitsSettings {
 
 export type HostBrowserProviderId = 'chrome' | 'browserbase'
 
+export type BrowserbaseStealthOs = 'linux' | 'windows' | 'mac' | 'mobile' | 'tablet'
+
 export interface AppPreferences {
   showMenuBarIcon?: boolean
   notifications?: NotificationSettings
@@ -62,6 +64,14 @@ export interface AppPreferences {
   chromeProfileId?: string
   allowPrereleaseUpdates?: boolean
   theme?: 'system' | 'light' | 'dark'
+
+  // Browserbase session settings
+  browserbaseAdvancedStealth?: boolean
+  browserbaseStealthOs?: BrowserbaseStealthOs
+  browserbaseProxies?: boolean
+  browserbaseProxyCountry?: string
+  browserbaseProxyState?: string
+  browserbaseProxyCity?: string
 }
 
 export interface AuthSettings {

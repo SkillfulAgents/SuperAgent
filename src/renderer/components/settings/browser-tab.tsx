@@ -10,11 +10,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@renderer/components/ui/select'
+import { Switch } from '@renderer/components/ui/switch'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { apiFetch } from '@renderer/lib/api'
 import { AlertTriangle, Check, Loader2 } from 'lucide-react'
-import type { HostBrowserProviderId } from '@shared/lib/config/settings'
+import type { HostBrowserProviderId, BrowserbaseStealthOs } from '@shared/lib/config/settings'
 import { ChromeProfileSelect } from '@renderer/components/settings/chrome-profile-select'
 
 const MODEL_OPTIONS = [
@@ -132,68 +133,248 @@ export function BrowserTab() {
 
       {/* Browserbase-specific settings */}
       {effectiveProvider === 'browserbase' && (
-        <BrowserbaseSettings
-          apiKey={browserbaseApiKey}
-          projectId={browserbaseProjectId}
-          onApiKeyChange={(v) => { setBrowserbaseApiKey(v); setValidationResult(null) }}
-          onProjectIdChange={(v) => { setBrowserbaseProjectId(v); setValidationResult(null) }}
-          isValidating={isValidating}
-          validationResult={validationResult}
-          hasSavedCredentials={
-            !!providers.find((p) => p.id === 'browserbase')?.available
-          }
-          disabled={isLoading}
-          onValidateAndSave={async () => {
-            if (!browserbaseApiKey.trim() || !browserbaseProjectId.trim()) return
-            setIsValidating(true)
-            setValidationResult(null)
+        <>
+          <BrowserbaseSettings
+            apiKey={browserbaseApiKey}
+            projectId={browserbaseProjectId}
+            onApiKeyChange={(v) => { setBrowserbaseApiKey(v); setValidationResult(null) }}
+            onProjectIdChange={(v) => { setBrowserbaseProjectId(v); setValidationResult(null) }}
+            isValidating={isValidating}
+            validationResult={validationResult}
+            hasSavedCredentials={
+              !!providers.find((p) => p.id === 'browserbase')?.available
+            }
+            disabled={isLoading}
+            onValidateAndSave={async () => {
+              if (!browserbaseApiKey.trim() || !browserbaseProjectId.trim()) return
+              setIsValidating(true)
+              setValidationResult(null)
 
-            try {
-              const res = await apiFetch('/api/settings/validate-browserbase', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  apiKey: browserbaseApiKey.trim(),
-                  projectId: browserbaseProjectId.trim(),
-                }),
-              })
-              const result = await res.json()
-              setValidationResult(result)
+              try {
+                const res = await apiFetch('/api/settings/validate-browserbase', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    apiKey: browserbaseApiKey.trim(),
+                    projectId: browserbaseProjectId.trim(),
+                  }),
+                })
+                const result = await res.json()
+                setValidationResult(result)
 
-              if (result.valid) {
+                if (result.valid) {
+                  await updateSettings.mutateAsync({
+                    apiKeys: {
+                      browserbaseApiKey: browserbaseApiKey.trim(),
+                      browserbaseProjectId: browserbaseProjectId.trim(),
+                    },
+                  })
+                  // Clear inputs so the button hides — saved state is shown via placeholder
+                  setBrowserbaseApiKey('')
+                  setBrowserbaseProjectId('')
+                }
+              } catch {
+                setValidationResult({ valid: false, error: 'Failed to validate credentials' })
+              } finally {
+                setIsValidating(false)
+              }
+            }}
+            onRemove={async () => {
+              setIsValidating(true)
+              try {
                 await updateSettings.mutateAsync({
                   apiKeys: {
-                    browserbaseApiKey: browserbaseApiKey.trim(),
-                    browserbaseProjectId: browserbaseProjectId.trim(),
+                    browserbaseApiKey: '',
+                    browserbaseProjectId: '',
                   },
                 })
-                // Clear inputs so the button hides — saved state is shown via placeholder
                 setBrowserbaseApiKey('')
                 setBrowserbaseProjectId('')
+                setValidationResult(null)
+              } finally {
+                setIsValidating(false)
               }
-            } catch {
-              setValidationResult({ valid: false, error: 'Failed to validate credentials' })
-            } finally {
-              setIsValidating(false)
-            }
+            }}
+          />
+
+          <BrowserbaseSessionSettings
+            advancedStealth={settings?.app?.browserbaseAdvancedStealth ?? false}
+            stealthOs={settings?.app?.browserbaseStealthOs}
+            proxies={settings?.app?.browserbaseProxies ?? false}
+            proxyCountry={settings?.app?.browserbaseProxyCountry ?? ''}
+            proxyState={settings?.app?.browserbaseProxyState ?? ''}
+            proxyCity={settings?.app?.browserbaseProxyCity ?? ''}
+            disabled={isLoading}
+            onUpdate={(updates) => updateSettings.mutate({ app: updates })}
+          />
+        </>
+      )}
+    </div>
+  )
+}
+
+const STEALTH_OS_OPTIONS: Array<{ value: BrowserbaseStealthOs; label: string }> = [
+  { value: 'linux', label: 'Linux' },
+  { value: 'windows', label: 'Windows' },
+  { value: 'mac', label: 'macOS' },
+  { value: 'mobile', label: 'Mobile' },
+  { value: 'tablet', label: 'Tablet' },
+]
+
+const NO_OS_VALUE = '__none__'
+
+interface BrowserbaseSessionSettingsProps {
+  advancedStealth: boolean
+  stealthOs?: BrowserbaseStealthOs
+  proxies: boolean
+  proxyCountry: string
+  proxyState: string
+  proxyCity: string
+  disabled: boolean
+  onUpdate: (updates: Partial<{
+    browserbaseAdvancedStealth: boolean
+    browserbaseStealthOs: BrowserbaseStealthOs | undefined
+    browserbaseProxies: boolean
+    browserbaseProxyCountry: string
+    browserbaseProxyState: string
+    browserbaseProxyCity: string
+  }>) => void
+}
+
+function BrowserbaseSessionSettings({
+  advancedStealth,
+  stealthOs,
+  proxies,
+  proxyCountry,
+  proxyState,
+  proxyCity,
+  disabled,
+  onUpdate,
+}: BrowserbaseSessionSettingsProps) {
+  return (
+    <div className="space-y-4 rounded-lg border p-4">
+      <h4 className="text-sm font-medium">Session Settings</h4>
+
+      {/* Advanced Stealth */}
+      <div className="flex items-center justify-between">
+        <div className="space-y-0.5">
+          <Label htmlFor="bb-stealth">Advanced Stealth Mode</Label>
+          <p className="text-xs text-muted-foreground">
+            Uses a custom Chromium browser to avoid bot detection. Requires Scale plan.
+          </p>
+        </div>
+        <Switch
+          id="bb-stealth"
+          checked={advancedStealth}
+          onCheckedChange={(checked) => {
+            onUpdate({
+              browserbaseAdvancedStealth: checked,
+              // Clear OS when disabling stealth
+              ...(!checked && { browserbaseStealthOs: undefined }),
+            })
           }}
-          onRemove={async () => {
-            setIsValidating(true)
-            try {
-              await updateSettings.mutateAsync({
-                apiKeys: {
-                  browserbaseApiKey: '',
-                  browserbaseProjectId: '',
-                },
-              })
-              setBrowserbaseApiKey('')
-              setBrowserbaseProjectId('')
-              setValidationResult(null)
-            } finally {
-              setIsValidating(false)
-            }
-          }}
+          disabled={disabled}
         />
+      </div>
+
+      {/* OS Selection (only when stealth is on) */}
+      {advancedStealth && (
+        <div className="space-y-2 pl-1">
+          <Label htmlFor="bb-stealth-os">Operating System</Label>
+          <Select
+            value={stealthOs ?? NO_OS_VALUE}
+            onValueChange={(value) => {
+              onUpdate({
+                browserbaseStealthOs: value === NO_OS_VALUE ? undefined : value as BrowserbaseStealthOs,
+              })
+            }}
+            disabled={disabled}
+          >
+            <SelectTrigger id="bb-stealth-os">
+              <SelectValue placeholder="Default (auto)" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={NO_OS_VALUE}>Default (auto)</SelectItem>
+              {STEALTH_OS_OPTIONS.map((opt) => (
+                <SelectItem key={opt.value} value={opt.value}>
+                  {opt.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            Changes the user agent and browser environment signals to match the selected platform.
+          </p>
+        </div>
+      )}
+
+      {/* Proxies */}
+      <div className="flex items-center justify-between">
+        <div className="space-y-0.5">
+          <Label htmlFor="bb-proxies">Enable Proxies</Label>
+          <p className="text-xs text-muted-foreground">
+            Route traffic through residential proxies for higher CAPTCHA success rates and geo-targeting.
+          </p>
+        </div>
+        <Switch
+          id="bb-proxies"
+          checked={proxies}
+          onCheckedChange={(checked) => {
+            onUpdate({
+              browserbaseProxies: checked,
+              // Clear geolocation when disabling
+              ...(!checked && {
+                browserbaseProxyCountry: '',
+                browserbaseProxyState: '',
+                browserbaseProxyCity: '',
+              }),
+            })
+          }}
+          disabled={disabled}
+        />
+      </div>
+
+      {/* Proxy Geolocation (only when proxies are on) */}
+      {proxies && (
+        <div className="space-y-3 pl-1">
+          <p className="text-xs text-muted-foreground">
+            Optionally specify a proxy location. Leave empty for best-effort US proxy.
+          </p>
+          <div className="grid grid-cols-3 gap-3">
+            <div className="space-y-1">
+              <Label htmlFor="bb-proxy-country" className="text-xs">Country Code</Label>
+              <Input
+                id="bb-proxy-country"
+                placeholder="e.g. US"
+                value={proxyCountry}
+                onChange={(e) => onUpdate({ browserbaseProxyCountry: e.target.value.toUpperCase() })}
+                disabled={disabled}
+                maxLength={2}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="bb-proxy-state" className="text-xs">State</Label>
+              <Input
+                id="bb-proxy-state"
+                placeholder="e.g. NY"
+                value={proxyState}
+                onChange={(e) => onUpdate({ browserbaseProxyState: e.target.value.toUpperCase() })}
+                disabled={disabled}
+                maxLength={2}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="bb-proxy-city" className="text-xs">City</Label>
+              <Input
+                id="bb-proxy-city"
+                placeholder="e.g. NEW_YORK"
+                value={proxyCity}
+                onChange={(e) => onUpdate({ browserbaseProxyCity: e.target.value.toUpperCase() })}
+                disabled={disabled}
+              />
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

@@ -74,6 +74,33 @@ export class BrowserbaseProvider implements HostBrowserProvider {
       this.sessions.delete(instanceId)
     }
 
+    // Build session creation payload with optional stealth & proxy settings
+    const sessionPayload: Record<string, unknown> = { projectId, keepAlive: true }
+
+    // Advanced Stealth Mode
+    if (settings.app?.browserbaseAdvancedStealth) {
+      sessionPayload.browserSettings = {
+        advancedStealth: true,
+        ...(settings.app.browserbaseStealthOs && { os: settings.app.browserbaseStealthOs }),
+      }
+    }
+
+    // Proxy configuration
+    if (settings.app?.browserbaseProxies) {
+      const { browserbaseProxyCountry, browserbaseProxyCity, browserbaseProxyState } = settings.app
+      if (browserbaseProxyCountry || browserbaseProxyCity || browserbaseProxyState) {
+        // Geolocation proxy
+        const geolocation: Record<string, string> = {}
+        if (browserbaseProxyCountry) geolocation.country = browserbaseProxyCountry
+        if (browserbaseProxyState) geolocation.state = browserbaseProxyState
+        if (browserbaseProxyCity) geolocation.city = browserbaseProxyCity
+        sessionPayload.proxies = [{ type: 'browserbase', geolocation }]
+      } else {
+        // Simple built-in proxy (best-effort US)
+        sessionPayload.proxies = true
+      }
+    }
+
     // Create a new session with keepAlive so it survives agent-browser disconnecting
     const response = await fetch(`${BROWSERBASE_API_BASE}/sessions`, {
       method: 'POST',
@@ -81,7 +108,7 @@ export class BrowserbaseProvider implements HostBrowserProvider {
         'Content-Type': 'application/json',
         'X-BB-API-Key': apiKey,
       },
-      body: JSON.stringify({ projectId, keepAlive: true }),
+      body: JSON.stringify(sessionPayload),
     })
 
     if (!response.ok) {
