@@ -1,5 +1,28 @@
 import { app, BrowserWindow, ipcMain, Menu, MenuItem, nativeTheme, session, shell, Notification } from 'electron'
+import { execFileSync } from 'child_process'
 import path from 'path'
+
+// Fix PATH for packaged Electron apps on macOS.
+// Without this, the app only sees /usr/bin:/bin:/usr/sbin:/sbin and can't find
+// tools like `gh` or `git` installed via Homebrew.
+if (process.platform !== 'win32') {
+  try {
+    const shellPath = execFileSync(process.env.SHELL || '/bin/zsh', ['-ilc', 'echo -n "$PATH"'], {
+      encoding: 'utf8',
+      timeout: 5000,
+      env: { ...process.env, DISABLE_AUTO_UPDATE: 'true' },
+    }).trim()
+    if (shellPath) {
+      process.env.PATH = shellPath
+    }
+  } catch {
+    // Fall back to adding common paths
+    const common = ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin']
+    const current = process.env.PATH || ''
+    process.env.PATH = [...common.filter((p) => !current.includes(p)), current].join(':')
+  }
+}
+
 import { EventSource } from 'eventsource'
 import { createTray, destroyTray, updateTrayWindow, setTrayVisible } from './tray'
 import { createAppMenu, updateAppMenuWindow, destroyAppMenu } from './app-menu'

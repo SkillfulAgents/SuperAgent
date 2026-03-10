@@ -9,6 +9,7 @@ import {
   updateSettings,
   clearSettingsCache,
   getAnthropicApiKeyStatus,
+  getBrowserbaseApiKeyStatus,
   getComposioApiKeyStatus,
   getComposioUserId,
   getVoiceSettings,
@@ -49,6 +50,7 @@ settings.get('/', async (c) => {
       runnerAvailability,
       apiKeyStatus: {
         anthropic: getAnthropicApiKeyStatus(),
+        browserbase: getBrowserbaseApiKeyStatus(),
         composio: getComposioApiKeyStatus(),
         deepgram: getSttProvider('deepgram').getApiKeyStatus(),
         openai: getSttProvider('openai').getApiKeyStatus(),
@@ -281,6 +283,7 @@ settings.put('/', async (c) => {
       runnerAvailability,
       apiKeyStatus: {
         anthropic: getAnthropicApiKeyStatus(),
+        browserbase: getBrowserbaseApiKeyStatus(),
         composio: getComposioApiKeyStatus(),
         deepgram: getSttProvider('deepgram').getApiKeyStatus(),
         openai: getSttProvider('openai').getApiKeyStatus(),

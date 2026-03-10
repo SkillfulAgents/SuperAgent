@@ -5,7 +5,6 @@ import { Button } from '@renderer/components/ui/button'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { useUser } from '@renderer/context/user-context'
 import { ComposioApiKeyInput } from '@renderer/components/settings/composio-api-key-input'
-import { ConnectedAccountsSection } from '@renderer/components/connected-accounts-section'
 
 export function ComposioTab() {
   const { data: settings, isLoading } = useSettings()
@@ -15,7 +14,6 @@ export function ComposioTab() {
   const [composioUserIdInput, setComposioUserIdInput] = useState('')
   const [isSavingUserId, setIsSavingUserId] = useState(false)
 
-  const composioApiKeyStatus = settings?.apiKeyStatus?.composio
   const hasComposioUserId = isAuthMode ? !!user?.id : !!settings?.composioUserId
 
   const handleSaveUserId = async () => {
@@ -105,18 +103,6 @@ export function ComposioTab() {
         </Button>
       )}
 
-      {/* Connected Accounts Section - only show if Composio is configured */}
-      {composioApiKeyStatus?.isConfigured && hasComposioUserId && (
-        <div className="pt-4 border-t">
-          <div className="mb-4">
-            <h3 className="text-sm font-medium">Connected Accounts</h3>
-            <p className="text-xs text-muted-foreground mt-1">
-              Manage your OAuth connections to external services.
-            </p>
-          </div>
-          <ConnectedAccountsSection />
-        </div>
-      )}
     </div>
   )
 }

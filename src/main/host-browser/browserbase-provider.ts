@@ -1,4 +1,4 @@
-import { getSettings } from '@shared/lib/config/settings'
+import { getSettings, getEffectiveBrowserbaseApiKey, getEffectiveBrowserbaseProjectId } from '@shared/lib/config/settings'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo, BrowserDebugInfo } from './types'
 
 const BROWSERBASE_API_BASE = 'https://api.browserbase.com/v1'
@@ -30,9 +30,8 @@ export class BrowserbaseProvider implements HostBrowserProvider {
   onExternalClose: ((instanceId: string) => void) | null = null
 
   detect(): HostBrowserProviderStatus {
-    const settings = getSettings()
-    const apiKey = settings.apiKeys?.browserbaseApiKey
-    const projectId = settings.apiKeys?.browserbaseProjectId
+    const apiKey = getEffectiveBrowserbaseApiKey()
+    const projectId = getEffectiveBrowserbaseProjectId()
 
     if (!apiKey || !projectId) {
       return {
@@ -47,9 +46,8 @@ export class BrowserbaseProvider implements HostBrowserProvider {
   }
 
   async launch(instanceId: string): Promise<BrowserConnectionInfo> {
-    const settings = getSettings()
-    const apiKey = settings.apiKeys?.browserbaseApiKey
-    const projectId = settings.apiKeys?.browserbaseProjectId
+    const apiKey = getEffectiveBrowserbaseApiKey()
+    const projectId = getEffectiveBrowserbaseProjectId()
 
     if (!apiKey || !projectId) {
       throw new Error('Browserbase API key and project ID must be configured')
@@ -74,6 +72,34 @@ export class BrowserbaseProvider implements HostBrowserProvider {
       this.sessions.delete(instanceId)
     }
 
+    // Build session creation payload with optional stealth & proxy settings
+    const settings = getSettings()
+    const sessionPayload: Record<string, unknown> = { projectId, keepAlive: true }
+
+    // Advanced Stealth Mode
+    if (settings.app?.browserbaseAdvancedStealth) {
+      sessionPayload.browserSettings = {
+        advancedStealth: true,
+        ...(settings.app.browserbaseStealthOs && { os: settings.app.browserbaseStealthOs }),
+      }
+    }
+
+    // Proxy configuration
+    if (settings.app?.browserbaseProxies) {
+      const { browserbaseProxyCountry, browserbaseProxyCity, browserbaseProxyState } = settings.app
+      if (browserbaseProxyCountry || browserbaseProxyCity || browserbaseProxyState) {
+        // Geolocation proxy
+        const geolocation: Record<string, string> = {}
+        if (browserbaseProxyCountry) geolocation.country = browserbaseProxyCountry
+        if (browserbaseProxyState) geolocation.state = browserbaseProxyState
+        if (browserbaseProxyCity) geolocation.city = browserbaseProxyCity
+        sessionPayload.proxies = [{ type: 'browserbase', geolocation }]
+      } else {
+        // Simple built-in proxy (best-effort US)
+        sessionPayload.proxies = true
+      }
+    }
+
     // Create a new session with keepAlive so it survives agent-browser disconnecting
     const response = await fetch(`${BROWSERBASE_API_BASE}/sessions`, {
       method: 'POST',
@@ -81,7 +107,7 @@ export class BrowserbaseProvider implements HostBrowserProvider {
         'Content-Type': 'application/json',
         'X-BB-API-Key': apiKey,
       },
-      body: JSON.stringify({ projectId, keepAlive: true }),
+      body: JSON.stringify(sessionPayload),
     })
 
     if (!response.ok) {
@@ -108,8 +134,7 @@ export class BrowserbaseProvider implements HostBrowserProvider {
     const sessionId = this.sessions.get(instanceId)
     if (!sessionId) return null
 
-    const settings = getSettings()
-    const apiKey = settings.apiKeys?.browserbaseApiKey
+    const apiKey = getEffectiveBrowserbaseApiKey()
     if (!apiKey) return null
 
     const response = await fetch(`${BROWSERBASE_API_BASE}/sessions/${sessionId}/debug`, {
@@ -140,9 +165,8 @@ export class BrowserbaseProvider implements HostBrowserProvider {
 
     this.sessions.delete(instanceId)
 
-    const settings = getSettings()
-    const apiKey = settings.apiKeys?.browserbaseApiKey
-    const projectId = settings.apiKeys?.browserbaseProjectId
+    const apiKey = getEffectiveBrowserbaseApiKey()
+    const projectId = getEffectiveBrowserbaseProjectId()
     if (!apiKey || !projectId) return
 
     try {
