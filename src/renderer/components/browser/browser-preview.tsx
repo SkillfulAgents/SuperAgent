@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Globe, ChevronUp, ChevronDown, X } from 'lucide-react'
+import { Globe, ChevronUp, ChevronDown, X, Loader2 } from 'lucide-react'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { clearBrowserActive } from '@renderer/hooks/use-message-stream'
 import { useUser } from '@renderer/context/user-context'
@@ -41,6 +41,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
   const isViewOnly = !canUseAgent(agentSlug)
   const [expanded, setExpanded] = useState(false)
   const [connected, setConnected] = useState(false)
+  const [pageLoading, setPageLoading] = useState(false)
   const [reconnectKey, setReconnectKey] = useState(0)
   const [showCloseWarning, setShowCloseWarning] = useState(false)
   const [isClosing, setIsClosing] = useState(false)
@@ -225,7 +226,9 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
         const data = typeof event.data === 'string' ? JSON.parse(event.data) : null
         if (!data) return
 
-        if (data.type === 'metadata') {
+        if (data.type === 'page_loading') {
+          setPageLoading(data.loading)
+        } else if (data.type === 'metadata') {
           metadataRef.current = {
             deviceWidth: data.deviceWidth || 1280,
             deviceHeight: data.deviceHeight || 720,
@@ -248,6 +251,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
 
     ws.onclose = () => {
       setConnected(false)
+      setPageLoading(false)
       fetch(`${baseUrl}/api/agents/${agentSlug}/browser/status`)
         .then((res) => res.json())
         .then((status: { active?: boolean }) => {
@@ -505,7 +509,11 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
         onPointerMove={handleDragMove}
         onPointerUp={handleDragEnd}
       >
-        <Globe className="h-3.5 w-3.5 shrink-0" />
+        {pageLoading ? (
+          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+        ) : (
+          <Globe className="h-3.5 w-3.5 shrink-0" />
+        )}
         <span className="flex-1 text-xs truncate">
           Browser{connected ? '' : ' (connecting...)'}
         </span>
