@@ -396,20 +396,35 @@ app.post('/env', async (c) => {
   }
 });
 
-// POST /mcp/sync - Update REMOTE_MCPS and hot-swap MCP tools.
-// Called by the host when MCP servers are added/removed via the UI.
-// Uses setMcpServers() for a non-disruptive tool update (no interrupt needed).
+// POST /mcp/sync - Update REMOTE_MCPS env var and notify the running process.
+// Called by the host when MCP servers are added/removed.
 app.post('/mcp/sync', async (c) => {
   try {
     const body = await c.req.json<{ value: string }>();
     const newValue = body.value ?? '[]';
 
+    const oldNames = new Set<string>();
+    try {
+      const old = JSON.parse(process.env.REMOTE_MCPS || '[]') as Array<{ name: string }>;
+      for (const m of old) oldNames.add(m.name);
+    } catch { /* ignore */ }
+
     process.env.REMOTE_MCPS = newValue;
     await updateEnvFile('REMOTE_MCPS', newValue);
 
-    const proc = getCurrentProcess();
-    if (proc) {
-      await proc.syncMcpServers();
+    const newNames = new Set<string>();
+    try {
+      const updated = JSON.parse(newValue) as Array<{ name: string }>;
+      for (const m of updated) newNames.add(m.name);
+    } catch { /* ignore */ }
+
+    const removed = [...oldNames].filter(n => !newNames.has(n));
+
+    if (removed.length > 0) {
+      const proc = getCurrentProcess();
+      if (proc) {
+        proc.notifyMcpRemoved(removed);
+      }
     }
 
     return c.json({ success: true });
