@@ -396,8 +396,24 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
     [agentSlug, sessionId]
   )
 
+  const handlePaste = useCallback(
+    (e: React.ClipboardEvent<HTMLCanvasElement>) => {
+      e.preventDefault()
+      const text = e.clipboardData.getData('text/plain')
+      if (text) {
+        sendInput({ type: 'input_paste', text })
+      }
+    },
+    [sendInput]
+  )
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLCanvasElement>) => {
+      // Let paste shortcut through so the native paste event fires
+      if (e.key === 'v' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+        return
+      }
+
       e.preventDefault()
       const printable = e.key.length === 1
 
@@ -554,6 +570,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
             onWheel={isViewOnly ? undefined : handleWheel}
             onKeyDown={isViewOnly ? undefined : handleKeyDown}
             onKeyUp={isViewOnly ? undefined : handleKeyUp}
+            onPaste={isViewOnly ? undefined : handlePaste}
           />
           {!connected && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/50">

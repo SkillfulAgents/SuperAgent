@@ -1673,6 +1673,11 @@ function handleBrowserStreamConnection(ws: WebSocket) {
           text: data.text,
           modifiers: data.modifiers || 0,
         }));
+      } else if (data.type === 'input_paste' && data.text) {
+        // Paste: inject clipboard text from the client into the remote page
+        cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Input.insertText', {
+          text: data.text,
+        }));
       }
     } catch { /* ignore */ }
   });
