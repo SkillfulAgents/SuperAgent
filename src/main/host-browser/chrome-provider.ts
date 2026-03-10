@@ -63,7 +63,7 @@ export class ChromeProvider implements HostBrowserProvider {
     return { id: this.id, name: this.name, available: false, reason: 'Chrome not found on this system' }
   }
 
-  async launch(instanceId: string, options?: Record<string, string>): Promise<BrowserConnectionInfo> {
+  async launch(instanceId: string, options?: Record<string, string>, _agentId?: string): Promise<BrowserConnectionInfo> {
     // Check if an instance already exists and its port is still open
     const existing = this.instances.get(instanceId)
     if (existing && await this.isPortOpen(existing.port)) {
