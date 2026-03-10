@@ -143,7 +143,9 @@ export function BrowserTab() {
             validationResult={validationResult}
             hasSavedCredentials={
               !!providers.find((p) => p.id === 'browserbase')?.available
+              || !!settings?.apiKeyStatus?.browserbase?.isConfigured
             }
+            credentialSource={settings?.apiKeyStatus?.browserbase?.source}
             disabled={isLoading}
             onValidateAndSave={async () => {
               if (!browserbaseApiKey.trim() || !browserbaseProjectId.trim()) return
@@ -388,6 +390,7 @@ export interface BrowserbaseSettingsProps {
   isValidating: boolean
   validationResult: { valid: boolean; error?: string } | null
   hasSavedCredentials: boolean
+  credentialSource?: 'settings' | 'env' | 'none'
   disabled: boolean
   onValidateAndSave: () => void
   onRemove: () => void
@@ -401,6 +404,7 @@ export function BrowserbaseSettings({
   isValidating,
   validationResult,
   hasSavedCredentials,
+  credentialSource,
   disabled,
   onValidateAndSave,
   onRemove,
@@ -412,7 +416,7 @@ export function BrowserbaseSettings({
       {hasSavedCredentials && (
         <div className="flex items-center gap-2">
           <span className="text-xs px-2 py-0.5 rounded-full bg-green-500/10 text-green-700 dark:text-green-400">
-            Credentials saved
+            {credentialSource === 'env' ? 'Using environment variable' : 'Credentials saved'}
           </span>
         </div>
       )}
