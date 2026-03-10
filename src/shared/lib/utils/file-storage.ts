@@ -282,8 +282,7 @@ export function parseJsonl<T = unknown>(content: string): T[] {
     try {
       results.push(JSON.parse(trimmed) as T)
     } catch (error) {
-      console.warn('Failed to parse JSONL line:', error)
-      // Skip malformed lines
+      // Skip malformed lines (common during concurrent writes by SDK)
     }
   }
 

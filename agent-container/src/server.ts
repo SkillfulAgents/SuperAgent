@@ -1540,6 +1540,8 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
       cdpWs.send(cdpMsg(state, 'Page.startScreencast', {
         format: 'jpeg', quality: 80, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1,
       }));
+      // Enable Page domain to receive navigation lifecycle events
+      cdpWs.send(cdpMsg(state, 'Page.enable'));
     }
   });
 
@@ -1553,6 +1555,8 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
         cdpWs.send(cdpMsg(state, 'Page.startScreencast', {
           format: 'jpeg', quality: 80, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1,
         }));
+        // Enable Page domain to receive navigation lifecycle events
+        cdpWs.send(cdpMsg(state, 'Page.enable'));
         return;
       }
 
@@ -1574,6 +1578,13 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
             }));
           }
           clientWs.send(Buffer.from(msg.params.data, 'base64'));
+        }
+      } else if (msg.method === 'Page.frameStartedLoading' || msg.method === 'Page.frameStoppedLoading') {
+        if (clientWs.readyState === WebSocket.OPEN) {
+          clientWs.send(JSON.stringify({
+            type: 'page_loading',
+            loading: msg.method === 'Page.frameStartedLoading',
+          }));
         }
       }
     } catch { /* ignore */ }
@@ -1661,6 +1672,11 @@ function handleBrowserStreamConnection(ws: WebSocket) {
           code: data.code,
           text: data.text,
           modifiers: data.modifiers || 0,
+        }));
+      } else if (data.type === 'input_paste' && data.text) {
+        // Paste: inject clipboard text from the client into the remote page
+        cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Input.insertText', {
+          text: data.text,
         }));
       }
     } catch { /* ignore */ }

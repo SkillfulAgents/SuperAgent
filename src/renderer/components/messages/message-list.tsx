@@ -97,7 +97,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     isStreaming,
     streamingToolUse,
     isCompacting,
-    activeSubagent,
+    activeSubagents,
+    completedSubagents,
     pendingSecretRequests: sseSecretRequests,
     pendingConnectedAccountRequests: sseConnectedAccountRequests,
     pendingRemoteMcpRequests: sseRemoteMcpRequests,
@@ -552,7 +553,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     if (scrollRef.current && isScrolledToBottomRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [messages, pendingUserMessage, streamingMessage, streamingToolUse, isCompacting, pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests, pendingFileRequests, pendingRemoteMcpRequests, pendingBrowserInputRequests, activeSubagent])
+  }, [messages, pendingUserMessage, streamingMessage, streamingToolUse, isCompacting, pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests, pendingFileRequests, pendingRemoteMcpRequests, pendingBrowserInputRequests, activeSubagents])
 
   if (isLoading && !pendingUserMessage) {
     return (
@@ -578,7 +579,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
               <CompactBoundaryItem boundary={item as ApiCompactBoundary} />
             ) : (
               <>
-                <MessageItem message={item as ApiMessage} agentSlug={agentSlug} sessionId={sessionId} isSessionActive={canHaveRunningToolCalls.has(item.id)} activeSubagent={activeSubagent} onRemoveMessage={handleRemoveMessage} onRemoveToolCall={handleRemoveToolCall} />
+                <MessageItem message={item as ApiMessage} agentSlug={agentSlug} sessionId={sessionId} isSessionActive={canHaveRunningToolCalls.has(item.id)} activeSubagents={activeSubagents} completedSubagents={completedSubagents} onRemoveMessage={handleRemoveMessage} onRemoveToolCall={handleRemoveToolCall} />
                 {turnDeliveredFiles.has(item.id) && item.id !== deferredElapsedMessageId && (
                   <DeliveredFiles files={turnDeliveredFiles.get(item.id)!} agentSlug={agentSlug} />
                 )}

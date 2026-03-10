@@ -1,5 +1,28 @@
-import { app, BrowserWindow, ipcMain, nativeTheme, session, shell, Notification } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, MenuItem, nativeTheme, session, shell, Notification } from 'electron'
+import { execFileSync } from 'child_process'
 import path from 'path'
+
+// Fix PATH for packaged Electron apps on macOS.
+// Without this, the app only sees /usr/bin:/bin:/usr/sbin:/sbin and can't find
+// tools like `gh` or `git` installed via Homebrew.
+if (process.platform !== 'win32') {
+  try {
+    const shellPath = execFileSync(process.env.SHELL || '/bin/zsh', ['-ilc', 'echo -n "$PATH"'], {
+      encoding: 'utf8',
+      timeout: 5000,
+      env: { ...process.env, DISABLE_AUTO_UPDATE: 'true' },
+    }).trim()
+    if (shellPath) {
+      process.env.PATH = shellPath
+    }
+  } catch {
+    // Fall back to adding common paths
+    const common = ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin']
+    const current = process.env.PATH || ''
+    process.env.PATH = [...common.filter((p) => !current.includes(p)), current].join(':')
+  }
+}
+
 import { EventSource } from 'eventsource'
 import { createTray, destroyTray, updateTrayWindow, setTrayVisible } from './tray'
 import { createAppMenu, updateAppMenuWindow, destroyAppMenu } from './app-menu'
@@ -71,6 +94,7 @@ function createWindow() {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      spellcheck: true,
     },
     ...(process.platform === 'darwin' && {
       titleBarStyle: 'hiddenInset' as const,
@@ -89,6 +113,27 @@ function createWindow() {
   session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
     const allowed = ['media', 'audioCapture', 'mediaKeySystem', 'clipboard-read', 'clipboard-sanitized-write']
     return allowed.includes(permission)
+  })
+
+  // Spellcheck context menu — show correction suggestions on right-click
+  mainWindow.webContents.on('context-menu', (_event, params) => {
+    if (params.misspelledWord) {
+      const menu = new Menu()
+      for (const suggestion of params.dictionarySuggestions) {
+        menu.append(new MenuItem({
+          label: suggestion,
+          click: () => mainWindow?.webContents.replaceMisspelling(suggestion),
+        }))
+      }
+      if (params.dictionarySuggestions.length > 0) {
+        menu.append(new MenuItem({ type: 'separator' }))
+      }
+      menu.append(new MenuItem({
+        label: 'Add to Dictionary',
+        click: () => mainWindow?.webContents.session.addWordToSpellCheckerDictionary(params.misspelledWord),
+      }))
+      menu.popup()
+    }
   })
 
   // Handle window.open() calls - prevent popup windows

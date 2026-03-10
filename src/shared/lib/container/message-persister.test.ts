@@ -230,8 +230,8 @@ describe('MessagePersister', () => {
       expect(subagentUpdated[0].parentToolId).toBe('task-tool-1')
     })
 
-    it('does not set pendingTaskToolId for non-Task tools', () => {
-      // Start a Bash tool
+    it('uses parent_tool_use_id as parentToolId for any sidechain message', () => {
+      // Start a Bash tool (non-Task)
       mockClient._sendMessage({
         type: 'stream_event',
         event: {
@@ -245,7 +245,7 @@ describe('MessagePersister', () => {
         event: { type: 'content_block_stop' },
       })
 
-      // Sidechain message should have null parentToolId
+      // Sidechain message with parent_tool_use_id should use it as parentToolId
       mockClient._sendMessage({
         type: 'assistant',
         parent_tool_use_id: 'some-id',
@@ -253,9 +253,8 @@ describe('MessagePersister', () => {
       })
 
       const subagentUpdated = sseEvents.filter(e => e.type === 'subagent_updated')
-      if (subagentUpdated.length > 0) {
-        expect(subagentUpdated[0].parentToolId).toBeNull()
-      }
+      expect(subagentUpdated.length).toBeGreaterThanOrEqual(1)
+      expect(subagentUpdated[0].parentToolId).toBe('some-id')
     })
   })
 
@@ -450,15 +449,10 @@ describe('MessagePersister', () => {
   // Subagent ID discovery
   // ============================================================================
 
-  describe('subagent ID discovery', () => {
-    it('discovers agentId from filesystem on first sidechain message', async () => {
-      mockReaddir.mockResolvedValue(['agent-abc123.jsonl', 'agent-def456.jsonl'])
-      mockStat.mockImplementation((filePath: string) => {
-        if (filePath.includes('abc123')) {
-          return Promise.resolve({ mtimeMs: 1000 })
-        }
-        return Promise.resolve({ mtimeMs: 2000 }) // def456 is newer
-      })
+  describe('subagent ID discovery (FIFO)', () => {
+    it('discovers agentId from single unclaimed file', async () => {
+      mockReaddir.mockResolvedValue(['agent-abc123.jsonl'])
+      mockStat.mockResolvedValue({ mtimeMs: 1000 })
 
       // Send a sidechain message to trigger discovery
       mockClient._sendMessage({
@@ -467,24 +461,66 @@ describe('MessagePersister', () => {
         message: { role: 'assistant', content: [{ type: 'text', text: 'working' }] },
       })
 
-      // Wait for the async discovery to complete
       await vi.waitFor(() => {
-        const events = sseEvents.filter(e => e.type === 'subagent_updated' && e.agentId === 'def456')
+        const events = sseEvents.filter(e => e.type === 'subagent_updated' && e.agentId === 'abc123')
         expect(events.length).toBeGreaterThanOrEqual(1)
+      })
+    })
+
+    it('assigns multiple unclaimed files in FIFO order by mtime', async () => {
+      mockReaddir.mockResolvedValue(['agent-abc123.jsonl', 'agent-def456.jsonl'])
+      mockStat.mockImplementation((filePath: string) => {
+        if (filePath.includes('abc123')) return Promise.resolve({ mtimeMs: 1000 })
+        if (filePath.includes('def456')) return Promise.resolve({ mtimeMs: 2000 })
+        return Promise.reject(new Error('ENOENT'))
+      })
+
+      // Register two Task tools (in order: tool-A then tool-B)
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_start', content_block: { type: 'tool_use', id: 'tool-A', name: 'Task' } },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_stop' },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_start', content_block: { type: 'tool_use', id: 'tool-B', name: 'Task' } },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_stop' },
+      })
+
+      sseEvents.length = 0
+
+      // Sidechain message for tool-A triggers discovery for both
+      mockClient._sendMessage({
+        type: 'assistant',
+        parent_tool_use_id: 'tool-A',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'working' }] },
+      })
+
+      await vi.waitFor(() => {
+        // tool-A (registered first) gets abc123 (oldest file)
+        const eventsA = sseEvents.filter(e => e.type === 'subagent_updated' && e.parentToolId === 'tool-A' && e.agentId === 'abc123')
+        expect(eventsA.length).toBeGreaterThanOrEqual(1)
+        // tool-B (registered second) gets def456 (newer file)
+        const eventsB = sseEvents.filter(e => e.type === 'subagent_updated' && e.parentToolId === 'tool-B' && e.agentId === 'def456')
+        expect(eventsB.length).toBeGreaterThanOrEqual(1)
       })
     })
 
     it('handles missing subagents directory gracefully', async () => {
       mockReaddir.mockRejectedValue(new Error('ENOENT'))
 
-      // Should not throw
       mockClient._sendMessage({
         type: 'assistant',
         parent_tool_use_id: 'task-tool-1',
         message: { role: 'assistant', content: [{ type: 'text', text: 'working' }] },
       })
 
-      // Should still broadcast subagent_updated with null agentId
       const events = sseEvents.filter(e => e.type === 'subagent_updated')
       expect(events.length).toBeGreaterThanOrEqual(1)
       expect(events[0].agentId).toBeNull()

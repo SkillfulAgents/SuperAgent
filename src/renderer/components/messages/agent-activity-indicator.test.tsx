@@ -19,7 +19,8 @@ const mockStreamState = {
   activeStartTime: null as number | null,
   isCompacting: false,
   contextUsage: null,
-  activeSubagent: null,
+  activeSubagents: [] as any[],
+  completedSubagents: null as Set<string> | null,
   slashCommands: [],
 }
 
@@ -50,6 +51,8 @@ describe('AgentActivityIndicator', () => {
       isActive: false,
       error: null,
       activeStartTime: null,
+      activeSubagents: [],
+      completedSubagents: null,
     })
     mockMessages.length = 0
   })

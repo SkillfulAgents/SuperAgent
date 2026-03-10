@@ -70,7 +70,19 @@ interface StreamState {
   activeStartTime: number | null // Timestamp when session became active (for elapsed timer)
   isCompacting: boolean // True while context compaction is in progress
   contextUsage: SessionUsage | null // Latest context window usage data
-  activeSubagent: SubagentInfo | null // Currently running subagent info
+  activeSubagents: SubagentInfo[] // Currently running subagent(s) info
+  completedSubagents: Set<string> | null // parentToolIds of completed subagents (for status logic)
+}
+
+// Upsert a subagent entry in the array by parentToolId (immutable)
+function upsertSubagent(list: SubagentInfo[], entry: SubagentInfo): SubagentInfo[] {
+  const idx = list.findIndex(s => s.parentToolId === entry.parentToolId)
+  if (idx >= 0) {
+    const copy = [...list]
+    copy[idx] = entry
+    return copy
+  }
+  return [...list, entry]
 }
 
 // Global state to track streaming per session
@@ -79,6 +91,7 @@ const streamListeners = new Map<string, Set<() => void>>()
 
 // Slash commands per session (separate from streamStates to avoid touching 25+ set() calls)
 const sessionSlashCommands = new Map<string, SlashCommandInfo[]>()
+
 
 // Singleton EventSource connections per session (prevents duplicates from StrictMode/re-renders)
 const eventSources = new Map<string, EventSource>()
@@ -133,7 +146,8 @@ function getOrCreateEventSource(
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
           contextUsage: current?.contextUsage ?? null,
-          activeSubagent: current?.activeSubagent ?? null,
+          activeSubagents: current?.activeSubagents ?? [],
+          completedSubagents: current?.completedSubagents ?? null,
         })
         // Fetch current browser status to sync state (handles missed events)
         fetch(`${baseUrl}/api/agents/${agentSlug}/browser/status`)
@@ -149,6 +163,7 @@ function getOrCreateEventSource(
       }
       else if (data.type === 'session_active') {
         // Session became active - user sent a message
+        if (data.sessionId && data.sessionId !== sessionId) return
         streamStates.set(sessionId, {
           isActive: true,
           isStreaming: current?.isStreaming ?? false,
@@ -165,7 +180,8 @@ function getOrCreateEventSource(
           activeStartTime: Date.now(),
           isCompacting: false,
           contextUsage: current?.contextUsage ?? null,
-          activeSubagent: null,
+          activeSubagents: [],
+          completedSubagents: null,
         })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
       }
@@ -175,6 +191,7 @@ function getOrCreateEventSource(
         // (isStreamingMessagePersisted in MessageList handles deduplication)
         // Clear streamingToolUse - if the tool was persisted, ToolCallItem renders it;
         // if it wasn't (interrupted mid-stream), it should disappear.
+        if (data.sessionId && data.sessionId !== sessionId) return
         streamStates.set(sessionId, {
           isActive: false,
           isStreaming: false,
@@ -191,7 +208,11 @@ function getOrCreateEventSource(
           activeStartTime: null,
           isCompacting: false,
           contextUsage: current?.contextUsage ?? null,
-          activeSubagent: null,
+          // Keep activeSubagents so subagent streaming summaries remain visible
+          // until persisted data arrives (isStreamingMessagePersisted handles dedup).
+          // Cleared on next session_active.
+          activeSubagents: current?.activeSubagents ?? [],
+          completedSubagents: current?.completedSubagents ?? null,
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -214,7 +235,8 @@ function getOrCreateEventSource(
           activeStartTime: null,
           isCompacting: false,
           contextUsage: current?.contextUsage ?? null,
-          activeSubagent: null,
+          activeSubagents: [],
+          completedSubagents: null,
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -246,7 +268,8 @@ function getOrCreateEventSource(
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
           contextUsage: current?.contextUsage ?? null,
-          activeSubagent: current?.activeSubagent ?? null,
+          activeSubagents: current?.activeSubagents ?? [],
+          completedSubagents: current?.completedSubagents ?? null,
         })
       }
       else if (data.type === 'stream_delta') {
@@ -266,7 +289,8 @@ function getOrCreateEventSource(
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
           contextUsage: current?.contextUsage ?? null,
-          activeSubagent: current?.activeSubagent ?? null,
+          activeSubagents: current?.activeSubagents ?? [],
+          completedSubagents: current?.completedSubagents ?? null,
         })
       }
       else if (data.type === 'tool_use_start' || data.type === 'tool_use_streaming') {
@@ -290,7 +314,8 @@ function getOrCreateEventSource(
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
           contextUsage: current?.contextUsage ?? null,
-          activeSubagent: current?.activeSubagent ?? null,
+          activeSubagents: current?.activeSubagents ?? [],
+          completedSubagents: current?.completedSubagents ?? null,
         })
       }
       else if (data.type === 'tool_use_ready') {
@@ -311,7 +336,8 @@ function getOrCreateEventSource(
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
           contextUsage: current?.contextUsage ?? null,
-          activeSubagent: current?.activeSubagent ?? null,
+          activeSubagents: current?.activeSubagents ?? [],
+          completedSubagents: current?.completedSubagents ?? null,
         })
       }
       else if (data.type === 'stream_end') {
@@ -331,7 +357,8 @@ function getOrCreateEventSource(
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
           contextUsage: current?.contextUsage ?? null,
-          activeSubagent: current?.activeSubagent ?? null,
+          activeSubagents: current?.activeSubagents ?? [],
+          completedSubagents: current?.completedSubagents ?? null,
         })
       }
       else if (data.type === 'messages_updated') {
@@ -490,24 +517,41 @@ function getOrCreateEventSource(
         }
       }
       else if (data.type === 'subagent_updated') {
-        // Subagent message persisted — clear streaming state, refetch persisted messages
+        // Subagent message persisted or agentId discovered — refetch persisted messages.
+        // Preserve existing streaming state; SubAgentBlock's isStreamingMessagePersisted
+        // dedup logic handles the transition from streaming to persisted display.
         if (current) {
+          const existing = current.activeSubagents.find(s => s.parentToolId === data.parentToolId)
+          const updated: SubagentInfo = {
+            parentToolId: data.parentToolId,
+            agentId: data.agentId ?? existing?.agentId ?? null,
+            streamingMessage: existing?.streamingMessage ?? null,
+            streamingToolUse: existing?.streamingToolUse ?? null,
+          }
           streamStates.set(sessionId, {
             ...current,
-            activeSubagent: {
-              parentToolId: data.parentToolId,
-              agentId: data.agentId,
-              streamingMessage: null,
-              streamingToolUse: null,
-            },
+            activeSubagents: upsertSubagent(current.activeSubagents, updated),
           })
           queryClient.invalidateQueries({ queryKey: ['subagent-messages', sessionId] })
         }
       }
       else if (data.type === 'subagent_completed') {
-        // Subagent finished
+        // Subagent finished — keep streaming data visible (for summary text) until persisted data arrives.
+        // Update agentId if provided, and mark as completed so status logic shows "completed".
         if (current) {
-          streamStates.set(sessionId, { ...current, activeSubagent: null })
+          const existing = current.activeSubagents.find(s => s.parentToolId === data.parentToolId)
+          const newCompleted = new Set(current.completedSubagents)
+          if (data.parentToolId) {
+            newCompleted.add(data.parentToolId)
+          }
+          const updatedSubagents = existing
+            ? upsertSubagent(current.activeSubagents, { ...existing, agentId: data.agentId ?? existing.agentId })
+            : current.activeSubagents
+          streamStates.set(sessionId, {
+            ...current,
+            activeSubagents: updatedSubagents,
+            completedSubagents: newCompleted,
+          })
           queryClient.invalidateQueries({ queryKey: ['subagent-messages', sessionId] })
           queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         }
@@ -515,46 +559,50 @@ function getOrCreateEventSource(
       // Subagent streaming events
       else if (data.type === 'subagent_stream_start') {
         if (current) {
+          const existing = current.activeSubagents.find(s => s.parentToolId === data.parentToolId)
+          const updated: SubagentInfo = {
+            parentToolId: data.parentToolId,
+            agentId: data.agentId ?? existing?.agentId ?? null,
+            streamingMessage: '',
+            streamingToolUse: null,
+          }
           streamStates.set(sessionId, {
             ...current,
-            activeSubagent: {
-              parentToolId: data.parentToolId,
-              agentId: data.agentId ?? current.activeSubagent?.agentId ?? null,
-              streamingMessage: '',
-              streamingToolUse: null,
-            },
+            activeSubagents: upsertSubagent(current.activeSubagents, updated),
           })
         }
       }
       else if (data.type === 'subagent_stream_delta') {
         if (current) {
-          const existing = current.activeSubagent
+          const existing = current.activeSubagents.find(s => s.parentToolId === data.parentToolId)
+          const updated: SubagentInfo = {
+            parentToolId: data.parentToolId,
+            agentId: data.agentId ?? existing?.agentId ?? null,
+            streamingMessage: (existing?.streamingMessage || '') + data.text,
+            streamingToolUse: existing?.streamingToolUse ?? null,
+          }
           streamStates.set(sessionId, {
             ...current,
-            activeSubagent: {
-              parentToolId: data.parentToolId,
-              agentId: data.agentId ?? existing?.agentId ?? null,
-              streamingMessage: (existing?.streamingMessage || '') + data.text,
-              streamingToolUse: existing?.streamingToolUse ?? null,
-            },
+            activeSubagents: upsertSubagent(current.activeSubagents, updated),
           })
         }
       }
       else if (data.type === 'subagent_tool_use_start' || data.type === 'subagent_tool_use_streaming') {
         if (current) {
-          const existing = current.activeSubagent
+          const existing = current.activeSubagents.find(s => s.parentToolId === data.parentToolId)
+          const updated: SubagentInfo = {
+            parentToolId: data.parentToolId,
+            agentId: data.agentId ?? existing?.agentId ?? null,
+            streamingMessage: existing?.streamingMessage ?? null,
+            streamingToolUse: {
+              id: data.toolId,
+              name: data.toolName,
+              partialInput: data.partialInput ?? '',
+            },
+          }
           streamStates.set(sessionId, {
             ...current,
-            activeSubagent: {
-              parentToolId: data.parentToolId,
-              agentId: data.agentId ?? existing?.agentId ?? null,
-              streamingMessage: existing?.streamingMessage ?? null,
-              streamingToolUse: {
-                id: data.toolId,
-                name: data.toolName,
-                partialInput: data.partialInput ?? '',
-              },
-            },
+            activeSubagents: upsertSubagent(current.activeSubagents, updated),
           })
         }
       }
@@ -748,7 +796,8 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     activeStartTime: null,
     isCompacting: false,
     contextUsage: null,
-    activeSubagent: null,
+    activeSubagents: [],
+    completedSubagents: null,
   })
   const [slashCommands, setSlashCommands] = useState<SlashCommandInfo[]>([])
   const queryClient = useQueryClient()
@@ -793,7 +842,8 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
         activeStartTime: null,
         isCompacting: false,
         contextUsage: null,
-        activeSubagent: null,
+        activeSubagents: [],
+        completedSubagents: null,
       })
     }
     updateState()

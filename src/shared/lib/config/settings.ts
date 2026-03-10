@@ -51,6 +51,8 @@ export interface AgentLimitsSettings {
 
 export type HostBrowserProviderId = 'chrome' | 'browserbase'
 
+export type BrowserbaseStealthOs = 'linux' | 'windows' | 'mac' | 'mobile' | 'tablet'
+
 export interface AppPreferences {
   showMenuBarIcon?: boolean
   notifications?: NotificationSettings
@@ -62,6 +64,14 @@ export interface AppPreferences {
   chromeProfileId?: string
   allowPrereleaseUpdates?: boolean
   theme?: 'system' | 'light' | 'dark'
+
+  // Browserbase session settings
+  browserbaseAdvancedStealth?: boolean
+  browserbaseStealthOs?: BrowserbaseStealthOs
+  browserbaseProxies?: boolean
+  browserbaseProxyCountry?: string
+  browserbaseProxyState?: string
+  browserbaseProxyCity?: string
 }
 
 export interface AuthSettings {
@@ -165,6 +175,7 @@ export interface GlobalSettingsResponse {
   apiKeyStatus: {
     anthropic: ApiKeyStatus
     composio: ApiKeyStatus
+    browserbase: ApiKeyStatus
     deepgram: ApiKeyStatus
     openai: ApiKeyStatus
   }
@@ -326,6 +337,8 @@ export function clearSettingsCache(): void {
   cachedSettings = null
 }
 
+// TODO - following function are very repetitive - consider refactor to a single generic function that takes the API key name as parameter
+
 /**
  * Get the status of the Anthropic API key configuration.
  * Saved settings take precedence over environment variable.
@@ -391,6 +404,44 @@ export function getComposioUserId(): string | undefined {
     return settings.apiKeys.composioUserId
   }
   return process.env.COMPOSIO_USER_ID
+}
+
+/**
+ * Get the status of the Browserbase API key configuration.
+ */
+export function getBrowserbaseApiKeyStatus(): ApiKeyStatus {
+  const settings = getSettings()
+  if (settings.apiKeys?.browserbaseApiKey) {
+    return { isConfigured: true, source: 'settings' }
+  }
+  if (process.env.BROWSERBASE_API_KEY) {
+    return { isConfigured: true, source: 'env' }
+  }
+  return { isConfigured: false, source: 'none' }
+}
+
+/**
+ * Get the effective Browserbase API key to use.
+ * Saved settings take precedence over environment variable.
+ */
+export function getEffectiveBrowserbaseApiKey(): string | undefined {
+  const settings = getSettings()
+  if (settings.apiKeys?.browserbaseApiKey) {
+    return settings.apiKeys.browserbaseApiKey
+  }
+  return process.env.BROWSERBASE_API_KEY
+}
+
+/**
+ * Get the effective Browserbase project ID to use.
+ * Saved settings take precedence over environment variable.
+ */
+export function getEffectiveBrowserbaseProjectId(): string | undefined {
+  const settings = getSettings()
+  if (settings.apiKeys?.browserbaseProjectId) {
+    return settings.apiKeys.browserbaseProjectId
+  }
+  return process.env.BROWSERBASE_PROJECT_ID
 }
 
 /**

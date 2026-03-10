@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Globe, ChevronUp, ChevronDown, X, MousePointerClick } from 'lucide-react'
+import { Globe, ChevronUp, ChevronDown, X, Loader2, MousePointerClick } from 'lucide-react'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { clearBrowserActive, useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useUser } from '@renderer/context/user-context'
@@ -42,6 +42,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
   const isViewOnly = !canUseAgent(agentSlug)
   const [expanded, setExpanded] = useState(false)
   const [connected, setConnected] = useState(false)
+  const [pageLoading, setPageLoading] = useState(false)
   const [reconnectKey, setReconnectKey] = useState(0)
   const [showCloseWarning, setShowCloseWarning] = useState(false)
   const [isClosing, setIsClosing] = useState(false)
@@ -141,6 +142,10 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
 
   const handleResizeMove = useCallback((e: React.PointerEvent) => {
     if (!resizeRef.current) return
+    const parent = containerRef.current?.parentElement
+    if (!parent) return
+    const parentRect = parent.getBoundingClientRect()
+
     const { startX, origW, origH, origX, origY, corner } = resizeRef.current
     const dx = e.clientX - startX
     const ratio = metadataRef.current.deviceWidth / metadataRef.current.deviceHeight
@@ -148,16 +153,24 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
     const isLeft = corner === 'nw' || corner === 'sw'
     const isTop = corner === 'nw' || corner === 'ne'
 
-    const newWidth = Math.max(MIN_WIDTH, isLeft ? origW - dx : origW + dx)
-    const newHeight = newWidth / ratio + HEADER_HEIGHT
-    const deltaW = newWidth - origW
-    const deltaH = newHeight - origH
+    let newWidth = Math.max(MIN_WIDTH, isLeft ? origW - dx : origW + dx)
+    let newX = isLeft ? origX - (newWidth - origW) : origX
+    let newY = isTop ? origY - (newWidth / ratio + HEADER_HEIGHT - origH) : origY
 
-    setSize({ width: newWidth, height: newHeight })
-    setPos({
-      x: isLeft ? origX - deltaW : origX,
-      y: isTop ? origY - deltaH : origY,
-    })
+    // Clamp so the window stays within the parent container
+    if (newX < 0) { newWidth += newX; newX = 0 }
+    if (newY < 0) { newWidth += newY * ratio; newY = 0 }
+    if (newX + newWidth > parentRect.width) newWidth = parentRect.width - newX
+    newWidth = Math.max(MIN_WIDTH, newWidth)
+
+    const newHeight = newWidth / ratio + HEADER_HEIGHT
+    if (newY + newHeight > parentRect.height) {
+      newWidth = (parentRect.height - newY - HEADER_HEIGHT) * ratio
+      newWidth = Math.max(MIN_WIDTH, newWidth)
+    }
+
+    setSize({ width: newWidth, height: newWidth / ratio + HEADER_HEIGHT })
+    setPos({ x: newX, y: newY })
   }, [])
 
   const handleResizeEnd = useCallback(() => {
@@ -223,7 +236,9 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
         const data = typeof event.data === 'string' ? JSON.parse(event.data) : null
         if (!data) return
 
-        if (data.type === 'metadata') {
+        if (data.type === 'page_loading') {
+          setPageLoading(data.loading)
+        } else if (data.type === 'metadata') {
           metadataRef.current = {
             deviceWidth: data.deviceWidth || 1280,
             deviceHeight: data.deviceHeight || 720,
@@ -246,6 +261,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
 
     ws.onclose = () => {
       setConnected(false)
+      setPageLoading(false)
       fetch(`${baseUrl}/api/agents/${agentSlug}/browser/status`)
         .then((res) => res.json())
         .then((status: { active?: boolean }) => {
@@ -397,8 +413,24 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
     [agentSlug, sessionId]
   )
 
+  const handlePaste = useCallback(
+    (e: React.ClipboardEvent<HTMLCanvasElement>) => {
+      e.preventDefault()
+      const text = e.clipboardData.getData('text/plain')
+      if (text) {
+        sendInput({ type: 'input_paste', text })
+      }
+    },
+    [sendInput]
+  )
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLCanvasElement>) => {
+      // Let paste shortcut through so the native paste event fires
+      if (e.key === 'v' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+        return
+      }
+
       e.preventDefault()
       const printable = e.key.length === 1
 
@@ -513,12 +545,6 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
         onPointerMove={handleDragMove}
         onPointerUp={handleDragEnd}
       >
-        {needsAttention && (
-          <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
-          </span>
-        )}
         <Globe className="h-3.5 w-3.5 shrink-0" />
         <span className="flex-1 text-xs truncate">
           {needsAttention ? (
@@ -564,6 +590,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
             onWheel={isViewOnly ? undefined : handleWheel}
             onKeyDown={isViewOnly ? undefined : handleKeyDown}
             onKeyUp={isViewOnly ? undefined : handleKeyUp}
+            onPaste={isViewOnly ? undefined : handlePaste}
           />
           {!connected && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/50">
