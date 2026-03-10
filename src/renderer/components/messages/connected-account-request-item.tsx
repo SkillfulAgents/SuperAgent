@@ -57,6 +57,8 @@ export function ConnectedAccountRequestItem({
   const renameAccount = useRenameConnectedAccount()
   // Track account IDs before OAuth to detect new accounts
   const accountIdsBeforeOAuth = useRef<Set<string>>(new Set())
+  // Track whether this component instance initiated the OAuth flow
+  const isOAuthInitiator = useRef(false)
 
   const { track } = useAnalyticsTracking()
   const provider = getProvider(toolkit)
@@ -72,17 +74,20 @@ export function ConnectedAccountRequestItem({
         const result = await refetch()
         setStatus('pending')
 
-        // Auto-select the newly added account
-        if (newAccountId) {
-          // We have the new account ID directly
-          setSelectedAccountIds((prev) => new Set(prev).add(newAccountId))
-        } else if (result.data?.accounts) {
-          // Find the new account by comparing with accounts before OAuth
-          const newAccount = result.data.accounts.find(
-            (acc) => !accountIdsBeforeOAuth.current.has(acc.id)
-          )
-          if (newAccount) {
-            setSelectedAccountIds((prev) => new Set(prev).add(newAccount.id))
+        // Only auto-select the new account if this component initiated the OAuth flow
+        if (isOAuthInitiator.current) {
+          isOAuthInitiator.current = false
+          if (newAccountId) {
+            // We have the new account ID directly
+            setSelectedAccountIds((prev) => new Set(prev).add(newAccountId))
+          } else if (result.data?.accounts) {
+            // Find the new account by comparing with accounts before OAuth
+            const newAccount = result.data.accounts.find(
+              (acc) => !accountIdsBeforeOAuth.current.has(acc.id)
+            )
+            if (newAccount) {
+              setSelectedAccountIds((prev) => new Set(prev).add(newAccount.id))
+            }
           }
         }
       } else {
@@ -159,6 +164,7 @@ export function ConnectedAccountRequestItem({
 
     // Track current account IDs before OAuth to detect new account later
     accountIdsBeforeOAuth.current = new Set(accounts.map((a) => a.id))
+    isOAuthInitiator.current = true
 
     const popup = prepareOAuthPopup()
 
