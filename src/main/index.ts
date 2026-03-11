@@ -362,7 +362,7 @@ async function startApp() {
   }
 
   // Start the API server
-  apiServer = serve({ fetch: api.fetch, port: actualApiPort }, () => {
+  apiServer = serve({ fetch: api.fetch, port: actualApiPort, hostname: '0.0.0.0' }, () => {
     console.log(`API server running on http://localhost:${actualApiPort}`)
 
     // Initialize all background services
