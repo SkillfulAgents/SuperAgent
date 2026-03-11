@@ -14,6 +14,7 @@
     "build:electron": "electron-vite build",
     "preview": "npm run build && node dist/web/server.mjs",
     "download:lima": "bash scripts/download-lima.sh",
+    "bake:lima": "bash scripts/bake-lima-image.sh",
     "dist:mac": "npm run download:lima && electron-vite build && electron-builder --mac",
     "dist:win": "electron-vite build && electron-builder --win",
     "typecheck": "tsc --noEmit",

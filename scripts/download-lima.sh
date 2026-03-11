@@ -1,6 +1,8 @@
 #!/bin/bash
-# Downloads Lima (limactl) binary, guest agent, and a pre-configured Alpine VM image
-# with containerd + nerdctl baked in, for bundling into the Electron app.
+# Downloads Lima (limactl) binary, guest agent, and a pre-baked Alpine VM image
+# with containerd + nerdctl, for bundling into the Electron app.
+#
+# The VM image is downloaded from a GitHub Release (pre-baked by bake-lima-image.sh).
 #
 # Usage: ./scripts/download-lima.sh [arm64|x86_64]
 #
@@ -16,6 +18,8 @@ set -euo pipefail
 LIMA_VERSION="2.0.3"
 ALPINE_VERSION="3.23.3"
 ARCH="${1:-$(uname -m)}"
+REPO="SkillfulAgents/SuperAgent"
+RELEASE_TAG="lima-vm-images"
 
 # Normalize to match Lima release naming (arm64, x86_64)
 case "$ARCH" in
@@ -84,89 +88,25 @@ else
   exit 1
 fi
 
-# ── 2. Download Alpine cloud image ────────────────────────────────────────────
+# ── 2. Download pre-baked VM image from GitHub Release ────────────────────────
 
-ALPINE_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION%.*}/releases/cloud/nocloud_alpine-${ALPINE_VERSION}-${GUEST_ARCH}-uefi-cloudinit-r0.qcow2"
-RAW_IMAGE="${OUTPUT_DIR}/vm-image-raw.qcow2"
-echo "Downloading Alpine ${ALPINE_VERSION} cloud image for ${GUEST_ARCH}..."
-curl -fSL "$ALPINE_URL" -o "$RAW_IMAGE"
-echo "  raw image: $(du -h "$RAW_IMAGE" | cut -f1)"
-
-# ── 3. Boot a temp VM and bake in containerd + nerdctl ─────────────────────────
-
-LIMA_HOME="/tmp/lima-bake-$$"
-rm -rf "$LIMA_HOME"
-mkdir -p "$LIMA_HOME"
-TEMP_VM="bake"
+ASSET_NAME="vm-image-alpine-${ALPINE_VERSION}-${GUEST_ARCH}.qcow2"
+VM_IMAGE="${OUTPUT_DIR}/vm-image.qcow2"
+IMAGE_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${ASSET_NAME}"
 
 echo ""
-echo "Baking containerd + nerdctl into the VM image..."
-
-# Use QEMU for baking — VZ (Virtualization.framework) doesn't work in CI VMs
-# (no nested virtualization). The baked disk image works with any VM type at runtime.
-# Force cpuType to avoid HVF (also unavailable in CI VMs) — uses TCG software emulation.
-BAKE_CONFIG="${LIMA_HOME}/bake-config.yaml"
-cat > "$BAKE_CONFIG" <<YAML
-vmType: qemu
-cpuType:
-  aarch64: "cortex-a72"
-  x86_64: "qemu64"
-images:
-  - location: "file://$(cd "$(dirname "$RAW_IMAGE")" && pwd)/$(basename "$RAW_IMAGE")"
-    arch: "${GUEST_ARCH}"
-disk: 60GiB
-containerd:
-  system: false
-  user: false
-provision:
-  - mode: system
-    script: |
-      #!/bin/sh
-      apk update
-      apk add --no-cache containerd~=2.2 containerd-openrc nerdctl~=2.1 buildkit~=0.25 cni-plugins
-      rc-update add containerd default
-YAML
-
-cleanup_bake_vm() {
-  echo "Cleaning up temp VM..."
-  LIMA_HOME="$LIMA_HOME" "$LIMACTL" stop "$TEMP_VM" --force 2>/dev/null || true
-  LIMA_HOME="$LIMA_HOME" "$LIMACTL" delete "$TEMP_VM" --force 2>/dev/null || true
-  rm -rf "$LIMA_HOME"
-  rm -f "$RAW_IMAGE"
-}
-trap 'cleanup_bake_vm; rm -f "$TMPFILE"' EXIT
-
-# Create and start VM (provisions automatically)
-LIMA_HOME="$LIMA_HOME" "$LIMACTL" create --name "$TEMP_VM" "$BAKE_CONFIG" --tty=false
-LIMA_HOME="$LIMA_HOME" "$LIMACTL" start "$TEMP_VM"
-
-# Verify nerdctl works inside the VM
-echo "Verifying nerdctl inside VM..."
-LIMA_HOME="$LIMA_HOME" "$LIMACTL" shell "$TEMP_VM" -- nerdctl --version
-
-# Stop VM cleanly so disk is consistent
-LIMA_HOME="$LIMA_HOME" "$LIMACTL" stop "$TEMP_VM"
-
-# Convert the diffdisk (raw, with baked packages) to compact qcow2
-DIFF_DISK="${LIMA_HOME}/${TEMP_VM}/diffdisk"
-VM_IMAGE="${OUTPUT_DIR}/vm-image.qcow2"
-
-if [ ! -f "$DIFF_DISK" ]; then
-  echo "ERROR: diffdisk not found at $DIFF_DISK"
-  ls -la "${LIMA_HOME}/${TEMP_VM}/"
+echo "Downloading pre-baked VM image (${ASSET_NAME})..."
+if ! curl -fSL "$IMAGE_URL" -o "$VM_IMAGE"; then
+  echo ""
+  echo "ERROR: Failed to download pre-baked VM image."
+  echo "  URL: $IMAGE_URL"
+  echo ""
+  echo "You need to bake and upload the image first:"
+  echo "  ./scripts/bake-lima-image.sh"
   exit 1
 fi
 
-if ! command -v qemu-img &> /dev/null; then
-  echo "ERROR: qemu-img is required to convert the disk image."
-  echo "Install with: brew install qemu"
-  exit 1
-fi
-
-echo "Converting raw disk to qcow2..."
-qemu-img convert -f raw -O qcow2 "$DIFF_DISK" "$VM_IMAGE"
-
-echo "  vm-image (baked): $(du -h "$VM_IMAGE" | cut -f1)"
+echo "  vm-image: $(du -h "$VM_IMAGE" | cut -f1)"
 
 echo ""
 echo "Total bundle size: $(du -sh "$OUTPUT_DIR" | cut -f1)"

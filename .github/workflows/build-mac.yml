@@ -20,9 +20,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install qemu (needed for VM image baking)
-        run: brew install qemu
-
       - name: Decode Apple API Key
         env:
           APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY }}
