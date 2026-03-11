@@ -104,9 +104,13 @@ echo "Baking containerd + nerdctl into the VM image..."
 
 # Use QEMU for baking — VZ (Virtualization.framework) doesn't work in CI VMs
 # (no nested virtualization). The baked disk image works with any VM type at runtime.
+# Force cpuType to avoid HVF (also unavailable in CI VMs) — uses TCG software emulation.
 BAKE_CONFIG="${LIMA_HOME}/bake-config.yaml"
 cat > "$BAKE_CONFIG" <<YAML
 vmType: qemu
+cpuType:
+  aarch64: "cortex-a72"
+  x86_64: "qemu64"
 images:
   - location: "file://$(cd "$(dirname "$RAW_IMAGE")" && pwd)/$(basename "$RAW_IMAGE")"
     arch: "${GUEST_ARCH}"
