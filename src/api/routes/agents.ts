@@ -59,7 +59,7 @@ import {
   publishSkillToSkillset,
   refreshAgentSkills,
 } from '@shared/lib/services/skillset-service'
-import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
+import { listArtifactsFromFilesystem, deleteArtifactFromFilesystem } from '@shared/lib/services/artifact-service'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import {
   exportAgentTemplate,
@@ -2851,6 +2851,20 @@ agents.get('/:id/artifacts', AgentRead(), async (c) => {
   } catch (error) {
     console.error('Failed to fetch artifacts:', error)
     return c.json({ error: 'Failed to fetch artifacts' }, 500)
+  }
+})
+
+// DELETE /api/agents/:id/artifacts/:artifactSlug - Delete a dashboard
+agents.delete('/:id/artifacts/:artifactSlug', AgentAdmin(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const artifactSlug = c.req.param('artifactSlug')
+
+    await deleteArtifactFromFilesystem(agentSlug, artifactSlug)
+    return c.body(null, 204)
+  } catch (error) {
+    console.error('Failed to delete artifact:', error)
+    return c.json({ error: 'Failed to delete artifact' }, 500)
   }
 })
 

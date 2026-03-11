@@ -40,6 +40,7 @@ import { CreateAgentDialog } from '@renderer/components/agents/create-agent-dial
 import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
+import { DashboardContextMenu } from '@renderer/components/dashboards/dashboard-context-menu'
 import { useSelection } from '@renderer/context/selection-context'
 import { useScheduledTasks, type ApiScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { useArtifacts, type ArtifactInfo } from '@renderer/hooks/use-artifacts'
@@ -151,19 +152,25 @@ function DashboardSubItem({
 
   return (
     <SidebarMenuSubItem>
-      <SidebarMenuSubButton
-        asChild
-        isActive={isSelected}
-        title={artifact.description || artifact.name}
+      <DashboardContextMenu
+        artifactSlug={artifact.slug}
+        artifactName={artifact.name}
+        agentSlug={agentSlug}
       >
-        <button
-          onClick={handleClick}
-          className="flex items-center gap-2 w-full"
+        <SidebarMenuSubButton
+          asChild
+          isActive={isSelected}
+          title={artifact.description || artifact.name}
         >
-          <LayoutDashboard className="h-3 w-3 shrink-0" />
-          <span className="truncate">{artifact.name}</span>
-        </button>
-      </SidebarMenuSubButton>
+          <button
+            onClick={handleClick}
+            className="flex items-center gap-2 w-full"
+          >
+            <LayoutDashboard className="h-3 w-3 shrink-0" />
+            <span className="truncate">{artifact.name}</span>
+          </button>
+        </SidebarMenuSubButton>
+      </DashboardContextMenu>
     </SidebarMenuSubItem>
   )
 }

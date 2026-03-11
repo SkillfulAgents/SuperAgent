@@ -50,3 +50,23 @@ export async function listArtifactsFromFilesystem(
 
   return dashboards
 }
+
+/**
+ * Delete a dashboard artifact by removing its directory from the host filesystem.
+ */
+export async function deleteArtifactFromFilesystem(
+  agentSlug: string,
+  artifactSlug: string
+): Promise<void> {
+  const workspaceDir = getAgentWorkspaceDir(agentSlug)
+  const artifactDir = path.join(workspaceDir, 'artifacts', artifactSlug)
+
+  // Ensure the path is within the expected artifacts directory
+  const artifactsDir = path.join(workspaceDir, 'artifacts')
+  const resolved = path.resolve(artifactDir)
+  if (!resolved.startsWith(path.resolve(artifactsDir) + path.sep)) {
+    throw new Error('Invalid artifact slug')
+  }
+
+  await fs.promises.rm(artifactDir, { recursive: true, force: true })
+}
