@@ -102,11 +102,11 @@ TEMP_VM="bake"
 echo ""
 echo "Baking containerd + nerdctl into the VM image..."
 
-# Write temp Lima config
+# Use QEMU for baking — VZ (Virtualization.framework) doesn't work in CI VMs
+# (no nested virtualization). The baked disk image works with any VM type at runtime.
 BAKE_CONFIG="${LIMA_HOME}/bake-config.yaml"
 cat > "$BAKE_CONFIG" <<YAML
-vmType: vz
-mountType: virtiofs
+vmType: qemu
 images:
   - location: "file://$(cd "$(dirname "$RAW_IMAGE")" && pwd)/$(basename "$RAW_IMAGE")"
     arch: "${GUEST_ARCH}"
