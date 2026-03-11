@@ -254,8 +254,8 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
       setPageLoading(false)
       fetch(`${baseUrl}/api/agents/${agentSlug}/browser/status`)
         .then((res) => res.json())
-        .then((status: { active?: boolean }) => {
-          if (!status.active) {
+        .then((status: { active?: boolean; sessionId?: string }) => {
+          if (!status.active || status.sessionId !== sessionId) {
             clearBrowserActive(sessionId)
           } else {
             // Browser still active but stream dropped (e.g. tab switch disrupted
