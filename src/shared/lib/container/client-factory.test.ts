@@ -174,6 +174,7 @@ describe('restartRunner', () => {
 
 describe('ANSI stripping regex', () => {
   // The regex used in pullImage: /\x1b\[[0-9;]*[A-Za-z]/g
+  // eslint-disable-next-line no-control-regex
   const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
 
   it('strips basic color codes', () => {

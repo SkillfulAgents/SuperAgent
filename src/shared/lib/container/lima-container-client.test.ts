@@ -42,9 +42,8 @@ vi.mock('@shared/lib/config/data-dir', () => ({
   getDataDir: vi.fn(() => '/mock/data'),
 }))
 
-import { execSync } from 'child_process'
 import * as fs from 'fs'
-import { execWithPath, checkCommandAvailable } from './base-container-client'
+import { execWithPath } from './base-container-client'
 import { getSettings } from '@shared/lib/config/settings'
 
 // ============================================================================
@@ -61,10 +60,8 @@ import {
   LimaContainerClient,
 } from './lima-container-client'
 
-const mockedExecSync = vi.mocked(execSync)
 const mockedFs = vi.mocked(fs)
 const mockedExecWithPath = vi.mocked(execWithPath)
-const mockedCheckCommandAvailable = vi.mocked(checkCommandAvailable)
 const mockedGetSettings = vi.mocked(getSettings)
 
 // ============================================================================
@@ -169,10 +166,6 @@ describe('ensureLimaReady', () => {
   function mockLimaList(vms: any[]) {
     const ndjson = vms.map((v) => JSON.stringify(v)).join('\n')
     mockedExecWithPath.mockResolvedValueOnce({ stdout: ndjson, stderr: '' })
-  }
-
-  function mockLimaListRunning(running: boolean) {
-    mockLimaList([{ name: LIMA_VM_NAME, status: running ? 'Running' : 'Stopped', memory: 4 * 1024 * 1024 * 1024 }])
   }
 
   it('creates VM and starts it when no VM exists', async () => {
