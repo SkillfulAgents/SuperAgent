@@ -40,6 +40,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
   const {
     attachments,
     isDragOver,
+    addFiles,
     removeAttachment,
     clearAttachments,
     handleFileSelect,
@@ -166,6 +167,24 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
     }
   }
 
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+
+    const imageFiles: File[] = []
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        const file = item.getAsFile()
+        if (file) imageFiles.push(file)
+      }
+    }
+
+    if (imageFiles.length > 0) {
+      e.preventDefault()
+      addFiles(imageFiles.map((file) => ({ file })))
+    }
+  }, [addFiles])
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Slash command menu keyboard navigation
     if (slashMenuOpen && filteredCommands.length > 0) {
@@ -229,6 +248,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
           value={message}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           onFocus={() => { if (slashFilter !== null && slashCommands.length > 0) setSlashMenuOpen(true) }}
           onBlur={() => setSlashMenuOpen(false)}
           placeholder={
