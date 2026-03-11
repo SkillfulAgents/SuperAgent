@@ -322,11 +322,12 @@ export async function stopLimaVm(timeoutMs = 15000): Promise<void> {
 }
 
 /**
- * Create the Lima VM with VZ framework and VirtioFS.
+ * Get the bundled Alpine cloud image path if available.
+ * Falls back to null (will download from Alpine CDN at runtime).
  */
 function getBundledVmImagePath(): string | null {
   if (typeof process !== 'undefined' && process.resourcesPath) {
-    const bundled = path.join(process.resourcesPath, 'lima', 'vm-image.qcow2')
+    const bundled = path.join(process.resourcesPath, 'lima', 'alpine.qcow2')
     if (fs.existsSync(bundled)) {
       return bundled
     }
@@ -337,6 +338,19 @@ function getBundledVmImagePath(): string | null {
 async function createLimaVm(): Promise<void> {
   const settings = getSettings()
   const vmMemory = settings.container.runtimeSettings?.lima?.vmMemory || DEFAULT_LIMA_VM_MEMORY
+
+  const arch = process.arch === 'x64' ? 'x86_64' : 'aarch64'
+
+  // Use bundled Alpine cloud image if available, otherwise download from CDN
+  const bundledImage = getBundledVmImagePath()
+  const imageLocation = bundledImage
+    ? `file://${bundledImage}`
+    : `https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/cloud/nocloud_alpine-3.23.3-${arch}-uefi-cloudinit-r0.qcow2`
+  if (bundledImage) {
+    console.log(`Using bundled Alpine image: ${bundledImage}`)
+  } else {
+    console.log(`Bundled image not found, will download from Alpine CDN`)
+  }
 
   const lines = [
     '# Lima VM for Superagent container runtime',
@@ -349,31 +363,28 @@ async function createLimaVm(): Promise<void> {
     `memory: ${vmMemory}`,
     'disk: 60GiB',
     '',
-    '# Alpine uses OpenRC, not systemd — disable Lima built-in containerd management',
-    '# containerd + nerdctl are pre-baked into the VM image at build time',
+    'images:',
+    `  - location: "${imageLocation}"`,
+    `    arch: "${arch}"`,
+    '',
+    '# Disable Lima built-in containerd management — we install via provision script',
     'containerd:',
     '  system: false',
     '  user: false',
     '',
-    '# Start containerd via OpenRC on boot',
+    '# Install containerd + nerdctl on first boot, then start containerd',
     'provision:',
     '  - mode: system',
     '    script: |',
     '      #!/bin/sh',
+    '      if ! command -v nerdctl >/dev/null 2>&1; then',
+    '        echo "Installing containerd + nerdctl..."',
+    '        apk update',
+    '        apk add --no-cache containerd~=2.2 containerd-openrc nerdctl~=2.1 buildkit~=0.25 cni-plugins',
+    '        rc-update add containerd default',
+    '      fi',
     '      service containerd start || true',
   ]
-
-  // Use bundled VM image if available (avoids downloading from the internet)
-  const bundledImage = getBundledVmImagePath()
-  if (bundledImage) {
-    const arch = process.arch === 'x64' ? 'x86_64' : 'aarch64'
-    lines.push(
-      'images:',
-      `  - location: "file://${bundledImage}"`,
-      `    arch: "${arch}"`,
-    )
-    console.log(`Using bundled VM image: ${bundledImage}`)
-  }
 
   lines.push('')
   const config = lines.join('\n')

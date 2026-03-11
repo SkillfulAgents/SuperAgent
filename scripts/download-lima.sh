@@ -1,15 +1,16 @@
 #!/bin/bash
-# Downloads Lima (limactl) binary, guest agent, and a pre-baked Alpine VM image
-# with containerd + nerdctl, for bundling into the Electron app.
+# Downloads Lima (limactl) binary, guest agent, and a fresh Alpine cloud image
+# for bundling into the Electron app.
 #
-# The VM image is downloaded from a GitHub Release (pre-baked by bake-lima-image.sh).
+# Packages (containerd, nerdctl, etc.) are installed on first VM boot via
+# Lima's provision script — no pre-baking needed.
 #
 # Usage: ./scripts/download-lima.sh [arm64|x86_64]
 #
 # Output:
 #   build/lima/bin/limactl                              - Lima CLI binary
 #   build/lima/share/lima/lima-guestagent.Linux-*.gz     - Guest agent for the VM
-#   build/lima/vm-image.qcow2                           - Alpine image with containerd+nerdctl
+#   build/lima/alpine.qcow2                             - Fresh Alpine cloud image
 #
 # electron-builder picks these up via the extraResources config in package.json.
 
@@ -18,8 +19,6 @@ set -euo pipefail
 LIMA_VERSION="2.0.3"
 ALPINE_VERSION="3.23.3"
 ARCH="${1:-$(uname -m)}"
-REPO="SkillfulAgents/SuperAgent"
-RELEASE_TAG="lima-vm-images"
 
 # Normalize to match Lima release naming (arm64, x86_64)
 case "$ARCH" in
@@ -88,25 +87,17 @@ else
   exit 1
 fi
 
-# ── 2. Download pre-baked VM image from GitHub Release ────────────────────────
+# ── 2. Download fresh Alpine cloud image ──────────────────────────────────────
 
-ASSET_NAME="vm-image-alpine-${ALPINE_VERSION}-${GUEST_ARCH}.qcow2"
-VM_IMAGE="${OUTPUT_DIR}/vm-image.qcow2"
-IMAGE_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${ASSET_NAME}"
+ALPINE_IMAGE_NAME="nocloud_alpine-${ALPINE_VERSION}-${GUEST_ARCH}-uefi-cloudinit-r0.qcow2"
+ALPINE_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION%.*}/releases/cloud/${ALPINE_IMAGE_NAME}"
+VM_IMAGE="${OUTPUT_DIR}/alpine.qcow2"
 
 echo ""
-echo "Downloading pre-baked VM image (${ASSET_NAME})..."
-if ! curl -fSL "$IMAGE_URL" -o "$VM_IMAGE"; then
-  echo ""
-  echo "ERROR: Failed to download pre-baked VM image."
-  echo "  URL: $IMAGE_URL"
-  echo ""
-  echo "You need to bake and upload the image first:"
-  echo "  ./scripts/bake-lima-image.sh"
-  exit 1
-fi
+echo "Downloading Alpine ${ALPINE_VERSION} cloud image..."
+curl -fSL "$ALPINE_URL" -o "$VM_IMAGE"
 
-echo "  vm-image: $(du -h "$VM_IMAGE" | cut -f1)"
+echo "  alpine-image: $(du -h "$VM_IMAGE" | cut -f1)"
 
 echo ""
 echo "Total bundle size: $(du -sh "$OUTPUT_DIR" | cut -f1)"
