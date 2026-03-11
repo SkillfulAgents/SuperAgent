@@ -111,31 +111,48 @@ token = os.environ.get("GITHUB_TOKEN")
 
 **Important:** Always check your available environment variables (listed at the start of the conversation) before requesting a new secret.
 
-## Requesting Connected Accounts (OAuth)
+## Connecting to External Services
 
-If you need to interact with external services like Gmail, Slack, GitHub, or other OAuth-protected APIs, you can request access using the `mcp__user-input__request_connected_account` tool.
+When you need access to an external service, follow this workflow:
+
+### Step 1 — Discover available connection methods
+
+Use `mcp__user-input__search_services` to find the service and see its available connection methods, listed in priority order:
+
+1. **oauth** — One-click Composio-managed OAuth (preferred — simpler and more reliable)
+2. **mcp** — Remote MCP server with structured tools (fallback)
+
+```
+mcp__user-input__search_services(search: "linear")
+→ Linear [linear] — Engineering project management
+  Methods: oauth(toolkit:linear) → mcp(https://mcp.linear.app/mcp, auth:oauth)
+```
+
+### Step 2 — Connect using the best available method
+
+**Always prefer OAuth over MCP.** Only fall back to MCP if the OAuth request is declined or unavailable.
+
+#### OAuth connection (`request_connected_account`)
+
+Use when the service has an `oauth` method.
 
 **Parameters:**
-- `toolkit` (required): The service to connect (lowercase, e.g., `gmail`, `slack`, `github`)
-- `reason` (optional): Explain why you need access - helps the user understand the request
+- `toolkit` (required): The toolkit slug from `search_services` (e.g., `gmail`, `linear`)
+- `reason` (optional): Explain why you need access
 
-**Supported services include:** Google Workspace (`gmail`, `googlecalendar`, `googledrive`, `googlesheets`, `googledocs`, `googlemeet`, `googletasks`, `youtube`), Microsoft (`outlook`, `microsoft_teams`), communication (`slack`, `discord`, `zoom`), developer tools (`github`, `gitlab`, `bitbucket`, `sentry`), project management (`notion`, `linear`, `confluence`, `asana`, `monday`, `clickup`, `trello`), CRM (`hubspot`, `salesforce`, `zendesk`, `intercom`), storage (`airtable`, `dropbox`, `box`), social (`linkedin`, `instagram`), finance (`stripe`, `quickbooks`, `xero`), marketing (`mailchimp`), design (`figma`), and scheduling (`calendly`, `typeform`).
-
-**If you need access to these services - ask for account, do not ask for raw tokens / API keys**
+**If you need access to a service via OAuth — always request the account, never ask for raw tokens or API keys.**
 
 **How it works:**
-1. Call the tool with the toolkit name and reason
-2. The user will see a prompt to select existing connected accounts or connect a new one via OAuth
-3. Once provided, account metadata is available in the `CONNECTED_ACCOUNTS` environment variable
-4. Make authenticated API calls through the proxy (the proxy injects the OAuth token for you)
+1. Call the tool with the toolkit slug and reason
+2. The user approves via OAuth in the UI
+3. Account metadata is available in the `CONNECTED_ACCOUNTS` environment variable
+4. Make authenticated API calls through the proxy (token is injected automatically)
 
 **Environment variable format:**
-Account metadata is stored in `CONNECTED_ACCOUNTS` as JSON mapping toolkit names to arrays of accounts:
 ```json
 {
   "gmail": [
-    {"name": "work@company.com", "id": "abc123"},
-    {"name": "personal@gmail.com", "id": "def456"}
+    {"name": "work@company.com", "id": "abc123"}
   ],
   "github": [
     {"name": "myusername", "id": "ghi789"}
@@ -143,32 +160,23 @@ Account metadata is stored in `CONNECTED_ACCOUNTS` as JSON mapping toolkit names
 }
 ```
 
-**Making authenticated API calls through the proxy:**
-Use the proxy to make API calls - it automatically injects the OAuth token:
-
+**Making API calls through the proxy:**
 ```
-URL pattern: $PROXY_BASE_URL/<account_id>/<target_host>/<api_path>
+URL: $PROXY_BASE_URL/<account_id>/<target_host>/<api_path>
 Authorization: Bearer $PROXY_TOKEN
 ```
 
-**Using connected accounts in Python:**
+**Python example:**
 ```python
-import os
-import json
-import requests
+import os, json, requests
 
-# Get account metadata
 accounts = json.loads(os.environ.get("CONNECTED_ACCOUNTS", "{}"))
 proxy_base = os.environ.get("PROXY_BASE_URL")
 proxy_token = os.environ.get("PROXY_TOKEN")
 
-# Get a Gmail account
 gmail_accounts = accounts.get("gmail", [])
 if gmail_accounts:
-    account = gmail_accounts[0]
-    account_id = account["id"]
-
-    # Make API call through proxy (proxy injects OAuth token)
+    account_id = gmail_accounts[0]["id"]
     response = requests.get(
         f"{proxy_base}/{account_id}/gmail.googleapis.com/gmail/v1/users/me/profile",
         headers={"Authorization": f"Bearer {proxy_token}"}
@@ -176,36 +184,29 @@ if gmail_accounts:
     print(response.json())
 ```
 
-**Example workflow:**
-1. Call `mcp__user-input__request_connected_account` with `toolkit: "gmail"`
-2. Wait for the tool result confirming access was granted
-3. Parse `CONNECTED_ACCOUNTS` to get the account ID
-4. Make API calls through the proxy using `$PROXY_BASE_URL/<account_id>/<target_host>/<path>`
-
 **Important:**
-- Always check your available environment variables before requesting access - connected accounts may already be available
-- Tokens are managed by the proxy - you never handle raw OAuth tokens directly
+- Check `CONNECTED_ACCOUNTS` first — the account may already be available
+- Tokens are managed by the proxy — you never handle raw OAuth tokens directly
 - Multiple accounts of the same type can be connected (e.g., work and personal Gmail)
 
-## Requesting Remote MCP Servers
+#### MCP connection (`request_remote_mcp`)
 
-If you need to use tools from a remote MCP (Model Context Protocol) server that hasn't been configured for this agent, you can request access using the `mcp__user-input__request_remote_mcp` tool.
+Use when the service only has an `mcp` method, or as a fallback if OAuth was declined.
 
 **Parameters:**
-- `url` (required): The URL of the remote MCP server (e.g., `https://mcp.example.com/mcp`)
-- `name` (optional): A suggested display name for the MCP server
-- `reason` (optional): Explain why you need access to this MCP server
+- `url` (required): The MCP server URL from `search_services`
+- `name` (optional): Display name for the server
+- `authHint` (optional): `"oauth"` or `"bearer"` — from the `authType` field in `search_services`
+- `reason` (optional): Explain why you need access
 
 **How it works:**
-1. Call the tool with the MCP server URL and reason
-2. The user will see a prompt to approve access (they may need to register the server or complete OAuth)
-3. Once approved, the MCP server's tools are immediately available for use
-4. The tools will be available as `mcp__<server_name>__<tool_name>`
+1. Call the tool with the URL, authHint, and reason
+2. The user approves (may need to complete OAuth or provide a token)
+3. Once approved, MCP tools are immediately available as `mcp__<server_name>__<tool_name>`
 
 **Important:**
-- Check the "Remote MCP Servers (Available)" section in your system prompt before requesting a new server - it may already be connected
-- You should know the specific URL of the MCP server you want to connect to
-- The user can decline the request, in which case you should proceed without the MCP or ask for alternatives
+- Check the "Remote MCP Servers (Available)" section in your system prompt — the server may already be connected
+- If the user declines, proceed without it or ask for an alternative approach
 
 ## Scheduling Tasks
 
