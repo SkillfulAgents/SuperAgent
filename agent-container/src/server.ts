@@ -12,6 +12,7 @@ import * as dns from 'dns';
 import * as net from 'net';
 import { inputManager } from './input-manager';
 import { dashboardManager } from './dashboard-manager';
+import { getCurrentProcess } from './claude-code';
 
 // Global error handlers to prevent crashes from AbortError during interrupts
 // The SDK throws AbortError when queries are aborted, which can propagate uncaught
@@ -392,6 +393,44 @@ app.post('/env', async (c) => {
   } catch (error: any) {
     console.error('[ENV] Error setting env var:', error);
     return c.json({ error: error.message || 'Failed to set environment variable' }, 500);
+  }
+});
+
+// POST /mcp/sync - Update REMOTE_MCPS env var and notify the running process.
+// Called by the host when MCP servers are added/removed.
+app.post('/mcp/sync', async (c) => {
+  try {
+    const body = await c.req.json<{ value: string }>();
+    const newValue = body.value ?? '[]';
+
+    const oldNames = new Set<string>();
+    try {
+      const old = JSON.parse(process.env.REMOTE_MCPS || '[]') as Array<{ name: string }>;
+      for (const m of old) oldNames.add(m.name);
+    } catch { /* ignore */ }
+
+    process.env.REMOTE_MCPS = newValue;
+    await updateEnvFile('REMOTE_MCPS', newValue);
+
+    const newNames = new Set<string>();
+    try {
+      const updated = JSON.parse(newValue) as Array<{ name: string }>;
+      for (const m of updated) newNames.add(m.name);
+    } catch { /* ignore */ }
+
+    const removed = [...oldNames].filter(n => !newNames.has(n));
+
+    if (removed.length > 0) {
+      const proc = getCurrentProcess();
+      if (proc) {
+        proc.notifyMcpRemoved(removed);
+      }
+    }
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    console.error('[MCP-SYNC] Error:', error);
+    return c.json({ error: error.message || 'Failed to sync MCP servers' }, 500);
   }
 });
 

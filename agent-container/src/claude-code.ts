@@ -336,6 +336,27 @@ export class ClaudeCodeProcess extends EventEmitter {
   }
 
   /**
+   * Called when MCP servers are removed externally (e.g. from the UI).
+   * Interrupts the current query so the model gets an updated tool set.
+   */
+  notifyMcpRemoved(names: string[]): void {
+    if (names.length === 0) return;
+    const label = names.join(', ');
+    console.log(`[ClaudeCodeProcess] MCP server(s) removed: [${label}], scheduling interrupt`);
+
+    setTimeout(async () => {
+      try {
+        await this.interrupt();
+        await this.sendMessage(
+          `${SYSTEM_MESSAGE_PREFIX}The following remote MCP server(s) have been removed and their tools are no longer available: ${label}. Continue with the remaining tools.`
+        );
+      } catch (err) {
+        console.error(`[ClaudeCodeProcess] MCP removal interrupt failed:`, err);
+      }
+    }, 0);
+  }
+
+  /**
    * Builds HTTP MCP server configs from the REMOTE_MCPS env var.
    * Each remote MCP is configured as an HTTP transport pointing to the proxy URL.
    */

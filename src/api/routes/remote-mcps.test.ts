@@ -11,6 +11,9 @@ vi.mock('../middleware/auth', () => {
   const passthrough: MiddlewareHandler = async (_c, next) => next()
   return {
     Authenticated: () => passthrough,
+    AgentRead: () => passthrough,
+    AgentUser: () => passthrough,
+    AgentAdmin: () => passthrough,
     UsersMcpServer: () => passthrough,
     IsAdmin: () => passthrough,
     Or: () => passthrough,
@@ -67,6 +70,16 @@ vi.mock('@shared/lib/db/schema', () => ({
     userId: 'user_id',
     createdAt: 'created_at',
   },
+  agentRemoteMcps: {
+    id: 'id',
+    agentSlug: 'agent_slug',
+    remoteMcpId: 'remote_mcp_id',
+  },
+}))
+
+const mockPushRemoteMcpsToContainer = vi.fn().mockResolvedValue(undefined)
+vi.mock('./agents', () => ({
+  pushRemoteMcpsToContainer: (...args: unknown[]) => mockPushRemoteMcpsToContainer(...args),
 }))
 
 vi.mock('drizzle-orm', () => ({
