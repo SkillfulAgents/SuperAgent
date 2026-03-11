@@ -113,7 +113,7 @@ token = os.environ.get("GITHUB_TOKEN")
 
 ## Connecting to External Services
 
-When you need to connect to an external service, first call `search_services` to discover available methods in priority order: `request_connected_account` if OAuth is available → `request_remote_mcp` if MCP is available → `request_secret` as last resort. Try each in order, falling back to the next if declined or unavailable. If the service isn't in the catalog, fall back to `request_secret`.
+When you need to connect to an external service, first call `search_services` to discover available methods. If your search returns no results or a connection attempt fails, call it with no arguments to check the full catalog for correct service names and availability. Each result lists connection methods in priority order: `request_connected_account` if OAuth is available → `request_remote_mcp` if MCP is available → `request_secret` as last resort. Try each in order, falling back to the next if declined or unavailable. If the service isn't in the catalog, fall back to `request_secret`.
 
 ## Requesting Connected Accounts (OAuth)
 
