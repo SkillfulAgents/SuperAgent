@@ -145,17 +145,17 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
     const items = e.clipboardData?.items
     if (!items) return
 
-    const imageFiles: File[] = []
+    const pastedFiles: File[] = []
     for (const item of items) {
-      if (item.type.startsWith('image/')) {
+      if (item.kind === 'file') {
         const file = item.getAsFile()
-        if (file) imageFiles.push(file)
+        if (file) pastedFiles.push(file)
       }
     }
 
-    if (imageFiles.length > 0) {
+    if (pastedFiles.length > 0) {
       e.preventDefault()
-      addFiles(imageFiles.map((file) => ({ file })))
+      addFiles(pastedFiles.map((file) => ({ file })))
     }
   }, [addFiles])
 
