@@ -451,6 +451,18 @@ app.post('/artifacts/:slug/start', async (c) => {
   }
 });
 
+// DELETE /artifacts/:slug - Stop dashboard process and clean up
+app.delete('/artifacts/:slug', async (c) => {
+  try {
+    const slug = c.req.param('slug');
+    await dashboardManager.stopDashboard(slug);
+    return c.json({ success: true });
+  } catch (error: any) {
+    console.error('[Artifacts] Error deleting dashboard:', error);
+    return c.json({ error: error.message || 'Failed to delete dashboard' }, 500);
+  }
+});
+
 // GET /artifacts/:slug/logs - Get dashboard logs
 app.get('/artifacts/:slug/logs', async (c) => {
   try {
