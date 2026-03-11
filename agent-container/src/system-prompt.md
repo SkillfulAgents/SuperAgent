@@ -176,6 +176,17 @@ if gmail_accounts:
     print(response.json())
 ```
 
+**Using curl with the proxy:**
+```bash
+curl -sf -H "Authorization: Bearer $PROXY_TOKEN" \
+  "$(echo -n $PROXY_BASE_URL)/${ACCOUNT_ID}/api.github.com/user/repos"
+```
+
+**⚠️ Proxy pitfalls:**
+- `$PROXY_TOKEN` only works with the proxy URL — never send it directly to external APIs.
+- Always strip trailing newlines from `$PROXY_BASE_URL` (use `echo -n` or `${var%$'\n'}`).
+- Never use `curl -w` to append to the response body — it breaks JSON parsing.
+
 **Example workflow:**
 1. Call `mcp__user-input__request_connected_account` with `toolkit: "gmail"`
 2. Wait for the tool result confirming access was granted
