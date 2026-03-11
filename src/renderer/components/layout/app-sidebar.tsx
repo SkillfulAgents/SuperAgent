@@ -1,7 +1,7 @@
 
 import { ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard, Loader2, WifiOff, LogOut, User, Users } from 'lucide-react'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
-import { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { isElectron, getPlatform } from '@renderer/lib/env'
 import { useDialogs } from '@renderer/context/dialog-context'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
@@ -34,7 +34,7 @@ import { useAgents, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useSessions, type ApiSession } from '@renderer/hooks/use-sessions'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSettings } from '@renderer/hooks/use-settings'
-import { useUserSettings } from '@renderer/hooks/use-user-settings'
+import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { CreateAgentDialog } from '@renderer/components/agents/create-agent-dialog'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
@@ -50,6 +50,24 @@ import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui
 import { useUser } from '@renderer/context/user-context'
 import { NotificationBell } from '@renderer/components/notifications/notification-bell'
 import { useIsOnline } from '@renderer/context/connectivity-context'
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  KeyboardSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core'
+import {
+  SortableContext,
+  verticalListSortingStrategy,
+  arrayMove,
+  sortableKeyboardCoordinates,
+} from '@dnd-kit/sortable'
+import { restrictToVerticalAxis } from '@dnd-kit/modifiers'
+import { SortableAgentMenuItem } from './sortable-agent-item'
+import { applyAgentOrder } from '@renderer/lib/agent-ordering'
 
 // Session sub-item that tracks its streaming state
 function SessionSubItem({
@@ -176,7 +194,10 @@ function DashboardSubItem({
 }
 
 // Agent menu item with expandable sessions
-function AgentMenuItem({ agent }: { agent: ApiAgent }) {
+export const AgentMenuItem = React.forwardRef<
+  HTMLLIElement,
+  { agent: ApiAgent } & React.HTMLAttributes<HTMLLIElement>
+>(({ agent, style, ...rest }, ref) => {
   const { selectedAgentSlug, selectAgent } = useSelection()
   const { agentMemberCount } = useUser()
   const { data: sessions } = useSessions(agent.slug)
@@ -199,7 +220,7 @@ function AgentMenuItem({ agent }: { agent: ApiAgent }) {
 
   return (
     <Collapsible asChild open={isOpen} onOpenChange={setIsOpen}>
-      <SidebarMenuItem>
+      <SidebarMenuItem ref={ref} style={style} {...rest}>
         <AgentContextMenu agent={agent}>
           <SidebarMenuButton
             onClick={handleClick}
@@ -275,7 +296,8 @@ function AgentMenuItem({ agent }: { agent: ApiAgent }) {
       </SidebarMenuItem>
     </Collapsible>
   )
-}
+})
+AgentMenuItem.displayName = 'AgentMenuItem'
 
 function UserFooter() {
   const { isAuthMode, user, signOut } = useUser()
@@ -347,8 +369,41 @@ export function AppSidebar() {
   const [containerSetupOpen, setContainerSetupOpen] = useState(false)
   const { data: agents, isLoading, error } = useAgents()
   const { data: userSettings } = useUserSettings()
+  const updateSettings = useUpdateUserSettings()
   const { data: runtimeStatus } = useRuntimeStatus()
   const isFullScreen = useFullScreen()
+
+  // Drag-and-drop sensors: distance threshold prevents click conflicts
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  )
+
+  // Optimistic local order during mutation
+  const [localOrder, setLocalOrder] = useState<string[] | null>(null)
+  const effectiveOrder = localOrder ?? userSettings?.agentOrder
+  const orderedAgents = useMemo(
+    () => applyAgentOrder(agents ?? [], effectiveOrder),
+    [agents, effectiveOrder]
+  )
+
+  const handleDragEnd = useCallback((event: DragEndEvent) => {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+    if (typeof active.id !== 'string' || typeof over.id !== 'string') return
+
+    const currentSlugs = orderedAgents.map(a => a.slug)
+    const oldIndex = currentSlugs.indexOf(active.id)
+    const newIndex = currentSlugs.indexOf(over.id)
+    if (oldIndex === -1 || newIndex === -1) return
+
+    const newOrder = arrayMove(currentSlugs, oldIndex, newIndex)
+    setLocalOrder(newOrder)
+    updateSettings.mutate(
+      { agentOrder: newOrder },
+      { onSettled: () => setLocalOrder(null) }
+    )
+  }, [orderedAgents, updateSettings])
 
   const isOnline = useIsOnline()
 
@@ -468,9 +523,21 @@ export function AppSidebar() {
                     No agents yet. Create one to get started.
                   </div>
                 ) : (
-                  agents.map((agent) => (
-                    <AgentMenuItem key={agent.slug} agent={agent} />
-                  ))
+                  <DndContext
+                    sensors={sensors}
+                    collisionDetection={closestCenter}
+                    onDragEnd={handleDragEnd}
+                    modifiers={[restrictToVerticalAxis]}
+                  >
+                    <SortableContext
+                      items={orderedAgents.map(a => a.slug)}
+                      strategy={verticalListSortingStrategy}
+                    >
+                      {orderedAgents.map((agent) => (
+                        <SortableAgentMenuItem key={agent.slug} agent={agent} />
+                      ))}
+                    </SortableContext>
+                  </DndContext>
                 )}
               </SidebarMenu>
             </SidebarGroupContent>
