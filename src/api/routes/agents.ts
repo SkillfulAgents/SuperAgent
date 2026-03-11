@@ -2860,6 +2860,17 @@ agents.delete('/:id/artifacts/:artifactSlug', AgentAdmin(), async (c) => {
     const agentSlug = c.req.param('id')
     const artifactSlug = c.req.param('artifactSlug')
 
+    // Stop the dashboard process in the container (if running), then delete files
+    try {
+      const client = containerManager.getClient(agentSlug)
+      const info = containerManager.getCachedInfo(agentSlug)
+      if (info.status === 'running') {
+        await client.fetch(`/artifacts/${encodeURIComponent(artifactSlug)}`, { method: 'DELETE' })
+      }
+    } catch {
+      // Container not running — just delete files
+    }
+
     await deleteArtifactFromFilesystem(agentSlug, artifactSlug)
     return c.body(null, 204)
   } catch (error) {
