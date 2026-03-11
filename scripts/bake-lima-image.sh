@@ -106,6 +106,13 @@ LIMA_HOME="$LIMA_HOME" "$LIMACTL" start "$TEMP_VM"
 echo "Verifying nerdctl inside VM..."
 LIMA_HOME="$LIMA_HOME" "$LIMACTL" shell "$TEMP_VM" -- nerdctl --version
 
+# Clean cloud-init state so it re-runs on next boot.
+# Without this, the baked image retains "already ran" markers and Lima
+# cannot inject fresh SSH keys when creating a new VM from this image.
+echo "Cleaning cloud-init state for re-use..."
+LIMA_HOME="$LIMA_HOME" "$LIMACTL" shell "$TEMP_VM" -- sudo cloud-init clean --logs 2>/dev/null \
+  || LIMA_HOME="$LIMA_HOME" "$LIMACTL" shell "$TEMP_VM" -- sudo rm -rf /var/lib/cloud
+
 LIMA_HOME="$LIMA_HOME" "$LIMACTL" stop "$TEMP_VM"
 
 # ── 3. Convert diffdisk to compact qcow2 ───────────────────────────────────
