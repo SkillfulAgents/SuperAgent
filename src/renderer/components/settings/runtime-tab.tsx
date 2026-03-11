@@ -30,7 +30,7 @@ const RUNNER_LABELS: Record<string, string> = {
   'apple-container': 'macOS Container',
   docker: 'Docker',
   podman: 'Podman',
-  lima: 'Lima',
+  lima: 'Built-in Runtime',
 }
 
 /**
@@ -56,7 +56,7 @@ const RUNTIME_SETTINGS: Record<string, RuntimeSettingField[]> = {
     {
       key: 'vmMemory',
       label: 'VM Memory',
-      description: 'Maximum memory for the Lima VM. Only used as needed.',
+      description: 'Maximum memory for the built-in runtime VM. Only used as needed.',
       type: 'select',
       options: VALID_LIMA_VM_MEMORY_OPTIONS.map((v) => ({ value: v, label: MEMORY_LABELS[v] || v })),
       defaultValue: DEFAULT_LIMA_VM_MEMORY,

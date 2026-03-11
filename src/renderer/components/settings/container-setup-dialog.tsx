@@ -36,10 +36,10 @@ const RUNTIME_INFO: Record<string, { name: string; description: string; installU
     icon: '🦭',
   },
   lima: {
-    name: 'Lima (Built-in)',
+    name: 'Built-in Runtime',
     description: 'Bundled lightweight container runtime. No extra software needed — just works.',
-    installUrl: 'https://lima-vm.io/',
-    icon: '🦙',
+    installUrl: '',
+    icon: '📦',
   },
 }
 

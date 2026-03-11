@@ -33,10 +33,10 @@ const RUNTIME_INFO: Record<string, { name: string; description: string; installU
     icon: '🦭',
   },
   lima: {
-    name: 'Lima (Built-in)',
+    name: 'Built-in Runtime',
     description: 'Bundled lightweight container runtime. No extra software needed — just works.',
-    installUrl: 'https://lima-vm.io/',
-    icon: '🦙',
+    installUrl: '',
+    icon: '📦',
   },
 }
 
@@ -47,9 +47,9 @@ export function DockerSetupStep() {
   const refreshAvailability = useRefreshAvailability()
   const [othersOpen, setOthersOpen] = useState(false)
 
-  // Detect if Lima is actively starting (CHECKING status with lima in the message)
+  // Detect if the built-in runtime is actively starting
   const isLimaStarting = runtimeStatus?.runtimeReadiness?.status === 'CHECKING' &&
-    runtimeStatus.runtimeReadiness.message?.toLowerCase().includes('lima')
+    runtimeStatus.runtimeReadiness.message?.toLowerCase().includes('built-in')
 
   const runtimeStatuses = useMemo(() => {
     if (!settings?.runnerAvailability) return []

@@ -1,5 +1,5 @@
 import path from 'path'
-import { createContainerClient, checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, startRunner, refreshRunnerAvailability, type ContainerRunner } from './client-factory'
+import { createContainerClient, checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, startRunner, refreshRunnerAvailability, getRunnerDisplayName, type ContainerRunner } from './client-factory'
 import type { ContainerClient, ContainerConfig, ContainerInfo, HealthCheckResult, RuntimeReadiness } from './types'
 import { healthMonitor } from './health-monitor'
 import { db } from '@shared/lib/db'
@@ -584,7 +584,7 @@ class ContainerManager {
 
     this.setReadiness({
       status: 'CHECKING',
-      message: `Checking ${configuredRunner} availability...`,
+      message: `Checking ${getRunnerDisplayName(configuredRunner)} availability...`,
       pullProgress: null,
     })
 
@@ -596,7 +596,7 @@ class ContainerManager {
       if ((configuredRunner === 'apple-container' || configuredRunner === 'lima') && runnerStatus?.installed && !runnerStatus?.running) {
         this.setReadiness({
           status: 'CHECKING',
-          message: `Starting ${configuredRunner} runtime...`,
+          message: `Starting ${getRunnerDisplayName(configuredRunner)} runtime...`,
           pullProgress: null,
         })
 
@@ -619,7 +619,7 @@ class ContainerManager {
           if (!available) {
             this.setReadiness({
               status: 'RUNTIME_UNAVAILABLE',
-              message: `${configuredRunner} runtime failed to start in time.`,
+              message: `${getRunnerDisplayName(configuredRunner)} runtime failed to start in time.`,
               pullProgress: null,
             })
             return
@@ -628,7 +628,7 @@ class ContainerManager {
         } else {
           this.setReadiness({
             status: 'RUNTIME_UNAVAILABLE',
-            message: `Failed to start ${configuredRunner} runtime: ${startResult.message}`,
+            message: `Failed to start ${getRunnerDisplayName(configuredRunner)} runtime: ${startResult.message}`,
             pullProgress: null,
           })
           return
@@ -642,9 +642,10 @@ class ContainerManager {
           settings = { ...settings, container: { ...settings.container, containerRunner: configuredRunner } }
           updateSettings(settings)
         } else {
+          const displayName = getRunnerDisplayName(configuredRunner)
           const detail = !runnerStatus?.installed
-            ? `${configuredRunner} is not installed.`
-            : `${configuredRunner} is not running. Please start it and refresh.`
+            ? `${displayName} is not installed.`
+            : `${displayName} is not running. Please start it and refresh.`
           this.setReadiness({
             status: 'RUNTIME_UNAVAILABLE',
             message: detail,

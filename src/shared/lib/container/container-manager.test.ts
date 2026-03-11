@@ -26,6 +26,7 @@ vi.mock('./client-factory', () => ({
   buildImage: vi.fn(),
   startRunner: vi.fn(),
   refreshRunnerAvailability: vi.fn(),
+  getRunnerDisplayName: (runner: string) => runner,
 }))
 
 const mockGetOrCreateProxyToken = vi.fn()

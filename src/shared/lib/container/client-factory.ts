@@ -51,6 +51,20 @@ export const SUPPORTED_RUNNERS: ContainerRunner[] = ALL_RUNNERS
   .map((r) => r.name)
 
 /**
+ * User-facing display name for a runner.
+ */
+const RUNNER_DISPLAY_NAMES: Record<ContainerRunner, string> = {
+  'apple-container': 'macOS Container',
+  docker: 'Docker',
+  podman: 'Podman',
+  lima: 'Built-in Runtime',
+}
+
+export function getRunnerDisplayName(runner: ContainerRunner): string {
+  return RUNNER_DISPLAY_NAMES[runner] || runner
+}
+
+/**
  * Get the actual CLI command for a runner name.
  * E.g., 'apple-container' -> 'container', 'docker' -> 'docker'
  */
@@ -115,9 +129,9 @@ export async function startRunner(runner: ContainerRunner): Promise<{ success: b
   if (runner === 'lima') {
     try {
       await ensureLimaReady()
-      return { success: true, message: 'Lima VM is running.' }
+      return { success: true, message: 'Built-in runtime is running.' }
     } catch (error: any) {
-      return { success: false, message: `Failed to start Lima VM: ${error.message}` }
+      return { success: false, message: `Failed to start built-in runtime: ${error.message}` }
     }
   }
 
