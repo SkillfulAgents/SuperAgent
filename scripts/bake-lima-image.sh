@@ -106,12 +106,33 @@ LIMA_HOME="$LIMA_HOME" "$LIMACTL" start "$TEMP_VM"
 echo "Verifying nerdctl inside VM..."
 LIMA_HOME="$LIMA_HOME" "$LIMACTL" shell "$TEMP_VM" -- nerdctl --version
 
-# Clean cloud-init state so it re-runs on next boot.
-# Without this, the baked image retains "already ran" markers and Lima
-# cannot inject fresh SSH keys when creating a new VM from this image.
-echo "Cleaning cloud-init state for re-use..."
-LIMA_HOME="$LIMA_HOME" "$LIMACTL" shell "$TEMP_VM" -- sudo cloud-init clean --logs 2>/dev/null \
-  || LIMA_HOME="$LIMA_HOME" "$LIMACTL" shell "$TEMP_VM" -- sudo rm -rf /var/lib/cloud
+# Clean ALL user/session state so the image works like a fresh cloud image.
+# The bake session creates a user, SSH keys, and cloud-init state that must
+# be removed so Lima can inject fresh credentials on each new VM.
+echo "Cleaning bake session state for re-use..."
+BAKE_USER=$(LIMA_HOME="$LIMA_HOME" "$LIMACTL" shell "$TEMP_VM" -- whoami)
+echo "  Bake user: $BAKE_USER"
+
+# 1. Clean cloud-init state (so it re-runs on next boot)
+LIMA_HOME="$LIMA_HOME" "$LIMACTL" shell "$TEMP_VM" -- sudo cloud-init clean --logs 2>/dev/null || true
+LIMA_HOME="$LIMA_HOME" "$LIMACTL" shell "$TEMP_VM" -- sudo rm -rf /var/lib/cloud
+
+# 2. Remove SSH authorized_keys from all users (bake session keys)
+LIMA_HOME="$LIMA_HOME" "$LIMACTL" shell "$TEMP_VM" -- sudo sh -c 'rm -rf /home/*/.ssh /root/.ssh'
+
+# 3. Remove SSH host keys (forces regeneration on next boot)
+LIMA_HOME="$LIMA_HOME" "$LIMACTL" shell "$TEMP_VM" -- sudo rm -f /etc/ssh/ssh_host_*
+
+# 4. Delete the bake-session user (cloud-init will create the runtime user)
+if [ -n "$BAKE_USER" ] && [ "$BAKE_USER" != "root" ]; then
+  LIMA_HOME="$LIMA_HOME" "$LIMACTL" shell "$TEMP_VM" -- sudo deluser "$BAKE_USER" 2>/dev/null || true
+  LIMA_HOME="$LIMA_HOME" "$LIMACTL" shell "$TEMP_VM" -- sudo rm -rf "/home/$BAKE_USER"
+fi
+
+# 5. Remove Lima guest agent state
+LIMA_HOME="$LIMA_HOME" "$LIMACTL" shell "$TEMP_VM" -- sudo rm -rf /run/lima-guestagent.sock
+
+echo "  Cleanup complete"
 
 LIMA_HOME="$LIMA_HOME" "$LIMACTL" stop "$TEMP_VM"
 
