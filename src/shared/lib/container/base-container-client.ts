@@ -124,14 +124,17 @@ export async function checkCommandAvailable(command: string): Promise<boolean> {
  */
 export function writeEnvFile(
   envVars: Record<string, string | undefined>,
-  agentId: string
+  agentId: string,
+  tmpDir?: string
 ): { flag: string; cleanup: () => void } {
   const content = Object.entries(envVars)
     .filter(([_, value]) => value !== undefined)
     .map(([key, value]) => `${key}=${value!.replace(/[\r\n]/g, '')}`)
     .join('\n')
 
-  const envFilePath = path.join(os.tmpdir(), `superagent-env-${agentId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+  const dir = tmpDir || os.tmpdir()
+  fs.mkdirSync(dir, { recursive: true })
+  const envFilePath = path.join(dir, `superagent-env-${agentId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
   fs.writeFileSync(envFilePath, content, { mode: 0o600 })
 
   return {
@@ -878,7 +881,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    * This avoids shell quoting issues and Windows command length limits.
    * The caller must clean up the file after the container starts.
    */
-  private buildEnvFile(additionalEnvVars?: Record<string, string>): { flag: string; cleanup: () => void } {
+  protected buildEnvFile(additionalEnvVars?: Record<string, string>): { flag: string; cleanup: () => void } {
     const envVars: Record<string, string | undefined> = {
       ANTHROPIC_API_KEY: getEffectiveAnthropicApiKey(),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',

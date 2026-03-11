@@ -649,3 +649,150 @@ describe('containerManager.syncAgentStatus', () => {
     expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('sync-agent')
   })
 })
+
+// ============================================================================
+// resetReadiness — PULLING_IMAGE guard
+// ============================================================================
+
+describe('containerManager.resetReadiness', () => {
+  it('resets to CHECKING when current status is READY', () => {
+    // Set initial state to READY
+    ;(containerManager as any)._readiness = {
+      status: 'READY',
+      message: 'Runtime ready',
+      pullProgress: null,
+    }
+
+    containerManager.resetReadiness('Restarting...')
+
+    const readiness = containerManager.getReadiness()
+    expect(readiness.status).toBe('CHECKING')
+    expect(readiness.message).toBe('Restarting...')
+  })
+
+  it('resets to CHECKING when current status is ERROR', () => {
+    ;(containerManager as any)._readiness = {
+      status: 'ERROR',
+      message: 'Something failed',
+      pullProgress: null,
+    }
+
+    containerManager.resetReadiness()
+
+    expect(containerManager.getReadiness().status).toBe('CHECKING')
+  })
+
+  it('resets to CHECKING when current status is RUNTIME_UNAVAILABLE', () => {
+    ;(containerManager as any)._readiness = {
+      status: 'RUNTIME_UNAVAILABLE',
+      message: 'No runtime',
+      pullProgress: null,
+    }
+
+    containerManager.resetReadiness()
+
+    expect(containerManager.getReadiness().status).toBe('CHECKING')
+  })
+
+  it('does NOT reset when current status is PULLING_IMAGE', () => {
+    const pullProgress = {
+      status: '3 of 7 layers',
+      percent: 43,
+      completedLayers: 3,
+      totalLayers: 7,
+    }
+    ;(containerManager as any)._readiness = {
+      status: 'PULLING_IMAGE',
+      message: 'Pulling...',
+      pullProgress,
+    }
+
+    containerManager.resetReadiness('Should be ignored')
+
+    const readiness = containerManager.getReadiness()
+    expect(readiness.status).toBe('PULLING_IMAGE')
+    expect(readiness.message).toBe('Pulling...')
+    expect(readiness.pullProgress).toEqual(pullProgress)
+  })
+
+  it('uses default message when none provided', () => {
+    ;(containerManager as any)._readiness = {
+      status: 'READY',
+      message: 'Ready',
+      pullProgress: null,
+    }
+
+    containerManager.resetReadiness()
+
+    expect(containerManager.getReadiness().message).toBe('Restarting runtime...')
+  })
+})
+
+// ============================================================================
+// stopAll — timeout and error isolation
+// ============================================================================
+
+describe('containerManager.stopAll', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    containerManager.clearClients()
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('stops all containers and clears state', async () => {
+    containerManager.getClient('agent-1')
+    containerManager.getClient('agent-2')
+    mockStop.mockResolvedValue(undefined)
+    mockGetInfoFromRuntime.mockResolvedValue({ status: 'stopped', port: null })
+
+    const promise = containerManager.stopAll()
+    await vi.advanceTimersByTimeAsync(0)
+    await promise
+
+    expect(mockStop).toHaveBeenCalledTimes(2)
+    // After stopAll, clients and statuses are cleared — getCachedInfo returns default 'stopped'
+    expect(containerManager.getCachedInfo('agent-1')).toEqual({ status: 'stopped', port: null })
+  })
+
+  it('does not throw when individual container stop fails', async () => {
+    containerManager.getClient('agent-1')
+    containerManager.getClient('agent-2')
+    // First stop fails, second succeeds
+    mockStop.mockRejectedValueOnce(new Error('connection refused'))
+    mockStop.mockResolvedValueOnce(undefined)
+    mockGetInfoFromRuntime.mockResolvedValue({ status: 'stopped', port: null })
+
+    const promise = containerManager.stopAll()
+    await vi.advanceTimersByTimeAsync(0)
+    // Should not throw
+    await expect(promise).resolves.toBeUndefined()
+  })
+
+  it('times out individual containers without blocking others', async () => {
+    containerManager.getClient('fast-agent')
+    containerManager.getClient('slow-agent')
+
+    let callCount = 0
+    mockStop.mockImplementation(() => {
+      callCount++
+      if (callCount === 2) {
+        // Second container hangs
+        return new Promise(() => {})
+      }
+      return Promise.resolve()
+    })
+    mockGetInfoFromRuntime.mockResolvedValue({ status: 'stopped', port: null })
+
+    const promise = containerManager.stopAll()
+    // Advance past the 10s timeout
+    await vi.advanceTimersByTimeAsync(11000)
+    await promise
+
+    // Both were attempted
+    expect(mockStop).toHaveBeenCalledTimes(2)
+  })
+})

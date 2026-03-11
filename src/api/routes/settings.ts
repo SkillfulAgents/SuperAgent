@@ -23,7 +23,8 @@ import {
 import { getTenantId } from '@shared/lib/analytics/tenant-id'
 import { getSttProvider } from '@shared/lib/stt'
 import { containerManager } from '@shared/lib/container/container-manager'
-import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
+import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
+import { VALID_LIMA_VM_MEMORY_OPTIONS } from '@shared/lib/container/types'
 import { detectAllProviders } from '../../main/host-browser'
 import { db } from '@shared/lib/db'
 import { proxyAuditLog, proxyTokens, agentConnectedAccounts, scheduledTasks, notifications, connectedAccounts } from '@shared/lib/db/schema'
@@ -105,6 +106,14 @@ settings.put('/', async (c) => {
           },
           409
         )
+      }
+    }
+
+    // Validate runtimeSettings if provided
+    if (body.container?.runtimeSettings) {
+      const limaSettings = body.container.runtimeSettings.lima
+      if (limaSettings?.vmMemory && !VALID_LIMA_VM_MEMORY_OPTIONS.includes(limaSettings.vmMemory)) {
+        return c.json({ error: `Invalid Lima VM memory. Must be one of: ${VALID_LIMA_VM_MEMORY_OPTIONS.join(', ')}` }, 400)
       }
     }
 
@@ -317,6 +326,9 @@ settings.post('/start-runner', async (c) => {
       return c.json({ error: `Invalid runner. Must be one of: ${SUPPORTED_RUNNERS.join(', ')}` }, 400)
     }
 
+    // Immediately broadcast CHECKING state so the frontend shows the starting banner
+    containerManager.resetReadiness(`Starting ${runner} runtime...`)
+
     const result = await startRunner(runner)
 
     if (result.success) {
@@ -339,6 +351,40 @@ settings.post('/start-runner', async (c) => {
   } catch (error) {
     console.error('Failed to start runner:', error)
     return c.json({ error: 'Failed to start runner' }, 500)
+  }
+})
+
+// POST /api/settings/restart-runner - Restart a container runtime (e.g., after changing runtime settings)
+settings.post('/restart-runner', async (c) => {
+  try {
+    const body = await c.req.json()
+    const runner = body.runner as ContainerRunner
+
+    if (!runner || !SUPPORTED_RUNNERS.includes(runner)) {
+      return c.json({ error: `Invalid runner. Must be one of: ${SUPPORTED_RUNNERS.join(', ')}` }, 400)
+    }
+
+    // Immediately broadcast CHECKING state so the frontend blocks agent creation
+    // and shows the "restarting" banner before the actual restart begins
+    containerManager.resetReadiness(`Restarting ${runner} runtime...`)
+
+    const result = await restartRunner(runner)
+
+    if (result.success) {
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+      const runnerAvailability = await refreshRunnerAvailability()
+
+      containerManager.ensureImageReady().catch((error) => {
+        console.error('Failed to check image after restarting runner:', error)
+      })
+
+      return c.json({ ...result, runnerAvailability })
+    }
+
+    return c.json(result, 400)
+  } catch (error) {
+    console.error('Failed to restart runner:', error)
+    return c.json({ error: 'Failed to restart runner' }, 500)
   }
 })
 

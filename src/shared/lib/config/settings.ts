@@ -1,5 +1,6 @@
 import fs from 'fs'
 import path from 'path'
+import os from 'os'
 import { getDataDir } from './data-dir'
 import { getDefaultAgentImage, AGENT_IMAGE_REGISTRY } from './version'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
@@ -11,6 +12,11 @@ export interface ContainerSettings {
     cpu: number
     memory: string
   }
+  /**
+   * Per-runtime settings, keyed by runner name.
+   * Each runtime can define its own params (VM config, API keys, etc.).
+   */
+  runtimeSettings?: Record<string, Record<string, string>>
 }
 
 export interface ApiKeySettings {
@@ -193,14 +199,22 @@ export interface GlobalSettingsResponse {
   analyticsTargets?: AnalyticsTarget[]
 }
 
+/**
+ * Default container runner: Lima on macOS (bundled, no install needed), Docker elsewhere.
+ */
+function getDefaultContainerRunner(): string {
+  return os.platform() === 'darwin' ? 'lima' : 'docker'
+}
+
 const DEFAULT_SETTINGS: AppSettings = {
   container: {
-    containerRunner: 'docker',
+    containerRunner: getDefaultContainerRunner(),
     agentImage: getDefaultAgentImage(),
     resourceLimits: {
       cpu: 2,
       memory: '4g',
     },
+    runtimeSettings: {},
   },
   app: {
     showMenuBarIcon: true,
@@ -261,6 +275,8 @@ export function loadSettings(): AppSettings {
             ...DEFAULT_SETTINGS.container.resourceLimits,
             ...loaded.container?.resourceLimits,
           },
+          // Ensure runtimeSettings exists (may be missing in old settings files)
+          runtimeSettings: loaded.container?.runtimeSettings ?? {},
         },
         app: {
           ...DEFAULT_SETTINGS.app,

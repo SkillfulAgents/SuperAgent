@@ -13,7 +13,8 @@
     "build:api": "tsup",
     "build:electron": "electron-vite build",
     "preview": "npm run build && node dist/web/server.mjs",
-    "dist:mac": "electron-vite build && electron-builder --mac",
+    "download:lima": "bash scripts/download-lima.sh",
+    "dist:mac": "npm run download:lima && electron-vite build && electron-builder --mac",
     "dist:win": "electron-vite build && electron-builder --win",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts,.tsx",
@@ -148,6 +149,15 @@
           "tray*",
           "status_*",
           "icon*"
+        ]
+      },
+      {
+        "from": "build/lima",
+        "to": "lima",
+        "filter": [
+          "bin/limactl",
+          "share/lima/lima-guestagent*",
+          "vm-image.qcow2"
         ]
       }
     ],

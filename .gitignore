@@ -8,6 +8,7 @@ out/
 dist/
 release/
 agent-container/dist/
+build/lima/
 
 # Test coverage
 coverage/

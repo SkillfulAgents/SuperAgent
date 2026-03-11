@@ -140,7 +140,34 @@ export function useStartRunner() {
       return data
     },
     onSuccess: () => {
-      // Invalidate settings to refresh runner availability
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+    },
+  })
+}
+
+export function useRestartRunner() {
+  const queryClient = useQueryClient()
+
+  return useMutation<StartRunnerResponse, Error, string>({
+    mutationFn: async (runner) => {
+      // Immediately invalidate so the next poll sees the runner as stopped
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+
+      const res = await apiFetch('/api/settings/restart-runner', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runner }),
+      })
+
+      const data = await res.json()
+
+      if (!res.ok) {
+        throw new Error(data.message || data.error || 'Failed to restart runner')
+      }
+
+      return data
+    },
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] })
     },
   })

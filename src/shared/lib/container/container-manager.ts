@@ -469,12 +469,18 @@ class ContainerManager {
     this.healthWarnings.clear()
   }
 
-  // Stop all containers
+  // Stop all containers (with per-container timeout to prevent blocking shutdown)
   async stopAll(): Promise<void> {
+    const STOP_TIMEOUT_MS = 10000
     const agentIds = Array.from(this.clients.keys())
     const stopPromises = agentIds.map(async (agentId) => {
       try {
-        await this.stopContainer(agentId)
+        await Promise.race([
+          this.stopContainer(agentId),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('Container stop timed out')), STOP_TIMEOUT_MS)
+          ),
+        ])
       } catch (error) {
         console.error(`Failed to stop container for agent ${agentId}:`, error)
       }
@@ -530,6 +536,19 @@ class ContainerManager {
     return this._readiness
   }
 
+  /** Reset readiness to CHECKING state and broadcast. Used when restarting a runtime.
+   *  Skips reset if an image pull is in progress to avoid losing pull progress UI. */
+  resetReadiness(message = 'Restarting runtime...'): void {
+    if (this._readiness.status === 'PULLING_IMAGE') {
+      return
+    }
+    this.setReadiness({
+      status: 'CHECKING',
+      message,
+      pullProgress: null,
+    })
+  }
+
   /** Update readiness state and broadcast change via SSE. */
   private setReadiness(readiness: RuntimeReadiness): void {
     this._readiness = readiness
@@ -573,22 +592,24 @@ class ContainerManager {
     const runnerStatus = allAvailability.find((r) => r.runner === configuredRunner)
 
     if (!runnerStatus?.available) {
-      // Auto-start Apple Container runtime if it's installed but not running
-      if (configuredRunner === 'apple-container' && runnerStatus?.installed && !runnerStatus?.running) {
+      // Auto-start runtimes that support it (Apple Container, Lima)
+      if ((configuredRunner === 'apple-container' || configuredRunner === 'lima') && runnerStatus?.installed && !runnerStatus?.running) {
         this.setReadiness({
           status: 'CHECKING',
-          message: 'Starting Apple Container runtime...',
+          message: `Starting ${configuredRunner} runtime...`,
           pullProgress: null,
         })
 
-        const startResult = await startRunner('apple-container')
+        const startResult = await startRunner(configuredRunner)
         if (startResult.success) {
-          // Poll for runtime to become available (up to ~15s)
+          // Poll for runtime to become available
+          // Lima VM boot can take up to ~30s, Apple Container ~15s
+          const maxPollSeconds = configuredRunner === 'lima' ? 60 : 15
           let available = false
-          for (let i = 0; i < 15; i++) {
+          for (let i = 0; i < maxPollSeconds; i++) {
             await new Promise((r) => setTimeout(r, 1000))
             const refreshed = await refreshRunnerAvailability()
-            const status = refreshed.find((r) => r.runner === 'apple-container')
+            const status = refreshed.find((r) => r.runner === configuredRunner)
             if (status?.available) {
               available = true
               break
@@ -598,7 +619,7 @@ class ContainerManager {
           if (!available) {
             this.setReadiness({
               status: 'RUNTIME_UNAVAILABLE',
-              message: 'Apple Container runtime failed to start in time.',
+              message: `${configuredRunner} runtime failed to start in time.`,
               pullProgress: null,
             })
             return
@@ -607,13 +628,13 @@ class ContainerManager {
         } else {
           this.setReadiness({
             status: 'RUNTIME_UNAVAILABLE',
-            message: `Failed to start Apple Container runtime: ${startResult.message}`,
+            message: `Failed to start ${configuredRunner} runtime: ${startResult.message}`,
             pullProgress: null,
           })
           return
         }
       } else {
-        // Configured runner not available — check if another runner is available and auto-switch
+        // Configured runner not available — check if another runner is already running and auto-switch
         const alternativeRunner = allAvailability.find((r) => r.available && r.runner !== configuredRunner)
         if (alternativeRunner) {
           console.log(`Configured runner ${configuredRunner} not available, auto-switching to ${alternativeRunner.runner}`)

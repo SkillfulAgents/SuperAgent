@@ -348,6 +348,7 @@ export function AppSidebar() {
   const readiness = runtimeStatus?.runtimeReadiness
   const isRuntimeUnavailable = readiness?.status === 'RUNTIME_UNAVAILABLE' || readiness?.status === 'ERROR'
   const isPullingOrBuilding = readiness?.status === 'PULLING_IMAGE'
+  const isChecking = readiness?.status === 'CHECKING'
 
   // Track if we've shown the initial container setup dialog
   const hasShownInitialSetup = useRef(false)
@@ -381,7 +382,7 @@ export function AppSidebar() {
 
       {!isOnline && (
         <div className="px-2 pt-2">
-          <Alert variant="destructive" className="py-2">
+          <Alert variant="destructive" className="py-2 [&>svg]:top-2.5">
             <WifiOff className="h-4 w-4" />
             <AlertDescription className="text-xs">
               No internet connection. Some features may be unavailable.
@@ -394,7 +395,7 @@ export function AppSidebar() {
         <div className="px-2 pt-2">
           <Alert
             variant="destructive"
-            className="py-2 cursor-pointer hover:bg-destructive/20 transition-colors"
+            className="py-2 [&>svg]:top-2.5 cursor-pointer hover:bg-destructive/20 transition-colors"
             onClick={() => setSettingsOpen(true)}
           >
             <AlertTriangle className="h-4 w-4" />
@@ -406,9 +407,20 @@ export function AppSidebar() {
         </div>
       )}
 
+      {isChecking && (
+        <div className="px-2 pt-2">
+          <Alert className="py-2 [&>svg]:top-2.5">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <AlertDescription className="text-xs">
+              {readiness?.message || 'Starting runtime...'}
+            </AlertDescription>
+          </Alert>
+        </div>
+      )}
+
       {isPullingOrBuilding && (
         <div className="px-2 pt-2">
-          <Alert className="py-2">
+          <Alert className="py-2 [&>svg]:top-2.5">
             <Loader2 className="h-4 w-4 animate-spin" />
             <AlertDescription className="text-xs">
               {readiness?.message || 'Preparing agent image...'}

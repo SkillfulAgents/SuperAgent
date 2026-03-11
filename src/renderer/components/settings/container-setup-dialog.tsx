@@ -35,6 +35,12 @@ const RUNTIME_INFO: Record<string, { name: string; description: string; installU
     installUrl: 'https://podman.io/getting-started/installation',
     icon: '🦭',
   },
+  lima: {
+    name: 'Lima (Built-in)',
+    description: 'Bundled lightweight container runtime. No extra software needed — just works.',
+    installUrl: 'https://lima-vm.io/',
+    icon: '🦙',
+  },
 }
 
 export function ContainerSetupDialog({ open, onOpenChange }: ContainerSetupDialogProps) {

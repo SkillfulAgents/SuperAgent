@@ -10,8 +10,9 @@ import {
   SelectValue,
 } from '@renderer/components/ui/select'
 import { Alert, AlertDescription, AlertTitle } from '@renderer/components/ui/alert'
-import { useSettings, useUpdateSettings, useStartRunner, useRefreshAvailability } from '@renderer/hooks/use-settings'
+import { useSettings, useUpdateSettings, useStartRunner, useRestartRunner, useRefreshAvailability } from '@renderer/hooks/use-settings'
 import { AlertCircle, AlertTriangle, Play, Loader2, RefreshCw, Plus, X } from 'lucide-react'
+import { DEFAULT_LIMA_VM_MEMORY, VALID_LIMA_VM_MEMORY_OPTIONS } from '@shared/lib/container/types'
 
 const MIN_MEMORY_BYTES = 512 * 1024 * 1024 // 512 MiB
 
@@ -29,15 +30,48 @@ const RUNNER_LABELS: Record<string, string> = {
   'apple-container': 'macOS Container',
   docker: 'Docker',
   podman: 'Podman',
+  lima: 'Lima',
+}
+
+/**
+ * Per-runtime settings definitions.
+ * Each runtime declares its configurable fields with metadata for rendering.
+ */
+interface RuntimeSettingField {
+  key: string
+  label: string
+  description: string
+  type: 'select' | 'text'
+  options?: { value: string; label: string }[]
+  defaultValue: string
+}
+
+const MEMORY_LABELS: Record<string, string> = {
+  '2GiB': '2 GB', '4GiB': '4 GB', '6GiB': '6 GB',
+  '8GiB': '8 GB', '12GiB': '12 GB', '16GiB': '16 GB',
+}
+
+const RUNTIME_SETTINGS: Record<string, RuntimeSettingField[]> = {
+  lima: [
+    {
+      key: 'vmMemory',
+      label: 'VM Memory',
+      description: 'Maximum memory for the Lima VM. Only used as needed.',
+      type: 'select',
+      options: VALID_LIMA_VM_MEMORY_OPTIONS.map((v) => ({ value: v, label: MEMORY_LABELS[v] || v })),
+      defaultValue: DEFAULT_LIMA_VM_MEMORY,
+    },
+  ],
 }
 
 export function RuntimeTab() {
   const { data: settings, isLoading } = useSettings()
   const updateSettings = useUpdateSettings()
   const startRunner = useStartRunner()
+  const restartRunner = useRestartRunner()
   const refreshAvailability = useRefreshAvailability()
 
-  // Local form state
+  // Local form state — main settings
   const [containerRunner, setContainerRunner] = useState('')
   const [agentImage, setAgentImage] = useState('')
   const [cpuLimit, setCpuLimit] = useState('')
@@ -48,8 +82,26 @@ export function RuntimeTab() {
   const [maxTurns, setMaxTurns] = useState<string | null>(null)
   const [maxBudgetUsd, setMaxBudgetUsd] = useState<string | null>(null)
 
+  // Local form state — runtime-specific settings (keyed by field key)
+  const [runtimeSettingsForm, setRuntimeSettingsForm] = useState<Record<string, string>>({})
+
   // Track if form has unsaved changes
   const [hasChanges, setHasChanges] = useState(false)
+
+  // Get saved runtime settings for the current runner
+  const savedRuntimeSettings = settings?.container.runtimeSettings?.[containerRunner] ?? {}
+
+  // Get the field definitions for the current runner
+  const currentRunnerFields = RUNTIME_SETTINGS[containerRunner] ?? []
+
+  // Check if runtime-specific settings have changed
+  const runtimeSettingsChanged = useMemo(() => {
+    return currentRunnerFields.some((field) => {
+      const saved = savedRuntimeSettings[field.key] || field.defaultValue
+      const current = runtimeSettingsForm[field.key] || field.defaultValue
+      return saved !== current
+    })
+  }, [currentRunnerFields, savedRuntimeSettings, runtimeSettingsForm])
 
   // Compute runner availability map with detailed status
   const runnerAvailabilityMap = useMemo(() => {
@@ -107,7 +159,19 @@ export function RuntimeTab() {
     }
   }, [settings])
 
-  // Check for changes
+  // Initialize runtime settings form when runner changes or settings load
+  useEffect(() => {
+    if (!settings || !containerRunner) return
+    const saved = settings.container.runtimeSettings?.[containerRunner] ?? {}
+    const fields = RUNTIME_SETTINGS[containerRunner] ?? []
+    const form: Record<string, string> = {}
+    for (const field of fields) {
+      form[field.key] = saved[field.key] || field.defaultValue
+    }
+    setRuntimeSettingsForm(form)
+  }, [containerRunner, settings])
+
+  // Check for changes (main settings only — runtime settings have their own save)
   useEffect(() => {
     if (!settings) return
 
@@ -149,6 +213,36 @@ export function RuntimeTab() {
     }
   }
 
+  // Save runtime-specific settings and restart the runtime
+  const handleSaveRuntimeSettings = async () => {
+    try {
+      // Save the settings first
+      await updateSettings.mutateAsync({
+        container: {
+          ...settings?.container,
+          runtimeSettings: {
+            ...settings?.container.runtimeSettings,
+            [containerRunner]: runtimeSettingsForm,
+          },
+        },
+      })
+      // Restart the runtime so changes take effect
+      await restartRunner.mutateAsync(containerRunner)
+    } catch (error) {
+      console.error('Failed to save runtime settings:', error)
+    }
+  }
+
+  const handleResetRuntimeSettings = () => {
+    const saved = settings?.container.runtimeSettings?.[containerRunner] ?? {}
+    const fields = RUNTIME_SETTINGS[containerRunner] ?? []
+    const form: Record<string, string> = {}
+    for (const field of fields) {
+      form[field.key] = saved[field.key] || field.defaultValue
+    }
+    setRuntimeSettingsForm(form)
+  }
+
   const hasRunningAgents = settings?.hasRunningAgents ?? false
 
   // Check if restricted fields have changed
@@ -159,6 +253,8 @@ export function RuntimeTab() {
      memoryLimit !== settings.container.resourceLimits.memory)
 
   const saveBlocked = hasRunningAgents && restrictedFieldsChanged
+  const runtimeSaveBlocked = hasRunningAgents
+  const isRestarting = restartRunner.isPending || updateSettings.isPending
 
   return (
     <div className="space-y-6">
@@ -251,11 +347,13 @@ export function RuntimeTab() {
                 const status = runnerAvailabilityMap.get(runner.value)
                 const isAvailable = status?.available ?? true
                 const isInstalled = status?.installed ?? true
+                const canStart = status?.canStart ?? false
+                const isSelectable = isAvailable || canStart
 
                 let statusText = ''
                 if (!isInstalled) {
                   statusText = ' (not installed)'
-                } else if (!isAvailable) {
+                } else if (!isAvailable && !canStart) {
                   statusText = ' (not running)'
                 }
 
@@ -263,8 +361,8 @@ export function RuntimeTab() {
                   <SelectItem
                     key={runner.value}
                     value={runner.value}
-                    disabled={!isAvailable}
-                    className={!isAvailable ? 'opacity-50' : ''}
+                    disabled={!isSelectable}
+                    className={!isSelectable ? 'opacity-50' : ''}
                   >
                     {runner.label}
                     {statusText}
@@ -303,6 +401,12 @@ export function RuntimeTab() {
         </div>
         <p className="text-xs text-muted-foreground">
           The container runtime to use for running agents.
+          {restartRunner.isPending && (
+            <span className="text-yellow-600 dark:text-yellow-400 block mt-1 flex items-center gap-1">
+              <Loader2 className="h-3 w-3 animate-spin inline" />
+              Restarting {RUNNER_LABELS[containerRunner] || containerRunner}...
+            </span>
+          )}
           {startRunner.error && (
             <span className="text-destructive block mt-1">
               {startRunner.error.message}
@@ -315,6 +419,90 @@ export function RuntimeTab() {
           )}
         </p>
       </div>
+
+      {/* Runtime-specific settings */}
+      {currentRunnerFields.length > 0 && (
+        <div className="space-y-4 p-4 border rounded-md">
+          <div className="space-y-0.5">
+            <Label className="text-base">{RUNNER_LABELS[containerRunner] || containerRunner} Settings</Label>
+            <p className="text-xs text-muted-foreground">
+              Changing these settings will restart the runtime.
+            </p>
+          </div>
+
+          {currentRunnerFields.map((field) => (
+            <div key={field.key} className="space-y-2">
+              <Label htmlFor={`runtime-${field.key}`}>{field.label}</Label>
+              {field.type === 'select' && field.options ? (
+                <Select
+                  value={runtimeSettingsForm[field.key] || field.defaultValue}
+                  onValueChange={(value) =>
+                    setRuntimeSettingsForm((prev) => ({ ...prev, [field.key]: value }))
+                  }
+                  disabled={isLoading || runtimeSaveBlocked || isRestarting}
+                >
+                  <SelectTrigger id={`runtime-${field.key}`} className={runtimeSaveBlocked ? 'bg-muted' : ''}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {field.options.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input
+                  id={`runtime-${field.key}`}
+                  value={runtimeSettingsForm[field.key] || ''}
+                  onChange={(e) =>
+                    setRuntimeSettingsForm((prev) => ({ ...prev, [field.key]: e.target.value }))
+                  }
+                  disabled={isLoading || runtimeSaveBlocked || isRestarting}
+                  className={runtimeSaveBlocked ? 'bg-muted' : ''}
+                />
+              )}
+              <p className="text-xs text-muted-foreground">{field.description}</p>
+            </div>
+          ))}
+
+          {runtimeSettingsChanged && (
+            <div className="flex items-center justify-end gap-2 pt-2 border-t">
+              {restartRunner.error && (
+                <p className="text-sm text-destructive mr-auto">
+                  {restartRunner.error.message}
+                </p>
+              )}
+              {restartRunner.isSuccess && restartRunner.data?.message && (
+                <p className="text-sm text-green-600 dark:text-green-400 mr-auto">
+                  {restartRunner.data.message}
+                </p>
+              )}
+              <Button
+                variant="outline"
+                onClick={handleResetRuntimeSettings}
+                disabled={isRestarting}
+              >
+                Reset
+              </Button>
+              <Button
+                onClick={handleSaveRuntimeSettings}
+                disabled={isRestarting || runtimeSaveBlocked}
+              >
+                {isRestarting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Restarting...
+                  </>
+                ) : (
+                  'Save & Restart'
+                )}
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="space-y-2">
         <Label htmlFor="agent-image">Agent Image</Label>
@@ -584,7 +772,7 @@ export function RuntimeTab() {
         </p>
       </div>
 
-      {/* Save/Reset buttons */}
+      {/* Save/Reset buttons — main settings only */}
       {hasChanges && (
         <div className="flex items-center justify-end gap-2 pt-4 border-t">
           {updateSettings.error && (
