@@ -210,7 +210,13 @@ export class LimaContainerClient extends BaseContainerClient {
     try {
       const { stdout } = await execLimactl(`list --json`)
       const vms = parseLimaList(stdout)
-      return vms.some((vm: any) => vm.name === LIMA_VM_NAME && vm.status === 'Running')
+      const running = vms.some((vm: any) => vm.name === LIMA_VM_NAME && vm.status === 'Running')
+      if (running) {
+        // Ensure the nerdctl wrapper points to the current limactl binary.
+        // The wrapper hardcodes the limactl path, which goes stale on app updates.
+        createNerdctlWrapper()
+      }
+      return running
     } catch {
       return false
     }
@@ -400,9 +406,12 @@ async function createLimaVm(): Promise<void> {
 }
 
 /**
- * Create the nerdctl wrapper shell script.
+ * Create/update the nerdctl wrapper shell script.
  * The script sets LIMA_HOME and delegates to limactl shell → nerdctl.
  * This works as both a command string (for exec) and a binary (for spawn).
+ *
+ * Called from isRunning() (to keep the wrapper current across app updates)
+ * and from ensureLimaReady() (after VM provisioning).
  */
 function createNerdctlWrapper(): void {
   const wrapperPath = getNerdctlWrapperPath()
