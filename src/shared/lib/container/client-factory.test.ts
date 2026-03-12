@@ -42,6 +42,20 @@ vi.mock('./apple-container-client', () => ({
   },
 }))
 
+const mockStopWSL2Distro = vi.fn()
+const mockEnsureWSL2Ready = vi.fn()
+
+vi.mock('./wsl2-container-client', () => ({
+  WSL2ContainerClient: {
+    isEligible: vi.fn(() => false),
+    isAvailable: vi.fn(() => Promise.resolve(false)),
+    isRunning: vi.fn(() => Promise.resolve(false)),
+  },
+  getWSL2NerdctlWrapperPath: vi.fn(() => 'C:\\mock\\wsl-nerdctl.cmd'),
+  ensureWSL2Ready: (...args: unknown[]) => mockEnsureWSL2Ready(...args),
+  stopWSL2Distro: (...args: unknown[]) => mockStopWSL2Distro(...args),
+}))
+
 vi.mock('./mock-container-client', () => ({
   MockContainerClient: vi.fn(),
 }))
@@ -117,6 +131,17 @@ describe('shutdownActiveRunner', () => {
 
     expect(mockStopLimaVm).not.toHaveBeenCalled()
   })
+
+  it('calls stopWSL2Distro when configured runner is wsl2', async () => {
+    mockGetSettings.mockReturnValue({
+      container: { containerRunner: 'wsl2' },
+    })
+    mockStopWSL2Distro.mockResolvedValue(undefined)
+
+    await shutdownActiveRunner()
+
+    expect(mockStopWSL2Distro).toHaveBeenCalledOnce()
+  })
 })
 
 describe('restartRunner', () => {
@@ -163,6 +188,37 @@ describe('restartRunner', () => {
     await restartRunner('docker')
 
     expect(mockStopLimaVm).not.toHaveBeenCalled()
+  })
+
+  it('calls stopWSL2Distro then ensureWSL2Ready for wsl2 runner', async () => {
+    mockStopWSL2Distro.mockResolvedValue(undefined)
+    mockEnsureWSL2Ready.mockResolvedValue(undefined)
+
+    const result = await restartRunner('wsl2')
+
+    expect(mockStopWSL2Distro).toHaveBeenCalledOnce()
+    expect(mockEnsureWSL2Ready).toHaveBeenCalledOnce()
+    expect(result.success).toBe(true)
+  })
+
+  it('continues to start wsl2 even when shutdown throws', async () => {
+    mockStopWSL2Distro.mockRejectedValue(new Error('WSL2 not running'))
+    mockEnsureWSL2Ready.mockResolvedValue(undefined)
+
+    const result = await restartRunner('wsl2')
+
+    expect(mockEnsureWSL2Ready).toHaveBeenCalledOnce()
+    expect(result.success).toBe(true)
+  })
+
+  it('returns failure when wsl2 start fails after restart', async () => {
+    mockStopWSL2Distro.mockResolvedValue(undefined)
+    mockEnsureWSL2Ready.mockRejectedValue(new Error('containerd failed'))
+
+    const result = await restartRunner('wsl2')
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('containerd failed')
   })
 })
 

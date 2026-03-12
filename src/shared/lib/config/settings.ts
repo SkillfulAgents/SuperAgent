@@ -200,10 +200,14 @@ export interface GlobalSettingsResponse {
 }
 
 /**
- * Default container runner: Lima on macOS (bundled, no install needed), Docker elsewhere.
+ * Default container runner: Lima on macOS (bundled, no install needed),
+ * WSL2 on Windows (bundled, no install needed), Docker elsewhere.
  */
 function getDefaultContainerRunner(): string {
-  return os.platform() === 'darwin' ? 'lima' : 'docker'
+  const p = os.platform()
+  if (p === 'darwin') return 'lima'
+  if (p === 'win32') return 'wsl2'
+  return 'docker'
 }
 
 const DEFAULT_SETTINGS: AppSettings = {

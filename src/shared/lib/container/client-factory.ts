@@ -3,13 +3,14 @@ import { DockerContainerClient } from './docker-container-client'
 import { PodmanContainerClient } from './podman-container-client'
 import { AppleContainerClient } from './apple-container-client'
 import { LimaContainerClient, getNerdctlWrapperPath, ensureLimaReady, stopLimaVm } from './lima-container-client'
+import { WSL2ContainerClient, getWSL2NerdctlWrapperPath, ensureWSL2Ready, stopWSL2Distro } from './wsl2-container-client'
 import { MockContainerClient } from './mock-container-client'
 import { getSettings } from '@shared/lib/config/settings'
 import { execWithPath, spawnWithPath, AGENT_CONTAINER_PATH } from './base-container-client'
 import { platform } from 'os'
 import * as fs from 'fs'
 
-export type ContainerRunner = 'docker' | 'podman' | 'apple-container' | 'lima'
+export type ContainerRunner = 'docker' | 'podman' | 'apple-container' | 'lima' | 'wsl2'
 
 export interface RunnerAvailability {
   runner: ContainerRunner
@@ -40,6 +41,7 @@ const ALL_RUNNERS: {
   { name: 'docker', cliCommand: 'docker', isEligible: () => DockerContainerClient.isEligible(), isAvailable: () => DockerContainerClient.isAvailable(), isRunning: () => DockerContainerClient.isRunning() },
   { name: 'podman', cliCommand: 'podman', isEligible: () => PodmanContainerClient.isEligible(), isAvailable: () => PodmanContainerClient.isAvailable(), isRunning: () => PodmanContainerClient.isRunning() },
   { name: 'lima', cliCommand: () => getNerdctlWrapperPath(), isEligible: () => LimaContainerClient.isEligible(), isAvailable: () => LimaContainerClient.isAvailable(), isRunning: () => LimaContainerClient.isRunning(), shutdownRuntime: () => stopLimaVm() },
+  { name: 'wsl2', cliCommand: () => getWSL2NerdctlWrapperPath(), isEligible: () => WSL2ContainerClient.isEligible(), isAvailable: () => WSL2ContainerClient.isAvailable(), isRunning: () => WSL2ContainerClient.isRunning(), shutdownRuntime: () => stopWSL2Distro() },
 ]
 
 /**
@@ -58,6 +60,7 @@ const RUNNER_DISPLAY_NAMES: Record<ContainerRunner, string> = {
   docker: 'Docker',
   podman: 'Podman',
   lima: 'Built-in Runtime',
+  wsl2: 'Built-in Runtime',
 }
 
 export function getRunnerDisplayName(runner: ContainerRunner): string {
@@ -90,6 +93,10 @@ const RUNNER_AVAILABILITY_CACHE_TTL_MS = parseInt(
 function canAttemptStart(runner: ContainerRunner): boolean {
   if (runner === 'apple-container' || runner === 'lima') {
     // Apple Container and Lima are always startable on macOS (where they're eligible)
+    return true
+  }
+  if (runner === 'wsl2') {
+    // WSL2 is always startable on Windows (where it's eligible)
     return true
   }
   const os = platform()
@@ -129,6 +136,15 @@ export async function startRunner(runner: ContainerRunner): Promise<{ success: b
   if (runner === 'lima') {
     try {
       await ensureLimaReady()
+      return { success: true, message: 'Built-in runtime is running.' }
+    } catch (error: any) {
+      return { success: false, message: `Failed to start built-in runtime: ${error.message}` }
+    }
+  }
+
+  if (runner === 'wsl2') {
+    try {
+      await ensureWSL2Ready()
       return { success: true, message: 'Built-in runtime is running.' }
     } catch (error: any) {
       return { success: false, message: `Failed to start built-in runtime: ${error.message}` }
@@ -210,7 +226,7 @@ export async function restartRunner(runner: ContainerRunner): Promise<{ success:
   // Clear availability cache immediately so any concurrent polls reflect the stopped state
   clearRunnerAvailabilityCache()
 
-  // Stop the runtime if it has a shutdown handler (Lima VM, Apple Container)
+  // Stop the runtime if it has a shutdown handler (Lima VM, Apple Container, WSL2)
   // For docker/podman, we don't stop the daemon — just restart by starting
   const entry = ALL_RUNNERS.find((r) => r.name === runner)
   if (entry?.shutdownRuntime) {
@@ -497,6 +513,8 @@ export function createContainerClient(config: ContainerConfig): ContainerClient 
       return new PodmanContainerClient(config)
     case 'lima':
       return new LimaContainerClient(config)
+    case 'wsl2':
+      return new WSL2ContainerClient(config)
     default:
       console.warn(`Unknown container runner "${runner}", falling back to docker`)
       return new DockerContainerClient(config)

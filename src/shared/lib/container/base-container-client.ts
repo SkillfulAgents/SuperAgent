@@ -102,6 +102,8 @@ export function spawnWithPath(command: string, args: string[], options?: { cwd?:
   return spawn(command, args, {
     ...options,
     env: { ...process.env, PATH: getEnhancedPath() },
+    // On Windows, shell: true is needed to spawn .cmd/.bat wrapper scripts
+    ...(isWindows && { shell: true }),
   })
 }
 
@@ -126,7 +128,7 @@ export function writeEnvFile(
   envVars: Record<string, string | undefined>,
   agentId: string,
   tmpDir?: string
-): { flag: string; cleanup: () => void } {
+): { flag: string; filePath: string; cleanup: () => void } {
   const content = Object.entries(envVars)
     .filter(([_, value]) => value !== undefined)
     .map(([key, value]) => `${key}=${value!.replace(/[\r\n]/g, '')}`)
@@ -139,6 +141,7 @@ export function writeEnvFile(
 
   return {
     flag: `--env-file "${envFilePath}"`,
+    filePath: envFilePath,
     cleanup: () => { try { fs.unlinkSync(envFilePath) } catch { /* ignore */ } },
   }
 }
@@ -241,6 +244,15 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    */
   protected getVolumeMountSuffix(): string {
     return ''
+  }
+
+  /**
+   * Translate a host path for use inside the container runtime.
+   * Default implementation forward-slashes the path. Subclasses can override
+   * for runtimes where host paths map differently (e.g., WSL2).
+   */
+  protected hostPathForRuntime(hostPath: string): string {
+    return hostPath.replace(/\\/g, '/')
   }
 
   /**
@@ -406,7 +418,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         runner, 'run', '-d',
         '--name', containerName,
         '-p', `${port}:${CONTAINER_INTERNAL_PORT}`,
-        '-v', `"${workspaceDir.replace(/\\/g, '/')}:/workspace${this.getVolumeMountSuffix()}"`,
+        '-v', `"${this.hostPathForRuntime(workspaceDir)}:/workspace${this.getVolumeMountSuffix()}"`,
         resourceFlags,
         additionalFlags,
         envFileFlag,

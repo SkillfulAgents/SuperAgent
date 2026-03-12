@@ -128,6 +128,12 @@ settings.put('/', async (c) => {
               ...body.container.resourceLimits,
             }
           : currentSettings.container.resourceLimits,
+        runtimeSettings: body.container?.runtimeSettings
+          ? {
+              ...currentSettings.container.runtimeSettings,
+              ...body.container.runtimeSettings,
+            }
+          : currentSettings.container.runtimeSettings,
       },
       app: {
         ...currentSettings.app,

@@ -31,6 +31,7 @@ const RUNNER_LABELS: Record<string, string> = {
   docker: 'Docker',
   podman: 'Podman',
   lima: 'Built-in Runtime',
+  wsl2: 'Built-in Runtime',
 }
 
 /**
@@ -401,6 +402,12 @@ export function RuntimeTab() {
         </div>
         <p className="text-xs text-muted-foreground">
           The container runtime to use for running agents.
+          {containerRunners.some(r => r.value === 'wsl2') &&
+            !runnerAvailabilityMap.get('wsl2')?.installed && (
+            <span className="text-yellow-600 dark:text-yellow-400 block mt-1">
+              WSL2 is not installed. Run <code className="bg-muted px-1 rounded">wsl --install</code> in PowerShell as Administrator, then restart your computer.
+            </span>
+          )}
           {restartRunner.isPending && (
             <span className="text-yellow-600 dark:text-yellow-400 block mt-1 flex items-center gap-1">
               <Loader2 className="h-3 w-3 animate-spin inline" />

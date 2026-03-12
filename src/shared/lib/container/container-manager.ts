@@ -592,8 +592,8 @@ class ContainerManager {
     const runnerStatus = allAvailability.find((r) => r.runner === configuredRunner)
 
     if (!runnerStatus?.available) {
-      // Auto-start runtimes that support it (Apple Container, Lima)
-      if ((configuredRunner === 'apple-container' || configuredRunner === 'lima') && runnerStatus?.installed && !runnerStatus?.running) {
+      // Auto-start runtimes that support it (Apple Container, Lima, WSL2)
+      if ((configuredRunner === 'apple-container' || configuredRunner === 'lima' || configuredRunner === 'wsl2') && runnerStatus?.installed && !runnerStatus?.running) {
         this.setReadiness({
           status: 'CHECKING',
           message: `Starting ${getRunnerDisplayName(configuredRunner)} runtime...`,
@@ -603,8 +603,8 @@ class ContainerManager {
         const startResult = await startRunner(configuredRunner)
         if (startResult.success) {
           // Poll for runtime to become available
-          // Lima VM boot can take up to ~30s, Apple Container ~15s
-          const maxPollSeconds = configuredRunner === 'lima' ? 60 : 15
+          // Lima VM / WSL2 distro boot can take up to ~30s, Apple Container ~15s
+          const maxPollSeconds = (configuredRunner === 'lima' || configuredRunner === 'wsl2') ? 60 : 15
           let available = false
           for (let i = 0; i < maxPollSeconds; i++) {
             await new Promise((r) => setTimeout(r, 1000))

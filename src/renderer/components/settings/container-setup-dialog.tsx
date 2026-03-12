@@ -41,6 +41,12 @@ const RUNTIME_INFO: Record<string, { name: string; description: string; installU
     installUrl: '',
     icon: '📦',
   },
+  wsl2: {
+    name: 'Built-in Runtime',
+    description: 'Lightweight container runtime using WSL2. Run "wsl --install" in PowerShell as Administrator, then restart your computer.',
+    installUrl: 'https://learn.microsoft.com/en-us/windows/wsl/install',
+    icon: '📦',
+  },
 }
 
 export function ContainerSetupDialog({ open, onOpenChange }: ContainerSetupDialogProps) {

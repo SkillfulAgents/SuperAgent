@@ -29,6 +29,8 @@ const BROWSER_CANDIDATES: Record<string, BrowserCandidate> = {
 interface BrowserInstance {
   process: ChildProcess
   port: number
+  proxyPort: number | null
+  proxyServer: net.Server | null
   userDataDir: string
   stoppingIntentionally: boolean
 }
@@ -67,7 +69,7 @@ export class ChromeProvider implements HostBrowserProvider {
     // Check if an instance already exists and its port is still open
     const existing = this.instances.get(instanceId)
     if (existing && await this.isPortOpen(existing.port)) {
-      return { port: existing.port }
+      return { port: existing.proxyPort ?? existing.port }
     }
 
     // If an instance exists but port is gone, clean up the stale entry
@@ -133,9 +135,34 @@ export class ChromeProvider implements HostBrowserProvider {
       { detached: false, stdio: 'ignore' }
     )
 
+    // Chrome on Windows ignores --remote-debugging-address=0.0.0.0 and always
+    // binds its CDP port to 127.0.0.1. This means containers running inside WSL2
+    // (via nerdctl) cannot reach Chrome directly — only Docker Desktop's special
+    // networking layer makes host 127.0.0.1 ports accessible from containers.
+    // To work around this, we run a lightweight TCP proxy on 0.0.0.0 that forwards
+    // to Chrome's 127.0.0.1 CDP port, making it reachable from any network interface.
+    let proxyPort: number | null = null
+    let proxyServer: net.Server | null = null
+    if (process.platform === 'win32') {
+      proxyPort = await this.findFreePort()
+      proxyServer = net.createServer((client) => {
+        const target = net.connect(port, '127.0.0.1')
+        client.pipe(target)
+        target.pipe(client)
+        client.on('error', () => target.destroy())
+        target.on('error', () => client.destroy())
+      })
+      await new Promise<void>((resolve, reject) => {
+        proxyServer!.listen(proxyPort!, '0.0.0.0', () => resolve())
+        proxyServer!.on('error', reject)
+      })
+    }
+
     const instance: BrowserInstance = {
       process: browserProcess,
       port,
+      proxyPort,
+      proxyServer,
       userDataDir,
       stoppingIntentionally: false,
     }
@@ -148,6 +175,7 @@ export class ChromeProvider implements HostBrowserProvider {
     browserProcess.on('exit', (code) => {
       console.log(`[ChromeProvider] Browser for instance ${instanceId} exited with code ${code}`)
       const wasIntentional = instance.stoppingIntentionally
+      instance.proxyServer?.close()
       this.instances.delete(instanceId)
       if (!wasIntentional) {
         console.log(`[ChromeProvider] Browser for instance ${instanceId} closed externally, notifying listeners`)
@@ -164,14 +192,19 @@ export class ChromeProvider implements HostBrowserProvider {
       throw err
     }
 
-    return { port, downloadDir }
+    const exposedPort = proxyPort ?? port
+    console.log(`[ChromeProvider] Chrome CDP on port ${port}${proxyPort ? `, proxy on 0.0.0.0:${proxyPort}` : ''} for instance ${instanceId}`)
+    return { port: exposedPort, downloadDir }
   }
 
   async stop(instanceId: string): Promise<void> {
     const instance = this.instances.get(instanceId)
-    if (instance && !instance.process.killed) {
+    if (instance) {
       instance.stoppingIntentionally = true
-      instance.process.kill()
+      instance.proxyServer?.close()
+      if (!instance.process.killed) {
+        instance.process.kill()
+      }
     }
     this.instances.delete(instanceId)
   }

@@ -14,8 +14,9 @@
     "build:electron": "electron-vite build",
     "preview": "npm run build && node dist/web/server.mjs",
     "download:lima": "bash scripts/download-lima.sh",
+    "download:wsl-rootfs": "bash scripts/download-wsl-rootfs.sh",
     "dist:mac": "npm run download:lima && electron-vite build && electron-builder --mac",
-    "dist:win": "electron-vite build && electron-builder --win",
+    "dist:win": "npm run download:wsl-rootfs && electron-vite build && electron-builder --win",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts,.tsx",
     "test": "vitest",
@@ -162,6 +163,13 @@
           "bin/limactl",
           "share/lima/lima-guestagent*",
           "alpine.qcow2"
+        ]
+      },
+      {
+        "from": "build/wsl2",
+        "to": "wsl2",
+        "filter": [
+          "alpine-rootfs.tar.gz"
         ]
       }
     ],

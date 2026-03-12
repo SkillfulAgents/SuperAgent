@@ -38,6 +38,12 @@ const RUNTIME_INFO: Record<string, { name: string; description: string; installU
     installUrl: '',
     icon: '📦',
   },
+  wsl2: {
+    name: 'Built-in Runtime',
+    description: 'Lightweight container runtime using WSL2. Run "wsl --install" in PowerShell as Administrator, then restart your computer.',
+    installUrl: 'https://learn.microsoft.com/en-us/windows/wsl/install',
+    icon: '📦',
+  },
 }
 
 export function DockerSetupStep() {
@@ -47,8 +53,8 @@ export function DockerSetupStep() {
   const refreshAvailability = useRefreshAvailability()
   const [othersOpen, setOthersOpen] = useState(false)
 
-  // Detect if the built-in runtime is actively starting
-  const isLimaStarting = runtimeStatus?.runtimeReadiness?.status === 'CHECKING' &&
+  // Detect if the built-in runtime (Lima on macOS, WSL2 on Windows) is actively starting
+  const isBuiltinStarting = runtimeStatus?.runtimeReadiness?.status === 'CHECKING' &&
     runtimeStatus.runtimeReadiness.message?.toLowerCase().includes('built-in')
 
   const runtimeStatuses = useMemo(() => {
@@ -56,10 +62,10 @@ export function DockerSetupStep() {
     return settings.runnerAvailability.map((r) => ({
       ...r,
       info: RUNTIME_INFO[r.runner] || { name: r.runner, description: '', installUrl: '', icon: '📦' },
-      // Lima counts as "effectively available" while it's starting
-      effectivelyAvailable: r.available || (r.runner === 'lima' && isLimaStarting),
+      // Built-in runtimes count as "effectively available" while starting
+      effectivelyAvailable: r.available || ((r.runner === 'lima' || r.runner === 'wsl2') && isBuiltinStarting),
     }))
-  }, [settings?.runnerAvailability, isLimaStarting])
+  }, [settings?.runnerAvailability, isBuiltinStarting])
 
   // Split into primary (available/starting) and others
   const primaryRuntime = runtimeStatuses.find((r) => r.effectivelyAvailable)
@@ -84,7 +90,7 @@ export function DockerSetupStep() {
   }
 
   const renderRuntime = (runtime: typeof runtimeStatuses[number]) => {
-    const isStarting = runtime.runner === 'lima' && isLimaStarting && !runtime.available
+    const isStarting = (runtime.runner === 'lima' || runtime.runner === 'wsl2') && isBuiltinStarting && !runtime.available
 
     return (
       <div
@@ -184,7 +190,7 @@ export function DockerSetupStep() {
         </Button>
       </div>
 
-      {hasAvailableRunner && !isLimaStarting && (
+      {hasAvailableRunner && !isBuiltinStarting && (
         <Alert>
           <Check className="h-4 w-4 text-green-600" />
           <AlertDescription className="text-green-700 dark:text-green-400">
@@ -193,7 +199,7 @@ export function DockerSetupStep() {
         </Alert>
       )}
 
-      {isLimaStarting && (
+      {isBuiltinStarting && (
         <Alert>
           <Loader2 className="h-4 w-4 animate-spin" />
           <AlertDescription>
