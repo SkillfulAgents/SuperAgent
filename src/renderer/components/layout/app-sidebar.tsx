@@ -2,7 +2,7 @@
 import { ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard, Loader2, WifiOff, LogOut, User, Users } from 'lucide-react'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
-import { isElectron, getPlatform } from '@renderer/lib/env'
+import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
 import { useDialogs } from '@renderer/context/dialog-context'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import {
@@ -168,6 +168,10 @@ function DashboardSubItem({
     selectDashboard(artifact.slug)
   }
 
+  const handleDoubleClick = () => {
+    openDashboardExternal(agentSlug, artifact.slug, artifact.name)
+  }
+
   return (
     <SidebarMenuSubItem>
       <DashboardContextMenu
@@ -178,10 +182,11 @@ function DashboardSubItem({
         <SidebarMenuSubButton
           asChild
           isActive={isSelected}
-          title={artifact.description || artifact.name}
+          title={`${artifact.description || artifact.name} (double-click to open in new window)`}
         >
           <button
             onClick={handleClick}
+            onDoubleClick={handleDoubleClick}
             className="flex items-center gap-2 w-full"
           >
             <LayoutDashboard className="h-3 w-3 shrink-0" />

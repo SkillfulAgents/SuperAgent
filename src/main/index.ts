@@ -66,6 +66,7 @@ app.commandLine.appendSwitch('enable-features', 'OverlayScrollbar')
 const DEFAULT_API_PORT = 47891
 let actualApiPort: number = DEFAULT_API_PORT
 let mainWindow: BrowserWindow | null = null
+const dashboardWindows: Set<BrowserWindow> = new Set()
 let apiServer: ReturnType<typeof serve> | null = null
 let notificationEventSource: EventSource | null = null
 
@@ -224,6 +225,29 @@ ipcMain.handle('set-badge-count', (_event, count: number) => {
 // IPC handler for detecting host browser availability
 ipcMain.handle('detect-host-browser', () => {
   return { providers: detectAllProviders() }
+})
+
+// IPC handler for opening a dashboard in a separate window
+ipcMain.handle('open-dashboard-window', (_event, { agentSlug, dashboardSlug, dashboardName }: { agentSlug: string; dashboardSlug: string; dashboardName?: string }) => {
+  const dashboardUrl = `http://localhost:${actualApiPort}/api/agents/${agentSlug}/artifacts/${dashboardSlug}/view`
+  const title = dashboardName || `${dashboardSlug} — SuperAgent`
+
+  const win = new BrowserWindow({
+    width: 1000,
+    height: 700,
+    title,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  })
+
+  win.loadURL(dashboardUrl)
+
+  dashboardWindows.add(win)
+  win.on('closed', () => {
+    dashboardWindows.delete(win)
+  })
 })
 
 // IPC handler for setting native theme (controls vibrancy appearance on macOS)
@@ -444,6 +468,12 @@ async function gracefulShutdown() {
 
   // Stop notification listener
   stopNotificationListener()
+
+  // Close all dashboard windows
+  for (const win of dashboardWindows) {
+    if (!win.isDestroyed()) win.close()
+  }
+  dashboardWindows.clear()
 
   // Destroy tray and app menu
   destroyTray()
