@@ -1,6 +1,10 @@
 import { app, BrowserWindow, ipcMain, Menu, MenuItem, nativeTheme, session, shell, Notification } from 'electron'
 import { execFileSync } from 'child_process'
 import path from 'path'
+import fs from 'fs'
+import os from 'os'
+
+// todo huge file - need to break up into multiple modules (tray, menu, auto-updater, host-browser provider, etc.)
 
 // Fix PATH for packaged Electron apps on macOS.
 // Without this, the app only sees /usr/bin:/bin:/usr/sbin:/sbin and can't find
@@ -66,9 +70,37 @@ app.commandLine.appendSwitch('enable-features', 'OverlayScrollbar')
 const DEFAULT_API_PORT = 47891
 let actualApiPort: number = DEFAULT_API_PORT
 let mainWindow: BrowserWindow | null = null
-const dashboardWindows: Set<BrowserWindow> = new Set()
+const dashboardWindows: Map<string, BrowserWindow> = new Map()
 let apiServer: ReturnType<typeof serve> | null = null
 let notificationEventSource: EventSource | null = null
+let apiReady = false
+const pendingDashboardLinks: { agentSlug: string; dashboardSlug: string }[] = []
+
+function openDashboardWindow(agentSlug: string, dashboardSlug: string) {
+  const key = `${agentSlug}/${dashboardSlug}`
+
+  // Focus existing window if already open
+  const existing = dashboardWindows.get(key)
+  if (existing && !existing.isDestroyed()) {
+    existing.show()
+    existing.focus()
+    return
+  }
+
+  const url = `http://localhost:${actualApiPort}/api/agents/${agentSlug}/artifacts/${dashboardSlug}/view`
+  const win = new BrowserWindow({
+    width: 1000,
+    height: 700,
+    title: 'SuperAgent Dashboard',
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  })
+  win.loadURL(url)
+  dashboardWindows.set(key, win)
+  win.on('closed', () => dashboardWindows.delete(key))
+}
 
 // Register custom protocol for OAuth callbacks
 // Use a different scheme in dev to avoid conflicts with the installed production app
@@ -227,27 +259,133 @@ ipcMain.handle('detect-host-browser', () => {
   return { providers: detectAllProviders() }
 })
 
+// IPC handler for showing the native emoji picker (macOS/Windows)
+ipcMain.handle('show-emoji-panel', () => {
+  app.showEmojiPanel()
+})
+
 // IPC handler for opening a dashboard in a separate window
-ipcMain.handle('open-dashboard-window', (_event, { agentSlug, dashboardSlug, dashboardName }: { agentSlug: string; dashboardSlug: string; dashboardName?: string }) => {
-  const dashboardUrl = `http://localhost:${actualApiPort}/api/agents/${agentSlug}/artifacts/${dashboardSlug}/view`
-  const title = dashboardName || `${dashboardSlug} — SuperAgent`
+ipcMain.handle('open-dashboard-window', (_event, { agentSlug, dashboardSlug }: { agentSlug: string; dashboardSlug: string }) => {
+  openDashboardWindow(agentSlug, dashboardSlug)
+})
 
-  const win = new BrowserWindow({
-    width: 1000,
-    height: 700,
-    title,
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  })
+// IPC handler for creating a macOS dock shortcut for a dashboard
+ipcMain.handle('create-dock-shortcut', (_event, { agentSlug, dashboardSlug, dashboardName, iconPng }: { agentSlug: string; dashboardSlug: string; dashboardName: string; iconPng: number[] }) => {
+  const iconBuffer = Buffer.from(iconPng)
 
-  win.loadURL(dashboardUrl)
+  // Create temp directory for iconset generation
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'superagent-icon-'))
+  try {
+    const iconsetDir = path.join(tmpDir, 'AppIcon.iconset')
+    fs.mkdirSync(iconsetDir)
 
-  dashboardWindows.add(win)
-  win.on('closed', () => {
-    dashboardWindows.delete(win)
-  })
+    // Write base 512x512 PNG
+    const basePng = path.join(tmpDir, 'base.png')
+    fs.writeFileSync(basePng, iconBuffer)
+
+    // Generate all required iconset sizes using sips (macOS built-in)
+    const sizes = [
+      { name: 'icon_16x16.png', size: 16 },
+      { name: 'icon_16x16@2x.png', size: 32 },
+      { name: 'icon_32x32.png', size: 32 },
+      { name: 'icon_32x32@2x.png', size: 64 },
+      { name: 'icon_128x128.png', size: 128 },
+      { name: 'icon_128x128@2x.png', size: 256 },
+      { name: 'icon_256x256.png', size: 256 },
+      { name: 'icon_256x256@2x.png', size: 512 },
+      { name: 'icon_512x512.png', size: 512 },
+    ]
+    for (const { name, size } of sizes) {
+      execFileSync('sips', ['-z', String(size), String(size), basePng, '--out', path.join(iconsetDir, name)])
+    }
+
+    // Generate .icns
+    const icnsPath = path.join(tmpDir, 'AppIcon.icns')
+    execFileSync('iconutil', ['-c', 'icns', iconsetDir, '-o', icnsPath])
+
+    // Create .app bundle
+    const sanitizedName = dashboardName.replace(/[/\\:*?"<>|]/g, '-').trim() || dashboardSlug
+    const appsDir = path.join(os.homedir(), 'Applications')
+    fs.mkdirSync(appsDir, { recursive: true })
+
+    const appPath = path.join(appsDir, `${sanitizedName}.app`)
+
+    // Remove old .app if it exists so icon cache doesn't serve a stale icon
+    if (fs.existsSync(appPath)) {
+      // Unregister just this app from Launch Services before deleting
+      const lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
+      try {
+        execFileSync(lsregister, ['-u', appPath])
+      } catch {
+        // non-critical
+      }
+      fs.rmSync(appPath, { recursive: true, force: true })
+    }
+
+    const contentsDir = path.join(appPath, 'Contents')
+    const macosDir = path.join(contentsDir, 'MacOS')
+    const resourcesDir = path.join(contentsDir, 'Resources')
+    fs.mkdirSync(macosDir, { recursive: true })
+    fs.mkdirSync(resourcesDir, { recursive: true })
+
+    // Write Info.plist
+    const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>${sanitizedName}</string>
+  <key>CFBundleDisplayName</key>
+  <string>${sanitizedName}</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.superagent.dashboard.${agentSlug}.${dashboardSlug}</string>
+  <key>CFBundleVersion</key>
+  <string>${Date.now()}</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleExecutable</key>
+  <string>launcher</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>LSUIElement</key>
+  <true/>
+</dict>
+</plist>`
+    fs.writeFileSync(path.join(contentsDir, 'Info.plist'), plist)
+
+    // Write launcher script that opens the deep link
+    const launcher = `#!/bin/bash\nopen "${PROTOCOL_SCHEME}://dashboard/${encodeURIComponent(agentSlug)}/${encodeURIComponent(dashboardSlug)}"\n`
+    const launcherPath = path.join(macosDir, 'launcher')
+    fs.writeFileSync(launcherPath, launcher)
+    fs.chmodSync(launcherPath, '755')
+
+    // Copy icon
+    fs.copyFileSync(icnsPath, path.join(resourcesDir, 'AppIcon.icns'))
+
+    // Remove macOS protection attributes so the app can launch
+    for (const attr of ['com.apple.quarantine', 'com.apple.provenance']) {
+      try {
+        execFileSync('xattr', ['-rd', attr, appPath])
+      } catch {
+        // Attribute may not be present, that's fine
+      }
+    }
+
+    // Add to macOS Dock
+    try {
+      const dockEntry = `<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>${appPath}</string><key>_CFURLStringType</key><integer>0</integer></dict></dict></dict>`
+      execFileSync('defaults', ['write', 'com.apple.dock', 'persistent-apps', '-array-add', dockEntry])
+      execFileSync('killall', ['Dock'])
+    } catch (error) {
+      console.error('Failed to add to Dock:', error)
+    }
+
+    // Reveal in Finder so the user can see where it lives
+    shell.showItemInFolder(appPath)
+  } finally {
+    // Clean up temp directory
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  }
 })
 
 // IPC handler for setting native theme (controls vibrancy appearance on macOS)
@@ -262,6 +400,24 @@ app.on('open-url', (event, url) => {
 })
 
 function handleDeepLinkUrl(url: string) {
+  // Dashboard deep links — open in a standalone window (doesn't need mainWindow)
+  if (url.startsWith(`${PROTOCOL_SCHEME}://dashboard/`)) {
+    try {
+      const stripped = url.replace(`${PROTOCOL_SCHEME}://dashboard/`, '')
+      const parts = stripped.split('/')
+      const agentSlug = decodeURIComponent(parts[0])
+      const dashboardSlug = decodeURIComponent(parts[1])
+      if (apiReady) {
+        openDashboardWindow(agentSlug, dashboardSlug)
+      } else {
+        pendingDashboardLinks.push({ agentSlug, dashboardSlug })
+      }
+    } catch (error) {
+      console.error('Failed to open dashboard from deep link:', error)
+    }
+    return
+  }
+
   if (!mainWindow) return
 
   // Composio OAuth callback
@@ -396,6 +552,13 @@ async function startApp() {
 
     // Start listening for notifications (for when window is closed)
     startNotificationListener()
+
+    // Mark API as ready and process any queued dashboard deep links
+    apiReady = true
+    for (const link of pendingDashboardLinks) {
+      openDashboardWindow(link.agentSlug, link.dashboardSlug)
+    }
+    pendingDashboardLinks.length = 0
   })
 
   // Set up server-level handlers (WebSocket proxies, etc.)
@@ -470,7 +633,7 @@ async function gracefulShutdown() {
   stopNotificationListener()
 
   // Close all dashboard windows
-  for (const win of dashboardWindows) {
+  for (const win of dashboardWindows.values()) {
     if (!win.isDestroyed()) win.close()
   }
   dashboardWindows.clear()

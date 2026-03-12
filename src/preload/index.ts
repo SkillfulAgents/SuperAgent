@@ -114,6 +114,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('open-dashboard-window', { agentSlug, dashboardSlug, dashboardName })
   },
 
+  // Show the native emoji picker
+  showEmojiPanel: (): Promise<void> => {
+    return ipcRenderer.invoke('show-emoji-panel')
+  },
+
+  // Create a macOS dock shortcut for a dashboard
+  createDockShortcut: (agentSlug: string, dashboardSlug: string, dashboardName: string, iconPng: Uint8Array): Promise<void> => {
+    return ipcRenderer.invoke('create-dock-shortcut', { agentSlug, dashboardSlug, dashboardName, iconPng: Array.from(iconPng) })
+  },
+
   // Auto-update
   checkForUpdates: (): Promise<void> => {
     return ipcRenderer.invoke('check-for-updates')
@@ -174,6 +184,8 @@ declare global {
       detectHostBrowser: () => Promise<{ available: boolean; browser: string | null; path: string | null }>
       setNativeTheme: (theme: string) => Promise<void>
       openDashboardWindow: (agentSlug: string, dashboardSlug: string, dashboardName?: string) => Promise<void>
+      showEmojiPanel: () => Promise<void>
+      createDockShortcut: (agentSlug: string, dashboardSlug: string, dashboardName: string, iconPng: Uint8Array) => Promise<void>
       checkForUpdates: () => Promise<void>
       downloadUpdate: () => Promise<void>
       installUpdate: () => Promise<void>
