@@ -178,14 +178,13 @@ if gmail_accounts:
 
 **Using curl with the proxy:**
 ```bash
+# Fetch repos via proxy
 curl -sf -H "Authorization: Bearer $PROXY_TOKEN" \
-  "$(echo -n $PROXY_BASE_URL)/${ACCOUNT_ID}/api.github.com/user/repos"
+  "$PROXY_BASE_URL/${ACCOUNT_ID}/api.github.com/user/repos"
 ```
 
 **Proxy pitfalls:**
-- `$PROXY_TOKEN` only works with the proxy URL — never send it directly to external APIs.
-- Always strip trailing newlines from `$PROXY_BASE_URL` (use `echo -n` or `${var%$'\n'}`).
-- Never use `curl -w` to append metadata to stdout when piping to a JSON parser — use `-o` to write the body to a file instead.
+- **ALWAYS add a `#` comment line before any bash command that uses `$PROXY_TOKEN` or `$PROXY_BASE_URL`**. There is a known Bash tool bug where `$VAR` expansion silently returns empty strings if the command has no preceding `#` comment. Even an empty `#` on its own line is enough. Without the comment, commands like `curl -H "Authorization: Bearer $PROXY_TOKEN" ...` will send an empty token and fail with auth errors.
 
 **Example workflow:**
 1. Call `mcp__user-input__request_connected_account` with `toolkit: "gmail"`
