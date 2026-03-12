@@ -6,7 +6,7 @@ import * as http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import * as fs from 'fs';
 import * as path from 'path';
-import { execFile } from 'child_process';
+import { execFile, execSync } from 'child_process';
 import { promisify } from 'util';
 import * as dns from 'dns';
 import * as net from 'net';
@@ -578,6 +578,20 @@ function ensureRemoteDebuggingPort(args: string): string {
   return args + ',--remote-debugging-port=9222';
 }
 
+// Clean up any stale agent-browser daemon process and socket file.
+// Prevents "Daemon failed to start" errors when a previous daemon is left
+// running (e.g. browser closed externally, conversation ended without closing,
+// or previous execBrowser timed out).
+function cleanupAgentBrowserDaemon(): void {
+  const socketDir = process.env.AGENT_BROWSER_SOCKET_DIR
+    || (process.env.XDG_RUNTIME_DIR ? path.join(process.env.XDG_RUNTIME_DIR, 'agent-browser') : null)
+    || path.join(process.env.HOME || '/home/claude', '.agent-browser');
+  const session = process.env.AGENT_BROWSER_SESSION || 'default';
+  const socketPath = path.join(socketDir, `${session}.sock`);
+  try { fs.unlinkSync(socketPath); } catch { /* ignore missing */ }
+  try { execSync('pkill -f "agent-browser" 2>/dev/null || true', { timeout: 3000 }); } catch { /* ignore */ }
+}
+
 // Execute an agent-browser CLI command and return the result.
 // Uses execFile (no shell) to prevent command injection.
 async function execBrowser(args: string[], cdpUrl?: string): Promise<{ stdout: string; exitCode: number }> {
@@ -593,8 +607,19 @@ async function execBrowser(args: string[], cdpUrl?: string): Promise<{ stdout: s
     });
     return { stdout: stdout.trim(), exitCode: 0 };
   } catch (error: any) {
+    if (error.stderr) {
+      console.error('[Browser] agent-browser stderr:', error.stderr);
+    }
+    // Combine stdout, stderr, and message for maximum debuggability.
+    // The error shown to users includes the full command line (from error.message)
+    // which contains the CDP URL — helpful for diagnosing connectivity issues.
+    const parts = [
+      error.stdout?.trim(),
+      error.stderr?.trim(),
+    ].filter(Boolean);
+    const detail = parts.length > 0 ? parts.join('\n') : (error.message || 'Command failed');
     return {
-      stdout: error.stdout?.trim() || error.message || 'Command failed',
+      stdout: detail,
       exitCode: error.code || 1,
     };
   }
@@ -799,10 +824,22 @@ app.post('/browser/open', async (c) => {
     // Configure Chrome to save downloads to /workspace/downloads so the agent can access them
     await ensureBrowserDownloadPreferences(profile, WORKSPACE_DOWNLOADS_DIR);
 
-    const result = await execBrowser(['open', body.url, '--profile', profile], cdpUrl);
+    // Clean up any leftover daemon state before starting
+    cleanupAgentBrowserDaemon();
+
+    let result = await execBrowser(['open', body.url, '--profile', profile], cdpUrl);
+
+    // Retry once on failure — agent-browser daemon startup can be flaky
+    if (result.exitCode !== 0) {
+      console.error('[Browser] First open attempt failed, retrying:', result.stdout);
+      cleanupAgentBrowserDaemon();
+      await new Promise(r => setTimeout(r, 1000));
+      result = await execBrowser(['open', body.url, '--profile', profile], cdpUrl);
+    }
 
     if (result.exitCode !== 0) {
-      return c.json({ error: result.stdout, success: false }, 500);
+      const debugInfo = cdpUrl ? ` [cdp=${cdpUrl}, mode=host, attempts=2]` : ' [mode=local, attempts=2]';
+      return c.json({ error: `${result.stdout}${debugInfo}`, success: false }, 500);
     }
 
     // Override Playwright's download interception via CDP so downloads go to workspace.
@@ -842,6 +879,7 @@ app.post('/browser/close', async (c) => {
     }
 
     await execBrowser(['close'], browserState.cdpUrl || undefined);
+    cleanupAgentBrowserDaemon();
 
     // If using host browser, tell the host to kill the Chrome process
     await stopHostBrowserIfNeeded();
@@ -860,6 +898,7 @@ app.post('/browser/close', async (c) => {
 // POST /browser/notify-closed - Host browser was closed externally, clean up state
 app.post('/browser/notify-closed', (c) => {
   if (browserState.active) {
+    cleanupAgentBrowserDaemon();
     cleanupCdpScreencast();
     broadcastBrowserEvent(false);
     browserState = { active: false, sessionId: null, cdpUrl: null };
