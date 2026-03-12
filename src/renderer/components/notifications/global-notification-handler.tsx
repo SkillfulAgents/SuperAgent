@@ -118,11 +118,15 @@ export function GlobalNotificationHandler() {
             queryClient.invalidateQueries({ queryKey: ['agents'] })
             break
 
-          case 'scheduled_task_created': {
-            // Scheduled task created - update task list for that agent
+          case 'scheduled_task_created':
+          case 'scheduled_task_updated': {
             const agentSlug = data.agentSlug as string | undefined
             if (agentSlug) {
               queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', agentSlug] })
+            }
+            const taskId = data.taskId as string | undefined
+            if (taskId) {
+              queryClient.invalidateQueries({ queryKey: ['scheduled-task', taskId] })
             }
             break
           }

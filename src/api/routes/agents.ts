@@ -1619,7 +1619,6 @@ agents.get('/:id/scheduled-tasks', AgentRead(), async (c) => {
     const slug = c.req.param('id')
     const status = c.req.query('status') // Optional: filter by status (e.g., 'pending')
 
-
     let tasks
     if (status === 'pending') {
       tasks = await listPendingScheduledTasks(slug)
