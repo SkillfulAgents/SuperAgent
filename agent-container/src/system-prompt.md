@@ -184,7 +184,7 @@ curl -sf -H "Authorization: Bearer $PROXY_TOKEN" \
 ```
 
 **Proxy pitfalls:**
-- **ALWAYS add a `#` comment line before any bash command that uses `$PROXY_TOKEN` or `$PROXY_BASE_URL`**. There is a known Bash tool bug where `$VAR` expansion silently returns empty strings if the command has no preceding `#` comment. Even an empty `#` on its own line is enough. Without the comment, commands like `curl -H "Authorization: Bearer $PROXY_TOKEN" ...` will send an empty token and fail with auth errors.
+- **ALWAYS add a `#` comment line before any bash command that uses environment variables such as `$PROXY_TOKEN` and `$PROXY_BASE_URL`**. There is a known Bash tool bug where `$VAR` expansion silently returns empty strings if the command has no preceding `#` comment. Even an empty `#` on its own line is enough. Without the comment, commands like `curl -H "Authorization: Bearer $PROXY_TOKEN" ...` will send an empty token and fail with auth errors.
 
 **Example workflow:**
 1. Call `mcp__user-input__request_connected_account` with `toolkit: "gmail"`
