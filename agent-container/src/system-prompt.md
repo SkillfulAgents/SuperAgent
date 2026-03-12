@@ -185,7 +185,7 @@ curl -sf -H "Authorization: Bearer $PROXY_TOKEN" \
 **⚠️ Proxy pitfalls:**
 - `$PROXY_TOKEN` only works with the proxy URL — never send it directly to external APIs.
 - Always strip trailing newlines from `$PROXY_BASE_URL` (use `echo -n` or `${var%$'\n'}`).
-- Never use `curl -w` to append to the response body — it breaks JSON parsing.
+- Never use `curl -w` to append metadata to stdout when piping to a JSON parser — use `-o` to write the body to a file instead.
 
 **Example workflow:**
 1. Call `mcp__user-input__request_connected_account` with `toolkit: "gmail"`
