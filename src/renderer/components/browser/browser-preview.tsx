@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Globe, ChevronUp, ChevronDown, X, Loader2 } from 'lucide-react'
+import { Globe, ChevronUp, ChevronDown, X, Loader2, MousePointerClick } from 'lucide-react'
 import { getApiBaseUrl } from '@renderer/lib/env'
-import { clearBrowserActive } from '@renderer/hooks/use-message-stream'
+import { clearBrowserActive, useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useUser } from '@renderer/context/user-context'
+import { cn } from '@shared/lib/utils/cn'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -46,6 +47,15 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
   const [showCloseWarning, setShowCloseWarning] = useState(false)
   const [isClosing, setIsClosing] = useState(false)
   const [aspectRatio, setAspectRatio] = useState('16 / 9')
+  const [overlayDismissedForId, setOverlayDismissedForId] = useState<string | null>(null)
+
+  const { pendingBrowserInputRequests } = useMessageStream(sessionId, agentSlug)
+  const needsAttention = browserActive && pendingBrowserInputRequests.length > 0 && !isViewOnly
+  const latestRequestId = pendingBrowserInputRequests.length > 0
+    ? pendingBrowserInputRequests[pendingBrowserInputRequests.length - 1].toolUseId
+    : null
+  const showOverlay = needsAttention && overlayDismissedForId !== latestRequestId && expanded
+
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -288,6 +298,13 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
     }
   }, [browserActive])
 
+  // Reset overlay dismiss state when attention state ends (agent resumed)
+  useEffect(() => {
+    if (!needsAttention) {
+      setOverlayDismissedForId(null)
+    }
+  }, [needsAttention])
+
   // --- Canvas input handlers ---
   const mapCoordinates = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -515,7 +532,10 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
     <div
       ref={containerRef}
       style={floatStyle}
-      className="flex flex-col rounded-lg border bg-background shadow-lg overflow-visible"
+      className={cn(
+        "flex flex-col rounded-lg border bg-background shadow-lg overflow-visible",
+        needsAttention && "ring-2 ring-blue-400 dark:ring-blue-500"
+      )}
       data-testid="browser-preview"
     >
       {/* Drag handle / header bar */}
@@ -526,13 +546,13 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
         onPointerMove={handleDragMove}
         onPointerUp={handleDragEnd}
       >
-        {pageLoading ? (
-          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
-        ) : (
-          <Globe className="h-3.5 w-3.5 shrink-0" />
-        )}
+        <Globe className="h-3.5 w-3.5 shrink-0" />
         <span className="flex-1 text-xs truncate">
-          Browser{connected ? '' : ' (connecting...)'}
+          {needsAttention ? (
+            <span className="text-blue-600 dark:text-blue-400 font-medium">Input needed</span>
+          ) : (
+            <>Browser{connected ? '' : ' (connecting...)'}</>
+          )}
         </span>
         <button
           className="p-0.5 rounded hover:bg-muted transition-colors"
@@ -579,7 +599,20 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
               <span className="text-white text-xs">Connecting to browser stream...</span>
             </div>
           )}
-
+          {showOverlay && (
+            <div
+              className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 backdrop-blur-sm cursor-pointer z-10 transition-opacity duration-300"
+              onClick={() => setOverlayDismissedForId(latestRequestId)}
+            >
+              <span className="relative flex h-3 w-3 mb-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
+              </span>
+              <span className="text-white text-sm font-medium mb-3">Your input needed</span>
+              <MousePointerClick className="h-6 w-6 text-white animate-pulse" />
+              <span className="text-white/70 text-xs mt-1">Click to interact</span>
+            </div>
+          )}
         </div>
       )}
 

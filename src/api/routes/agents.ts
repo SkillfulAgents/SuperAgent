@@ -1613,6 +1613,85 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
   }
 })
 
+// POST /api/agents/:id/sessions/:sessionId/complete-browser-input - Complete or cancel a browser input request
+agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const body = await c.req.json()
+    const { toolUseId, decline, declineReason } = body
+
+    if (!toolUseId) {
+      return c.json({ error: 'toolUseId is required' }, 400)
+    }
+
+    const client = containerManager.getClient(agentSlug)
+
+    if (decline) {
+      const reason = declineReason || 'User wants to chat with the agent'
+
+      const rejectResponse = await client.fetch(
+        `/inputs/${encodeURIComponent(toolUseId)}/reject`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason }),
+        }
+      )
+
+      if (!rejectResponse.ok) {
+        let errorDetails = 'Unknown error'
+        try {
+          const error = await rejectResponse.json()
+          errorDetails = JSON.stringify(error)
+        } catch {
+          errorDetails = await rejectResponse.text()
+        }
+        console.error(`[complete-browser-input] Failed to reject: ${errorDetails}`)
+        return c.json({ error: 'Failed to reject browser input request' }, 500)
+      }
+
+      // Interrupt the session so the user can chat directly with the agent
+      const sessionId = c.req.param('sessionId')
+      try {
+        await client.interruptSession(sessionId)
+      } catch (e) {
+        console.error(`[complete-browser-input] Failed to interrupt session: ${e}`)
+      }
+      await messagePersister.markSessionInterrupted(sessionId)
+
+      trackServerEvent('request_declined', { type: 'browser_input', withReason: !!declineReason })
+      return c.json({ success: true, declined: true })
+    }
+
+    // User completed the browser interaction
+    const resolveResponse = await client.fetch(
+      `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: 'completed' }),
+      }
+    )
+
+    if (!resolveResponse.ok) {
+      let errorDetails = 'Unknown error'
+      try {
+        const error = await resolveResponse.json()
+        errorDetails = JSON.stringify(error)
+      } catch {
+        errorDetails = await resolveResponse.text()
+      }
+      console.error(`[complete-browser-input] Failed to resolve: ${errorDetails}`)
+      return c.json({ error: 'Failed to complete browser input request' }, 500)
+    }
+
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('Failed to complete browser input:', error)
+    return c.json({ error: 'Failed to complete browser input' }, 500)
+  }
+})
+
 // GET /api/agents/:id/scheduled-tasks - List scheduled tasks for an agent
 agents.get('/:id/scheduled-tasks', AgentRead(), async (c) => {
   try {

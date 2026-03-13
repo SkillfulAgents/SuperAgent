@@ -28,12 +28,14 @@ const mockStreamState = {
   streamingMessage: null as string | null,
   streamingToolUse: null as { id: string; name: string; partialInput: string } | null,
   isCompacting: false,
-  activeSubagent: null,
+  activeSubagents: new Map(),
+  completedSubagents: new Map(),
   pendingSecretRequests: [] as Array<{ toolUseId: string; secretName: string; reason?: string }>,
   pendingConnectedAccountRequests: [] as any[],
   pendingRemoteMcpRequests: [] as any[],
   pendingQuestionRequests: [] as any[],
   pendingFileRequests: [] as any[],
+  pendingBrowserInputRequests: [] as any[],
 }
 
 const mockClearCompacting = vi.fn()
@@ -45,6 +47,7 @@ vi.mock('@renderer/hooks/use-message-stream', () => ({
   removeRemoteMcpRequest: vi.fn(),
   removeQuestionRequest: vi.fn(),
   removeFileRequest: vi.fn(),
+  removeBrowserInputRequest: vi.fn(),
   clearCompacting: (...args: unknown[]) => mockClearCompacting(...args),
 }))
 
@@ -114,12 +117,14 @@ describe('MessageList', () => {
       streamingMessage: null,
       streamingToolUse: null,
       isCompacting: false,
-      activeSubagent: null,
+      activeSubagents: new Map(),
+      completedSubagents: new Map(),
       pendingSecretRequests: [],
       pendingConnectedAccountRequests: [],
       pendingRemoteMcpRequests: [],
       pendingQuestionRequests: [],
       pendingFileRequests: [],
+      pendingBrowserInputRequests: [],
     })
   })
 

@@ -307,7 +307,7 @@ The web-browser agent:
 - Has full access to all browser interaction tools (click, fill, scroll, screenshot, etc.)
 - Will NOT close the browser — you manage the lifecycle
 - Will ALWAYS report the current URL when it finishes
-- If it encounters a login page or CAPTCHA, it will report the obstacle so you can ask the user to help
+- If it encounters a login page, CAPTCHA, or 2FA, it will automatically call `request_browser_input` to prompt the user — no action needed from you
 
 ### Workflow
 1. **Use WebSearch** if you are unsure about the URL or need to find the correct page (e.g., search for "ExampleCorp contact page" to find the URL for contacting support)
@@ -319,7 +319,7 @@ The web-browser agent:
 
 ### Tips
 - The browser state persists between delegations — you can chain multiple tasks
-- If the agent reports a login/CAPTCHA, ask the user to interact with the browser directly (they can see it live), then re-delegate
+- The web-browser agent will automatically prompt the user via `request_browser_input` if it hits a login/CAPTCHA/2FA. If you're browsing directly (via `browser_get_state()`) and encounter one yourself, call `mcp__user-input__request_browser_input` to prompt the user.
 - Track the URLs reported by the agent so you know where the browser is
 - Remember to close the browser when you're done to free resources
 - Downloads triggered in the browser will be saved to `/workspace/downloads/`
