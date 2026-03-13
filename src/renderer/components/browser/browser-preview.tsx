@@ -516,6 +516,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
       ref={containerRef}
       style={floatStyle}
       className="flex flex-col rounded-lg border bg-background shadow-lg overflow-visible"
+      data-testid="browser-preview"
     >
       {/* Drag handle / header bar */}
       <div
@@ -564,6 +565,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
             className={`w-full h-full object-contain ${isViewOnly ? 'cursor-not-allowed' : 'cursor-default'}`}
             style={{ aspectRatio }}
             tabIndex={isViewOnly ? -1 : 0}
+            data-testid="browser-canvas"
             onMouseDown={isViewOnly ? undefined : handleMouseDown}
             onMouseUp={isViewOnly ? undefined : handleMouseUp}
             onMouseMove={isViewOnly ? undefined : handleMouseMove}
