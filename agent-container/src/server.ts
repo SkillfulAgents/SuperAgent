@@ -56,6 +56,9 @@ app.post('/sessions', async (c) => {
       return c.json({ error: 'initialMessage is required' }, 400);
     }
 
+    if (body.maxBrowserTabs) {
+      tabManager.setMaxTabs(body.maxBrowserTabs);
+    }
     const session = await sessionManager.createSession(body);
     return c.json(session, 201);
   } catch (error: any) {
@@ -1216,12 +1219,13 @@ app.post('/browser/run', async (c) => {
     }
 
     const cmd = body.command.trim().toLowerCase();
-    if (cmd.startsWith('tab')) {
-      await tabManager.syncTabCount();
+    let tabInfo = null;
+    if (cmd.startsWith('tab') || cmd.includes('.click(') || cmd.startsWith('click') || cmd.startsWith('dblclick')) {
+      tabInfo = await tabManager.detectNewTab();
     }
 
     notifyBrowserAction();
-    return c.json({ success: true, output: result.stdout });
+    return c.json({ success: true, output: result.stdout, ...(tabInfo && { tabInfo }) });
   } catch (error: any) {
     console.error('[Browser] Error running command:', error);
     return c.json({ error: error.message || 'Failed to run browser command' }, 500);

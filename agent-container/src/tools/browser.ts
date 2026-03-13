@@ -48,15 +48,9 @@ function errorResult(message: string) {
   }
 }
 
-/** Fetch cached tab count from the server (instant, no daemon query) */
-async function getTabWarning(): Promise<string> {
-  try {
-    const response = await fetch(`${CONTAINER_URL}/browser/tab-status`)
-    const data = await response.json() as { tabCount: number }
-    return tabManager.formatTabWarning(data.tabCount)
-  } catch {
-    return ''
-  }
+/** Get tab warning from cached tab count (no network call needed — same process) */
+function getTabWarning(): string {
+  return tabManager.formatTabWarning(tabManager.getTabCount())
 }
 
 export function stripAnsi(str: string): string {
@@ -189,7 +183,7 @@ export const browserClickTool = tool(
     if (tabInfo) {
       text += tabManager.formatTabNotification(tabInfo)
     } else {
-      text += await getTabWarning()
+      text += getTabWarning()
     }
 
     return {
@@ -212,7 +206,7 @@ export const browserFillTool = tool(
     })
     if (!result.success) return errorResult(result.error!)
     let text = `Filled ${args.ref} with "${args.value}".`
-    text += await getTabWarning()
+    text += getTabWarning()
     return {
       content: [
         {
@@ -243,7 +237,7 @@ export const browserScrollTool = tool(
     })
     if (!result.success) return errorResult(result.error!)
     let text = `Scrolled ${args.direction}${args.amount ? ` by ${args.amount}px` : ''}.`
-    text += await getTabWarning()
+    text += getTabWarning()
     return {
       content: [
         {
@@ -292,7 +286,7 @@ export const browserPressTool = tool(
     if (tabInfo) {
       text += tabManager.formatTabNotification(tabInfo)
     } else {
-      text += await getTabWarning()
+      text += getTabWarning()
     }
 
     return {
@@ -406,10 +400,16 @@ Available commands:
     const result = await browserFetch('run', { command: args.command })
     if (!result.success) return errorResult(result.error!)
     const data = result.data as Record<string, unknown>
-    const output = data.output ? String(data.output) : 'Command executed.'
+    let text = data.output ? String(data.output) : 'Command executed.'
+    const tabInfo = data.tabInfo as { activeIndex: number; activeUrl: string; tabCount: number } | undefined
+    if (tabInfo) {
+      text += tabManager.formatTabNotification(tabInfo)
+    } else {
+      text += getTabWarning()
+    }
     return {
       content: [
-        { type: 'text' as const, text: output },
+        { type: 'text' as const, text },
       ],
     }
   }

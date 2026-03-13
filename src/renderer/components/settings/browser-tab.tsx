@@ -75,6 +75,28 @@ export function BrowserTab() {
         </p>
       </div>
 
+      {/* Max Browser Tabs */}
+      <div className="space-y-2">
+        <Label htmlFor="max-browser-tabs">Max Browser Tabs</Label>
+        <Input
+          id="max-browser-tabs"
+          type="number"
+          min={1}
+          max={20}
+          value={settings?.app?.maxBrowserTabs ?? 10}
+          onChange={(e) => {
+            const value = parseInt(e.target.value)
+            if (value >= 1 && value <= 20) {
+              updateSettings.mutate({ app: { maxBrowserTabs: value } })
+            }
+          }}
+          disabled={isLoading}
+        />
+        <p className="text-xs text-muted-foreground">
+          Maximum number of browser tabs the agent can have open at once (default: 10)
+        </p>
+      </div>
+
       {/* Browser Host selector */}
       <div className="space-y-2">
         <Label htmlFor="browser-host">Browser Host</Label>

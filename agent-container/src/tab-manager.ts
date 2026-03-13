@@ -7,7 +7,7 @@
 import * as net from 'net';
 import * as path from 'path';
 
-export const MAX_TABS = 5;
+const DEFAULT_MAX_TABS = 10;
 
 export interface TabInfo {
   index: number;
@@ -25,8 +25,17 @@ export interface NewTabResult {
 
 class TabManager {
   private lastKnownTabCount = 1;
+  private maxTabs = DEFAULT_MAX_TABS;
 
   // --- State ---
+
+  setMaxTabs(n: number): void {
+    this.maxTabs = n;
+  }
+
+  getMaxTabs(): number {
+    return this.maxTabs;
+  }
 
   resetTabCount(): void {
     this.lastKnownTabCount = 1;
@@ -79,8 +88,6 @@ class TabManager {
   /** Check if a new tab was opened since the last check. Returns tab info or null. */
   async detectNewTab(): Promise<NewTabResult | null> {
     try {
-      // Small delay to let the browser settle after the action
-      await new Promise(r => setTimeout(r, 300));
       const tabs = await this.queryTabs();
       const prevCount = this.lastKnownTabCount;
       this.lastKnownTabCount = tabs.length;
@@ -105,13 +112,14 @@ class TabManager {
 
   // --- URL Matching ---
 
-  /** Normalize and compare two URLs (origin + pathname, ignoring trailing slash and query/hash) */
+  /** Normalize and compare two URLs (origin + pathname + search, ignoring trailing slash and hash) */
   urlsMatch(a: string, b: string): boolean {
     try {
       const ua = new URL(a);
       const ub = new URL(b);
       return ua.origin === ub.origin &&
-             ua.pathname.replace(/\/$/, '') === ub.pathname.replace(/\/$/, '');
+             ua.pathname.replace(/\/$/, '') === ub.pathname.replace(/\/$/, '') &&
+             ua.search === ub.search;
     } catch { return false; }
   }
 
@@ -130,8 +138,8 @@ class TabManager {
     const { activeIndex, activeUrl, tabCount } = tabInfo;
     let msg = `\nNew tab opened — you are now on tab ${activeIndex} (${activeUrl}). ${tabCount} tab(s) open.`;
 
-    if (tabCount >= MAX_TABS) {
-      msg += `\n⚠️ WARNING: ${tabCount} tabs open (max ${MAX_TABS}). You MUST close tabs you no longer need IMMEDIATELY. Switch with browser_run("tab <n>") then browser_run("tab close").`;
+    if (tabCount >= this.maxTabs) {
+      msg += `\n⚠️ WARNING: ${tabCount} tabs open (max ${this.maxTabs}). You MUST close tabs you no longer need IMMEDIATELY. Switch with browser_run("tab <n>") then browser_run("tab close").`;
     } else {
       msg += `\nIf you no longer need the tab you came from, close it now: browser_run("tab <prev>") then browser_run("tab close").`;
     }
@@ -141,15 +149,15 @@ class TabManager {
 
   /** Escalating warning appended to tool responses when tabs are high */
   formatTabWarning(tabCount: number): string {
-    if (tabCount >= MAX_TABS) return `\n\n🚨 CRITICAL: ${tabCount} TABS OPEN (limit: ${MAX_TABS}). STOP and close unneeded tabs NOW. Run browser_run("tab") to list, then close extras.`;
-    if (tabCount >= MAX_TABS - 1) return `\n\n[${tabCount} tabs open — close any you no longer need]`;
+    if (tabCount >= this.maxTabs) return `\n\n🚨 CRITICAL: ${tabCount} TABS OPEN (limit: ${this.maxTabs}). STOP and close unneeded tabs NOW. Run browser_run("tab") to list, then close extras.`;
+    if (tabCount >= this.maxTabs - 1) return `\n\n[${tabCount} tabs open — close any you no longer need]`;
     return '';
   }
 
   /** Tab status line appended to snapshot/state responses */
   formatTabStatus(tabCount: number): string {
     if (tabCount <= 1) return '';
-    if (tabCount >= MAX_TABS) return `\n\n[Tabs: ${tabCount} open — OVER LIMIT, close tabs NOW]`;
+    if (tabCount >= this.maxTabs) return `\n\n[Tabs: ${tabCount} open — OVER LIMIT, close tabs NOW]`;
     return `\n\n[Tabs: ${tabCount} open]`;
   }
 }
