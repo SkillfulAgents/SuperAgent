@@ -1,0 +1,193 @@
+name: Agentic E2E Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: 'Filter test cases by ID or name (optional)'
+        required: false
+        default: ''
+      tag:
+        description: 'Filter by tag (e.g. smoke, lifecycle, ci)'
+        required: false
+        default: 'ci'
+      target:
+        description: 'Test target: web, electron, or both'
+        required: false
+        default: 'both'
+        type: choice
+        options:
+          - web
+          - electron
+          - both
+  schedule:
+    # Runs nightly at 2am UTC
+    - cron: '0 2 * * *'
+
+env:
+  SUPERAGENT_PORT: 47892
+
+jobs:
+  # ── Web mode: SuperAgent in Docker, QA agent controls headless Chromium ──
+  agentic-e2e-web:
+    if: >-
+      github.event.inputs.target == 'web' ||
+      github.event.inputs.target == 'both' ||
+      github.event.inputs.target == '' ||
+      github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Install Playwright MCP dependencies
+        run: npx playwright install --with-deps chromium
+
+      - name: Build Docker images
+        run: |
+          docker build -t superagent:ci .
+          docker build -t superagent-container:ci ./agent-container
+
+      - name: Start SuperAgent
+        run: |
+          docker run -d \
+            --name superagent \
+            --network host \
+            -e ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }} \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            superagent:ci
+          echo "Waiting for SuperAgent to start..."
+          timeout 120 bash -c 'until curl -sf http://localhost:${{ env.SUPERAGENT_PORT }}/api/settings > /dev/null 2>&1; do sleep 3; done'
+          echo "SuperAgent is up."
+
+      - name: Run agentic E2E tests (web)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          COMPOSIO_API_KEY: ${{ secrets.COMPOSIO_API_KEY }}
+          COMPOSIO_USER_ID: ${{ secrets.COMPOSIO_USER_ID }}
+        run: |
+          ARGS="--target web"
+          if [ -n "${{ github.event.inputs.filter }}" ]; then
+            ARGS="$ARGS --filter ${{ github.event.inputs.filter }}"
+          fi
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            ARGS="$ARGS --tag ${{ github.event.inputs.tag }}"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            ARGS="$ARGS --tag ci"
+          fi
+          npm run test:agentic-e2e -- \
+            --base-url http://localhost:${{ env.SUPERAGENT_PORT }} \
+            $ARGS
+
+      - name: Upload test results (web)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentic-e2e-web-results-${{ github.run_id }}
+          path: scripts/agentic-e2e/results/
+          retention-days: 30
+
+      - name: Upload playwright artifacts (web)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-mcp-web-artifacts-${{ github.run_id }}
+          path: .playwright-mcp/
+          retention-days: 30
+
+      - name: Stop SuperAgent
+        if: always()
+        run: docker stop superagent || true
+
+  # ── Electron mode: native Electron app via xvfb + CDP ──
+  agentic-e2e-electron:
+    if: >-
+      github.event.inputs.target == 'electron' ||
+      github.event.inputs.target == 'both' ||
+      github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Install Playwright MCP dependencies
+        run: npx playwright install --with-deps chromium
+
+      - name: Install xvfb and Electron deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libnss3 libatk-bridge2.0-0 libdrm2 libxkbcommon0 libgbm1 libgtk-3-0 libasound2
+
+      - name: Rebuild native modules for Electron
+        run: npx electron-rebuild -f
+
+      - name: Build Electron app
+        run: npm run build:electron
+
+      - name: Build Docker images (for agent containers)
+        run: |
+          docker build -t superagent-container:ci ./agent-container
+
+      - name: Run agentic E2E tests (electron)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          COMPOSIO_API_KEY: ${{ secrets.COMPOSIO_API_KEY }}
+          COMPOSIO_USER_ID: ${{ secrets.COMPOSIO_USER_ID }}
+          DISPLAY: ':99'
+        run: |
+          Xvfb :99 -screen 0 1920x1080x24 &
+          sleep 2
+          ARGS="--target electron"
+          if [ -n "${{ github.event.inputs.filter }}" ]; then
+            ARGS="$ARGS --filter ${{ github.event.inputs.filter }}"
+          fi
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            ARGS="$ARGS --tag ${{ github.event.inputs.tag }}"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            ARGS="$ARGS --tag ci"
+          fi
+          npm run test:agentic-e2e -- $ARGS
+
+      - name: Upload test results (electron)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentic-e2e-electron-results-${{ github.run_id }}
+          path: scripts/agentic-e2e/results/
+          retention-days: 30
+
+      - name: Upload playwright artifacts (electron)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-mcp-electron-artifacts-${{ github.run_id }}
+          path: .playwright-mcp/
+          retention-days: 30

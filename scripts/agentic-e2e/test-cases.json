@@ -1,0 +1,56 @@
+[
+  {
+    "id": "detailed-core",
+    "name": "Detailed core workflow: create, chat, lifecycle, basic settings",
+    "steps": [
+      "agent-create",
+      "session-chat",
+      "agent-settings",
+      "agent-lifecycle"
+    ],
+    "tags": ["detailed", "core", "ci"],
+    "setup": ["ensureKeys"]
+  },
+  {
+    "id": "detailed-integrations",
+    "name": "Detailed integrations: MCP, connected accounts, request interactions",
+    "steps": [
+      "agent-create",
+      "mcp",
+      "connected-accounts",
+      "request-interactions"
+    ],
+    "tags": ["detailed", "integrations", "ci"],
+    "setup": ["ensureKeys", "ensureGitHub"]
+  },
+  {
+    "id": "detailed-artifacts",
+    "name": "Detailed artifacts: dashboards, scheduled tasks, browser use",
+    "steps": [
+      "agent-create",
+      "browser-use",
+      "dashboard",
+      "scheduled-tasks"
+    ],
+    "tags": ["detailed", "artifacts", "ci"],
+    "setup": ["ensureKeys"]
+  },
+  {
+    "id": "detailed-product-surface",
+    "name": "Detailed product surface: global settings, notifications, skills",
+    "steps": [
+      "agent-create",
+      "settings-global",
+      "notifications",
+      "skills"
+    ],
+    "tags": ["detailed", "product-surface", "ci"],
+    "setup": ["ensureKeys"]
+  },
+  {
+    "id": "exploration",
+    "name": "Free-roam exploration QA: explore and break things",
+    "tags": ["exploration"],
+    "setup": ["ensureKeys"]
+  }
+]
