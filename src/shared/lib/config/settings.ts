@@ -70,6 +70,7 @@ export interface AppPreferences {
   chromeProfileId?: string
   allowPrereleaseUpdates?: boolean
   theme?: 'system' | 'light' | 'dark'
+  maxBrowserTabs?: number
 
   // Browserbase session settings
   browserbaseAdvancedStealth?: boolean

@@ -863,6 +863,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       maxTurns: agentLimits.maxTurns,
       maxBudgetUsd: agentLimits.maxBudgetUsd,
       customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
+      maxBrowserTabs: getSettings().app?.maxBrowserTabs,
     })
     const sessionId = containerSession.id
 
