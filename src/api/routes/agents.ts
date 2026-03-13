@@ -59,7 +59,7 @@ import {
   publishSkillToSkillset,
   refreshAgentSkills,
 } from '@shared/lib/services/skillset-service'
-import { listArtifactsFromFilesystem, deleteArtifactFromFilesystem } from '@shared/lib/services/artifact-service'
+import { listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import {
   exportAgentTemplate,
@@ -2876,6 +2876,25 @@ agents.delete('/:id/artifacts/:artifactSlug', AgentAdmin(), async (c) => {
   } catch (error) {
     console.error('Failed to delete artifact:', error)
     return c.json({ error: 'Failed to delete artifact' }, 500)
+  }
+})
+
+// PATCH /api/agents/:id/artifacts/:artifactSlug - Rename a dashboard
+agents.patch('/:id/artifacts/:artifactSlug', AgentAdmin(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const artifactSlug = c.req.param('artifactSlug')
+    const { name } = await c.req.json()
+
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      return c.json({ error: 'Name is required' }, 400)
+    }
+
+    await renameArtifactOnFilesystem(agentSlug, artifactSlug, name.trim())
+    return c.json({ ok: true })
+  } catch (error) {
+    console.error('Failed to rename artifact:', error)
+    return c.json({ error: 'Failed to rename artifact' }, 500)
   }
 })
 

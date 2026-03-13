@@ -41,6 +41,8 @@ import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { DashboardContextMenu } from '@renderer/components/dashboards/dashboard-context-menu'
+import { useQueryClient } from '@tanstack/react-query'
+import { apiFetch } from '@renderer/lib/api'
 import { useSelection } from '@renderer/context/selection-context'
 import { useScheduledTasks, type ApiScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { useArtifacts, type ArtifactInfo } from '@renderer/hooks/use-artifacts'
@@ -162,6 +164,7 @@ function DashboardSubItem({
 }) {
   const { selectedDashboardSlug, selectAgent, selectDashboard } = useSelection()
   const isSelected = artifact.slug === selectedDashboardSlug
+  const [isRenaming, setIsRenaming] = useState(false)
 
   const handleClick = () => {
     selectAgent(agentSlug)
@@ -178,6 +181,7 @@ function DashboardSubItem({
         artifactSlug={artifact.slug}
         artifactName={artifact.name}
         agentSlug={agentSlug}
+        onRenameRequest={() => setIsRenaming(true)}
       >
         <SidebarMenuSubButton
           asChild
@@ -190,11 +194,85 @@ function DashboardSubItem({
             className="flex items-center gap-2 w-full"
           >
             <LayoutDashboard className="h-3 w-3 shrink-0" />
-            <span className="truncate">{artifact.name}</span>
+            {isRenaming ? (
+              <InlineRenameInput
+                agentSlug={agentSlug}
+                artifactSlug={artifact.slug}
+                currentName={artifact.name}
+                onDone={() => setIsRenaming(false)}
+              />
+            ) : (
+              <span className="truncate">{artifact.name}</span>
+            )}
           </button>
         </SidebarMenuSubButton>
       </DashboardContextMenu>
     </SidebarMenuSubItem>
+  )
+}
+
+function InlineRenameInput({
+  agentSlug,
+  artifactSlug,
+  currentName,
+  onDone,
+}: {
+  agentSlug: string
+  artifactSlug: string
+  currentName: string
+  onDone: () => void
+}) {
+  const [value, setValue] = useState(currentName)
+  const queryClient = useQueryClient()
+  const inputRef = React.useRef<HTMLInputElement>(null)
+  const cancelledRef = React.useRef(false)
+  const submittedRef = React.useRef(false)
+
+  React.useEffect(() => {
+    inputRef.current?.select()
+  }, [])
+
+  const submit = async () => {
+    if (submittedRef.current || cancelledRef.current) return
+    submittedRef.current = true
+    const trimmed = value.trim()
+    if (trimmed && trimmed !== currentName) {
+      try {
+        const res = await apiFetch(`/api/agents/${agentSlug}/artifacts/${artifactSlug}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: trimmed }),
+        })
+        if (res.ok) {
+          queryClient.invalidateQueries({ queryKey: ['artifacts', agentSlug] })
+        }
+      } catch (error) {
+        console.error('Failed to rename dashboard:', error)
+      }
+    }
+    onDone()
+  }
+
+  const cancel = () => {
+    cancelledRef.current = true
+    onDone()
+  }
+
+  return (
+    <input
+      ref={inputRef}
+      value={value}
+      onChange={(e) => setValue(e.target.value)}
+      onKeyDown={(e) => {
+        e.stopPropagation()
+        if (e.key === 'Enter') submit()
+        if (e.key === 'Escape') cancel()
+      }}
+      onBlur={submit}
+      onClick={(e) => e.stopPropagation()}
+      autoFocus
+      className="w-full bg-background border border-input rounded px-1 py-0 text-sm outline-none focus:ring-1 focus:ring-ring"
+    />
   )
 }
 

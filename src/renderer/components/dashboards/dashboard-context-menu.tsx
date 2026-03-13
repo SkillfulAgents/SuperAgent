@@ -4,6 +4,7 @@ import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
+  ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@renderer/components/ui/context-menu'
 import {
@@ -20,12 +21,13 @@ import { useSelection } from '@renderer/context/selection-context'
 import { useUser } from '@renderer/context/user-context'
 import { useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
-import { Trash2 } from 'lucide-react'
+import { Pencil, Trash2 } from 'lucide-react'
 
 interface DashboardContextMenuProps {
   artifactSlug: string
   artifactName: string
   agentSlug: string
+  onRenameRequest?: () => void
   children: React.ReactNode
 }
 
@@ -33,6 +35,7 @@ export function DashboardContextMenu({
   artifactSlug,
   artifactName,
   agentSlug,
+  onRenameRequest,
   children,
 }: DashboardContextMenuProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
@@ -73,6 +76,15 @@ export function DashboardContextMenu({
           {children}
         </ContextMenuTrigger>
         <ContextMenuContent>
+          {onRenameRequest && (
+            <>
+              <ContextMenuItem onClick={onRenameRequest}>
+                <Pencil className="h-4 w-4 mr-2" />
+                Rename Dashboard
+              </ContextMenuItem>
+              <ContextMenuSeparator />
+            </>
+          )}
           <ContextMenuItem
             className="text-destructive focus:text-destructive"
             onClick={() => setShowDeleteDialog(true)}
