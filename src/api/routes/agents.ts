@@ -1650,6 +1650,15 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
         return c.json({ error: 'Failed to reject browser input request' }, 500)
       }
 
+      // Interrupt the session so the user can chat directly with the agent
+      const sessionId = c.req.param('sessionId')
+      try {
+        await client.interruptSession(sessionId)
+      } catch (e) {
+        console.error(`[complete-browser-input] Failed to interrupt session: ${e}`)
+      }
+      await messagePersister.markSessionInterrupted(sessionId)
+
       trackServerEvent('request_declined', { type: 'browser_input', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }

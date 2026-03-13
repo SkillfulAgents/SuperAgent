@@ -14,6 +14,7 @@ interface BrowserInputRequestItemProps {
   onComplete: () => void
 }
 
+type SubmittingAction = 'completing' | 'declining'
 type RequestStatus = 'pending' | 'submitting' | 'completed' | 'declined'
 
 export function BrowserInputRequestItem({
@@ -26,10 +27,12 @@ export function BrowserInputRequestItem({
   onComplete,
 }: BrowserInputRequestItemProps) {
   const [status, setStatus] = useState<RequestStatus>('pending')
+  const [submittingAction, setSubmittingAction] = useState<SubmittingAction | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  const submitBrowserInput = async (body: object, successStatus: RequestStatus) => {
+  const submitBrowserInput = async (body: object, successStatus: RequestStatus, action: SubmittingAction) => {
     setStatus('submitting')
+    setSubmittingAction(action)
     setError(null)
 
     try {
@@ -52,15 +55,17 @@ export function BrowserInputRequestItem({
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Request failed')
       setStatus('pending')
+      setSubmittingAction(null)
     }
   }
 
-  const handleComplete = () => submitBrowserInput({ toolUseId }, 'completed')
+  const handleComplete = () => submitBrowserInput({ toolUseId }, 'completed', 'completing')
 
   const handleChatWithAgent = () =>
     submitBrowserInput(
       { toolUseId, decline: true, declineReason: 'User wants to chat with the agent' },
-      'declined'
+      'declined',
+      'declining'
     )
 
   if (status === 'completed' || status === 'declined') {
@@ -138,7 +143,7 @@ export function BrowserInputRequestItem({
               className="bg-blue-600 hover:bg-blue-700 text-white"
               data-testid="browser-input-complete-btn"
             >
-              {status === 'submitting' ? (
+              {submittingAction === 'completing' ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
                 <Check className="h-4 w-4" />
@@ -154,7 +159,11 @@ export function BrowserInputRequestItem({
               className="border-blue-200 dark:border-blue-700 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900"
               data-testid="browser-input-chat-btn"
             >
-              <MessageSquare className="h-4 w-4" />
+              {submittingAction === 'declining' ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <MessageSquare className="h-4 w-4" />
+              )}
               <span className="ml-1">Chat with agent</span>
             </Button>
           </div>

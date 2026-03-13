@@ -15,7 +15,7 @@ Example:
     message: z.string().describe(
       'Informal message explaining what you need the user to do (e.g., "Hey, I need you to enter your password")'
     ),
-    requirements: z.array(z.string()).optional().describe(
+    requirements: z.array(z.string()).default([]).describe(
       'Optional formal list of specific actions the user should complete'
     ),
   },
@@ -35,7 +35,7 @@ Example:
     try {
       await inputManager.createPendingWithType(toolUseId, 'browser_input', {
         message: args.message,
-        requirements: args.requirements || [],
+        requirements: args.requirements,
       })
 
       return {

@@ -464,12 +464,13 @@ function getOrCreateEventSource(
         }
       }
       else if (data.type === 'browser_input_request') {
-        const newRequest: BrowserInputRequest = {
-          toolUseId: data.toolUseId,
-          message: data.message,
-          requirements: data.requirements || [],
-        }
-        if (current) {
+        // Dedupe: the server may broadcast the same toolUseId from multiple detection points
+        if (current && !current.pendingBrowserInputRequests.some(r => r.toolUseId === data.toolUseId)) {
+          const newRequest: BrowserInputRequest = {
+            toolUseId: data.toolUseId,
+            message: data.message,
+            requirements: data.requirements || [],
+          }
           streamStates.set(sessionId, {
             ...current,
             pendingBrowserInputRequests: [...current.pendingBrowserInputRequests, newRequest],
