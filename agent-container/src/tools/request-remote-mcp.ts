@@ -16,7 +16,7 @@ export const requestRemoteMcpTool = tool(
   'request_remote_mcp',
   `Request access to a remote MCP server. The user will be prompted to connect the MCP server (potentially going through OAuth), then assign it to this agent. After approval, the MCP tools become available.
 
-Use this when you need to interact with an MCP server that hasn't been configured for this agent yet. You should know the URL of the MCP server you want to connect to.`,
+Use this when you need to interact with an MCP server that hasn't been configured for this agent yet. You should know the URL of the MCP server you want to connect to. Use search_services to discover available MCP servers and their URLs.`,
   {
     url: z
       .url()

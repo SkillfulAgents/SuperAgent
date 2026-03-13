@@ -111,6 +111,10 @@ token = os.environ.get("GITHUB_TOKEN")
 
 **Important:** Always check your available environment variables (listed at the start of the conversation) before requesting a new secret.
 
+## Connecting to External Services
+
+When you need to connect to an external service, first call `search_services` to discover available methods. If your search returns no results or a connection attempt fails, call it with no arguments to check the full catalog for correct service names and availability. Each result lists connection methods in priority order: `request_connected_account` if OAuth is available → `request_remote_mcp` if MCP is available → `request_secret` as last resort. Try each in order, falling back to the next if declined or unavailable. If the service isn't in the catalog, fall back to `request_secret`.
+
 ## Requesting Connected Accounts (OAuth)
 
 If you need to interact with external services like Gmail, Slack, GitHub, or other OAuth-protected APIs, you can request access using the `mcp__user-input__request_connected_account` tool.
@@ -118,8 +122,6 @@ If you need to interact with external services like Gmail, Slack, GitHub, or oth
 **Parameters:**
 - `toolkit` (required): The service to connect (lowercase, e.g., `gmail`, `slack`, `github`)
 - `reason` (optional): Explain why you need access - helps the user understand the request
-
-**Supported services include:** Google Workspace (`gmail`, `googlecalendar`, `googledrive`, `googlesheets`, `googledocs`, `googlemeet`, `googletasks`, `youtube`), Microsoft (`outlook`, `microsoft_teams`), communication (`slack`, `discord`, `zoom`), developer tools (`github`, `gitlab`, `bitbucket`, `sentry`), project management (`notion`, `linear`, `confluence`, `asana`, `monday`, `clickup`, `trello`), CRM (`hubspot`, `salesforce`, `zendesk`, `intercom`), storage (`airtable`, `dropbox`, `box`), social (`linkedin`, `instagram`), finance (`stripe`, `quickbooks`, `xero`), marketing (`mailchimp`), design (`figma`), and scheduling (`calendly`, `typeform`).
 
 **If you need access to these services - ask for account, do not ask for raw tokens / API keys**
 
