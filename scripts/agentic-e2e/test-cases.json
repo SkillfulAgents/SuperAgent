@@ -1,56 +1,59 @@
 [
   {
+    "id": "detailed-agent-create",
+    "name": "Detailed: agent creation and deletion via UI",
+    "features": ["agent-create"],
+    "tags": ["detailed", "core", "ci"],
+    "setup": ["ensureSecrets"]
+  },
+  {
     "id": "detailed-core",
-    "name": "Detailed core workflow: create, chat, lifecycle, basic settings",
-    "steps": [
-      "agent-create",
+    "name": "Detailed core workflow: chat, lifecycle, basic settings",
+    "features": [
       "session-chat",
       "agent-settings",
       "agent-lifecycle"
     ],
     "tags": ["detailed", "core", "ci"],
-    "setup": ["ensureKeys"]
+    "setup": ["ensureSecrets", "ensureAgent"]
   },
   {
     "id": "detailed-integrations",
     "name": "Detailed integrations: MCP, connected accounts, request interactions",
-    "steps": [
-      "agent-create",
+    "features": [
       "mcp",
       "connected-accounts",
       "request-interactions"
     ],
     "tags": ["detailed", "integrations", "ci"],
-    "setup": ["ensureKeys", "ensureGitHub"]
+    "setup": ["ensureSecrets", "ensureOAuth", "ensureAgent"]
   },
   {
     "id": "detailed-artifacts",
     "name": "Detailed artifacts: dashboards, scheduled tasks, browser use",
-    "steps": [
-      "agent-create",
+    "features": [
       "browser-use",
       "dashboard",
       "scheduled-tasks"
     ],
     "tags": ["detailed", "artifacts", "ci"],
-    "setup": ["ensureKeys"]
+    "setup": ["ensureSecrets", "ensureAgent"]
   },
   {
     "id": "detailed-product-surface",
     "name": "Detailed product surface: global settings, notifications, skills",
-    "steps": [
-      "agent-create",
+    "features": [
       "settings-global",
       "notifications",
       "skills"
     ],
     "tags": ["detailed", "product-surface", "ci"],
-    "setup": ["ensureKeys"]
+    "setup": ["ensureSecrets", "ensureAgent"]
   },
   {
-    "id": "exploration",
-    "name": "Free-roam exploration QA: explore and break things",
-    "tags": ["exploration"],
-    "setup": ["ensureKeys"]
+    "id": "chaos-monkey",
+    "name": "Chaos monkey: go wild and break everything",
+    "tags": ["chaos", "exploration"],
+    "setup": ["ensureSecrets"]
   }
 ]

@@ -1,5 +1,5 @@
 /**
- * ensureGitHub: Registers an existing Composio GitHub connected account into SuperAgent.
+ * ensureOAuth: Registers an existing Composio GitHub connected account into SuperAgent.
  *
  * Requires:
  *   - COMPOSIO_API_KEY in env (Composio platform API key)
@@ -10,7 +10,7 @@
  *   2. Register that connection in SuperAgent via POST /api/connected-accounts.
  *   3. If the connection is already registered, skip.
  */
-export async function ensureGitHub(baseUrl: string): Promise<void> {
+export async function ensureOAuth(baseUrl: string): Promise<void> {
   const composioKey = process.env.COMPOSIO_API_KEY
   const composioUserId = process.env.COMPOSIO_USER_ID
 

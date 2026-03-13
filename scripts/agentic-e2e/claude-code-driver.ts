@@ -20,6 +20,14 @@ export interface DriverOptions {
   mcpConfigPath?: string
   model?: string
   verbose?: boolean
+  /** Override the default timeout (ms). When hit, process is killed and partial output is returned. */
+  timeoutMs?: number
+  /** Resume an existing session instead of starting a new one. */
+  resumeSessionId?: string
+  /** Pin a specific session ID (enables persistence + resume). */
+  sessionId?: string
+  /** Limit the number of agentic turns per invocation. */
+  maxTurns?: number
 }
 
 const DEFAULT_TIMEOUT_MS = 60 * 60 * 1000
@@ -56,9 +64,10 @@ function parseTestResult(output: string): Pick<TestResult, 'passed' | 'reason' |
     try { return extractResult(JSON.parse(bareJsonMatch[0])) } catch { /* fall through */ }
   }
 
+  const tail = output.slice(-500)
   return {
     passed: false,
-    reason: 'Could not parse test result JSON from agent output',
+    reason: `Agent did not output valid JSON. Last 500 chars: ${tail}`,
     steps: [],
   }
 }
@@ -70,32 +79,54 @@ export async function runTest(
   const {
     model = DEFAULT_MODEL,
     verbose = false,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    resumeSessionId,
+    sessionId,
+    maxTurns,
   } = options
-  const timeoutMs = DEFAULT_TIMEOUT_MS
   const maxBudgetUsd = DEFAULT_MAX_BUDGET_USD
 
-  const systemPrompt = options.systemPrompt ?? (await loadSystemPrompt())
   const mcpConfigPath = options.mcpConfigPath ?? resolve(__dirname, 'playwright-mcp-config.json')
 
   const startTime = Date.now()
 
-  const systemPromptFile = resolve(tmpdir(), `qa-agent-system-${randomUUID()}.md`)
-  await writeFile(systemPromptFile, systemPrompt, 'utf-8')
-
+  let systemPromptFile: string | undefined
   const args: string[] = [
     '-p', testPrompt,
     '--output-format', 'text',
     '--model', model,
     '--mcp-config', mcpConfigPath,
     '--max-budget-usd', String(maxBudgetUsd),
-    '--system-prompt', systemPromptFile,
     '--dangerously-skip-permissions',
-    '--no-session-persistence',
     '--allowedTools', 'mcp__playwright__*',
   ]
 
+  if (resumeSessionId) {
+    args.push('--resume', resumeSessionId)
+  } else {
+    const systemPrompt = options.systemPrompt ?? (await loadSystemPrompt())
+    systemPromptFile = resolve(tmpdir(), `qa-agent-system-${randomUUID()}.md`)
+    await writeFile(systemPromptFile, systemPrompt, 'utf-8')
+    args.push('--system-prompt', systemPromptFile)
+    if (!sessionId) {
+      args.push('--no-session-persistence')
+    }
+  }
+
+  if (sessionId) {
+    args.push('--session-id', sessionId)
+  }
+
+  if (maxTurns) {
+    args.push('--max-turns', String(maxTurns))
+  }
+
   console.log(`[claude-driver] MCP config: ${mcpConfigPath}`)
-  console.log(`[claude-driver] Spawning claude (model: ${model})...`)
+  if (resumeSessionId) {
+    console.log(`[claude-driver] Resuming session ${resumeSessionId} (model: ${model})...`)
+  } else {
+    console.log(`[claude-driver] Spawning claude (model: ${model})...`)
+  }
 
   return new Promise<TestResult>((resolvePromise, reject) => {
     let stdout = ''
@@ -159,7 +190,7 @@ export async function runTest(
 
     const cleanup = () => {
       clearInterval(activityCheck)
-      unlink(systemPromptFile).catch(() => {})
+      if (systemPromptFile) unlink(systemPromptFile).catch(() => {})
     }
 
     proc.on('error', (err) => {

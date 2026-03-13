@@ -1,15 +1,19 @@
 #!/usr/bin/env tsx
-import { readFile, mkdir, writeFile, readdir } from 'node:fs/promises'
+import { readFile, mkdir, writeFile, readdir, copyFile } from 'node:fs/promises'
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { runTest, type TestResult, type DriverOptions } from './claude-code-driver'
-import { ensureKeys, ensureGitHub } from './setup'
+import { ensureSecrets, ensureOAuth, ensureAgent, deleteAgent } from './setup'
 import { launchElectron, killElectron, rebuildForElectron, rebuildForNode } from './setup/launch-electron'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+
+// ---------------------------------------------------------------------------
+// Env
+// ---------------------------------------------------------------------------
 
 function loadEnvFile() {
   const envPath = resolve(__dirname, '.env.local')
@@ -31,31 +35,51 @@ function loadEnvFile() {
 
 loadEnvFile()
 
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
 interface TestCase {
   id: string
   name: string
-  /** Feature file names from steps/ directory (e.g. "agent-create", "session-chat"). Exploration mode ignores this. */
-  steps?: string[]
+  /** Feature files to test independently (e.g. "session-chat", "agent-settings"). */
+  features?: string[]
   tags?: string[]
-  /** Setup modules to run before the test (e.g. "ensureKeys"). API keys are pre-injected — the QA agent does NOT need to configure them. */
+  /** Programmatic setup modules (e.g. "ensureSecrets", "ensureAgent"). */
   setup?: string[]
   teardown?: string[]
+}
+
+interface FeatureResult {
+  feature: string
+  result: TestResult
+}
+
+interface TestCaseResult {
+  testCase: TestCase
+  agentName: string
+  featureResults: FeatureResult[]
+  overallPassed: boolean
 }
 
 interface TestSuiteResult {
   startedAt: string
   finishedAt: string
   totalDurationMs: number
-  total: number
-  passed: number
-  failed: number
-  results: Array<{
-    testCase: TestCase
-    result: TestResult
-  }>
+  totalTestCases: number
+  passedTestCases: number
+  failedTestCases: number
+  totalFeatures: number
+  passedFeatures: number
+  failedFeatures: number
+  results: TestCaseResult[]
 }
 
 type TestTarget = 'web' | 'electron'
+
+// ---------------------------------------------------------------------------
+// CLI args
+// ---------------------------------------------------------------------------
 
 function parseArgs() {
   const args = process.argv.slice(2)
@@ -63,8 +87,10 @@ function parseArgs() {
   let tag: string | undefined
   let verbose = false
   let maxRetries = 1
-  let baseUrl = 'http://localhost:47892'
+  let baseUrl = 'http://localhost:47891'
   let target: TestTarget = 'web'
+  let exploration = false
+  let model: string | undefined
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -90,25 +116,58 @@ function parseArgs() {
           process.exit(1)
         }
         break
+      case '--exploration':
+        exploration = true
+        break
+      case '--model':
+        model = args[++i]
+        break
     }
   }
 
-  return { filter, tag, verbose, maxRetries, baseUrl, target }
+  return { filter, tag, verbose, maxRetries, baseUrl, target, exploration, model }
 }
 
-async function loadStepFiles(steps: string[]): Promise<string> {
+// ---------------------------------------------------------------------------
+// Agent name generation
+// ---------------------------------------------------------------------------
+
+function generateAgentName(): string {
+  const now = new Date()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  const hour = String(now.getHours()).padStart(2, '0')
+  const min = String(now.getMinutes()).padStart(2, '0')
+  return `QA-${now.getFullYear()}${month}${day}-${hour}${min}`
+}
+
+// ---------------------------------------------------------------------------
+// Feature file loading
+// ---------------------------------------------------------------------------
+
+async function loadFeatureFile(name: string): Promise<string> {
+  const filePath = resolve(__dirname, 'features', `${name}.md`)
+  try {
+    return (await readFile(filePath, 'utf-8')).trim()
+  } catch {
+    throw new Error(`Feature file not found: ${filePath}`)
+  }
+}
+
+async function loadAllFeaturesAsReference(): Promise<string> {
+  const featuresDir = resolve(__dirname, 'features')
+  const files = (await readdir(featuresDir)).filter((f) => f.endsWith('.md')).sort()
   const parts: string[] = []
-  for (const name of steps) {
-    const filePath = resolve(__dirname, 'steps', `${name}.md`)
-    try {
-      const content = await readFile(filePath, 'utf-8')
-      parts.push(content.trim())
-    } catch {
-      console.warn(`  [warn] Step file not found: ${filePath}, skipping`)
-    }
+  for (const file of files) {
+    const content = await readFile(resolve(featuresDir, file), 'utf-8')
+    parts.push(`### ${file.replace('.md', '')}\n\n${content.trim()}`)
   }
   return parts.join('\n\n---\n\n')
 }
+
+// ---------------------------------------------------------------------------
+// Test cases
+// ---------------------------------------------------------------------------
 
 async function loadTestCases(filterStr?: string, tagStr?: string): Promise<TestCase[]> {
   const raw = await readFile(resolve(__dirname, 'test-cases.json'), 'utf-8')
@@ -128,102 +187,11 @@ async function loadTestCases(filterStr?: string, tagStr?: string): Promise<TestC
   return cases
 }
 
-async function loadAllStepsAsReference(): Promise<string> {
-  const stepsDir = resolve(__dirname, 'steps')
-  const files = (await readdir(stepsDir)).filter((f) => f.endsWith('.md')).sort()
-  const parts: string[] = []
-  for (const file of files) {
-    const content = await readFile(resolve(stepsDir, file), 'utf-8')
-    parts.push(`### ${file.replace('.md', '')}\n\n${content.trim()}`)
-  }
-  return parts.join('\n\n---\n\n')
-}
+// ---------------------------------------------------------------------------
+// Prompt builders
+// ---------------------------------------------------------------------------
 
-async function buildExplorationPrompt(baseUrl: string): Promise<string> {
-  const reference = await loadAllStepsAsReference()
-  return `You are an exploration QA tester for a web application called SuperAgent at ${baseUrl}.
-
-Your goal: **find bugs**. Explore the app freely, try unexpected flows, edge cases, rapid actions, weird inputs, and anything that might break things.
-
-## Rules
-- Navigate to ${baseUrl} first.
-- You are NOT required to follow any specific order. Do whatever you think is most likely to surface bugs.
-- Try things like: creating agents with empty/special-character names, sending messages before agent is ready, clicking buttons rapidly, navigating away mid-operation, opening settings and changing things while agent is working, etc.
-- After each interesting action, take a screenshot.
-- If you find a bug (error message, crash, unexpected behavior, UI glitch, broken state), document it immediately.
-- Keep going until you've explored thoroughly or hit a dead end.
-
-## Reference: Known UI Actions
-Below is a reference of all known features and actions. Use these as inspiration, NOT as a checklist.
-
-${reference}
-
-## Output
-Report ALL bugs found. Your response MUST end with a JSON block:
-
-\`\`\`json
-{
-  "passed": true or false,
-  "reason": "Summary of exploration and findings",
-  "bugs": ["Bug 1: description", "Bug 2: description"],
-  "steps": ["What you did, in order"]
-}
-\`\`\`
-
-Set "passed" to false if you found any bugs, true if the app survived your exploration.`
-}
-
-async function buildPrompt(tc: TestCase, baseUrl: string, target: TestTarget): Promise<string> {
-  if (tc.id === 'exploration') {
-    return buildExplorationPrompt(baseUrl)
-  }
-
-  if (!tc.steps || tc.steps.length === 0) {
-    throw new Error(`Test case "${tc.id}" has no steps defined`)
-  }
-
-  const isElectron = target === 'electron'
-  const features = await loadStepFiles(tc.steps)
-  const appDescription = isElectron
-    ? `a desktop Electron app called SuperAgent (API at ${baseUrl})`
-    : `a web app called SuperAgent at ${baseUrl}`
-  const navigationStep = isElectron
-    ? `1. The Electron app is already open in front of you — do NOT navigate to a URL. Just take a screenshot to see the current state. Dismiss the Getting Started Wizard if it appears.`
-    : `1. Navigate to ${baseUrl}. Dismiss the Getting Started Wizard if it appears.`
-
-  return `You are a senior QA engineer testing ${appDescription}.
-
-## Your Mission
-
-Thoroughly test every feature in the areas described below. The feature descriptions are **hints and references** — they tell you what exists and roughly how to find it, but they are NOT a rigid script. You should:
-
-- Use the feature hints as a starting point, then **explore beyond them**. Click around, try edge cases, test error states, verify visual feedback, and cover anything else you notice.
-- Think like a real user: what would they try? What could go wrong? What happens with empty inputs, special characters, rapid clicks, or unexpected navigation?
-- Test the **complete surface area** of each feature — not just the happy path. If a feature has a form, test validation. If there's a list, test empty/one/many states. If something can be added, test adding AND removing.
-- If you discover features or UI elements not mentioned in the hints, test those too.
-
-## How to Work
-
-${navigationStep}
-2. For each feature area below, read the hints to understand what's available, then test comprehensively.
-   - Take a screenshot after each key action.
-   - When you find unexpected behavior — that's a **bug**. Screenshot it, document what happened vs what you expected, then keep going.
-   - If something is blocked (e.g. agent not running), try to unblock it yourself. Only skip as a last resort, and note exactly why.
-3. After testing everything, compile your findings.
-
-## Feature Hints
-
-The following sections describe the features you should focus on. Treat these as a map of what to test, not a step-by-step script.
-
-${features}
-
-## Bug Reporting
-
-For each bug, record:
-- **What you did** (action)
-- **What you expected** (expected result)
-- **What actually happened** (actual result)
-
+const JSON_OUTPUT_INSTRUCTIONS = `
 ## Final Output
 
 After testing, you MUST end your response with this exact JSON format:
@@ -237,13 +205,158 @@ After testing, you MUST end your response with this exact JSON format:
 }
 \`\`\`
 
-Set "passed" to false if you found any bugs.`
+Set "passed" to false if you found any bugs.
+
+**CRITICAL: You MUST include this JSON block as the very last thing in your response. Without it, the test run will be marked as FAILED regardless of your findings. Do NOT reference screenshot filenames you invented — only reference what you actually see on screen.**`
+
+async function buildFeaturePrompt(opts: {
+  featureName: string
+  agentName: string
+  baseUrl: string
+  target: TestTarget
+  exploration?: boolean
+}): Promise<string> {
+  const { featureName, agentName, baseUrl, target, exploration } = opts
+  const featureContent = await loadFeatureFile(featureName)
+  const isElectron = target === 'electron'
+
+  const appDescription = isElectron
+    ? `a desktop Electron app called SuperAgent (API at ${baseUrl})`
+    : `a web app called SuperAgent at ${baseUrl}`
+
+  const navigationInstruction = isElectron
+    ? `The Electron app is already open. Take a screenshot to see the current state. Dismiss the Getting Started Wizard if it appears.`
+    : `Navigate to ${baseUrl}. Dismiss the Getting Started Wizard if it appears.`
+
+  const agentContext = agentName
+    ? `\n## Context\n\nAn agent named **"${agentName}"** has already been created and started.\nYou do NOT need to create a new agent. Find this agent in the sidebar and click on it.\nIf the agent is sleeping, start it and wait for it to become idle before proceeding.\n`
+    : ''
+
+  const taskInstructions = exploration
+    ? `Then test the following feature area. The description below tells you what exists and roughly how to find it — treat it as a loose guide, not a script.
+
+You should be **thorough and curious**. Don't just verify the basics — actively look for things that seem off, try variations the description doesn't mention, follow tangents if something catches your eye, and generally spend more time poking around than you normally would. The goal is to find anything interesting, not just confirm the happy path works.
+
+- Take a screenshot after each key action.
+- If you find unexpected behavior, document it as a bug and keep going.
+- When you've covered the described steps, keep exploring — try different inputs, different sequences, different states. Use your judgment on what's worth investigating.`
+    : `Then test the following feature area thoroughly. The description below is a **hint and reference** — it tells you what exists and roughly how to find it, but it is NOT a rigid script. You should:
+
+- Use the hints as a starting point, then **explore beyond them**.
+- Think like a real user: what would they try? What could go wrong?
+- Test the **complete surface area** — not just the happy path.
+- Take a screenshot after each key action.
+- If you find unexpected behavior, document it as a bug and keep going.`
+
+  return `You are a senior QA engineer testing ${appDescription}.
+${agentContext}
+## Task
+
+${navigationInstruction}
+
+${taskInstructions}
+
+### Feature: ${featureName}
+
+${featureContent}
+
+## Bug Reporting
+
+For each bug, record:
+- **What you did** (action)
+- **What you expected** (expected result)
+- **What actually happened** (actual result)
+${JSON_OUTPUT_INSTRUCTIONS}`
 }
 
-/**
- * Generate a temporary MCP config that tells @playwright/mcp to connect
- * to an existing browser via CDP instead of launching a new one.
- */
+const CHAOS_JSON_INSTRUCTIONS = `
+## Output
+
+As soon as you find a bug, STOP and output this JSON:
+
+\`\`\`json
+{
+  "bug": "Short description of the bug",
+  "action": "What you did",
+  "expected": "What you expected",
+  "actual": "What actually happened",
+  "steps": ["Step 1: what you did — result", "Step 2: what you did — result"]
+}
+\`\`\`
+
+If you've explored thoroughly and found no new bugs, output:
+
+\`\`\`json
+{
+  "bug": null,
+  "steps": ["Step 1: what you did — result", "Step 2: what you did — result"]
+}
+\`\`\`
+
+**CRITICAL: You MUST use exactly this JSON schema — the \`"bug"\` field is REQUIRED (set to a string or null). Do NOT invent other fields or formats. Wrap in \`\`\`json fences. Output ONLY the JSON block, no other text.**`
+
+async function buildExplorationPrompt(baseUrl: string): Promise<string> {
+  const reference = await loadAllFeaturesAsReference()
+  return `You are an exploration QA tester for a web application called SuperAgent at ${baseUrl}.
+
+Your goal: **find one bug**. Explore the app freely — try unexpected flows, edge cases, weird inputs, anything that might break things. As soon as you find a bug, stop and report it.
+
+## Rules
+- Navigate to ${baseUrl} first.
+- You are NOT required to follow any specific order. Do whatever you think is most likely to surface bugs.
+- Try things like: creating agents with empty/special-character names, sending messages before agent is ready, clicking buttons rapidly, navigating away mid-operation, opening settings and changing things while agent is working, etc.
+- After each interesting action, take a screenshot.
+- As soon as you find a bug (error message, crash, unexpected behavior, UI glitch, broken state), STOP and output your JSON.
+
+## Reference: Known UI Actions
+Below is a reference of all known features and actions. Use these as inspiration, NOT as a checklist.
+
+${reference}
+${CHAOS_JSON_INSTRUCTIONS}`
+}
+
+// ---------------------------------------------------------------------------
+// Screenshot collection
+// ---------------------------------------------------------------------------
+
+const PLAYWRIGHT_MCP_DIR = resolve(__dirname, '../../.playwright-mcp')
+
+async function collectScreenshots(sinceMs: number, destDir: string): Promise<string[]> {
+  let files: string[]
+  try {
+    files = await readdir(PLAYWRIGHT_MCP_DIR)
+  } catch {
+    return []
+  }
+
+  const pngs = files
+    .filter((f) => f.endsWith('.png'))
+    .map((f) => {
+      // filename: page-2026-03-13T20-21-28-927Z.png → 2026-03-13T20:21:28.927Z
+      const tsMatch = f.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z/)
+      const ts = tsMatch
+        ? new Date(`${tsMatch[1]}-${tsMatch[2]}-${tsMatch[3]}T${tsMatch[4]}:${tsMatch[5]}:${tsMatch[6]}.${tsMatch[7]}Z`).getTime()
+        : 0
+      return { name: f, ts }
+    })
+    .filter((f) => f.ts >= sinceMs)
+    .sort((a, b) => b.ts - a.ts)
+
+  await mkdir(destDir, { recursive: true })
+
+  const copied: string[] = []
+  for (let i = 0; i < pngs.length; i++) {
+    const destName = `${i + 1}.png`
+    await copyFile(resolve(PLAYWRIGHT_MCP_DIR, pngs[i].name), resolve(destDir, destName))
+    copied.push(destName)
+  }
+  return copied
+}
+
+// ---------------------------------------------------------------------------
+// Electron CDP config
+// ---------------------------------------------------------------------------
+
 async function writeCdpMcpConfig(cdpEndpoint: string): Promise<string> {
   const config = {
     mcpServers: {
@@ -258,28 +371,94 @@ async function writeCdpMcpConfig(cdpEndpoint: string): Promise<string> {
   return tmpPath
 }
 
-async function runSetupModule(mod: string, baseUrl: string): Promise<void> {
+// ---------------------------------------------------------------------------
+// Setup modules
+// ---------------------------------------------------------------------------
+
+interface SetupContext {
+  agentName: string
+  agentSlug: string | null
+}
+
+async function runSetupModule(mod: string, baseUrl: string, ctx: SetupContext): Promise<void> {
   console.log(`  [setup] Running ${mod}...`)
   switch (mod) {
-    case 'ensureKeys':
-      await ensureKeys(baseUrl)
+    case 'ensureSecrets':
+      await ensureSecrets(baseUrl)
       break
-    case 'ensureGitHub':
-      await ensureGitHub(baseUrl)
+    case 'ensureOAuth':
+      await ensureOAuth(baseUrl)
+      break
+    case 'ensureAgent':
+      ctx.agentSlug = await ensureAgent(baseUrl, ctx.agentName)
       break
     default:
       console.warn(`  [setup] Unknown module: ${mod}`)
   }
 }
 
+// ---------------------------------------------------------------------------
+// Run a single feature with retries
+// ---------------------------------------------------------------------------
+
+async function runFeatureWithRetries(
+  prompt: string,
+  driverOptions: DriverOptions,
+  maxRetries: number,
+): Promise<TestResult> {
+  let lastResult: TestResult | null = null
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    if (attempt > 1) {
+      console.log(`    Retry ${attempt}/${maxRetries}...`)
+    }
+    try {
+      lastResult = await runTest(prompt, driverOptions)
+    } catch (err) {
+      lastResult = {
+        passed: false,
+        reason: `Runner error: ${err instanceof Error ? err.message : String(err)}`,
+        steps: [],
+        rawOutput: '',
+        durationMs: 0,
+      }
+    }
+    if (lastResult.passed) break
+  }
+
+  return lastResult!
+}
+
+// ---------------------------------------------------------------------------
+// Print a single feature result
+// ---------------------------------------------------------------------------
+
+function printFeatureResult(feature: string, result: TestResult) {
+  const status = result.passed ? 'PASSED' : 'FAILED'
+  console.log(`  [${status}] ${feature} (${(result.durationMs / 1000).toFixed(1)}s)`)
+  if (!result.passed) {
+    console.log(`    Reason: ${result.reason}`)
+  }
+  if (result.steps.length > 0) {
+    for (const step of result.steps) {
+      console.log(`    - ${step}`)
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
 async function main() {
-  let { filter, tag, verbose, maxRetries, baseUrl, target } = parseArgs()
+  let { filter, tag, verbose, maxRetries, baseUrl, target, exploration, model } = parseArgs()
 
   console.log('=== SuperAgent Agentic E2E Test Runner ===\n')
   console.log(`Target: ${target}`)
   console.log(`Base URL: ${baseUrl}`)
   console.log(`Max retries: ${maxRetries}`)
-  console.log(`Verbose: ${verbose}\n`)
+  console.log(`Verbose: ${verbose}`)
+  console.log(`Exploration: ${exploration}\n`)
 
   if (target === 'electron') {
     rebuildForElectron()
@@ -316,121 +495,229 @@ async function main() {
   await mkdir(resultsDir, { recursive: true })
 
   const suiteStart = Date.now()
-  const results: TestSuiteResult['results'] = []
+  const allResults: TestCaseResult[] = []
 
   for (const tc of testCases) {
     console.log(`\n${'─'.repeat(60)}`)
-    console.log(`> Running: [${tc.id}] ${tc.name}`)
-    console.log(`${'─'.repeat(60)}\n`)
+    console.log(`> [${tc.id}] ${tc.name}`)
+    console.log(`${'─'.repeat(60)}`)
 
+    const agentName = generateAgentName()
+    const needsAgent = tc.setup?.includes('ensureAgent') ?? false
+    const ctx: SetupContext = { agentName, agentSlug: null }
+
+    // --- Programmatic setup ---
     if (tc.setup && tc.setup.length > 0) {
-      console.log(`[setup] ${tc.setup.join(', ')}`)
+      console.log(`\n[setup] ${tc.setup.join(', ')}`)
+      if (needsAgent) {
+        console.log(`[agent] Name: ${agentName}`)
+      }
       try {
-        for (const mod of tc.setup) await runSetupModule(mod, baseUrl)
+        for (const mod of tc.setup) await runSetupModule(mod, baseUrl, ctx)
       } catch (err) {
         const reason = `Setup failed: ${err instanceof Error ? err.message : String(err)}`
         console.error(`[setup] ${reason}`)
-        results.push({
+        allResults.push({
           testCase: tc,
-          result: { passed: false, reason, steps: [], rawOutput: '', durationMs: 0 },
+          agentName: needsAgent ? agentName : '',
+          featureResults: [],
+          overallPassed: false,
         })
         continue
       }
     }
 
-    let prompt: string
-    try {
-      prompt = await buildPrompt(tc, baseUrl, target)
-    } catch (err) {
-      const reason = `Prompt build failed: ${err instanceof Error ? err.message : String(err)}`
-      console.error(`[prompt] ${reason}`)
-      results.push({
+    const driverOptions: DriverOptions = { verbose, mcpConfigPath, model }
+
+    // --- Chaos monkey mode: find one bug per round, resume with context ---
+    if (tc.id === 'chaos-monkey') {
+      const MAX_ROUNDS = 100
+      const bugsFound: string[] = []
+      const chaosResults: FeatureResult[] = []
+      const sessionId = randomUUID()
+
+      console.log(`\n> Unleashing the chaos monkey (max ${MAX_ROUNDS} rounds, one bug per round)...`)
+      console.log(`[chaos-monkey] Session: ${sessionId}`)
+
+      const initialPrompt = await buildExplorationPrompt(baseUrl)
+
+      for (let round = 1; round <= MAX_ROUNDS; round++) {
+        console.log(`\n> [chaos-monkey] Round ${round}/${MAX_ROUNDS}...`)
+        const roundStartMs = Date.now()
+
+        const isFirstRound = round === 1
+        let prompt: string
+        if (isFirstRound) {
+          prompt = initialPrompt
+        } else {
+          const bugList = bugsFound.map((b, i) => `${i + 1}. ${b}`).join('\n')
+          prompt = `Good, you found ${bugsFound.length} bug(s) so far:\n${bugList}\n\nKeep going — explore areas you haven't touched yet and find the next bug. Avoid re-testing bugs you already found. As soon as you find a new bug, STOP and output your JSON with the \`"bug"\` field set to a description string. If you can't find any more bugs, set \`"bug": null\`.`
+        }
+
+        if (verbose) {
+          console.log('[prompt] ' + prompt.slice(0, 600) + (prompt.length > 600 ? '...(truncated)\n' : '\n'))
+        }
+
+        let result: TestResult
+        try {
+          result = await runTest(prompt, {
+            ...driverOptions,
+            sessionId: isFirstRound ? sessionId : undefined,
+            resumeSessionId: isFirstRound ? undefined : sessionId,
+          })
+        } catch (err) {
+          console.warn(`[chaos-monkey] Round ${round} error: ${err instanceof Error ? err.message : String(err)}`)
+          break
+        }
+
+        const outputPath = resolve(resultsDir, `${tc.id}--round-${round}.txt`)
+        await writeFile(outputPath, result.rawOutput, 'utf-8')
+
+        // Extract bug from output — try json fences first, then bare JSON
+        let bugDesc: string | null = null
+        let bugFieldPresent = false
+        const jsonMatch = result.rawOutput.match(/```json\s*\n([\s\S]*?)\n\s*```/)
+        if (jsonMatch) {
+          try {
+            const parsed = JSON.parse(jsonMatch[1])
+            bugFieldPresent = 'bug' in parsed
+            bugDesc = typeof parsed.bug === 'string' ? parsed.bug : null
+          } catch { /* ignore */ }
+        }
+        if (!bugFieldPresent) {
+          const bareMatch = result.rawOutput.match(/\{[\s\S]*"bug"\s*:[\s\S]*\}/)
+          if (bareMatch) {
+            try {
+              const parsed = JSON.parse(bareMatch[0])
+              bugFieldPresent = 'bug' in parsed
+              bugDesc = typeof parsed.bug === 'string' ? parsed.bug : null
+            } catch { /* ignore */ }
+          }
+        }
+        // Agent returned something but not the expected format — don't stop, keep going
+        if (!bugFieldPresent) {
+          console.log(`  [WARN] Agent returned malformed output (no "bug" field), continuing...`)
+          chaosResults.push({ feature: `round-${round}`, result })
+          continue
+        }
+
+        const roundScreenshotDir = resolve(resultsDir, `${tc.id}--round-${round}`)
+        const screenshots = await collectScreenshots(roundStartMs, roundScreenshotDir)
+        if (screenshots.length > 0) {
+          console.log(`  [screenshots] ${screenshots.length} saved to ${tc.id}--round-${round}/`)
+        }
+
+        if (bugDesc) {
+          bugsFound.push(bugDesc)
+          console.log(`  [BUG #${bugsFound.length}] ${bugDesc}`)
+        } else {
+          console.log(`  [NO BUG] Agent found no new bugs this round.`)
+        }
+
+        chaosResults.push({ feature: `round-${round}`, result })
+
+        if (!bugDesc) {
+          console.log(`[chaos-monkey] No more bugs found, stopping.`)
+          break
+        }
+      }
+
+      console.log(`\n[chaos-monkey] Total bugs found: ${bugsFound.length}`)
+      for (let i = 0; i < bugsFound.length; i++) {
+        console.log(`  ${i + 1}. ${bugsFound[i]}`)
+      }
+
+      const overallPassed = bugsFound.length === 0
+      allResults.push({
         testCase: tc,
-        result: { passed: false, reason, steps: [], rawOutput: '', durationMs: 0 },
+        agentName: '',
+        featureResults: chaosResults,
+        overallPassed,
       })
       continue
     }
 
-    if (verbose) {
-      console.log('[prompt] Built prompt:')
-      console.log(prompt.slice(0, 800) + (prompt.length > 800 ? '...(truncated)' : ''))
-      console.log()
-    }
+    // --- Run features independently ---
+    const featureResults: FeatureResult[] = []
+    const features = tc.features ?? []
 
-    const driverOptions: DriverOptions = {
-      verbose,
-      mcpConfigPath,
-    }
-
-    let lastResult: TestResult | null = null
-
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      if (attempt > 1) {
-        console.log(`\n  Retry ${attempt}/${maxRetries}...\n`)
+    for (const feat of features) {
+      console.log(`\n> Running feature: ${feat}...`)
+      const prompt = await buildFeaturePrompt({
+        featureName: feat,
+        agentName: needsAgent ? agentName : '',
+        baseUrl,
+        target,
+        exploration,
+      })
+      if (verbose) {
+        console.log('[prompt] ' + prompt.slice(0, 600) + '...(truncated)\n')
       }
+      const result = await runFeatureWithRetries(prompt, driverOptions, maxRetries)
+      featureResults.push({ feature: feat, result })
 
+      const outputPath = resolve(resultsDir, `${tc.id}--${feat}.txt`)
+      await writeFile(outputPath, result.rawOutput, 'utf-8')
+
+      printFeatureResult(feat, result)
+    }
+
+    const overallPassed = featureResults.length > 0 && featureResults.every((fr) => fr.result.passed)
+    allResults.push({
+      testCase: tc,
+      agentName: needsAgent ? agentName : '',
+      featureResults,
+      overallPassed,
+    })
+
+    // --- Auto-teardown: delete agent created by ensureAgent ---
+    if (ctx.agentSlug) {
+      console.log(`\n[teardown] Deleting agent ${ctx.agentSlug}...`)
       try {
-        lastResult = await runTest(prompt, driverOptions)
+        await deleteAgent(baseUrl, ctx.agentSlug)
       } catch (err) {
-        lastResult = {
-          passed: false,
-          reason: `Runner error: ${err instanceof Error ? err.message : String(err)}`,
-          steps: [],
-          rawOutput: '',
-          durationMs: 0,
-        }
-      }
-
-      if (lastResult.passed) break
-    }
-
-    const finalResult = lastResult!
-    results.push({ testCase: tc, result: finalResult })
-
-    const status = finalResult.passed ? 'PASSED' : 'FAILED'
-    console.log(`\n[${status}] [${tc.id}] ${tc.name}`)
-    console.log(`   Reason: ${finalResult.reason}`)
-    console.log(`   Duration: ${(finalResult.durationMs / 1000).toFixed(1)}s`)
-
-    if (finalResult.steps.length > 0) {
-      console.log('   Steps:')
-      for (const step of finalResult.steps) {
-        console.log(`     - ${step}`)
+        console.warn(`[teardown] Warning: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
 
-    const outputPath = resolve(resultsDir, `${tc.id}.txt`)
-    await writeFile(outputPath, finalResult.rawOutput, 'utf-8')
-
+    // --- Manual teardown modules ---
     if (tc.teardown && tc.teardown.length > 0) {
       console.log(`[teardown] ${tc.teardown.join(', ')}`)
       try {
-        for (const mod of tc.teardown) await runSetupModule(mod, baseUrl)
+        for (const mod of tc.teardown) await runSetupModule(mod, baseUrl, ctx)
       } catch (err) {
         console.warn(`[teardown] Warning: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Summary
+  // ---------------------------------------------------------------------------
+
   const suiteEnd = Date.now()
   const totalDurationMs = suiteEnd - suiteStart
 
+  const allFeatureResults = allResults.flatMap((r) => r.featureResults)
   const summary: TestSuiteResult = {
     startedAt: new Date(suiteStart).toISOString(),
     finishedAt: new Date(suiteEnd).toISOString(),
     totalDurationMs,
-    total: results.length,
-    passed: results.filter((r) => r.result.passed).length,
-    failed: results.filter((r) => !r.result.passed).length,
-    results: results.map(({ testCase, result }) => ({
-      testCase,
-      result: {
-        passed: result.passed,
-        reason: result.reason,
-        steps: result.steps,
-        rawOutput: '[see results/<id>.txt]',
-        durationMs: result.durationMs,
-      },
+    totalTestCases: allResults.length,
+    passedTestCases: allResults.filter((r) => r.overallPassed).length,
+    failedTestCases: allResults.filter((r) => !r.overallPassed).length,
+    totalFeatures: allFeatureResults.length,
+    passedFeatures: allFeatureResults.filter((fr) => fr.result.passed).length,
+    failedFeatures: allFeatureResults.filter((fr) => !fr.result.passed).length,
+    results: allResults.map((r) => ({
+      ...r,
+      featureResults: r.featureResults.map((fr) => ({
+        ...fr,
+        result: {
+          ...fr.result,
+          rawOutput: `[see results/${r.testCase.id}--${fr.feature}.txt]`,
+        },
+      })),
     })),
   }
 
@@ -440,11 +727,21 @@ async function main() {
   console.log(`\n${'═'.repeat(60)}`)
   console.log('SUMMARY')
   console.log(`${'═'.repeat(60)}`)
-  console.log(`Total:    ${summary.total}`)
-  console.log(`Passed:   ${summary.passed}`)
-  console.log(`Failed:   ${summary.failed}`)
-  console.log(`Duration: ${(totalDurationMs / 1000).toFixed(1)}s`)
-  console.log(`Results:  ${summaryPath}`)
+
+  for (const tcResult of allResults) {
+    const tcStatus = tcResult.overallPassed ? 'PASSED' : 'FAILED'
+    console.log(`\n  [${tcStatus}] ${tcResult.testCase.id}${tcResult.agentName ? ` (agent: ${tcResult.agentName})` : ''}`)
+    for (const fr of tcResult.featureResults) {
+      const frStatus = fr.result.passed ? 'PASSED' : 'FAILED'
+      console.log(`    ${frStatus}  ${fr.feature} (${(fr.result.durationMs / 1000).toFixed(1)}s)`)
+    }
+  }
+
+  console.log(`\n${'─'.repeat(60)}`)
+  console.log(`Test cases: ${summary.passedTestCases}/${summary.totalTestCases} passed`)
+  console.log(`Features:   ${summary.passedFeatures}/${summary.totalFeatures} passed`)
+  console.log(`Duration:   ${(totalDurationMs / 1000).toFixed(1)}s`)
+  console.log(`Results:    ${summaryPath}`)
   console.log(`${'═'.repeat(60)}\n`)
 
   if (target === 'electron') {
@@ -455,7 +752,7 @@ async function main() {
     }
   }
 
-  process.exit(summary.failed > 0 ? 1 : 0)
+  process.exit(summary.failedTestCases > 0 ? 1 : 0)
 }
 
 main().catch((err) => {

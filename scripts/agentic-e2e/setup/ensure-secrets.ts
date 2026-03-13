@@ -1,11 +1,11 @@
 /**
- * ensureKeys: Pre-injects API keys into SuperAgent and marks setup as completed.
+ * ensureSecrets: Pre-injects API keys into SuperAgent and marks setup as completed.
  * Reads ANTHROPIC_API_KEY, COMPOSIO_API_KEY, COMPOSIO_USER_ID from environment.
  *
  * This runs BEFORE the QA agent starts, so the agent never needs to enter keys manually.
- * Step files for settings-global should skip key-entry steps accordingly.
+ * Feature files for settings-global should skip key-entry steps accordingly.
  */
-export async function ensureKeys(baseUrl: string): Promise<void> {
+export async function ensureSecrets(baseUrl: string): Promise<void> {
   const settingsUrl = `${baseUrl}/api/settings`
 
   const check = await fetch(settingsUrl)
