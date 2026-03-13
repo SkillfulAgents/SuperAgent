@@ -90,6 +90,87 @@ export function useUpdateScheduledTaskTimezone() {
 }
 
 /**
+ * Run a scheduled task immediately
+ */
+export function useRunScheduledTaskNow() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ taskId }: { taskId: string; agentSlug: string }) => {
+      const res = await apiFetch(`/api/scheduled-tasks/${taskId}/run-now`, {
+        method: 'POST',
+      })
+      if (!res.ok) throw new Error('Failed to run scheduled task')
+      return res.json() as Promise<{ sessionId: string; agentSlug: string; task: ApiScheduledTask }>
+    },
+    onSuccess: (data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['scheduled-task', variables.taskId] })
+      queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', variables.agentSlug] })
+      queryClient.invalidateQueries({ queryKey: ['scheduled-task-sessions', variables.taskId] })
+      queryClient.invalidateQueries({ queryKey: ['sessions', variables.agentSlug] })
+    },
+  })
+}
+
+/**
+ * Describe a cron schedule in English using the summarizer LLM
+ */
+export function useDescribeSchedule() {
+  return useMutation({
+    mutationFn: async ({ taskId }: { taskId: string }) => {
+      const res = await apiFetch(`/api/scheduled-tasks/${taskId}/describe-schedule`, {
+        method: 'POST',
+      })
+      if (!res.ok) throw new Error('Failed to describe schedule')
+      return res.json() as Promise<{ description: string }>
+    },
+  })
+}
+
+/**
+ * Parse an English description into a cron expression using the summarizer LLM
+ */
+export function useParseSchedule() {
+  return useMutation({
+    mutationFn: async ({ taskId, description }: { taskId: string; description: string }) => {
+      const res = await apiFetch(`/api/scheduled-tasks/${taskId}/parse-schedule`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.error || 'Failed to parse schedule')
+      }
+      return res.json() as Promise<{ expression: string }>
+    },
+  })
+}
+
+/**
+ * Update a recurring task's cron expression
+ */
+export function useUpdateSchedule() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ taskId, scheduleExpression }: { taskId: string; scheduleExpression: string }) => {
+      const res = await apiFetch(`/api/scheduled-tasks/${taskId}/schedule`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scheduleExpression }),
+      })
+      if (!res.ok) throw new Error('Failed to update schedule')
+      return res.json() as Promise<ApiScheduledTask>
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['scheduled-task', data.id] })
+      queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', data.agentSlug] })
+    },
+  })
+}
+
+/**
  * Fetch all sessions created by a scheduled task
  */
 export function useScheduledTaskSessions(taskId: string | null) {

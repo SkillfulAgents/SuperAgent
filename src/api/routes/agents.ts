@@ -59,7 +59,7 @@ import {
   publishSkillToSkillset,
   refreshAgentSkills,
 } from '@shared/lib/services/skillset-service'
-import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
+import { listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import {
   exportAgentTemplate,
@@ -2931,6 +2931,160 @@ agents.get('/:id/artifacts', AgentRead(), async (c) => {
     console.error('Failed to fetch artifacts:', error)
     return c.json({ error: 'Failed to fetch artifacts' }, 500)
   }
+})
+
+// DELETE /api/agents/:id/artifacts/:artifactSlug - Delete a dashboard
+agents.delete('/:id/artifacts/:artifactSlug', AgentAdmin(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const artifactSlug = c.req.param('artifactSlug')
+
+    // Stop the dashboard process in the container (if running), then delete files
+    try {
+      const client = containerManager.getClient(agentSlug)
+      const info = containerManager.getCachedInfo(agentSlug)
+      if (info.status === 'running') {
+        await client.fetch(`/artifacts/${encodeURIComponent(artifactSlug)}`, { method: 'DELETE' })
+      }
+    } catch {
+      // Container not running — just delete files
+    }
+
+    await deleteArtifactFromFilesystem(agentSlug, artifactSlug)
+    return c.body(null, 204)
+  } catch (error) {
+    console.error('Failed to delete artifact:', error)
+    return c.json({ error: 'Failed to delete artifact' }, 500)
+  }
+})
+
+// PATCH /api/agents/:id/artifacts/:artifactSlug - Rename a dashboard
+agents.patch('/:id/artifacts/:artifactSlug', AgentAdmin(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const artifactSlug = c.req.param('artifactSlug')
+    const { name } = await c.req.json()
+
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      return c.json({ error: 'Name is required' }, 400)
+    }
+
+    await renameArtifactOnFilesystem(agentSlug, artifactSlug, name.trim())
+    return c.json({ ok: true })
+  } catch (error) {
+    console.error('Failed to rename artifact:', error)
+    return c.json({ error: 'Failed to rename artifact' }, 500)
+  }
+})
+
+// GET /api/agents/:id/artifacts/:artifactSlug/view - Standalone dashboard wrapper
+// Serves a self-contained HTML page that handles agent lifecycle (auto-start, wait, then load dashboard)
+agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
+  const agentSlug = c.req.param('id')
+  const artifactSlug = c.req.param('artifactSlug')
+  const basePath = `/api/agents/${agentSlug}`
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Loading dashboard…</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0a0a0a; color: #e5e5e5; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+    .container { text-align: center; max-width: 400px; padding: 2rem; }
+    .spinner { width: 40px; height: 40px; border: 3px solid #333; border-top-color: #888; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 1.5rem; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .status { font-size: 14px; color: #999; margin-top: 0.5rem; }
+    .error { color: #ef4444; }
+    iframe { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; border: 0; }
+  </style>
+</head>
+<body>
+  <div class="container" id="loading">
+    <div class="spinner"></div>
+    <div id="status" class="status">Checking agent status…</div>
+  </div>
+  <script>
+    const agentSlug = ${JSON.stringify(agentSlug)};
+    const artifactSlug = ${JSON.stringify(artifactSlug)};
+    const basePath = ${JSON.stringify(basePath)};
+    const dashboardUrl = basePath + '/artifacts/' + encodeURIComponent(artifactSlug) + '/';
+    const statusEl = document.getElementById('status');
+    const loadingEl = document.getElementById('loading');
+
+    function setTitle(name) {
+      document.title = (name || artifactSlug) + ' \\u2014 SuperAgent';
+    }
+
+    async function fetchDashboardName() {
+      try {
+        const res = await fetch(basePath + '/artifacts');
+        if (res.ok) {
+          const artifacts = await res.json();
+          const d = Array.isArray(artifacts) && artifacts.find(a => a.slug === artifactSlug);
+          if (d && d.name) { setTitle(d.name); return d.name; }
+        }
+      } catch {}
+      return null;
+    }
+
+    async function run() {
+      try {
+        // 1. Resolve dashboard name (works even when agent is stopped)
+        await fetchDashboardName();
+
+        // 2. Check agent status
+        const agentRes = await fetch(basePath);
+        if (!agentRes.ok) { throw new Error('Failed to fetch agent info'); }
+        const agent = await agentRes.json();
+
+        if (agent.status !== 'running') {
+          // 3. Start the agent
+          statusEl.textContent = 'Starting agent…';
+          const startRes = await fetch(basePath + '/start', { method: 'POST' });
+          if (!startRes.ok) {
+            const err = await startRes.json().catch(() => ({}));
+            throw new Error(err.error || 'Failed to start agent');
+          }
+        }
+
+        // 4. Poll until dashboard is running
+        statusEl.textContent = 'Waiting for dashboard…';
+        await pollDashboard();
+
+        // 5. Show the dashboard
+        loadingEl.remove();
+        const iframe = document.createElement('iframe');
+        iframe.src = dashboardUrl;
+        iframe.sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups';
+        document.body.appendChild(iframe);
+      } catch (err) {
+        statusEl.textContent = err.message;
+        statusEl.classList.add('error');
+      }
+    }
+
+    async function pollDashboard() {
+      for (let i = 0; i < 120; i++) {
+        const res = await fetch(basePath + '/artifacts');
+        if (res.ok) {
+          const artifacts = await res.json();
+          const d = Array.isArray(artifacts) && artifacts.find(a => a.slug === artifactSlug);
+          if (d && d.status === 'running') { setTitle(d.name); return; }
+        }
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      throw new Error('Dashboard did not start in time');
+    }
+
+    run();
+  </script>
+</body>
+</html>`
+
+  return c.html(html)
 })
 
 // Shared handler for proxying artifact requests to the container

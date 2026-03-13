@@ -264,8 +264,8 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
       setPageLoading(false)
       fetch(`${baseUrl}/api/agents/${agentSlug}/browser/status`)
         .then((res) => res.json())
-        .then((status: { active?: boolean }) => {
-          if (!status.active) {
+        .then((status: { active?: boolean; sessionId?: string }) => {
+          if (!status.active || status.sessionId !== sessionId) {
             clearBrowserActive(sessionId)
           } else {
             // Browser still active but stream dropped (e.g. tab switch disrupted
@@ -536,6 +536,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
         "flex flex-col rounded-lg border bg-background shadow-lg overflow-visible",
         needsAttention && "ring-2 ring-blue-400 dark:ring-blue-500"
       )}
+      data-testid="browser-preview"
     >
       {/* Drag handle / header bar */}
       <div
@@ -584,6 +585,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
             className={`w-full h-full object-contain ${isViewOnly ? 'cursor-not-allowed' : 'cursor-default'}`}
             style={{ aspectRatio }}
             tabIndex={isViewOnly ? -1 : 0}
+            data-testid="browser-canvas"
             onMouseDown={isViewOnly ? undefined : handleMouseDown}
             onMouseUp={isViewOnly ? undefined : handleMouseUp}
             onMouseMove={isViewOnly ? undefined : handleMouseMove}

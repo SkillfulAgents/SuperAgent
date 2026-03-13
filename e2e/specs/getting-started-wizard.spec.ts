@@ -38,10 +38,10 @@ test.describe('Getting Started Wizard', () => {
 
     // Dismiss it for cleanup
     await wizardPage.clickNext()  // -> LLM
-    await wizardPage.clickNext()  // -> Runtime
     await wizardPage.clickNext()  // -> Browser
     await wizardPage.clickSkip()  // -> Composio
-    await wizardPage.clickSkip()  // -> Agent
+    await wizardPage.clickSkip()  // -> Runtime
+    await wizardPage.clickNext()  // -> Agent
     await wizardPage.clickFinish()
     await wizardPage.expectNotVisible()
   })
@@ -88,23 +88,23 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.clickNext()
     await wizardPage.expectStep(1)
 
-    // Go to Step 2: Runtime
+    // Go to Step 2: Browser (optional)
     await wizardPage.clickNext()
     await wizardPage.expectStep(2)
-    await expect(page.getByText('Set Up Container Runtime')).toBeVisible()
-
-    // Go to Step 3: Browser (optional)
-    await wizardPage.clickNext()
-    await wizardPage.expectStep(3)
     await expect(page.getByText('Set Up Browser')).toBeVisible()
 
-    // Go to Step 4: Composio (optional)
+    // Go to Step 3: Composio (optional)
     await wizardPage.clickSkip()
-    await wizardPage.expectStep(4)
+    await wizardPage.expectStep(3)
     await expect(page.getByText('Set Up Composio')).toBeVisible()
 
-    // Go to Step 5: Create Agent (optional) - Skip since no Composio input
+    // Go to Step 4: Runtime
     await wizardPage.clickSkip()
+    await wizardPage.expectStep(4)
+    await expect(page.getByText('Set Up Container Runtime')).toBeVisible()
+
+    // Go to Step 5: Create Agent (optional)
+    await wizardPage.clickNext()
     await wizardPage.expectStep(5)
     await expect(page.getByRole('heading', { name: 'Create Your First Agent' })).toBeVisible()
 
@@ -122,13 +122,16 @@ test.describe('Getting Started Wizard', () => {
     await appPage.waitForAppLoaded()
     await wizardPage.expectVisible()
 
-    // Navigate to Browser step (step 3)
+    // Navigate to Browser step (step 2)
     await wizardPage.clickNext() // -> LLM
-    await wizardPage.clickNext() // -> Runtime
     await wizardPage.clickNext() // -> Browser
-    await wizardPage.expectStep(3)
+    await wizardPage.expectStep(2)
 
     // Skip should advance to Composio
+    await wizardPage.clickSkip()
+    await wizardPage.expectStep(3)
+
+    // Skip should advance to Runtime
     await wizardPage.clickSkip()
     await wizardPage.expectStep(4)
 
@@ -152,10 +155,10 @@ test.describe('Getting Started Wizard', () => {
 
     // Navigate through and finish
     await wizardPage.clickNext()  // -> LLM
-    await wizardPage.clickNext()  // -> Runtime
     await wizardPage.clickNext()  // -> Browser
     await wizardPage.clickSkip()  // -> Composio
-    await wizardPage.clickSkip()  // -> Agent
+    await wizardPage.clickSkip()  // -> Runtime
+    await wizardPage.clickNext()  // -> Agent
     await wizardPage.clickFinish()
     await wizardPage.expectNotVisible()
 
@@ -180,10 +183,10 @@ test.describe('Getting Started Wizard', () => {
 
     // Navigate to Create Agent step
     await wizardPage.clickNext()  // -> LLM
-    await wizardPage.clickNext()  // -> Runtime
     await wizardPage.clickNext()  // -> Browser
     await wizardPage.clickSkip()  // -> Composio
-    await wizardPage.clickSkip()  // -> Agent
+    await wizardPage.clickSkip()  // -> Runtime
+    await wizardPage.clickNext()  // -> Agent
     await wizardPage.expectStep(5)
 
     // Create an agent
@@ -221,10 +224,10 @@ test.describe('Getting Started Wizard', () => {
 
     // Dismiss it
     await wizardPage.clickNext()  // -> LLM
-    await wizardPage.clickNext()  // -> Runtime
     await wizardPage.clickNext()  // -> Browser
     await wizardPage.clickSkip()  // -> Composio
-    await wizardPage.clickSkip()  // -> Agent
+    await wizardPage.clickSkip()  // -> Runtime
+    await wizardPage.clickNext()  // -> Agent
     await wizardPage.clickFinish()
     await wizardPage.expectNotVisible()
   })

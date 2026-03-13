@@ -16,6 +16,6 @@ export function useRuntimeStatus() {
       if (!res.ok) throw new Error('Failed to fetch runtime status')
       return res.json()
     },
-    refetchInterval: 60000,
+    refetchInterval: 30000,
   })
 }

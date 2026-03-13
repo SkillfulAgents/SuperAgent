@@ -25,7 +25,7 @@ browser.post('/launch-host-browser', IsAgent(), async (c) => {
       options.chromeProfileId = settings.app.chromeProfileId
     }
 
-    const connectionInfo = await provider.launch(agentId, options)
+    const connectionInfo = await provider.launch(agentId, options, agentId)
     return c.json(connectionInfo)
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Failed to launch browser'

@@ -2,13 +2,15 @@ import type { ContainerClient, ContainerConfig, ImagePullProgress } from './type
 import { DockerContainerClient } from './docker-container-client'
 import { PodmanContainerClient } from './podman-container-client'
 import { AppleContainerClient } from './apple-container-client'
+import { LimaContainerClient, getNerdctlWrapperPath, ensureLimaReady, stopLimaVm } from './lima-container-client'
+import { WSL2ContainerClient, getWSL2NerdctlWrapperPath, ensureWSL2Ready, stopWSL2Distro } from './wsl2-container-client'
 import { MockContainerClient } from './mock-container-client'
 import { getSettings } from '@shared/lib/config/settings'
 import { execWithPath, spawnWithPath, AGENT_CONTAINER_PATH } from './base-container-client'
 import { platform } from 'os'
 import * as fs from 'fs'
 
-export type ContainerRunner = 'docker' | 'podman' | 'apple-container'
+export type ContainerRunner = 'docker' | 'podman' | 'apple-container' | 'lima' | 'wsl2'
 
 export interface RunnerAvailability {
   runner: ContainerRunner
@@ -28,14 +30,18 @@ export interface RunnerAvailability {
  */
 const ALL_RUNNERS: {
   name: ContainerRunner
-  cliCommand: string
+  cliCommand: string | (() => string)
   isEligible: () => boolean
   isAvailable: () => Promise<boolean>
   isRunning: () => Promise<boolean>
+  /** Optional cleanup when the app is shutting down (e.g., stop a VM). */
+  shutdownRuntime?: () => Promise<void>
 }[] = [
-  { name: 'apple-container', cliCommand: 'container', isEligible: () => AppleContainerClient.isEligible(), isAvailable: () => AppleContainerClient.isAvailable(), isRunning: () => AppleContainerClient.isRunning() },
+  { name: 'apple-container', cliCommand: 'container', isEligible: () => AppleContainerClient.isEligible(), isAvailable: () => AppleContainerClient.isAvailable(), isRunning: () => AppleContainerClient.isRunning(), shutdownRuntime: () => execWithPath('container system stop').then(() => {}) },
   { name: 'docker', cliCommand: 'docker', isEligible: () => DockerContainerClient.isEligible(), isAvailable: () => DockerContainerClient.isAvailable(), isRunning: () => DockerContainerClient.isRunning() },
   { name: 'podman', cliCommand: 'podman', isEligible: () => PodmanContainerClient.isEligible(), isAvailable: () => PodmanContainerClient.isAvailable(), isRunning: () => PodmanContainerClient.isRunning() },
+  { name: 'lima', cliCommand: () => getNerdctlWrapperPath(), isEligible: () => LimaContainerClient.isEligible(), isAvailable: () => LimaContainerClient.isAvailable(), isRunning: () => LimaContainerClient.isRunning(), shutdownRuntime: () => stopLimaVm() },
+  { name: 'wsl2', cliCommand: () => getWSL2NerdctlWrapperPath(), isEligible: () => WSL2ContainerClient.isEligible(), isAvailable: () => WSL2ContainerClient.isAvailable(), isRunning: () => WSL2ContainerClient.isRunning(), shutdownRuntime: () => stopWSL2Distro() },
 ]
 
 /**
@@ -47,11 +53,28 @@ export const SUPPORTED_RUNNERS: ContainerRunner[] = ALL_RUNNERS
   .map((r) => r.name)
 
 /**
+ * User-facing display name for a runner.
+ */
+const RUNNER_DISPLAY_NAMES: Record<ContainerRunner, string> = {
+  'apple-container': 'macOS Container',
+  docker: 'Docker',
+  podman: 'Podman',
+  lima: 'Built-in Runtime',
+  wsl2: 'Built-in Runtime',
+}
+
+export function getRunnerDisplayName(runner: ContainerRunner): string {
+  return RUNNER_DISPLAY_NAMES[runner] || runner
+}
+
+/**
  * Get the actual CLI command for a runner name.
  * E.g., 'apple-container' -> 'container', 'docker' -> 'docker'
  */
 function getCliCommand(runner: ContainerRunner): string {
-  return ALL_RUNNERS.find((r) => r.name === runner)?.cliCommand ?? runner
+  const entry = ALL_RUNNERS.find((r) => r.name === runner)
+  if (!entry) return runner
+  return typeof entry.cliCommand === 'function' ? entry.cliCommand() : entry.cliCommand
 }
 
 /** Cache for runner availability to avoid spawning docker commands repeatedly */
@@ -68,8 +91,12 @@ const RUNNER_AVAILABILITY_CACHE_TTL_MS = parseInt(
  * Only possible on macOS for Docker Desktop and Podman machine.
  */
 function canAttemptStart(runner: ContainerRunner): boolean {
-  if (runner === 'apple-container') {
-    // Apple Container is always startable on macOS (where it's eligible)
+  if (runner === 'apple-container' || runner === 'lima') {
+    // Apple Container and Lima are always startable on macOS (where they're eligible)
+    return true
+  }
+  if (runner === 'wsl2') {
+    // WSL2 is always startable on Windows (where it's eligible)
     return true
   }
   const os = platform()
@@ -103,6 +130,24 @@ export async function startRunner(runner: ContainerRunner): Promise<{ success: b
         return { success: true, message: 'Apple Container runtime is already running.' }
       }
       return { success: false, message: `Failed to start Apple Container runtime: ${error.message}` }
+    }
+  }
+
+  if (runner === 'lima') {
+    try {
+      await ensureLimaReady()
+      return { success: true, message: 'Built-in runtime is running.' }
+    } catch (error: any) {
+      return { success: false, message: `Failed to start built-in runtime: ${error.message}` }
+    }
+  }
+
+  if (runner === 'wsl2') {
+    try {
+      await ensureWSL2Ready()
+      return { success: true, message: 'Built-in runtime is running.' }
+    } catch (error: any) {
+      return { success: false, message: `Failed to start built-in runtime: ${error.message}` }
     }
   }
 
@@ -171,6 +216,29 @@ export async function startRunner(runner: ContainerRunner): Promise<{ success: b
   }
 
   return { success: false, message: `Cannot auto-start ${runner} on this platform.` }
+}
+
+/**
+ * Restart a container runtime. Stops the runtime, then starts it again.
+ * Used when runtime-specific settings change (e.g., Lima VM memory).
+ */
+export async function restartRunner(runner: ContainerRunner): Promise<{ success: boolean; message: string }> {
+  // Clear availability cache immediately so any concurrent polls reflect the stopped state
+  clearRunnerAvailabilityCache()
+
+  // Stop the runtime if it has a shutdown handler (Lima VM, Apple Container, WSL2)
+  // For docker/podman, we don't stop the daemon — just restart by starting
+  const entry = ALL_RUNNERS.find((r) => r.name === runner)
+  if (entry?.shutdownRuntime) {
+    try {
+      await entry.shutdownRuntime()
+    } catch {
+      // Runtime might not be running, that's fine
+    }
+  }
+
+  // Start it back up (ensureLimaReady will recreate VM if config changed)
+  return startRunner(runner)
 }
 
 /**
@@ -268,12 +336,18 @@ export async function checkImageExists(runner: ContainerRunner, image: string): 
 /**
  * Pull a container image, reporting layer-based progress.
  *
- * In non-TTY (piped) mode, docker/podman pull output lines like:
+ * Docker/Podman non-TTY output:
  *   abc123: Pulling fs layer
  *   abc123: Pull complete
  *   def456: Already exists
  *
- * We track unique layer IDs and completed layers to compute progress.
+ * nerdctl non-TTY (plain) output:
+ *   manifest-sha256:abc123: done
+ *   config-sha256:def456: done
+ *   layer-sha256:ghi789: downloading ...
+ *   layer-sha256:ghi789: done
+ *
+ * We track unique layer/item IDs and completed ones to compute progress.
  */
 export function pullImage(
   runner: ContainerRunner,
@@ -290,24 +364,43 @@ export function pullImage(
 
     const allLayers = new Set<string>()
     const completedLayers = new Set<string>()
-    // Match lines like "abc123def: Pull complete" or "abc123def: Already exists"
-    const layerIdPattern = /^([a-f0-9]+):\s+(.+)$/i
-    const completedStatuses = ['pull complete', 'already exists']
+    // Docker: "abc123def: Pull complete" or "abc123def: Already exists"
+    const dockerLayerPattern = /^([a-f0-9]+):\s+(.+)$/i
+    const dockerCompletedStatuses = ['pull complete', 'already exists']
+    // nerdctl: "layer-sha256:abc123:    done    |...|" (with ANSI codes and progress bars)
+    // After stripping ANSI codes: capture the type-sha256:hash identifier and the status word
+    const nerdctlItemPattern = /^((?:layer|manifest|config|index)-sha256:[a-f0-9]+):\s+(\w+)/i
+    const nerdctlCompletedStatuses = ['done', 'exists']
+    // Strip ANSI escape sequences (colors, cursor movement, etc.)
+    // eslint-disable-next-line no-control-regex
+    const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
 
     const handleData = (data: Buffer) => {
-      const text = data.toString()
+      const text = stripAnsi(data.toString())
       const lines = text.split('\n')
       for (const line of lines) {
         const trimmed = line.trim()
         if (!trimmed) continue
 
-        const match = trimmed.match(layerIdPattern)
-        if (match) {
-          const layerId = match[1]
-          const status = match[2].toLowerCase()
-          allLayers.add(layerId)
-          if (completedStatuses.some((s) => status.startsWith(s))) {
-            completedLayers.add(layerId)
+        // Try nerdctl format first (more specific pattern)
+        const nerdctlMatch = trimmed.match(nerdctlItemPattern)
+        if (nerdctlMatch) {
+          const itemId = nerdctlMatch[1]
+          const status = nerdctlMatch[2].toLowerCase()
+          allLayers.add(itemId)
+          if (nerdctlCompletedStatuses.includes(status)) {
+            completedLayers.add(itemId)
+          }
+        } else {
+          // Try Docker format
+          const dockerMatch = trimmed.match(dockerLayerPattern)
+          if (dockerMatch) {
+            const layerId = dockerMatch[1]
+            const status = dockerMatch[2].toLowerCase()
+            allLayers.add(layerId)
+            if (dockerCompletedStatuses.some((s) => status.startsWith(s))) {
+              completedLayers.add(layerId)
+            }
           }
         }
 
@@ -418,8 +511,26 @@ export function createContainerClient(config: ContainerConfig): ContainerClient 
       return new DockerContainerClient(config)
     case 'podman':
       return new PodmanContainerClient(config)
+    case 'lima':
+      return new LimaContainerClient(config)
+    case 'wsl2':
+      return new WSL2ContainerClient(config)
     default:
       console.warn(`Unknown container runner "${runner}", falling back to docker`)
       return new DockerContainerClient(config)
+  }
+}
+
+/**
+ * Shut down the currently configured container runtime (e.g., stop Lima VM).
+ * No-op for runtimes that don't need shutdown (Docker, Podman).
+ * Called during app shutdown from startup.ts.
+ */
+export async function shutdownActiveRunner(): Promise<void> {
+  const settings = getSettings()
+  const runner = settings.container.containerRunner as ContainerRunner
+  const entry = ALL_RUNNERS.find((r) => r.name === runner)
+  if (entry?.shutdownRuntime) {
+    await entry.shutdownRuntime()
   }
 }

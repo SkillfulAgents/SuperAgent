@@ -1,6 +1,8 @@
 
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useAgents } from '@renderer/hooks/use-agents'
+import { useUserSettings } from '@renderer/hooks/use-user-settings'
+import { applyAgentOrder } from '@renderer/lib/agent-ordering'
 import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
 import { useSessions } from '@renderer/hooks/use-sessions'
 import { useSelection } from '@renderer/context/selection-context'
@@ -60,7 +62,12 @@ function TemplateCard({ template, onClick }: { template: ApiDiscoverableAgent; o
 
 export function HomePage() {
   const { data: agents, isLoading: agentsLoading } = useAgents()
+  const { data: userSettings } = useUserSettings()
   const { data: discoverableAgents } = useDiscoverableAgents()
+  const orderedAgents = useMemo(
+    () => applyAgentOrder(agents ?? [], userSettings?.agentOrder),
+    [agents, userSettings?.agentOrder]
+  )
   const [createAgentOpen, setCreateAgentOpen] = useState(false)
   const [selectedTemplate, setSelectedTemplate] = useState<ApiDiscoverableAgent | null>(null)
   const { state: sidebarState } = useSidebar()
@@ -68,7 +75,7 @@ export function HomePage() {
 
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && sidebarState === 'collapsed' && !isFullScreen
 
-  const hasAgents = agents && agents.length > 0
+  const hasAgents = orderedAgents.length > 0
   const hasTemplates = discoverableAgents && discoverableAgents.length > 0
 
   return (
@@ -103,7 +110,7 @@ export function HomePage() {
               </div>
             ) : hasAgents ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                {agents.map((agent) => (
+                {orderedAgents.map((agent) => (
                   <AgentCard key={agent.slug} agent={agent} />
                 ))}
               </div>
