@@ -45,6 +45,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
       if (msg.type === 'compact_boundary') continue
       for (const tc of msg.toolCalls || []) {
         if ((tc.name === 'Agent' || tc.name === 'Task') && activeIds.has(tc.id)) {
+          if (tc.isError) continue
           const input = tc.input as { subagent_type?: string; description?: string }
           const isCompleted = completedSubagents?.has(tc.id) || tc.result != null
           items.push({
