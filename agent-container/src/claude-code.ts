@@ -410,6 +410,7 @@ export class ClaudeCodeProcess extends EventEmitter {
               'mcp__browser__browser_get_state',
               'WebSearch',
               'Read',
+              'mcp__user-input__request_browser_input',
             ],
             prompt: WEB_BROWSER_AGENT_PROMPT,
             maxTurns: 500,
@@ -457,6 +458,18 @@ export class ClaudeCodeProcess extends EventEmitter {
                 message: error instanceof Error ? error.message : 'User declined to answer',
               };
             }
+          }
+
+          // For MCP user-input tools called by subagents, set the toolUseId
+          // so the tool handler can consume it. PreToolUse hooks may not fire
+          // for subagent tool calls, so we set it here as well.
+          // TODO: Race condition — if both canUseTool and PreToolUse fire for
+          // the same tool call, the last write wins (setCurrentToolUseId is
+          // not additive). This is acceptable because they write the same ID,
+          // but if two user-input tools fire concurrently the first ID could
+          // be overwritten before consumeCurrentToolUseId is called.
+          if (toolName.startsWith('mcp__user-input__') && options.toolUseID) {
+            inputManager.setCurrentToolUseId(options.toolUseID);
           }
 
           // Auto-approve other tools (we're in bypassPermissions mode)

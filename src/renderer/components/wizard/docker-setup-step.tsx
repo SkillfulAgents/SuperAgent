@@ -1,13 +1,16 @@
-import { useMemo } from 'react'
+import { useState, useMemo } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@renderer/components/ui/collapsible'
 import { useSettings, useStartRunner, useRefreshAvailability } from '@renderer/hooks/use-settings'
+import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import {
   Loader2,
   Check,
   Play,
   ExternalLink,
   RefreshCw,
+  ChevronDown,
 } from 'lucide-react'
 
 const RUNTIME_INFO: Record<string, { name: string; description: string; installUrl: string; icon: string }> = {
@@ -29,24 +32,46 @@ const RUNTIME_INFO: Record<string, { name: string; description: string; installU
     installUrl: 'https://podman.io/getting-started/installation',
     icon: '🦭',
   },
+  lima: {
+    name: 'Built-in Runtime',
+    description: 'Bundled lightweight container runtime. No extra software needed — just works.',
+    installUrl: '',
+    icon: '📦',
+  },
+  wsl2: {
+    name: 'Built-in Runtime',
+    description: 'Lightweight container runtime using WSL2. Run "wsl --install" in PowerShell as Administrator, then restart your computer.',
+    installUrl: 'https://learn.microsoft.com/en-us/windows/wsl/install',
+    icon: '📦',
+  },
 }
 
 export function DockerSetupStep() {
   const { data: settings } = useSettings()
+  const { data: runtimeStatus } = useRuntimeStatus()
   const startRunner = useStartRunner()
   const refreshAvailability = useRefreshAvailability()
+  const [othersOpen, setOthersOpen] = useState(false)
+
+  // Detect if the built-in runtime (Lima on macOS, WSL2 on Windows) is actively starting
+  const isBuiltinStarting = runtimeStatus?.runtimeReadiness?.status === 'CHECKING' &&
+    runtimeStatus.runtimeReadiness.message?.toLowerCase().includes('built-in')
 
   const runtimeStatuses = useMemo(() => {
     if (!settings?.runnerAvailability) return []
     return settings.runnerAvailability.map((r) => ({
       ...r,
       info: RUNTIME_INFO[r.runner] || { name: r.runner, description: '', installUrl: '', icon: '📦' },
+      // Built-in runtimes count as "effectively available" while starting
+      effectivelyAvailable: r.available || ((r.runner === 'lima' || r.runner === 'wsl2') && isBuiltinStarting),
     }))
-  }, [settings?.runnerAvailability])
+  }, [settings?.runnerAvailability, isBuiltinStarting])
 
-  const hasAvailableRunner = useMemo(() => {
-    return settings?.runnerAvailability?.some((r) => r.available) ?? false
-  }, [settings?.runnerAvailability])
+  // Split into primary (available/starting) and others
+  const primaryRuntime = runtimeStatuses.find((r) => r.effectivelyAvailable)
+  const otherRuntimes = runtimeStatuses.filter((r) => r !== primaryRuntime)
+
+  const hasAvailableRunner = primaryRuntime != null
 
   const handleStartRunner = async (runner: string) => {
     try {
@@ -62,6 +87,86 @@ export function DockerSetupStep() {
     } else {
       window.open(url, '_blank', 'noopener,noreferrer')
     }
+  }
+
+  const renderRuntime = (runtime: typeof runtimeStatuses[number]) => {
+    const isStarting = (runtime.runner === 'lima' || runtime.runner === 'wsl2') && isBuiltinStarting && !runtime.available
+
+    return (
+      <div
+        key={runtime.runner}
+        className="flex items-start gap-3 p-3 rounded-lg border bg-card"
+      >
+        <span className="text-2xl">{runtime.info.icon}</span>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="font-medium">{runtime.info.name}</span>
+            {runtime.available && (
+              <span className="text-xs bg-green-500/10 text-green-600 dark:text-green-400 px-2 py-0.5 rounded-full flex items-center gap-1">
+                <Check className="h-3 w-3" />
+                Running
+              </span>
+            )}
+            {isStarting && (
+              <span className="text-xs bg-blue-500/10 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded-full flex items-center gap-1">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                Starting...
+              </span>
+            )}
+            {!runtime.available && !isStarting && runtime.installed && !runtime.running && (
+              <span className="text-xs bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 px-2 py-0.5 rounded-full">
+                Installed (not running)
+              </span>
+            )}
+            {!runtime.installed && (
+              <span className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded-full">
+                Not installed
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground mt-1">
+            {runtime.info.description}
+          </p>
+          <div className="mt-2">
+            {runtime.available ? (
+              <Button size="sm" variant="outline" className="h-7 text-xs" disabled>
+                <Check className="h-3 w-3 mr-1" />
+                Ready to use
+              </Button>
+            ) : isStarting ? (
+              <Button size="sm" variant="outline" className="h-7 text-xs" disabled>
+                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                Starting...
+              </Button>
+            ) : runtime.installed && runtime.canStart ? (
+              <Button
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => handleStartRunner(runtime.runner)}
+                disabled={startRunner.isPending}
+              >
+                {startRunner.isPending ? (
+                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                ) : (
+                  <Play className="h-3 w-3 mr-1" />
+                )}
+                Start {runtime.info.name}
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs"
+                onClick={() => handleOpenInstallLink(runtime.info.installUrl)}
+              >
+                <ExternalLink className="h-3 w-3 mr-1" />
+                Install {runtime.info.name}
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -85,7 +190,7 @@ export function DockerSetupStep() {
         </Button>
       </div>
 
-      {hasAvailableRunner && (
+      {hasAvailableRunner && !isBuiltinStarting && (
         <Alert>
           <Check className="h-4 w-4 text-green-600" />
           <AlertDescription className="text-green-700 dark:text-green-400">
@@ -94,71 +199,36 @@ export function DockerSetupStep() {
         </Alert>
       )}
 
+      {isBuiltinStarting && (
+        <Alert>
+          <Loader2 className="h-4 w-4 animate-spin" />
+          <AlertDescription>
+            {runtimeStatus?.runtimeReadiness?.message || 'Starting container runtime...'}
+          </AlertDescription>
+        </Alert>
+      )}
+
       <div className="space-y-3">
-        {runtimeStatuses.map((runtime) => (
-          <div
-            key={runtime.runner}
-            className="flex items-start gap-3 p-3 rounded-lg border bg-card"
-          >
-            <span className="text-2xl">{runtime.info.icon}</span>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="font-medium">{runtime.info.name}</span>
-                {runtime.available && (
-                  <span className="text-xs bg-green-500/10 text-green-600 dark:text-green-400 px-2 py-0.5 rounded-full flex items-center gap-1">
-                    <Check className="h-3 w-3" />
-                    Running
-                  </span>
-                )}
-                {runtime.installed && !runtime.running && (
-                  <span className="text-xs bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 px-2 py-0.5 rounded-full">
-                    Installed (not running)
-                  </span>
-                )}
-                {!runtime.installed && (
-                  <span className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded-full">
-                    Not installed
-                  </span>
-                )}
-              </div>
-              <p className="text-xs text-muted-foreground mt-1">
-                {runtime.info.description}
-              </p>
-              <div className="mt-2">
-                {runtime.available ? (
-                  <Button size="sm" variant="outline" className="h-7 text-xs" disabled>
-                    <Check className="h-3 w-3 mr-1" />
-                    Ready to use
-                  </Button>
-                ) : runtime.installed && runtime.canStart ? (
-                  <Button
-                    size="sm"
-                    className="h-7 text-xs"
-                    onClick={() => handleStartRunner(runtime.runner)}
-                    disabled={startRunner.isPending}
-                  >
-                    {startRunner.isPending ? (
-                      <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                    ) : (
-                      <Play className="h-3 w-3 mr-1" />
-                    )}
-                    Start {runtime.info.name}
-                  </Button>
-                ) : (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7 text-xs"
-                    onClick={() => handleOpenInstallLink(runtime.info.installUrl)}
-                  >
-                    <ExternalLink className="h-3 w-3 mr-1" />
-                    Install {runtime.info.name}
-                  </Button>
-                )}
-              </div>
-            </div>
-          </div>
-        ))}
+        {/* Primary runtime (available or starting) shown at top */}
+        {primaryRuntime && renderRuntime(primaryRuntime)}
+
+        {/* Other runtimes collapsed if there's a primary */}
+        {primaryRuntime && otherRuntimes.length > 0 ? (
+          <Collapsible open={othersOpen} onOpenChange={setOthersOpen}>
+            <CollapsibleTrigger asChild>
+              <button className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors py-1">
+                <ChevronDown className={`h-3 w-3 transition-transform ${othersOpen ? 'rotate-180' : ''}`} />
+                Other runtimes
+              </button>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="space-y-3 pt-1">
+              {otherRuntimes.map(renderRuntime)}
+            </CollapsibleContent>
+          </Collapsible>
+        ) : (
+          /* No primary — show all runtimes flat */
+          otherRuntimes.map(renderRuntime)
+        )}
       </div>
 
       {startRunner.error && (

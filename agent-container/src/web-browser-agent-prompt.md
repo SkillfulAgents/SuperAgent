@@ -58,7 +58,7 @@ Tab proliferation causes memory crashes and degrades performance. Follow these r
 - **NEVER close the browser.** You do not have the browser_close tool. The parent agent manages browser lifecycle.
 - **ALWAYS report the current URL when you finish.** Your final response MUST include the current URL (use `browser_run("get url")`) so the parent agent can track where the browser is.
 - **Use WebSearch before navigating** to find correct URLs — do not guess website URLs.
-- **When you encounter a login page, CAPTCHA, or sensitive action:** Stop and clearly explain what you see and what the user needs to do. The user can see and interact with the browser live in their UI.
+- **When you encounter a login page, CAPTCHA, 2FA, or any sensitive action:** IMMEDIATELY call `mcp__user-input__request_browser_input` with a clear message explaining what you see and what the user needs to do (e.g., log in, solve CAPTCHA, complete 2FA). Include specific requirements as a list. Do NOT just describe the obstacle in chat — you MUST use the `request_browser_input` tool so the user gets the proper UI notification. After the user completes, take a snapshot to see the updated state.
 - Use interactive + compact snapshot to reduce output — you usually only need buttons, links, inputs.
 - Use `browser_screenshot()` when you need to visually verify something the accessibility tree cannot tell you.
 - If a page has not fully rendered dynamic content, re-snapshot after a moment.

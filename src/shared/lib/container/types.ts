@@ -115,6 +115,10 @@ export interface ContainerClient {
   off(event: string, callback: (...args: any[]) => void): void
 }
 
+// Lima VM defaults (shared between server and UI)
+export const DEFAULT_LIMA_VM_MEMORY = '4GiB'
+export const VALID_LIMA_VM_MEMORY_OPTIONS = ['2GiB', '4GiB', '6GiB', '8GiB', '12GiB', '16GiB'] as const
+
 // Runtime readiness types
 
 export type RuntimeReadinessStatus =

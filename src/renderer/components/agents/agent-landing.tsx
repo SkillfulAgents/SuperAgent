@@ -55,6 +55,7 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
   const {
     attachments,
     isDragOver,
+    addFiles,
     removeAttachment,
     clearAttachments,
     handleFileSelect,
@@ -139,6 +140,24 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
       console.error('Failed to start session:', error)
     }
   }
+
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+
+    const pastedFiles: File[] = []
+    for (const item of items) {
+      if (item.kind === 'file') {
+        const file = item.getAsFile()
+        if (file) pastedFiles.push(file)
+      }
+    }
+
+    if (pastedFiles.length > 0) {
+      e.preventDefault()
+      addFiles(pastedFiles.map((file) => ({ file })))
+    }
+  }, [addFiles])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
@@ -237,6 +256,7 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
                   onKeyDown={handleKeyDown}
+                  onPaste={handlePaste}
                   className={`pr-12 resize-none text-base transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh]' : 'min-h-[120px]'}`}
                   disabled={isDisabled}
                   autoFocus

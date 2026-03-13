@@ -8,6 +8,8 @@ out/
 dist/
 release/
 agent-container/dist/
+build/lima/
+build/wsl2/
 
 # Test coverage
 coverage/

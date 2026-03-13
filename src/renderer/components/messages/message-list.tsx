@@ -7,6 +7,7 @@ import {
   removeRemoteMcpRequest,
   removeQuestionRequest,
   removeFileRequest,
+  removeBrowserInputRequest,
   clearCompacting,
 } from '@renderer/hooks/use-message-stream'
 import { MessageItem } from './message-item'
@@ -17,6 +18,7 @@ import { ConnectedAccountRequestItem } from './connected-account-request-item'
 import { RemoteMcpRequestItem } from './remote-mcp-request-item'
 import { QuestionRequestItem } from './question-request-item'
 import { FileRequestItem } from './file-request-item'
+import { BrowserInputRequestItem } from './browser-input-request-item'
 import { Loader2, Wrench, WifiOff } from 'lucide-react'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { useIsOnline } from '@renderer/context/connectivity-context'
@@ -102,6 +104,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     pendingRemoteMcpRequests: sseRemoteMcpRequests,
     pendingQuestionRequests: sseQuestionRequests,
     pendingFileRequests: sseFileRequests,
+    pendingBrowserInputRequests: sseBrowserInputRequests,
   } = useMessageStream(sessionId, agentSlug)
   const isOnline = useIsOnline()
 
@@ -122,8 +125,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     }[] = []
     const fileRequests: { toolUseId: string; description: string; fileTypes?: string }[] = []
     const remoteMcpRequests: { toolUseId: string; url: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer' }[] = []
+    const browserInputRequests: { toolUseId: string; message: string; requirements: string[] }[] = []
 
-    if (!messages) return { secretRequests, connectedAccountRequests, questionRequests, fileRequests, remoteMcpRequests }
+    if (!messages) return { secretRequests, connectedAccountRequests, questionRequests, fileRequests, remoteMcpRequests, browserInputRequests }
 
     for (let i = 0; i < messages.length; i++) {
       const message = messages[i]
@@ -192,11 +196,20 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
               fileTypes: input.fileTypes,
             })
           }
+        } else if (toolCall.name === 'mcp__user-input__request_browser_input') {
+          const input = toolCall.input as { message?: string; requirements?: string[] }
+          if (input.message) {
+            browserInputRequests.push({
+              toolUseId: toolCall.id,
+              message: input.message,
+              requirements: input.requirements || [],
+            })
+          }
         }
       }
     }
 
-    return { secretRequests, connectedAccountRequests, questionRequests, fileRequests, remoteMcpRequests }
+    return { secretRequests, connectedAccountRequests, questionRequests, fileRequests, remoteMcpRequests, browserInputRequests }
   }, [messages, pendingUserMessage])
 
   // Track toolUseIds the user has already answered, so that the message-based
@@ -294,6 +307,20 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     return merged
   }, [sseRemoteMcpRequests, messagesBasedPendingRequests.remoteMcpRequests, isActive])
 
+  const pendingBrowserInputRequests = useMemo(() => {
+    const seen = new Set<string>()
+    const merged: { toolUseId: string; message: string; requirements: string[] }[] = []
+
+    const messageBased = isActive ? messagesBasedPendingRequests.browserInputRequests : []
+    for (const req of [...sseBrowserInputRequests, ...messageBased]) {
+      if (!seen.has(req.toolUseId) && !dismissedRequestIds.current.has(req.toolUseId)) {
+        seen.add(req.toolUseId)
+        merged.push(req)
+      }
+    }
+    return merged
+  }, [sseBrowserInputRequests, messagesBasedPendingRequests.browserInputRequests, isActive])
+
   const scrollRef = useRef<HTMLDivElement>(null)
   const isScrolledToBottomRef = useRef(true)
 
@@ -364,6 +391,15 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     (toolUseId: string) => {
       dismissedRequestIds.current.add(toolUseId)
       removeFileRequest(sessionId, toolUseId)
+    },
+    [sessionId]
+  )
+
+  // Handler to remove a completed browser input request
+  const handleBrowserInputRequestComplete = useCallback(
+    (toolUseId: string) => {
+      dismissedRequestIds.current.add(toolUseId)
+      removeBrowserInputRequest(sessionId, toolUseId)
     },
     [sessionId]
   )
@@ -517,7 +553,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     if (scrollRef.current && isScrolledToBottomRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [messages, pendingUserMessage, streamingMessage, streamingToolUse, isCompacting, pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests, pendingFileRequests, pendingRemoteMcpRequests, activeSubagents])
+  }, [messages, pendingUserMessage, streamingMessage, streamingToolUse, isCompacting, pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests, pendingFileRequests, pendingRemoteMcpRequests, pendingBrowserInputRequests, activeSubagents])
 
   if (isLoading && !pendingUserMessage) {
     return (
@@ -691,6 +727,18 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
             agentSlug={agentSlug}
             readOnly={isViewOnly}
             onComplete={() => handleFileRequestComplete(request.toolUseId)}
+          />
+        ))}
+        {pendingBrowserInputRequests.map((request) => (
+          <BrowserInputRequestItem
+            key={request.toolUseId}
+            toolUseId={request.toolUseId}
+            message={request.message}
+            requirements={request.requirements}
+            sessionId={sessionId}
+            agentSlug={agentSlug}
+            readOnly={isViewOnly}
+            onComplete={() => handleBrowserInputRequestComplete(request.toolUseId)}
           />
         ))}
       </div>
