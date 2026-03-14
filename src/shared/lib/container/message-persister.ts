@@ -36,6 +36,7 @@ interface StreamingState {
   // Per-subagent streaming state, keyed by parent tool_use ID (supports concurrent background agents)
   activeSubagents: Map<string, SubagentStreamingState>
   slashCommands: SlashCommandInfo[] // Available slash commands from SDK
+  isAwaitingInput: boolean // True when session is waiting for user input (e.g., secret, file, question)
 }
 
 class MessagePersister {
@@ -75,6 +76,7 @@ class MessagePersister {
       completedSubagentIds: new Set(),
       activeSubagents: new Map(),
       slashCommands: [],
+      isAwaitingInput: false,
     })
 
     // Store container client for reconnection checks
@@ -107,6 +109,12 @@ class MessagePersister {
   isSessionActive(sessionId: string): boolean {
     const state = this.streamingStates.get(sessionId)
     return state?.isActive ?? false
+  }
+
+  // Check if a session is waiting for user input
+  isSessionAwaitingInput(sessionId: string): boolean {
+    const state = this.streamingStates.get(sessionId)
+    return state?.isAwaitingInput ?? false
   }
 
   // Get available slash commands for a session
@@ -203,6 +211,7 @@ class MessagePersister {
       state.isInterrupted = true
       state.isStreaming = false
       state.isActive = false
+      state.isAwaitingInput = false
       state.currentText = ''
       state.currentToolUse = null
       state.currentToolInput = ''
@@ -264,11 +273,13 @@ class MessagePersister {
         completedSubagentIds: new Set(),
         activeSubagents: new Map(),
         slashCommands: [],
+        isAwaitingInput: false,
       }
       this.streamingStates.set(sessionId, state)
     }
     state.isActive = true
     state.isInterrupted = false // Reset interrupted flag on new message
+    state.isAwaitingInput = false // Reset awaiting input on new message
     if (agentSlug) {
       state.agentSlug = agentSlug
     }
@@ -283,6 +294,19 @@ class MessagePersister {
       agentSlug: state.agentSlug,
       isActive: true,
     })
+  }
+
+  // Mark session as awaiting user input and broadcast globally
+  private markSessionAwaitingInput(sessionId: string): void {
+    const state = this.streamingStates.get(sessionId)
+    if (state && !state.isAwaitingInput) {
+      state.isAwaitingInput = true
+      this.broadcastGlobal({
+        type: 'session_awaiting_input',
+        sessionId,
+        agentSlug: state.agentSlug,
+      })
+    }
   }
 
   // Broadcast to SSE clients
@@ -389,6 +413,15 @@ class MessagePersister {
           this.broadcastToSSE(sessionId, { type: 'messages_updated' })
           break
         }
+        // Clear awaiting input when tool results arrive (user provided input)
+        if (state.isAwaitingInput) {
+          state.isAwaitingInput = false
+          this.broadcastGlobal({
+            type: 'session_input_provided',
+            sessionId,
+            agentSlug: state.agentSlug,
+          })
+        }
         // Tool results come as 'user' type messages
         this.handleToolResults(sessionId, content)
         break
@@ -419,6 +452,7 @@ class MessagePersister {
         // Query completed - session is no longer active
         state.isStreaming = false
         state.isActive = false
+        state.isAwaitingInput = false
         state.currentText = ''
 
         // Extract and persist context usage from result event
@@ -542,6 +576,7 @@ class MessagePersister {
   private markSessionInactive(sessionId: string, state: StreamingState): void {
     state.isStreaming = false
     state.isActive = false
+    state.isAwaitingInput = false
     state.currentText = ''
     state.currentToolUse = null
     state.currentToolInput = ''
@@ -939,6 +974,13 @@ class MessagePersister {
               state.currentToolInput,
               state.agentSlug
             )
+          }
+
+          // Mark session as awaiting input when a blocking user-input tool fires
+          // Only tools with 'request_' prefix actually block waiting for user response
+          // (schedule_task, deliver_file, search_* resolve immediately and don't block)
+          if (state.currentToolUse.name === 'AskUserQuestion' || state.currentToolUse.name.startsWith('mcp__user-input__request_')) {
+            this.markSessionAwaitingInput(sessionId)
           }
 
           // Track Task/Agent tool for subagent correlation

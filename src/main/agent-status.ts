@@ -10,9 +10,11 @@ export interface ApiAgent {
 export interface ApiSession {
   id: string
   isActive: boolean
+  isAwaitingInput?: boolean
 }
 
-export type ActivityStatus = 'working' | 'idle' | 'sleeping'
+// TODO: Consolidate with AgentActivityStatus in agent-status.tsx and agent.page.ts into a single shared type
+export type ActivityStatus = 'working' | 'idle' | 'sleeping' | 'awaiting_input'
 
 export interface AgentInfo {
   slug: string
@@ -67,6 +69,8 @@ export async function fetchAgentsWithStatus(apiPort: number): Promise<AgentInfo[
       agents.map(async (agent) => {
         let hasActiveSessions = false
 
+        let hasSessionsAwaitingInput = false
+
         if (agent.status === 'running') {
           try {
             const sessionsRes = await fetch(
@@ -75,6 +79,7 @@ export async function fetchAgentsWithStatus(apiPort: number): Promise<AgentInfo[
             if (sessionsRes.ok) {
               const sessions: ApiSession[] = await sessionsRes.json()
               hasActiveSessions = sessions.some(s => s.isActive)
+              hasSessionsAwaitingInput = sessions.some(s => s.isAwaitingInput)
             }
           } catch {
             // Ignore session fetch errors
@@ -85,6 +90,8 @@ export async function fetchAgentsWithStatus(apiPort: number): Promise<AgentInfo[
         let activityStatus: ActivityStatus
         if (agent.status === 'stopped') {
           activityStatus = 'sleeping'
+        } else if (hasSessionsAwaitingInput) {
+          activityStatus = 'awaiting_input'
         } else if (hasActiveSessions) {
           activityStatus = 'working'
         } else {

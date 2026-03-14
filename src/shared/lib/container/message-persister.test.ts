@@ -1596,4 +1596,234 @@ describe('MessagePersister', () => {
       expect(usageEvents).toHaveLength(0)
     })
   })
+
+  // ============================================================================
+  // Awaiting input status tracking
+  // ============================================================================
+
+  describe('awaiting input status tracking', () => {
+    // Helper to collect global notification events
+    function collectGlobalEvents(): { events: any[]; cleanup: () => void } {
+      const events: any[] = []
+      const cleanup = messagePersister.addGlobalNotificationClient((data) => {
+        events.push(data)
+      })
+      return { events, cleanup }
+    }
+
+    // Helper to simulate a complete tool_use block
+    function simulateToolUse(toolName: string, toolId: string, input: Record<string, unknown>) {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: toolId, name: toolName },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_stop' },
+      })
+    }
+
+    it('isSessionAwaitingInput returns false initially', () => {
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+    })
+
+    it('sets isAwaitingInput after request_secret tool fires', () => {
+      simulateToolUse('mcp__user-input__request_secret', 'tool-1', {
+        secretName: 'API_KEY',
+        reason: 'Need it',
+      })
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+    })
+
+    it('sets isAwaitingInput after AskUserQuestion tool fires', () => {
+      simulateToolUse('AskUserQuestion', 'tool-1', {
+        questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],
+      })
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+    })
+
+    it('sets isAwaitingInput after request_connected_account tool fires', () => {
+      simulateToolUse('mcp__user-input__request_connected_account', 'tool-1', {
+        toolkit: 'github',
+        reason: 'Need access',
+      })
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+    })
+
+    it('sets isAwaitingInput after request_file tool fires', () => {
+      simulateToolUse('mcp__user-input__request_file', 'tool-1', {
+        description: 'Upload a CSV',
+      })
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+    })
+
+    it('sets isAwaitingInput after request_remote_mcp tool fires', () => {
+      simulateToolUse('mcp__user-input__request_remote_mcp', 'tool-1', {
+        url: 'https://example.com/mcp',
+      })
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+    })
+
+    it('sets isAwaitingInput after request_browser_input tool fires', () => {
+      simulateToolUse('mcp__user-input__request_browser_input', 'tool-1', {
+        message: 'Please log in',
+        requirements: ['Enter credentials'],
+      })
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+    })
+
+    it('does NOT set isAwaitingInput for schedule_task tool', () => {
+      simulateToolUse('mcp__user-input__schedule_task', 'tool-1', {
+        scheduleType: 'at',
+        scheduleExpression: '2026-03-20T10:00:00Z',
+        prompt: 'Do something',
+      })
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+    })
+
+    it('does NOT set isAwaitingInput for deliver_file tool', () => {
+      simulateToolUse('mcp__user-input__deliver_file', 'tool-1', {
+        filePath: '/tmp/output.csv',
+        description: 'Results',
+      })
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+    })
+
+    it('does NOT set isAwaitingInput for non-user-input tools', () => {
+      simulateToolUse('Bash', 'tool-1', { command: 'ls' })
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+    })
+
+    it('broadcasts session_awaiting_input globally when status transitions', () => {
+      const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
+
+      simulateToolUse('mcp__user-input__request_secret', 'tool-1', {
+        secretName: 'KEY',
+      })
+
+      const awaitingEvents = globalEvents.filter(e => e.type === 'session_awaiting_input')
+      expect(awaitingEvents).toHaveLength(1)
+      expect(awaitingEvents[0].sessionId).toBe(SESSION_ID)
+      expect(awaitingEvents[0].agentSlug).toBe(AGENT_SLUG)
+
+      globalCleanup()
+    })
+
+    it('does not double-broadcast when already awaiting input', () => {
+      const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
+
+      // Fire two user-input tools in sequence
+      simulateToolUse('mcp__user-input__request_secret', 'tool-1', { secretName: 'KEY1' })
+      simulateToolUse('mcp__user-input__request_file', 'tool-2', { description: 'CSV' })
+
+      const awaitingEvents = globalEvents.filter(e => e.type === 'session_awaiting_input')
+      // Should only broadcast once (first transition)
+      expect(awaitingEvents).toHaveLength(1)
+
+      globalCleanup()
+    })
+
+    it('clears isAwaitingInput when tool result arrives (user message)', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      simulateToolUse('mcp__user-input__request_secret', 'tool-1', { secretName: 'KEY' })
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+      // Simulate tool result arriving as a user message
+      mockClient._sendMessage({
+        type: 'user',
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: 'tool-1', content: 'secret-value' },
+          ],
+        },
+      })
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+    })
+
+    it('broadcasts session_input_provided globally when input is received', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      simulateToolUse('mcp__user-input__request_secret', 'tool-1', { secretName: 'KEY' })
+
+      const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
+
+      // Simulate tool result
+      mockClient._sendMessage({
+        type: 'user',
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: 'tool-1', content: 'value' },
+          ],
+        },
+      })
+
+      const providedEvents = globalEvents.filter(e => e.type === 'session_input_provided')
+      expect(providedEvents).toHaveLength(1)
+      expect(providedEvents[0].sessionId).toBe(SESSION_ID)
+      expect(providedEvents[0].agentSlug).toBe(AGENT_SLUG)
+
+      globalCleanup()
+    })
+
+    it('clears isAwaitingInput when session goes idle (result event)', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      simulateToolUse('mcp__user-input__request_secret', 'tool-1', { secretName: 'KEY' })
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+      // Simulate session completing
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+      })
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+    })
+
+    it('clears isAwaitingInput when session is interrupted', async () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      simulateToolUse('mcp__user-input__request_secret', 'tool-1', { secretName: 'KEY' })
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+      await messagePersister.markSessionInterrupted(SESSION_ID)
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+    })
+
+    it('clears isAwaitingInput when new user message starts (markSessionActive)', () => {
+      simulateToolUse('mcp__user-input__request_secret', 'tool-1', { secretName: 'KEY' })
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+      // New message starts a new turn
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+    })
+
+    it('returns false for unknown session IDs', () => {
+      expect(messagePersister.isSessionAwaitingInput('nonexistent-session')).toBe(false)
+    })
+  })
 })

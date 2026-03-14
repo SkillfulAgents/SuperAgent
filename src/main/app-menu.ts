@@ -47,12 +47,25 @@ async function buildAppMenu(): Promise<void> {
   const agents = await fetchAgentsWithStatus(apiPortRef)
 
   // Group agents by status
+  const awaitingInput = agents.filter(a => a.activityStatus === 'awaiting_input')
   const working = agents.filter(a => a.activityStatus === 'working')
   const idle = agents.filter(a => a.activityStatus === 'idle')
   const sleeping = agents.filter(a => a.activityStatus === 'sleeping')
 
   // Build Agents submenu
   const agentsSubmenu: Electron.MenuItemConstructorOptions[] = []
+
+  if (awaitingInput.length > 0) {
+    agentsSubmenu.push({ label: 'Awaiting Input', enabled: false })
+    awaitingInput.forEach(agent => {
+      agentsSubmenu.push({
+        label: agent.name,
+        icon: createStatusIcon('working'),
+        click: () => sendToRenderer('navigate-to-agent', agent.slug),
+      })
+    })
+    agentsSubmenu.push({ type: 'separator' })
+  }
 
   if (working.length > 0) {
     agentsSubmenu.push({ label: 'Working', enabled: false })

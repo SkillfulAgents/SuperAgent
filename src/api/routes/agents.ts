@@ -60,6 +60,7 @@ import {
   refreshAgentSkills,
 } from '@shared/lib/services/skillset-service'
 import { listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
+import { getSessionIdsWithUnreadNotifications } from '@shared/lib/services/notification-service'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import {
   exportAgentTemplate,
@@ -817,9 +818,12 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
 
 
     const sessionList = await listSessions(slug)
+    const unreadSessionIds = await getSessionIdsWithUnreadNotifications(slug)
     const sessionsWithStatus = sessionList.map((session) => ({
       ...session,
       isActive: messagePersister.isSessionActive(session.id),
+      isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id),
+      hasUnreadNotifications: unreadSessionIds.has(session.id),
     }))
 
     return c.json(sessionsWithStatus)

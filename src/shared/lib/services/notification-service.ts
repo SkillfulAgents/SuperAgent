@@ -100,6 +100,29 @@ export async function listNotifications(limit: number = 50, userId?: string): Pr
 }
 
 /**
+ * Get session IDs that have unread notifications for a given agent.
+ * Useful for showing "unseen" indicators in the sidebar.
+ */
+export async function getSessionIdsWithUnreadNotifications(agentSlug: string, userId?: string): Promise<Set<string>> {
+  const conditions = [
+    eq(notifications.agentSlug, agentSlug),
+    eq(notifications.isRead, false),
+  ]
+
+  if (userId) {
+    const slugs = await getAccessibleAgentSlugs(userId)
+    if (!slugs.includes(agentSlug)) return new Set()
+  }
+
+  const rows = await db
+    .select({ sessionId: notifications.sessionId })
+    .from(notifications)
+    .where(and(...conditions))
+
+  return new Set(rows.map(r => r.sessionId))
+}
+
+/**
  * List unread notifications.
  * When userId is provided, only returns notifications for agents the user has access to.
  */

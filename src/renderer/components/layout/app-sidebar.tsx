@@ -1,5 +1,5 @@
 
-import { ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard, Loader2, WifiOff, LogOut, User, Users } from 'lucide-react'
+import { ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard, Loader2, WifiOff, LogOut, User, Users, CircleHelp } from 'lucide-react'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
@@ -82,7 +82,9 @@ function SessionSubItem({
   const { selectedSessionId, selectAgent, selectSession } = useSelection()
   const isSelected = session.id === selectedSessionId
   const { isStreaming } = useMessageStream(isSelected ? session.id : null, isSelected ? agentSlug : null)
-  const showActive = session.isActive || isStreaming
+  const isWorking = (session.isActive || isStreaming) && !session.isAwaitingInput
+  const isAwaitingInput = session.isAwaitingInput
+  const hasUnread = !session.isActive && !session.isAwaitingInput && session.hasUnreadNotifications
 
   const handleClick = () => {
     selectAgent(agentSlug)
@@ -101,12 +103,16 @@ function SessionSubItem({
           isActive={isSelected}
         >
           <button onClick={handleClick} className="flex items-center gap-2 w-full" data-testid={`session-item-${session.id}`}>
-            {showActive && (
+            {isAwaitingInput ? (
+              <CircleHelp className="h-3 w-3 shrink-0 text-orange-500" />
+            ) : isWorking ? (
               <span className="relative flex h-2 w-2 shrink-0">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-current opacity-75"></span>
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-current"></span>
               </span>
-            )}
+            ) : hasUnread ? (
+              <span className="h-2 w-2 shrink-0 rounded-full bg-blue-500" />
+            ) : null}
             <span className="truncate">{session.name}</span>
           </button>
         </SidebarMenuSubButton>
@@ -318,6 +324,7 @@ export const AgentMenuItem = React.forwardRef<
             <AgentStatus
               status={agent.status}
               hasActiveSessions={sessions?.some((s) => s.isActive) ?? false}
+              hasSessionsAwaitingInput={sessions?.some((s) => s.isAwaitingInput) ?? false}
             />
           </SidebarMenuButton>
         </AgentContextMenu>

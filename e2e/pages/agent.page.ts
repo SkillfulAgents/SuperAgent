@@ -1,6 +1,6 @@
 import { Page, expect } from '@playwright/test'
 
-export type AgentActivityStatus = 'sleeping' | 'idle' | 'working'
+export type AgentActivityStatus = 'sleeping' | 'idle' | 'working' | 'awaiting_input'
 
 /**
  * Page object for agent-related operations

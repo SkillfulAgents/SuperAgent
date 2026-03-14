@@ -22,6 +22,7 @@ function AgentCard({ agent }: { agent: ApiAgent }) {
   const { selectAgent } = useSelection()
   const { data: sessions } = useSessions(agent.slug)
   const hasActiveSessions = sessions?.some((s) => s.isActive) ?? false
+  const hasSessionsAwaitingInput = sessions?.some((s) => s.isAwaitingInput) ?? false
 
   return (
     <AgentContextMenu agent={agent}>
@@ -31,7 +32,7 @@ function AgentCard({ agent }: { agent: ApiAgent }) {
       >
         <div className="flex items-center justify-between gap-2 min-w-0">
           <span className="font-medium truncate">{agent.name}</span>
-          <AgentStatus status={agent.status} hasActiveSessions={hasActiveSessions} className="shrink-0" />
+          <AgentStatus status={agent.status} hasActiveSessions={hasActiveSessions} hasSessionsAwaitingInput={hasSessionsAwaitingInput} className="shrink-0" />
         </div>
         {agent.description && (
           <p className="text-xs text-muted-foreground line-clamp-2">{agent.description}</p>
