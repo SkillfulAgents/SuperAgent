@@ -1,6 +1,7 @@
 import path from 'path'
 import { Hono } from 'hono'
 import { getLlmProvider, getAllProviderInfo } from '@shared/lib/llm-provider'
+import type { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provider'
 import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
 import { Authenticated, IsAdmin } from '../middleware/auth'
 import { isAuthMode } from '@shared/lib/auth/mode'
@@ -53,6 +54,7 @@ settings.get('/', async (c) => {
       apiKeyStatus: {
         anthropic: getLlmProvider('anthropic').getApiKeyStatus(),
         openrouter: getLlmProvider('openrouter').getApiKeyStatus(),
+        bedrock: getLlmProvider('bedrock').getApiKeyStatus(),
         browserbase: getBrowserbaseApiKeyStatus(),
         composio: getComposioApiKeyStatus(),
         deepgram: getSttProvider('deepgram').getApiKeyStatus(),
@@ -204,6 +206,19 @@ settings.put('/', async (c) => {
         }
       }
 
+      // Handle Bedrock credentials
+      for (const field of ['bedrockApiKey', 'bedrockAccessKeyId', 'bedrockSecretAccessKey', 'bedrockRegion'] as const) {
+        if (body.apiKeys[field] === '') {
+          newSettings.apiKeys = { ...newSettings.apiKeys }
+          delete newSettings.apiKeys[field]
+        } else if (body.apiKeys[field]) {
+          newSettings.apiKeys = {
+            ...newSettings.apiKeys,
+            [field]: body.apiKeys[field],
+          }
+        }
+      }
+
       // Handle Composio API key
       if (body.apiKeys.composioApiKey === '') {
         newSettings.apiKeys = { ...newSettings.apiKeys }
@@ -317,6 +332,7 @@ settings.put('/', async (c) => {
       apiKeyStatus: {
         anthropic: getLlmProvider('anthropic').getApiKeyStatus(),
         openrouter: getLlmProvider('openrouter').getApiKeyStatus(),
+        bedrock: getLlmProvider('bedrock').getApiKeyStatus(),
         browserbase: getBrowserbaseApiKeyStatus(),
         composio: getComposioApiKeyStatus(),
         deepgram: getSttProvider('deepgram').getApiKeyStatus(),
@@ -454,7 +470,7 @@ settings.post('/validate-llm-key', async (c) => {
     if (!provider || typeof provider !== 'string') {
       return c.json({ valid: false, error: 'Provider is required' }, 400)
     }
-    if (provider !== 'anthropic' && provider !== 'openrouter') {
+    if (provider !== 'anthropic' && provider !== 'openrouter' && provider !== 'bedrock') {
       return c.json({ valid: false, error: `Unknown provider: ${provider}` }, 400)
     }
 
@@ -463,6 +479,26 @@ settings.post('/validate-llm-key', async (c) => {
     return c.json(result)
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Invalid API key'
+    return c.json({ valid: false, error: message })
+  }
+})
+
+// POST /api/settings/validate-bedrock - Validate AWS credentials for Bedrock
+settings.post('/validate-bedrock', async (c) => {
+  try {
+    const { accessKeyId, secretAccessKey, region } = await c.req.json()
+    if (!accessKeyId || !secretAccessKey) {
+      return c.json({ valid: false, error: 'Access Key ID and Secret Access Key are required' }, 400)
+    }
+    const bedrockProvider = getLlmProvider('bedrock') as BedrockLlmProvider
+    const result = await bedrockProvider.validateAwsCredentials(
+      accessKeyId,
+      secretAccessKey,
+      region || 'us-east-1'
+    )
+    return c.json(result)
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Invalid credentials'
     return c.json({ valid: false, error: message })
   }
 })

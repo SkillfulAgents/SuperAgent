@@ -683,6 +683,87 @@ describe('usage route', () => {
       expect(dayEntry.byModel[0].cost).toBe(3.00)
     })
 
+    it('normalizes Bedrock format "us.anthropic.claude-opus-4-6-v1" to "claude-opus-4-6"', async () => {
+      const agent = makeAgent('agent-1', 'Agent One')
+      mockListAgents.mockResolvedValue([agent])
+      mockGetAgentClaudeConfigDir.mockReturnValue('/data/agents/agent-1/.claude')
+
+      mockLoadDailyUsageData.mockResolvedValue([
+        makeDay('2025-01-15', 0, [
+          { modelName: 'us.anthropic.claude-opus-4-6-v1', cost: 2.00 },
+        ]),
+      ])
+
+      const res = await getUsage('days=7')
+      const body = await res.json()
+      const dayEntry = body.daily.find((d: { date: string }) => d.date === '2025-01-15')
+
+      expect(dayEntry.byModel[0].model).toBe('claude-opus-4-6')
+    })
+
+    it('normalizes Bedrock format "global.anthropic.claude-sonnet-4-6" to "claude-sonnet-4-6"', async () => {
+      const agent = makeAgent('agent-1', 'Agent One')
+      mockListAgents.mockResolvedValue([agent])
+      mockGetAgentClaudeConfigDir.mockReturnValue('/data/agents/agent-1/.claude')
+
+      mockLoadDailyUsageData.mockResolvedValue([
+        makeDay('2025-01-15', 0, [
+          { modelName: 'global.anthropic.claude-sonnet-4-6', cost: 1.00 },
+        ]),
+      ])
+
+      const res = await getUsage('days=7')
+      const body = await res.json()
+      const dayEntry = body.daily.find((d: { date: string }) => d.date === '2025-01-15')
+
+      expect(dayEntry.byModel[0].model).toBe('claude-sonnet-4-6')
+    })
+
+    it('normalizes Bedrock format "us.anthropic.claude-haiku-4-5-20251001-v1:0" to "claude-haiku-4-5-20251001"', async () => {
+      const agent = makeAgent('agent-1', 'Agent One')
+      mockListAgents.mockResolvedValue([agent])
+      mockGetAgentClaudeConfigDir.mockReturnValue('/data/agents/agent-1/.claude')
+
+      mockLoadDailyUsageData.mockResolvedValue([
+        makeDay('2025-01-15', 0, [
+          { modelName: 'us.anthropic.claude-haiku-4-5-20251001-v1:0', cost: 0.50 },
+        ]),
+      ])
+
+      const res = await getUsage('days=7')
+      const body = await res.json()
+      const dayEntry = body.daily.find((d: { date: string }) => d.date === '2025-01-15')
+
+      expect(dayEntry.byModel[0].model).toBe('claude-haiku-4-5-20251001')
+    })
+
+    it('merges Bedrock and Anthropic model names for same model', async () => {
+      const agent1 = makeAgent('agent-1', 'Agent One')
+      const agent2 = makeAgent('agent-2', 'Agent Two')
+      mockListAgents.mockResolvedValue([agent1, agent2])
+      mockGetAgentClaudeConfigDir.mockImplementation((slug: string) => `/data/agents/${slug}/.claude`)
+
+      mockLoadDailyUsageData
+        .mockResolvedValueOnce([
+          makeDay('2025-01-15', 2.00, [
+            { modelName: 'claude-opus-4-6', cost: 2.00 },
+          ]),
+        ])
+        .mockResolvedValueOnce([
+          makeDay('2025-01-15', 1.00, [
+            { modelName: 'us.anthropic.claude-opus-4-6-v1', cost: 1.00 },
+          ]),
+        ])
+
+      const res = await getUsage('days=7')
+      const body = await res.json()
+      const dayEntry = body.daily.find((d: { date: string }) => d.date === '2025-01-15')
+
+      expect(dayEntry.byModel).toHaveLength(1)
+      expect(dayEntry.byModel[0].model).toBe('claude-opus-4-6')
+      expect(dayEntry.byModel[0].cost).toBe(3.00)
+    })
+
     it('preserves unknown model names as-is', async () => {
       const agent = makeAgent('agent-1', 'Agent One')
       mockListAgents.mockResolvedValue([agent])

@@ -10,9 +10,10 @@ import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { AlertTriangle } from 'lucide-react'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { ProviderApiKeyInput } from './provider-api-key-input'
+import { BedrockCredentialsInput } from './bedrock-credentials-input'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 
-const PROVIDER_KEY_CONFIG: Record<LlmProviderId, {
+const SIMPLE_PROVIDER_KEY_CONFIG: Record<string, {
   label: string
   placeholder: string
   envVarName: string
@@ -40,7 +41,6 @@ export function LlmTab() {
   const providerStatus = settings?.llmProviderStatus ?? []
   const activeProviderInfo = providerStatus.find(p => p.id === activeProvider)
   const modelOptions = activeProviderInfo?.availableModels ?? []
-  const keyConfig = PROVIDER_KEY_CONFIG[activeProvider]
 
   return (
     <div className="space-y-6">
@@ -79,18 +79,22 @@ export function LlmTab() {
         )}
       </div>
 
-      {/* API Keys Section */}
+      {/* Credentials Section */}
       <div className="pt-4 border-t space-y-4">
-        <h3 className="text-sm font-medium">API Key</h3>
-        <ProviderApiKeyInput
-          key={activeProvider}
-          providerId={activeProvider}
-          label={keyConfig.label}
-          placeholder={keyConfig.placeholder}
-          envVarName={keyConfig.envVarName}
-          apiKeySettingsField={keyConfig.apiKeySettingsField}
-          disabled={isLoading}
-        />
+        <h3 className="text-sm font-medium">{activeProvider === 'bedrock' ? 'Credentials' : 'API Key'}</h3>
+        {activeProvider === 'bedrock' ? (
+          <BedrockCredentialsInput key="bedrock" disabled={isLoading} />
+        ) : (
+          <ProviderApiKeyInput
+            key={activeProvider}
+            providerId={activeProvider}
+            label={SIMPLE_PROVIDER_KEY_CONFIG[activeProvider].label}
+            placeholder={SIMPLE_PROVIDER_KEY_CONFIG[activeProvider].placeholder}
+            envVarName={SIMPLE_PROVIDER_KEY_CONFIG[activeProvider].envVarName}
+            apiKeySettingsField={SIMPLE_PROVIDER_KEY_CONFIG[activeProvider].apiKeySettingsField}
+            disabled={isLoading}
+          />
+        )}
       </div>
 
       {/* Models Section */}

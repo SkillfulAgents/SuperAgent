@@ -35,6 +35,10 @@ export interface UpdateSettingsParams {
   apiKeys?: {
     anthropicApiKey?: string
     openrouterApiKey?: string
+    bedrockApiKey?: string
+    bedrockAccessKeyId?: string
+    bedrockSecretAccessKey?: string
+    bedrockRegion?: string
     composioApiKey?: string
     composioUserId?: string
     browserbaseApiKey?: string

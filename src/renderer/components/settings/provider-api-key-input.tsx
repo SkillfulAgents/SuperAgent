@@ -13,7 +13,7 @@ interface ProviderApiKeyInputProps {
   label: string
   placeholder?: string
   envVarName?: string
-  apiKeySettingsField: 'anthropicApiKey' | 'openrouterApiKey'
+  apiKeySettingsField: 'anthropicApiKey' | 'openrouterApiKey' | 'bedrockApiKey'
   showSourceIndicator?: boolean
   showNotConfiguredAlert?: boolean
   showHelpText?: boolean

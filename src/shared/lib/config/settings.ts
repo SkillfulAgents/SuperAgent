@@ -22,6 +22,10 @@ export interface ContainerSettings {
 export interface ApiKeySettings {
   anthropicApiKey?: string
   openrouterApiKey?: string
+  bedrockApiKey?: string
+  bedrockAccessKeyId?: string
+  bedrockSecretAccessKey?: string
+  bedrockRegion?: string
   composioApiKey?: string
   composioUserId?: string
   browserbaseApiKey?: string
@@ -135,7 +139,7 @@ export interface AnalyticsTarget {
   enabled: boolean
 }
 
-export type LlmProviderId = 'anthropic' | 'openrouter'
+export type LlmProviderId = 'anthropic' | 'openrouter' | 'bedrock'
 
 export interface AppSettings {
   container: ContainerSettings
@@ -195,6 +199,7 @@ export interface GlobalSettingsResponse {
   apiKeyStatus: {
     anthropic: ApiKeyStatus
     openrouter: ApiKeyStatus
+    bedrock: ApiKeyStatus
     composio: ApiKeyStatus
     browserbase: ApiKeyStatus
     deepgram: ApiKeyStatus

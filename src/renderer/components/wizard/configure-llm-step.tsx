@@ -8,11 +8,12 @@ import {
   SelectValue,
 } from '@renderer/components/ui/select'
 import { ProviderApiKeyInput } from '@renderer/components/settings/provider-api-key-input'
+import { BedrockCredentialsInput } from '@renderer/components/settings/bedrock-credentials-input'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { ChevronRight } from 'lucide-react'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 
-const PROVIDER_INSTRUCTIONS: Record<LlmProviderId, { steps: { text: string; link?: { href: string; label: string } }[] }> = {
+const PROVIDER_INSTRUCTIONS: Record<string, { steps: { text: string; link?: { href: string; label: string } }[] }> = {
   anthropic: {
     steps: [
       { text: 'Sign up for an account at', link: { href: 'https://console.anthropic.com/login', label: 'console.anthropic.com' } },
@@ -27,9 +28,16 @@ const PROVIDER_INSTRUCTIONS: Record<LlmProviderId, { steps: { text: string; link
       { text: 'Click Create Key and copy your API key' },
     ],
   },
+  bedrock: {
+    steps: [
+      { text: 'Open the', link: { href: 'https://console.aws.amazon.com/bedrock/', label: 'Amazon Bedrock console' } },
+      { text: 'Enable access to Claude models in Model access' },
+      { text: 'Create a Bedrock API key or use IAM credentials' },
+    ],
+  },
 }
 
-const PROVIDER_KEY_CONFIG: Record<LlmProviderId, {
+const SIMPLE_PROVIDER_KEY_CONFIG: Record<string, {
   label: string
   placeholder: string
   envVarName: string
@@ -57,7 +65,6 @@ export function ConfigureLLMStep() {
   const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
   const providerStatus = settings?.llmProviderStatus ?? []
   const instructions = PROVIDER_INSTRUCTIONS[activeProvider]
-  const keyConfig = PROVIDER_KEY_CONFIG[activeProvider]
 
   return (
     <div className="space-y-4">
@@ -89,52 +96,61 @@ export function ConfigureLLMStep() {
         </Select>
       </div>
 
-      <ProviderApiKeyInput
-        key={activeProvider}
-        providerId={activeProvider}
-        label={keyConfig.label}
-        placeholder={keyConfig.placeholder}
-        envVarName={keyConfig.envVarName}
-        apiKeySettingsField={keyConfig.apiKeySettingsField}
-        showNotConfiguredAlert={false}
-        showHelpText={false}
-        showRemoveButton={false}
-      />
+      {activeProvider === 'bedrock' ? (
+        <BedrockCredentialsInput
+          key="bedrock"
+          showNotConfiguredAlert={false}
+        />
+      ) : (
+        <ProviderApiKeyInput
+          key={activeProvider}
+          providerId={activeProvider}
+          label={SIMPLE_PROVIDER_KEY_CONFIG[activeProvider].label}
+          placeholder={SIMPLE_PROVIDER_KEY_CONFIG[activeProvider].placeholder}
+          envVarName={SIMPLE_PROVIDER_KEY_CONFIG[activeProvider].envVarName}
+          apiKeySettingsField={SIMPLE_PROVIDER_KEY_CONFIG[activeProvider].apiKeySettingsField}
+          showNotConfiguredAlert={false}
+          showHelpText={false}
+          showRemoveButton={false}
+        />
+      )}
 
-      <div className="pt-2">
-        <button
-          type="button"
-          onClick={() => setShowInstructions(!showInstructions)}
-          className="text-sm text-primary hover:underline flex items-center gap-1"
-        >
-          <ChevronRight className={`h-3 w-3 transition-transform ${showInstructions ? 'rotate-90' : ''}`} />
-          How to get an API key
-        </button>
+      {instructions && (
+        <div className="pt-2">
+          <button
+            type="button"
+            onClick={() => setShowInstructions(!showInstructions)}
+            className="text-sm text-primary hover:underline flex items-center gap-1"
+          >
+            <ChevronRight className={`h-3 w-3 transition-transform ${showInstructions ? 'rotate-90' : ''}`} />
+            How to get started
+          </button>
 
-        {showInstructions && (
-          <div className="mt-2 p-3 rounded-md border bg-muted/30 text-sm space-y-2">
-            <ol className="list-decimal list-inside space-y-1.5 text-muted-foreground">
-              {instructions.steps.map((step, i) => (
-                <li key={i}>
-                  {step.text}{step.link && (
-                    <>
-                      {' '}
-                      <a
-                        href={step.link.href}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-primary underline underline-offset-4"
-                      >
-                        {step.link.label}
-                      </a>
-                    </>
-                  )}
-                </li>
-              ))}
-            </ol>
-          </div>
-        )}
-      </div>
+          {showInstructions && (
+            <div className="mt-2 p-3 rounded-md border bg-muted/30 text-sm space-y-2">
+              <ol className="list-decimal list-inside space-y-1.5 text-muted-foreground">
+                {instructions.steps.map((step, i) => (
+                  <li key={i}>
+                    {step.text}{step.link && (
+                      <>
+                        {' '}
+                        <a
+                          href={step.link.href}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-primary underline underline-offset-4"
+                        >
+                          {step.link.label}
+                        </a>
+                      </>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

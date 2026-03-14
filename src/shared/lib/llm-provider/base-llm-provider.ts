@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { getSettings, type ApiKeySettings, type ApiKeyStatus } from '../config/settings'
 
-export type LlmProviderId = 'anthropic' | 'openrouter'
+export type LlmProviderId = 'anthropic' | 'openrouter' | 'bedrock'
 
 export interface ModelOption {
   value: string

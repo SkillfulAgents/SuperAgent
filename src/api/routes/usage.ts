@@ -11,20 +11,27 @@ import { agentAcl } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
 
 /**
- * Normalize OpenRouter-style model names (e.g. "anthropic/claude-4.6-opus-20260205")
- * to canonical Anthropic names (e.g. "claude-opus-4-6") so that ccusage can look up pricing.
- * Returns the original name if no mapping is found.
+ * Normalize non-standard model names to canonical Anthropic names so that
+ * ccusage can look up pricing and the chart consolidates equivalent models.
+ *
+ * Handles:
+ * - OpenRouter: "anthropic/claude-4.6-opus-20260205" → "claude-opus-4-6"
+ * - Bedrock:    "us.anthropic.claude-opus-4-6-v1"    → "claude-opus-4-6"
+ *               "global.anthropic.claude-sonnet-4-6"  → "claude-sonnet-4-6"
  */
 function normalizeModelName(model: string): string {
-  // Strip provider prefix (e.g. "anthropic/claude-..." -> "claude-...")
-  const stripped = model.includes('/') ? model.split('/').pop()! : model
+  // Bedrock format: "{region}.anthropic.{model-id}" or "anthropic.{model-id}"
+  // Strip region prefix and "anthropic." prefix, then strip trailing "-v1:0" / "-v1" suffixes
+  const bedrockMatch = model.match(/^(?:[\w-]+\.)?anthropic\.(.+)$/)
+  if (bedrockMatch) {
+    return bedrockMatch[1].replace(/-v\d+(?::\d+)?$/, '')
+  }
 
-  // Map OpenRouter's rewritten names back to canonical names.
-  // OpenRouter uses "claude-{version}-{family}-{date}" format,
-  // while Anthropic uses "claude-{family}-{version}" format.
-  const match = stripped.match(/^claude-(\d+(?:\.\d+)?)-(\w+)(?:-\d+)?$/)
-  if (match) {
-    const [, version, family] = match
+  // OpenRouter format: "anthropic/claude-{version}-{family}-{date}"
+  const stripped = model.includes('/') ? model.split('/').pop()! : model
+  const openRouterMatch = stripped.match(/^claude-(\d+(?:\.\d+)?)-(\w+)(?:-\d+)?$/)
+  if (openRouterMatch) {
+    const [, version, family] = openRouterMatch
     const normalizedVersion = version.replace('.', '-')
     return `claude-${family}-${normalizedVersion}`
   }
