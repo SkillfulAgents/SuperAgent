@@ -19,6 +19,14 @@ coverage/
 .e2e-data-auth/
 playwright-report/
 test-results/
+.playwright-mcp/
+
+# Agentic E2E test artifacts
+scripts/agentic-e2e/results/
+# QA agent screenshots/snapshots (may land in project root)
+[0-9][0-9]-*.png
+[0-9][0-9]-*.md
+snapshot-*.md
 
 # Database
 *.db
