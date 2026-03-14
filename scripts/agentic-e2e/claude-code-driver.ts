@@ -40,34 +40,39 @@ async function loadSystemPrompt(): Promise<string> {
   return `${prompt}\n\n---\n\n## UI Reference\n\n${uiDetails}`
 }
 
-function extractResult(parsed: Record<string, unknown>): Pick<TestResult, 'passed' | 'reason' | 'steps'> {
-  let reason = String(parsed.reason || '')
-  const bugs = Array.isArray(parsed.bugs) ? parsed.bugs.map(String) : []
-  if (bugs.length > 0) {
-    reason += `\n  Bugs found:\n${bugs.map((b) => `    - ${b}`).join('\n')}`
-  }
-  return {
-    passed: Boolean(parsed.passed),
-    reason,
-    steps: Array.isArray(parsed.steps) ? parsed.steps.map(String) : [],
-  }
-}
-
 function parseTestResult(output: string): Pick<TestResult, 'passed' | 'reason' | 'steps'> {
+  const passMatch = output.match(/^\[TEST_PASS\]/m)
+  const failMatch = output.match(/^\[TEST_FAIL\]/m)
+  const reasonMatch = output.match(/^\[REASON\]\s*(.+)$/m)
+  const bugLines = [...output.matchAll(/^\[BUG_FOUND\]\s*(.+)$/gm)].map((m) => m[1].trim())
+  const stepLines = [...output.matchAll(/^\[STEP\]\s*(.+)$/gm)].map((m) => m[1].trim())
+
+  if (passMatch || failMatch) {
+    const passed = !!passMatch && !failMatch
+    let reason = reasonMatch ? reasonMatch[1].trim() : ''
+    if (bugLines.length > 0) {
+      reason += `\n  Bugs found:\n${bugLines.map((b) => `    - ${b}`).join('\n')}`
+    }
+    return { passed, reason, steps: stepLines }
+  }
+
+  // Fallback: try legacy JSON format
   const jsonMatch = output.match(/```json\s*\n([\s\S]*?)\n\s*```/)
   if (jsonMatch) {
-    try { return extractResult(JSON.parse(jsonMatch[1])) } catch { /* fall through */ }
-  }
-
-  const bareJsonMatch = output.match(/\{[\s\S]*"passed"\s*:\s*(true|false)[\s\S]*\}/)
-  if (bareJsonMatch) {
-    try { return extractResult(JSON.parse(bareJsonMatch[0])) } catch { /* fall through */ }
+    try {
+      const parsed = JSON.parse(jsonMatch[1])
+      return {
+        passed: Boolean(parsed.passed),
+        reason: String(parsed.reason || ''),
+        steps: Array.isArray(parsed.steps) ? parsed.steps.map(String) : [],
+      }
+    } catch { /* fall through */ }
   }
 
   const tail = output.slice(-500)
   return {
     passed: false,
-    reason: `Agent did not output valid JSON. Last 500 chars: ${tail}`,
+    reason: `Agent did not output expected markers ([TEST_PASS]/[TEST_FAIL]/[BUG_FOUND]). Last 500 chars: ${tail}`,
     steps: [],
   }
 }
@@ -157,22 +162,18 @@ export async function runTest(
 
     const activityCheck = setInterval(() => {
       if (!proc.pid || proc.killed) {
-        console.log(`[claude-driver] Process no longer alive, stopping health check`)
         clearInterval(activityCheck)
         return
       }
       try {
         process.kill(proc.pid, 0)
       } catch {
-        console.log(`[claude-driver] Process ${proc.pid} is gone`)
         clearInterval(activityCheck)
         return
       }
-      const silentMs = Date.now() - lastOutputTime
-      if (silentMs > 120000) {
-        console.log(`[claude-driver] No output for ${Math.round(silentMs / 1000)}s — process alive but silent (stdout: ${stdout.length} bytes)`)
-      }
-    }, 30000)
+      const elapsedMs = Date.now() - startTime
+      console.log(`[health] agent processing... (${Math.round(elapsedMs / 1000)}s)`)
+    }, 60000)
 
     proc.stdout?.on('data', (chunk: Buffer) => {
       const text = chunk.toString()

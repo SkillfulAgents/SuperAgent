@@ -191,23 +191,23 @@ async function loadTestCases(filterStr?: string, tagStr?: string): Promise<TestC
 // Prompt builders
 // ---------------------------------------------------------------------------
 
-const JSON_OUTPUT_INSTRUCTIONS = `
+const OUTPUT_INSTRUCTIONS = `
 ## Final Output
 
-After testing, you MUST end your response with this exact JSON format:
+After testing, end your response with a structured report. The very first line of your report MUST be one of:
 
-\`\`\`json
-{
-  "passed": true or false,
-  "reason": "Summary of what was tested and any bugs found",
-  "bugs": ["Bug 1: description", "Bug 2: description"],
-  "steps": ["Step 1: what you did", "Step 2: what you did"]
-}
-\`\`\`
+[TEST_PASS]
+[TEST_FAIL]
 
-Set "passed" to false if you found any bugs.
+Then continue with:
 
-**CRITICAL: You MUST include this JSON block as the very last thing in your response. Without it, the test run will be marked as FAILED regardless of your findings. Do NOT reference screenshot filenames you invented — only reference what you actually see on screen.**`
+[REASON] One-line summary of what was tested
+[BUG_FOUND] Description of bug 1
+[BUG_FOUND] Description of bug 2
+[STEP] What you did first — result
+[STEP] What you did next — result
+
+Use [TEST_FAIL] if you found any bugs. Each marker must be on its own line. Do NOT reference screenshot filenames you invented — only reference what you actually see on screen.`
 
 async function buildFeaturePrompt(opts: {
   featureName: string
@@ -266,34 +266,26 @@ For each bug, record:
 - **What you did** (action)
 - **What you expected** (expected result)
 - **What actually happened** (actual result)
-${JSON_OUTPUT_INSTRUCTIONS}`
+${OUTPUT_INSTRUCTIONS}`
 }
 
-const CHAOS_JSON_INSTRUCTIONS = `
+const CHAOS_OUTPUT_INSTRUCTIONS = `
 ## Output
 
-As soon as you find a bug, STOP and output this JSON:
+As soon as you find a bug, **take a screenshot first**, then STOP and output a report. The very first line MUST be one of:
 
-\`\`\`json
-{
-  "bug": "Short description of the bug",
-  "action": "What you did",
-  "expected": "What you expected",
-  "actual": "What actually happened",
-  "steps": ["Step 1: what you did — result", "Step 2: what you did — result"]
-}
-\`\`\`
+[BUG_FOUND] Short description of the bug
+[NO_BUG_FOUND]
 
-If you've explored thoroughly and found no new bugs, output:
+If you found a bug, continue with:
 
-\`\`\`json
-{
-  "bug": null,
-  "steps": ["Step 1: what you did — result", "Step 2: what you did — result"]
-}
-\`\`\`
+[ACTION] What you did
+[EXPECTED] What you expected
+[ACTUAL] What actually happened
+[STEP] What you did first — result
+[STEP] What you did next — result
 
-**CRITICAL: You MUST use exactly this JSON schema — the \`"bug"\` field is REQUIRED (set to a string or null). Do NOT invent other fields or formats. Wrap in \`\`\`json fences. Output ONLY the JSON block, no other text.**`
+**CRITICAL: The first line of your output MUST start with [BUG_FOUND] or [NO_BUG_FOUND]. This is how the runner detects your findings.**`
 
 async function buildExplorationPrompt(baseUrl: string): Promise<string> {
   const reference = await loadAllFeaturesAsReference()
@@ -306,13 +298,13 @@ Your goal: **find one bug**. Explore the app freely — try unexpected flows, ed
 - You are NOT required to follow any specific order. Do whatever you think is most likely to surface bugs.
 - Try things like: creating agents with empty/special-character names, sending messages before agent is ready, clicking buttons rapidly, navigating away mid-operation, opening settings and changing things while agent is working, etc.
 - After each interesting action, take a screenshot.
-- As soon as you find a bug (error message, crash, unexpected behavior, UI glitch, broken state), STOP and output your JSON.
+- As soon as you find a bug (error message, crash, unexpected behavior, UI glitch, broken state), **take a screenshot first**, then STOP and output your JSON.
 
 ## Reference: Known UI Actions
 Below is a reference of all known features and actions. Use these as inspiration, NOT as a checklist.
 
 ${reference}
-${CHAOS_JSON_INSTRUCTIONS}`
+${CHAOS_OUTPUT_INSTRUCTIONS}`
 }
 
 // ---------------------------------------------------------------------------
@@ -341,6 +333,8 @@ async function collectScreenshots(sinceMs: number, destDir: string): Promise<str
     })
     .filter((f) => f.ts >= sinceMs)
     .sort((a, b) => b.ts - a.ts)
+
+  if (pngs.length === 0) return []
 
   await mkdir(destDir, { recursive: true })
 
@@ -570,41 +564,24 @@ async function main() {
           break
         }
 
-        const outputPath = resolve(resultsDir, `${tc.id}--round-${round}.txt`)
-        await writeFile(outputPath, result.rawOutput, 'utf-8')
+        const roundDir = resolve(resultsDir, `${tc.id}--round-${round}`)
+        await mkdir(roundDir, { recursive: true })
+        await writeFile(resolve(roundDir, 'report.md'), result.rawOutput, 'utf-8')
 
-        // Extract bug from output — try json fences first, then bare JSON
-        let bugDesc: string | null = null
-        let bugFieldPresent = false
-        const jsonMatch = result.rawOutput.match(/```json\s*\n([\s\S]*?)\n\s*```/)
-        if (jsonMatch) {
-          try {
-            const parsed = JSON.parse(jsonMatch[1])
-            bugFieldPresent = 'bug' in parsed
-            bugDesc = typeof parsed.bug === 'string' ? parsed.bug : null
-          } catch { /* ignore */ }
-        }
-        if (!bugFieldPresent) {
-          const bareMatch = result.rawOutput.match(/\{[\s\S]*"bug"\s*:[\s\S]*\}/)
-          if (bareMatch) {
-            try {
-              const parsed = JSON.parse(bareMatch[0])
-              bugFieldPresent = 'bug' in parsed
-              bugDesc = typeof parsed.bug === 'string' ? parsed.bug : null
-            } catch { /* ignore */ }
-          }
-        }
-        // Agent returned something but not the expected format — don't stop, keep going
-        if (!bugFieldPresent) {
-          console.log(`  [WARN] Agent returned malformed output (no "bug" field), continuing...`)
-          chaosResults.push({ feature: `round-${round}`, result })
-          continue
-        }
-
-        const roundScreenshotDir = resolve(resultsDir, `${tc.id}--round-${round}`)
-        const screenshots = await collectScreenshots(roundStartMs, roundScreenshotDir)
+        const screenshots = await collectScreenshots(roundStartMs, roundDir)
         if (screenshots.length > 0) {
           console.log(`  [screenshots] ${screenshots.length} saved to ${tc.id}--round-${round}/`)
+        }
+
+        // Extract bug from output using [BUG_FOUND] / [NO_BUG_FOUND] markers
+        const bugMatch = result.rawOutput.match(/^\[BUG_FOUND\]\s*(.+)$/m)
+        const noBugMatch = result.rawOutput.match(/^\[NO_BUG_FOUND\]/m)
+        const bugDesc = bugMatch ? bugMatch[1].trim() : null
+
+        if (!bugMatch && !noBugMatch) {
+          console.log(`  [WARN] Agent returned no [BUG_FOUND] or [NO_BUG_FOUND] marker, continuing...`)
+          chaosResults.push({ feature: `round-${round}`, result })
+          continue
         }
 
         if (bugDesc) {
@@ -643,6 +620,7 @@ async function main() {
 
     for (const feat of features) {
       console.log(`\n> Running feature: ${feat}...`)
+      const featureStartMs = Date.now()
       const prompt = await buildFeaturePrompt({
         featureName: feat,
         agentName: needsAgent ? agentName : '',
@@ -656,8 +634,14 @@ async function main() {
       const result = await runFeatureWithRetries(prompt, driverOptions, maxRetries)
       featureResults.push({ feature: feat, result })
 
-      const outputPath = resolve(resultsDir, `${tc.id}--${feat}.txt`)
-      await writeFile(outputPath, result.rawOutput, 'utf-8')
+      const featDir = resolve(resultsDir, `${tc.id}--${feat}`)
+      await mkdir(featDir, { recursive: true })
+      await writeFile(resolve(featDir, 'report.md'), result.rawOutput, 'utf-8')
+
+      const screenshots = await collectScreenshots(featureStartMs, featDir)
+      if (screenshots.length > 0) {
+        console.log(`  [screenshots] ${screenshots.length} saved to ${tc.id}--${feat}/`)
+      }
 
       printFeatureResult(feat, result)
     }
@@ -715,7 +699,7 @@ async function main() {
         ...fr,
         result: {
           ...fr.result,
-          rawOutput: `[see results/${r.testCase.id}--${fr.feature}.txt]`,
+          rawOutput: `[see results/${r.testCase.id}--${fr.feature}/report.md]`,
         },
       })),
     })),
