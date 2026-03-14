@@ -24,6 +24,9 @@ export async function ensureSecrets(baseUrl: string): Promise<void> {
 
   const payload: Record<string, unknown> = {
     app: { setupCompleted: true },
+    // Set maxOutputTokens to 0 (falsy) so the container code skips constructing
+    // options.env, which would otherwise override process.env and drop the API key.
+    agentLimits: { maxOutputTokens: 0 },
   }
   if (Object.keys(apiKeys).length > 0) {
     payload.apiKeys = apiKeys

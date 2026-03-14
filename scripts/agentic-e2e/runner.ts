@@ -48,6 +48,8 @@ interface TestCase {
   /** Programmatic setup modules (e.g. "ensureSecrets", "ensureAgent"). */
   setup?: string[]
   teardown?: string[]
+  /** Per-feature test data injected into prompts (keyed by feature name). */
+  testData?: Record<string, Record<string, unknown>>
 }
 
 interface FeatureResult {
@@ -91,6 +93,7 @@ function parseArgs() {
   let target: TestTarget = 'web'
   let exploration = false
   let model: string | undefined
+  let budgetOverride: number | undefined
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -122,10 +125,13 @@ function parseArgs() {
       case '--model':
         model = args[++i]
         break
+      case '--budget':
+        budgetOverride = parseFloat(args[++i])
+        break
     }
   }
 
-  return { filter, tag, verbose, maxRetries, baseUrl, target, exploration, model }
+  return { filter, tag, verbose, maxRetries, baseUrl, target, exploration, model, budgetOverride }
 }
 
 // ---------------------------------------------------------------------------
@@ -191,6 +197,21 @@ async function loadTestCases(filterStr?: string, tagStr?: string): Promise<TestC
 // Prompt builders
 // ---------------------------------------------------------------------------
 
+function formatTestData(data: Record<string, unknown>, indent = 0): string {
+  const pad = '  '.repeat(indent)
+  return Object.entries(data)
+    .map(([key, val]) => {
+      if (val && typeof val === 'object' && !Array.isArray(val)) {
+        return `${pad}- **${key}**:\n${formatTestData(val as Record<string, unknown>, indent + 1)}`
+      }
+      if (Array.isArray(val)) {
+        return `${pad}- **${key}**: ${val.map((v) => `"${v}"`).join(', ')}`
+      }
+      return `${pad}- **${key}**: ${val}`
+    })
+    .join('\n')
+}
+
 const OUTPUT_INSTRUCTIONS = `
 ## Final Output
 
@@ -215,8 +236,9 @@ async function buildFeaturePrompt(opts: {
   baseUrl: string
   target: TestTarget
   exploration?: boolean
+  testData?: Record<string, unknown>
 }): Promise<string> {
-  const { featureName, agentName, baseUrl, target, exploration } = opts
+  const { featureName, agentName, baseUrl, target, exploration, testData } = opts
   const featureContent = await loadFeatureFile(featureName)
   const isElectron = target === 'electron'
 
@@ -248,6 +270,10 @@ You should be **thorough and curious**. Don't just verify the basics — activel
 - Take a screenshot after each key action.
 - If you find unexpected behavior, document it as a bug and keep going.`
 
+  const testDataSection = testData
+    ? `\n## Test Data\n\nUse the following data when testing this feature:\n\n${formatTestData(testData)}\n`
+    : ''
+
   return `You are a senior QA engineer testing ${appDescription}.
 ${agentContext}
 ## Task
@@ -259,7 +285,7 @@ ${taskInstructions}
 ### Feature: ${featureName}
 
 ${featureContent}
-
+${testDataSection}
 ## Bug Reporting
 
 For each bug, record:
@@ -297,8 +323,9 @@ Your goal: **find one bug**. Explore the app freely — try unexpected flows, ed
 - Navigate to ${baseUrl} first.
 - You are NOT required to follow any specific order. Do whatever you think is most likely to surface bugs.
 - Try things like: creating agents with empty/special-character names, sending messages before agent is ready, clicking buttons rapidly, navigating away mid-operation, opening settings and changing things while agent is working, etc.
+- **NEVER delete or modify the Anthropic API key in Settings. It is the only way agents can function. Treat it as off-limits.**
 - After each interesting action, take a screenshot.
-- As soon as you find a bug (error message, crash, unexpected behavior, UI glitch, broken state), **take a screenshot first**, then STOP and output your JSON.
+- As soon as you find a bug (error message, crash, unexpected behavior, UI glitch, broken state), **take a screenshot first**, then STOP and output your report.
 
 ## Reference: Known UI Actions
 Below is a reference of all known features and actions. Use these as inspiration, NOT as a checklist.
@@ -313,35 +340,27 @@ ${CHAOS_OUTPUT_INSTRUCTIONS}`
 
 const PLAYWRIGHT_MCP_DIR = resolve(__dirname, '../../.playwright-mcp')
 
-async function collectScreenshots(sinceMs: number, destDir: string): Promise<string[]> {
-  let files: string[]
+async function snapshotScreenshotDir(): Promise<Set<string>> {
   try {
-    files = await readdir(PLAYWRIGHT_MCP_DIR)
+    const files = await readdir(PLAYWRIGHT_MCP_DIR)
+    return new Set(files.filter((f) => f.endsWith('.png')))
   } catch {
-    return []
+    return new Set()
   }
+}
 
-  const pngs = files
-    .filter((f) => f.endsWith('.png'))
-    .map((f) => {
-      // filename: page-2026-03-13T20-21-28-927Z.png → 2026-03-13T20:21:28.927Z
-      const tsMatch = f.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z/)
-      const ts = tsMatch
-        ? new Date(`${tsMatch[1]}-${tsMatch[2]}-${tsMatch[3]}T${tsMatch[4]}:${tsMatch[5]}:${tsMatch[6]}.${tsMatch[7]}Z`).getTime()
-        : 0
-      return { name: f, ts }
-    })
-    .filter((f) => f.ts >= sinceMs)
-    .sort((a, b) => b.ts - a.ts)
+async function collectScreenshots(before: Set<string>, destDir: string): Promise<string[]> {
+  const after = await snapshotScreenshotDir()
+  const newFiles = [...after].filter((f) => !before.has(f)).sort().reverse()
 
-  if (pngs.length === 0) return []
+  if (newFiles.length === 0) return []
 
   await mkdir(destDir, { recursive: true })
 
   const copied: string[] = []
-  for (let i = 0; i < pngs.length; i++) {
+  for (let i = 0; i < newFiles.length; i++) {
     const destName = `${i + 1}.png`
-    await copyFile(resolve(PLAYWRIGHT_MCP_DIR, pngs[i].name), resolve(destDir, destName))
+    await copyFile(resolve(PLAYWRIGHT_MCP_DIR, newFiles[i]), resolve(destDir, destName))
     copied.push(destName)
   }
   return copied
@@ -396,16 +415,30 @@ async function runSetupModule(mod: string, baseUrl: string, ctx: SetupContext): 
 // ---------------------------------------------------------------------------
 
 async function runFeatureWithRetries(
-  prompt: string,
+  basePrompt: string,
   driverOptions: DriverOptions,
   maxRetries: number,
 ): Promise<TestResult> {
   let lastResult: TestResult | null = null
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    if (attempt > 1) {
-      console.log(`    Retry ${attempt}/${maxRetries}...`)
+    let prompt = basePrompt
+
+    if (attempt > 1 && lastResult && !lastResult.passed) {
+      const ctx = [
+        `## Previous Attempt (${attempt - 1}/${maxRetries}) Failed`,
+        '',
+        `Reason: ${lastResult.reason}`,
+        ...(lastResult.steps.length > 0
+          ? ['', 'Steps taken:', ...lastResult.steps.map((s) => `- ${s}`)]
+          : []),
+        '',
+        'Avoid repeating the same approach. Try a different strategy.',
+      ].join('\n')
+      prompt = `${ctx}\n\n${basePrompt}`
+      console.log(`    Retry ${attempt}/${maxRetries} (with failure context)...`)
     }
+
     try {
       lastResult = await runTest(prompt, driverOptions)
     } catch (err) {
@@ -445,14 +478,18 @@ function printFeatureResult(feature: string, result: TestResult) {
 // ---------------------------------------------------------------------------
 
 async function main() {
-  let { filter, tag, verbose, maxRetries, baseUrl, target, exploration, model } = parseArgs()
+  let { filter, tag, verbose, maxRetries, baseUrl, target, exploration, model, budgetOverride } = parseArgs()
+
+  const BUDGET_FEATURE = budgetOverride ?? 5
+  const BUDGET_CHAOS = budgetOverride ?? 3
 
   console.log('=== SuperAgent Agentic E2E Test Runner ===\n')
   console.log(`Target: ${target}`)
   console.log(`Base URL: ${baseUrl}`)
   console.log(`Max retries: ${maxRetries}`)
   console.log(`Verbose: ${verbose}`)
-  console.log(`Exploration: ${exploration}\n`)
+  console.log(`Exploration: ${exploration}`)
+  console.log(`Budget: feature=$${BUDGET_FEATURE}, chaos=$${BUDGET_CHAOS}\n`)
 
   if (target === 'electron') {
     rebuildForElectron()
@@ -521,10 +558,15 @@ async function main() {
       }
     }
 
-    const driverOptions: DriverOptions = { verbose, mcpConfigPath, model }
+    const isChaos = tc.id === 'chaos-monkey'
+    const driverOptions: DriverOptions = {
+      verbose,
+      mcpConfigPath,
+      model,
+      maxBudgetUsd: isChaos ? BUDGET_CHAOS : BUDGET_FEATURE,
+    }
 
-    // --- Chaos monkey mode: find one bug per round, resume with context ---
-    if (tc.id === 'chaos-monkey') {
+    if (isChaos) {
       const MAX_ROUNDS = 100
       const bugsFound: string[] = []
       const chaosResults: FeatureResult[] = []
@@ -537,7 +579,7 @@ async function main() {
 
       for (let round = 1; round <= MAX_ROUNDS; round++) {
         console.log(`\n> [chaos-monkey] Round ${round}/${MAX_ROUNDS}...`)
-        const roundStartMs = Date.now()
+        const screenshotsBefore = await snapshotScreenshotDir()
 
         const isFirstRound = round === 1
         let prompt: string
@@ -545,7 +587,7 @@ async function main() {
           prompt = initialPrompt
         } else {
           const bugList = bugsFound.map((b, i) => `${i + 1}. ${b}`).join('\n')
-          prompt = `Good, you found ${bugsFound.length} bug(s) so far:\n${bugList}\n\nKeep going — explore areas you haven't touched yet and find the next bug. Avoid re-testing bugs you already found. As soon as you find a new bug, STOP and output your JSON with the \`"bug"\` field set to a description string. If you can't find any more bugs, set \`"bug": null\`.`
+          prompt = `Good, you found ${bugsFound.length} bug(s) so far:\n${bugList}\n\nKeep going — explore areas you haven't touched yet and find the next bug. Avoid re-testing bugs you already found. As soon as you find a new bug, take a screenshot, then STOP and report it starting with [BUG_FOUND]. If no more bugs, output [NO_BUG_FOUND].`
         }
 
         if (verbose) {
@@ -568,18 +610,17 @@ async function main() {
         await mkdir(roundDir, { recursive: true })
         await writeFile(resolve(roundDir, 'report.md'), result.rawOutput, 'utf-8')
 
-        const screenshots = await collectScreenshots(roundStartMs, roundDir)
+        const screenshots = await collectScreenshots(screenshotsBefore, roundDir)
         if (screenshots.length > 0) {
           console.log(`  [screenshots] ${screenshots.length} saved to ${tc.id}--round-${round}/`)
         }
 
-        // Extract bug from output using [BUG_FOUND] / [NO_BUG_FOUND] markers
         const bugMatch = result.rawOutput.match(/^\[BUG_FOUND\]\s*(.+)$/m)
         const noBugMatch = result.rawOutput.match(/^\[NO_BUG_FOUND\]/m)
         const bugDesc = bugMatch ? bugMatch[1].trim() : null
 
         if (!bugMatch && !noBugMatch) {
-          console.log(`  [WARN] Agent returned no [BUG_FOUND] or [NO_BUG_FOUND] marker, continuing...`)
+          console.log(`  [WARN] No [BUG_FOUND] or [NO_BUG_FOUND] marker found, continuing...`)
           chaosResults.push({ feature: `round-${round}`, result })
           continue
         }
@@ -620,13 +661,14 @@ async function main() {
 
     for (const feat of features) {
       console.log(`\n> Running feature: ${feat}...`)
-      const featureStartMs = Date.now()
+      const screenshotsBefore = await snapshotScreenshotDir()
       const prompt = await buildFeaturePrompt({
         featureName: feat,
         agentName: needsAgent ? agentName : '',
         baseUrl,
         target,
         exploration,
+        testData: tc.testData?.[feat],
       })
       if (verbose) {
         console.log('[prompt] ' + prompt.slice(0, 600) + '...(truncated)\n')
@@ -638,7 +680,7 @@ async function main() {
       await mkdir(featDir, { recursive: true })
       await writeFile(resolve(featDir, 'report.md'), result.rawOutput, 'utf-8')
 
-      const screenshots = await collectScreenshots(featureStartMs, featDir)
+      const screenshots = await collectScreenshots(screenshotsBefore, featDir)
       if (screenshots.length > 0) {
         console.log(`  [screenshots] ${screenshots.length} saved to ${tc.id}--${feat}/`)
       }

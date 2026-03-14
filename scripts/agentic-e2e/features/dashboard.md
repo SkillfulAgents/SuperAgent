@@ -1,59 +1,49 @@
-# Dashboard Steps
+# Dashboard
 
-Dashboards are created by the agent during a chat conversation, not through settings UI.
-You must first ensure the agent is running, then ask it to create one.
+## Overview
 
-## ensure-agent-running
+Dashboards are created by the agent through chat conversation using the `create_dashboard` tool — there is no dedicated settings UI for creating them. The agent writes code and sets up the dashboard as part of a chat interaction.
 
-Make sure the agent is running (status "idle"). If the agent is sleeping, click the Start button and wait for it to become idle (30-120 seconds).
-Take a screenshot confirming the agent is running.
-Assert: agent status is "idle" or "running".
-DO NOT skip this step — all following steps require an active agent.
+## Sidebar — Dashboard Items
 
----
+Dashboards appear as **sub-items** under their parent agent in the sidebar tree.
 
-## create-dashboard-via-chat
+### Components
 
-Click the agent in the sidebar to open the chat view.
-Type the following message and press Enter:
-"Create a simple dashboard called 'clock' that shows the current time. Use the plain framework."
-Wait for the agent to finish processing — this may take 30-60 seconds as the agent writes code and sets up the dashboard.
-Watch for a tool call card (e.g. "create_dashboard") in the message list.
-Take a screenshot once the agent confirms the dashboard is created.
-Assert: the agent's response mentions the dashboard was created successfully.
-DO NOT skip this step — the remaining dashboard tests depend on a dashboard existing.
+- **Dashboard entry** — each created dashboard is listed as a child node beneath the agent that created it.
+- **Expand/collapse** — the agent's tree node can be expanded to reveal its dashboards.
 
----
+### User Interactions
 
-## verify-dashboard-in-sidebar
+- Click a dashboard entry to open it in the main content area.
+- Right-click a dashboard entry to open the **context menu**.
 
-After the agent has created a dashboard, check the sidebar under the current agent.
-Expand the agent's tree if needed — dashboards appear as sub-items.
-Take a snapshot of the sidebar.
-Assert: a dashboard item is visible under the agent in the sidebar.
+## Dashboard View
 
----
+When a dashboard is selected, the main content area displays the dashboard inside an **iframe** that renders the dashboard's content.
 
-## open-dashboard
+### Components
 
-Click the dashboard item in the sidebar.
-Take a screenshot.
-Assert: the main content area shows the dashboard view with an iframe.
+- **Dashboard iframe** — renders the dashboard code/content produced by the agent. Loads automatically when the dashboard is opened.
 
----
+## Dashboard Creation via Chat
 
-## verify-dashboard-loaded
+Users ask the agent to create a dashboard by sending a message in the chat. The agent processes the request, writes the necessary code, and invokes the `create_dashboard` tool.
 
-Wait up to 15 seconds for the dashboard iframe to load content.
-Take a screenshot.
-Assert: the iframe is visible and shows content (not blank, not an error page).
+### Components
 
----
+- **Tool call card** — a `create_dashboard` card appears in the message list showing the tool invocation and result.
+- **Agent response** — the agent confirms whether the dashboard was created successfully.
 
-## delete-dashboard
+### Behavior
 
-Right-click a dashboard item in the sidebar.
-Click "Delete Dashboard" from the context menu.
-Confirm deletion.
-Take a screenshot.
-Assert: the dashboard item no longer appears in the sidebar.
+- After creation, the new dashboard appears in the sidebar under the agent.
+- Processing may take some time as the agent generates code and provisions the dashboard.
+
+## Dashboard Context Menu
+
+Right-clicking a dashboard entry in the sidebar opens a context menu.
+
+### Actions
+
+- **Delete Dashboard** — removes the dashboard. A confirmation dialog appears before the deletion is executed. Once confirmed, the dashboard entry is removed from the sidebar.

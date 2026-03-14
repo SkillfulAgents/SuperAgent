@@ -15,7 +15,22 @@
       "agent-lifecycle"
     ],
     "tags": ["detailed", "core", "ci"],
-    "setup": ["ensureSecrets", "ensureAgent"]
+    "setup": ["ensureSecrets", "ensureAgent"],
+    "testData": {
+      "session-chat": {
+        "sampleMessages": [
+          "Hello, what is 2+2?",
+          "What is the capital of Japan?"
+        ],
+        "longRunningPrompt": "Write a very detailed 2000-word essay about the history of computing"
+      },
+      "agent-settings": {
+        "renameValue": "Renamed Agent",
+        "systemPrompt": "You are a helpful coding assistant. Always respond concisely.",
+        "secretKey": "MY_TEST_KEY",
+        "secretValue": "test-value-12345"
+      }
+    }
   },
   {
     "id": "detailed-integrations",
@@ -26,7 +41,26 @@
       "request-interactions"
     ],
     "tags": ["detailed", "integrations", "ci"],
-    "setup": ["ensureSecrets", "ensureOAuth", "ensureAgent"]
+    "setup": ["ensureSecrets", "ensureOAuth", "ensureAgent"],
+    "testData": {
+      "mcp": {
+        "globalServer": { "name": "Jina AI", "url": "https://mcp.jina.ai/v1", "auth": "none" },
+        "verifyToolPrompt": "Use the Jina AI primer tool to give me a primer on 'Anthropic Claude'.",
+        "chatTriggeredServer": { "name": "DeepWiki", "url": "https://mcp.deepwiki.com/mcp" },
+        "triggerPrompt": "Use the DeepWiki MCP to look up the documentation for the github repo 'anthropics/claude-code'."
+      },
+      "connected-accounts": {
+        "accountName": "GitHub",
+        "triggerPrompt": "Use my GitHub account to list my repositories"
+      },
+      "request-interactions": {
+        "secretTriggerPrompt": "Please use my OPENAI_API_KEY to call the OpenAI API and list available models.",
+        "secretDeclineTriggerPrompt": "Use my GITHUB_TOKEN to authenticate with the GitHub API",
+        "secretTestValue": "sk-test-12345",
+        "questionTriggerPrompt": "Help me set up a project. Ask me what programming language I want to use.",
+        "questionAnswer": "Python"
+      }
+    }
   },
   {
     "id": "detailed-artifacts",
@@ -37,7 +71,20 @@
       "scheduled-tasks"
     ],
     "tags": ["detailed", "artifacts", "ci"],
-    "setup": ["ensureSecrets", "ensureAgent"]
+    "setup": ["ensureSecrets", "ensureAgent"],
+    "testData": {
+      "browser-use": {
+        "openPagePrompt": "Open the website https://example.com in the browser and take a screenshot.",
+        "interactPrompt": "Take a snapshot of the page and click the 'More information...' link on example.com.",
+        "searchPrompt": "Open https://en.wikipedia.org and search for 'Claude (AI)'. Take a screenshot of the search results."
+      },
+      "dashboard": {
+        "createPrompt": "Create a simple dashboard called 'clock' that shows the current time. Use the plain framework."
+      },
+      "scheduled-tasks": {
+        "createPrompt": "Schedule a task that runs every 5 minutes and just says 'ping'. Confirm when scheduled."
+      }
+    }
   },
   {
     "id": "detailed-product-surface",

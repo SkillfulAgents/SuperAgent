@@ -1,29 +1,34 @@
-# Skills Steps
+# Skills
 
-## install-skill
+Skills are modular capabilities that can be installed on an agent. They are discovered and installed from the agent landing page, and managed through the agent settings dialog.
 
-On the agent landing page, scroll down to find the discoverable skills section (cards showing available skills).
-Look for a skill that does NOT require environment variables — good choices are skills with a simple "Install" button and no env var form.
-For example, look for "Amazon Order" or any skill that shows a simple install button.
-Click the install (+) button on the skill card.
-If an env var dialog appears and you don't have the required values, click Cancel, pick a different skill, and try again.
-Take a screenshot after installation.
-Assert: the skill appears in the agent's installed skills list with status "Up to date".
-DO NOT skip this step — keep trying different skills until one installs successfully.
+## Agent Landing Page — Discoverable Skills
 
----
+The landing page includes a section showcasing skills available for installation.
 
-## verify-skill-installed
+### Components
 
-Open the agent settings dialog and click the "Skills" tab.
-Take a screenshot.
-Assert: at least one skill is listed with status "Up to date" or "locally-modified".
+- **Discoverable skills section**: a collection of skill cards displayed on the agent landing page.
+- **Skill card**: each card shows the skill's name and description.
+- **Install button** (`+`): located on each skill card, initiates installation.
+- **Environment variable dialog**: a modal that appears during installation if the skill requires environment variables to be configured. Contains input fields for each required variable, along with confirm and cancel actions.
 
----
+### Interactions
 
-## update-skill
+- Clicking the install button on a skill card installs the skill. If the skill requires environment variables, the env var dialog appears first; the user must fill in the values and confirm before installation proceeds.
+- After successful installation, the skill is added to the agent's installed skills list.
 
-In the agent settings "Skills" tab, check if any skill shows status "update-available".
-If yes, click its "Update" button and take a screenshot.
-If no skills have updates available, note "no updates available" — this is acceptable.
-Assert: if updated, the skill status changes to "Up to date".
+## Agent Settings — Skills Tab
+
+The Skills tab within the agent settings dialog provides management for installed skills.
+
+### Components
+
+- **Installed skills list**: shows all skills currently installed on the agent.
+- **Skill status**: each skill displays its current state — "Up to date", "locally-modified", or "update-available".
+- **Update button**: appears on skills with "update-available" status.
+
+### Interactions
+
+- Opening the agent settings dialog and navigating to the "Skills" tab displays the list of installed skills and their statuses.
+- Clicking "Update" on a skill with available updates applies the update, changing the skill's status to "Up to date".

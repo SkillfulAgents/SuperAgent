@@ -1,68 +1,54 @@
-# Agent Request Interaction Steps
+# In-Chat Request Cards
 
-These steps test the interactive request cards that appear when an agent needs
-something from the user (secret, question, MCP). To trigger these cards, you must
-send specific chat messages that cause the agent to request resources.
+When the agent needs something from the user during a conversation, interactive request cards appear inline within the message list. There are two types: Secret Request and Question Request.
 
-Important: the agent MUST be running before these steps. If it is sleeping, start it first.
+## Secret Request Card
 
-## trigger-secret-request
+**Location:** Appears inline in the chat message list when the agent needs a secret value (e.g., an API key or token).
 
-Send a chat message that would cause the agent to request a secret it doesn't have.
-For example: "Please use my OPENAI_API_KEY to call the OpenAI API and list available models."
-Wait for the agent to process. A secret request card should appear in the message list (data-testid='secret-request').
-Take a screenshot.
-Assert: a secret request card is visible, showing the secret name the agent is asking for.
-DO NOT skip this step.
+**Container:** `data-testid='secret-request'`
 
----
+### Components
 
-## provide-secret
+- **Secret name label** — displays which secret the agent is requesting.
+- **Value input field** — a text input where the user enters the secret value.
+- **Provide button** (`data-testid='secret-provide-btn'`) — submits the entered value to the agent. Pressing Enter in the input field has the same effect.
+- **Decline button** (`data-testid='secret-decline-btn'`) — refuses the request; the agent continues without the secret.
 
-Find the secret request card from the previous step.
-Type any test value (e.g. "sk-test-12345") into the secret value input field.
-Click the "Provide" button (data-testid='secret-provide-btn') or press Enter.
-Take a screenshot.
-Assert: the request card shows as completed (data-testid='secret-request-completed'), and the agent continues processing.
+### States
 
----
+- **Pending** — the card is interactive with the input field and both buttons enabled.
+- **Completed** (`data-testid='secret-request-completed'`) — shown after the user provides a value or declines. The card becomes read-only and indicates the outcome.
 
-## trigger-and-decline-secret
+### User Interactions
 
-Send another chat message that causes a secret request (e.g. "Use my GITHUB_TOKEN to authenticate with the GitHub API").
-Wait for the secret request card to appear.
-Click the "Decline" button (data-testid='secret-decline-btn').
-Take a screenshot.
-Assert: the request card shows as declined, and the agent continues (likely reporting it can't complete the task).
+- Enter a value and provide it; the agent resumes with the secret available.
+- Decline the request; the agent resumes and handles the missing secret gracefully.
 
 ---
 
-## trigger-question-request
+## Question Request Card
 
-Send a chat message that would cause the agent to ask you a question.
-For example: "Help me set up a project. Ask me what programming language I want to use."
-Wait for the agent to process. A question request card should appear (data-testid='question-request').
-Take a screenshot.
-Assert: a question request card is visible.
-Note: if the agent answers directly without asking a question, try a different prompt like "I need help choosing — please ask me to pick between Python, JavaScript, or Rust."
+**Location:** Appears inline in the chat message list when the agent asks the user a question.
 
----
+**Container:** `data-testid='question-request'`
 
-## answer-question
+### Components
 
-Find the question request card.
-If it is a multiple choice question, select any option.
-If it is a free text question, type a reasonable answer (e.g. "Python").
-Click the "Submit" button (data-testid='question-submit-btn').
-Take a screenshot.
-Assert: the question card shows as completed (data-testid='question-request-completed'), and the agent continues processing.
+- **Question text** — the question the agent is asking.
+- **Answer input** — varies by question type:
+  - **Multiple-choice (single):** radio button options.
+  - **Multiple-choice (multi):** checkbox options.
+  - **Free-text:** a text input field.
+- **Submit button** (`data-testid='question-submit-btn'`) — submits the selected/typed answer.
+- **Decline button** (`data-testid='question-decline-btn'`) — refuses to answer; the agent continues without the response.
 
----
+### States
 
-## trigger-and-decline-question
+- **Pending** — the card is interactive with answer input and both buttons enabled.
+- **Completed** (`data-testid='question-request-completed'`) — shown after the user submits an answer or declines. The card becomes read-only and indicates the outcome.
 
-Trigger another question from the agent using a similar prompt.
-When the question card appears, click the "Decline" button (data-testid='question-decline-btn').
-Take a screenshot.
-Assert: the question card shows as declined, and the agent continues.
-If the agent doesn't ask a question, note it and move on.
+### User Interactions
+
+- Select an option or type a free-text answer and submit; the agent resumes with the answer.
+- Decline the question; the agent resumes and handles the missing answer gracefully.

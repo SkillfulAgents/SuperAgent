@@ -1,74 +1,38 @@
-# Browser Use Steps
+# Browser Use
 
-Test the agent's built-in browser tools (browser_open, browser_snapshot, browser_screenshot, browser_click, etc.).
-These tools let the agent open a headless browser inside its container, navigate to websites, and interact with web pages.
-The browser view is streamed live to the user in the UI.
+## Global Settings — Browser Use Tab
 
-Important: the agent MUST be running before these steps. If it is sleeping, start it first.
+Located in the global settings dialog (opened via the gear icon in the sidebar footer), the **Browser Use** tab contains configuration for the agent's browser capabilities.
 
-## verify-browser-settings
+### Components
 
-Open global settings (gear icon in sidebar footer).
-Navigate to the "Browser Use" tab.
-Take a screenshot.
-Assert: the Browser Use settings tab is visible, showing options for Browser Agent Model and Browser Host (default: "Container (built-in)").
-Close the settings dialog.
+- **Browser Agent Model** — selector for the model used when the agent performs browser interactions.
+- **Browser Host** — dropdown to choose where the browser runs. The default value is "Container (built-in)".
 
----
+## In-Chat Browser Tool Calls
 
-## browser-open-page
+When an agent uses browser tools during a conversation, **tool call cards** appear inline in the message list. Each card displays the tool name, the action performed, and any results.
 
-In the chat with the running agent, type the following message and press Enter:
-"Open the website https://example.com in the browser and take a screenshot."
-Wait for the agent to process — this may take 15-30 seconds as it opens the browser and navigates.
-Watch for tool call cards in the message list:
-- A "browser_open" tool call card should appear showing the URL
-- A "browser_screenshot" tool call card should appear with a screenshot image
-Take a screenshot of the chat showing the tool calls.
-Assert: both tool call cards are visible, and the screenshot shows the example.com page.
-DO NOT skip this step.
+### Tool Types
 
----
+- **browser_open** — opens a URL in the headless browser. The card shows the target URL.
+- **browser_screenshot** — captures a visual screenshot of the current page. The card displays the resulting image.
+- **browser_snapshot** — captures the page's accessibility tree. The card shows the structured text output.
+- **browser_click** — clicks an element on the page. The card indicates which element was targeted.
+- **browser_fill** — fills a form field with text.
+- **browser_close** — closes the browser session.
 
-## browser-snapshot-and-interact
+### User Interactions
 
-Send a follow-up message:
-"Take a snapshot of the page and click the 'More information...' link on example.com."
-Wait for the agent to process.
-Watch for tool call cards:
-- A "browser_snapshot" card showing the accessibility tree
-- A "browser_click" card showing which element was clicked
-Take a screenshot.
-Assert: the agent used browser_snapshot to read the page and browser_click to interact with an element.
-DO NOT skip this step.
+- Users can scroll through tool call cards in the message list to follow the agent's browser activity step by step.
+- Screenshot images within tool call cards can be viewed inline.
 
----
+## Browser Preview Panel
 
-## browser-search-and-extract
+A **live-streamed view** of the agent's browser session appears in the main content area while the browser is active. This is rendered as an iframe or image that updates in real time as the agent navigates and interacts with pages.
 
-Send a message that requires the agent to navigate to a different site and extract information:
-"Open https://en.wikipedia.org and search for 'Claude (AI)'. Take a screenshot of the search results."
-Wait for the agent to process — this may take 30-60 seconds as it navigates and interacts.
-Watch for tool call cards (browser_open, browser_fill, browser_click, browser_screenshot).
-Take a screenshot.
-Assert: the agent navigated to Wikipedia, interacted with the search form, and took a screenshot of the results.
+### Behavior
 
----
-
-## verify-browser-stream
-
-While the agent is using browser tools (or after), check if a browser preview panel is visible in the UI.
-The browser view should be streamed live — look for an iframe or image showing the browser content in the main content area.
-Take a screenshot.
-Assert: a browser preview is visible in the UI showing the current page the agent has open.
-If no preview is visible (e.g. the browser was already closed), note the outcome.
-
----
-
-## browser-close
-
-Send a message: "Close the browser."
-Wait for the agent to process.
-Take a screenshot.
-Assert: the agent confirms the browser is closed, and the browser preview (if any) disappears.
-If the agent doesn't have a browser_close tool, it may say the browser closes automatically — that is acceptable.
+- The preview appears automatically when the agent opens a browser session.
+- It reflects the current state of the page as the agent navigates, clicks, and fills forms.
+- The preview disappears when the browser session is closed (either explicitly or automatically).

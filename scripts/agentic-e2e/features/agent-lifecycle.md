@@ -1,46 +1,31 @@
-# Agent Lifecycle Steps
+# Agent Lifecycle
 
-## agent-stop
+Controls for managing an agent's running state live in the agent header. Deletion is accessed through the sidebar.
 
-Click the agent settings button in the header (data-testid='agent-settings-button'), or find the Stop button directly in the agent header.
-Click the Stop button to stop the agent container.
-Wait for the status indicator to change to "sleeping" (moon icon, gray). This may take 5-15 seconds.
-Take a screenshot.
-Assert: agent status shows "sleeping".
-DO NOT skip this step.
+## Status Indicator
 
----
+Located in the agent header. Displays the agent's current state:
 
-## agent-start
+- **Sleeping** — moon icon, gray. The container is stopped.
+- **Starting** — transitional state while the container boots.
+- **Running / Idle** — the container is active and ready.
 
-With the agent in sleeping state, click the Start button in the agent header.
-Wait for the status to return to "running" or "idle" (30-120 seconds).
-Take a screenshot.
-Assert: agent status is "running" or "idle".
-DO NOT skip this step.
+## Start / Stop Controls
 
----
+**Components:**
+- Start button — visible in the agent header when the agent is sleeping
+- Stop button — visible in the agent header when the agent is running/idle; also accessible via the settings button (data-testid='agent-settings-button')
 
-## verify-session-persisted
+**User interactions:** Users can stop a running agent; the status transitions to "sleeping" (typically 5–15 seconds). Users can start a sleeping agent; the status transitions through "starting" to "running" or "idle" (typically 30–120 seconds).
 
-After restarting the agent, check the sidebar for the session list under the agent.
-Take a snapshot.
-Assert: previously created sessions are still visible in the sidebar — they should not have been lost during stop/start.
+## Session Persistence
 
----
+Sessions created before a stop/start cycle are preserved. After restarting an agent, previously created sessions remain visible in the sidebar session list beneath the agent.
 
-## agent-delete
+## Agent Deletion
 
-Right-click the agent you previously created in the sidebar.
-Click "Delete Agent" from the context menu (data-testid='delete-agent-item').
-In the confirmation dialog (data-testid='confirm-delete-agent-dialog'), click the Delete button (data-testid='confirm-delete-agent-button').
-Take a screenshot.
-Assert: the agent you deleted no longer appears in the sidebar.
-DO NOT skip this step.
+**Components:**
+- Sidebar context menu — triggered by right-clicking the agent entry in the sidebar; contains a "Delete Agent" item (data-testid='delete-agent-item')
+- Confirmation dialog (data-testid='confirm-delete-agent-dialog') — includes a Delete button (data-testid='confirm-delete-agent-button')
 
----
-
-## verify-agent-gone
-
-Take a snapshot of the sidebar.
-Assert: the agent you previously deleted no longer exists in the sidebar.
+**User interactions:** Users can right-click an agent in the sidebar and select "Delete Agent." A confirmation dialog appears; confirming deletes the agent and removes it from the sidebar entirely.

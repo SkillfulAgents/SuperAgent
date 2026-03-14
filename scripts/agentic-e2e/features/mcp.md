@@ -1,101 +1,73 @@
-# MCP Steps
+# MCP Management
 
-Test the full MCP workflow using two no-auth servers:
-- **Jina AI** (`https://mcp.jina.ai/v1`) — added manually via global settings UI
-- **DeepWiki** (`https://mcp.deepwiki.com/mcp`) — triggered by the agent during chat, registered via the in-chat MCP request card
+MCP (Model Context Protocol) servers extend an agent's capabilities by providing additional tools. Servers are registered globally, then assigned to individual agents. Agents can also request new MCP servers mid-conversation.
 
-## add-mcp-global
+## Global Settings — MCPs Tab
 
-Open global settings (gear icon in sidebar footer).
-Navigate to the "MCPs" tab.
-Take a screenshot.
-Click "Add MCP Server" to open the add form.
-Fill in Name: "Jina AI" and URL: "https://mcp.jina.ai/v1".
-Leave Authentication on "No Authentication".
-Click "Add" / "Save" to register the server.
-Take a screenshot.
-Wait a few seconds for tool discovery to complete.
-Assert: "Jina AI" appears in the global MCP servers list, ideally with discovered tools shown.
+Accessed via the gear icon in the sidebar footer, then selecting the "MCPs" tab.
 
----
+### Components
 
-## assign-mcp-to-agent
+- **MCP servers list** — displays all globally registered servers with their discovered tools.
+- **"Add MCP Server" button** — opens the add-server form.
 
-Open the agent settings dialog for the current agent.
-Navigate to the "MCPs" tab.
-Click "Add MCP servers".
-Check the checkbox for "Jina AI" in the available servers list.
-Click the add button (e.g. "Add 1 server(s)").
-Take a screenshot.
-Assert: "Jina AI" appears in the agent's MCP server list.
-Close the agent settings dialog.
+### Add MCP Server Form
+
+- **Name** text input — display name for the server.
+- **URL** text input — the server's endpoint URL.
+- **Authentication** selector — defaults to "No Authentication"; supports additional auth modes.
+- **"Add" / "Save" button** — registers the server and triggers tool discovery.
+
+### Per-server Actions
+
+- **Delete (trash) icon** — removes the server from the global list (may prompt for confirmation).
 
 ---
 
-## start-agent-and-chat
+## Agent Settings — MCPs Tab
 
-Make sure the agent is running. If the agent status shows "sleeping", click the Start button to start it.
-Wait until the agent status changes to "idle" (this may take 10-20 seconds as the container starts up).
-Then click the agent in the sidebar to open the chat view.
-Type a simple message like "Hello, what tools do you have available?" and press Enter.
-Wait for the agent to respond (10-30 seconds).
-Take a screenshot.
-Assert: the agent is running (status "idle"), the chat input is available, and you received a response.
-DO NOT skip this step — the following steps all require an active chat session.
+Opened from the agent settings dialog, under the "MCPs" tab.
 
----
+### Components
 
-## verify-mcp-via-chat
+- **Agent MCP server list** — shows servers currently assigned to this agent.
+- **"Add MCP servers" button** — opens a picker listing globally registered servers not yet assigned.
 
-Now that the agent is running with Jina AI MCP assigned, send a chat message that triggers the agent to use the Jina AI **primer** tool.
-Type: "Use the Jina AI primer tool to give me a primer on 'Anthropic Claude'."
-Press Enter and wait for the agent to process — this may take 15-30 seconds as it calls the MCP tool.
-Watch for a tool call card showing "primer" (a Jina AI MCP tool) in the message list.
-Take a screenshot of the tool call and the agent's response.
-Assert: the agent successfully called the Jina AI "primer" tool (NOT the built-in WebSearch) and returned content in its response.
-DO NOT skip this step.
+### Add MCP Servers Picker
+
+- **Checkbox per server** — select one or more servers to assign.
+- **Add button** (e.g. "Add N server(s)") — assigns the selected servers to the agent.
+
+### Per-server Actions
+
+- **Remove (trash) icon** — unassigns the server from this agent (does not delete it globally).
 
 ---
 
-## trigger-mcp-request-via-chat
+## Chat View — MCP Tool Calls
 
-In the same chat session, send a new message that causes the agent to request a MCP server it does not yet have.
-Type: "Use the DeepWiki MCP to look up the documentation for the github repo 'anthropics/claude-code'."
-Press Enter and wait. The agent will attempt to use a tool from `https://mcp.deepwiki.com/mcp`, which is not yet registered.
-A purple "MCP Server Requested" card should appear in the message list.
-Take a screenshot of the MCP request card.
-Assert: the card shows "MCP Server Requested: DeepWiki" (or similar) with the URL `https://mcp.deepwiki.com/mcp`.
-DO NOT skip this step.
+When an agent uses an MCP tool during a conversation, the chat message list reflects this.
+
+### Components
+
+- **Tool call card** — appears inline in the message list, showing the MCP tool name invoked and the returned content.
 
 ---
 
-## register-mcp-from-chat
+## Chat View — MCP Server Request Card
 
-In the MCP request card from the previous step, there should be a "Register" section with a name input and a "Register" button.
-Optionally type "DeepWiki" as the display name (it may already be pre-filled).
-Click the "Register" button to register the server.
-Wait a few seconds for registration and tool discovery.
-The card should now show the newly registered DeepWiki server as selectable.
-Select it (click on it) and click "Grant Access".
-Take a screenshot.
-Assert: the card shows "Access Granted", and the agent continues processing with the DeepWiki tools now available.
+When an agent attempts to use an MCP server that is not yet registered, a request card appears in the chat.
 
----
+### Components
 
-## remove-mcp-from-agent
+- **"MCP Server Requested" card** (purple) — displays the requested server name and URL.
+- **Name input** — pre-filled or editable display name for the server.
+- **"Register" button** — registers the server globally and triggers tool discovery.
 
-Open the agent settings dialog.
-Navigate to the "MCPs" tab.
-Find "Jina AI" in the list and click the remove (trash) icon.
-Take a screenshot.
-Assert: "Jina AI" is no longer in the agent's MCP list.
+### Post-Registration State
 
----
+After registration completes, the card updates:
 
-## remove-mcp-global
-
-Open global settings.
-Navigate to the "MCPs" tab.
-Find "Jina AI" and "DeepWiki" in the global server list and delete both (click trash icon, confirm if prompted).
-Take a screenshot.
-Assert: neither "Jina AI" nor "DeepWiki" appear in the global MCP servers list.
+- **Server selector** — the newly registered server appears as a selectable item.
+- **"Grant Access" button** — assigns the server to the current agent so the conversation can continue.
+- **"Access Granted" status** — confirms the server is now available and the agent resumes processing.

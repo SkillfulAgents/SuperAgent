@@ -1,58 +1,56 @@
-# Scheduled Tasks Steps
+# Scheduled Tasks
 
-Scheduled tasks are created by the agent during a chat conversation, not through settings UI.
-You must first ensure the agent is running, then ask it to schedule one.
+Scheduled tasks are recurring jobs that an agent can create during a chat conversation using the `schedule_task` tool. They are not created through a settings UI. Once created, tasks appear in the sidebar and can trigger automatically on their defined schedule, spawning new sessions when they run.
 
-## ensure-agent-running
+Prerequisite: the agent must be in an active state (idle or running) for task creation and execution to work.
 
-Make sure the agent is running (status "idle"). If the agent is sleeping, click the Start button and wait for it to become idle (30-120 seconds).
-Take a screenshot confirming the agent is running.
-Assert: agent status is "idle" or "running".
-DO NOT skip this step — all following steps require an active agent.
+## Task Creation via Chat
 
----
+Tasks are created conversationally — the user asks the agent to schedule something, and the agent invokes the `schedule_task` tool.
 
-## create-task-via-chat
+### Components
 
-Click the agent in the sidebar to open the chat view (or use an existing session).
-Type the following message and press Enter:
-"Schedule a task that runs every 5 minutes and just says 'ping'. Confirm when scheduled."
-Wait for the agent to finish processing — this may take 20-40 seconds.
-Watch for a tool call card (e.g. "schedule_task") in the message list.
-Take a screenshot once the agent confirms the task is scheduled.
-Assert: the agent's response mentions the task was scheduled successfully.
-DO NOT skip this step — the remaining scheduled task tests depend on a task existing.
+- **Tool call card** (`schedule_task`): an inline card in the assistant message confirming the tool was invoked to create the scheduled task.
+- **Agent confirmation message**: the assistant's response indicating the task was successfully scheduled.
 
----
+### Interactions
 
-## verify-task-in-sidebar
+- The user sends a message requesting a recurring task. The agent processes the request and calls `schedule_task`.
+- On success, the agent responds with confirmation and the new task appears in the sidebar.
 
-After the agent has scheduled a task, check the sidebar under the current agent.
-Expand the agent's tree if needed — scheduled tasks appear as sub-items.
-Take a snapshot of the sidebar.
-Assert: a scheduled task item is visible under the agent in the sidebar.
+## Sidebar — Scheduled Task Items
 
----
+Scheduled tasks appear as sub-items under their parent agent in the sidebar tree.
 
-## open-task
+### Components
 
-Click the scheduled task item in the sidebar.
-Take a screenshot.
-Assert: the main content area shows the scheduled task view with task details (schedule expression, next run time).
+- **Scheduled task item**: a tree node nested under the agent entry. Each item represents one scheduled task.
 
----
+### Interactions
 
-## cancel-task
+- Expanding the agent's sidebar tree reveals any scheduled tasks belonging to that agent.
+- Clicking a scheduled task item navigates to the task detail view.
 
-In the scheduled task view, click the "Cancel Task" button.
-In the confirmation dialog, click to confirm cancellation.
-Take a screenshot.
-Assert: the task status shows as "cancelled" and the task item is removed or marked in the sidebar.
+## Task Detail View
 
----
+The main content area for a selected scheduled task, showing its configuration and status.
 
-## verify-task-triggered
+### Components
 
-Note: this step requires waiting for the scheduled task to actually trigger. If the task was set to run every 5 minutes, you may need to wait.
-If you have time, wait up to 90 seconds and check for a new session created by the task.
-If you already cancelled the task in the previous step, you can skip this step — note "task was cancelled before trigger".
+- **Schedule expression**: displays the cron expression defining the task's recurrence.
+- **Next run time**: shows when the task is next scheduled to execute.
+- **Task status**: indicates the current state of the task (e.g., active, cancelled).
+- **Cancel Task button**: initiates task cancellation.
+
+### Interactions
+
+- Clicking "Cancel Task" opens a confirmation dialog. Confirming cancels the task, updates its status, and reflects the change in the sidebar.
+
+## Automatic Task Execution
+
+When a scheduled task's cron expression matches the current time, it triggers automatically.
+
+### Behavior
+
+- A triggered task creates a new session under the agent, visible in the sidebar's session list.
+- Cancelled tasks do not trigger.

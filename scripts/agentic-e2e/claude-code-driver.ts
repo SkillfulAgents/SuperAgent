@@ -28,11 +28,13 @@ export interface DriverOptions {
   sessionId?: string
   /** Limit the number of agentic turns per invocation. */
   maxTurns?: number
+  /** Per-invocation spending cap in USD. */
+  maxBudgetUsd?: number
 }
 
 const DEFAULT_TIMEOUT_MS = 60 * 60 * 1000
 const DEFAULT_MODEL = 'sonnet'
-const DEFAULT_MAX_BUDGET_USD = 100
+const DEFAULT_MAX_BUDGET_USD = 5
 
 async function loadSystemPrompt(): Promise<string> {
   const uiDetails = await readFile(resolve(__dirname, 'UI-details.md'), 'utf-8')
@@ -56,23 +58,9 @@ function parseTestResult(output: string): Pick<TestResult, 'passed' | 'reason' |
     return { passed, reason, steps: stepLines }
   }
 
-  // Fallback: try legacy JSON format
-  const jsonMatch = output.match(/```json\s*\n([\s\S]*?)\n\s*```/)
-  if (jsonMatch) {
-    try {
-      const parsed = JSON.parse(jsonMatch[1])
-      return {
-        passed: Boolean(parsed.passed),
-        reason: String(parsed.reason || ''),
-        steps: Array.isArray(parsed.steps) ? parsed.steps.map(String) : [],
-      }
-    } catch { /* fall through */ }
-  }
-
-  const tail = output.slice(-500)
   return {
     passed: false,
-    reason: `Agent did not output expected markers ([TEST_PASS]/[TEST_FAIL]/[BUG_FOUND]). Last 500 chars: ${tail}`,
+    reason: `No [TEST_PASS] or [TEST_FAIL] marker found. Tail: ${output.slice(-300)}`,
     steps: [],
   }
 }
@@ -88,8 +76,8 @@ export async function runTest(
     resumeSessionId,
     sessionId,
     maxTurns,
+    maxBudgetUsd = DEFAULT_MAX_BUDGET_USD,
   } = options
-  const maxBudgetUsd = DEFAULT_MAX_BUDGET_USD
 
   const mcpConfigPath = options.mcpConfigPath ?? resolve(__dirname, 'playwright-mcp-config.json')
 
@@ -137,7 +125,6 @@ export async function runTest(
     let stdout = ''
     let stderr = ''
     let killed = false
-    let lastOutputTime = Date.now()
 
     const proc: ChildProcess = spawn('claude', args, {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -178,14 +165,12 @@ export async function runTest(
     proc.stdout?.on('data', (chunk: Buffer) => {
       const text = chunk.toString()
       stdout += text
-      lastOutputTime = Date.now()
       if (verbose) process.stdout.write(text)
     })
 
     proc.stderr?.on('data', (chunk: Buffer) => {
       const text = chunk.toString()
       stderr += text
-      lastOutputTime = Date.now()
       console.log(`[claude-driver][stderr] ${text.trimEnd()}`)
     })
 
@@ -222,7 +207,7 @@ export async function runTest(
         return
       }
 
-      if (code !== 0 && !stdout.includes('"passed"')) {
+      if (code !== 0 && !stdout.match(/\[TEST_PASS\]|\[TEST_FAIL\]|\[BUG_FOUND\]/)) {
         resolvePromise({
           passed: false,
           reason: `claude CLI exited with code ${code}. stderr: ${stderr.slice(0, 500)}`,

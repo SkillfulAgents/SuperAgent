@@ -1,95 +1,47 @@
-# Agent Settings Steps
+# Agent Settings Dialog
 
-## open-agent-settings
+The agent settings dialog (data-testid='agent-settings-dialog') is opened via the settings button in the main content header (data-testid='agent-settings-button'). It is organized into tabbed sections.
 
-Click the agent settings button in the main content header (data-testid='agent-settings-button').
-The agent settings dialog should open (data-testid='agent-settings-dialog').
-Take a screenshot.
-Assert: the agent settings dialog is visible.
-DO NOT skip this step.
+## General Tab
 
----
+The default tab when the dialog opens.
 
-## settings-rename
+**Components:**
+- Agent name input field — pre-filled with the current agent name
+- Save button
 
-In the agent settings dialog, make sure the General tab is selected.
-Find the agent name input field and clear it, then type a new name you choose (e.g. "Renamed Agent").
-Click Save.
-Take a screenshot.
-Assert: the agent name in the sidebar and header has changed to the new name you entered.
-DO NOT skip this step.
+**User interactions:** Users can clear and edit the agent name, then save. The updated name is reflected in both the sidebar and the header.
 
----
+## System Prompt Tab
 
-## settings-edit-instructions
+**Components:**
+- Text area for custom system instructions — pre-filled with any existing prompt
+- Save button
 
-In the agent settings dialog, click the "System Prompt" tab.
-Clear the existing content and type custom instructions of your choice (e.g. "You are a helpful coding assistant. Always respond concisely.").
-Click Save.
-Take a screenshot.
-Assert: the save completes without error.
+**User interactions:** Users can write or replace system-level instructions for the agent, then save.
 
----
+## Secrets Tab
 
-## settings-add-secret
+**Components:**
+- Key name input field
+- Value input field
+- "Add Secret" button
+- Secrets list — each row displays a key name and a delete (trash) icon
 
-In the agent settings dialog, click the "Secrets" tab.
-Type a key name you choose (e.g. "MY_TEST_KEY") in the key name field.
-Type a value you choose in the value field.
-Click "Add Secret".
-Take a screenshot.
-Assert: a row with the key name you entered appears in the secrets list.
-DO NOT skip this step.
+**User interactions:** Users can add a secret by entering a key/value pair and clicking "Add Secret"; the new entry appears in the list. Users can remove a secret by clicking its delete icon; the row is removed from the list.
 
----
+## Accounts Tab
 
-## settings-delete-secret
+**Components:**
+- Connected accounts list — each row shows an account display name and a remove (trash) icon
+- "Add accounts" button, which opens a picker dialog with checkboxes for available accounts and an "Add N account(s)" confirmation button
 
-In the Secrets tab, find the row with the key you just added.
-Click the delete (trash) icon on that row.
-Take a screenshot.
-Assert: the row with that key is gone from the list.
+**User interactions:** Users can add one or more accounts from the picker and confirm. Added accounts appear in the connected accounts list. Users can remove an account by clicking its delete icon. The picker may be empty if no accounts are available.
 
----
+## MCPs Tab
 
-## settings-add-connected-account
+**Components:**
+- MCP servers list — each row shows a server name and a remove (trash) icon
+- "Add MCP servers" button, which opens a picker dialog with checkboxes for available servers and an "Add N server(s)" confirmation button
 
-In the agent settings dialog, click the "Accounts" tab.
-Click the "Add accounts" button.
-In the picker, check the checkbox for an account shown in the list (note its display name).
-Click "Add 1 account(s)".
-Take a screenshot.
-Assert: the account you selected appears in the connected accounts list.
-If no accounts are available to add (the list is empty), note "no accounts available" and move on.
-
----
-
-## settings-remove-connected-account
-
-In the Accounts tab, find the row for the account you just added.
-Click the remove (trash) icon.
-Take a screenshot.
-Assert: that account is no longer in the list.
-If you skipped the add step because no accounts were available, skip this step too.
-
----
-
-## settings-add-mcp
-
-In the agent settings dialog, click the "MCPs" tab.
-Click "Add MCP servers".
-Check the checkbox for an MCP server from the list (note its name).
-Click "Add 1 server(s)".
-Take a screenshot.
-Assert: the MCP server you selected appears in the MCPs list.
-If no MCP servers are available, note "no MCP servers available" and move on.
-
----
-
-## settings-remove-mcp
-
-In the MCPs tab, find the row for the MCP server you just added.
-Click the remove (trash) icon.
-Take a screenshot.
-Assert: that MCP server is no longer in the list.
-If you skipped the add step, skip this step too.
+**User interactions:** Users can add one or more MCP servers from the picker and confirm. Added servers appear in the list. Users can remove a server by clicking its delete icon. The picker may be empty if no servers are available.

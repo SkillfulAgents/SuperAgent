@@ -1,51 +1,45 @@
-# Agent Create (Standalone Test)
+# Agent Create
 
-This feature tests the full UI flow of creating, starting, and deleting agents.
-When run as a standalone test, you must clean up after yourself by deleting the agents you create.
+This feature covers the UI for creating agents, starting agent containers, and deleting agents.
 
-## create-agent
+## Sidebar — Create Agent Button
 
-Navigate to the app URL if not already there.
-Click the Create Agent button in the sidebar (data-testid='create-agent-button').
-In the dialog that opens (data-testid='create-agent-dialog'), type a name you choose (e.g. "UI Test Agent") into the agent name input (data-testid='agent-name-input').
-Click the submit button (data-testid='create-agent-submit').
-Take a screenshot.
-Assert: the sidebar now shows an agent with the name you just entered.
-DO NOT skip this step.
+The sidebar contains a "Create Agent" button (data-testid='create-agent-button') that opens the agent creation dialog.
 
----
+### Create Agent Dialog
 
-## create-agent-from-template
+A modal dialog (data-testid='create-agent-dialog') with:
 
-On the home page, pick a template card that looks interesting and click it.
-In the create dialog, review the template. If the template requires environment variables you don't have, click Cancel and note it as "skipped due to missing env vars" — this is acceptable.
-If no env vars are required, confirm or adjust the agent name and click Create.
-Take a screenshot.
-Assert: either a new agent appears in the sidebar, or you cancelled due to missing env vars (both are acceptable outcomes).
+- **Agent name input** (data-testid='agent-name-input') — text field for entering the new agent's name.
+- **Submit button** (data-testid='create-agent-submit') — creates the agent and closes the dialog.
 
----
+On successful creation, the new agent appears in the sidebar agent list.
 
-## wait-agent-running
+## Home Page — Template Cards
 
-Click on the agent you created in "create-agent" in the sidebar.
-Click the Start button in the agent header to start the container.
-Wait for the agent container to start. Check the agent status indicator (data-testid='agent-status') every 15 seconds.
-The status transitions: sleeping → starting → running (or idle).
-This takes 30-120 seconds.
-Take a screenshot once the agent is ready.
-Assert: agent status is "running" or "idle".
-DO NOT skip this step.
+The home page displays a collection of template cards. Each card represents a preconfigured agent template.
 
----
+### Template-Based Creation
 
-## cleanup-created-agents
+Clicking a template card opens the create agent dialog pre-filled with template settings. If the template requires environment variables that are not configured, the user can cancel. Otherwise, the user can adjust the agent name and confirm creation.
 
-After testing, delete every agent you created during this test:
-1. Right-click the agent in the sidebar.
-2. Click "Delete Agent" from the context menu (data-testid='delete-agent-item').
-3. In the confirmation dialog (data-testid='confirm-delete-agent-dialog'), click the Delete button (data-testid='confirm-delete-agent-button').
-4. Take a screenshot.
-5. Assert: the agent no longer appears in the sidebar.
+## Agent Detail — Container Lifecycle
 
-Repeat for each agent you created (from "create-agent" and "create-agent-from-template" if applicable).
-DO NOT skip this step — leave the environment clean.
+Clicking an agent in the sidebar navigates to the agent detail view. The agent header contains:
+
+- **Start button** — launches the agent's container.
+- **Status indicator** (data-testid='agent-status') — shows the current container state. Possible states: `sleeping`, `starting`, `running`, `idle`. Container startup typically takes 30–120 seconds.
+
+## Sidebar — Agent Context Menu
+
+Right-clicking an agent in the sidebar opens a context menu with:
+
+- **Delete Agent** (data-testid='delete-agent-item') — triggers a confirmation dialog.
+
+### Delete Confirmation Dialog
+
+A confirmation dialog (data-testid='confirm-delete-agent-dialog') with:
+
+- **Delete button** (data-testid='confirm-delete-agent-button') — permanently removes the agent.
+
+On successful deletion, the agent is removed from the sidebar list.
