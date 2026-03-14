@@ -10,26 +10,24 @@ Automated end-to-end testing for SuperAgent using Claude Code CLI + Playwright M
 cp .env.example .env.local
 ```
 
-2. Start the SuperAgent dev server:
+2. Start the app (web or Electron):
 
 ```bash
-# from repo root
+# Web dev server
 npm run dev
-```
 
-3. Ensure Docker is running (the test framework creates agent containers via the host API).
+# Or packaged Electron app
+npm run build && npm run start
+```
 
 ## Usage
 
 ```bash
-# Run all test cases
-npx tsx scripts/agentic-e2e/runner.ts
-
-# Run a specific test case
-npx tsx scripts/agentic-e2e/runner.ts --filter detailed-core
-
-# Run with verbose output
+# Run against web dev server (default)
 npx tsx scripts/agentic-e2e/runner.ts --filter detailed-core --verbose
+
+# Run against Electron app
+npx tsx scripts/agentic-e2e/runner.ts --filter detailed-core --target electron --verbose
 
 # Chaos monkey mode (exploratory bug hunting)
 npx tsx scripts/agentic-e2e/runner.ts --filter chaos-monkey --verbose
@@ -54,7 +52,7 @@ npx tsx scripts/agentic-e2e/runner.ts --filter chaos-monkey --verbose
 ```
 scripts/agentic-e2e/
 ├── runner.ts                 # Test orchestrator
-├── claude-code-driver.ts     # Claude CLI process driver
+├── claude-code-driver.ts     # Claude CLI process drix a
 ├── system-prompt.md          # Base agent instructions
 ├── test-cases.json           # Test case definitions + test data
 ├── features/                 # Feature specs (UI/UX component docs)
