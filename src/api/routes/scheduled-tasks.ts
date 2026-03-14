@@ -8,7 +8,7 @@
 import { Hono } from 'hono'
 import type { Context, Next, MiddlewareHandler } from 'hono'
 import { and, eq } from 'drizzle-orm'
-import Anthropic from '@anthropic-ai/sdk'
+import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import {
   getScheduledTask,
   cancelScheduledTask,
@@ -26,7 +26,7 @@ import {
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { messagePersister } from '@shared/lib/container/message-persister'
-import { getEffectiveModels, getEffectiveAnthropicApiKey } from '@shared/lib/config/settings'
+import { getEffectiveModels } from '@shared/lib/config/settings'
 import { validateCronExpression } from '@shared/lib/services/schedule-parser'
 import { withRetry } from '@shared/lib/utils/retry'
 import { Authenticated } from '../middleware/auth'
@@ -220,14 +220,14 @@ scheduledTasksRouter.post('/:taskId/describe-schedule', TaskAgentRole('viewer'),
       return c.json({ error: 'Task is not a recurring cron task' }, 400)
     }
 
-    const apiKey = getEffectiveAnthropicApiKey()
-    if (!apiKey) {
-      return c.json({ error: 'Anthropic API key not configured' }, 500)
+    const provider = getActiveLlmProvider()
+    if (!provider.getApiKeyStatus().isConfigured) {
+      return c.json({ error: 'LLM API key not configured' }, 500)
     }
 
-    const anthropic = new Anthropic({ apiKey })
+    const client = provider.createClient()
     const response = await withRetry(() =>
-      anthropic.messages.create({
+      client.messages.create({
         model: getEffectiveModels().summarizerModel,
         max_tokens: 100,
         messages: [
@@ -273,14 +273,14 @@ scheduledTasksRouter.post('/:taskId/parse-schedule', TaskAgentRole('user'), asyn
       return c.json({ error: 'description is required' }, 400)
     }
 
-    const apiKey = getEffectiveAnthropicApiKey()
-    if (!apiKey) {
-      return c.json({ error: 'Anthropic API key not configured' }, 500)
+    const provider = getActiveLlmProvider()
+    if (!provider.getApiKeyStatus().isConfigured) {
+      return c.json({ error: 'LLM API key not configured' }, 500)
     }
 
-    const anthropic = new Anthropic({ apiKey })
+    const client = provider.createClient()
     const response = await withRetry(() =>
-      anthropic.messages.create({
+      client.messages.create({
         model: getEffectiveModels().summarizerModel,
         max_tokens: 50,
         messages: [

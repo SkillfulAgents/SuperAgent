@@ -9,10 +9,11 @@ import type {
   AuthSettings,
   VoiceSettings,
   AnalyticsTarget,
+  LlmProviderId,
 } from '@shared/lib/config/settings'
 import type { RunnerAvailability } from '@shared/lib/container/client-factory'
 
-export type { GlobalSettingsResponse, ContainerSettings, AppPreferences, ModelSettings, AgentLimitsSettings, AuthSettings, VoiceSettings, AnalyticsTarget, RunnerAvailability }
+export type { GlobalSettingsResponse, ContainerSettings, AppPreferences, ModelSettings, AgentLimitsSettings, AuthSettings, VoiceSettings, AnalyticsTarget, LlmProviderId, RunnerAvailability }
 
 export function useSettings(options?: { enabled?: boolean }) {
   return useQuery<GlobalSettingsResponse>({
@@ -30,8 +31,10 @@ export function useSettings(options?: { enabled?: boolean }) {
 export interface UpdateSettingsParams {
   container?: Partial<ContainerSettings>
   app?: Partial<AppPreferences>
+  llmProvider?: LlmProviderId
   apiKeys?: {
     anthropicApiKey?: string
+    openrouterApiKey?: string
     composioApiKey?: string
     composioUserId?: string
     browserbaseApiKey?: string

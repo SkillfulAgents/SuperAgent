@@ -813,7 +813,7 @@ class MessagePersister {
   // Handle stream events for SSE broadcasting (not for persistence)
   private handleStreamEvent(
     sessionId: string,
-    event: { type: string; content_block?: { type: string; id?: string; name?: string }; delta?: { type: string; text?: string; partial_json?: string } },
+    event: { type: string; content_block?: { type: string; id?: string; name?: string }; delta?: { type: string; text?: string; partial_json?: string }; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } },
     state: StreamingState
   ): void {
     switch (event.type) {
@@ -964,6 +964,17 @@ class MessagePersister {
           })
           state.currentToolUse = null
           state.currentToolInput = ''
+        }
+        break
+
+      case 'message_delta':
+        // message_delta carries final usage data (especially important for OpenRouter
+        // which sends input_tokens: 0 in message_start but real values in message_delta)
+        if (event.usage) {
+          const deltaUsage = event.usage as { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number }
+          if (deltaUsage.input_tokens || deltaUsage.output_tokens) {
+            this.broadcastContextUsage(sessionId, state, deltaUsage)
+          }
         }
         break
 

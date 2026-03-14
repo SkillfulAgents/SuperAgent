@@ -15,14 +15,8 @@ import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { apiFetch } from '@renderer/lib/api'
 import { AlertTriangle, Check, Loader2 } from 'lucide-react'
-import type { HostBrowserProviderId, BrowserbaseStealthOs } from '@shared/lib/config/settings'
+import type { HostBrowserProviderId, BrowserbaseStealthOs, LlmProviderId } from '@shared/lib/config/settings'
 import { ChromeProfileSelect } from '@renderer/components/settings/chrome-profile-select'
-
-const MODEL_OPTIONS = [
-  { value: 'claude-haiku-4-5', label: 'Claude 4.5 Haiku' },
-  { value: 'claude-sonnet-4-6', label: 'Claude 4.6 Sonnet' },
-  { value: 'claude-opus-4-6', label: 'Claude 4.6 Opus' },
-]
 
 // Value used for "Container (built-in)" — no host browser provider
 const CONTAINER_VALUE = '__container__'
@@ -63,7 +57,9 @@ export function BrowserTab() {
             <SelectValue placeholder="Select a model" />
           </SelectTrigger>
           <SelectContent>
-            {MODEL_OPTIONS.map((model) => (
+            {(settings?.llmProviderStatus?.find(
+              p => p.id === ((settings?.llmProvider ?? 'anthropic') as LlmProviderId)
+            )?.availableModels ?? []).map((model) => (
               <SelectItem key={model.value} value={model.value}>
                 {model.label}
               </SelectItem>

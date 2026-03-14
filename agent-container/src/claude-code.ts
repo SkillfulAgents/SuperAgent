@@ -235,13 +235,15 @@ type SDKModelAlias = 'sonnet' | 'opus' | 'haiku';
 
 /**
  * Maps a full model ID (e.g. 'claude-sonnet-4-5') to the SDK's short alias.
+ * Passes through model IDs containing '/' (e.g. OpenRouter format).
  */
-function toModelAlias(model?: string): SDKModelAlias | undefined {
+function toModelAlias(model?: string): SDKModelAlias | string | undefined {
   if (!model) return undefined;
+  if (model.includes('/')) return model;
   if (model.includes('opus')) return 'opus';
   if (model.includes('sonnet')) return 'sonnet';
   if (model.includes('haiku')) return 'haiku';
-  return undefined;
+  return model;
 }
 
 // Module-level reference to the current process (one per container)
@@ -274,7 +276,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private claudeSessionId: string | null;
   private systemPromptAppend: string | undefined;
   private model: string | undefined;
-  private browserModel: 'sonnet' | 'opus' | 'haiku' | undefined;
+  private browserModel: string | undefined;
   private maxOutputTokens: number | undefined;
   private maxThinkingTokens: number | undefined;
   private maxTurns: number | undefined;
@@ -394,7 +396,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         agents: {
           'web-browser': {
             description: 'Web browsing specialist. Delegate any task that requires interacting with websites — navigating pages, filling forms, clicking buttons, extracting information, searching for products, changing settings on web services, or any multi-step web interaction. The browser should already be open (use browser_open first). This agent runs on a cheaper model and handles all browser interactions autonomously.',
-            model: this.browserModel || 'sonnet',
+            model: (this.browserModel || 'sonnet') as 'sonnet' | 'opus' | 'haiku',
             tools: [
               'mcp__browser__browser_open',
               'mcp__browser__browser_snapshot',

@@ -6,25 +6,91 @@ import {
   SelectValue,
 } from '@renderer/components/ui/select'
 import { Label } from '@renderer/components/ui/label'
+import { Alert, AlertDescription } from '@renderer/components/ui/alert'
+import { AlertTriangle } from 'lucide-react'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
-import { AnthropicApiKeyInput } from './anthropic-api-key-input'
+import { ProviderApiKeyInput } from './provider-api-key-input'
+import type { LlmProviderId } from '@shared/lib/config/settings'
 
-const MODEL_OPTIONS = [
-  { value: 'claude-haiku-4-5', label: 'Claude 4.5 Haiku' },
-  { value: 'claude-sonnet-4-6', label: 'Claude 4.6 Sonnet' },
-  { value: 'claude-opus-4-6', label: 'Claude 4.6 Opus' },
-]
+const PROVIDER_KEY_CONFIG: Record<LlmProviderId, {
+  label: string
+  placeholder: string
+  envVarName: string
+  apiKeySettingsField: 'anthropicApiKey' | 'openrouterApiKey'
+}> = {
+  anthropic: {
+    label: 'Anthropic API Key',
+    placeholder: 'sk-ant-...',
+    envVarName: 'ANTHROPIC_API_KEY',
+    apiKeySettingsField: 'anthropicApiKey',
+  },
+  openrouter: {
+    label: 'OpenRouter API Key',
+    placeholder: 'sk-or-...',
+    envVarName: 'OPENROUTER_API_KEY',
+    apiKeySettingsField: 'openrouterApiKey',
+  },
+}
 
 export function LlmTab() {
   const { data: settings, isLoading } = useSettings()
   const updateSettings = useUpdateSettings()
 
+  const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
+  const providerStatus = settings?.llmProviderStatus ?? []
+  const activeProviderInfo = providerStatus.find(p => p.id === activeProvider)
+  const modelOptions = activeProviderInfo?.availableModels ?? []
+  const keyConfig = PROVIDER_KEY_CONFIG[activeProvider]
+
   return (
     <div className="space-y-6">
-      {/* API Keys Section */}
+      {/* Provider Section */}
       <div className="space-y-4">
-        <h3 className="text-sm font-medium">API Keys</h3>
-        <AnthropicApiKeyInput disabled={isLoading} />
+        <h3 className="text-sm font-medium">LLM Provider</h3>
+        <div className="space-y-2">
+          <Label htmlFor="llm-provider">Provider</Label>
+          <Select
+            value={activeProvider}
+            onValueChange={(value) => {
+              updateSettings.mutate({ llmProvider: value as LlmProviderId })
+            }}
+            disabled={isLoading}
+          >
+            <SelectTrigger id="llm-provider">
+              <SelectValue placeholder="Select a provider" />
+            </SelectTrigger>
+            <SelectContent>
+              {providerStatus.map((provider) => (
+                <SelectItem key={provider.id} value={provider.id}>
+                  {provider.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        {settings?.hasRunningAgents && (
+          <Alert>
+            <AlertTriangle className="h-4 w-4" />
+            <AlertDescription>
+              Running agents will use the previous provider until restarted.
+            </AlertDescription>
+          </Alert>
+        )}
+      </div>
+
+      {/* API Keys Section */}
+      <div className="pt-4 border-t space-y-4">
+        <h3 className="text-sm font-medium">API Key</h3>
+        <ProviderApiKeyInput
+          key={activeProvider}
+          providerId={activeProvider}
+          label={keyConfig.label}
+          placeholder={keyConfig.placeholder}
+          envVarName={keyConfig.envVarName}
+          apiKeySettingsField={keyConfig.apiKeySettingsField}
+          disabled={isLoading}
+        />
       </div>
 
       {/* Models Section */}
@@ -33,7 +99,7 @@ export function LlmTab() {
         <div className="space-y-2">
           <Label htmlFor="agent-model">Agent Model</Label>
           <Select
-            value={settings?.models?.agentModel ?? 'claude-opus-4-6'}
+            value={settings?.models?.agentModel ?? modelOptions[0]?.value ?? ''}
             onValueChange={(value) => {
               updateSettings.mutate({ models: { agentModel: value } })
             }}
@@ -43,7 +109,7 @@ export function LlmTab() {
               <SelectValue placeholder="Select a model" />
             </SelectTrigger>
             <SelectContent>
-              {MODEL_OPTIONS.map((model) => (
+              {modelOptions.map((model) => (
                 <SelectItem key={model.value} value={model.value}>
                   {model.label}
                 </SelectItem>
@@ -57,7 +123,7 @@ export function LlmTab() {
         <div className="space-y-2">
           <Label htmlFor="summarizer-model">Summarizer Model</Label>
           <Select
-            value={settings?.models?.summarizerModel ?? 'claude-haiku-4-5'}
+            value={settings?.models?.summarizerModel ?? modelOptions[0]?.value ?? ''}
             onValueChange={(value) => {
               updateSettings.mutate({ models: { summarizerModel: value } })
             }}
@@ -67,7 +133,7 @@ export function LlmTab() {
               <SelectValue placeholder="Select a model" />
             </SelectTrigger>
             <SelectContent>
-              {MODEL_OPTIONS.map((model) => (
+              {modelOptions.map((model) => (
                 <SelectItem key={model.value} value={model.value}>
                   {model.label}
                 </SelectItem>

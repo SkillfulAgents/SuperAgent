@@ -1227,4 +1227,373 @@ describe('MessagePersister', () => {
       expect(streamStarts[0].slashCommands).toBeUndefined()
     })
   })
+
+  // ============================================================================
+  // Context usage tracking
+  // ============================================================================
+
+  describe('context usage from assistant messages', () => {
+    it('broadcasts context_usage when assistant message includes usage data', () => {
+      mockClient._sendMessage({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Hello' }],
+          usage: {
+            input_tokens: 1500,
+            output_tokens: 200,
+            cache_creation_input_tokens: 500,
+            cache_read_input_tokens: 1000,
+          },
+        },
+      })
+
+      const usageEvents = sseEvents.filter(e => e.type === 'context_usage')
+      expect(usageEvents).toHaveLength(1)
+      expect(usageEvents[0]).toMatchObject({
+        type: 'context_usage',
+        inputTokens: 1500,
+        outputTokens: 200,
+        cacheCreationInputTokens: 500,
+        cacheReadInputTokens: 1000,
+        contextWindow: 200_000, // default
+      })
+    })
+
+    it('does not broadcast context_usage when assistant message has no usage', () => {
+      mockClient._sendMessage({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Hello' }],
+        },
+      })
+
+      const usageEvents = sseEvents.filter(e => e.type === 'context_usage')
+      expect(usageEvents).toHaveLength(0)
+    })
+
+    it('handles null cache token fields gracefully (OpenRouter format)', () => {
+      mockClient._sendMessage({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Hello' }],
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_input_tokens: null,
+            cache_read_input_tokens: null,
+          },
+        },
+      })
+
+      const usageEvents = sseEvents.filter(e => e.type === 'context_usage')
+      expect(usageEvents).toHaveLength(1)
+      expect(usageEvents[0]).toMatchObject({
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+      })
+    })
+  })
+
+  describe('context usage from message_delta stream events', () => {
+    it('broadcasts context_usage from message_delta with real token counts', () => {
+      // Simulate OpenRouter: assistant message has zeros, message_delta has real values
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'message_start' },
+      })
+
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn' },
+          usage: {
+            input_tokens: 4500,
+            output_tokens: 300,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+        },
+      })
+
+      const usageEvents = sseEvents.filter(e => e.type === 'context_usage')
+      expect(usageEvents).toHaveLength(1)
+      expect(usageEvents[0]).toMatchObject({
+        type: 'context_usage',
+        inputTokens: 4500,
+        outputTokens: 300,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        contextWindow: 200_000,
+      })
+    })
+
+    it('does not broadcast from message_delta when usage has all zeros', () => {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'message_start' },
+      })
+
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn' },
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+          },
+        },
+      })
+
+      const usageEvents = sseEvents.filter(e => e.type === 'context_usage')
+      expect(usageEvents).toHaveLength(0)
+    })
+
+    it('does not broadcast from message_delta when no usage field', () => {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'message_start' },
+      })
+
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn' },
+        },
+      })
+
+      const usageEvents = sseEvents.filter(e => e.type === 'context_usage')
+      expect(usageEvents).toHaveLength(0)
+    })
+
+    it('message_delta usage overwrites earlier zero-usage from assistant (OpenRouter pattern)', () => {
+      // Step 1: assistant message with zeros (OpenRouter sends this first)
+      mockClient._sendMessage({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Hello' }],
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_input_tokens: null,
+            cache_read_input_tokens: null,
+          },
+        },
+      })
+
+      // Step 2: message_delta arrives with real values
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn' },
+          usage: {
+            input_tokens: 8500,
+            output_tokens: 450,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+        },
+      })
+
+      const usageEvents = sseEvents.filter(e => e.type === 'context_usage')
+      // Two broadcasts: first with zeros, then corrected with real values
+      expect(usageEvents).toHaveLength(2)
+      // The last one should have the real values
+      expect(usageEvents[1]).toMatchObject({
+        inputTokens: 8500,
+        outputTokens: 450,
+      })
+    })
+
+    it('Anthropic pattern: assistant and message_delta both have same valid usage', () => {
+      // Anthropic sends real usage in both assistant message and message_delta
+      mockClient._sendMessage({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Hello' }],
+          usage: {
+            input_tokens: 3000,
+            output_tokens: 150,
+            cache_creation_input_tokens: 2000,
+            cache_read_input_tokens: 5000,
+          },
+        },
+      })
+
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn' },
+          usage: {
+            input_tokens: 3000,
+            output_tokens: 150,
+            cache_creation_input_tokens: 2000,
+            cache_read_input_tokens: 5000,
+          },
+        },
+      })
+
+      const usageEvents = sseEvents.filter(e => e.type === 'context_usage')
+      // Two broadcasts with identical data - harmless redundancy
+      expect(usageEvents).toHaveLength(2)
+      expect(usageEvents[0]).toMatchObject({
+        inputTokens: 3000,
+        outputTokens: 150,
+        cacheCreationInputTokens: 2000,
+        cacheReadInputTokens: 5000,
+      })
+      expect(usageEvents[1]).toMatchObject({
+        inputTokens: 3000,
+        outputTokens: 150,
+        cacheCreationInputTokens: 2000,
+        cacheReadInputTokens: 5000,
+      })
+    })
+
+    it('message_delta with only output_tokens triggers broadcast', () => {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'message_start' },
+      })
+
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn' },
+          usage: {
+            input_tokens: 0,
+            output_tokens: 500,
+          },
+        },
+      })
+
+      const usageEvents = sseEvents.filter(e => e.type === 'context_usage')
+      expect(usageEvents).toHaveLength(1)
+      expect(usageEvents[0].outputTokens).toBe(500)
+    })
+
+    it('message_delta usage includes cache fields from Anthropic', () => {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'message_start' },
+      })
+
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'message_delta',
+          delta: { stop_reason: 'tool_use' },
+          usage: {
+            input_tokens: 2,
+            cache_creation_input_tokens: 2659,
+            cache_read_input_tokens: 12442,
+            output_tokens: 2042,
+          },
+        },
+      })
+
+      const usageEvents = sseEvents.filter(e => e.type === 'context_usage')
+      expect(usageEvents).toHaveLength(1)
+      expect(usageEvents[0]).toMatchObject({
+        inputTokens: 2,
+        cacheCreationInputTokens: 2659,
+        cacheReadInputTokens: 12442,
+        outputTokens: 2042,
+        contextWindow: 200_000,
+      })
+    })
+
+    it('multiple turns accumulate: last message_delta usage wins', () => {
+      // Turn 1
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'message_start' },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'message_delta',
+          usage: { input_tokens: 1000, output_tokens: 100 },
+        },
+      })
+
+      // Turn 2 (context grows)
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'message_start' },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'message_delta',
+          usage: { input_tokens: 3000, output_tokens: 200 },
+        },
+      })
+
+      const usageEvents = sseEvents.filter(e => e.type === 'context_usage')
+      expect(usageEvents).toHaveLength(2)
+      // Last usage should reflect the larger context
+      expect(usageEvents[1]).toMatchObject({
+        inputTokens: 3000,
+        outputTokens: 200,
+      })
+    })
+
+    it('message_delta in sidechain does not affect main context usage', () => {
+      // Set up a subagent
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'message_start' },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: 'tool-1', name: 'Agent' },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_stop' },
+      })
+
+      sseEvents.length = 0
+
+      // Sidechain message_delta (has parent_tool_use_id)
+      mockClient._sendMessage({
+        type: 'stream_event',
+        parent_tool_use_id: 'tool-1',
+        event: {
+          type: 'message_delta',
+          usage: { input_tokens: 99999, output_tokens: 99999 },
+        },
+      })
+
+      // Main context should NOT be affected
+      const usageEvents = sseEvents.filter(e => e.type === 'context_usage')
+      expect(usageEvents).toHaveLength(0)
+    })
+  })
 })

@@ -21,6 +21,7 @@ export interface ContainerSettings {
 
 export interface ApiKeySettings {
   anthropicApiKey?: string
+  openrouterApiKey?: string
   composioApiKey?: string
   composioUserId?: string
   browserbaseApiKey?: string
@@ -134,9 +135,12 @@ export interface AnalyticsTarget {
   enabled: boolean
 }
 
+export type LlmProviderId = 'anthropic' | 'openrouter'
+
 export interface AppSettings {
   container: ContainerSettings
   apiKeys?: ApiKeySettings
+  llmProvider?: LlmProviderId
   app?: AppPreferences
   models?: ModelSettings
   agentLimits?: AgentLimitsSettings
@@ -173,14 +177,24 @@ export interface HostBrowserStatus {
   providers: HostBrowserProviderInfo[]
 }
 
+export interface LlmProviderInfo {
+  id: LlmProviderId
+  name: string
+  isConfigured: boolean
+  availableModels: { value: string; label: string }[]
+}
+
 export interface GlobalSettingsResponse {
   dataDir: string
   container: ContainerSettings
   app: AppPreferences
   hasRunningAgents: boolean
   runnerAvailability: RunnerAvailability[]
+  llmProvider: LlmProviderId
+  llmProviderStatus: LlmProviderInfo[]
   apiKeyStatus: {
     anthropic: ApiKeyStatus
+    openrouter: ApiKeyStatus
     composio: ApiKeyStatus
     browserbase: ApiKeyStatus
     deepgram: ApiKeyStatus
@@ -292,6 +306,7 @@ export function loadSettings(): AppSettings {
           },
         },
         apiKeys: loaded.apiKeys,
+        llmProvider: loaded.llmProvider,
         models: {
           ...DEFAULT_SETTINGS.models,
           ...loaded.models,

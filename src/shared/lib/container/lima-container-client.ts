@@ -2,7 +2,8 @@ import { execSync } from 'child_process'
 import * as fs from 'fs'
 import * as path from 'path'
 import { BaseContainerClient, checkCommandAvailable, execWithPath, writeEnvFile } from './base-container-client'
-import { getEffectiveAnthropicApiKey, getSettings } from '@shared/lib/config/settings'
+import { getSettings } from '@shared/lib/config/settings'
+import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import { DEFAULT_LIMA_VM_MEMORY } from './types'
 import type { ContainerConfig } from './types'
 import os from 'os'
@@ -154,7 +155,7 @@ export class LimaContainerClient extends BaseContainerClient {
    */
   protected buildEnvFile(additionalEnvVars?: Record<string, string>): { flag: string; cleanup: () => void } {
     const envVars: Record<string, string | undefined> = {
-      ANTHROPIC_API_KEY: getEffectiveAnthropicApiKey(),
+      ...getActiveLlmProvider().getContainerEnvVars(),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
       ...this.config.envVars,
       ...additionalEnvVars,

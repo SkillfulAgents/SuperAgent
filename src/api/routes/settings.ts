@@ -1,6 +1,6 @@
 import path from 'path'
 import { Hono } from 'hono'
-import Anthropic from '@anthropic-ai/sdk'
+import { getLlmProvider, getAllProviderInfo } from '@shared/lib/llm-provider'
 import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
 import { Authenticated, IsAdmin } from '../middleware/auth'
 import { isAuthMode } from '@shared/lib/auth/mode'
@@ -8,7 +8,6 @@ import {
   getSettings,
   updateSettings,
   clearSettingsCache,
-  getAnthropicApiKeyStatus,
   getBrowserbaseApiKeyStatus,
   getComposioApiKeyStatus,
   getComposioUserId,
@@ -49,8 +48,11 @@ settings.get('/', async (c) => {
       app: currentSettings.app || { showMenuBarIcon: true },
       hasRunningAgents,
       runnerAvailability,
+      llmProvider: currentSettings.llmProvider ?? 'anthropic',
+      llmProviderStatus: getAllProviderInfo(),
       apiKeyStatus: {
-        anthropic: getAnthropicApiKeyStatus(),
+        anthropic: getLlmProvider('anthropic').getApiKeyStatus(),
+        openrouter: getLlmProvider('openrouter').getApiKeyStatus(),
         browserbase: getBrowserbaseApiKeyStatus(),
         composio: getComposioApiKeyStatus(),
         deepgram: getSttProvider('deepgram').getApiKeyStatus(),
@@ -145,6 +147,9 @@ settings.put('/', async (c) => {
           : {}),
       },
       apiKeys: currentSettings.apiKeys,
+      llmProvider: body.llmProvider !== undefined
+        ? body.llmProvider
+        : currentSettings.llmProvider,
       models: body.models
         ? {
             ...currentSettings.models,
@@ -185,6 +190,17 @@ settings.put('/', async (c) => {
         newSettings.apiKeys = {
           ...newSettings.apiKeys,
           anthropicApiKey: body.apiKeys.anthropicApiKey,
+        }
+      }
+
+      // Handle OpenRouter API key
+      if (body.apiKeys.openrouterApiKey === '') {
+        newSettings.apiKeys = { ...newSettings.apiKeys }
+        delete newSettings.apiKeys.openrouterApiKey
+      } else if (body.apiKeys.openrouterApiKey) {
+        newSettings.apiKeys = {
+          ...newSettings.apiKeys,
+          openrouterApiKey: body.apiKeys.openrouterApiKey,
         }
       }
 
@@ -296,8 +312,11 @@ settings.put('/', async (c) => {
       app: newSettings.app || { showMenuBarIcon: true },
       hasRunningAgents,
       runnerAvailability,
+      llmProvider: newSettings.llmProvider ?? 'anthropic',
+      llmProviderStatus: getAllProviderInfo(),
       apiKeyStatus: {
-        anthropic: getAnthropicApiKeyStatus(),
+        anthropic: getLlmProvider('anthropic').getApiKeyStatus(),
+        openrouter: getLlmProvider('openrouter').getApiKeyStatus(),
         browserbase: getBrowserbaseApiKeyStatus(),
         composio: getComposioApiKeyStatus(),
         deepgram: getSttProvider('deepgram').getApiKeyStatus(),
@@ -409,7 +428,7 @@ settings.post('/refresh-availability', async (c) => {
   }
 })
 
-// POST /api/settings/validate-anthropic-key - Validate an Anthropic API key
+// POST /api/settings/validate-anthropic-key - Validate an Anthropic API key (kept for backward compat)
 settings.post('/validate-anthropic-key', async (c) => {
   try {
     const { apiKey } = await c.req.json()
@@ -417,15 +436,31 @@ settings.post('/validate-anthropic-key', async (c) => {
       return c.json({ valid: false, error: 'API key is required' }, 400)
     }
 
-    const client = new Anthropic({ apiKey })
-    const { summarizerModel } = getEffectiveModels()
-    await client.messages.create({
-      model: summarizerModel,
-      max_tokens: 1,
-      messages: [{ role: 'user', content: 'Hi' }],
-    })
+    const result = await getLlmProvider('anthropic').validateKey(apiKey)
+    return c.json(result)
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Invalid API key'
+    return c.json({ valid: false, error: message })
+  }
+})
 
-    return c.json({ valid: true })
+// POST /api/settings/validate-llm-key - Validate an API key for any LLM provider
+settings.post('/validate-llm-key', async (c) => {
+  try {
+    const { provider, apiKey } = await c.req.json()
+    if (!apiKey || typeof apiKey !== 'string') {
+      return c.json({ valid: false, error: 'API key is required' }, 400)
+    }
+    if (!provider || typeof provider !== 'string') {
+      return c.json({ valid: false, error: 'Provider is required' }, 400)
+    }
+    if (provider !== 'anthropic' && provider !== 'openrouter') {
+      return c.json({ valid: false, error: `Unknown provider: ${provider}` }, 400)
+    }
+
+    const llmProvider = getLlmProvider(provider)
+    const result = await llmProvider.validateKey(apiKey)
+    return c.json(result)
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Invalid API key'
     return c.json({ valid: false, error: message })

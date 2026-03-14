@@ -17,7 +17,8 @@ import type {
   StreamMessage,
 } from './types'
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
-import { getSettings, getEffectiveAnthropicApiKey } from '@shared/lib/config/settings'
+import { getSettings } from '@shared/lib/config/settings'
+import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 
 const execAsync = promisify(exec)
 
@@ -896,7 +897,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    */
   protected buildEnvFile(additionalEnvVars?: Record<string, string>): { flag: string; cleanup: () => void } {
     const envVars: Record<string, string | undefined> = {
-      ANTHROPIC_API_KEY: getEffectiveAnthropicApiKey(),
+      ...getActiveLlmProvider().getContainerEnvVars(),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
       ...this.config.envVars,
       ...additionalEnvVars,

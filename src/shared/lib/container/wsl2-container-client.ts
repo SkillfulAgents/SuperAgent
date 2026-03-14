@@ -3,7 +3,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { BaseContainerClient, checkCommandAvailable, execWithPath, shellQuote, writeEnvFile } from './base-container-client'
-import { getEffectiveAnthropicApiKey } from '@shared/lib/config/settings'
+import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import type { ContainerConfig } from './types'
 import { getDataDir } from '@shared/lib/config/data-dir'
 
@@ -145,7 +145,7 @@ export class WSL2ContainerClient extends BaseContainerClient {
    */
   protected buildEnvFile(additionalEnvVars?: Record<string, string>): { flag: string; cleanup: () => void } {
     const envVars: Record<string, string | undefined> = {
-      ANTHROPIC_API_KEY: getEffectiveAnthropicApiKey(),
+      ...getActiveLlmProvider().getContainerEnvVars(),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
       ...this.config.envVars,
       ...additionalEnvVars,

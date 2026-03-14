@@ -46,8 +46,8 @@ vi.mock('./base-container-client', () => ({
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: vi.fn(() => ({
     container: { runtimeSettings: {} },
+    apiKeys: { anthropicApiKey: 'test-key' },
   })),
-  getEffectiveAnthropicApiKey: vi.fn(() => 'test-key'),
 }))
 
 vi.mock('@shared/lib/config/data-dir', () => ({

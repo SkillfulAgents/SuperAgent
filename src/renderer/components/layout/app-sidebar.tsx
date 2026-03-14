@@ -427,7 +427,9 @@ function ApiKeyWarning({ onOpenSettings }: { onOpenSettings: () => void }) {
   const showAdminInfo = !isAuthMode || isAdmin
   const { data: settings } = useSettings({ enabled: showAdminInfo })
 
-  if (!settings?.apiKeyStatus?.anthropic || settings.apiKeyStatus.anthropic.isConfigured) return null
+  const activeProviderId = settings?.llmProvider ?? 'anthropic'
+  const activeKeyStatus = settings?.apiKeyStatus?.[activeProviderId as keyof typeof settings.apiKeyStatus]
+  if (!activeKeyStatus || activeKeyStatus.isConfigured) return null
 
   return (
     <div className="px-2 pt-2">

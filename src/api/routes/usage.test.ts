@@ -20,9 +20,16 @@ vi.mock('@shared/lib/utils/file-storage', () => ({
 }))
 
 const mockLoadDailyUsageData = vi.fn()
+const mockCalculateCostFromTokens = vi.fn()
 
 vi.mock('ccusage/data-loader', () => ({
   loadDailyUsageData: (...args: unknown[]) => mockLoadDailyUsageData(...args),
+}))
+
+vi.mock('ccusage/pricing-fetcher', () => ({
+  PricingFetcher: class {
+    calculateCostFromTokens = (...args: unknown[]) => mockCalculateCostFromTokens(...args)
+  },
 }))
 
 const mockIsAuthMode = vi.fn()
@@ -77,18 +84,37 @@ interface MockAgent {
   frontmatter: { name: string }
 }
 
+interface MockModelBreakdown {
+  modelName: string
+  cost: number
+  inputTokens?: number
+  outputTokens?: number
+  cacheCreationTokens?: number
+  cacheReadTokens?: number
+}
+
 interface MockDayUsage {
   date: string
   totalCost: number
-  modelBreakdowns: Array<{ modelName: string; cost: number }>
+  modelBreakdowns: MockModelBreakdown[]
 }
 
 function makeAgent(slug: string, name: string): MockAgent {
   return { slug, frontmatter: { name } }
 }
 
-function makeDay(date: string, totalCost: number, models: Array<{ modelName: string; cost: number }> = []): MockDayUsage {
-  return { date, totalCost, modelBreakdowns: models }
+function makeDay(date: string, totalCost: number, models: MockModelBreakdown[] = []): MockDayUsage {
+  return {
+    date,
+    totalCost,
+    modelBreakdowns: models.map(m => ({
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      ...m,
+    })),
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -546,6 +572,304 @@ describe('usage route', () => {
       expect(dayEntry.totalCost).toBe(2.00)
       expect(dayEntry.byAgent).toHaveLength(1)
       expect(dayEntry.byAgent[0].agentSlug).toBe('agent-1')
+    })
+  })
+
+  // =========================================================================
+  // OpenRouter model name normalization
+  // =========================================================================
+  describe('model name normalization', () => {
+    it('normalizes OpenRouter format "anthropic/claude-4.6-opus-20260205" to "claude-opus-4-6"', async () => {
+      const agent = makeAgent('agent-1', 'Agent One')
+      mockListAgents.mockResolvedValue([agent])
+      mockGetAgentClaudeConfigDir.mockReturnValue('/data/agents/agent-1/.claude')
+
+      mockLoadDailyUsageData.mockResolvedValue([
+        makeDay('2025-01-15', 0, [
+          { modelName: 'anthropic/claude-4.6-opus-20260205', cost: 1.50 },
+        ]),
+      ])
+
+      const res = await getUsage('days=7')
+      const body = await res.json()
+      const dayEntry = body.daily.find((d: { date: string }) => d.date === '2025-01-15')
+
+      expect(dayEntry.byModel).toHaveLength(1)
+      expect(dayEntry.byModel[0].model).toBe('claude-opus-4-6')
+    })
+
+    it('normalizes "anthropic/claude-4.5-haiku-20251001" to "claude-haiku-4-5"', async () => {
+      const agent = makeAgent('agent-1', 'Agent One')
+      mockListAgents.mockResolvedValue([agent])
+      mockGetAgentClaudeConfigDir.mockReturnValue('/data/agents/agent-1/.claude')
+
+      mockLoadDailyUsageData.mockResolvedValue([
+        makeDay('2025-01-15', 0, [
+          { modelName: 'anthropic/claude-4.5-haiku-20251001', cost: 0.50 },
+        ]),
+      ])
+
+      const res = await getUsage('days=7')
+      const body = await res.json()
+      const dayEntry = body.daily.find((d: { date: string }) => d.date === '2025-01-15')
+
+      expect(dayEntry.byModel[0].model).toBe('claude-haiku-4-5')
+    })
+
+    it('normalizes "anthropic/claude-4.6-sonnet-20260115" to "claude-sonnet-4-6"', async () => {
+      const agent = makeAgent('agent-1', 'Agent One')
+      mockListAgents.mockResolvedValue([agent])
+      mockGetAgentClaudeConfigDir.mockReturnValue('/data/agents/agent-1/.claude')
+
+      mockLoadDailyUsageData.mockResolvedValue([
+        makeDay('2025-01-15', 0, [
+          { modelName: 'anthropic/claude-4.6-sonnet-20260115', cost: 0.80 },
+        ]),
+      ])
+
+      const res = await getUsage('days=7')
+      const body = await res.json()
+      const dayEntry = body.daily.find((d: { date: string }) => d.date === '2025-01-15')
+
+      expect(dayEntry.byModel[0].model).toBe('claude-sonnet-4-6')
+    })
+
+    it('does not modify standard Anthropic model names', async () => {
+      const agent = makeAgent('agent-1', 'Agent One')
+      mockListAgents.mockResolvedValue([agent])
+      mockGetAgentClaudeConfigDir.mockReturnValue('/data/agents/agent-1/.claude')
+
+      mockLoadDailyUsageData.mockResolvedValue([
+        makeDay('2025-01-15', 0, [
+          { modelName: 'claude-opus-4-6', cost: 2.00 },
+          { modelName: 'claude-haiku-4-5', cost: 0.30 },
+        ]),
+      ])
+
+      const res = await getUsage('days=7')
+      const body = await res.json()
+      const dayEntry = body.daily.find((d: { date: string }) => d.date === '2025-01-15')
+
+      const models = dayEntry.byModel.map((m: { model: string }) => m.model).sort()
+      expect(models).toEqual(['claude-haiku-4-5', 'claude-opus-4-6'])
+    })
+
+    it('merges costs when OpenRouter name normalizes to existing canonical name', async () => {
+      const agent1 = makeAgent('agent-1', 'Agent One')
+      const agent2 = makeAgent('agent-2', 'Agent Two')
+      mockListAgents.mockResolvedValue([agent1, agent2])
+      mockGetAgentClaudeConfigDir.mockImplementation((slug: string) => `/data/agents/${slug}/.claude`)
+
+      // agent-1 uses Anthropic directly, agent-2 uses OpenRouter — same model
+      mockLoadDailyUsageData
+        .mockResolvedValueOnce([
+          makeDay('2025-01-15', 2.00, [
+            { modelName: 'claude-opus-4-6', cost: 2.00 },
+          ]),
+        ])
+        .mockResolvedValueOnce([
+          makeDay('2025-01-15', 1.00, [
+            { modelName: 'anthropic/claude-4.6-opus-20260205', cost: 1.00 },
+          ]),
+        ])
+
+      const res = await getUsage('days=7')
+      const body = await res.json()
+      const dayEntry = body.daily.find((d: { date: string }) => d.date === '2025-01-15')
+
+      // Should be merged under one model name
+      expect(dayEntry.byModel).toHaveLength(1)
+      expect(dayEntry.byModel[0].model).toBe('claude-opus-4-6')
+      expect(dayEntry.byModel[0].cost).toBe(3.00)
+    })
+
+    it('preserves unknown model names as-is', async () => {
+      const agent = makeAgent('agent-1', 'Agent One')
+      mockListAgents.mockResolvedValue([agent])
+      mockGetAgentClaudeConfigDir.mockReturnValue('/data/agents/agent-1/.claude')
+
+      mockLoadDailyUsageData.mockResolvedValue([
+        makeDay('2025-01-15', 0, [
+          { modelName: 'some-other-model', cost: 0.10 },
+        ]),
+      ])
+
+      const res = await getUsage('days=7')
+      const body = await res.json()
+      const dayEntry = body.daily.find((d: { date: string }) => d.date === '2025-01-15')
+
+      expect(dayEntry.byModel[0].model).toBe('some-other-model')
+    })
+  })
+
+  // =========================================================================
+  // Cost recalculation for unpriced OpenRouter models
+  // =========================================================================
+  describe('cost recalculation for unpriced models', () => {
+    it('recalculates cost when ccusage returned 0 but normalized name has pricing', async () => {
+      const agent = makeAgent('agent-1', 'Agent One')
+      mockListAgents.mockResolvedValue([agent])
+      mockGetAgentClaudeConfigDir.mockReturnValue('/data/agents/agent-1/.claude')
+
+      // ccusage returns cost=0 because it couldn't price the OpenRouter model name
+      mockLoadDailyUsageData.mockResolvedValue([
+        makeDay('2025-01-15', 0, [{
+          modelName: 'anthropic/claude-4.6-opus-20260205',
+          cost: 0,
+          inputTokens: 1000,
+          outputTokens: 500,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+        }]),
+      ])
+
+      // PricingFetcher returns a recalculated cost for the normalized name
+      mockCalculateCostFromTokens.mockResolvedValue(0.0175)
+
+      const res = await getUsage('days=7')
+      const body = await res.json()
+      const dayEntry = body.daily.find((d: { date: string }) => d.date === '2025-01-15')
+
+      // Should have called calculateCostFromTokens with normalized name
+      expect(mockCalculateCostFromTokens).toHaveBeenCalledWith(
+        {
+          input_tokens: 1000,
+          output_tokens: 500,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+        'claude-opus-4-6'
+      )
+
+      // Cost should be the recalculated value
+      expect(dayEntry.byModel[0].cost).toBe(0.0175)
+      // totalCost and agent cost should also be updated
+      expect(dayEntry.totalCost).toBe(0.0175)
+      expect(dayEntry.byAgent[0].cost).toBe(0.0175)
+    })
+
+    it('does not recalculate when model name did not change after normalization', async () => {
+      const agent = makeAgent('agent-1', 'Agent One')
+      mockListAgents.mockResolvedValue([agent])
+      mockGetAgentClaudeConfigDir.mockReturnValue('/data/agents/agent-1/.claude')
+
+      // Standard model with cost=0 (no normalization needed)
+      mockLoadDailyUsageData.mockResolvedValue([
+        makeDay('2025-01-15', 0, [{
+          modelName: 'claude-opus-4-6',
+          cost: 0,
+          inputTokens: 1000,
+          outputTokens: 500,
+        }]),
+      ])
+
+      const res = await getUsage('days=7')
+      await res.json()
+
+      // Should NOT try to recalculate — name didn't change
+      expect(mockCalculateCostFromTokens).not.toHaveBeenCalled()
+    })
+
+    it('does not recalculate when all tokens are zero', async () => {
+      const agent = makeAgent('agent-1', 'Agent One')
+      mockListAgents.mockResolvedValue([agent])
+      mockGetAgentClaudeConfigDir.mockReturnValue('/data/agents/agent-1/.claude')
+
+      mockLoadDailyUsageData.mockResolvedValue([
+        makeDay('2025-01-15', 0, [{
+          modelName: 'anthropic/claude-4.6-opus-20260205',
+          cost: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+        }]),
+      ])
+
+      const res = await getUsage('days=7')
+      await res.json()
+
+      // No tokens → no recalculation
+      expect(mockCalculateCostFromTokens).not.toHaveBeenCalled()
+    })
+
+    it('does not recalculate when ccusage already priced the model (cost > 0)', async () => {
+      const agent = makeAgent('agent-1', 'Agent One')
+      mockListAgents.mockResolvedValue([agent])
+      mockGetAgentClaudeConfigDir.mockReturnValue('/data/agents/agent-1/.claude')
+
+      mockLoadDailyUsageData.mockResolvedValue([
+        makeDay('2025-01-15', 1.50, [{
+          modelName: 'anthropic/claude-4.6-opus-20260205',
+          cost: 1.50,
+          inputTokens: 10000,
+          outputTokens: 5000,
+        }]),
+      ])
+
+      const res = await getUsage('days=7')
+      await res.json()
+
+      // ccusage already computed a cost, no recalculation needed
+      expect(mockCalculateCostFromTokens).not.toHaveBeenCalled()
+    })
+
+    it('handles pricing fetcher failure gracefully', async () => {
+      const agent = makeAgent('agent-1', 'Agent One')
+      mockListAgents.mockResolvedValue([agent])
+      mockGetAgentClaudeConfigDir.mockReturnValue('/data/agents/agent-1/.claude')
+
+      mockLoadDailyUsageData.mockResolvedValue([
+        makeDay('2025-01-15', 0, [{
+          modelName: 'anthropic/claude-4.6-opus-20260205',
+          cost: 0,
+          inputTokens: 1000,
+          outputTokens: 500,
+        }]),
+      ])
+
+      mockCalculateCostFromTokens.mockRejectedValue(new Error('Pricing unavailable'))
+
+      const res = await getUsage('days=7')
+      expect(res.status).toBe(200)
+
+      const body = await res.json()
+      const dayEntry = body.daily.find((d: { date: string }) => d.date === '2025-01-15')
+
+      // Should keep cost as 0 without crashing
+      expect(dayEntry.byModel[0].cost).toBe(0)
+    })
+
+    it('includes cache tokens in recalculation', async () => {
+      const agent = makeAgent('agent-1', 'Agent One')
+      mockListAgents.mockResolvedValue([agent])
+      mockGetAgentClaudeConfigDir.mockReturnValue('/data/agents/agent-1/.claude')
+
+      mockLoadDailyUsageData.mockResolvedValue([
+        makeDay('2025-01-15', 0, [{
+          modelName: 'anthropic/claude-4.6-opus-20260205',
+          cost: 0,
+          inputTokens: 100,
+          outputTokens: 200,
+          cacheCreationTokens: 5000,
+          cacheReadTokens: 10000,
+        }]),
+      ])
+
+      mockCalculateCostFromTokens.mockResolvedValue(0.05)
+
+      const res = await getUsage('days=7')
+      await res.json()
+
+      expect(mockCalculateCostFromTokens).toHaveBeenCalledWith(
+        {
+          input_tokens: 100,
+          output_tokens: 200,
+          cache_creation_input_tokens: 5000,
+          cache_read_input_tokens: 10000,
+        },
+        'claude-opus-4-6'
+      )
     })
   })
 })
