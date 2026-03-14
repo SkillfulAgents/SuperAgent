@@ -37,9 +37,7 @@ const DEFAULT_MODEL = 'sonnet'
 const DEFAULT_MAX_BUDGET_USD = 5
 
 async function loadSystemPrompt(): Promise<string> {
-  const uiDetails = await readFile(resolve(__dirname, 'UI-details.md'), 'utf-8')
-  const prompt = await readFile(resolve(__dirname, 'system-prompt.md'), 'utf-8')
-  return `${prompt}\n\n---\n\n## UI Reference\n\n${uiDetails}`
+  return readFile(resolve(__dirname, 'system-prompt.md'), 'utf-8')
 }
 
 function parseTestResult(output: string): Pick<TestResult, 'passed' | 'reason' | 'steps'> {
