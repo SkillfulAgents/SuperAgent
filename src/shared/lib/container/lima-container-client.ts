@@ -5,7 +5,7 @@ import { BaseContainerClient, checkCommandAvailable, execWithPath, writeEnvFile 
 import { getEffectiveAnthropicApiKey, getSettings } from '@shared/lib/config/settings'
 import { DEFAULT_LIMA_VM_MEMORY } from './types'
 import type { ContainerConfig } from './types'
-import { getDataDir } from '@shared/lib/config/data-dir'
+import os from 'os'
 
 export const LIMA_VM_NAME = 'superagent'
 
@@ -30,10 +30,15 @@ function getMacOSMajorVersion(): number | null {
 
 /**
  * Get the directory where Lima stores VM data.
- * Uses a subdirectory of the app data dir.
+ *
+ * Always uses ~/.superagent/lima (under the user's home directory) rather than
+ * the app data dir (~/Library/Application Support/superagent/lima on macOS).
+ * Lima creates Unix domain sockets under LIMA_HOME which are subject to
+ * UNIX_PATH_MAX (104 on macOS). The longer Application Support path can
+ * exceed this limit for users with long usernames.
  */
 export function getLimaHome(): string {
-  return path.join(getDataDir(), 'lima')
+  return path.join(os.homedir(), '.superagent', 'lima')
 }
 
 /**

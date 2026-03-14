@@ -38,9 +38,16 @@ vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveAnthropicApiKey: vi.fn(() => 'test-key'),
 }))
 
-vi.mock('@shared/lib/config/data-dir', () => ({
-  getDataDir: vi.fn(() => '/mock/data'),
-}))
+vi.mock('os', async () => {
+  const actual = await vi.importActual<typeof import('os')>('os')
+  return {
+    ...actual,
+    default: {
+      ...actual,
+      homedir: vi.fn(() => '/Users/testuser'),
+    },
+  }
+})
 
 import * as fs from 'fs'
 import { execWithPath } from './base-container-client'
@@ -137,9 +144,9 @@ describe('getLimactlPath', () => {
 })
 
 describe('getLimaHome', () => {
-  it('returns data dir + /lima', () => {
+  it('returns homedir + /.superagent/lima (short path to avoid UNIX_PATH_MAX)', () => {
     const result = getLimaHome()
-    expect(result).toBe('/mock/data/lima')
+    expect(result).toBe('/Users/testuser/.superagent/lima')
   })
 })
 
