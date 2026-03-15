@@ -4,8 +4,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // Mocks — must be set up before importing the module under test
 // ============================================================================
 
+const mockSpawn = vi.fn()
 vi.mock('child_process', () => ({
   execSync: vi.fn(),
+  spawn: (...args: any[]) => mockSpawn(...args),
 }))
 
 vi.mock('fs', () => ({
@@ -148,6 +150,21 @@ describe('ensureWSL2Ready', () => {
     })
   })
 
+  // Helper to mock spawn for provisioning (returns a fake child process)
+  function mockSpawnProvision(exitCode = 0, stderrOutput = '') {
+    const { EventEmitter } = require('events')
+    const proc = new EventEmitter()
+    proc.stdin = { write: vi.fn(), end: vi.fn() }
+    proc.stdout = new EventEmitter()
+    proc.stderr = new EventEmitter()
+    mockSpawn.mockReturnValueOnce(proc)
+    // Emit close on next tick so the promise resolves
+    process.nextTick(() => {
+      if (stderrOutput) proc.stderr.emit('data', Buffer.from(stderrOutput))
+      proc.emit('close', exitCode)
+    })
+  }
+
   // Helper to mock wsl --list --verbose output
   function mockWSLList(distros: { name: string; state: string }[]) {
     // Simulate wsl --list --verbose output (with UTF-16LE null bytes stripped)
@@ -162,12 +179,14 @@ describe('ensureWSL2Ready', () => {
     mockWSLList([])
     // wsl --import
     mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
-    // Provision (wsl -d superagent -- sh ...)
-    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    // Provision via spawn (piped stdin)
+    mockSpawnProvision(0)
     // Second list: distro exists but stopped
     mockWSLList([{ name: WSL2_DISTRO_NAME, state: 'Stopped' }])
     // Start distro (wsl -d superagent -- echo starting)
     mockedExecWithPath.mockResolvedValueOnce({ stdout: 'starting', stderr: '' })
+    // Provisioning check: test -x /usr/local/bin/superagent-nerdctl (passes — just provisioned)
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
     // nerdctl version check (containerd ready)
     mockedExecWithPath.mockResolvedValueOnce({ stdout: 'nerdctl version', stderr: '' })
 
@@ -190,6 +209,8 @@ describe('ensureWSL2Ready', () => {
     mockWSLList([{ name: WSL2_DISTRO_NAME, state: 'Running' }])
     // Second list: still running
     mockWSLList([{ name: WSL2_DISTRO_NAME, state: 'Running' }])
+    // Provisioning check: test -x /usr/local/bin/superagent-nerdctl (passes)
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
     // nerdctl version check
     mockedExecWithPath.mockResolvedValueOnce({ stdout: 'nerdctl version', stderr: '' })
 
@@ -232,13 +253,49 @@ describe('ensureWSL2Ready', () => {
     await Promise.all([p1, p2])
   })
 
+  it('re-provisions distro when superagent-nerdctl is missing', async () => {
+    // First list: distro exists and running
+    mockWSLList([{ name: WSL2_DISTRO_NAME, state: 'Running' }])
+    // Second list: still running
+    mockWSLList([{ name: WSL2_DISTRO_NAME, state: 'Running' }])
+    // Provisioning check: test -x fails (helper missing)
+    mockedExecWithPath.mockRejectedValueOnce(new Error('exit code 1'))
+    // Re-provision via spawn
+    mockSpawnProvision(0)
+    // nerdctl version check
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: 'nerdctl version', stderr: '' })
+
+    await ensureWSL2Ready()
+
+    // spawn should have been called for provisioning
+    expect(mockSpawn).toHaveBeenCalledWith('wsl', ['-d', WSL2_DISTRO_NAME, '--', 'sh', '-s'], expect.any(Object))
+  })
+
+  it('unregisters distro and throws when re-provisioning fails', async () => {
+    // First list: distro exists and running
+    mockWSLList([{ name: WSL2_DISTRO_NAME, state: 'Running' }])
+    // Second list: still running
+    mockWSLList([{ name: WSL2_DISTRO_NAME, state: 'Running' }])
+    // Provisioning check: test -x fails (helper missing)
+    mockedExecWithPath.mockRejectedValueOnce(new Error('exit code 1'))
+    // Re-provision fails via spawn
+    mockSpawnProvision(1, 'apk: network unreachable')
+    // Unregister (cleanup)
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+
+    await expect(ensureWSL2Ready()).rejects.toThrow('Failed to provision WSL2 distro')
+
+    const calls = mockedExecWithPath.mock.calls.map((c) => c[0] as string)
+    expect(calls.some((c) => c.includes('--unregister'))).toBe(true)
+  })
+
   it('cleans up zombie distro when start fails after creation', async () => {
     // First list: no distros
     mockWSLList([])
     // wsl --import
     mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
-    // Provision
-    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    // Provision via spawn
+    mockSpawnProvision(0)
     // Second list: distro exists but stopped
     mockWSLList([{ name: WSL2_DISTRO_NAME, state: 'Stopped' }])
     // Start fails
@@ -547,7 +604,7 @@ describe('WSL2ContainerClient.handleRunError', () => {
   }
 
   function mockEnsureWSL2ReadySuccess() {
-    // ensureWSL2Ready calls: wsl --list, createWSL2Distro, wsl --list again, start, nerdctl version
+    // ensureWSL2Ready calls: wsl --list, wsl --list again, test -x provisioning check, nerdctl version
     // Mock a running distro for the minimal path
     const header = '  NAME                   STATE           VERSION'
     const line = `  ${WSL2_DISTRO_NAME.padEnd(23)}Running         2`
@@ -556,6 +613,8 @@ describe('WSL2ContainerClient.handleRunError', () => {
     mockedExecWithPath.mockResolvedValueOnce(runningOutput)
     // Second list: running
     mockedExecWithPath.mockResolvedValueOnce(runningOutput)
+    // Provisioning check: test -x /usr/local/bin/superagent-nerdctl
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
     // nerdctl version
     mockedExecWithPath.mockResolvedValueOnce({ stdout: 'ok', stderr: '' })
   }

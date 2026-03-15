@@ -1,4 +1,4 @@
-import { execSync } from 'child_process'
+import { execSync, spawn } from 'child_process'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
@@ -292,6 +292,34 @@ async function ensureWSL2ReadyImpl(): Promise<void> {
     }
   }
 
+  // Check if the distro is properly provisioned (has the superagent-nerdctl helper).
+  // An existing distro may be missing it if a previous provisioning failed partway
+  // through, or if the app was upgraded from a version that didn't provision it.
+  let isProvisioned = false
+  try {
+    await execWSL('test -x /usr/local/bin/superagent-nerdctl')
+    isProvisioned = true
+  } catch {
+    // Helper script missing
+  }
+
+  if (!isProvisioned) {
+    console.log('WSL2 distro exists but is not provisioned, re-provisioning...')
+    try {
+      await provisionWSL2Distro()
+    } catch (error) {
+      console.error('Re-provisioning failed, unregistering broken distro...')
+      try {
+        await execWithPath(`wsl --unregister ${shellQuote(WSL2_DISTRO_NAME)}`)
+      } catch { /* best-effort cleanup */ }
+      throw new Error(
+        `Failed to provision WSL2 distro: ${error instanceof Error ? error.message : String(error)}. ` +
+        'The distro has been removed. It will be recreated on next attempt. ' +
+        'If the problem persists, check your network connection (Alpine packages must be downloaded).'
+      )
+    }
+  }
+
   // Use the helper script to ensure containerd is running and verify nerdctl works.
   // The superagent-nerdctl script starts containerd on-demand if not already running.
   let containerdReady = false
@@ -314,7 +342,10 @@ async function ensureWSL2ReadyImpl(): Promise<void> {
   }
 
   if (!containerdReady) {
-    throw new Error('containerd failed to start inside WSL2 distro')
+    throw new Error(
+      'containerd failed to start inside WSL2 distro. ' +
+      'Try running "wsl --unregister superagent" in PowerShell and restarting the app.'
+    )
   }
 
   // Create/update the nerdctl wrapper script
@@ -369,7 +400,24 @@ async function createWSL2Distro(): Promise<void> {
   console.log(`Importing WSL2 distro from: ${bundledRootfs}`)
   await execWithPath(`wsl --import ${shellQuote(WSL2_DISTRO_NAME)} "${installDir}" "${bundledRootfs}"`)
 
-  // Provision the distro: install containerd, nerdctl, buildkit, cni-plugins
+  // Provision the distro; if provisioning fails, unregister to avoid a zombie distro
+  try {
+    await provisionWSL2Distro()
+  } catch (error) {
+    console.error('Provisioning failed after distro import, cleaning up...')
+    try {
+      await execWithPath(`wsl --unregister ${shellQuote(WSL2_DISTRO_NAME)}`)
+    } catch { /* best-effort cleanup */ }
+    throw error
+  }
+}
+
+/**
+ * Provision the WSL2 distro: install containerd, nerdctl, buildkit, cni-plugins,
+ * and create the superagent-nerdctl helper script.
+ * Safe to call on an already-provisioned distro (idempotent).
+ */
+async function provisionWSL2Distro(): Promise<void> {
   console.log('Provisioning WSL2 distro...')
   const provisionScript = [
     '#!/bin/sh',
@@ -390,39 +438,78 @@ async function createWSL2Distro(): Promise<void> {
     '# so this script is the primary mechanism for starting containerd.',
     'cat > /usr/local/bin/superagent-nerdctl << "NERDCTL_WRAPPER"',
     '#!/bin/sh',
+    '',
+    '# Ensure cgroups are mounted — WSL2 does not always do this automatically.',
+    '# containerd requires cgroup support to function.',
+    'if [ ! -d /sys/fs/cgroup/cgroup.controllers ] && [ ! -d /sys/fs/cgroup/cpu ]; then',
+    '  # Neither cgroup v2 unified hierarchy nor cgroup v1 controllers are mounted',
+    '  if grep -q cgroup2 /proc/filesystems 2>/dev/null; then',
+    '    # Mount cgroup v2',
+    '    mkdir -p /sys/fs/cgroup',
+    '    mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null || true',
+    '  else',
+    '    # Mount cgroup v1 controllers',
+    '    mkdir -p /sys/fs/cgroup',
+    '    mount -t tmpfs cgroup_root /sys/fs/cgroup 2>/dev/null || true',
+    '    for ctrl in cpu cpuacct memory blkio devices freezer pids; do',
+    '      mkdir -p /sys/fs/cgroup/$ctrl',
+    '      mount -t cgroup -o $ctrl cgroup /sys/fs/cgroup/$ctrl 2>/dev/null || true',
+    '    done',
+    '  fi',
+    'fi',
+    '',
+    'LOGFILE=/var/log/containerd.log',
     'if ! pidof containerd > /dev/null 2>&1; then',
     '  # Use setsid to detach containerd from the shell session so it survives',
     '  # after the wsl -d ... command exits (busybox sh sends SIGHUP to bg jobs).',
-    '  setsid containerd > /dev/null 2>&1 &',
+    '  setsid containerd >> "$LOGFILE" 2>&1 &',
     '  # Wait for socket',
-    '  for i in $(seq 1 10); do',
+    '  for i in $(seq 1 15); do',
     '    [ -S /run/containerd/containerd.sock ] && break',
     '    sleep 1',
     '  done',
+    '  if [ ! -S /run/containerd/containerd.sock ]; then',
+    '    echo "containerd failed to start. Log:" >&2',
+    '    tail -20 "$LOGFILE" >&2',
+    '    exit 1',
+    '  fi',
     'fi',
     'exec nerdctl "$@"',
     'NERDCTL_WRAPPER',
     'chmod +x /usr/local/bin/superagent-nerdctl',
     '',
     '# Also try boot command as optimization (may not work on all WSL versions)',
+    '# Preserve [automount] so Windows drives stay accessible at /mnt/c etc.',
     'cat > /etc/wsl.conf << "WSLCONF"',
+    '[automount]',
+    'enabled = true',
+    'mountFsTab = true',
+    '',
     '[boot]',
-    'command = /bin/sh -c "setsid containerd > /dev/null 2>&1 &"',
+    'command = /bin/sh -c "mkdir -p /sys/fs/cgroup && mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null; setsid containerd >> /var/log/containerd.log 2>&1 &"',
     'WSLCONF',
   ].join('\n')
 
-  // Write provision script to a temp location accessible inside WSL2
-  const tmpDir = path.join(os.homedir(), '.superagent', 'tmp')
-  fs.mkdirSync(tmpDir, { recursive: true })
-  const scriptPath = path.join(tmpDir, `provision-${Date.now()}.sh`)
-  fs.writeFileSync(scriptPath, provisionScript, { mode: 0o755 })
-
-  try {
-    const wslScriptPath = windowsToWSLPath(scriptPath)
-    await execWithPath(`wsl -d ${shellQuote(WSL2_DISTRO_NAME)} -- sh "${wslScriptPath}"`)
-  } finally {
-    try { fs.unlinkSync(scriptPath) } catch { /* ignore */ }
-  }
+  // Pipe the provision script via stdin rather than writing to a file on the
+  // Windows filesystem. Freshly imported WSL2 distros may not have /mnt/c
+  // automounted yet, making Windows file paths inaccessible.
+  await new Promise<void>((resolve, reject) => {
+    const proc = spawn('wsl', ['-d', WSL2_DISTRO_NAME, '--', 'sh', '-s'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    let stderr = ''
+    proc.stderr.on('data', (data: Buffer) => { stderr += data.toString() })
+    proc.on('close', (code) => {
+      if (code === 0) {
+        resolve()
+      } else {
+        reject(new Error(`Provision script failed (exit ${code}): ${stderr.trim()}`))
+      }
+    })
+    proc.on('error', reject)
+    proc.stdin.write(provisionScript)
+    proc.stdin.end()
+  })
 }
 
 /**
