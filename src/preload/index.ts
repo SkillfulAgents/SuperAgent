@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 // Expose protected methods that allow the renderer process to use
 // ipcRenderer without exposing the entire object
@@ -124,6 +124,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('create-dock-shortcut', { agentSlug, dashboardSlug, dashboardName, iconPng: Array.from(iconPng) })
   },
 
+  // Get the real filesystem path for a dropped/selected file
+  getPathForFile: (file: File): string => {
+    return webUtils.getPathForFile(file)
+  },
+
   // Auto-update
   checkForUpdates: (): Promise<void> => {
     return ipcRenderer.invoke('check-for-updates')
@@ -186,6 +191,7 @@ declare global {
       openDashboardWindow: (agentSlug: string, dashboardSlug: string, dashboardName?: string) => Promise<void>
       showEmojiPanel: () => Promise<void>
       createDockShortcut: (agentSlug: string, dashboardSlug: string, dashboardName: string, iconPng: Uint8Array) => Promise<void>
+      getPathForFile: (file: File) => string
       checkForUpdates: () => Promise<void>
       downloadUpdate: () => Promise<void>
       installUpdate: () => Promise<void>

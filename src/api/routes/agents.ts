@@ -2784,6 +2784,59 @@ agents.post('/:id/sessions/:sessionId/upload-file', AgentUser(), async (c) => {
   }
 })
 
+async function handleFolderUpload(agentSlug: string, sourcePath: string) {
+  const stat = await fs.promises.stat(sourcePath)
+  if (!stat.isDirectory()) {
+    throw new Error('Source is not a directory')
+  }
+
+  const folderName = path.basename(sourcePath)
+  const workspaceDir = getAgentWorkspaceDir(agentSlug)
+  const destPath = path.resolve(workspaceDir, 'uploads', folderName)
+
+  // Security: ensure dest doesn't escape uploads directory
+  if (!destPath.startsWith(path.resolve(workspaceDir, 'uploads'))) {
+    throw new Error('Invalid path')
+  }
+
+  await fs.promises.mkdir(path.dirname(destPath), { recursive: true })
+  await fs.promises.cp(sourcePath, destPath, { recursive: true })
+
+  return {
+    success: true,
+    path: `/workspace/uploads/${folderName}/`,
+    folderName,
+  }
+}
+
+// POST /api/agents/:id/upload-folder - Copy a local folder to the agent workspace (Electron only)
+agents.post('/:id/upload-folder', AgentUser(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const { sourcePath } = await c.req.json<{ sourcePath: string }>()
+    if (!sourcePath) return c.json({ error: 'No source path provided' }, 400)
+    const result = await handleFolderUpload(agentSlug, sourcePath)
+    return c.json(result)
+  } catch (error) {
+    console.error('Failed to upload folder:', error)
+    return c.json({ error: 'Failed to upload folder' }, 500)
+  }
+})
+
+// POST /api/agents/:id/sessions/:sessionId/upload-folder - Copy a local folder to the agent workspace (Electron only)
+agents.post('/:id/sessions/:sessionId/upload-folder', AgentUser(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const { sourcePath } = await c.req.json<{ sourcePath: string }>()
+    if (!sourcePath) return c.json({ error: 'No source path provided' }, 400)
+    const result = await handleFolderUpload(agentSlug, sourcePath)
+    return c.json(result)
+  } catch (error) {
+    console.error('Failed to upload folder:', error)
+    return c.json({ error: 'Failed to upload folder' }, 500)
+  }
+})
+
 // GET /api/agents/:id/files/* - Download a file from the agent workspace
 agents.get('/:id/files/*', AgentRead(), async (c) => {
   try {

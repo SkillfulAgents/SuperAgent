@@ -139,4 +139,19 @@ describe('AttachmentPreview', () => {
     expect(screen.getByText('readme.md')).toBeInTheDocument()
     expect(screen.getByText('components')).toBeInTheDocument()
   })
+
+  it('hides file count for Electron folder attachments (empty files array)', () => {
+    const attachment: FolderAttachment = {
+      type: 'folder',
+      id: 'electron-folder',
+      folderName: 'my-project',
+      folderPath: '/Users/joe/my-project',
+      files: [],
+      totalSize: 0,
+    }
+    render(<AttachmentPreview attachments={[attachment]} onRemove={vi.fn()} />)
+    expect(screen.getByText('my-project')).toBeInTheDocument()
+    // Should not show "0 files" metadata
+    expect(screen.queryByText(/file/)).not.toBeInTheDocument()
+  })
 })

@@ -12,6 +12,7 @@ export interface FolderAttachment {
   type: 'folder'
   id: string
   folderName: string
+  folderPath?: string
   files: { file: File; relativePath: string }[]
   totalSize: number
 }
@@ -46,9 +47,11 @@ export function AttachmentPreview({ attachments, onRemove }: AttachmentPreviewPr
                 <span className="truncate max-w-[160px] font-medium" title={attachment.folderName}>
                   {attachment.folderName}
                 </span>
-                <span className="text-muted-foreground">
-                  {attachment.files.length} file{attachment.files.length !== 1 ? 's' : ''} &middot; {formatFileSize(attachment.totalSize)}
-                </span>
+                {attachment.files.length > 0 && (
+                  <span className="text-muted-foreground">
+                    {attachment.files.length} file{attachment.files.length !== 1 ? 's' : ''} &middot; {formatFileSize(attachment.totalSize)}
+                  </span>
+                )}
               </div>
             </>
           ) : (
