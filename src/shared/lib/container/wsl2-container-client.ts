@@ -44,7 +44,7 @@ export function getWSL2NerdctlWrapperPath(): string {
  * `args` is a shell command string executed inside the distro.
  */
 function execWSL(args: string): Promise<{ stdout: string; stderr: string }> {
-  return execWithPath(`wsl -d ${shellQuote(WSL2_DISTRO_NAME)} -- ${args}`)
+  return execWithPath(`wsl -d ${WSL2_DISTRO_NAME} -- ${args}`)
 }
 
 /**
@@ -116,7 +116,7 @@ export class WSL2ContainerClient extends BaseContainerClient {
   protected getAdditionalRunFlags(): string {
     try {
       const output = execSync(
-        `wsl -d ${shellQuote(WSL2_DISTRO_NAME)} -- ip route show default`,
+        `wsl -d ${WSL2_DISTRO_NAME} -- ip route show default`,
         { timeout: 10000 }
       ).toString().trim()
       // Output: "default via 172.22.192.1 dev eth0 ..."
@@ -285,7 +285,7 @@ async function ensureWSL2ReadyImpl(): Promise<void> {
       if (!distroExists) {
         console.error('WSL2 distro start failed after creation, cleaning up...')
         try {
-          await execWithPath(`wsl --unregister ${shellQuote(WSL2_DISTRO_NAME)}`)
+          await execWithPath(`wsl --unregister ${WSL2_DISTRO_NAME}`)
         } catch { /* best-effort cleanup */ }
       }
       throw error
@@ -310,7 +310,7 @@ async function ensureWSL2ReadyImpl(): Promise<void> {
     } catch (error) {
       console.error('Re-provisioning failed, unregistering broken distro...')
       try {
-        await execWithPath(`wsl --unregister ${shellQuote(WSL2_DISTRO_NAME)}`)
+        await execWithPath(`wsl --unregister ${WSL2_DISTRO_NAME}`)
       } catch { /* best-effort cleanup */ }
       throw new Error(
         `Failed to provision WSL2 distro: ${error instanceof Error ? error.message : String(error)}. ` +
@@ -323,11 +323,14 @@ async function ensureWSL2ReadyImpl(): Promise<void> {
   // Use the helper script to ensure containerd is running and verify nerdctl works.
   // The superagent-nerdctl script starts containerd on-demand if not already running.
   let containerdReady = false
+  let lastError: any = null
   console.log('Ensuring containerd is running...')
   try {
     await execWSL('/usr/local/bin/superagent-nerdctl version')
     containerdReady = true
-  } catch {
+  } catch (err) {
+    lastError = err
+    console.error('containerd check failed:', (err as any)?.message, (err as any)?.stderr)
     // Helper script might need a moment on first run; retry a few times
     for (let i = 0; i < 15; i++) {
       await new Promise(r => setTimeout(r, 1000))
@@ -335,8 +338,11 @@ async function ensureWSL2ReadyImpl(): Promise<void> {
         await execWSL('/usr/local/bin/superagent-nerdctl version')
         containerdReady = true
         break
-      } catch {
-        // keep trying
+      } catch (retryErr) {
+        lastError = retryErr
+        if (i === 0 || i === 4 || i === 14) {
+          console.error(`containerd retry ${i + 1}/15 failed:`, (retryErr as any)?.message, (retryErr as any)?.stderr)
+        }
       }
     }
   }
@@ -359,7 +365,7 @@ async function ensureWSL2ReadyImpl(): Promise<void> {
 export async function stopWSL2Distro(timeoutMs = 15000): Promise<void> {
   try {
     await Promise.race([
-      execWithPath(`wsl --terminate ${shellQuote(WSL2_DISTRO_NAME)}`),
+      execWithPath(`wsl --terminate ${WSL2_DISTRO_NAME}`),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('WSL2 distro stop timed out')), timeoutMs)
       ),
@@ -398,7 +404,7 @@ async function createWSL2Distro(): Promise<void> {
   }
 
   console.log(`Importing WSL2 distro from: ${bundledRootfs}`)
-  await execWithPath(`wsl --import ${shellQuote(WSL2_DISTRO_NAME)} "${installDir}" "${bundledRootfs}"`)
+  await execWithPath(`wsl --import ${WSL2_DISTRO_NAME} "${installDir}" "${bundledRootfs}"`)
 
   // Provision the distro; if provisioning fails, unregister to avoid a zombie distro
   try {
@@ -406,7 +412,7 @@ async function createWSL2Distro(): Promise<void> {
   } catch (error) {
     console.error('Provisioning failed after distro import, cleaning up...')
     try {
-      await execWithPath(`wsl --unregister ${shellQuote(WSL2_DISTRO_NAME)}`)
+      await execWithPath(`wsl --unregister ${WSL2_DISTRO_NAME}`)
     } catch { /* best-effort cleanup */ }
     throw error
   }
