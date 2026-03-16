@@ -2,7 +2,7 @@ import { execSync, spawn } from 'child_process'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { BaseContainerClient, checkCommandAvailable, execWithPath, shellQuote, writeEnvFile } from './base-container-client'
+import { BaseContainerClient, checkCommandAvailable, execWithPath, writeEnvFile } from './base-container-client'
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import type { ContainerConfig } from './types'
 import { getDataDir } from '@shared/lib/config/data-dir'
@@ -323,14 +323,11 @@ async function ensureWSL2ReadyImpl(): Promise<void> {
   // Use the helper script to ensure containerd is running and verify nerdctl works.
   // The superagent-nerdctl script starts containerd on-demand if not already running.
   let containerdReady = false
-  let lastError: any = null
   console.log('Ensuring containerd is running...')
   try {
     await execWSL('/usr/local/bin/superagent-nerdctl version')
     containerdReady = true
-  } catch (err) {
-    lastError = err
-    console.error('containerd check failed:', (err as any)?.message, (err as any)?.stderr)
+  } catch {
     // Helper script might need a moment on first run; retry a few times
     for (let i = 0; i < 15; i++) {
       await new Promise(r => setTimeout(r, 1000))
@@ -338,11 +335,8 @@ async function ensureWSL2ReadyImpl(): Promise<void> {
         await execWSL('/usr/local/bin/superagent-nerdctl version')
         containerdReady = true
         break
-      } catch (retryErr) {
-        lastError = retryErr
-        if (i === 0 || i === 4 || i === 14) {
-          console.error(`containerd retry ${i + 1}/15 failed:`, (retryErr as any)?.message, (retryErr as any)?.stderr)
-        }
+      } catch {
+        // keep trying
       }
     }
   }
