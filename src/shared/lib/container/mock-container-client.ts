@@ -493,6 +493,64 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         },
       },
     ])],
+    // Tool rendering scenarios for E2E tests
+    ['read file', new ToolUseScenario(
+      'Read',
+      { file_path: '/workspace/src/index.ts' },
+      'const app = express();\napp.listen(3000);',
+      'Here is the content of the file.'
+    )],
+    ['write file', new ToolUseScenario(
+      'Write',
+      { file_path: '/workspace/src/hello.ts', content: 'console.log("hello")' },
+      'File written successfully.',
+      'I created the file for you.'
+    )],
+    ['search code', new ToolUseScenario(
+      'Grep',
+      { pattern: 'TODO', include: '*.ts' },
+      'src/index.ts:5: // TODO: add error handling\nsrc/utils.ts:12: // TODO: refactor',
+      'I found 2 TODO comments in the codebase.'
+    )],
+    ['find files', new ToolUseScenario(
+      'Glob',
+      { pattern: 'src/**/*.ts' },
+      'src/index.ts\nsrc/utils.ts\nsrc/types.ts',
+      'I found 3 TypeScript files.'
+    )],
+    ['search web', new ToolUseScenario(
+      'WebSearch',
+      { query: 'TypeScript best practices 2025' },
+      'Web search results for query: TypeScript best practices 2025\n\n1. Use strict mode\n2. Prefer interfaces over types',
+      'Here are the search results.'
+    )],
+    // Connected account request scenario
+    ['ask account', new UserInputRequestScenario([
+      {
+        name: 'mcp__user-input__request_connected_account',
+        input: { toolkit: 'github', reason: 'Need access to your GitHub repositories' },
+      },
+    ])],
+    // Remote MCP request scenario - URL will be overridden by test via registerScenario
+    ['request mcp', new UserInputRequestScenario([
+      {
+        name: 'mcp__user-input__request_remote_mcp',
+        input: { url: 'http://localhost:9876/mcp', name: 'Test MCP', reason: 'Need access to test tools' },
+      },
+    ])],
+    // Schedule task scenario
+    ['schedule task', new ToolUseScenario(
+      'mcp__user-input__schedule_task',
+      {
+        scheduleType: 'cron',
+        scheduleExpression: '0 9 * * 1-5',
+        prompt: 'Check for new issues and summarize them',
+        name: 'Daily Issue Summary',
+        timezone: 'America/New_York',
+      },
+      'Task scheduled successfully. ID: task_123',
+      'I\'ve scheduled the daily issue summary task.'
+    )],
   ])
   static defaultScenario: MockScenario = new SimpleTextResponseScenario(
     'This is a mock response from the E2E test container.'
