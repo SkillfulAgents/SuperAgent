@@ -257,6 +257,14 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   /**
+   * Build a -v flag value for a volume mount.
+   * Encapsulates hostPathForRuntime() + getVolumeMountSuffix().
+   */
+  public buildVolumeFlag(hostPath: string, containerPath: string): string {
+    return `"${this.hostPathForRuntime(hostPath)}:${containerPath}${this.getVolumeMountSuffix()}"`
+  }
+
+  /**
    * Returns resource limit flags for the container.
    * Subclasses can override if the runtime uses different flag syntax.
    */
@@ -420,6 +428,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         '--name', containerName,
         '-p', `${port}:${CONTAINER_INTERNAL_PORT}`,
         '-v', `"${this.hostPathForRuntime(workspaceDir)}:/workspace${this.getVolumeMountSuffix()}"`,
+        ...(options?.additionalVolumes || []).flatMap(v => ['-v', v]),
         resourceFlags,
         additionalFlags,
         envFileFlag,

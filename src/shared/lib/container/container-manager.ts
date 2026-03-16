@@ -12,6 +12,7 @@ import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
 import { messagePersister } from './message-persister'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
+import { getMountsWithHealth } from '@shared/lib/services/mount-service'
 
 /** Interval for syncing container status with reality (in ms). Default: 300 seconds */
 const STATUS_SYNC_INTERVAL_MS = parseInt(
@@ -183,6 +184,15 @@ class ContainerManager {
         })
       }
     }
+  }
+
+  /**
+   * Restart a container by stopping and re-starting it.
+   * Mounts are re-loaded from mounts.json on start.
+   */
+  async restartContainer(agentId: string): Promise<ContainerClient> {
+    await this.stopContainer(agentId)
+    return this.ensureRunning(agentId)
   }
 
   /**
@@ -482,8 +492,26 @@ class ContainerManager {
         Object.assign(envVars, settings.customEnvVars)
       }
 
+      // Load mounts and build volume flags for healthy ones
+      const mountsWithHealth = getMountsWithHealth(agentId)
+      const healthyMounts = mountsWithHealth.filter((m) => m.health === 'ok')
+      const missingMounts = mountsWithHealth.filter((m) => m.health === 'missing')
+
+      if (missingMounts.length > 0) {
+        console.warn(`[ContainerManager] Skipping ${missingMounts.length} missing mount(s) for ${agentId}:`, missingMounts.map((m) => m.hostPath))
+        messagePersister.broadcastGlobal({
+          type: 'mount_health_warning',
+          agentSlug: agentId,
+          missingMounts: missingMounts.map((m) => ({ folderName: m.folderName, hostPath: m.hostPath })),
+        })
+      }
+
+      const additionalVolumes = healthyMounts.map((m) =>
+        client.buildVolumeFlag(m.hostPath, m.containerPath)
+      )
+
       // Start container (user secrets are in .env file in workspace)
-      await client.start({ envVars })
+      await client.start({ envVars, additionalVolumes })
 
       // Sync status from Docker to get the actual port
       const info = await this.syncAgentStatus(agentId)

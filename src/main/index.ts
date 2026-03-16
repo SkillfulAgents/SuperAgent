@@ -259,6 +259,12 @@ ipcMain.handle('detect-host-browser', () => {
   return { providers: detectAllProviders() }
 })
 
+// IPC handler for opening a native directory picker
+ipcMain.handle('open-directory', async () => {
+  const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
+  return result.canceled ? null : result.filePaths[0]
+})
+
 // IPC handler for showing the native emoji picker (macOS/Windows)
 ipcMain.handle('show-emoji-panel', () => {
   app.showEmojiPanel()

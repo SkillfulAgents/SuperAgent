@@ -581,6 +581,11 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     }
   }
 
+  // Volume flag builder (no-op in mock — mounts are not simulated)
+  buildVolumeFlag(hostPath: string, containerPath: string): string {
+    return `"${hostPath}:${containerPath}"`
+  }
+
   // Lifecycle management
 
   async start(_options?: StartOptions): Promise<void> {

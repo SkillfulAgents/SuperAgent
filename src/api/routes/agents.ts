@@ -28,6 +28,7 @@ import {
   removeToolCall,
 } from '@shared/lib/services/session-service'
 import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile } from '@shared/lib/utils/file-storage'
+import { getMountsWithHealth, addMount, removeMount } from '@shared/lib/services/mount-service'
 import {
   listSecrets,
   getSecret,
@@ -2834,6 +2835,71 @@ agents.post('/:id/sessions/:sessionId/upload-folder', AgentUser(), async (c) => 
   } catch (error) {
     console.error('Failed to upload folder:', error)
     return c.json({ error: 'Failed to upload folder' }, 500)
+  }
+})
+
+// --- Mount CRUD endpoints ---
+
+// GET /api/agents/:id/mounts - List mounts with health status
+agents.get('/:id/mounts', AgentRead(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const mounts = getMountsWithHealth(agentSlug)
+    return c.json(mounts)
+  } catch (error) {
+    console.error('Failed to list mounts:', error)
+    return c.json({ error: 'Failed to list mounts' }, 500)
+  }
+})
+
+// POST /api/agents/:id/mounts - Add a mount
+agents.post('/:id/mounts', AgentUser(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const { hostPath, restart } = await c.req.json<{ hostPath: string; restart?: boolean }>()
+    if (!hostPath) return c.json({ error: 'hostPath is required' }, 400)
+
+    let mount
+    try {
+      mount = addMount(agentSlug, hostPath)
+    } catch (err: any) {
+      return c.json({ error: err.message || 'Invalid path' }, 400)
+    }
+
+    if (restart) {
+      const cachedInfo = containerManager.getCachedInfo(agentSlug)
+      if (cachedInfo.status === 'running') {
+        await containerManager.restartContainer(agentSlug)
+      }
+    }
+
+    return c.json(mount, 201)
+  } catch (error) {
+    console.error('Failed to add mount:', error)
+    return c.json({ error: 'Failed to add mount' }, 500)
+  }
+})
+
+// DELETE /api/agents/:id/mounts/:mountId - Remove a mount
+agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const mountId = c.req.param('mountId')
+    const restart = c.req.query('restart') === 'true'
+
+    removeMount(agentSlug, mountId)
+
+    if (restart) {
+      const cachedInfo = containerManager.getCachedInfo(agentSlug)
+      if (cachedInfo.status === 'running') {
+        await containerManager.restartContainer(agentSlug)
+      }
+    }
+
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('Failed to remove mount:', error)
+    return c.json({ error: 'Failed to remove mount' }, 500)
   }
 })
 

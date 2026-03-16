@@ -1,11 +1,11 @@
 
 import { cn } from '@shared/lib/utils/cn'
-import { User, Bot, Terminal } from 'lucide-react'
+import { User, Bot, Terminal, Link2 } from 'lucide-react'
 import { ToolCallItem } from './tool-call-item'
 import { SubAgentBlock } from './subagent-block'
 import { MessageContextMenu } from './message-context-menu'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
-import { parseAttachedFiles } from '@shared/lib/utils/attached-files'
+import { parseAttachedFiles, parseMountedFolders } from '@shared/lib/utils/attached-files'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
@@ -31,7 +31,8 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
   const isAssistant = message.type === 'assistant'
 
   const rawText = message.content.text
-  const { cleanText, attachedFiles } = isUser && rawText ? parseAttachedFiles(rawText) : { cleanText: rawText, attachedFiles: [] }
+  const { cleanText: textAfterFiles, attachedFiles } = isUser && rawText ? parseAttachedFiles(rawText) : { cleanText: rawText, attachedFiles: [] }
+  const { cleanText, mountedFolders } = isUser && textAfterFiles ? parseMountedFolders(textAfterFiles) : { cleanText: textAfterFiles, mountedFolders: [] }
   const text = cleanText
   const hasText = text && text.length > 0
   const toolCalls = message.toolCalls || []
@@ -199,6 +200,23 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
           <div className="flex flex-wrap gap-1.5 justify-end">
             {attachedFiles.map((filePath, idx) => (
               <FileDownloadPill key={idx} filePath={filePath} agentSlug={agentSlug} />
+            ))}
+          </div>
+        )}
+
+        {/* Mounted folder pills for user messages */}
+        {isUser && mountedFolders.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 justify-end">
+            {mountedFolders.map((mount, idx) => (
+              <div
+                key={idx}
+                className="flex items-center gap-1.5 rounded-full border bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800 px-3 py-1 text-xs"
+                title={`Host: ${mount.hostPath}`}
+              >
+                <Link2 className="h-3 w-3 text-blue-500" />
+                <span className="font-medium">{mount.containerPath}</span>
+                <span className="text-muted-foreground">mounted</span>
+              </div>
             ))}
           </div>
         )}

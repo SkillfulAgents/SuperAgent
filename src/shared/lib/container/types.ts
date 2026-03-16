@@ -51,6 +51,7 @@ export interface CreateSessionOptions {
 
 export interface StartOptions {
   envVars?: Record<string, string>
+  additionalVolumes?: string[] // Extra -v flag values for bind mounts
 }
 
 // Container resource usage stats
@@ -74,6 +75,9 @@ export interface ContainerClient {
   start(options?: StartOptions): Promise<void>
   stop(): Promise<{ forceStopUsed: boolean }>
   stopSync(): void // Synchronous stop for exit handlers
+
+  // Build a -v flag value for a volume mount (hostPath:containerPath with runtime-specific suffix)
+  buildVolumeFlag(hostPath: string, containerPath: string): string
 
   // Query the container runtime for current state (spawns CLI process)
   // Use containerManager.getCachedInfo() for cached status instead

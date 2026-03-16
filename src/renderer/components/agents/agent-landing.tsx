@@ -18,8 +18,10 @@ import { apiFetch } from '@renderer/lib/api'
 import { AttachmentPreview } from '@renderer/components/messages/attachment-preview'
 import { useAttachments } from '@renderer/hooks/use-attachments'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
-import { appendAttachedFiles } from '@shared/lib/utils/attached-files'
-import { zipFolderFiles } from '@renderer/lib/file-utils'
+import { appendAttachedFiles, appendMountedFolders } from '@shared/lib/utils/attached-files'
+import { zipFolderFiles, type FolderGroup } from '@renderer/lib/file-utils'
+import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
+import { useAddMount } from '@renderer/hooks/use-mounts'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 
 interface AgentLandingProps {
@@ -42,6 +44,18 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
   const [selectedSkillsets, setSelectedSkillsets] = useState<Set<string> | null>(null)
   const SKILLS_PER_PAGE = 6
   const createSession = useCreateSession()
+  const addMountMutation = useAddMount()
+
+  // Mount choice dialog state
+  const [pendingFolders, setPendingFolders] = useState<FolderGroup[]>([])
+  const [showMountDialog, setShowMountDialog] = useState(false)
+  const isElectron = !!window.electronAPI
+
+  const handleFoldersReceived = useCallback((folders: FolderGroup[]) => {
+    setPendingFolders(folders)
+    setShowMountDialog(true)
+  }, [])
+
   const { data: skillsData } = useAgentSkills(agent.slug)
   const skills = Array.isArray(skillsData) ? skillsData : []
   const { data: discoverableSkillsData } = useDiscoverableSkills(agent.slug)
@@ -57,12 +71,14 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
     attachments,
     isDragOver,
     addFiles,
+    addFolders: addFoldersDirectly,
+    addMounts,
     removeAttachment,
     clearAttachments,
     handleFileSelect,
     handleFolderSelect,
     dragHandlers,
-  } = useAttachments()
+  } = useAttachments({ onFoldersReceived: isElectron ? handleFoldersReceived : undefined })
 
   // Auto-expand when message gets long (5+ lines)
   useEffect(() => {
@@ -93,9 +109,13 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
         setIsUploading(true)
         try {
           const uploadResults: { path: string }[] = []
+          const mountResults: { containerPath: string; hostPath: string }[] = []
 
           for (const a of attachments) {
-            if (a.type === 'folder' && a.folderPath) {
+            if (a.type === 'mount') {
+              const result = await addMountMutation.mutateAsync({ agentSlug: agent.slug, hostPath: a.hostPath, restart: true })
+              mountResults.push({ containerPath: result.containerPath, hostPath: a.hostPath })
+            } else if (a.type === 'folder' && a.folderPath) {
               // Electron: copy folder directly on the server filesystem
               const res = await apiFetch(
                 `/api/agents/${agent.slug}/upload-folder`,
@@ -118,7 +138,7 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
               )
               if (!res.ok) throw new Error('Failed to upload folder')
               uploadResults.push(await res.json() as { path: string })
-            } else {
+            } else if (a.type === 'file') {
               const formData = new FormData()
               formData.append('file', a.file)
               const res = await apiFetch(
@@ -130,6 +150,9 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
             }
           }
 
+          // Append mounts before files — parseAttachedFiles strips from its marker onward,
+          // so [Attached files:] must come last for both blocks to be parseable.
+          content = appendMountedFolders(content, mountResults)
           content = appendAttachedFiles(content, uploadResults.map((r) => r.path))
         } catch (error) {
           console.error('Failed to upload attachments:', error)
@@ -219,6 +242,19 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
     }, []),
   })
 
+  const handleMountChoice = useCallback((choice: 'upload' | 'mount' | 'cancel') => {
+    setShowMountDialog(false)
+    if (choice === 'upload') {
+      addFoldersDirectly(pendingFolders)
+    } else if (choice === 'mount') {
+      addMounts(pendingFolders.map((f) => ({
+        folderName: f.folderName,
+        hostPath: f.folderPath!,
+      })))
+    }
+    setPendingFolders([])
+  }, [pendingFolders, addFoldersDirectly, addMounts])
+
   const isDisabled = createSession.isPending || isUploading || !isRuntimeReady
 
   return (
@@ -257,6 +293,11 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
               </div>
             )}
 
+            <MountChoiceDialog
+              open={showMountDialog}
+              onChoice={handleMountChoice}
+              folderName={pendingFolders.length === 1 ? pendingFolders[0].folderName : undefined}
+            />
             <form
               onSubmit={handleSubmit}
               className={`space-y-4 ${isDragOver ? 'ring-2 ring-primary rounded-lg' : ''}`}

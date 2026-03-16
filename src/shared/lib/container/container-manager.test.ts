@@ -12,6 +12,8 @@ const mockGetStats = vi.fn()
 
 const mockClearRunnerAvailabilityCache = vi.fn()
 
+const mockBuildVolumeFlag = vi.fn((hostPath: string, containerPath: string) => `"${hostPath}:${containerPath}"`)
+
 vi.mock('./client-factory', () => ({
   createContainerClient: () => ({
     start: mockStart,
@@ -20,6 +22,7 @@ vi.mock('./client-factory', () => ({
     getInfoFromRuntime: mockGetInfoFromRuntime,
     getStats: mockGetStats,
     fetch: vi.fn(),
+    buildVolumeFlag: (...args: unknown[]) => mockBuildVolumeFlag(...args as [string, string]),
   }),
   checkAllRunnersAvailability: vi.fn().mockResolvedValue([]),
   checkImageExists: vi.fn().mockResolvedValue(true),
@@ -121,6 +124,11 @@ vi.mock('@shared/lib/services/timezone-resolver', () => ({
   resolveTimezoneForAgent: () => 'America/New_York',
 }))
 
+const mockGetMountsWithHealth = vi.fn()
+vi.mock('@shared/lib/services/mount-service', () => ({
+  getMountsWithHealth: (...args: unknown[]) => mockGetMountsWithHealth(...args),
+}))
+
 import { containerManager } from './container-manager'
 
 describe('containerManager.ensureRunning — env var construction', () => {
@@ -132,6 +140,9 @@ describe('containerManager.ensureRunning — env var construction', () => {
     mockGetOrCreateProxyToken.mockResolvedValue('synth-token-123')
     mockGetContainerHostUrl.mockReturnValue('192.168.1.100')
     mockGetAppPort.mockReturnValue(3000)
+
+    // Default: no mounts
+    mockGetMountsWithHealth.mockReturnValue([])
 
     // Default: container not running
     containerManager.updateCachedStatus('test-agent', 'stopped', null)
@@ -249,6 +260,114 @@ describe('containerManager.ensureRunning — env var construction', () => {
 
     const startOpts = mockStart.mock.calls[0][0]
     expect(startOpts.envVars.TZ).toBe('America/New_York')
+  })
+})
+
+// ============================================================================
+// ensureRunning — mount volume integration
+// ============================================================================
+
+describe('containerManager.ensureRunning — mount volumes', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    containerManager.removeClient('test-agent')
+
+    mockGetOrCreateProxyToken.mockResolvedValue('token')
+    mockGetContainerHostUrl.mockReturnValue('127.0.0.1')
+    mockGetAppPort.mockReturnValue(3000)
+
+    containerManager.updateCachedStatus('test-agent', 'stopped', null)
+    mockStart.mockResolvedValue(undefined)
+    mockGetInfoFromRuntime.mockResolvedValue({ status: 'running', port: 8080 })
+
+    // Default DB mocks (no accounts, no MCPs)
+    mockDbInnerJoin.mockReturnValue({ where: mockDbWhere })
+    mockDbWhere.mockResolvedValue([])
+    mockMcpInnerJoin.mockReturnValue({ where: mockMcpWhere })
+    mockMcpWhere.mockResolvedValue([])
+  })
+
+  it('passes additionalVolumes from healthy mounts to client.start()', async () => {
+    mockGetMountsWithHealth.mockReturnValue([
+      { id: 'm1', hostPath: '/host/project', containerPath: '/mounts/project', folderName: 'project', addedAt: '2025-01-01', health: 'ok' },
+    ])
+
+    await containerManager.ensureRunning('test-agent')
+
+    expect(mockStart).toHaveBeenCalledOnce()
+    const opts = mockStart.mock.calls[0][0]
+    expect(opts.additionalVolumes).toHaveLength(1)
+    // The volume flag is produced by buildVolumeFlag which we can't inspect exactly
+    // since the client is mocked, but it should be an array of strings
+    expect(typeof opts.additionalVolumes[0]).toBe('string')
+  })
+
+  it('skips missing mounts and broadcasts warning', async () => {
+    mockGetMountsWithHealth.mockReturnValue([
+      { id: 'm1', hostPath: '/host/ok', containerPath: '/mounts/ok', folderName: 'ok', addedAt: '2025-01-01', health: 'ok' },
+      { id: 'm2', hostPath: '/host/gone', containerPath: '/mounts/gone', folderName: 'gone', addedAt: '2025-01-01', health: 'missing' },
+    ])
+
+    await containerManager.ensureRunning('test-agent')
+
+    const opts = mockStart.mock.calls[0][0]
+    // Only healthy mount should be in volumes
+    expect(opts.additionalVolumes).toHaveLength(1)
+
+    // Should broadcast mount health warning
+    const broadcasts = vi.mocked(messagePersister.broadcastGlobal).mock.calls
+    const mountWarnings = broadcasts.filter(([msg]: any) => msg.type === 'mount_health_warning')
+    expect(mountWarnings).toHaveLength(1)
+    expect(mountWarnings[0][0]).toMatchObject({
+      type: 'mount_health_warning',
+      agentSlug: 'test-agent',
+      missingMounts: [{ folderName: 'gone', hostPath: '/host/gone' }],
+    })
+  })
+
+  it('passes empty additionalVolumes when no mounts exist', async () => {
+    mockGetMountsWithHealth.mockReturnValue([])
+
+    await containerManager.ensureRunning('test-agent')
+
+    const opts = mockStart.mock.calls[0][0]
+    expect(opts.additionalVolumes).toEqual([])
+  })
+})
+
+// ============================================================================
+// restartContainer
+// ============================================================================
+
+describe('containerManager.restartContainer', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    containerManager.removeClient('test-agent')
+    mockGetMountsWithHealth.mockReturnValue([])
+    mockGetOrCreateProxyToken.mockResolvedValue('token')
+    mockGetContainerHostUrl.mockReturnValue('127.0.0.1')
+    mockGetAppPort.mockReturnValue(3000)
+    mockDbInnerJoin.mockReturnValue({ where: mockDbWhere })
+    mockDbWhere.mockResolvedValue([])
+    mockMcpInnerJoin.mockReturnValue({ where: mockMcpWhere })
+    mockMcpWhere.mockResolvedValue([])
+  })
+
+  it('calls stop then ensureRunning', async () => {
+    containerManager.getClient('test-agent')
+    containerManager.updateCachedStatus('test-agent', 'running', 4001)
+    mockStop.mockResolvedValue({ forceStopUsed: false })
+    mockGetInfoFromRuntime.mockResolvedValue({ status: 'running', port: 4002 })
+    mockStart.mockResolvedValue(undefined)
+
+    await containerManager.restartContainer('test-agent')
+
+    expect(mockStop).toHaveBeenCalledOnce()
+    expect(mockStart).toHaveBeenCalledOnce()
+    // Stop should have been called before start
+    const stopOrder = mockStop.mock.invocationCallOrder[0]
+    const startOrder = mockStart.mock.invocationCallOrder[0]
+    expect(stopOrder).toBeLessThan(startOrder)
   })
 })
 

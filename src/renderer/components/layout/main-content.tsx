@@ -28,6 +28,7 @@ import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import { useMarkSessionNotificationsRead } from '@renderer/hooks/use-notifications'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useUser } from '@renderer/context/user-context'
+import { useMountWarnings } from '@renderer/hooks/use-mount-warnings'
 import { computeContextPercent } from '@shared/lib/utils/context-usage'
 
 export function MainContent() {
@@ -57,6 +58,7 @@ export function MainContent() {
   const { browserActive, isActive, contextUsage: streamContextUsage } = useMessageStream(sessionId ?? null, agentSlug ?? null)
   const { canUseAgent } = useUser()
   const isViewOnly = agentSlug ? !canUseAgent(agentSlug) : false
+  const { warning: mountWarning, dismiss: dismissMountWarning } = useMountWarnings(agentSlug ?? null)
   const { data: runtimeStatus, isPending: isRuntimePending } = useRuntimeStatus()
   const readiness = runtimeStatus?.runtimeReadiness
   const isRuntimeReady = isRuntimePending || readiness?.status === 'READY'
@@ -290,6 +292,24 @@ export function MainContent() {
           </div>
         </div>
       ))}
+
+      {/* Missing mount warning banner */}
+      {mountWarning && mountWarning.missingMounts.length > 0 && (
+        <div className="shrink-0 border-b bg-yellow-500/10 px-4 py-2">
+          <div className="flex items-center gap-2 text-xs text-yellow-700 dark:text-yellow-400">
+            <AlertTriangle className="h-3 w-3 shrink-0" />
+            <span className="flex-1">
+              Some mounted folders were not found and have been skipped: {mountWarning.missingMounts.map((m) => m.folderName).join(', ')}
+            </span>
+            <button
+              onClick={dismissMountWarning}
+              className="text-yellow-700 dark:text-yellow-400 hover:text-foreground transition-colors"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Context window usage bar (expanded) */}
       {sessionId && contextPercent != null && contextBarExpanded && (

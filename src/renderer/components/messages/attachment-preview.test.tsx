@@ -2,7 +2,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { AttachmentPreview, type Attachment, type FolderAttachment } from './attachment-preview'
+import { AttachmentPreview, type Attachment, type FolderAttachment, type MountAttachment } from './attachment-preview'
 
 function createFile(name: string, size: number, type: string): File {
   const blob = new Blob(['x'.repeat(size)], { type })
@@ -153,5 +153,61 @@ describe('AttachmentPreview', () => {
     expect(screen.getByText('my-project')).toBeInTheDocument()
     // Should not show "0 files" metadata
     expect(screen.queryByText(/file/)).not.toBeInTheDocument()
+  })
+
+  it('renders mount attachment folder name', () => {
+    const attachment: MountAttachment = {
+      type: 'mount',
+      id: 'mount-1',
+      folderName: 'my-data',
+      hostPath: '/Users/joe/my-data',
+    }
+    render(<AttachmentPreview attachments={[attachment]} onRemove={vi.fn()} />)
+    expect(screen.getByText('my-data')).toBeInTheDocument()
+  })
+
+  it('renders "mounted, read-write" label for mount attachments', () => {
+    const attachment: MountAttachment = {
+      type: 'mount',
+      id: 'mount-1',
+      folderName: 'my-data',
+      hostPath: '/Users/joe/my-data',
+    }
+    render(<AttachmentPreview attachments={[attachment]} onRemove={vi.fn()} />)
+    expect(screen.getByText('mounted, read-write')).toBeInTheDocument()
+  })
+
+  it('calls onRemove with mount id when remove button is clicked', async () => {
+    const user = userEvent.setup()
+    const onRemove = vi.fn()
+    const attachment: MountAttachment = {
+      type: 'mount',
+      id: 'mount-42',
+      folderName: 'test-mount',
+      hostPath: '/tmp/test',
+    }
+    render(<AttachmentPreview attachments={[attachment]} onRemove={onRemove} />)
+
+    const removeButton = screen.getByRole('button')
+    await user.click(removeButton)
+    expect(onRemove).toHaveBeenCalledWith('mount-42')
+  })
+
+  it('renders mixed file, folder, and mount attachments', () => {
+    const attachments: Attachment[] = [
+      createAttachment({ id: 'f1', name: 'readme.md' }),
+      createFolderAttachment({ id: 'd1', folderName: 'components' }),
+      {
+        type: 'mount',
+        id: 'm1',
+        folderName: 'workspace',
+        hostPath: '/Users/joe/workspace',
+      },
+    ]
+    render(<AttachmentPreview attachments={attachments} onRemove={vi.fn()} />)
+    expect(screen.getByText('readme.md')).toBeInTheDocument()
+    expect(screen.getByText('components')).toBeInTheDocument()
+    expect(screen.getByText('workspace')).toBeInTheDocument()
+    expect(screen.getByText('mounted, read-write')).toBeInTheDocument()
   })
 })

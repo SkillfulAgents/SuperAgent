@@ -13,8 +13,10 @@ import { AttachmentPreview } from './attachment-preview'
 import { SlashCommandMenu } from './slash-command-menu'
 import { useAttachments } from '@renderer/hooks/use-attachments'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
-import { appendAttachedFiles } from '@shared/lib/utils/attached-files'
-import { zipFolderFiles } from '@renderer/lib/file-utils'
+import { appendAttachedFiles, appendMountedFolders } from '@shared/lib/utils/attached-files'
+import { zipFolderFiles, type FolderGroup } from '@renderer/lib/file-utils'
+import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
+import { useAddMount } from '@renderer/hooks/use-mounts'
 
 interface MessageInputProps {
   sessionId: string
@@ -33,28 +35,54 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
   const sendMessage = useSendMessage()
   const uploadFile = useUploadFile()
   const uploadFolder = useUploadFolder()
+  const addMountMutation = useAddMount()
   const interruptSession = useInterruptSession()
   const { isActive, slashCommands } = useMessageStream(sessionId, agentSlug)
   const isOnline = useIsOnline()
   const isOffline = !isOnline
   const { track } = useAnalyticsTracking()
 
+  // Mount choice dialog state
+  const [pendingFolders, setPendingFolders] = useState<FolderGroup[]>([])
+  const [showMountDialog, setShowMountDialog] = useState(false)
+  const isElectron = !!window.electronAPI
+
+  const handleFoldersReceived = useCallback((folders: FolderGroup[]) => {
+    setPendingFolders(folders)
+    setShowMountDialog(true)
+  }, [])
+
   const {
     attachments,
     isDragOver,
     addFiles,
+    addFolders: addFoldersDirectly,
+    addMounts,
     removeAttachment,
     clearAttachments,
     handleFileSelect,
     handleFolderSelect,
     dragHandlers,
-  } = useAttachments()
+  } = useAttachments({ onFoldersReceived: isElectron ? handleFoldersReceived : undefined })
 
   const voiceInput = useVoiceInput({
     onTranscriptUpdate: useCallback((text: string) => {
       setMessage(text)
     }, []),
   })
+
+  const handleMountChoice = useCallback((choice: 'upload' | 'mount' | 'cancel') => {
+    setShowMountDialog(false)
+    if (choice === 'upload') {
+      addFoldersDirectly(pendingFolders)
+    } else if (choice === 'mount') {
+      addMounts(pendingFolders.map((f) => ({
+        folderName: f.folderName,
+        hostPath: f.folderPath!,
+      })))
+    }
+    setPendingFolders([])
+  }, [pendingFolders, addFoldersDirectly, addMounts])
 
   // Extract the slash command prefix being typed (e.g. "co" from "/co")
   const slashFilter = useMemo(() => {
@@ -133,9 +161,13 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
       setIsUploading(true)
       try {
         const uploadResults: { path: string }[] = []
+        const mountResults: { containerPath: string; hostPath: string }[] = []
 
         for (const a of attachments) {
-          if (a.type === 'folder' && a.folderPath) {
+          if (a.type === 'mount') {
+            const result = await addMountMutation.mutateAsync({ agentSlug, hostPath: a.hostPath, restart: true })
+            mountResults.push({ containerPath: result.containerPath, hostPath: a.hostPath })
+          } else if (a.type === 'folder' && a.folderPath) {
             // Electron: copy folder directly on the server filesystem
             const result = await uploadFolder.mutateAsync({ sessionId, agentSlug, sourcePath: a.folderPath })
             uploadResults.push(result)
@@ -152,6 +184,9 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
         }
 
         // Append file paths to message
+        // Append mounts before files — parseAttachedFiles strips from its marker onward,
+        // so [Attached files:] must come last for both blocks to be parseable.
+        content = appendMountedFolders(content, mountResults)
         content = appendAttachedFiles(content, uploadResults.map((r) => r.path))
       } catch (error) {
         console.error('Failed to upload attachments:', error)
@@ -239,6 +274,11 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
       className={`relative pl-2 pr-4 py-[18px] border-t bg-background ${isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
       {...dragHandlers}
     >
+      <MountChoiceDialog
+        open={showMountDialog}
+        onChoice={handleMountChoice}
+        folderName={pendingFolders.length === 1 ? pendingFolders[0].folderName : undefined}
+      />
       <SlashCommandMenu
         commands={filteredCommands}
         selectedIndex={slashMenuIndex}
