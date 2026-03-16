@@ -12,6 +12,7 @@ import archiver from 'archiver'
 import AdmZip from 'adm-zip'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
+import Anthropic from '@anthropic-ai/sdk'
 import {
   getAgentWorkspaceDir,
   getAgentClaudeMdPath,
@@ -20,8 +21,7 @@ import {
   directoryExists,
   parseMarkdownWithFrontmatter,
 } from '@shared/lib/utils/file-storage'
-import { getEffectiveModels } from '@shared/lib/config/settings'
-import { getActiveLlmProvider } from '@shared/lib/llm-provider'
+import { getEffectiveAnthropicApiKey, getEffectiveModels } from '@shared/lib/config/settings'
 import { withRetry } from '@shared/lib/utils/retry'
 import {
   ensureSkillsetCached,
@@ -818,11 +818,11 @@ async function generateAgentPRSuggestions(
   const modifiedContent = await readFileOrNull(claudeMdPath)
   if (!modifiedContent) return fallback
 
-  const provider = getActiveLlmProvider()
-  if (!provider.getApiKeyStatus().isConfigured) return fallback
+  const apiKey = getEffectiveAnthropicApiKey()
+  if (!apiKey) return fallback
 
   try {
-    const client = provider.createClient()
+    const client = new Anthropic({ apiKey })
     const model = getEffectiveModels().summarizerModel
 
     const response = await withRetry(() =>
@@ -890,11 +890,11 @@ async function generateAgentPublishSuggestions(
     suggestedVersion: '1.0.0',
   }
 
-  const provider = getActiveLlmProvider()
-  if (!provider.getApiKeyStatus().isConfigured) return fallback
+  const apiKey = getEffectiveAnthropicApiKey()
+  if (!apiKey) return fallback
 
   try {
-    const client = provider.createClient()
+    const client = new Anthropic({ apiKey })
     const model = getEffectiveModels().summarizerModel
 
     const response = await withRetry(() =>

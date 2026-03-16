@@ -36,7 +36,6 @@ interface StreamingState {
   // Per-subagent streaming state, keyed by parent tool_use ID (supports concurrent background agents)
   activeSubagents: Map<string, SubagentStreamingState>
   slashCommands: SlashCommandInfo[] // Available slash commands from SDK
-  isAwaitingInput: boolean // True when session is waiting for user input (e.g., secret, file, question)
 }
 
 class MessagePersister {
@@ -76,7 +75,6 @@ class MessagePersister {
       completedSubagentIds: new Set(),
       activeSubagents: new Map(),
       slashCommands: [],
-      isAwaitingInput: false,
     })
 
     // Store container client for reconnection checks
@@ -109,12 +107,6 @@ class MessagePersister {
   isSessionActive(sessionId: string): boolean {
     const state = this.streamingStates.get(sessionId)
     return state?.isActive ?? false
-  }
-
-  // Check if a session is waiting for user input
-  isSessionAwaitingInput(sessionId: string): boolean {
-    const state = this.streamingStates.get(sessionId)
-    return state?.isAwaitingInput ?? false
   }
 
   // Get available slash commands for a session
@@ -211,7 +203,6 @@ class MessagePersister {
       state.isInterrupted = true
       state.isStreaming = false
       state.isActive = false
-      state.isAwaitingInput = false
       state.currentText = ''
       state.currentToolUse = null
       state.currentToolInput = ''
@@ -273,13 +264,11 @@ class MessagePersister {
         completedSubagentIds: new Set(),
         activeSubagents: new Map(),
         slashCommands: [],
-        isAwaitingInput: false,
       }
       this.streamingStates.set(sessionId, state)
     }
     state.isActive = true
     state.isInterrupted = false // Reset interrupted flag on new message
-    state.isAwaitingInput = false // Reset awaiting input on new message
     if (agentSlug) {
       state.agentSlug = agentSlug
     }
@@ -294,19 +283,6 @@ class MessagePersister {
       agentSlug: state.agentSlug,
       isActive: true,
     })
-  }
-
-  // Mark session as awaiting user input and broadcast globally
-  private markSessionAwaitingInput(sessionId: string): void {
-    const state = this.streamingStates.get(sessionId)
-    if (state && !state.isAwaitingInput) {
-      state.isAwaitingInput = true
-      this.broadcastGlobal({
-        type: 'session_awaiting_input',
-        sessionId,
-        agentSlug: state.agentSlug,
-      })
-    }
   }
 
   // Broadcast to SSE clients
@@ -413,15 +389,6 @@ class MessagePersister {
           this.broadcastToSSE(sessionId, { type: 'messages_updated' })
           break
         }
-        // Clear awaiting input when tool results arrive (user provided input)
-        if (state.isAwaitingInput) {
-          state.isAwaitingInput = false
-          this.broadcastGlobal({
-            type: 'session_input_provided',
-            sessionId,
-            agentSlug: state.agentSlug,
-          })
-        }
         // Tool results come as 'user' type messages
         this.handleToolResults(sessionId, content)
         break
@@ -452,7 +419,6 @@ class MessagePersister {
         // Query completed - session is no longer active
         state.isStreaming = false
         state.isActive = false
-        state.isAwaitingInput = false
         state.currentText = ''
 
         // Extract and persist context usage from result event
@@ -576,7 +542,6 @@ class MessagePersister {
   private markSessionInactive(sessionId: string, state: StreamingState): void {
     state.isStreaming = false
     state.isActive = false
-    state.isAwaitingInput = false
     state.currentText = ''
     state.currentToolUse = null
     state.currentToolInput = ''
@@ -637,21 +602,6 @@ class MessagePersister {
       // Clear streaming text since it's now persisted
       if (content.type === 'assistant') {
         sub.currentText = ''
-        // Subagent messages arrive as complete messages (not stream events),
-        // so detect browser input requests from the finished tool_use blocks.
-        const messageContent = content.message?.content
-        if (Array.isArray(messageContent)) {
-          for (const block of messageContent) {
-            if (block.type === 'tool_use' && block.name === 'mcp__user-input__request_browser_input') {
-              this.handleBrowserInputRequestTool(
-                sessionId,
-                block.id,
-                JSON.stringify(block.input || {}),
-                state.agentSlug
-              )
-            }
-          }
-        }
       }
       this.broadcastToSSE(sessionId, {
         type: 'subagent_updated',
@@ -816,16 +766,6 @@ class MessagePersister {
 
       case 'content_block_stop':
         if (sub.currentToolUse) {
-          // Safety net: detect browser input if stream events arrive for subagents
-          if (sub.currentToolUse.name === 'mcp__user-input__request_browser_input') {
-            this.handleBrowserInputRequestTool(
-              sessionId,
-              sub.currentToolUse.id,
-              sub.currentToolInput,
-              state.agentSlug
-            )
-          }
-
           this.broadcastToSSE(sessionId, {
             type: 'subagent_tool_use_ready',
             parentToolId,
@@ -848,7 +788,7 @@ class MessagePersister {
   // Handle stream events for SSE broadcasting (not for persistence)
   private handleStreamEvent(
     sessionId: string,
-    event: { type: string; content_block?: { type: string; id?: string; name?: string }; delta?: { type: string; text?: string; partial_json?: string }; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } },
+    event: { type: string; content_block?: { type: string; id?: string; name?: string }; delta?: { type: string; text?: string; partial_json?: string } },
     state: StreamingState
   ): void {
     switch (event.type) {
@@ -967,22 +907,6 @@ class MessagePersister {
             )
           }
 
-          if (state.currentToolUse.name === 'mcp__user-input__request_browser_input') {
-            this.handleBrowserInputRequestTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // Mark session as awaiting input when a blocking user-input tool fires
-          // Only tools with 'request_' prefix actually block waiting for user response
-          // (schedule_task, deliver_file, search_* resolve immediately and don't block)
-          if (state.currentToolUse.name === 'AskUserQuestion' || state.currentToolUse.name.startsWith('mcp__user-input__request_')) {
-            this.markSessionAwaitingInput(sessionId)
-          }
-
           // Track Task/Agent tool for subagent correlation
           if (state.currentToolUse.name === 'Task' || state.currentToolUse.name === 'Agent') {
             let isBackground = false
@@ -1006,17 +930,6 @@ class MessagePersister {
           })
           state.currentToolUse = null
           state.currentToolInput = ''
-        }
-        break
-
-      case 'message_delta':
-        // message_delta carries final usage data (especially important for OpenRouter
-        // which sends input_tokens: 0 in message_start but real values in message_delta)
-        if (event.usage) {
-          const deltaUsage = event.usage as { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number }
-          if (deltaUsage.input_tokens || deltaUsage.output_tokens) {
-            this.broadcastContextUsage(sessionId, state, deltaUsage)
-          }
         }
         break
 
@@ -1314,45 +1227,6 @@ class MessagePersister {
       }
     } catch (error) {
       console.error('[MessagePersister] Error handling remote MCP request:', error)
-    }
-  }
-
-  // Handle browser input request tool - broadcast to SSE clients so they can show the UI
-  private handleBrowserInputRequestTool(
-    sessionId: string,
-    toolUseId: string,
-    toolInput: string,
-    agentSlug?: string
-  ): void {
-    try {
-      let input: { message: string; requirements?: string[] } = { message: '' }
-      try {
-        input = JSON.parse(toolInput)
-      } catch {
-        console.error('[MessagePersister] Failed to parse browser input request:', toolInput)
-        return
-      }
-
-      if (!input.message) {
-        console.error('[MessagePersister] Browser input request missing message')
-        return
-      }
-
-      this.broadcastToSSE(sessionId, {
-        type: 'browser_input_request',
-        toolUseId,
-        message: input.message,
-        requirements: input.requirements || [],
-        agentSlug,
-      })
-
-      if (agentSlug && !this.hasActiveViewers(sessionId)) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'browser_input').catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-        })
-      }
-    } catch (error) {
-      console.error('[MessagePersister] Error handling browser input request:', error)
     }
   }
 

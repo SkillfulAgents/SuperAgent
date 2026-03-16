@@ -6,33 +6,34 @@ import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { apiFetch } from '@renderer/lib/api'
 import { AlertTriangle, Eye, EyeOff, Check, Loader2 } from 'lucide-react'
-import type { ApiKeyStatus, LlmProviderId } from '@shared/lib/config/settings'
+import type { ApiKeyStatus } from '@shared/lib/config/settings'
 
-interface ProviderApiKeyInputProps {
-  providerId: LlmProviderId
-  label: string
-  placeholder?: string
-  envVarName?: string
-  apiKeySettingsField: 'anthropicApiKey' | 'openrouterApiKey' | 'bedrockApiKey'
+interface AnthropicApiKeyInputProps {
+  /** Override the label text. Defaults to "Anthropic API Key" */
+  label?: string
+  /** HTML id prefix for input elements */
+  idPrefix?: string
+  /** Whether to show the source indicator badge (e.g. "Using saved setting") */
   showSourceIndicator?: boolean
+  /** Whether to show the "not configured" destructive alert */
   showNotConfiguredAlert?: boolean
+  /** Whether to show the help text below the input */
   showHelpText?: boolean
+  /** Whether to show the "Remove Saved Key" button */
   showRemoveButton?: boolean
+  /** Whether the input is disabled */
   disabled?: boolean
 }
 
-export function ProviderApiKeyInput({
-  providerId,
-  label,
-  placeholder = 'Enter API key...',
-  envVarName,
-  apiKeySettingsField,
+export function AnthropicApiKeyInput({
+  label = 'Anthropic API Key',
+  idPrefix = 'anthropic-api-key',
   showSourceIndicator = true,
   showNotConfiguredAlert = true,
   showHelpText = true,
   showRemoveButton = true,
   disabled = false,
-}: ProviderApiKeyInputProps) {
+}: AnthropicApiKeyInputProps) {
   const { data: settings } = useSettings()
   const updateSettings = useUpdateSettings()
 
@@ -42,7 +43,7 @@ export function ProviderApiKeyInput({
   const [validationResult, setValidationResult] = useState<{ valid: boolean; error?: string } | null>(null)
   const [isRemoving, setIsRemoving] = useState(false)
 
-  const apiKeyStatus: ApiKeyStatus | undefined = settings?.apiKeyStatus?.[providerId]
+  const apiKeyStatus: ApiKeyStatus | undefined = settings?.apiKeyStatus?.anthropic
 
   const handleValidateAndSave = async () => {
     if (!apiKeyInput.trim()) return
@@ -50,17 +51,17 @@ export function ProviderApiKeyInput({
     setValidationResult(null)
 
     try {
-      const res = await apiFetch('/api/settings/validate-llm-key', {
+      const res = await apiFetch('/api/settings/validate-anthropic-key', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: providerId, apiKey: apiKeyInput.trim() }),
+        body: JSON.stringify({ apiKey: apiKeyInput.trim() }),
       })
       const result = await res.json()
       setValidationResult(result)
 
       if (result.valid) {
         await updateSettings.mutateAsync({
-          apiKeys: { [apiKeySettingsField]: apiKeyInput.trim() },
+          apiKeys: { anthropicApiKey: apiKeyInput.trim() },
         })
         setApiKeyInput('')
         setShowApiKey(false)
@@ -76,7 +77,7 @@ export function ProviderApiKeyInput({
     setIsRemoving(true)
     try {
       await updateSettings.mutateAsync({
-        apiKeys: { [apiKeySettingsField]: '' },
+        apiKeys: { anthropicApiKey: '' },
       })
       setValidationResult(null)
     } catch (error) {
@@ -87,12 +88,12 @@ export function ProviderApiKeyInput({
   }
 
   const isBusy = isValidating || isRemoving
-  const idPrefix = `${providerId}-api-key`
 
   return (
     <div className="space-y-2">
       <Label htmlFor={idPrefix}>{label}</Label>
 
+      {/* Source indicator */}
       {showSourceIndicator && apiKeyStatus?.isConfigured && (
         <div className="flex items-center gap-2">
           <span
@@ -109,15 +110,17 @@ export function ProviderApiKeyInput({
         </div>
       )}
 
+      {/* Not configured alert */}
       {showNotConfiguredAlert && !apiKeyStatus?.isConfigured && (
         <Alert variant="destructive">
           <AlertTriangle className="h-4 w-4" />
           <AlertDescription>
-            No API key configured.{envVarName && <> Set <code className="bg-muted px-1 rounded">{envVarName}</code> environment variable or enter below.</>}
+            No API key configured. Set <code className="bg-muted px-1 rounded">ANTHROPIC_API_KEY</code> environment variable or enter below.
           </AlertDescription>
         </Alert>
       )}
 
+      {/* Input with show/hide toggle */}
       <div className="relative">
         <Input
           id={idPrefix}
@@ -127,7 +130,7 @@ export function ProviderApiKeyInput({
             setApiKeyInput(e.target.value)
             setValidationResult(null)
           }}
-          placeholder={apiKeyStatus?.isConfigured ? '••••••••••••••••' : placeholder}
+          placeholder={apiKeyStatus?.isConfigured ? '••••••••••••••••' : 'sk-ant-...'}
           className="pr-10"
           disabled={disabled || isBusy}
         />
@@ -141,6 +144,7 @@ export function ProviderApiKeyInput({
         </button>
       </div>
 
+      {/* Validation result */}
       {validationResult && (
         <Alert variant={validationResult.valid ? 'default' : 'destructive'}>
           {validationResult.valid ? (
@@ -156,6 +160,7 @@ export function ProviderApiKeyInput({
         </Alert>
       )}
 
+      {/* Help text */}
       {showHelpText && (
         <p className="text-xs text-muted-foreground">
           {apiKeyStatus?.source === 'settings'
@@ -166,6 +171,7 @@ export function ProviderApiKeyInput({
         </p>
       )}
 
+      {/* Validate & Save / Remove buttons */}
       <div className="flex gap-2">
         {apiKeyInput.trim() && (
           <Button size="sm" onClick={handleValidateAndSave} disabled={isBusy}>

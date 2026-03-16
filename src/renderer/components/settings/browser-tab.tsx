@@ -15,8 +15,14 @@ import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { apiFetch } from '@renderer/lib/api'
 import { AlertTriangle, Check, Loader2 } from 'lucide-react'
-import type { HostBrowserProviderId, BrowserbaseStealthOs, LlmProviderId } from '@shared/lib/config/settings'
+import type { HostBrowserProviderId, BrowserbaseStealthOs } from '@shared/lib/config/settings'
 import { ChromeProfileSelect } from '@renderer/components/settings/chrome-profile-select'
+
+const MODEL_OPTIONS = [
+  { value: 'claude-haiku-4-5', label: 'Claude 4.5 Haiku' },
+  { value: 'claude-sonnet-4-6', label: 'Claude 4.6 Sonnet' },
+  { value: 'claude-opus-4-6', label: 'Claude 4.6 Opus' },
+]
 
 // Value used for "Container (built-in)" — no host browser provider
 const CONTAINER_VALUE = '__container__'
@@ -57,9 +63,7 @@ export function BrowserTab() {
             <SelectValue placeholder="Select a model" />
           </SelectTrigger>
           <SelectContent>
-            {(settings?.llmProviderStatus?.find(
-              p => p.id === ((settings?.llmProvider ?? 'anthropic') as LlmProviderId)
-            )?.availableModels ?? []).map((model) => (
+            {MODEL_OPTIONS.map((model) => (
               <SelectItem key={model.value} value={model.value}>
                 {model.label}
               </SelectItem>
@@ -68,28 +72,6 @@ export function BrowserTab() {
         </Select>
         <p className="text-xs text-muted-foreground">
           Model used for the web browser subagent
-        </p>
-      </div>
-
-      {/* Max Browser Tabs */}
-      <div className="space-y-2">
-        <Label htmlFor="max-browser-tabs">Max Browser Tabs</Label>
-        <Input
-          id="max-browser-tabs"
-          type="number"
-          min={1}
-          max={20}
-          value={settings?.app?.maxBrowserTabs ?? 10}
-          onChange={(e) => {
-            const value = parseInt(e.target.value)
-            if (value >= 1 && value <= 20) {
-              updateSettings.mutate({ app: { maxBrowserTabs: value } })
-            }
-          }}
-          disabled={isLoading}
-        />
-        <p className="text-xs text-muted-foreground">
-          Maximum number of browser tabs the agent can have open at once (default: 10)
         </p>
       </div>
 

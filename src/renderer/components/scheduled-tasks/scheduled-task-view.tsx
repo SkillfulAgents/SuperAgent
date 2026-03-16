@@ -2,24 +2,17 @@
  * Scheduled Task View
  *
  * Displays details of a pending scheduled task, including the prompt
- * that will be executed and options to cancel, run now, or edit schedule.
+ * that will be executed and options to cancel the task.
  */
 
-import { useState } from 'react'
-import { Clock, Calendar, Repeat, Trash2, MessageSquare, Globe, Play, Pencil, Loader2 } from 'lucide-react'
+import { Clock, Calendar, Repeat, Trash2, MessageSquare, Globe } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
-import { Input } from '@renderer/components/ui/input'
-import { Label } from '@renderer/components/ui/label'
 import { TimezonePicker } from '@renderer/components/ui/timezone-picker'
 import {
   useScheduledTask,
   useCancelScheduledTask,
   useScheduledTaskSessions,
   useUpdateScheduledTaskTimezone,
-  useRunScheduledTaskNow,
-  useDescribeSchedule,
-  useParseSchedule,
-  useUpdateSchedule,
 } from '@renderer/hooks/use-scheduled-tasks'
 import { useSelection } from '@renderer/context/selection-context'
 import { useUser } from '@renderer/context/user-context'
@@ -34,14 +27,6 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@renderer/components/ui/alert-dialog'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@renderer/components/ui/dialog'
 
 interface ScheduledTaskViewProps {
   taskId: string
@@ -53,19 +38,9 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const { data: sessions = [] } = useScheduledTaskSessions(taskId)
   const cancelTask = useCancelScheduledTask()
   const updateTimezone = useUpdateScheduledTaskTimezone()
-  const runNow = useRunScheduledTaskNow()
   const { handleScheduledTaskDeleted, selectSession } = useSelection()
   const { canUseAgent } = useUser()
   const canCancel = canUseAgent(agentSlug)
-
-  // Edit schedule modal state
-  const [editScheduleOpen, setEditScheduleOpen] = useState(false)
-  const [scheduleDescription, setScheduleDescription] = useState('')
-  const [parsedExpression, setParsedExpression] = useState<string | null>(null)
-  const [parseError, setParseError] = useState<string | null>(null)
-  const describeSchedule = useDescribeSchedule()
-  const parseSchedule = useParseSchedule()
-  const updateSchedule = useUpdateSchedule()
 
   const formatInTaskTz = (date: Date | string) => {
     const d = typeof date === 'string' ? new Date(date) : date
@@ -81,59 +56,6 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
       handleScheduledTaskDeleted(taskId)
     } catch (err) {
       console.error('Failed to cancel scheduled task:', err)
-    }
-  }
-
-  const handleRunNow = async () => {
-    try {
-      const result = await runNow.mutateAsync({ taskId, agentSlug })
-      selectSession(result.sessionId)
-    } catch (err) {
-      console.error('Failed to run scheduled task:', err)
-    }
-  }
-
-  const handleOpenEditSchedule = async () => {
-    setEditScheduleOpen(true)
-    setParsedExpression(null)
-    setParseError(null)
-    setScheduleDescription('')
-
-    try {
-      const result = await describeSchedule.mutateAsync({ taskId })
-      setScheduleDescription(result.description)
-    } catch (err) {
-      console.error('Failed to describe schedule:', err)
-    }
-  }
-
-  const handleParseDescription = async () => {
-    if (!scheduleDescription.trim()) return
-    setParsedExpression(null)
-    setParseError(null)
-
-    try {
-      const result = await parseSchedule.mutateAsync({
-        taskId,
-        description: scheduleDescription.trim(),
-      })
-      setParsedExpression(result.expression)
-    } catch (err) {
-      setParseError(err instanceof Error ? err.message : 'Failed to parse schedule')
-    }
-  }
-
-  const handleSaveSchedule = async () => {
-    if (!parsedExpression) return
-
-    try {
-      await updateSchedule.mutateAsync({
-        taskId,
-        scheduleExpression: parsedExpression,
-      })
-      setEditScheduleOpen(false)
-    } catch (err) {
-      console.error('Failed to update schedule:', err)
     }
   }
 
@@ -186,62 +108,32 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
           </div>
 
           {task.status === 'pending' && canCancel && (
-            <div className="flex items-center gap-2">
-              {/* Run Now button */}
-              <Button
-                variant="default"
-                size="sm"
-                onClick={handleRunNow}
-                disabled={runNow.isPending}
-              >
-                {runNow.isPending ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <Play className="h-4 w-4 mr-2" />
-                )}
-                {runNow.isPending ? 'Running...' : 'Run Now'}
-              </Button>
-
-              {/* Edit Schedule button (recurring only) */}
-              {isRecurring && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleOpenEditSchedule}
-                >
-                  <Pencil className="h-4 w-4 mr-2" />
-                  Edit Schedule
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="destructive" size="sm">
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Cancel Task
                 </Button>
-              )}
-
-              {/* Cancel Task button */}
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button variant="destructive" size="sm">
-                    <Trash2 className="h-4 w-4 mr-2" />
-                    Cancel Task
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Cancel Scheduled Task</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      Are you sure you want to cancel this scheduled task? This action cannot be undone.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Keep Task</AlertDialogCancel>
-                    <AlertDialogAction
-                      onClick={handleCancel}
-                      disabled={cancelTask.isPending}
-                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                    >
-                      {cancelTask.isPending ? 'Cancelling...' : 'Cancel Task'}
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-            </div>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Cancel Scheduled Task</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Are you sure you want to cancel this scheduled task? This action cannot be undone.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Keep Task</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={handleCancel}
+                    disabled={cancelTask.isPending}
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  >
+                    {cancelTask.isPending ? 'Cancelling...' : 'Cancel Task'}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           )}
         </div>
       </div>
@@ -367,91 +259,6 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
           </div>
         )}
       </div>
-
-      {/* Edit Schedule Modal */}
-      <Dialog open={editScheduleOpen} onOpenChange={setEditScheduleOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Edit Schedule</DialogTitle>
-            <DialogDescription>
-              Modify the schedule description below and convert it to a new cron expression.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-2">
-            <div className="text-xs text-muted-foreground">
-              Current expression: <code className="bg-muted px-1 py-0.5 rounded">{task.scheduleExpression}</code>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="schedule-description">Schedule Description</Label>
-              {describeSchedule.isPending ? (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground py-2">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Translating schedule...
-                </div>
-              ) : (
-                <Input
-                  id="schedule-description"
-                  value={scheduleDescription}
-                  onChange={(e) => {
-                    setScheduleDescription(e.target.value)
-                    setParsedExpression(null)
-                    setParseError(null)
-                  }}
-                  placeholder="e.g. Every weekday at 9:00 AM"
-                />
-              )}
-            </div>
-
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleParseDescription}
-              disabled={parseSchedule.isPending || !scheduleDescription.trim()}
-            >
-              {parseSchedule.isPending ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Converting...
-                </>
-              ) : (
-                'Convert to Cron'
-              )}
-            </Button>
-
-            {parsedExpression && (
-              <div className="rounded-lg border bg-muted/30 p-3 space-y-1">
-                <div className="text-sm font-medium">New cron expression:</div>
-                <code className="text-sm bg-muted px-2 py-1 rounded block">{parsedExpression}</code>
-              </div>
-            )}
-
-            {parseError && (
-              <div className="text-sm text-destructive">{parseError}</div>
-            )}
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setEditScheduleOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={handleSaveSchedule}
-              disabled={!parsedExpression || updateSchedule.isPending}
-            >
-              {updateSchedule.isPending ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Saving...
-                </>
-              ) : (
-                'Save Schedule'
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

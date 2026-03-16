@@ -36,6 +36,6 @@ function isPortAvailable(port: number): Promise<boolean> {
       })
     })
 
-    server.listen(port, '0.0.0.0')
+    server.listen(port)
   })
 }

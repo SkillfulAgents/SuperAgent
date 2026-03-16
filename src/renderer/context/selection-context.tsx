@@ -17,8 +17,6 @@ interface SelectionContextType {
   handleSessionDeleted: (sessionId: string) => void
   // Called when a scheduled task is deleted/cancelled - clears selection if it was selected
   handleScheduledTaskDeleted: (taskId: string) => void
-  // Called when a dashboard is deleted - clears selection if it was selected
-  handleDashboardDeleted: (slug: string) => void
 }
 
 const SelectionContext = createContext<SelectionContextType | null>(null)
@@ -82,12 +80,6 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     }
   }, [selectedScheduledTaskId])
 
-  const handleDashboardDeleted = useCallback((slug: string) => {
-    if (selectedDashboardSlug === slug) {
-      setSelectedDashboardSlug(null)
-    }
-  }, [selectedDashboardSlug])
-
   return (
     <SelectionContext.Provider
       value={{
@@ -103,7 +95,6 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
         handleAgentDeleted,
         handleSessionDeleted,
         handleScheduledTaskDeleted,
-        handleDashboardDeleted,
       }}
     >
       {children}

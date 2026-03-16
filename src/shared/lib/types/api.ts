@@ -65,8 +65,6 @@ export interface ApiSession {
   lastActivityAt: Date
   messageCount: number
   isActive?: boolean
-  isAwaitingInput?: boolean
-  hasUnreadNotifications?: boolean
   lastUsage?: SessionUsage
 }
 

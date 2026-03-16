@@ -1,5 +1,5 @@
 import path from 'path'
-import { createContainerClient, checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, startRunner, refreshRunnerAvailability, getRunnerDisplayName, type ContainerRunner } from './client-factory'
+import { createContainerClient, checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, startRunner, refreshRunnerAvailability, type ContainerRunner } from './client-factory'
 import type { ContainerClient, ContainerConfig, ContainerInfo, HealthCheckResult, RuntimeReadiness } from './types'
 import { healthMonitor } from './health-monitor'
 import { db } from '@shared/lib/db'
@@ -469,18 +469,12 @@ class ContainerManager {
     this.healthWarnings.clear()
   }
 
-  // Stop all containers (with per-container timeout to prevent blocking shutdown)
+  // Stop all containers
   async stopAll(): Promise<void> {
-    const STOP_TIMEOUT_MS = 10000
     const agentIds = Array.from(this.clients.keys())
     const stopPromises = agentIds.map(async (agentId) => {
       try {
-        await Promise.race([
-          this.stopContainer(agentId),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('Container stop timed out')), STOP_TIMEOUT_MS)
-          ),
-        ])
+        await this.stopContainer(agentId)
       } catch (error) {
         console.error(`Failed to stop container for agent ${agentId}:`, error)
       }
@@ -536,19 +530,6 @@ class ContainerManager {
     return this._readiness
   }
 
-  /** Reset readiness to CHECKING state and broadcast. Used when restarting a runtime.
-   *  Skips reset if an image pull is in progress to avoid losing pull progress UI. */
-  resetReadiness(message = 'Restarting runtime...'): void {
-    if (this._readiness.status === 'PULLING_IMAGE') {
-      return
-    }
-    this.setReadiness({
-      status: 'CHECKING',
-      message,
-      pullProgress: null,
-    })
-  }
-
   /** Update readiness state and broadcast change via SSE. */
   private setReadiness(readiness: RuntimeReadiness): void {
     this._readiness = readiness
@@ -584,7 +565,7 @@ class ContainerManager {
 
     this.setReadiness({
       status: 'CHECKING',
-      message: `Checking ${getRunnerDisplayName(configuredRunner)} availability...`,
+      message: `Checking ${configuredRunner} availability...`,
       pullProgress: null,
     })
 
@@ -592,24 +573,22 @@ class ContainerManager {
     const runnerStatus = allAvailability.find((r) => r.runner === configuredRunner)
 
     if (!runnerStatus?.available) {
-      // Auto-start runtimes that support it (Apple Container, Lima, WSL2)
-      if ((configuredRunner === 'apple-container' || configuredRunner === 'lima' || configuredRunner === 'wsl2') && runnerStatus?.installed && !runnerStatus?.running) {
+      // Auto-start Apple Container runtime if it's installed but not running
+      if (configuredRunner === 'apple-container' && runnerStatus?.installed && !runnerStatus?.running) {
         this.setReadiness({
           status: 'CHECKING',
-          message: `Starting ${getRunnerDisplayName(configuredRunner)} runtime...`,
+          message: 'Starting Apple Container runtime...',
           pullProgress: null,
         })
 
-        const startResult = await startRunner(configuredRunner)
+        const startResult = await startRunner('apple-container')
         if (startResult.success) {
-          // Poll for runtime to become available
-          // Lima VM / WSL2 distro boot can take up to ~30s, Apple Container ~15s
-          const maxPollSeconds = (configuredRunner === 'lima' || configuredRunner === 'wsl2') ? 60 : 15
+          // Poll for runtime to become available (up to ~15s)
           let available = false
-          for (let i = 0; i < maxPollSeconds; i++) {
+          for (let i = 0; i < 15; i++) {
             await new Promise((r) => setTimeout(r, 1000))
             const refreshed = await refreshRunnerAvailability()
-            const status = refreshed.find((r) => r.runner === configuredRunner)
+            const status = refreshed.find((r) => r.runner === 'apple-container')
             if (status?.available) {
               available = true
               break
@@ -619,7 +598,7 @@ class ContainerManager {
           if (!available) {
             this.setReadiness({
               status: 'RUNTIME_UNAVAILABLE',
-              message: `${getRunnerDisplayName(configuredRunner)} runtime failed to start in time.`,
+              message: 'Apple Container runtime failed to start in time.',
               pullProgress: null,
             })
             return
@@ -628,13 +607,13 @@ class ContainerManager {
         } else {
           this.setReadiness({
             status: 'RUNTIME_UNAVAILABLE',
-            message: `Failed to start ${getRunnerDisplayName(configuredRunner)} runtime: ${startResult.message}`,
+            message: `Failed to start Apple Container runtime: ${startResult.message}`,
             pullProgress: null,
           })
           return
         }
       } else {
-        // Configured runner not available — check if another runner is already running and auto-switch
+        // Configured runner not available — check if another runner is available and auto-switch
         const alternativeRunner = allAvailability.find((r) => r.available && r.runner !== configuredRunner)
         if (alternativeRunner) {
           console.log(`Configured runner ${configuredRunner} not available, auto-switching to ${alternativeRunner.runner}`)
@@ -642,10 +621,9 @@ class ContainerManager {
           settings = { ...settings, container: { ...settings.container, containerRunner: configuredRunner } }
           updateSettings(settings)
         } else {
-          const displayName = getRunnerDisplayName(configuredRunner)
           const detail = !runnerStatus?.installed
-            ? `${displayName} is not installed.`
-            : `${displayName} is not running. Please start it and refresh.`
+            ? `${configuredRunner} is not installed.`
+            : `${configuredRunner} is not running. Please start it and refresh.`
           this.setReadiness({
             status: 'RUNTIME_UNAVAILABLE',
             message: detail,

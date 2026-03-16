@@ -9,12 +9,11 @@ const mockStreamState = {
   isStreaming: false,
   streamingMessage: null,
   streamingToolUse: null,
-  pendingSecretRequests: [] as any[],
-  pendingConnectedAccountRequests: [] as any[],
-  pendingQuestionRequests: [] as any[],
-  pendingFileRequests: [] as any[],
-  pendingRemoteMcpRequests: [] as any[],
-  pendingBrowserInputRequests: [] as any[],
+  pendingSecretRequests: [],
+  pendingConnectedAccountRequests: [],
+  pendingQuestionRequests: [],
+  pendingFileRequests: [],
+  pendingRemoteMcpRequests: [],
   error: null as string | null,
   browserActive: false,
   activeStartTime: null as number | null,
@@ -54,12 +53,6 @@ describe('AgentActivityIndicator', () => {
       activeStartTime: null,
       activeSubagents: [],
       completedSubagents: null,
-      pendingSecretRequests: [],
-      pendingConnectedAccountRequests: [],
-      pendingQuestionRequests: [],
-      pendingFileRequests: [],
-      pendingRemoteMcpRequests: [],
-      pendingBrowserInputRequests: [],
     })
     mockMessages.length = 0
   })
@@ -163,108 +156,5 @@ describe('AgentActivityIndicator', () => {
     expect(screen.getByText('Working...')).toBeInTheDocument()
     // Todo list should not render (all completed)
     expect(screen.queryByText('Task 1')).not.toBeInTheDocument()
-  })
-
-  it('shows "Waiting for input..." when pending secret requests exist', () => {
-    mockStreamState.isActive = true
-    mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingSecretRequests = [{ toolUseId: 't1', secretName: 'API_KEY' }]
-
-    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
-    expect(screen.queryByText('Working...')).not.toBeInTheDocument()
-  })
-
-  it('shows "Waiting for input..." when pending question requests exist', () => {
-    mockStreamState.isActive = true
-    mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingQuestionRequests = [{
-      toolUseId: 't1',
-      questions: [{ question: 'Pick one', header: 'DB', options: [], multiSelect: false }],
-    }]
-
-    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
-  })
-
-  it('shows "Waiting for input..." when pending connected account requests exist', () => {
-    mockStreamState.isActive = true
-    mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingConnectedAccountRequests = [{ toolUseId: 't1', toolkit: 'github' }]
-
-    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
-  })
-
-  it('shows "Waiting for input..." when pending file requests exist', () => {
-    mockStreamState.isActive = true
-    mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingFileRequests = [{ toolUseId: 't1', description: 'Upload CSV' }]
-
-    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
-  })
-
-  it('shows "Waiting for input..." when pending remote MCP requests exist', () => {
-    mockStreamState.isActive = true
-    mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingRemoteMcpRequests = [{ toolUseId: 't1', url: 'https://example.com' }]
-
-    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
-  })
-
-  it('shows "Waiting for input..." when pending browser input requests exist', () => {
-    mockStreamState.isActive = true
-    mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingBrowserInputRequests = [{ toolUseId: 't1', message: 'Login', requirements: [] }]
-
-    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
-  })
-
-  it('shows "Working..." when active but no pending requests', () => {
-    mockStreamState.isActive = true
-    mockStreamState.activeStartTime = Date.now()
-    // All pending arrays are empty (from beforeEach reset)
-
-    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getByText('Working...')).toBeInTheDocument()
-    expect(screen.queryByText('Waiting for input...')).not.toBeInTheDocument()
-  })
-
-  it('does not show "Waiting for input..." when not active even if pending requests exist', () => {
-    mockStreamState.isActive = false
-    mockStreamState.pendingSecretRequests = [{ toolUseId: 't1', secretName: 'KEY' }]
-
-    const { container } = render(
-      <AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />
-    )
-    // Component should return null when not active
-    expect(container.innerHTML).toBe('')
-  })
-
-  it('"Waiting for input..." takes priority over TodoWrite activeForm', () => {
-    mockStreamState.isActive = true
-    mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingSecretRequests = [{ toolUseId: 't1', secretName: 'KEY' }]
-    mockMessages.push({
-      id: 'msg-1',
-      type: 'assistant',
-      content: { text: '' },
-      toolCalls: [{
-        id: 'tc-1',
-        name: 'TodoWrite',
-        input: {
-          todos: [{ content: 'Doing work', status: 'in_progress', activeForm: 'Setting things up' }],
-        },
-        result: 'ok',
-      }],
-      createdAt: new Date(),
-    })
-
-    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
-    expect(screen.queryByText('Setting things up')).not.toBeInTheDocument()
   })
 })

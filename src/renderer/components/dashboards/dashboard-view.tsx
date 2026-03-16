@@ -1,11 +1,10 @@
-import { useState, useRef, useCallback } from 'react'
+import { useRef, useCallback } from 'react'
 import { Button } from '@renderer/components/ui/button'
-import { Play, RefreshCw, LayoutDashboard, ExternalLink, Dock } from 'lucide-react'
+import { Play, RefreshCw, LayoutDashboard } from 'lucide-react'
 import { useAgent, useStartAgent } from '@renderer/hooks/use-agents'
 import { useArtifacts } from '@renderer/hooks/use-artifacts'
 import { useUser } from '@renderer/context/user-context'
-import { getApiBaseUrl, isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
-import { AddToDockDialog } from './add-to-dock-dialog'
+import { getApiBaseUrl } from '@renderer/lib/env'
 
 interface DashboardViewProps {
   agentSlug: string
@@ -13,7 +12,6 @@ interface DashboardViewProps {
 }
 
 export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) {
-  const [dockDialogOpen, setDockDialogOpen] = useState(false)
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const { data: agent } = useAgent(agentSlug)
   const { data: artifacts } = useArtifacts(agentSlug)
@@ -33,10 +31,6 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
       iframeRef.current.src = iframeSrc
     }
   }, [iframeSrc])
-
-  const handlePopOut = useCallback(() => {
-    openDashboardExternal(agentSlug, dashboardSlug, dashboard?.name)
-  }, [agentSlug, dashboardSlug, dashboard?.name])
 
   const handleStartAgent = useCallback(() => {
     startAgent.mutate(agentSlug)
@@ -84,28 +78,12 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
             — {dashboard.description}
           </span>
         )}
-        <div className="ml-auto flex items-center gap-1">
-          {/* TODO: Add Windows support — create .lnk shortcut and pin to taskbar */}
-          {isElectron() && getPlatform() === 'darwin' && (
-            <Button variant="ghost" size="sm" onClick={() => setDockDialogOpen(true)} title="Add to Dock">
-              <Dock className="h-3 w-3" />
-            </Button>
-          )}
-          <Button variant="ghost" size="sm" onClick={handlePopOut} title="Open in new window">
-            <ExternalLink className="h-3 w-3" />
-          </Button>
-          <Button variant="ghost" size="sm" onClick={handleRefresh} title="Refresh">
+        <div className="ml-auto">
+          <Button variant="ghost" size="sm" onClick={handleRefresh}>
             <RefreshCw className="h-3 w-3" />
           </Button>
         </div>
       </div>
-      <AddToDockDialog
-        open={dockDialogOpen}
-        onOpenChange={setDockDialogOpen}
-        agentSlug={agentSlug}
-        dashboardSlug={dashboardSlug}
-        dashboardName={dashboard?.name || dashboardSlug}
-      />
       <iframe
         ref={iframeRef}
         src={iframeSrc}

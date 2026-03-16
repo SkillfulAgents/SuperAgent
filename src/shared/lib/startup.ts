@@ -1,6 +1,5 @@
 import type { ServerType } from '@hono/node-server'
 import { containerManager } from './container/container-manager'
-import { shutdownActiveRunner } from './container/client-factory'
 import { taskScheduler } from './scheduler/task-scheduler'
 import { autoSleepMonitor } from './scheduler/auto-sleep-monitor'
 import { stopAllProviders } from '../../main/host-browser'
@@ -78,5 +77,4 @@ export async function shutdownServices() {
   containerManager.stopStatusSync()
   containerManager.stopHealthMonitor()
   await containerManager.stopAll()
-  await shutdownActiveRunner()
 }

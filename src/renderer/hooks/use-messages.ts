@@ -52,23 +52,6 @@ export function useUploadFile() {
   })
 }
 
-export function useUploadFolder() {
-  return useMutation({
-    mutationFn: async (data: { sessionId?: string; agentSlug: string; sourcePath: string }) => {
-      const url = data.sessionId
-        ? `/api/agents/${data.agentSlug}/sessions/${data.sessionId}/upload-folder`
-        : `/api/agents/${data.agentSlug}/upload-folder`
-      const res = await apiFetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sourcePath: data.sourcePath }),
-      })
-      if (!res.ok) throw new Error('Failed to upload folder')
-      return res.json() as Promise<{ path: string; folderName: string }>
-    },
-  })
-}
-
 export function useDeleteMessage() {
   const queryClient = useQueryClient()
 

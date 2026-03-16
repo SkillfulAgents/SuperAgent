@@ -416,18 +416,6 @@ export class UserInputRequestScenario implements MockScenario {
  * Mock implementation of ContainerClient for E2E testing.
  * Simulates container behavior without requiring Docker/Podman.
  */
-// Browser scenario cleanup function — set by dynamic import below
-let cleanupBrowserSessionFn: ((sessionId: string) => void) | null = null
-
-// Register browser scenario only when E2E_CHROMIUM_PATH is available
-if (process.env.E2E_MOCK === 'true' && process.env.E2E_CHROMIUM_PATH) {
-  import('./mock-browser-scenario').then(({ BrowserScenario, cleanupBrowserSession }) => {
-    MockContainerClient.scenarios.set('browse ', new BrowserScenario())
-    cleanupBrowserSessionFn = cleanupBrowserSession
-    console.log('[MockContainerClient] Registered BrowserScenario (E2E_CHROMIUM_PATH available)')
-  })
-}
-
 export class MockContainerClient extends EventEmitter implements ContainerClient {
   // Global scenario registry - tests can register scenarios by message pattern
   static scenarios = new Map<string, MockScenario>([
@@ -494,7 +482,6 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   private config: ContainerConfig
   private running: boolean = false
-  private activeBrowserSessionId: string | null = null
   private sessions: Map<string, ContainerSession> = new Map()
   private sessionMessages: Map<string, unknown[]> = new Map()
   private streamCallbacks: Map<string, Set<(message: StreamMessage) => void>> = new Map()
@@ -506,14 +493,6 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   constructor(config: ContainerConfig) {
     super()
     this.config = config
-  }
-
-  getAgentId(): string {
-    return this.config.agentId
-  }
-
-  setActiveBrowserSession(sessionId: string | null): void {
-    this.activeBrowserSessionId = sessionId
   }
 
   /**
@@ -589,10 +568,6 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   }
 
   async stop(): Promise<void> {
-    if (this.activeBrowserSessionId && cleanupBrowserSessionFn) {
-      cleanupBrowserSessionFn(this.activeBrowserSessionId)
-      this.activeBrowserSessionId = null
-    }
     this.running = false
     this.sessions.clear()
     this.sessionMessages.clear()
@@ -601,10 +576,6 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   }
 
   stopSync(): void {
-    if (this.activeBrowserSessionId && cleanupBrowserSessionFn) {
-      cleanupBrowserSessionFn(this.activeBrowserSessionId)
-      this.activeBrowserSessionId = null
-    }
     this.running = false
     this.sessions.clear()
     this.sessionMessages.clear()
@@ -627,18 +598,6 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   async fetch(fetchPath: string, _init?: RequestInit): Promise<Response> {
     // Mock fetch - return appropriate empty responses based on path
-
-    // Browser status — used by frontend when WebSocket closes to check if browser is still active
-    if (fetchPath === '/browser/status') {
-      return new Response(JSON.stringify({
-        active: this.activeBrowserSessionId !== null,
-        sessionId: this.activeBrowserSessionId,
-      }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    }
-
     // Endpoints that return arrays need to return [] not {}
     if (fetchPath === '/artifacts') {
       return new Response(JSON.stringify([]), {

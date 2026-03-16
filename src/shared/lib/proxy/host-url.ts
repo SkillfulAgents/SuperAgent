@@ -7,7 +7,6 @@ export function getContainerHostUrl(): string {
   if (runner === 'podman') {
     return 'host.containers.internal'
   }
-  // Docker, Apple Container, Lima, and WSL2 all use host.docker.internal
   return 'host.docker.internal'
 }
 

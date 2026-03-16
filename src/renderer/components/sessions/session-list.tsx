@@ -27,8 +27,7 @@ function SessionTab({
   const { isStreaming } = useMessageStream(isSelected ? session.id : null, isSelected ? agentSlug : null)
 
   // Show as active if API says so OR if we're currently streaming
-  const isWorking = (session.isActive || isStreaming) && !session.isAwaitingInput
-  const isAwaitingInput = session.isAwaitingInput
+  const showActive = session.isActive || isStreaming
 
   return (
     <button
@@ -41,17 +40,12 @@ function SessionTab({
       )}
       data-testid={`session-tab-${session.id}`}
     >
-      {isAwaitingInput ? (
-        <span className="relative flex h-2 w-2">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-orange-500 opacity-75"></span>
-          <span className="relative inline-flex rounded-full h-2 w-2 bg-orange-500"></span>
-        </span>
-      ) : isWorking ? (
+      {showActive && (
         <span className="relative flex h-2 w-2">
           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-current opacity-75"></span>
           <span className="relative inline-flex rounded-full h-2 w-2 bg-current"></span>
         </span>
-      ) : null}
+      )}
       {session.name}
     </button>
   )

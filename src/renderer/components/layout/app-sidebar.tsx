@@ -1,8 +1,8 @@
 
-import { ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard, Loader2, WifiOff, LogOut, User, Users, CircleHelp } from 'lucide-react'
+import { ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard, Loader2, WifiOff, LogOut, User, Users } from 'lucide-react'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
-import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
+import { useState, useEffect, useRef } from 'react'
+import { isElectron, getPlatform } from '@renderer/lib/env'
 import { useDialogs } from '@renderer/context/dialog-context'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import {
@@ -34,15 +34,12 @@ import { useAgents, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useSessions, type ApiSession } from '@renderer/hooks/use-sessions'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSettings } from '@renderer/hooks/use-settings'
-import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
+import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { CreateAgentDialog } from '@renderer/components/agents/create-agent-dialog'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
-import { DashboardContextMenu } from '@renderer/components/dashboards/dashboard-context-menu'
-import { useQueryClient } from '@tanstack/react-query'
-import { apiFetch } from '@renderer/lib/api'
 import { useSelection } from '@renderer/context/selection-context'
 import { useScheduledTasks, type ApiScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { useArtifacts, type ArtifactInfo } from '@renderer/hooks/use-artifacts'
@@ -52,24 +49,6 @@ import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui
 import { useUser } from '@renderer/context/user-context'
 import { NotificationBell } from '@renderer/components/notifications/notification-bell'
 import { useIsOnline } from '@renderer/context/connectivity-context'
-import {
-  DndContext,
-  closestCenter,
-  PointerSensor,
-  KeyboardSensor,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-} from '@dnd-kit/core'
-import {
-  SortableContext,
-  verticalListSortingStrategy,
-  arrayMove,
-  sortableKeyboardCoordinates,
-} from '@dnd-kit/sortable'
-import { restrictToVerticalAxis } from '@dnd-kit/modifiers'
-import { SortableAgentMenuItem } from './sortable-agent-item'
-import { applyAgentOrder } from '@renderer/lib/agent-ordering'
 
 // Session sub-item that tracks its streaming state
 function SessionSubItem({
@@ -82,9 +61,7 @@ function SessionSubItem({
   const { selectedSessionId, selectAgent, selectSession } = useSelection()
   const isSelected = session.id === selectedSessionId
   const { isStreaming } = useMessageStream(isSelected ? session.id : null, isSelected ? agentSlug : null)
-  const isWorking = (session.isActive || isStreaming) && !session.isAwaitingInput
-  const isAwaitingInput = session.isAwaitingInput
-  const hasUnread = !session.isActive && !session.isAwaitingInput && session.hasUnreadNotifications
+  const showActive = session.isActive || isStreaming
 
   const handleClick = () => {
     selectAgent(agentSlug)
@@ -103,16 +80,12 @@ function SessionSubItem({
           isActive={isSelected}
         >
           <button onClick={handleClick} className="flex items-center gap-2 w-full" data-testid={`session-item-${session.id}`}>
-            {isAwaitingInput ? (
-              <CircleHelp className="h-3 w-3 shrink-0 text-orange-500" />
-            ) : isWorking ? (
+            {showActive && (
               <span className="relative flex h-2 w-2 shrink-0">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-current opacity-75"></span>
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-current"></span>
               </span>
-            ) : hasUnread ? (
-              <span className="h-2 w-2 shrink-0 rounded-full bg-blue-500" />
-            ) : null}
+            )}
             <span className="truncate">{session.name}</span>
           </button>
         </SidebarMenuSubButton>
@@ -170,123 +143,33 @@ function DashboardSubItem({
 }) {
   const { selectedDashboardSlug, selectAgent, selectDashboard } = useSelection()
   const isSelected = artifact.slug === selectedDashboardSlug
-  const [isRenaming, setIsRenaming] = useState(false)
 
   const handleClick = () => {
     selectAgent(agentSlug)
     selectDashboard(artifact.slug)
   }
 
-  const handleDoubleClick = () => {
-    openDashboardExternal(agentSlug, artifact.slug, artifact.name)
-  }
-
   return (
     <SidebarMenuSubItem>
-      <DashboardContextMenu
-        artifactSlug={artifact.slug}
-        artifactName={artifact.name}
-        agentSlug={agentSlug}
-        onRenameRequest={() => setIsRenaming(true)}
+      <SidebarMenuSubButton
+        asChild
+        isActive={isSelected}
+        title={artifact.description || artifact.name}
       >
-        <SidebarMenuSubButton
-          asChild
-          isActive={isSelected}
-          title={`${artifact.description || artifact.name} (double-click to open in new window)`}
+        <button
+          onClick={handleClick}
+          className="flex items-center gap-2 w-full"
         >
-          <button
-            onClick={handleClick}
-            onDoubleClick={handleDoubleClick}
-            className="flex items-center gap-2 w-full"
-          >
-            <LayoutDashboard className="h-3 w-3 shrink-0" />
-            {isRenaming ? (
-              <InlineRenameInput
-                agentSlug={agentSlug}
-                artifactSlug={artifact.slug}
-                currentName={artifact.name}
-                onDone={() => setIsRenaming(false)}
-              />
-            ) : (
-              <span className="truncate">{artifact.name}</span>
-            )}
-          </button>
-        </SidebarMenuSubButton>
-      </DashboardContextMenu>
+          <LayoutDashboard className="h-3 w-3 shrink-0" />
+          <span className="truncate">{artifact.name}</span>
+        </button>
+      </SidebarMenuSubButton>
     </SidebarMenuSubItem>
   )
 }
 
-function InlineRenameInput({
-  agentSlug,
-  artifactSlug,
-  currentName,
-  onDone,
-}: {
-  agentSlug: string
-  artifactSlug: string
-  currentName: string
-  onDone: () => void
-}) {
-  const [value, setValue] = useState(currentName)
-  const queryClient = useQueryClient()
-  const inputRef = React.useRef<HTMLInputElement>(null)
-  const cancelledRef = React.useRef(false)
-  const submittedRef = React.useRef(false)
-
-  React.useEffect(() => {
-    inputRef.current?.select()
-  }, [])
-
-  const submit = async () => {
-    if (submittedRef.current || cancelledRef.current) return
-    submittedRef.current = true
-    const trimmed = value.trim()
-    if (trimmed && trimmed !== currentName) {
-      try {
-        const res = await apiFetch(`/api/agents/${agentSlug}/artifacts/${artifactSlug}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: trimmed }),
-        })
-        if (res.ok) {
-          queryClient.invalidateQueries({ queryKey: ['artifacts', agentSlug] })
-        }
-      } catch (error) {
-        console.error('Failed to rename dashboard:', error)
-      }
-    }
-    onDone()
-  }
-
-  const cancel = () => {
-    cancelledRef.current = true
-    onDone()
-  }
-
-  return (
-    <input
-      ref={inputRef}
-      value={value}
-      onChange={(e) => setValue(e.target.value)}
-      onKeyDown={(e) => {
-        e.stopPropagation()
-        if (e.key === 'Enter') submit()
-        if (e.key === 'Escape') cancel()
-      }}
-      onBlur={submit}
-      onClick={(e) => e.stopPropagation()}
-      autoFocus
-      className="w-full bg-background border border-input rounded px-1 py-0 text-sm outline-none focus:ring-1 focus:ring-ring"
-    />
-  )
-}
-
 // Agent menu item with expandable sessions
-export const AgentMenuItem = React.forwardRef<
-  HTMLLIElement,
-  { agent: ApiAgent } & React.HTMLAttributes<HTMLLIElement>
->(({ agent, style, ...rest }, ref) => {
+function AgentMenuItem({ agent }: { agent: ApiAgent }) {
   const { selectedAgentSlug, selectAgent } = useSelection()
   const { agentMemberCount } = useUser()
   const { data: sessions } = useSessions(agent.slug)
@@ -309,7 +192,7 @@ export const AgentMenuItem = React.forwardRef<
 
   return (
     <Collapsible asChild open={isOpen} onOpenChange={setIsOpen}>
-      <SidebarMenuItem ref={ref} style={style} {...rest}>
+      <SidebarMenuItem>
         <AgentContextMenu agent={agent}>
           <SidebarMenuButton
             onClick={handleClick}
@@ -324,7 +207,6 @@ export const AgentMenuItem = React.forwardRef<
             <AgentStatus
               status={agent.status}
               hasActiveSessions={sessions?.some((s) => s.isActive) ?? false}
-              hasSessionsAwaitingInput={sessions?.some((s) => s.isAwaitingInput) ?? false}
             />
           </SidebarMenuButton>
         </AgentContextMenu>
@@ -386,8 +268,7 @@ export const AgentMenuItem = React.forwardRef<
       </SidebarMenuItem>
     </Collapsible>
   )
-})
-AgentMenuItem.displayName = 'AgentMenuItem'
+}
 
 function UserFooter() {
   const { isAuthMode, user, signOut } = useUser()
@@ -434,9 +315,7 @@ function ApiKeyWarning({ onOpenSettings }: { onOpenSettings: () => void }) {
   const showAdminInfo = !isAuthMode || isAdmin
   const { data: settings } = useSettings({ enabled: showAdminInfo })
 
-  const activeProviderId = settings?.llmProvider ?? 'anthropic'
-  const activeKeyStatus = settings?.apiKeyStatus?.[activeProviderId as keyof typeof settings.apiKeyStatus]
-  if (!activeKeyStatus || activeKeyStatus.isConfigured) return null
+  if (!settings?.apiKeyStatus?.anthropic || settings.apiKeyStatus.anthropic.isConfigured) return null
 
   return (
     <div className="px-2 pt-2">
@@ -461,48 +340,14 @@ export function AppSidebar() {
   const [containerSetupOpen, setContainerSetupOpen] = useState(false)
   const { data: agents, isLoading, error } = useAgents()
   const { data: userSettings } = useUserSettings()
-  const updateSettings = useUpdateUserSettings()
   const { data: runtimeStatus } = useRuntimeStatus()
   const isFullScreen = useFullScreen()
-
-  // Drag-and-drop sensors: distance threshold prevents click conflicts
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
-  )
-
-  // Optimistic local order during mutation
-  const [localOrder, setLocalOrder] = useState<string[] | null>(null)
-  const effectiveOrder = localOrder ?? userSettings?.agentOrder
-  const orderedAgents = useMemo(
-    () => applyAgentOrder(agents ?? [], effectiveOrder),
-    [agents, effectiveOrder]
-  )
-
-  const handleDragEnd = useCallback((event: DragEndEvent) => {
-    const { active, over } = event
-    if (!over || active.id === over.id) return
-    if (typeof active.id !== 'string' || typeof over.id !== 'string') return
-
-    const currentSlugs = orderedAgents.map(a => a.slug)
-    const oldIndex = currentSlugs.indexOf(active.id)
-    const newIndex = currentSlugs.indexOf(over.id)
-    if (oldIndex === -1 || newIndex === -1) return
-
-    const newOrder = arrayMove(currentSlugs, oldIndex, newIndex)
-    setLocalOrder(newOrder)
-    updateSettings.mutate(
-      { agentOrder: newOrder },
-      { onSettled: () => setLocalOrder(null) }
-    )
-  }, [orderedAgents, updateSettings])
 
   const isOnline = useIsOnline()
 
   const readiness = runtimeStatus?.runtimeReadiness
   const isRuntimeUnavailable = readiness?.status === 'RUNTIME_UNAVAILABLE' || readiness?.status === 'ERROR'
   const isPullingOrBuilding = readiness?.status === 'PULLING_IMAGE'
-  const isChecking = readiness?.status === 'CHECKING'
 
   // Track if we've shown the initial container setup dialog
   const hasShownInitialSetup = useRef(false)
@@ -536,7 +381,7 @@ export function AppSidebar() {
 
       {!isOnline && (
         <div className="px-2 pt-2">
-          <Alert variant="destructive" className="py-2 [&>svg]:top-2.5">
+          <Alert variant="destructive" className="py-2">
             <WifiOff className="h-4 w-4" />
             <AlertDescription className="text-xs">
               No internet connection. Some features may be unavailable.
@@ -549,7 +394,7 @@ export function AppSidebar() {
         <div className="px-2 pt-2">
           <Alert
             variant="destructive"
-            className="py-2 [&>svg]:top-2.5 cursor-pointer hover:bg-destructive/20 transition-colors"
+            className="py-2 cursor-pointer hover:bg-destructive/20 transition-colors"
             onClick={() => setSettingsOpen(true)}
           >
             <AlertTriangle className="h-4 w-4" />
@@ -561,20 +406,9 @@ export function AppSidebar() {
         </div>
       )}
 
-      {isChecking && (
-        <div className="px-2 pt-2">
-          <Alert className="py-2 [&>svg]:top-2.5">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            <AlertDescription className="text-xs">
-              {readiness?.message || 'Starting runtime...'}
-            </AlertDescription>
-          </Alert>
-        </div>
-      )}
-
       {isPullingOrBuilding && (
         <div className="px-2 pt-2">
-          <Alert className="py-2 [&>svg]:top-2.5">
+          <Alert className="py-2">
             <Loader2 className="h-4 w-4 animate-spin" />
             <AlertDescription className="text-xs">
               {readiness?.message || 'Preparing agent image...'}
@@ -615,21 +449,9 @@ export function AppSidebar() {
                     No agents yet. Create one to get started.
                   </div>
                 ) : (
-                  <DndContext
-                    sensors={sensors}
-                    collisionDetection={closestCenter}
-                    onDragEnd={handleDragEnd}
-                    modifiers={[restrictToVerticalAxis]}
-                  >
-                    <SortableContext
-                      items={orderedAgents.map(a => a.slug)}
-                      strategy={verticalListSortingStrategy}
-                    >
-                      {orderedAgents.map((agent) => (
-                        <SortableAgentMenuItem key={agent.slug} agent={agent} />
-                      ))}
-                    </SortableContext>
-                  </DndContext>
+                  agents.map((agent) => (
+                    <AgentMenuItem key={agent.slug} agent={agent} />
+                  ))
                 )}
               </SidebarMenu>
             </SidebarGroupContent>

@@ -1,34 +1,20 @@
 /**
  * Scheduled Tasks API Routes
  *
- * Endpoints for viewing, cancelling, running, and editing scheduled tasks.
+ * Endpoints for viewing and cancelling scheduled tasks.
  * Note: Listing tasks by agent is in agents.ts since it's under /api/agents/:agentSlug/
  */
 
 import { Hono } from 'hono'
 import type { Context, Next, MiddlewareHandler } from 'hono'
 import { and, eq } from 'drizzle-orm'
-import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import {
   getScheduledTask,
   cancelScheduledTask,
   resetScheduledTask,
   updateTaskTimezone,
-  markTaskExecuted,
-  recordManualExecution,
-  updateScheduleExpression,
 } from '@shared/lib/services/scheduled-task-service'
-import {
-  getSessionsByScheduledTask,
-  registerSession,
-  updateSessionMetadata,
-} from '@shared/lib/services/session-service'
-import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
-import { containerManager } from '@shared/lib/container/container-manager'
-import { messagePersister } from '@shared/lib/container/message-persister'
-import { getEffectiveModels } from '@shared/lib/config/settings'
-import { validateCronExpression } from '@shared/lib/services/schedule-parser'
-import { withRetry } from '@shared/lib/utils/retry'
+import { getSessionsByScheduledTask } from '@shared/lib/services/session-service'
 import { Authenticated } from '../middleware/auth'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
@@ -158,203 +144,6 @@ scheduledTasksRouter.patch('/:taskId/timezone', TaskAgentRole('user'), async (c)
   } catch (error) {
     console.error('Failed to update scheduled task timezone:', error)
     return c.json({ error: 'Failed to update timezone' }, 500)
-  }
-})
-
-// POST /api/scheduled-tasks/:taskId/run-now - Execute a scheduled task immediately
-scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) => {
-  try {
-    const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
-    if (!task || task.status !== 'pending') {
-      return c.json({ error: 'Task is not pending' }, 400)
-    }
-
-    const client = await containerManager.ensureRunning(task.agentSlug)
-    const availableEnvVars = await getSecretEnvVars(task.agentSlug)
-
-    const containerSession = await client.createSession({
-      availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
-      initialMessage: task.prompt,
-      model: getEffectiveModels().agentModel,
-      browserModel: getEffectiveModels().browserModel,
-    })
-
-    const sessionId = containerSession.id
-    const sessionName = task.name || 'Scheduled Task (Run Now)'
-
-    await registerSession(task.agentSlug, sessionId, sessionName)
-    await updateSessionMetadata(task.agentSlug, sessionId, {
-      isScheduledExecution: true,
-      scheduledTaskId: task.id,
-      scheduledTaskName: task.name || undefined,
-    })
-
-    await messagePersister.subscribeToSession(sessionId, client, sessionId, task.agentSlug)
-    messagePersister.markSessionActive(sessionId, task.agentSlug)
-
-    if (task.isRecurring) {
-      // Recurring: keep schedule, just record the manual execution
-      await recordManualExecution(task.id, sessionId)
-    } else {
-      // One-time: cancel the schedule and mark as executed
-      await markTaskExecuted(task.id, sessionId)
-    }
-
-    const updated = await getScheduledTask(task.id)
-    return c.json({
-      sessionId,
-      agentSlug: task.agentSlug,
-      task: updated,
-    }, 201)
-  } catch (error) {
-    console.error('Failed to run scheduled task now:', error)
-    return c.json({ error: 'Failed to run scheduled task' }, 500)
-  }
-})
-
-// POST /api/scheduled-tasks/:taskId/describe-schedule - Translate cron expression to English
-scheduledTasksRouter.post('/:taskId/describe-schedule', TaskAgentRole('viewer'), async (c) => {
-  try {
-    const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
-    if (!task || task.scheduleType !== 'cron') {
-      return c.json({ error: 'Task is not a recurring cron task' }, 400)
-    }
-
-    const provider = getActiveLlmProvider()
-    if (!provider.getApiKeyStatus().isConfigured) {
-      return c.json({ error: 'LLM API key not configured' }, 500)
-    }
-
-    const client = provider.createClient()
-    const response = await withRetry(() =>
-      client.messages.create({
-        model: getEffectiveModels().summarizerModel,
-        max_tokens: 100,
-        messages: [
-          {
-            role: 'user',
-            content: `Translate the following crontab expression to a concise human-readable English description. Respond with ONLY the description, nothing else. No quotes, no explanation.
-
-Cron expression: ${task.scheduleExpression}
-
-Examples:
-"0 9 * * 1-5" → "Every weekday at 9:00 AM"
-"*/15 * * * *" → "Every 15 minutes"
-"0 0 1 * *" → "First day of every month at midnight"`,
-          },
-        ],
-      })
-    )
-
-    const textBlock = response.content.find((block) => block.type === 'text')
-    const description = textBlock?.type === 'text' ? textBlock.text.trim() : null
-
-    if (!description) {
-      return c.json({ error: 'Failed to generate description' }, 500)
-    }
-
-    return c.json({ description })
-  } catch (error) {
-    console.error('Failed to describe schedule:', error)
-    return c.json({ error: 'Failed to describe schedule' }, 500)
-  }
-})
-
-// POST /api/scheduled-tasks/:taskId/parse-schedule - Convert English description to cron expression
-scheduledTasksRouter.post('/:taskId/parse-schedule', TaskAgentRole('user'), async (c) => {
-  try {
-    const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
-    if (!task || task.scheduleType !== 'cron') {
-      return c.json({ error: 'Task is not a recurring cron task' }, 400)
-    }
-
-    const body = await c.req.json<{ description: string }>()
-    if (!body.description?.trim()) {
-      return c.json({ error: 'description is required' }, 400)
-    }
-
-    const provider = getActiveLlmProvider()
-    if (!provider.getApiKeyStatus().isConfigured) {
-      return c.json({ error: 'LLM API key not configured' }, 500)
-    }
-
-    const client = provider.createClient()
-    const response = await withRetry(() =>
-      client.messages.create({
-        model: getEffectiveModels().summarizerModel,
-        max_tokens: 50,
-        messages: [
-          {
-            role: 'user',
-            content: `Convert the following English schedule description to a standard 5-field crontab expression (minute hour day-of-month month day-of-week). Respond with ONLY the cron expression, nothing else. No quotes, no explanation.
-
-Description: ${body.description.trim()}
-
-Examples:
-"Every weekday at 9:00 AM" → 0 9 * * 1-5
-"Every 15 minutes" → */15 * * * *
-"First day of every month at midnight" → 0 0 1 * *`,
-          },
-        ],
-      })
-    )
-
-    const textBlock = response.content.find((block) => block.type === 'text')
-    const expression = textBlock?.type === 'text' ? textBlock.text.trim() : null
-
-    if (!expression) {
-      return c.json({ error: 'Failed to generate cron expression' }, 500)
-    }
-
-    // Validate the generated cron expression
-    try {
-      const result = validateCronExpression(expression)
-      if (!result.valid) throw new Error('Invalid')
-    } catch {
-      return c.json({
-        error: 'Generated expression is not valid cron syntax',
-        expression,
-      }, 422)
-    }
-
-    return c.json({ expression })
-  } catch (error) {
-    console.error('Failed to parse schedule description:', error)
-    return c.json({ error: 'Failed to parse schedule' }, 500)
-  }
-})
-
-// PATCH /api/scheduled-tasks/:taskId/schedule - Update a recurring task's cron expression
-scheduledTasksRouter.patch('/:taskId/schedule', TaskAgentRole('user'), async (c) => {
-  try {
-    const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
-    if (!task || task.scheduleType !== 'cron') {
-      return c.json({ error: 'Task is not a recurring cron task' }, 400)
-    }
-
-    const body = await c.req.json<{ scheduleExpression: string }>()
-    if (!body.scheduleExpression?.trim()) {
-      return c.json({ error: 'scheduleExpression is required' }, 400)
-    }
-
-    // Validate cron expression
-    try {
-      const result = validateCronExpression(body.scheduleExpression.trim())
-      if (!result.valid) throw new Error('Invalid')
-    } catch {
-      return c.json({ error: 'Invalid cron expression' }, 400)
-    }
-
-    const updated = await updateScheduleExpression(task.id, body.scheduleExpression.trim())
-    if (!updated) {
-      return c.json({ error: 'Task not found or not pending' }, 404)
-    }
-
-    const refreshed = await getScheduledTask(task.id)
-    return c.json(refreshed)
-  } catch (error) {
-    console.error('Failed to update schedule:', error)
-    return c.json({ error: 'Failed to update schedule' }, 500)
   }
 })
 

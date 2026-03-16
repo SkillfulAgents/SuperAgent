@@ -1,6 +1,5 @@
 import fs from 'fs'
 import path from 'path'
-import os from 'os'
 import { getDataDir } from './data-dir'
 import { getDefaultAgentImage, AGENT_IMAGE_REGISTRY } from './version'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
@@ -12,20 +11,10 @@ export interface ContainerSettings {
     cpu: number
     memory: string
   }
-  /**
-   * Per-runtime settings, keyed by runner name.
-   * Each runtime can define its own params (VM config, API keys, etc.).
-   */
-  runtimeSettings?: Record<string, Record<string, string>>
 }
 
 export interface ApiKeySettings {
   anthropicApiKey?: string
-  openrouterApiKey?: string
-  bedrockApiKey?: string
-  bedrockAccessKeyId?: string
-  bedrockSecretAccessKey?: string
-  bedrockRegion?: string
   composioApiKey?: string
   composioUserId?: string
   browserbaseApiKey?: string
@@ -75,7 +64,6 @@ export interface AppPreferences {
   chromeProfileId?: string
   allowPrereleaseUpdates?: boolean
   theme?: 'system' | 'light' | 'dark'
-  maxBrowserTabs?: number
 
   // Browserbase session settings
   browserbaseAdvancedStealth?: boolean
@@ -139,12 +127,9 @@ export interface AnalyticsTarget {
   enabled: boolean
 }
 
-export type LlmProviderId = 'anthropic' | 'openrouter' | 'bedrock'
-
 export interface AppSettings {
   container: ContainerSettings
   apiKeys?: ApiKeySettings
-  llmProvider?: LlmProviderId
   app?: AppPreferences
   models?: ModelSettings
   agentLimits?: AgentLimitsSettings
@@ -181,25 +166,14 @@ export interface HostBrowserStatus {
   providers: HostBrowserProviderInfo[]
 }
 
-export interface LlmProviderInfo {
-  id: LlmProviderId
-  name: string
-  isConfigured: boolean
-  availableModels: { value: string; label: string }[]
-}
-
 export interface GlobalSettingsResponse {
   dataDir: string
   container: ContainerSettings
   app: AppPreferences
   hasRunningAgents: boolean
   runnerAvailability: RunnerAvailability[]
-  llmProvider: LlmProviderId
-  llmProviderStatus: LlmProviderInfo[]
   apiKeyStatus: {
     anthropic: ApiKeyStatus
-    openrouter: ApiKeyStatus
-    bedrock: ApiKeyStatus
     composio: ApiKeyStatus
     browserbase: ApiKeyStatus
     deepgram: ApiKeyStatus
@@ -219,26 +193,14 @@ export interface GlobalSettingsResponse {
   analyticsTargets?: AnalyticsTarget[]
 }
 
-/**
- * Default container runner: Lima on macOS (bundled, no install needed),
- * WSL2 on Windows (bundled, no install needed), Docker elsewhere.
- */
-function getDefaultContainerRunner(): string {
-  const p = os.platform()
-  if (p === 'darwin') return 'lima'
-  if (p === 'win32') return 'wsl2'
-  return 'docker'
-}
-
 const DEFAULT_SETTINGS: AppSettings = {
   container: {
-    containerRunner: getDefaultContainerRunner(),
+    containerRunner: 'docker',
     agentImage: getDefaultAgentImage(),
     resourceLimits: {
       cpu: 2,
       memory: '4g',
     },
-    runtimeSettings: {},
   },
   app: {
     showMenuBarIcon: true,
@@ -299,8 +261,6 @@ export function loadSettings(): AppSettings {
             ...DEFAULT_SETTINGS.container.resourceLimits,
             ...loaded.container?.resourceLimits,
           },
-          // Ensure runtimeSettings exists (may be missing in old settings files)
-          runtimeSettings: loaded.container?.runtimeSettings ?? {},
         },
         app: {
           ...DEFAULT_SETTINGS.app,
@@ -311,7 +271,6 @@ export function loadSettings(): AppSettings {
           },
         },
         apiKeys: loaded.apiKeys,
-        llmProvider: loaded.llmProvider,
         models: {
           ...DEFAULT_SETTINGS.models,
           ...loaded.models,

@@ -190,7 +190,6 @@ async function updateTrayMenu(): Promise<void> {
   const agents = await fetchAgentsWithStatus(apiPortRef)
 
   // Group agents by status
-  const awaitingInput = agents.filter(a => a.activityStatus === 'awaiting_input')
   const working = agents.filter(a => a.activityStatus === 'working')
   const idle = agents.filter(a => a.activityStatus === 'idle')
   const sleeping = agents.filter(a => a.activityStatus === 'sleeping')
@@ -203,19 +202,6 @@ async function updateTrayMenu(): Promise<void> {
     },
     { type: 'separator' },
   ]
-
-  // Add awaiting input agents section
-  if (awaitingInput.length > 0) {
-    menuTemplate.push({ label: 'Awaiting Input', enabled: false })
-    awaitingInput.forEach(agent => {
-      menuTemplate.push({
-        label: agent.name,
-        icon: createStatusIcon('working'),
-        click: () => navigateToAgent(agent.slug),
-      })
-    })
-    menuTemplate.push({ type: 'separator' })
-  }
 
   // Add working agents section
   if (working.length > 0) {

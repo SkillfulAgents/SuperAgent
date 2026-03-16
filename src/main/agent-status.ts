@@ -10,11 +10,9 @@ export interface ApiAgent {
 export interface ApiSession {
   id: string
   isActive: boolean
-  isAwaitingInput?: boolean
 }
 
-// TODO: Consolidate with AgentActivityStatus in agent-status.tsx and agent.page.ts into a single shared type
-export type ActivityStatus = 'working' | 'idle' | 'sleeping' | 'awaiting_input'
+export type ActivityStatus = 'working' | 'idle' | 'sleeping'
 
 export interface AgentInfo {
   slug: string
@@ -23,53 +21,19 @@ export interface AgentInfo {
 }
 
 /**
- * Apply saved agent ordering (matches renderer's applyAgentOrder logic).
- * Agents in savedOrder keep their saved position; unknown agents go first.
- */
-function applyAgentOrder(agents: AgentInfo[], savedOrder: string[] | undefined): AgentInfo[] {
-  if (!savedOrder || savedOrder.length === 0) return agents
-
-  const positionMap = new Map(savedOrder.map((slug, i) => [slug, i]))
-
-  const ordered: AgentInfo[] = []
-  const newAgents: AgentInfo[] = []
-
-  for (const agent of agents) {
-    if (positionMap.has(agent.slug)) {
-      ordered.push(agent)
-    } else {
-      newAgents.push(agent)
-    }
-  }
-
-  ordered.sort((a, b) => positionMap.get(a.slug)! - positionMap.get(b.slug)!)
-
-  return [...newAgents, ...ordered]
-}
-
-/**
- * Fetch agents with their activity status from the API,
- * sorted by the user's saved agent order.
+ * Fetch agents with their activity status from the API
  */
 export async function fetchAgentsWithStatus(apiPort: number): Promise<AgentInfo[]> {
   try {
-    // Fetch agents and user settings in parallel
-    const [agentsRes, settingsRes] = await Promise.all([
-      fetch(`http://localhost:${apiPort}/api/agents`),
-      fetch(`http://localhost:${apiPort}/api/user-settings`).catch(() => null),
-    ])
+    // Fetch all agents
+    const agentsRes = await fetch(`http://localhost:${apiPort}/api/agents`)
     if (!agentsRes.ok) return []
     const agents: ApiAgent[] = await agentsRes.json()
-
-    const agentOrder: string[] | undefined =
-      settingsRes?.ok ? (await settingsRes.json())?.agentOrder : undefined
 
     // For each running agent, check if it has active sessions
     const agentsWithStatus: AgentInfo[] = await Promise.all(
       agents.map(async (agent) => {
         let hasActiveSessions = false
-
-        let hasSessionsAwaitingInput = false
 
         if (agent.status === 'running') {
           try {
@@ -79,7 +43,6 @@ export async function fetchAgentsWithStatus(apiPort: number): Promise<AgentInfo[
             if (sessionsRes.ok) {
               const sessions: ApiSession[] = await sessionsRes.json()
               hasActiveSessions = sessions.some(s => s.isActive)
-              hasSessionsAwaitingInput = sessions.some(s => s.isAwaitingInput)
             }
           } catch {
             // Ignore session fetch errors
@@ -90,8 +53,6 @@ export async function fetchAgentsWithStatus(apiPort: number): Promise<AgentInfo[
         let activityStatus: ActivityStatus
         if (agent.status === 'stopped') {
           activityStatus = 'sleeping'
-        } else if (hasSessionsAwaitingInput) {
-          activityStatus = 'awaiting_input'
         } else if (hasActiveSessions) {
           activityStatus = 'working'
         } else {
@@ -106,7 +67,7 @@ export async function fetchAgentsWithStatus(apiPort: number): Promise<AgentInfo[
       })
     )
 
-    return applyAgentOrder(agentsWithStatus, agentOrder)
+    return agentsWithStatus
   } catch (error) {
     console.error('Failed to fetch agents:', error)
     return []

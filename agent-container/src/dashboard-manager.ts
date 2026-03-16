@@ -310,27 +310,6 @@ class DashboardManager {
     return result
   }
 
-  async stopDashboard(slug: string): Promise<boolean> {
-    const info = this.dashboards.get(slug)
-    if (!info) return false
-
-    if (info.process) {
-      info.process.kill('SIGTERM')
-      await new Promise<void>((resolve) => {
-        if (info.process) {
-          info.process.on('exit', () => resolve())
-          setTimeout(resolve, 5000)
-        } else {
-          resolve()
-        }
-      })
-    }
-
-    info.logStream?.end()
-    this.dashboards.delete(slug)
-    return true
-  }
-
   getDashboardPort(slug: string): number | null {
     const info = this.dashboards.get(slug)
     if (!info || info.status !== 'running') return null

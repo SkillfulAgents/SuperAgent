@@ -11,7 +11,6 @@ const mockSendMessage = {
   isPending: false,
 }
 const mockUploadFile = { mutateAsync: vi.fn().mockResolvedValue({ path: '/tmp/file' }) }
-const mockUploadFolder = { mutateAsync: vi.fn().mockResolvedValue({ path: '/tmp/folder' }) }
 const mockInterruptSession = {
   mutateAsync: vi.fn().mockResolvedValue({}),
   isPending: false,
@@ -20,7 +19,6 @@ const mockInterruptSession = {
 vi.mock('@renderer/hooks/use-messages', () => ({
   useSendMessage: () => mockSendMessage,
   useUploadFile: () => mockUploadFile,
-  useUploadFolder: () => mockUploadFolder,
   useInterruptSession: () => mockInterruptSession,
 }))
 

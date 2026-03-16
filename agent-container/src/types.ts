@@ -60,7 +60,6 @@ export interface CreateSessionRequest {
   maxTurns?: number; // Max conversation turns
   maxBudgetUsd?: number; // Max cost in USD per session
   customEnvVars?: Record<string, string>; // User-defined env vars for the agent process
-  maxBrowserTabs?: number; // Max browser tabs allowed (default 10)
 }
 
 export interface SendMessageRequest {

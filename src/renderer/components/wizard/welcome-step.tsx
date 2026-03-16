@@ -15,15 +15,15 @@ export function WelcomeStep() {
           </li>
           <li className="flex items-start gap-2">
             <span className="font-mono text-primary mt-0.5">2.</span>
-            <span><strong>Browser</strong> (optional) - Choose how agents browse the web</span>
+            <span><strong>Container Runtime</strong> - Ensure containers can run on your machine</span>
           </li>
           <li className="flex items-start gap-2">
             <span className="font-mono text-primary mt-0.5">3.</span>
-            <span><strong>Composio</strong> (optional) - Connect OAuth accounts like Gmail, Slack, GitHub</span>
+            <span><strong>Browser</strong> (optional) - Choose how agents browse the web</span>
           </li>
           <li className="flex items-start gap-2">
             <span className="font-mono text-primary mt-0.5">4.</span>
-            <span><strong>Container Runtime</strong> - Ensure containers can run on your machine</span>
+            <span><strong>Composio</strong> (optional) - Connect OAuth accounts like Gmail, Slack, GitHub</span>
           </li>
           <li className="flex items-start gap-2">
             <span className="font-mono text-primary mt-0.5">5.</span>

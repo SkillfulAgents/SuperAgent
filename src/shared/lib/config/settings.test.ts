@@ -768,7 +768,7 @@ describe('settings cache', () => {
       // First call: no file
       mockNoSettingsFile()
       const first = getSettings()
-      expect(first.container.containerRunner).toBe(process.platform === 'darwin' ? 'lima' : 'docker')
+      expect(first.container.containerRunner).toBe('docker')
 
       // Now simulate file existing with different content
       clearSettingsCache()
@@ -1208,7 +1208,7 @@ describe('getCustomEnvVars', () => {
 
 describe('DEFAULT_SETTINGS', () => {
   it('has expected container defaults', () => {
-    expect(DEFAULT_SETTINGS.container.containerRunner).toBe(process.platform === 'darwin' ? 'lima' : 'docker')
+    expect(DEFAULT_SETTINGS.container.containerRunner).toBe('docker')
     expect(DEFAULT_SETTINGS.container.agentImage).toBe(
       'ghcr.io/skillfulagents/superagent-agent-container-base:latest'
     )
@@ -1333,7 +1333,7 @@ describe('integration scenarios', () => {
 
     // Initial read: defaults
     const initial = getSettings()
-    expect(initial.container.containerRunner).toBe(process.platform === 'darwin' ? 'lima' : 'docker')
+    expect(initial.container.containerRunner).toBe('docker')
 
     // Update
     mockedFs.existsSync.mockReturnValue(true)
@@ -1352,82 +1352,5 @@ describe('integration scenarios', () => {
     expect(afterUpdate.container.containerRunner).toBe('podman')
     // readFileSync should only have been called once (the initial load)
     expect(mockedFs.readFileSync).not.toHaveBeenCalled()
-  })
-})
-
-// ============================================================================
-// runtimeSettings initialization
-// ============================================================================
-
-describe('runtimeSettings migration', () => {
-  beforeEach(() => {
-    clearSettingsCache()
-  })
-
-  it('initializes runtimeSettings as empty object for old settings files', () => {
-    mockSettingsFile(
-      JSON.stringify({
-        container: {
-          containerRunner: 'docker',
-        },
-      })
-    )
-
-    const result = loadSettings()
-
-    expect(result.container.runtimeSettings).toEqual({})
-  })
-
-  it('preserves existing runtimeSettings when present', () => {
-    mockSettingsFile(
-      JSON.stringify({
-        container: {
-          containerRunner: 'lima',
-          runtimeSettings: {
-            lima: { vmMemory: '8GiB' },
-          },
-        },
-      })
-    )
-
-    const result = loadSettings()
-
-    expect(result.container.runtimeSettings).toEqual({
-      lima: { vmMemory: '8GiB' },
-    })
-  })
-
-  it('initializes runtimeSettings when container field is missing entirely', () => {
-    mockSettingsFile(JSON.stringify({}))
-
-    const result = loadSettings()
-
-    expect(result.container.runtimeSettings).toEqual({})
-  })
-
-  it('round-trips runtimeSettings through save and reload', () => {
-    mockNoSettingsFile()
-    const defaults = loadSettings()
-
-    const customized = {
-      ...defaults,
-      container: {
-        ...defaults.container,
-        runtimeSettings: {
-          lima: { vmMemory: '16GiB' },
-        },
-      },
-    }
-
-    mockedFs.existsSync.mockReturnValue(true)
-    mockedFs.writeFileSync.mockImplementation(() => {})
-    saveSettings(customized as any)
-
-    const savedContent = mockedFs.writeFileSync.mock.calls[0][1] as string
-    clearSettingsCache()
-    mockSettingsFile(savedContent)
-
-    const reloaded = loadSettings()
-    expect(reloaded.container.runtimeSettings?.lima?.vmMemory).toBe('16GiB')
   })
 })

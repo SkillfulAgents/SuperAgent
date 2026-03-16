@@ -63,16 +63,3 @@ export function getPlatform(): string | undefined {
   }
   return undefined
 }
-
-/**
- * Open a dashboard in a new window (Electron) or new tab (web).
- */
-export function openDashboardExternal(agentSlug: string, dashboardSlug: string, dashboardName?: string): void {
-  if (isElectron() && window.electronAPI?.openDashboardWindow) {
-    window.electronAPI.openDashboardWindow(agentSlug, dashboardSlug, dashboardName)
-  } else {
-    const baseUrl = getApiBaseUrl()
-    const url = `${baseUrl}/api/agents/${agentSlug}/artifacts/${dashboardSlug}/view`
-    window.open(url, '_blank')
-  }
-}

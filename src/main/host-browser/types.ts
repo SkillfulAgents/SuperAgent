@@ -32,7 +32,7 @@ export interface HostBrowserProvider {
   detect(): HostBrowserProviderStatus
 
   /** Launch/connect a browser instance. Returns CDP connection info. */
-  launch(instanceId: string, options?: Record<string, string>, agentId?: string): Promise<BrowserConnectionInfo>
+  launch(instanceId: string, options?: Record<string, string>): Promise<BrowserConnectionInfo>
 
   /** Get debug/screencast connection info for an active instance (optional — for remote providers) */
   getDebugInfo?(instanceId: string): Promise<BrowserDebugInfo | null>

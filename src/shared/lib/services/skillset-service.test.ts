@@ -64,9 +64,7 @@ vi.mock('@anthropic-ai/sdk', () => ({
 }))
 
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: vi.fn(() => ({
-    apiKeys: mockGetApiKey() ? { anthropicApiKey: mockGetApiKey() } : {},
-  })),
+  getEffectiveAnthropicApiKey: mockGetApiKey,
   getEffectiveModels: mockGetModels,
 }))
 
