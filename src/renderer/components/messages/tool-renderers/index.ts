@@ -14,6 +14,7 @@ import { scheduleTaskRenderer } from './schedule-task'
 import { deliverFileRenderer } from './deliver-file'
 import { requestFileRenderer } from './request-file'
 import { requestRemoteMcpRenderer } from './request-remote-mcp'
+import { requestScriptRunRenderer } from './request-script-run'
 import { taskRenderer } from './task'
 import {
   browserOpenRenderer,
@@ -72,6 +73,7 @@ const toolRenderers: Record<string, ToolRenderer> = {
   'mcp__user-input__deliver_file': deliverFileRenderer,
   'mcp__user-input__request_file': requestFileRenderer,
   'mcp__user-input__request_remote_mcp': requestRemoteMcpRenderer,
+  'mcp__user-input__request_script_run': requestScriptRunRenderer,
 
   // MCP tools - browser
   'mcp__browser__browser_open': browserOpenRenderer,

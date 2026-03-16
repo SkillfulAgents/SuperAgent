@@ -15,6 +15,15 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
   },
 }))
 
+const mockGetSettings = vi.fn((): Record<string, unknown> => ({ hostShellUse: { allowScriptExecution: true } }))
+vi.mock('@shared/lib/config/settings', () => ({
+  getSettings: () => mockGetSettings(),
+  VALID_SCRIPT_TYPES: {
+    darwin: ['applescript', 'shell'],
+    win32: ['powershell'],
+  },
+}))
+
 const mockReaddir = vi.fn()
 const mockStat = vi.fn()
 vi.mock('fs', () => ({
@@ -1824,6 +1833,124 @@ describe('MessagePersister', () => {
 
     it('returns false for unknown session IDs', () => {
       expect(messagePersister.isSessionAwaitingInput('nonexistent-session')).toBe(false)
+    })
+  })
+
+  // ============================================================================
+  // Script run request detection
+  // ============================================================================
+
+  describe('Script run request detection', () => {
+    // Use existing simulateToolUse helper (already defined above in awaiting input tests)
+    // Re-define locally since the other is scoped to that describe block
+    function simulateToolUse(toolName: string, toolId: string, input: Record<string, unknown>) {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: toolId, name: toolName },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_stop' },
+      })
+    }
+
+    it('broadcasts script_run_request SSE event when all checks pass', () => {
+      mockGetSettings.mockReturnValue({ hostShellUse: { allowScriptExecution: true } })
+      sseEvents.length = 0
+
+      simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-1', {
+        script: 'sw_vers',
+        explanation: 'Check macOS version',
+        scriptType: 'shell',
+      })
+
+      const scriptEvents = sseEvents.filter(e => e.type === 'script_run_request')
+      expect(scriptEvents).toHaveLength(1)
+      expect(scriptEvents[0]).toMatchObject({
+        type: 'script_run_request',
+        toolUseId: 'tool-sr-1',
+        script: 'sw_vers',
+        explanation: 'Check macOS version',
+        scriptType: 'shell',
+        agentSlug: AGENT_SLUG,
+      })
+    })
+
+    it('auto-rejects when allowScriptExecution is disabled', () => {
+      mockGetSettings.mockReturnValue({ hostShellUse: { allowScriptExecution: false } })
+      sseEvents.length = 0
+
+      simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-2', {
+        script: 'sw_vers',
+        explanation: 'Check version',
+        scriptType: 'shell',
+      })
+
+      // Should NOT broadcast to SSE (auto-reject path)
+      const scriptEvents = sseEvents.filter(e => e.type === 'script_run_request')
+      expect(scriptEvents).toHaveLength(0)
+    })
+
+    it('does not broadcast when hostShellUse is undefined', () => {
+      mockGetSettings.mockReturnValue({})
+      sseEvents.length = 0
+
+      simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-3', {
+        script: 'test',
+        explanation: 'Test',
+        scriptType: 'shell',
+      })
+
+      const scriptEvents = sseEvents.filter(e => e.type === 'script_run_request')
+      expect(scriptEvents).toHaveLength(0)
+    })
+
+    it('does not broadcast when script is missing from input', () => {
+      mockGetSettings.mockReturnValue({ hostShellUse: { allowScriptExecution: true } })
+      sseEvents.length = 0
+
+      simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-4', {
+        explanation: 'Check version',
+        scriptType: 'shell',
+      })
+
+      const scriptEvents = sseEvents.filter(e => e.type === 'script_run_request')
+      expect(scriptEvents).toHaveLength(0)
+    })
+
+    it('does not broadcast when scriptType is missing', () => {
+      mockGetSettings.mockReturnValue({ hostShellUse: { allowScriptExecution: true } })
+      sseEvents.length = 0
+
+      simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-5', {
+        script: 'sw_vers',
+        explanation: 'Check version',
+      })
+
+      const scriptEvents = sseEvents.filter(e => e.type === 'script_run_request')
+      expect(scriptEvents).toHaveLength(0)
+    })
+
+    it('sets isAwaitingInput after request_script_run tool fires', () => {
+      mockGetSettings.mockReturnValue({ hostShellUse: { allowScriptExecution: true } })
+
+      simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-6', {
+        script: 'sw_vers',
+        explanation: 'Check version',
+        scriptType: 'shell',
+      })
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
     })
   })
 })

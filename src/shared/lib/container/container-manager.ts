@@ -487,6 +487,9 @@ class ContainerManager {
       const tz = resolveTimezoneForAgent(agentId)
       envVars['TZ'] = tz
 
+      // Tell the agent container which host OS is running (for script type selection)
+      envVars['HOST_PLATFORM'] = process.platform
+
       // Inject user-defined custom env vars (set in global settings)
       if (settings.customEnvVars) {
         Object.assign(envVars, settings.customEnvVars)

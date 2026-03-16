@@ -47,6 +47,13 @@ interface BrowserInputRequest {
   requirements: string[]
 }
 
+interface ScriptRunRequest {
+  toolUseId: string
+  script: string
+  explanation: string
+  scriptType: 'applescript' | 'shell' | 'powershell'
+}
+
 export interface SubagentInfo {
   parentToolId: string | null
   agentId: string | null
@@ -65,6 +72,7 @@ interface StreamState {
   pendingFileRequests: FileRequest[]
   pendingRemoteMcpRequests: RemoteMcpRequest[]
   pendingBrowserInputRequests: BrowserInputRequest[]
+  pendingScriptRunRequests: ScriptRunRequest[]
   error: string | null // Error message if session encountered an error
   browserActive: boolean // Whether browser is running for this session
   activeStartTime: number | null // Timestamp when session became active (for elapsed timer)
@@ -141,6 +149,7 @@ function getOrCreateEventSource(
           pendingFileRequests: current?.pendingFileRequests ?? [],
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
+          pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           error: null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -177,6 +186,7 @@ function getOrCreateEventSource(
           pendingFileRequests: current?.pendingFileRequests ?? [],
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
+          pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           error: null, // Clear any previous error when starting new request
           browserActive: current?.browserActive ?? false,
           activeStartTime: Date.now(),
@@ -205,6 +215,7 @@ function getOrCreateEventSource(
           pendingFileRequests: [],
           pendingRemoteMcpRequests: [],
           pendingBrowserInputRequests: [],
+          pendingScriptRunRequests: [],
           error: null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: null,
@@ -232,6 +243,7 @@ function getOrCreateEventSource(
           pendingFileRequests: [],
           pendingRemoteMcpRequests: [],
           pendingBrowserInputRequests: [],
+          pendingScriptRunRequests: [],
           error: data.error || 'An unknown error occurred',
           browserActive: current?.browserActive ?? false,
           activeStartTime: null,
@@ -265,6 +277,7 @@ function getOrCreateEventSource(
           pendingFileRequests: current?.pendingFileRequests ?? [],
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
+          pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           error: null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -286,6 +299,7 @@ function getOrCreateEventSource(
           pendingFileRequests: current?.pendingFileRequests ?? [],
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
+          pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -311,6 +325,7 @@ function getOrCreateEventSource(
           pendingFileRequests: current?.pendingFileRequests ?? [],
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
+          pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -333,6 +348,7 @@ function getOrCreateEventSource(
           pendingFileRequests: current?.pendingFileRequests ?? [],
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
+          pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -354,6 +370,7 @@ function getOrCreateEventSource(
           pendingFileRequests: current?.pendingFileRequests ?? [],
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
+          pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -476,6 +493,21 @@ function getOrCreateEventSource(
           streamStates.set(sessionId, {
             ...current,
             pendingBrowserInputRequests: [...current.pendingBrowserInputRequests, newRequest],
+          })
+        }
+      }
+      else if (data.type === 'script_run_request') {
+        // Agent is requesting script execution on the host
+        if (current && !current.pendingScriptRunRequests.some(r => r.toolUseId === data.toolUseId)) {
+          const newRequest: ScriptRunRequest = {
+            toolUseId: data.toolUseId,
+            script: data.script,
+            explanation: data.explanation,
+            scriptType: data.scriptType,
+          }
+          streamStates.set(sessionId, {
+            ...current,
+            pendingScriptRunRequests: [...current.pendingScriptRunRequests, newRequest],
           })
         }
       }
@@ -764,6 +796,20 @@ export function removeBrowserInputRequest(sessionId: string, toolUseId: string):
   }
 }
 
+// Helper function to remove a script run request from a session
+export function removeScriptRunRequest(sessionId: string, toolUseId: string): void {
+  const current = streamStates.get(sessionId)
+  if (current) {
+    streamStates.set(sessionId, {
+      ...current,
+      pendingScriptRunRequests: current.pendingScriptRunRequests.filter(
+        (r) => r.toolUseId !== toolUseId
+      ),
+    })
+    streamListeners.get(sessionId)?.forEach((listener) => listener())
+  }
+}
+
 // Helper to clear isCompacting state (used when persisted messages already show the boundary)
 export function clearCompacting(sessionId: string): void {
   const current = streamStates.get(sessionId)
@@ -794,6 +840,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     pendingFileRequests: [],
     pendingRemoteMcpRequests: [],
     pendingBrowserInputRequests: [],
+    pendingScriptRunRequests: [],
     error: null,
     browserActive: false,
     activeStartTime: null,
@@ -840,6 +887,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
         pendingFileRequests: [],
         pendingRemoteMcpRequests: [],
         pendingBrowserInputRequests: [],
+        pendingScriptRunRequests: [],
         error: null,
         browserActive: false,
         activeStartTime: null,

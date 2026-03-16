@@ -1695,6 +1695,136 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
   }
 })
 
+// POST /api/agents/:id/sessions/:sessionId/run-script - Run or deny a script execution request
+agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const body = await c.req.json()
+    const { toolUseId, script, scriptType, decline, declineReason } = body
+
+    if (!toolUseId) {
+      return c.json({ error: 'toolUseId is required' }, 400)
+    }
+
+    const client = containerManager.getClient(agentSlug)
+
+    if (decline) {
+      const reason = declineReason || 'User denied script execution'
+
+      const rejectResponse = await client.fetch(
+        `/inputs/${encodeURIComponent(toolUseId)}/reject`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason }),
+        }
+      )
+
+      if (!rejectResponse.ok) {
+        let errorDetails = 'Unknown error'
+        try {
+          const error = await rejectResponse.json()
+          errorDetails = JSON.stringify(error)
+        } catch {
+          errorDetails = await rejectResponse.text()
+        }
+        console.error(`[run-script] Failed to reject: ${errorDetails}`)
+        return c.json({ error: 'Failed to reject script run request' }, 500)
+      }
+
+      trackServerEvent('request_declined', { type: 'script_run', withReason: !!declineReason })
+      return c.json({ success: true, declined: true })
+    }
+
+    // Run path: verify settings, validate platform, execute script
+    const { getSettings, VALID_SCRIPT_TYPES } = await import('@shared/lib/config/settings')
+    const settings = getSettings()
+    if (!settings.hostShellUse?.allowScriptExecution) {
+      return c.json({ error: 'Host script execution is not enabled' }, 403)
+    }
+
+    if (!script || !scriptType) {
+      return c.json({ error: 'script and scriptType are required' }, 400)
+    }
+
+    // Validate scriptType against platform
+    const platform = process.platform
+    if (!VALID_SCRIPT_TYPES[platform]?.includes(scriptType)) {
+      return c.json({ error: `Script type "${scriptType}" is not supported on ${platform}` }, 400)
+    }
+
+    // Execute the script with a 30s timeout
+    const { exec, execFile } = await import('child_process')
+    const { promisify } = await import('util')
+    const execAsync = promisify(exec)
+    const execFileAsync = promisify(execFile)
+
+    let stdout = ''
+    let stderr = ''
+    let exitCode = 0
+
+    try {
+      if (scriptType === 'applescript') {
+        // Use execFile to avoid shell escaping issues with quotes/newlines.
+        // Split into one -e arg per line (how osascript handles multi-line scripts).
+        const lines = script.split('\n').filter((l: string) => l.trim())
+        const args = lines.flatMap((line: string) => ['-e', line])
+        const result = await execFileAsync('osascript', args, { timeout: 30000 })
+        stdout = result.stdout || ''
+        stderr = result.stderr || ''
+      } else if (scriptType === 'shell') {
+        const result = await execAsync(script, { timeout: 30000, shell: '/bin/zsh' })
+        stdout = result.stdout || ''
+        stderr = result.stderr || ''
+      } else {
+        // powershell — use execFile to avoid shell escaping issues
+        const result = await execFileAsync('powershell.exe', ['-Command', script], { timeout: 30000 })
+        stdout = result.stdout || ''
+        stderr = result.stderr || ''
+      }
+    } catch (execError: any) {
+      stdout = execError.stdout || ''
+      stderr = execError.stderr || ''
+      exitCode = execError.code ?? 1
+    }
+
+    // Format output for the agent
+    const output = [
+      `Exit code: ${exitCode}`,
+      stdout ? `stdout:\n${stdout}` : '',
+      stderr ? `stderr:\n${stderr}` : '',
+    ].filter(Boolean).join('\n\n')
+
+    // Resolve the pending input
+    const resolveResponse = await client.fetch(
+      `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: output }),
+      }
+    )
+
+    if (!resolveResponse.ok) {
+      let errorDetails = 'Unknown error'
+      try {
+        const error = await resolveResponse.json()
+        errorDetails = JSON.stringify(error)
+      } catch {
+        errorDetails = await resolveResponse.text()
+      }
+      console.error(`[run-script] Failed to resolve: ${errorDetails}`)
+      return c.json({ error: 'Failed to resolve script run request' }, 500)
+    }
+
+    trackServerEvent('script_executed', { scriptType, exitCode })
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('Failed to run script:', error)
+    return c.json({ error: 'Failed to run script' }, 500)
+  }
+})
+
 // GET /api/agents/:id/scheduled-tasks - List scheduled tasks for an agent
 agents.get('/:id/scheduled-tasks', AgentRead(), async (c) => {
   try {

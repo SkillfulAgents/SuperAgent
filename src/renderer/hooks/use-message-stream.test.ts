@@ -1530,4 +1530,179 @@ describe('useMessageStream', () => {
     expect(spy).toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
     expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
   })
+
+  describe('script_run_request event', () => {
+    it('adds script run request to pending list', async () => {
+      const mod = await getHookModule()
+      const wrapper = createWrapper()
+
+      const { result } = renderHook(
+        () => mod.useMessageStream('session-1', 'agent-1'),
+        { wrapper }
+      )
+
+      // Wait for EventSource to be created
+      await vi.waitFor(() => {
+        expect(MockEventSource.instances.length).toBeGreaterThan(0)
+      })
+
+      const es = MockEventSource.instances[MockEventSource.instances.length - 1]
+
+      // Send connected event first
+      act(() => {
+        es.simulateMessage({ type: 'connected', isActive: true })
+      })
+
+      // Send script_run_request event
+      act(() => {
+        es.simulateMessage({
+          type: 'script_run_request',
+          toolUseId: 'tool-1',
+          script: 'sw_vers',
+          explanation: 'Check macOS version',
+          scriptType: 'shell',
+        })
+      })
+
+      await vi.waitFor(() => {
+        expect(result.current.pendingScriptRunRequests).toHaveLength(1)
+      })
+
+      expect(result.current.pendingScriptRunRequests[0]).toEqual({
+        toolUseId: 'tool-1',
+        script: 'sw_vers',
+        explanation: 'Check macOS version',
+        scriptType: 'shell',
+      })
+    })
+
+    it('deduplicates script run requests by toolUseId', async () => {
+      const mod = await getHookModule()
+      const wrapper = createWrapper()
+
+      const { result } = renderHook(
+        () => mod.useMessageStream('session-2', 'agent-1'),
+        { wrapper }
+      )
+
+      await vi.waitFor(() => {
+        expect(MockEventSource.instances.length).toBeGreaterThan(0)
+      })
+
+      const es = MockEventSource.instances[MockEventSource.instances.length - 1]
+
+      act(() => {
+        es.simulateMessage({ type: 'connected', isActive: true })
+      })
+
+      // Send same toolUseId twice
+      act(() => {
+        es.simulateMessage({
+          type: 'script_run_request',
+          toolUseId: 'tool-dup',
+          script: 'sw_vers',
+          explanation: 'Check version',
+          scriptType: 'shell',
+        })
+      })
+
+      act(() => {
+        es.simulateMessage({
+          type: 'script_run_request',
+          toolUseId: 'tool-dup',
+          script: 'sw_vers',
+          explanation: 'Check version',
+          scriptType: 'shell',
+        })
+      })
+
+      await vi.waitFor(() => {
+        expect(result.current.pendingScriptRunRequests).toHaveLength(1)
+      })
+    })
+
+    it('clears script run requests on session_idle', async () => {
+      const mod = await getHookModule()
+      const wrapper = createWrapper()
+
+      const { result } = renderHook(
+        () => mod.useMessageStream('session-3', 'agent-1'),
+        { wrapper }
+      )
+
+      await vi.waitFor(() => {
+        expect(MockEventSource.instances.length).toBeGreaterThan(0)
+      })
+
+      const es = MockEventSource.instances[MockEventSource.instances.length - 1]
+
+      act(() => {
+        es.simulateMessage({ type: 'connected', isActive: true })
+      })
+
+      act(() => {
+        es.simulateMessage({
+          type: 'script_run_request',
+          toolUseId: 'tool-clear',
+          script: 'test',
+          explanation: 'Test',
+          scriptType: 'shell',
+        })
+      })
+
+      await vi.waitFor(() => {
+        expect(result.current.pendingScriptRunRequests).toHaveLength(1)
+      })
+
+      act(() => {
+        es.simulateMessage({ type: 'session_idle' })
+      })
+
+      await vi.waitFor(() => {
+        expect(result.current.pendingScriptRunRequests).toHaveLength(0)
+      })
+    })
+
+    it('removeScriptRunRequest removes by toolUseId', async () => {
+      const mod = await getHookModule()
+      const wrapper = createWrapper()
+
+      const { result } = renderHook(
+        () => mod.useMessageStream('session-4', 'agent-1'),
+        { wrapper }
+      )
+
+      await vi.waitFor(() => {
+        expect(MockEventSource.instances.length).toBeGreaterThan(0)
+      })
+
+      const es = MockEventSource.instances[MockEventSource.instances.length - 1]
+
+      act(() => {
+        es.simulateMessage({ type: 'connected', isActive: true })
+      })
+
+      act(() => {
+        es.simulateMessage({
+          type: 'script_run_request',
+          toolUseId: 'tool-remove',
+          script: 'test',
+          explanation: 'Test',
+          scriptType: 'shell',
+        })
+      })
+
+      await vi.waitFor(() => {
+        expect(result.current.pendingScriptRunRequests).toHaveLength(1)
+      })
+
+      act(() => {
+        mod.removeScriptRunRequest('session-4', 'tool-remove')
+      })
+
+      await vi.waitFor(() => {
+        expect(result.current.pendingScriptRunRequests).toHaveLength(0)
+      })
+    })
+  })
 })

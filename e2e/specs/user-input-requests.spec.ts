@@ -166,4 +166,51 @@ test.describe('User Input Requests', () => {
     // Session should complete
     await sessionPage.waitForInputEnabled(15000)
   })
+
+  test('script run request: approve execution', async ({ page }) => {
+    // Enable host shell script execution in settings (required for the request to reach the UI)
+    await page.request.put('http://localhost:3000/api/settings', {
+      data: { hostShellUse: { allowScriptExecution: true } },
+    })
+
+    // "ask script" triggers UserInputRequestScenario with mcp__user-input__request_script_run
+    await sessionPage.sendMessage('ask script')
+
+    // Wait for the script run request UI to appear
+    await sessionPage.waitForScriptRunRequest()
+
+    // Verify content is shown
+    const request = sessionPage.getScriptRunRequests().first()
+    await expect(request).toContainText('sw_vers')
+    await expect(request).toContainText('Check macOS version')
+
+    // Approve execution
+    await sessionPage.approveScriptRun()
+
+    // Request should disappear
+    await expect(sessionPage.getScriptRunRequests()).toHaveCount(0, { timeout: 10000 })
+
+    // Session should complete
+    await sessionPage.waitForInputEnabled(15000)
+  })
+
+  test('script run request: deny execution', async ({ page }) => {
+    // Enable host shell script execution in settings (required for the request to reach the UI)
+    await page.request.put('http://localhost:3000/api/settings', {
+      data: { hostShellUse: { allowScriptExecution: true } },
+    })
+
+    await sessionPage.sendMessage('ask script')
+
+    await sessionPage.waitForScriptRunRequest()
+
+    // Deny execution
+    await sessionPage.denyScriptRun()
+
+    // Request should disappear
+    await expect(sessionPage.getScriptRunRequests()).toHaveCount(0, { timeout: 10000 })
+
+    // Session should complete
+    await sessionPage.waitForInputEnabled(15000)
+  })
 })

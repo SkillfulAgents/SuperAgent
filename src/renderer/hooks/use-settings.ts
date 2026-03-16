@@ -8,6 +8,7 @@ import type {
   AgentLimitsSettings,
   AuthSettings,
   VoiceSettings,
+  HostShellUseSettings,
   AnalyticsTarget,
   LlmProviderId,
 } from '@shared/lib/config/settings'
@@ -51,6 +52,7 @@ export interface UpdateSettingsParams {
   customEnvVars?: Record<string, string>
   auth?: Partial<AuthSettings>
   voice?: Partial<VoiceSettings>
+  hostShellUse?: Partial<HostShellUseSettings>
   shareAnalytics?: boolean
   analyticsTargets?: AnalyticsTarget[]
 }
