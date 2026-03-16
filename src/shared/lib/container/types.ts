@@ -72,7 +72,7 @@ export interface HealthCheckResult {
 export interface ContainerClient {
   // Lifecycle management
   start(options?: StartOptions): Promise<void>
-  stop(): Promise<void>
+  stop(): Promise<{ forceStopUsed: boolean }>
   stopSync(): void // Synchronous stop for exit handlers
 
   // Query the container runtime for current state (spawns CLI process)

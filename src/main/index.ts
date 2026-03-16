@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, MenuItem, nativeTheme, session, shell, Notification } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItem, nativeTheme, session, shell, Notification } from 'electron'
 import { execFileSync } from 'child_process'
 import path from 'path'
 import fs from 'fs'
@@ -505,6 +505,16 @@ function startNotificationListener(): void {
           }
         }
       }
+
+      if (data.type === 'system_alert') {
+        dialog.showMessageBox({
+          type: data.level || 'warning',
+          title: data.title,
+          message: data.title,
+          detail: data.body,
+          buttons: ['OK'],
+        }).catch(() => {})
+      }
     } catch {
       // Ignore parse errors for ping messages etc
     }
@@ -662,7 +672,17 @@ async function gracefulShutdown() {
 app.on('before-quit', async (event) => {
   if (!isShuttingDown) {
     event.preventDefault()
+
+    // Hard deadline: force-exit if graceful shutdown hangs (e.g., stuck Lima VM)
+    // Must exceed the full escalation chain: stop(10s) + kill(5s) + forceStop(10s) = 25s
+    const forceExitTimer = setTimeout(() => {
+      console.error('Graceful shutdown timed out after 35s — force exiting')
+      process.exit(1)
+    }, 35000)
+    forceExitTimer.unref() // Don't keep the event loop alive just for this timer
+
     await gracefulShutdown()
+    clearTimeout(forceExitTimer)
     app.quit()
   }
 })

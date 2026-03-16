@@ -199,6 +199,24 @@ export class LimaContainerClient extends BaseContainerClient {
    */
 
   /**
+   * Force-stop by killing the Lima VM directly (QEMU process).
+   * Called when nerdctl stop + kill both time out because the VM is unresponsive.
+   */
+  protected async forceStop(): Promise<void> {
+    console.warn('Force-stopping Lima VM (killing QEMU process)')
+    try {
+      await Promise.race([
+        execLimactl(`stop --force ${LIMA_VM_NAME}`),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Lima force-stop timed out')), 10000)
+        ),
+      ])
+    } catch {
+      console.error('Lima VM force-stop failed')
+    }
+  }
+
+  /**
    * Check if limactl is available (bundled or system-installed).
    */
   static async isAvailable(): Promise<boolean> {
@@ -319,6 +337,8 @@ async function ensureLimaReadyImpl(): Promise<void> {
 /**
  * Stop the Lima VM gracefully with a timeout.
  * Used during app shutdown — must not hang indefinitely.
+ * If the graceful stop times out (e.g., VM CPU is pegged), escalates to
+ * force-stop which kills the QEMU process directly.
  */
 export async function stopLimaVm(timeoutMs = 15000): Promise<void> {
   try {
@@ -329,7 +349,19 @@ export async function stopLimaVm(timeoutMs = 15000): Promise<void> {
       ),
     ])
   } catch {
-    // VM might not be running, or timed out — either way, continue
+    // Graceful stop failed or timed out — escalate to force-stop (kills QEMU directly)
+    console.warn('Lima VM graceful stop failed, escalating to force-stop')
+    try {
+      await Promise.race([
+        execLimactl(`stop --force ${LIMA_VM_NAME}`),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Lima VM force-stop timed out')), 10000)
+        ),
+      ])
+    } catch {
+      // Force-stop also failed — nothing more we can do
+      console.error('Lima VM force-stop also failed')
+    }
   }
 }
 

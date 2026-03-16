@@ -10,6 +10,8 @@ const mockStopSync = vi.fn()
 const mockGetInfoFromRuntime = vi.fn()
 const mockGetStats = vi.fn()
 
+const mockClearRunnerAvailabilityCache = vi.fn()
+
 vi.mock('./client-factory', () => ({
   createContainerClient: () => ({
     start: mockStart,
@@ -26,6 +28,7 @@ vi.mock('./client-factory', () => ({
   buildImage: vi.fn(),
   startRunner: vi.fn(),
   refreshRunnerAvailability: vi.fn(),
+  clearRunnerAvailabilityCache: (...args: unknown[]) => mockClearRunnerAvailabilityCache(...args),
   getRunnerDisplayName: (runner: string) => runner,
 }))
 
@@ -747,7 +750,7 @@ describe('containerManager.stopAll', () => {
   it('stops all containers and clears state', async () => {
     containerManager.getClient('agent-1')
     containerManager.getClient('agent-2')
-    mockStop.mockResolvedValue(undefined)
+    mockStop.mockResolvedValue({ forceStopUsed: false })
     mockGetInfoFromRuntime.mockResolvedValue({ status: 'stopped', port: null })
 
     const promise = containerManager.stopAll()
@@ -764,7 +767,7 @@ describe('containerManager.stopAll', () => {
     containerManager.getClient('agent-2')
     // First stop fails, second succeeds
     mockStop.mockRejectedValueOnce(new Error('connection refused'))
-    mockStop.mockResolvedValueOnce(undefined)
+    mockStop.mockResolvedValueOnce({ forceStopUsed: false })
     mockGetInfoFromRuntime.mockResolvedValue({ status: 'stopped', port: null })
 
     const promise = containerManager.stopAll()
@@ -784,16 +787,137 @@ describe('containerManager.stopAll', () => {
         // Second container hangs
         return new Promise(() => {})
       }
-      return Promise.resolve()
+      return Promise.resolve({ forceStopUsed: false })
     })
     mockGetInfoFromRuntime.mockResolvedValue({ status: 'stopped', port: null })
 
     const promise = containerManager.stopAll()
-    // Advance past the 10s timeout
-    await vi.advanceTimersByTimeAsync(11000)
+    // Advance past the 30s timeout (full escalation chain)
+    await vi.advanceTimersByTimeAsync(31000)
     await promise
 
     // Both were attempted
     expect(mockStop).toHaveBeenCalledTimes(2)
+  })
+})
+
+// ============================================================================
+// stopContainer — forceStopUsed recovery
+// ============================================================================
+
+describe('containerManager.stopContainer force stop recovery', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    containerManager.clearClients()
+  })
+
+  it('marks all other running agents as stopped when forceStopUsed', async () => {
+    containerManager.getClient('stuck-agent')
+    containerManager.getClient('other-agent-1')
+    containerManager.getClient('other-agent-2')
+
+    // Simulate other agents as running
+    containerManager.updateCachedStatus('stuck-agent', 'running', 4001)
+    containerManager.updateCachedStatus('other-agent-1', 'running', 4002)
+    containerManager.updateCachedStatus('other-agent-2', 'running', 4003)
+
+    // The stuck agent required force stop
+    mockStop.mockResolvedValue({ forceStopUsed: true })
+
+    await containerManager.stopContainer('stuck-agent')
+
+    // All agents should now be stopped
+    expect(containerManager.getCachedInfo('stuck-agent')).toEqual({ status: 'stopped', port: null })
+    expect(containerManager.getCachedInfo('other-agent-1')).toEqual({ status: 'stopped', port: null })
+    expect(containerManager.getCachedInfo('other-agent-2')).toEqual({ status: 'stopped', port: null })
+
+    // Sessions should be marked inactive for all agents
+    expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('stuck-agent')
+    expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('other-agent-1')
+    expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('other-agent-2')
+  })
+
+  it('broadcasts agent_status_changed for all affected agents', async () => {
+    containerManager.getClient('stuck-agent')
+    containerManager.getClient('other-agent')
+    containerManager.updateCachedStatus('stuck-agent', 'running', 4001)
+    containerManager.updateCachedStatus('other-agent', 'running', 4002)
+
+    mockStop.mockResolvedValue({ forceStopUsed: true })
+
+    await containerManager.stopContainer('stuck-agent')
+
+    const broadcasts = vi.mocked(messagePersister.broadcastGlobal).mock.calls
+    const statusEvents = broadcasts
+      .filter(([msg]: any) => msg.type === 'agent_status_changed')
+      .map(([msg]: any) => ({ agentSlug: msg.agentSlug, status: msg.status }))
+
+    expect(statusEvents).toContainEqual({ agentSlug: 'stuck-agent', status: 'stopped' })
+    expect(statusEvents).toContainEqual({ agentSlug: 'other-agent', status: 'stopped' })
+  })
+
+  it('broadcasts system_alert when forceStopUsed', async () => {
+    containerManager.getClient('stuck-agent')
+    containerManager.updateCachedStatus('stuck-agent', 'running', 4001)
+
+    mockStop.mockResolvedValue({ forceStopUsed: true })
+
+    await containerManager.stopContainer('stuck-agent')
+
+    const broadcasts = vi.mocked(messagePersister.broadcastGlobal).mock.calls
+    const alertEvents = broadcasts.filter(([msg]: any) => msg.type === 'system_alert')
+
+    expect(alertEvents).toHaveLength(1)
+    expect(alertEvents[0][0]).toMatchObject({
+      type: 'system_alert',
+      level: 'warning',
+    })
+  })
+
+  it('clears runner availability cache when forceStopUsed', async () => {
+    containerManager.getClient('stuck-agent')
+    containerManager.updateCachedStatus('stuck-agent', 'running', 4001)
+
+    mockStop.mockResolvedValue({ forceStopUsed: true })
+
+    await containerManager.stopContainer('stuck-agent')
+
+    expect(mockClearRunnerAvailabilityCache).toHaveBeenCalled()
+  })
+
+  it('does not trigger recovery when forceStopUsed is false', async () => {
+    containerManager.getClient('normal-agent')
+    containerManager.getClient('other-agent')
+    containerManager.updateCachedStatus('normal-agent', 'running', 4001)
+    containerManager.updateCachedStatus('other-agent', 'running', 4002)
+
+    mockStop.mockResolvedValue({ forceStopUsed: false })
+
+    await containerManager.stopContainer('normal-agent')
+
+    // Only the stopped agent should be marked stopped
+    expect(containerManager.getCachedInfo('normal-agent')).toEqual({ status: 'stopped', port: null })
+    expect(containerManager.getCachedInfo('other-agent')).toEqual({ status: 'running', port: 4002 })
+
+    // No system_alert
+    const broadcasts = vi.mocked(messagePersister.broadcastGlobal).mock.calls
+    const alertEvents = broadcasts.filter(([msg]: any) => msg.type === 'system_alert')
+    expect(alertEvents).toHaveLength(0)
+
+    // No cache clear
+    expect(mockClearRunnerAvailabilityCache).not.toHaveBeenCalled()
+  })
+
+  it('still cleans up even when stop() throws', async () => {
+    containerManager.getClient('error-agent')
+    containerManager.updateCachedStatus('error-agent', 'running', 4001)
+
+    mockStop.mockRejectedValue(new Error('unexpected error'))
+
+    await expect(containerManager.stopContainer('error-agent')).rejects.toThrow('unexpected error')
+
+    // Should still be marked as stopped despite the error
+    expect(containerManager.getCachedInfo('error-agent')).toEqual({ status: 'stopped', port: null })
+    expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('error-agent')
   })
 })
