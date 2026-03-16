@@ -13,6 +13,7 @@ import { searchServicesTool } from './tools/search-services'
 import { scheduleTaskTool } from './tools/schedule-task'
 import { deliverFileTool } from './tools/deliver-file'
 import { requestFileTool } from './tools/request-file'
+import { requestBrowserInputTool } from './tools/request-browser-input'
 import { browserTools } from './tools/browser'
 import { createDashboardTool } from './tools/create-dashboard'
 import { startDashboardTool } from './tools/start-dashboard'
@@ -30,7 +31,7 @@ export function createUserInputMcpServer() {
   return createSdkMcpServer({
     name: 'user-input',
     version: '1.0.0',
-    tools: [requestSecretTool, requestConnectedAccountTool, requestRemoteMcpTool, searchServicesTool, scheduleTaskTool, deliverFileTool, requestFileTool],
+    tools: [requestSecretTool, requestConnectedAccountTool, requestRemoteMcpTool, searchServicesTool, scheduleTaskTool, deliverFileTool, requestFileTool, requestBrowserInputTool],
   })
 }
 

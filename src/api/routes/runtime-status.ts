@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { Authenticated } from '../middleware/auth'
 import { containerManager } from '@shared/lib/container/container-manager'
-import { getAnthropicApiKeyStatus } from '@shared/lib/config/settings'
+import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 
 const runtimeStatus = new Hono()
 
@@ -12,7 +12,7 @@ runtimeStatus.get('/', (c) => {
   return c.json({
     runtimeReadiness: containerManager.getReadiness(),
     hasRunningAgents: containerManager.hasRunningAgents(),
-    apiKeyConfigured: getAnthropicApiKeyStatus().isConfigured,
+    apiKeyConfigured: getActiveLlmProvider().getApiKeyStatus().isConfigured,
   })
 })
 

@@ -41,6 +41,12 @@ interface RemoteMcpRequest {
   authHint?: 'oauth' | 'bearer'
 }
 
+interface BrowserInputRequest {
+  toolUseId: string
+  message: string
+  requirements: string[]
+}
+
 export interface SubagentInfo {
   parentToolId: string | null
   agentId: string | null
@@ -58,6 +64,7 @@ interface StreamState {
   pendingQuestionRequests: QuestionRequest[]
   pendingFileRequests: FileRequest[]
   pendingRemoteMcpRequests: RemoteMcpRequest[]
+  pendingBrowserInputRequests: BrowserInputRequest[]
   error: string | null // Error message if session encountered an error
   browserActive: boolean // Whether browser is running for this session
   activeStartTime: number | null // Timestamp when session became active (for elapsed timer)
@@ -133,6 +140,7 @@ function getOrCreateEventSource(
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
+          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           error: null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -144,10 +152,12 @@ function getOrCreateEventSource(
         // Fetch current browser status to sync state (handles missed events)
         fetch(`${baseUrl}/api/agents/${agentSlug}/browser/status`)
           .then((res) => res.json())
-          .then((status: { active?: boolean }) => {
+          .then((status: { active?: boolean; sessionId?: string }) => {
             const latest = streamStates.get(sessionId)
-            if (latest && latest.browserActive !== (status.active ?? false)) {
-              streamStates.set(sessionId, { ...latest, browserActive: status.active ?? false })
+            // Only mark browser active if it belongs to THIS session
+            const activeForThisSession = (status.active ?? false) && status.sessionId === sessionId
+            if (latest && latest.browserActive !== activeForThisSession) {
+              streamStates.set(sessionId, { ...latest, browserActive: activeForThisSession })
               streamListeners.get(sessionId)?.forEach((listener) => listener())
             }
           })
@@ -166,6 +176,7 @@ function getOrCreateEventSource(
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
+          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           error: null, // Clear any previous error when starting new request
           browserActive: current?.browserActive ?? false,
           activeStartTime: Date.now(),
@@ -193,6 +204,7 @@ function getOrCreateEventSource(
           pendingQuestionRequests: [],
           pendingFileRequests: [],
           pendingRemoteMcpRequests: [],
+          pendingBrowserInputRequests: [],
           error: null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: null,
@@ -219,6 +231,7 @@ function getOrCreateEventSource(
           pendingQuestionRequests: [],
           pendingFileRequests: [],
           pendingRemoteMcpRequests: [],
+          pendingBrowserInputRequests: [],
           error: data.error || 'An unknown error occurred',
           browserActive: current?.browserActive ?? false,
           activeStartTime: null,
@@ -251,6 +264,7 @@ function getOrCreateEventSource(
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
+          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           error: null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -271,6 +285,7 @@ function getOrCreateEventSource(
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
+          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -295,6 +310,7 @@ function getOrCreateEventSource(
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
+          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -316,6 +332,7 @@ function getOrCreateEventSource(
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
+          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -336,6 +353,7 @@ function getOrCreateEventSource(
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
+          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -444,6 +462,20 @@ function getOrCreateEventSource(
           streamStates.set(sessionId, {
             ...current,
             pendingRemoteMcpRequests: [...current.pendingRemoteMcpRequests, newRequest],
+          })
+        }
+      }
+      else if (data.type === 'browser_input_request') {
+        // Dedupe: the server may broadcast the same toolUseId from multiple detection points
+        if (current && !current.pendingBrowserInputRequests.some(r => r.toolUseId === data.toolUseId)) {
+          const newRequest: BrowserInputRequest = {
+            toolUseId: data.toolUseId,
+            message: data.message,
+            requirements: data.requirements || [],
+          }
+          streamStates.set(sessionId, {
+            ...current,
+            pendingBrowserInputRequests: [...current.pendingBrowserInputRequests, newRequest],
           })
         }
       }
@@ -718,6 +750,20 @@ export function removeRemoteMcpRequest(sessionId: string, toolUseId: string): vo
   }
 }
 
+// Helper function to remove a browser input request from a session
+export function removeBrowserInputRequest(sessionId: string, toolUseId: string): void {
+  const current = streamStates.get(sessionId)
+  if (current) {
+    streamStates.set(sessionId, {
+      ...current,
+      pendingBrowserInputRequests: current.pendingBrowserInputRequests.filter(
+        (r) => r.toolUseId !== toolUseId
+      ),
+    })
+    streamListeners.get(sessionId)?.forEach((listener) => listener())
+  }
+}
+
 // Helper to clear isCompacting state (used when persisted messages already show the boundary)
 export function clearCompacting(sessionId: string): void {
   const current = streamStates.get(sessionId)
@@ -747,6 +793,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     pendingQuestionRequests: [],
     pendingFileRequests: [],
     pendingRemoteMcpRequests: [],
+    pendingBrowserInputRequests: [],
     error: null,
     browserActive: false,
     activeStartTime: null,
@@ -792,6 +839,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
         pendingQuestionRequests: [],
         pendingFileRequests: [],
         pendingRemoteMcpRequests: [],
+        pendingBrowserInputRequests: [],
         error: null,
         browserActive: false,
         activeStartTime: null,

@@ -1227,4 +1227,603 @@ describe('MessagePersister', () => {
       expect(streamStarts[0].slashCommands).toBeUndefined()
     })
   })
+
+  // ============================================================================
+  // Context usage tracking
+  // ============================================================================
+
+  describe('context usage from assistant messages', () => {
+    it('broadcasts context_usage when assistant message includes usage data', () => {
+      mockClient._sendMessage({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Hello' }],
+          usage: {
+            input_tokens: 1500,
+            output_tokens: 200,
+            cache_creation_input_tokens: 500,
+            cache_read_input_tokens: 1000,
+          },
+        },
+      })
+
+      const usageEvents = sseEvents.filter(e => e.type === 'context_usage')
+      expect(usageEvents).toHaveLength(1)
+      expect(usageEvents[0]).toMatchObject({
+        type: 'context_usage',
+        inputTokens: 1500,
+        outputTokens: 200,
+        cacheCreationInputTokens: 500,
+        cacheReadInputTokens: 1000,
+        contextWindow: 200_000, // default
+      })
+    })
+
+    it('does not broadcast context_usage when assistant message has no usage', () => {
+      mockClient._sendMessage({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Hello' }],
+        },
+      })
+
+      const usageEvents = sseEvents.filter(e => e.type === 'context_usage')
+      expect(usageEvents).toHaveLength(0)
+    })
+
+    it('handles null cache token fields gracefully (OpenRouter format)', () => {
+      mockClient._sendMessage({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Hello' }],
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_input_tokens: null,
+            cache_read_input_tokens: null,
+          },
+        },
+      })
+
+      const usageEvents = sseEvents.filter(e => e.type === 'context_usage')
+      expect(usageEvents).toHaveLength(1)
+      expect(usageEvents[0]).toMatchObject({
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+      })
+    })
+  })
+
+  describe('context usage from message_delta stream events', () => {
+    it('broadcasts context_usage from message_delta with real token counts', () => {
+      // Simulate OpenRouter: assistant message has zeros, message_delta has real values
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'message_start' },
+      })
+
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn' },
+          usage: {
+            input_tokens: 4500,
+            output_tokens: 300,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+        },
+      })
+
+      const usageEvents = sseEvents.filter(e => e.type === 'context_usage')
+      expect(usageEvents).toHaveLength(1)
+      expect(usageEvents[0]).toMatchObject({
+        type: 'context_usage',
+        inputTokens: 4500,
+        outputTokens: 300,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        contextWindow: 200_000,
+      })
+    })
+
+    it('does not broadcast from message_delta when usage has all zeros', () => {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'message_start' },
+      })
+
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn' },
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+          },
+        },
+      })
+
+      const usageEvents = sseEvents.filter(e => e.type === 'context_usage')
+      expect(usageEvents).toHaveLength(0)
+    })
+
+    it('does not broadcast from message_delta when no usage field', () => {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'message_start' },
+      })
+
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn' },
+        },
+      })
+
+      const usageEvents = sseEvents.filter(e => e.type === 'context_usage')
+      expect(usageEvents).toHaveLength(0)
+    })
+
+    it('message_delta usage overwrites earlier zero-usage from assistant (OpenRouter pattern)', () => {
+      // Step 1: assistant message with zeros (OpenRouter sends this first)
+      mockClient._sendMessage({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Hello' }],
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_input_tokens: null,
+            cache_read_input_tokens: null,
+          },
+        },
+      })
+
+      // Step 2: message_delta arrives with real values
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn' },
+          usage: {
+            input_tokens: 8500,
+            output_tokens: 450,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+        },
+      })
+
+      const usageEvents = sseEvents.filter(e => e.type === 'context_usage')
+      // Two broadcasts: first with zeros, then corrected with real values
+      expect(usageEvents).toHaveLength(2)
+      // The last one should have the real values
+      expect(usageEvents[1]).toMatchObject({
+        inputTokens: 8500,
+        outputTokens: 450,
+      })
+    })
+
+    it('Anthropic pattern: assistant and message_delta both have same valid usage', () => {
+      // Anthropic sends real usage in both assistant message and message_delta
+      mockClient._sendMessage({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Hello' }],
+          usage: {
+            input_tokens: 3000,
+            output_tokens: 150,
+            cache_creation_input_tokens: 2000,
+            cache_read_input_tokens: 5000,
+          },
+        },
+      })
+
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn' },
+          usage: {
+            input_tokens: 3000,
+            output_tokens: 150,
+            cache_creation_input_tokens: 2000,
+            cache_read_input_tokens: 5000,
+          },
+        },
+      })
+
+      const usageEvents = sseEvents.filter(e => e.type === 'context_usage')
+      // Two broadcasts with identical data - harmless redundancy
+      expect(usageEvents).toHaveLength(2)
+      expect(usageEvents[0]).toMatchObject({
+        inputTokens: 3000,
+        outputTokens: 150,
+        cacheCreationInputTokens: 2000,
+        cacheReadInputTokens: 5000,
+      })
+      expect(usageEvents[1]).toMatchObject({
+        inputTokens: 3000,
+        outputTokens: 150,
+        cacheCreationInputTokens: 2000,
+        cacheReadInputTokens: 5000,
+      })
+    })
+
+    it('message_delta with only output_tokens triggers broadcast', () => {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'message_start' },
+      })
+
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn' },
+          usage: {
+            input_tokens: 0,
+            output_tokens: 500,
+          },
+        },
+      })
+
+      const usageEvents = sseEvents.filter(e => e.type === 'context_usage')
+      expect(usageEvents).toHaveLength(1)
+      expect(usageEvents[0].outputTokens).toBe(500)
+    })
+
+    it('message_delta usage includes cache fields from Anthropic', () => {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'message_start' },
+      })
+
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'message_delta',
+          delta: { stop_reason: 'tool_use' },
+          usage: {
+            input_tokens: 2,
+            cache_creation_input_tokens: 2659,
+            cache_read_input_tokens: 12442,
+            output_tokens: 2042,
+          },
+        },
+      })
+
+      const usageEvents = sseEvents.filter(e => e.type === 'context_usage')
+      expect(usageEvents).toHaveLength(1)
+      expect(usageEvents[0]).toMatchObject({
+        inputTokens: 2,
+        cacheCreationInputTokens: 2659,
+        cacheReadInputTokens: 12442,
+        outputTokens: 2042,
+        contextWindow: 200_000,
+      })
+    })
+
+    it('multiple turns accumulate: last message_delta usage wins', () => {
+      // Turn 1
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'message_start' },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'message_delta',
+          usage: { input_tokens: 1000, output_tokens: 100 },
+        },
+      })
+
+      // Turn 2 (context grows)
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'message_start' },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'message_delta',
+          usage: { input_tokens: 3000, output_tokens: 200 },
+        },
+      })
+
+      const usageEvents = sseEvents.filter(e => e.type === 'context_usage')
+      expect(usageEvents).toHaveLength(2)
+      // Last usage should reflect the larger context
+      expect(usageEvents[1]).toMatchObject({
+        inputTokens: 3000,
+        outputTokens: 200,
+      })
+    })
+
+    it('message_delta in sidechain does not affect main context usage', () => {
+      // Set up a subagent
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'message_start' },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: 'tool-1', name: 'Agent' },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_stop' },
+      })
+
+      sseEvents.length = 0
+
+      // Sidechain message_delta (has parent_tool_use_id)
+      mockClient._sendMessage({
+        type: 'stream_event',
+        parent_tool_use_id: 'tool-1',
+        event: {
+          type: 'message_delta',
+          usage: { input_tokens: 99999, output_tokens: 99999 },
+        },
+      })
+
+      // Main context should NOT be affected
+      const usageEvents = sseEvents.filter(e => e.type === 'context_usage')
+      expect(usageEvents).toHaveLength(0)
+    })
+  })
+
+  // ============================================================================
+  // Awaiting input status tracking
+  // ============================================================================
+
+  describe('awaiting input status tracking', () => {
+    // Helper to collect global notification events
+    function collectGlobalEvents(): { events: any[]; cleanup: () => void } {
+      const events: any[] = []
+      const cleanup = messagePersister.addGlobalNotificationClient((data) => {
+        events.push(data)
+      })
+      return { events, cleanup }
+    }
+
+    // Helper to simulate a complete tool_use block
+    function simulateToolUse(toolName: string, toolId: string, input: Record<string, unknown>) {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: toolId, name: toolName },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_stop' },
+      })
+    }
+
+    it('isSessionAwaitingInput returns false initially', () => {
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+    })
+
+    it('sets isAwaitingInput after request_secret tool fires', () => {
+      simulateToolUse('mcp__user-input__request_secret', 'tool-1', {
+        secretName: 'API_KEY',
+        reason: 'Need it',
+      })
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+    })
+
+    it('sets isAwaitingInput after AskUserQuestion tool fires', () => {
+      simulateToolUse('AskUserQuestion', 'tool-1', {
+        questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],
+      })
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+    })
+
+    it('sets isAwaitingInput after request_connected_account tool fires', () => {
+      simulateToolUse('mcp__user-input__request_connected_account', 'tool-1', {
+        toolkit: 'github',
+        reason: 'Need access',
+      })
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+    })
+
+    it('sets isAwaitingInput after request_file tool fires', () => {
+      simulateToolUse('mcp__user-input__request_file', 'tool-1', {
+        description: 'Upload a CSV',
+      })
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+    })
+
+    it('sets isAwaitingInput after request_remote_mcp tool fires', () => {
+      simulateToolUse('mcp__user-input__request_remote_mcp', 'tool-1', {
+        url: 'https://example.com/mcp',
+      })
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+    })
+
+    it('sets isAwaitingInput after request_browser_input tool fires', () => {
+      simulateToolUse('mcp__user-input__request_browser_input', 'tool-1', {
+        message: 'Please log in',
+        requirements: ['Enter credentials'],
+      })
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+    })
+
+    it('does NOT set isAwaitingInput for schedule_task tool', () => {
+      simulateToolUse('mcp__user-input__schedule_task', 'tool-1', {
+        scheduleType: 'at',
+        scheduleExpression: '2026-03-20T10:00:00Z',
+        prompt: 'Do something',
+      })
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+    })
+
+    it('does NOT set isAwaitingInput for deliver_file tool', () => {
+      simulateToolUse('mcp__user-input__deliver_file', 'tool-1', {
+        filePath: '/tmp/output.csv',
+        description: 'Results',
+      })
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+    })
+
+    it('does NOT set isAwaitingInput for non-user-input tools', () => {
+      simulateToolUse('Bash', 'tool-1', { command: 'ls' })
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+    })
+
+    it('broadcasts session_awaiting_input globally when status transitions', () => {
+      const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
+
+      simulateToolUse('mcp__user-input__request_secret', 'tool-1', {
+        secretName: 'KEY',
+      })
+
+      const awaitingEvents = globalEvents.filter(e => e.type === 'session_awaiting_input')
+      expect(awaitingEvents).toHaveLength(1)
+      expect(awaitingEvents[0].sessionId).toBe(SESSION_ID)
+      expect(awaitingEvents[0].agentSlug).toBe(AGENT_SLUG)
+
+      globalCleanup()
+    })
+
+    it('does not double-broadcast when already awaiting input', () => {
+      const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
+
+      // Fire two user-input tools in sequence
+      simulateToolUse('mcp__user-input__request_secret', 'tool-1', { secretName: 'KEY1' })
+      simulateToolUse('mcp__user-input__request_file', 'tool-2', { description: 'CSV' })
+
+      const awaitingEvents = globalEvents.filter(e => e.type === 'session_awaiting_input')
+      // Should only broadcast once (first transition)
+      expect(awaitingEvents).toHaveLength(1)
+
+      globalCleanup()
+    })
+
+    it('clears isAwaitingInput when tool result arrives (user message)', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      simulateToolUse('mcp__user-input__request_secret', 'tool-1', { secretName: 'KEY' })
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+      // Simulate tool result arriving as a user message
+      mockClient._sendMessage({
+        type: 'user',
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: 'tool-1', content: 'secret-value' },
+          ],
+        },
+      })
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+    })
+
+    it('broadcasts session_input_provided globally when input is received', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      simulateToolUse('mcp__user-input__request_secret', 'tool-1', { secretName: 'KEY' })
+
+      const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
+
+      // Simulate tool result
+      mockClient._sendMessage({
+        type: 'user',
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: 'tool-1', content: 'value' },
+          ],
+        },
+      })
+
+      const providedEvents = globalEvents.filter(e => e.type === 'session_input_provided')
+      expect(providedEvents).toHaveLength(1)
+      expect(providedEvents[0].sessionId).toBe(SESSION_ID)
+      expect(providedEvents[0].agentSlug).toBe(AGENT_SLUG)
+
+      globalCleanup()
+    })
+
+    it('clears isAwaitingInput when session goes idle (result event)', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      simulateToolUse('mcp__user-input__request_secret', 'tool-1', { secretName: 'KEY' })
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+      // Simulate session completing
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+      })
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+    })
+
+    it('clears isAwaitingInput when session is interrupted', async () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      simulateToolUse('mcp__user-input__request_secret', 'tool-1', { secretName: 'KEY' })
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+      await messagePersister.markSessionInterrupted(SESSION_ID)
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+    })
+
+    it('clears isAwaitingInput when new user message starts (markSessionActive)', () => {
+      simulateToolUse('mcp__user-input__request_secret', 'tool-1', { secretName: 'KEY' })
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+      // New message starts a new turn
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+    })
+
+    it('returns false for unknown session IDs', () => {
+      expect(messagePersister.isSessionAwaitingInput('nonexistent-session')).toBe(false)
+    })
+  })
 })

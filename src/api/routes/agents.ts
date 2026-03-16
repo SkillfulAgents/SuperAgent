@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono'
 import { streamSSE } from 'hono/streaming'
-import Anthropic from '@anthropic-ai/sdk'
+import type Anthropic from '@anthropic-ai/sdk'
 import { randomUUID } from 'crypto'
 import { Authenticated, AgentRead, AgentUser, AgentAdmin } from '../middleware/auth'
 import {
@@ -59,7 +59,8 @@ import {
   publishSkillToSkillset,
   refreshAgentSkills,
 } from '@shared/lib/services/skillset-service'
-import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
+import { listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
+import { getSessionIdsWithUnreadNotifications } from '@shared/lib/services/notification-service'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import {
   exportAgentTemplate,
@@ -79,7 +80,8 @@ import {
 } from '@shared/lib/services/agent-template-service'
 import { withRetry } from '@shared/lib/utils/retry'
 import { transformMessages, type TransformedMessage, type TransformedItem } from '@shared/lib/utils/message-transform'
-import { getEffectiveAnthropicApiKey, getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings } from '@shared/lib/config/settings'
+import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings } from '@shared/lib/config/settings'
+import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import * as fs from 'fs'
@@ -302,13 +304,9 @@ async function createOwnerAcl(c: Context, agentSlug: string) {
   })
 }
 
-// Create Anthropic client lazily to use API key from settings
-function getAnthropicClient(): Anthropic {
-  const apiKey = getEffectiveAnthropicApiKey()
-  if (!apiKey) {
-    throw new Error('Anthropic API key not configured')
-  }
-  return new Anthropic({ apiKey })
+// Create LLM client using the active provider
+function getLlmClient(): Anthropic {
+  return getActiveLlmProvider().createClient()
 }
 
 // Model used for generating session names (lightweight task)
@@ -324,7 +322,7 @@ async function generateAndUpdateSessionNameAsync(
   agentName: string
 ): Promise<void> {
   try {
-    const anthropic = getAnthropicClient()
+    const anthropic = getLlmClient()
     const response = await withRetry(() =>
       anthropic.messages.create({
         model: getSummarizerModel(),
@@ -820,9 +818,12 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
 
 
     const sessionList = await listSessions(slug)
+    const unreadSessionIds = await getSessionIdsWithUnreadNotifications(slug)
     const sessionsWithStatus = sessionList.map((session) => ({
       ...session,
       isActive: messagePersister.isSessionActive(session.id),
+      isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id),
+      hasUnreadNotifications: unreadSessionIds.has(session.id),
     }))
 
     return c.json(sessionsWithStatus)
@@ -863,6 +864,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       maxTurns: agentLimits.maxTurns,
       maxBudgetUsd: agentLimits.maxBudgetUsd,
       customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
+      maxBrowserTabs: getSettings().app?.maxBrowserTabs,
     })
     const sessionId = containerSession.id
 
@@ -1610,6 +1612,85 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
   } catch (error) {
     console.error('Failed to answer question:', error)
     return c.json({ error: 'Failed to answer question' }, 500)
+  }
+})
+
+// POST /api/agents/:id/sessions/:sessionId/complete-browser-input - Complete or cancel a browser input request
+agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const body = await c.req.json()
+    const { toolUseId, decline, declineReason } = body
+
+    if (!toolUseId) {
+      return c.json({ error: 'toolUseId is required' }, 400)
+    }
+
+    const client = containerManager.getClient(agentSlug)
+
+    if (decline) {
+      const reason = declineReason || 'User wants to chat with the agent'
+
+      const rejectResponse = await client.fetch(
+        `/inputs/${encodeURIComponent(toolUseId)}/reject`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason }),
+        }
+      )
+
+      if (!rejectResponse.ok) {
+        let errorDetails = 'Unknown error'
+        try {
+          const error = await rejectResponse.json()
+          errorDetails = JSON.stringify(error)
+        } catch {
+          errorDetails = await rejectResponse.text()
+        }
+        console.error(`[complete-browser-input] Failed to reject: ${errorDetails}`)
+        return c.json({ error: 'Failed to reject browser input request' }, 500)
+      }
+
+      // Interrupt the session so the user can chat directly with the agent
+      const sessionId = c.req.param('sessionId')
+      try {
+        await client.interruptSession(sessionId)
+      } catch (e) {
+        console.error(`[complete-browser-input] Failed to interrupt session: ${e}`)
+      }
+      await messagePersister.markSessionInterrupted(sessionId)
+
+      trackServerEvent('request_declined', { type: 'browser_input', withReason: !!declineReason })
+      return c.json({ success: true, declined: true })
+    }
+
+    // User completed the browser interaction
+    const resolveResponse = await client.fetch(
+      `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: 'completed' }),
+      }
+    )
+
+    if (!resolveResponse.ok) {
+      let errorDetails = 'Unknown error'
+      try {
+        const error = await resolveResponse.json()
+        errorDetails = JSON.stringify(error)
+      } catch {
+        errorDetails = await resolveResponse.text()
+      }
+      console.error(`[complete-browser-input] Failed to resolve: ${errorDetails}`)
+      return c.json({ error: 'Failed to complete browser input request' }, 500)
+    }
+
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('Failed to complete browser input:', error)
+    return c.json({ error: 'Failed to complete browser input' }, 500)
   }
 })
 
@@ -2703,6 +2784,59 @@ agents.post('/:id/sessions/:sessionId/upload-file', AgentUser(), async (c) => {
   }
 })
 
+async function handleFolderUpload(agentSlug: string, sourcePath: string) {
+  const stat = await fs.promises.stat(sourcePath)
+  if (!stat.isDirectory()) {
+    throw new Error('Source is not a directory')
+  }
+
+  const folderName = path.basename(sourcePath)
+  const workspaceDir = getAgentWorkspaceDir(agentSlug)
+  const destPath = path.resolve(workspaceDir, 'uploads', folderName)
+
+  // Security: ensure dest doesn't escape uploads directory
+  if (!destPath.startsWith(path.resolve(workspaceDir, 'uploads'))) {
+    throw new Error('Invalid path')
+  }
+
+  await fs.promises.mkdir(path.dirname(destPath), { recursive: true })
+  await fs.promises.cp(sourcePath, destPath, { recursive: true })
+
+  return {
+    success: true,
+    path: `/workspace/uploads/${folderName}/`,
+    folderName,
+  }
+}
+
+// POST /api/agents/:id/upload-folder - Copy a local folder to the agent workspace (Electron only)
+agents.post('/:id/upload-folder', AgentUser(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const { sourcePath } = await c.req.json<{ sourcePath: string }>()
+    if (!sourcePath) return c.json({ error: 'No source path provided' }, 400)
+    const result = await handleFolderUpload(agentSlug, sourcePath)
+    return c.json(result)
+  } catch (error) {
+    console.error('Failed to upload folder:', error)
+    return c.json({ error: 'Failed to upload folder' }, 500)
+  }
+})
+
+// POST /api/agents/:id/sessions/:sessionId/upload-folder - Copy a local folder to the agent workspace (Electron only)
+agents.post('/:id/sessions/:sessionId/upload-folder', AgentUser(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const { sourcePath } = await c.req.json<{ sourcePath: string }>()
+    if (!sourcePath) return c.json({ error: 'No source path provided' }, 400)
+    const result = await handleFolderUpload(agentSlug, sourcePath)
+    return c.json(result)
+  } catch (error) {
+    console.error('Failed to upload folder:', error)
+    return c.json({ error: 'Failed to upload folder' }, 500)
+  }
+})
+
 // GET /api/agents/:id/files/* - Download a file from the agent workspace
 agents.get('/:id/files/*', AgentRead(), async (c) => {
   try {
@@ -2852,6 +2986,160 @@ agents.get('/:id/artifacts', AgentRead(), async (c) => {
     console.error('Failed to fetch artifacts:', error)
     return c.json({ error: 'Failed to fetch artifacts' }, 500)
   }
+})
+
+// DELETE /api/agents/:id/artifacts/:artifactSlug - Delete a dashboard
+agents.delete('/:id/artifacts/:artifactSlug', AgentAdmin(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const artifactSlug = c.req.param('artifactSlug')
+
+    // Stop the dashboard process in the container (if running), then delete files
+    try {
+      const client = containerManager.getClient(agentSlug)
+      const info = containerManager.getCachedInfo(agentSlug)
+      if (info.status === 'running') {
+        await client.fetch(`/artifacts/${encodeURIComponent(artifactSlug)}`, { method: 'DELETE' })
+      }
+    } catch {
+      // Container not running — just delete files
+    }
+
+    await deleteArtifactFromFilesystem(agentSlug, artifactSlug)
+    return c.body(null, 204)
+  } catch (error) {
+    console.error('Failed to delete artifact:', error)
+    return c.json({ error: 'Failed to delete artifact' }, 500)
+  }
+})
+
+// PATCH /api/agents/:id/artifacts/:artifactSlug - Rename a dashboard
+agents.patch('/:id/artifacts/:artifactSlug', AgentAdmin(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const artifactSlug = c.req.param('artifactSlug')
+    const { name } = await c.req.json()
+
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      return c.json({ error: 'Name is required' }, 400)
+    }
+
+    await renameArtifactOnFilesystem(agentSlug, artifactSlug, name.trim())
+    return c.json({ ok: true })
+  } catch (error) {
+    console.error('Failed to rename artifact:', error)
+    return c.json({ error: 'Failed to rename artifact' }, 500)
+  }
+})
+
+// GET /api/agents/:id/artifacts/:artifactSlug/view - Standalone dashboard wrapper
+// Serves a self-contained HTML page that handles agent lifecycle (auto-start, wait, then load dashboard)
+agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
+  const agentSlug = c.req.param('id')
+  const artifactSlug = c.req.param('artifactSlug')
+  const basePath = `/api/agents/${agentSlug}`
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Loading dashboard…</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0a0a0a; color: #e5e5e5; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+    .container { text-align: center; max-width: 400px; padding: 2rem; }
+    .spinner { width: 40px; height: 40px; border: 3px solid #333; border-top-color: #888; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 1.5rem; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .status { font-size: 14px; color: #999; margin-top: 0.5rem; }
+    .error { color: #ef4444; }
+    iframe { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; border: 0; }
+  </style>
+</head>
+<body>
+  <div class="container" id="loading">
+    <div class="spinner"></div>
+    <div id="status" class="status">Checking agent status…</div>
+  </div>
+  <script>
+    const agentSlug = ${JSON.stringify(agentSlug)};
+    const artifactSlug = ${JSON.stringify(artifactSlug)};
+    const basePath = ${JSON.stringify(basePath)};
+    const dashboardUrl = basePath + '/artifacts/' + encodeURIComponent(artifactSlug) + '/';
+    const statusEl = document.getElementById('status');
+    const loadingEl = document.getElementById('loading');
+
+    function setTitle(name) {
+      document.title = (name || artifactSlug) + ' \\u2014 SuperAgent';
+    }
+
+    async function fetchDashboardName() {
+      try {
+        const res = await fetch(basePath + '/artifacts');
+        if (res.ok) {
+          const artifacts = await res.json();
+          const d = Array.isArray(artifacts) && artifacts.find(a => a.slug === artifactSlug);
+          if (d && d.name) { setTitle(d.name); return d.name; }
+        }
+      } catch {}
+      return null;
+    }
+
+    async function run() {
+      try {
+        // 1. Resolve dashboard name (works even when agent is stopped)
+        await fetchDashboardName();
+
+        // 2. Check agent status
+        const agentRes = await fetch(basePath);
+        if (!agentRes.ok) { throw new Error('Failed to fetch agent info'); }
+        const agent = await agentRes.json();
+
+        if (agent.status !== 'running') {
+          // 3. Start the agent
+          statusEl.textContent = 'Starting agent…';
+          const startRes = await fetch(basePath + '/start', { method: 'POST' });
+          if (!startRes.ok) {
+            const err = await startRes.json().catch(() => ({}));
+            throw new Error(err.error || 'Failed to start agent');
+          }
+        }
+
+        // 4. Poll until dashboard is running
+        statusEl.textContent = 'Waiting for dashboard…';
+        await pollDashboard();
+
+        // 5. Show the dashboard
+        loadingEl.remove();
+        const iframe = document.createElement('iframe');
+        iframe.src = dashboardUrl;
+        iframe.sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups';
+        document.body.appendChild(iframe);
+      } catch (err) {
+        statusEl.textContent = err.message;
+        statusEl.classList.add('error');
+      }
+    }
+
+    async function pollDashboard() {
+      for (let i = 0; i < 120; i++) {
+        const res = await fetch(basePath + '/artifacts');
+        if (res.ok) {
+          const artifacts = await res.json();
+          const d = Array.isArray(artifacts) && artifacts.find(a => a.slug === artifactSlug);
+          if (d && d.status === 'running') { setTitle(d.name); return; }
+        }
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      throw new Error('Dashboard did not start in time');
+    }
+
+    run();
+  </script>
+</body>
+</html>`
+
+  return c.html(html)
 })
 
 // Shared handler for proxying artifact requests to the container

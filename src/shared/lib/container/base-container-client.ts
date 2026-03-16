@@ -17,7 +17,8 @@ import type {
   StreamMessage,
 } from './types'
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
-import { getSettings, getEffectiveAnthropicApiKey } from '@shared/lib/config/settings'
+import { getSettings } from '@shared/lib/config/settings'
+import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 
 const execAsync = promisify(exec)
 
@@ -102,6 +103,8 @@ export function spawnWithPath(command: string, args: string[], options?: { cwd?:
   return spawn(command, args, {
     ...options,
     env: { ...process.env, PATH: getEnhancedPath() },
+    // On Windows, shell: true is needed to spawn .cmd/.bat wrapper scripts
+    ...(isWindows && { shell: true }),
   })
 }
 
@@ -124,18 +127,22 @@ export async function checkCommandAvailable(command: string): Promise<boolean> {
  */
 export function writeEnvFile(
   envVars: Record<string, string | undefined>,
-  agentId: string
-): { flag: string; cleanup: () => void } {
+  agentId: string,
+  tmpDir?: string
+): { flag: string; filePath: string; cleanup: () => void } {
   const content = Object.entries(envVars)
     .filter(([_, value]) => value !== undefined)
     .map(([key, value]) => `${key}=${value!.replace(/[\r\n]/g, '')}`)
     .join('\n')
 
-  const envFilePath = path.join(os.tmpdir(), `superagent-env-${agentId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+  const dir = tmpDir || os.tmpdir()
+  fs.mkdirSync(dir, { recursive: true })
+  const envFilePath = path.join(dir, `superagent-env-${agentId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
   fs.writeFileSync(envFilePath, content, { mode: 0o600 })
 
   return {
     flag: `--env-file "${envFilePath}"`,
+    filePath: envFilePath,
     cleanup: () => { try { fs.unlinkSync(envFilePath) } catch { /* ignore */ } },
   }
 }
@@ -238,6 +245,15 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    */
   protected getVolumeMountSuffix(): string {
     return ''
+  }
+
+  /**
+   * Translate a host path for use inside the container runtime.
+   * Default implementation forward-slashes the path. Subclasses can override
+   * for runtimes where host paths map differently (e.g., WSL2).
+   */
+  protected hostPathForRuntime(hostPath: string): string {
+    return hostPath.replace(/\\/g, '/')
   }
 
   /**
@@ -403,7 +419,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         runner, 'run', '-d',
         '--name', containerName,
         '-p', `${port}:${CONTAINER_INTERNAL_PORT}`,
-        '-v', `"${workspaceDir.replace(/\\/g, '/')}:/workspace${this.getVolumeMountSuffix()}"`,
+        '-v', `"${this.hostPathForRuntime(workspaceDir)}:/workspace${this.getVolumeMountSuffix()}"`,
         resourceFlags,
         additionalFlags,
         envFileFlag,
@@ -582,6 +598,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           maxTurns: options.maxTurns,
           maxBudgetUsd: options.maxBudgetUsd,
           customEnvVars: options.customEnvVars,
+          maxBrowserTabs: options.maxBrowserTabs,
         }),
         signal: controller.signal,
       })
@@ -878,9 +895,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    * This avoids shell quoting issues and Windows command length limits.
    * The caller must clean up the file after the container starts.
    */
-  private buildEnvFile(additionalEnvVars?: Record<string, string>): { flag: string; cleanup: () => void } {
+  protected buildEnvFile(additionalEnvVars?: Record<string, string>): { flag: string; cleanup: () => void } {
     const envVars: Record<string, string | undefined> = {
-      ANTHROPIC_API_KEY: getEffectiveAnthropicApiKey(),
+      ...getActiveLlmProvider().getContainerEnvVars(),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
       ...this.config.envVars,
       ...additionalEnvVars,

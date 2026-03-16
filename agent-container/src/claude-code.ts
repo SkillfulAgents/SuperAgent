@@ -235,13 +235,15 @@ type SDKModelAlias = 'sonnet' | 'opus' | 'haiku';
 
 /**
  * Maps a full model ID (e.g. 'claude-sonnet-4-5') to the SDK's short alias.
+ * Passes through model IDs containing '/' (e.g. OpenRouter format).
  */
-function toModelAlias(model?: string): SDKModelAlias | undefined {
+function toModelAlias(model?: string): SDKModelAlias | string | undefined {
   if (!model) return undefined;
+  if (model.includes('/')) return model;
   if (model.includes('opus')) return 'opus';
   if (model.includes('sonnet')) return 'sonnet';
   if (model.includes('haiku')) return 'haiku';
-  return undefined;
+  return model;
 }
 
 // Module-level reference to the current process (one per container)
@@ -274,7 +276,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private claudeSessionId: string | null;
   private systemPromptAppend: string | undefined;
   private model: string | undefined;
-  private browserModel: 'sonnet' | 'opus' | 'haiku' | undefined;
+  private browserModel: string | undefined;
   private maxOutputTokens: number | undefined;
   private maxThinkingTokens: number | undefined;
   private maxTurns: number | undefined;
@@ -394,7 +396,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         agents: {
           'web-browser': {
             description: 'Web browsing specialist. Delegate any task that requires interacting with websites — navigating pages, filling forms, clicking buttons, extracting information, searching for products, changing settings on web services, or any multi-step web interaction. The browser should already be open (use browser_open first). This agent runs on a cheaper model and handles all browser interactions autonomously.',
-            model: this.browserModel || 'sonnet',
+            model: (this.browserModel || 'sonnet') as 'sonnet' | 'opus' | 'haiku',
             tools: [
               'mcp__browser__browser_open',
               'mcp__browser__browser_snapshot',
@@ -410,6 +412,7 @@ export class ClaudeCodeProcess extends EventEmitter {
               'mcp__browser__browser_get_state',
               'WebSearch',
               'Read',
+              'mcp__user-input__request_browser_input',
             ],
             prompt: WEB_BROWSER_AGENT_PROMPT,
             maxTurns: 500,
@@ -457,6 +460,18 @@ export class ClaudeCodeProcess extends EventEmitter {
                 message: error instanceof Error ? error.message : 'User declined to answer',
               };
             }
+          }
+
+          // For MCP user-input tools called by subagents, set the toolUseId
+          // so the tool handler can consume it. PreToolUse hooks may not fire
+          // for subagent tool calls, so we set it here as well.
+          // TODO: Race condition — if both canUseTool and PreToolUse fire for
+          // the same tool call, the last write wins (setCurrentToolUseId is
+          // not additive). This is acceptable because they write the same ID,
+          // but if two user-input tools fire concurrently the first ID could
+          // be overwritten before consumeCurrentToolUseId is called.
+          if (toolName.startsWith('mcp__user-input__') && options.toolUseID) {
+            inputManager.setCurrentToolUseId(options.toolUseID);
           }
 
           // Auto-approve other tools (we're in bypassPermissions mode)

@@ -2,6 +2,9 @@ import { useState, useCallback, useEffect } from 'react'
 import { type Attachment } from '@renderer/components/messages/attachment-preview'
 import { getItemsFromDataTransfer, getFolderFromDirectoryInput, type FileWithPath, type FolderGroup } from '@renderer/lib/file-utils'
 
+// 500 MB max folder size for in-browser zip upload (no Electron fs.cp available)
+const MAX_WEB_FOLDER_SIZE = 500 * 1024 * 1024
+
 export function useAttachments() {
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [isDragOver, setIsDragOver] = useState(false)
@@ -22,14 +25,26 @@ export function useAttachments() {
   }, [])
 
   const addFolders = useCallback((folders: FolderGroup[]) => {
-    const newAttachments: Attachment[] = folders.map((folder) => ({
-      type: 'folder' as const,
-      id: crypto.randomUUID(),
-      folderName: folder.folderName,
-      files: folder.files,
-      totalSize: folder.files.reduce((sum, f) => sum + f.file.size, 0),
-    }))
-    setAttachments((prev) => [...prev, ...newAttachments])
+    const newAttachments: Attachment[] = []
+    for (const folder of folders) {
+      const totalSize = folder.files.reduce((sum, f) => sum + f.file.size, 0)
+      if (!folder.folderPath && totalSize > MAX_WEB_FOLDER_SIZE) {
+        const sizeMB = Math.round(totalSize / (1024 * 1024))
+        alert(`Folder "${folder.folderName}" is too large (${sizeMB} MB). The maximum folder size in the browser is 500 MB. Please use the desktop app for larger folders.`)
+        continue
+      }
+      newAttachments.push({
+        type: 'folder' as const,
+        id: crypto.randomUUID(),
+        folderName: folder.folderName,
+        folderPath: folder.folderPath,
+        files: folder.files,
+        totalSize,
+      })
+    }
+    if (newAttachments.length > 0) {
+      setAttachments((prev) => [...prev, ...newAttachments])
+    }
   }, [])
 
   const removeAttachment = useCallback((id: string) => {

@@ -50,6 +50,7 @@ export function MainContent() {
   const startAgent = useStartAgent()
   const stopAgent = useStopAgent()
   const hasActiveSessions = sessions?.some((s) => s.isActive) ?? false
+  const hasSessionsAwaitingInput = sessions?.some((s) => s.isAwaitingInput) ?? false
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
   const markSessionNotificationsRead = useMarkSessionNotificationsRead()
@@ -131,7 +132,7 @@ export function MainContent() {
         <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-2 min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="text-sm md:text-base font-semibold truncate">{agent?.name || 'Loading...'}</span>
-            {agent && <AgentStatus status={agent.status} hasActiveSessions={hasActiveSessions} />}
+            {agent && <AgentStatus status={agent.status} hasActiveSessions={hasActiveSessions} hasSessionsAwaitingInput={hasSessionsAwaitingInput} />}
           </div>
           {sessionId && session?.agentSlug === agentSlug && (
             <div className="flex items-center gap-2 min-w-0">
