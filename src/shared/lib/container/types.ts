@@ -46,6 +46,7 @@ export interface CreateSessionOptions {
   maxTurns?: number // Max conversation turns
   maxBudgetUsd?: number // Max cost in USD per session
   customEnvVars?: Record<string, string> // User-defined env vars for the agent process
+  maxBrowserTabs?: number // Max browser tabs allowed (default 10)
 }
 
 export interface StartOptions {
@@ -113,6 +114,10 @@ export interface ContainerClient {
   on(event: 'message', callback: (sessionId: string, message: any) => void): void
   off(event: string, callback: (...args: any[]) => void): void
 }
+
+// Lima VM defaults (shared between server and UI)
+export const DEFAULT_LIMA_VM_MEMORY = '4GiB'
+export const VALID_LIMA_VM_MEMORY_OPTIONS = ['2GiB', '4GiB', '6GiB', '8GiB', '12GiB', '16GiB'] as const
 
 // Runtime readiness types
 

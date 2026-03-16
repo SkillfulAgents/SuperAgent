@@ -12,9 +12,9 @@ import crypto from 'crypto'
 import path from 'path'
 import fs from 'fs'
 import yaml from 'js-yaml'
-import Anthropic from '@anthropic-ai/sdk'
 import { getDataDir } from '@shared/lib/config/data-dir'
-import { getEffectiveAnthropicApiKey, getEffectiveModels } from '@shared/lib/config/settings'
+import { getEffectiveModels } from '@shared/lib/config/settings'
+import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import { withRetry } from '@shared/lib/utils/retry'
 import {
   getAgentWorkspaceDir,
@@ -747,14 +747,14 @@ async function generatePRSuggestions(
     return fallback
   }
 
-  const apiKey = getEffectiveAnthropicApiKey()
-  if (!apiKey) {
-    console.warn('[PR suggestions] No Anthropic API key configured')
+  const provider = getActiveLlmProvider()
+  if (!provider.getApiKeyStatus().isConfigured) {
+    console.warn('[PR suggestions] No LLM API key configured')
     return fallback
   }
 
   try {
-    const client = new Anthropic({ apiKey })
+    const client = provider.createClient()
     const model = getEffectiveModels().summarizerModel
 
     const response = await withRetry(() =>
@@ -1091,14 +1091,14 @@ async function generatePublishSuggestions(
     suggestedVersion: currentVersion,
   }
 
-  const apiKey = getEffectiveAnthropicApiKey()
-  if (!apiKey) {
-    console.warn('[Publish suggestions] No Anthropic API key configured')
+  const provider = getActiveLlmProvider()
+  if (!provider.getApiKeyStatus().isConfigured) {
+    console.warn('[Publish suggestions] No LLM API key configured')
     return fallback
   }
 
   try {
-    const client = new Anthropic({ apiKey })
+    const client = provider.createClient()
     const model = getEffectiveModels().summarizerModel
 
     const response = await withRetry(() =>

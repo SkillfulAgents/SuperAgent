@@ -13,6 +13,7 @@ interface AgentListItemProps {
 export function AgentListItem({ agent, selected, onClick }: AgentListItemProps) {
   const { data: sessions } = useSessions(agent.slug)
   const hasActiveSessions = sessions?.some((s) => s.isActive) ?? false
+  const hasSessionsAwaitingInput = sessions?.some((s) => s.isAwaitingInput) ?? false
 
   return (
     <button
@@ -25,7 +26,7 @@ export function AgentListItem({ agent, selected, onClick }: AgentListItemProps) 
       )}
     >
       <span className="font-medium truncate">{agent.name}</span>
-      <AgentStatus status={agent.status} hasActiveSessions={hasActiveSessions} />
+      <AgentStatus status={agent.status} hasActiveSessions={hasActiveSessions} hasSessionsAwaitingInput={hasSessionsAwaitingInput} />
     </button>
   )
 }

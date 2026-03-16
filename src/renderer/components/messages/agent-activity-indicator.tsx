@@ -18,7 +18,20 @@ interface AgentActivityIndicatorProps {
 }
 
 export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIndicatorProps) {
-  const { isActive, error, activeStartTime, activeSubagents, completedSubagents } = useMessageStream(sessionId, agentSlug)
+  const {
+    isActive, error, activeStartTime, activeSubagents, completedSubagents,
+    pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests,
+    pendingFileRequests, pendingRemoteMcpRequests, pendingBrowserInputRequests,
+  } = useMessageStream(sessionId, agentSlug)
+
+  const isAwaitingInput = isActive && (
+    pendingSecretRequests.length > 0 ||
+    pendingConnectedAccountRequests.length > 0 ||
+    pendingQuestionRequests.length > 0 ||
+    pendingFileRequests.length > 0 ||
+    pendingRemoteMcpRequests.length > 0 ||
+    pendingBrowserInputRequests.length > 0
+  )
   const { data: messages } = useMessages(sessionId, agentSlug)
 
   // Use activeStartTime from SSE (set when session_active fires) as primary source.
@@ -45,6 +58,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
       if (msg.type === 'compact_boundary') continue
       for (const tc of msg.toolCalls || []) {
         if ((tc.name === 'Agent' || tc.name === 'Task') && activeIds.has(tc.id)) {
+          if (tc.isError) continue
           const input = tc.input as { subagent_type?: string; description?: string }
           const isCompleted = completedSubagents?.has(tc.id) || tc.result != null
           items.push({
@@ -110,15 +124,23 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     }
   }
 
-  const statusText = activeItem?.activeForm || 'Working...'
+  const statusText = isAwaitingInput
+    ? 'Waiting for input...'
+    : (activeItem?.activeForm || 'Working...')
 
   return (
     <div className="mx-4 mb-2 rounded-lg border bg-muted/50 p-3" data-testid="activity-indicator">
       {/* Header with pulsing indicator */}
       <div className="flex items-center gap-2">
         <span className="relative flex h-3 w-3">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>
-          <span className="relative inline-flex rounded-full h-3 w-3 bg-primary"></span>
+          <span className={cn(
+            "animate-ping absolute inline-flex h-full w-full rounded-full opacity-75",
+            isAwaitingInput ? "bg-orange-500" : "bg-primary"
+          )}></span>
+          <span className={cn(
+            "relative inline-flex rounded-full h-3 w-3",
+            isAwaitingInput ? "bg-orange-500" : "bg-primary"
+          )}></span>
         </span>
         <span className="text-sm font-medium">{statusText}</span>
         {elapsed && (

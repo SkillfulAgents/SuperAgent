@@ -19,6 +19,7 @@ import { AttachmentPreview } from '@renderer/components/messages/attachment-prev
 import { useAttachments } from '@renderer/hooks/use-attachments'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { appendAttachedFiles } from '@shared/lib/utils/attached-files'
+import { zipFolderFiles } from '@renderer/lib/file-utils'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 
 interface AgentLandingProps {
@@ -55,6 +56,7 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
   const {
     attachments,
     isDragOver,
+    addFiles,
     removeAttachment,
     clearAttachments,
     handleFileSelect,
@@ -90,32 +92,43 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
       if (attachments.length > 0) {
         setIsUploading(true)
         try {
-          const uploadPromises = attachments.flatMap((a) => {
-            if (a.type === 'folder') {
-              return a.files.map((f) => {
-                const formData = new FormData()
-                formData.append('file', f.file)
-                formData.append('relativePath', f.relativePath)
-                return apiFetch(
-                  `/api/agents/${agent.slug}/upload-file`,
-                  { method: 'POST', body: formData }
-                ).then(async (res) => {
-                  if (!res.ok) throw new Error('Failed to upload file')
-                  return res.json() as Promise<{ path: string; filename: string; size: number }>
-                })
-              })
-            }
-            const formData = new FormData()
-            formData.append('file', a.file)
-            return [apiFetch(
-              `/api/agents/${agent.slug}/upload-file`,
-              { method: 'POST', body: formData }
-            ).then(async (res) => {
+          const uploadResults: { path: string }[] = []
+
+          for (const a of attachments) {
+            if (a.type === 'folder' && a.folderPath) {
+              // Electron: copy folder directly on the server filesystem
+              const res = await apiFetch(
+                `/api/agents/${agent.slug}/upload-folder`,
+                {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ sourcePath: a.folderPath }),
+                }
+              )
+              if (!res.ok) throw new Error('Failed to upload folder')
+              uploadResults.push(await res.json() as { path: string })
+            } else if (a.type === 'folder') {
+              // Web fallback: zip files in browser and upload as single archive
+              const zipBlob = await zipFolderFiles(a.files)
+              const formData = new FormData()
+              formData.append('file', new File([zipBlob], `${a.folderName}.zip`, { type: 'application/zip' }))
+              const res = await apiFetch(
+                `/api/agents/${agent.slug}/upload-file`,
+                { method: 'POST', body: formData }
+              )
+              if (!res.ok) throw new Error('Failed to upload folder')
+              uploadResults.push(await res.json() as { path: string })
+            } else {
+              const formData = new FormData()
+              formData.append('file', a.file)
+              const res = await apiFetch(
+                `/api/agents/${agent.slug}/upload-file`,
+                { method: 'POST', body: formData }
+              )
               if (!res.ok) throw new Error('Failed to upload file')
-              return res.json() as Promise<{ path: string; filename: string; size: number }>
-            })]
-          })
-          const uploadResults = await Promise.all(uploadPromises)
+              uploadResults.push(await res.json() as { path: string })
+            }
+          }
 
           content = appendAttachedFiles(content, uploadResults.map((r) => r.path))
         } catch (error) {
@@ -139,6 +152,24 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
       console.error('Failed to start session:', error)
     }
   }
+
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+
+    const pastedFiles: File[] = []
+    for (const item of items) {
+      if (item.kind === 'file') {
+        const file = item.getAsFile()
+        if (file) pastedFiles.push(file)
+      }
+    }
+
+    if (pastedFiles.length > 0) {
+      e.preventDefault()
+      addFiles(pastedFiles.map((file) => ({ file })))
+    }
+  }, [addFiles])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
@@ -237,6 +268,7 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
                   onKeyDown={handleKeyDown}
+                  onPaste={handlePaste}
                   className={`pr-12 resize-none text-base transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh]' : 'min-h-[120px]'}`}
                   disabled={isDisabled}
                   autoFocus

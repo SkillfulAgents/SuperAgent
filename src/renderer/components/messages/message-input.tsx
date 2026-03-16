@@ -1,7 +1,7 @@
 
 import { Button } from '@renderer/components/ui/button'
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
-import { useSendMessage, useUploadFile, useInterruptSession } from '@renderer/hooks/use-messages'
+import { useSendMessage, useUploadFile, useUploadFolder, useInterruptSession } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { Send, Loader2, StopCircle, WifiOff } from 'lucide-react'
 import { useIsOnline } from '@renderer/context/connectivity-context'
@@ -14,6 +14,7 @@ import { SlashCommandMenu } from './slash-command-menu'
 import { useAttachments } from '@renderer/hooks/use-attachments'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { appendAttachedFiles } from '@shared/lib/utils/attached-files'
+import { zipFolderFiles } from '@renderer/lib/file-utils'
 
 interface MessageInputProps {
   sessionId: string
@@ -31,6 +32,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const sendMessage = useSendMessage()
   const uploadFile = useUploadFile()
+  const uploadFolder = useUploadFolder()
   const interruptSession = useInterruptSession()
   const { isActive, slashCommands } = useMessageStream(sessionId, agentSlug)
   const isOnline = useIsOnline()
@@ -40,6 +42,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
   const {
     attachments,
     isDragOver,
+    addFiles,
     removeAttachment,
     clearAttachments,
     handleFileSelect,
@@ -129,15 +132,24 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
     if (attachments.length > 0) {
       setIsUploading(true)
       try {
-        const uploadPromises = attachments.flatMap((a) => {
-          if (a.type === 'folder') {
-            return a.files.map((f) =>
-              uploadFile.mutateAsync({ sessionId, agentSlug, file: f.file, relativePath: f.relativePath })
-            )
+        const uploadResults: { path: string }[] = []
+
+        for (const a of attachments) {
+          if (a.type === 'folder' && a.folderPath) {
+            // Electron: copy folder directly on the server filesystem
+            const result = await uploadFolder.mutateAsync({ sessionId, agentSlug, sourcePath: a.folderPath })
+            uploadResults.push(result)
+          } else if (a.type === 'folder') {
+            // Web fallback: zip files in browser and upload as single archive
+            const zipBlob = await zipFolderFiles(a.files)
+            const zipFile = new File([zipBlob], `${a.folderName}.zip`, { type: 'application/zip' })
+            const result = await uploadFile.mutateAsync({ sessionId, agentSlug, file: zipFile })
+            uploadResults.push(result)
+          } else {
+            const result = await uploadFile.mutateAsync({ sessionId, agentSlug, file: a.file })
+            uploadResults.push(result)
           }
-          return [uploadFile.mutateAsync({ sessionId, agentSlug, file: a.file })]
-        })
-        const uploadResults = await Promise.all(uploadPromises)
+        }
 
         // Append file paths to message
         content = appendAttachedFiles(content, uploadResults.map((r) => r.path))
@@ -165,6 +177,24 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
       console.error('Failed to send message:', error)
     }
   }
+
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+
+    const pastedFiles: File[] = []
+    for (const item of items) {
+      if (item.kind === 'file') {
+        const file = item.getAsFile()
+        if (file) pastedFiles.push(file)
+      }
+    }
+
+    if (pastedFiles.length > 0) {
+      e.preventDefault()
+      addFiles(pastedFiles.map((file) => ({ file })))
+    }
+  }, [addFiles])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Slash command menu keyboard navigation
@@ -229,6 +259,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
           value={message}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           onFocus={() => { if (slashFilter !== null && slashCommands.length > 0) setSlashMenuOpen(true) }}
           onBlur={() => setSlashMenuOpen(false)}
           placeholder={

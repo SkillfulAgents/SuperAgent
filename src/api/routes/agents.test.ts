@@ -11,6 +11,7 @@ const mockFsReadFile = vi.fn()
 const mockFsWriteFile = vi.fn()
 const mockFsMkdir = vi.fn()
 const mockFsReaddir = vi.fn()
+const mockFsCp = vi.fn()
 const mockFsExistsSync = vi.fn()
 const mockCreateReadStream = vi.fn()
 
@@ -22,6 +23,7 @@ vi.mock('fs', () => ({
       writeFile: (...args: unknown[]) => mockFsWriteFile(...args),
       mkdir: (...args: unknown[]) => mockFsMkdir(...args),
       readdir: (...args: unknown[]) => mockFsReaddir(...args),
+      cp: (...args: unknown[]) => mockFsCp(...args),
     },
     existsSync: (...args: unknown[]) => mockFsExistsSync(...args),
     createReadStream: (...args: unknown[]) => mockCreateReadStream(...args),
@@ -32,6 +34,7 @@ vi.mock('fs', () => ({
     writeFile: (...args: unknown[]) => mockFsWriteFile(...args),
     mkdir: (...args: unknown[]) => mockFsMkdir(...args),
     readdir: (...args: unknown[]) => mockFsReaddir(...args),
+    cp: (...args: unknown[]) => mockFsCp(...args),
   },
   existsSync: (...args: unknown[]) => mockFsExistsSync(...args),
   createReadStream: (...args: unknown[]) => mockCreateReadStream(...args),
@@ -1503,5 +1506,73 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.error).toBe('No file provided')
+  })
+})
+
+// ============================================================================
+// Folder Upload — POST /:id/upload-folder
+// ============================================================================
+
+describe('folder upload — POST /:id/upload-folder', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockFsMkdir.mockResolvedValue(undefined)
+    mockFsCp.mockResolvedValue(undefined)
+  })
+
+  it('copies folder to workspace uploads directory', async () => {
+    mockFsStat.mockResolvedValue({ isDirectory: () => true })
+
+    const res = await postJson(app, '/api/agents/test-agent/upload-folder', {
+      sourcePath: '/Users/joe/Desktop/my-project',
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.success).toBe(true)
+    expect(body.path).toBe('/workspace/uploads/my-project/')
+    expect(body.folderName).toBe('my-project')
+
+    expect(mockFsCp).toHaveBeenCalledWith(
+      '/Users/joe/Desktop/my-project',
+      expect.stringContaining('my-project'),
+      { recursive: true }
+    )
+  })
+
+  it('returns 400 when no sourcePath is provided', async () => {
+    const res = await postJson(app, '/api/agents/test-agent/upload-folder', {})
+    expect(res.status).toBe(400)
+  })
+
+  it('returns 400 when source is not a directory', async () => {
+    mockFsStat.mockResolvedValue({ isDirectory: () => false })
+
+    const res = await postJson(app, '/api/agents/test-agent/upload-folder', {
+      sourcePath: '/Users/joe/file.txt',
+    })
+    expect(res.status).toBe(500)
+  })
+
+  it('returns 500 when source path does not exist', async () => {
+    mockFsStat.mockRejectedValue(new Error('ENOENT'))
+
+    const res = await postJson(app, '/api/agents/test-agent/upload-folder', {
+      sourcePath: '/nonexistent/path',
+    })
+    expect(res.status).toBe(500)
+  })
+
+  it('works with session-scoped endpoint', async () => {
+    mockFsStat.mockResolvedValue({ isDirectory: () => true })
+
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/upload-folder', {
+      sourcePath: '/Users/joe/project',
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.path).toBe('/workspace/uploads/project/')
   })
 })

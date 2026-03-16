@@ -22,9 +22,9 @@ import { CreateAgentStep } from './create-agent-step'
 const STEPS = [
   { label: 'Welcome' },
   { label: 'LLM' },
-  { label: 'Runtime' },
   { label: 'Browser' },
   { label: 'Composio' },
+  { label: 'Runtime' },
   { label: 'Agent' },
 ]
 
@@ -108,9 +108,9 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
         <div className="px-6 py-4 min-h-[320px]" data-testid="wizard-step-content" data-step={currentStep}>
           {currentStep === 0 && <WelcomeStep />}
           {currentStep === 1 && <ConfigureLLMStep />}
-          {currentStep === 2 && <DockerSetupStep />}
-          {currentStep === 3 && <BrowserSetupStep />}
-          {currentStep === 4 && <ComposioStep onCanProceedChange={setComposioCanProceed} saveRef={composioSaveRef} />}
+          {currentStep === 2 && <BrowserSetupStep />}
+          {currentStep === 3 && <ComposioStep onCanProceedChange={setComposioCanProceed} saveRef={composioSaveRef} />}
+          {currentStep === 4 && <DockerSetupStep />}
           {currentStep === 5 && <CreateAgentStep />}
         </div>
 
@@ -127,7 +127,9 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
           </Button>
 
           <div className="flex gap-2">
-            {(currentStep === 3 || currentStep === 4 || currentStep === 5) && (
+            {/* TODO: this is disgusting - lets just hold all strps in a better data structure that has this info in it */}
+            {/* Skip available on Browser (2), Composio (3), Runtime (4), Agent (5) */}
+            {(currentStep === 2 || currentStep === 3 || currentStep === 4 || currentStep === 5) && (
               <Button
                 variant="ghost"
                 onClick={() => {
@@ -148,8 +150,8 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
               </Button>
             ) : (
               <Button
-                onClick={currentStep === 4 ? handleComposioNext : () => setCurrentStep((s) => s + 1)}
-                disabled={currentStep === 4 && !composioCanProceed}
+                onClick={currentStep === 3 ? handleComposioNext : () => setCurrentStep((s) => s + 1)}
+                disabled={currentStep === 3 && !composioCanProceed}
                 data-testid="wizard-next"
               >
                 Next

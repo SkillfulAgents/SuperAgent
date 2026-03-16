@@ -9,6 +9,7 @@
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { readFile } from 'fs/promises'
 import { z } from 'zod'
+import { tabManager } from '../tab-manager'
 
 const CONTAINER_URL = `http://localhost:${process.env.PORT || '3000'}`
 
@@ -47,6 +48,11 @@ function errorResult(message: string) {
   }
 }
 
+/** Get tab warning from cached tab count (no network call needed — same process) */
+function getTabWarning(): string {
+  return tabManager.formatTabWarning(tabManager.getTabCount())
+}
+
 export function stripAnsi(str: string): string {
   // eslint-disable-next-line no-control-regex
   return str.replace(/\x1b\[[0-9;]*m/g, '')
@@ -83,6 +89,19 @@ Use this to start browsing a website. The browser preserves cookies/sessions via
   async (args) => {
     const result = await browserFetch('open', { url: args.url })
     if (!result.success) return errorResult(result.error!)
+    const data = result.data as Record<string, unknown> | undefined
+
+    if (data?.switchedToExisting) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Switched to existing tab ${data.tabIndex} which already has ${data.url} open. Use browser_snapshot to see the page content.`,
+          },
+        ],
+      }
+    }
+
     return {
       content: [
         {
@@ -135,9 +154,12 @@ Use compact=true (default) to reduce output size.`,
     if (!result.success) return errorResult(result.error!)
 
     const data = result.data as Record<string, unknown>
-    const text = data.snapshot
+    const tabCount = typeof data.tabCount === 'number' ? data.tabCount : 0
+    let text = data.snapshot
       ? String(data.snapshot)
       : JSON.stringify(data, null, 2)
+
+    text += tabManager.formatTabStatus(tabCount)
 
     return {
       content: [{ type: 'text' as const, text }],
@@ -154,13 +176,18 @@ export const browserClickTool = tool(
   async (args) => {
     const result = await browserFetch('click', { ref: args.ref })
     if (!result.success) return errorResult(result.error!)
+    const data = result.data as Record<string, unknown> | undefined
+    const tabInfo = data?.tabInfo as { activeIndex: number; activeUrl: string; tabCount: number } | undefined
+
+    let text = `Clicked ${args.ref}. Use browser_snapshot to see the updated page.`
+    if (tabInfo) {
+      text += tabManager.formatTabNotification(tabInfo)
+    } else {
+      text += getTabWarning()
+    }
+
     return {
-      content: [
-        {
-          type: 'text' as const,
-          text: `Clicked ${args.ref}. Use browser_snapshot to see the updated page.`,
-        },
-      ],
+      content: [{ type: 'text' as const, text }],
     }
   }
 )
@@ -178,11 +205,13 @@ export const browserFillTool = tool(
       value: args.value,
     })
     if (!result.success) return errorResult(result.error!)
+    let text = `Filled ${args.ref} with "${args.value}".`
+    text += getTabWarning()
     return {
       content: [
         {
           type: 'text' as const,
-          text: `Filled ${args.ref} with "${args.value}".`,
+          text,
         },
       ],
     }
@@ -207,11 +236,13 @@ export const browserScrollTool = tool(
       amount: args.amount,
     })
     if (!result.success) return errorResult(result.error!)
+    let text = `Scrolled ${args.direction}${args.amount ? ` by ${args.amount}px` : ''}.`
+    text += getTabWarning()
     return {
       content: [
         {
           type: 'text' as const,
-          text: `Scrolled ${args.direction}${args.amount ? ` by ${args.amount}px` : ''}.`,
+          text,
         },
       ],
     }
@@ -248,10 +279,18 @@ export const browserPressTool = tool(
   async (args) => {
     const result = await browserFetch('press', { key: args.key })
     if (!result.success) return errorResult(result.error!)
+    const data = result.data as Record<string, unknown> | undefined
+    const tabInfo = data?.tabInfo as { activeIndex: number; activeUrl: string; tabCount: number } | undefined
+
+    let text = `Pressed "${args.key}".`
+    if (tabInfo) {
+      text += tabManager.formatTabNotification(tabInfo)
+    } else {
+      text += getTabWarning()
+    }
+
     return {
-      content: [
-        { type: 'text' as const, text: `Pressed "${args.key}".` },
-      ],
+      content: [{ type: 'text' as const, text }],
     }
   }
 )
@@ -361,10 +400,16 @@ Available commands:
     const result = await browserFetch('run', { command: args.command })
     if (!result.success) return errorResult(result.error!)
     const data = result.data as Record<string, unknown>
-    const output = data.output ? String(data.output) : 'Command executed.'
+    let text = data.output ? String(data.output) : 'Command executed.'
+    const tabInfo = data.tabInfo as { activeIndex: number; activeUrl: string; tabCount: number } | undefined
+    if (tabInfo) {
+      text += tabManager.formatTabNotification(tabInfo)
+    } else {
+      text += getTabWarning()
+    }
     return {
       content: [
-        { type: 'text' as const, text: output },
+        { type: 'text' as const, text },
       ],
     }
   }
@@ -410,10 +455,13 @@ export const browserGetStateTool = tool(
 
     if (snapshotResult.success) {
       const data = snapshotResult.data as Record<string, unknown>
+      const tabCount = typeof data.tabCount === 'number' ? data.tabCount : 0
       const snapshot = data.snapshot
         ? String(data.snapshot)
         : JSON.stringify(data, null, 2)
       parts.push(`**Accessibility Snapshot:**\n${snapshot}`)
+      const tabStatus = tabManager.formatTabStatus(tabCount)
+      if (tabStatus) parts.push(tabStatus.trim())
     } else {
       parts.push(`**Accessibility Snapshot:** Error - ${snapshotResult.error}`)
     }

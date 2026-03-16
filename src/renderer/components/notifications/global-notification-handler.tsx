@@ -67,6 +67,11 @@ export function GlobalNotificationHandler() {
           case 'os_notification': {
             // Refresh notification list (for badge/dropdown)
             queryClient.invalidateQueries({ queryKey: ['notifications'] })
+            // Refresh sessions so unread indicators update in sidebar
+            const notifAgentSlug = data.agentSlug as string | undefined
+            if (notifAgentSlug) {
+              queryClient.invalidateQueries({ queryKey: ['sessions', notifAgentSlug] })
+            }
 
             // Skip if user doesn't have access to the notification's agent
             const agentSlug = data.agentSlug as string | undefined
@@ -93,7 +98,9 @@ export function GlobalNotificationHandler() {
 
           case 'session_active':
           case 'session_idle':
-          case 'session_error': {
+          case 'session_error':
+          case 'session_awaiting_input':
+          case 'session_input_provided': {
             // Session state changed - update sessions list in sidebar
             // Scope invalidation to the specific agent to avoid flashing "working" on other agents
             const eventAgentSlug = data.agentSlug as string | undefined

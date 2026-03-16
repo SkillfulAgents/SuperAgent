@@ -91,6 +91,8 @@ export function useMarkSessionNotificationsRead() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['notifications'] })
+      // Also invalidate sessions so the sidebar's unread dot disappears
+      queryClient.invalidateQueries({ queryKey: ['sessions'] })
     },
   })
 }

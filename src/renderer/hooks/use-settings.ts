@@ -9,10 +9,11 @@ import type {
   AuthSettings,
   VoiceSettings,
   AnalyticsTarget,
+  LlmProviderId,
 } from '@shared/lib/config/settings'
 import type { RunnerAvailability } from '@shared/lib/container/client-factory'
 
-export type { GlobalSettingsResponse, ContainerSettings, AppPreferences, ModelSettings, AgentLimitsSettings, AuthSettings, VoiceSettings, AnalyticsTarget, RunnerAvailability }
+export type { GlobalSettingsResponse, ContainerSettings, AppPreferences, ModelSettings, AgentLimitsSettings, AuthSettings, VoiceSettings, AnalyticsTarget, LlmProviderId, RunnerAvailability }
 
 export function useSettings(options?: { enabled?: boolean }) {
   return useQuery<GlobalSettingsResponse>({
@@ -30,8 +31,14 @@ export function useSettings(options?: { enabled?: boolean }) {
 export interface UpdateSettingsParams {
   container?: Partial<ContainerSettings>
   app?: Partial<AppPreferences>
+  llmProvider?: LlmProviderId
   apiKeys?: {
     anthropicApiKey?: string
+    openrouterApiKey?: string
+    bedrockApiKey?: string
+    bedrockAccessKeyId?: string
+    bedrockSecretAccessKey?: string
+    bedrockRegion?: string
     composioApiKey?: string
     composioUserId?: string
     browserbaseApiKey?: string
@@ -140,7 +147,34 @@ export function useStartRunner() {
       return data
     },
     onSuccess: () => {
-      // Invalidate settings to refresh runner availability
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+    },
+  })
+}
+
+export function useRestartRunner() {
+  const queryClient = useQueryClient()
+
+  return useMutation<StartRunnerResponse, Error, string>({
+    mutationFn: async (runner) => {
+      // Immediately invalidate so the next poll sees the runner as stopped
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+
+      const res = await apiFetch('/api/settings/restart-runner', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runner }),
+      })
+
+      const data = await res.json()
+
+      if (!res.ok) {
+        throw new Error(data.message || data.error || 'Failed to restart runner')
+      }
+
+      return data
+    },
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] })
     },
   })
