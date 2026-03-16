@@ -7,16 +7,12 @@ import { Send, Loader2, StopCircle, WifiOff } from 'lucide-react'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
-import { useVoiceInput } from '@renderer/hooks/use-voice-input'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { AttachmentPreview } from './attachment-preview'
 import { SlashCommandMenu } from './slash-command-menu'
-import { useAttachments } from '@renderer/hooks/use-attachments'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
-import { appendAttachedFiles, appendMountedFolders } from '@shared/lib/utils/attached-files'
-import { zipFolderFiles, type FolderGroup } from '@renderer/lib/file-utils'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
-import { useAddMount } from '@renderer/hooks/use-mounts'
+import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 
 interface MessageInputProps {
   sessionId: string
@@ -27,68 +23,41 @@ interface MessageInputProps {
 export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInputProps) {
   const { canUseAgent } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
-  const [message, setMessage] = useState('')
   const [slashMenuOpen, setSlashMenuOpen] = useState(false)
   const [slashMenuIndex, setSlashMenuIndex] = useState(0)
-  const [isUploading, setIsUploading] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const sendMessage = useSendMessage()
   const uploadFile = useUploadFile()
   const uploadFolder = useUploadFolder()
-  const addMountMutation = useAddMount()
   const interruptSession = useInterruptSession()
   const { isActive, slashCommands } = useMessageStream(sessionId, agentSlug)
   const isOnline = useIsOnline()
   const isOffline = !isOnline
   const { track } = useAnalyticsTracking()
 
-  // Mount choice dialog state
-  const [pendingFolders, setPendingFolders] = useState<FolderGroup[]>([])
-  const [showMountDialog, setShowMountDialog] = useState(false)
-  const isElectron = !!window.electronAPI
-
-  const handleFoldersReceived = useCallback((folders: FolderGroup[]) => {
-    setPendingFolders(folders)
-    setShowMountDialog(true)
-  }, [])
-
-  const {
-    attachments,
-    isDragOver,
-    addFiles,
-    addFolders: addFoldersDirectly,
-    addMounts,
-    removeAttachment,
-    clearAttachments,
-    handleFileSelect,
-    handleFolderSelect,
-    dragHandlers,
-  } = useAttachments({ onFoldersReceived: isElectron ? handleFoldersReceived : undefined })
-
-  const voiceInput = useVoiceInput({
-    onTranscriptUpdate: useCallback((text: string) => {
-      setMessage(text)
-    }, []),
+  const composer = useMessageComposer({
+    agentSlug,
+    uploadFile: useCallback(
+      ({ file }) => uploadFile.mutateAsync({ sessionId, agentSlug, file }),
+      [uploadFile, sessionId, agentSlug]
+    ),
+    uploadFolder: useCallback(
+      ({ sourcePath }) => uploadFolder.mutateAsync({ sessionId, agentSlug, sourcePath }),
+      [uploadFolder, sessionId, agentSlug]
+    ),
+    onSubmit: useCallback(async (content: string) => {
+      onMessageSent?.(content)
+      await sendMessage.mutateAsync({ sessionId, agentSlug, content })
+      track('message_sent')
+    }, [onMessageSent, sendMessage, sessionId, agentSlug, track]),
+    submitDisabled: sendMessage.isPending || isActive || isOffline,
   })
-
-  const handleMountChoice = useCallback((choice: 'upload' | 'mount' | 'cancel') => {
-    setShowMountDialog(false)
-    if (choice === 'upload') {
-      addFoldersDirectly(pendingFolders)
-    } else if (choice === 'mount') {
-      addMounts(pendingFolders.map((f) => ({
-        folderName: f.folderName,
-        hostPath: f.folderPath!,
-      })))
-    }
-    setPendingFolders([])
-  }, [pendingFolders, addFoldersDirectly, addMounts])
 
   // Extract the slash command prefix being typed (e.g. "co" from "/co")
   const slashFilter = useMemo(() => {
-    const match = message.match(/^\/(\S*)$/)
+    const match = composer.message.match(/^\/(\S*)$/)
     return match ? match[1] : null
-  }, [message])
+  }, [composer.message])
 
   // Filter slash commands based on current input
   const filteredCommands = useMemo(() => {
@@ -105,14 +74,14 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
   }, [filteredCommands.length, slashMenuIndex])
 
   const selectSlashCommand = useCallback((name: string) => {
-    setMessage(`/${name} `)
+    composer.setMessage(`/${name} `)
     setSlashMenuOpen(false)
     textareaRef.current?.focus()
-  }, [])
+  }, [composer])
 
   const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value
-    setMessage(value)
+    composer.setMessage(value)
 
     // Open slash menu when input is "/" followed by optional non-space chars (still typing command)
     if (/^\/\S*$/.test(value) && slashCommands.length > 0) {
@@ -121,7 +90,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
     } else {
       setSlashMenuOpen(false)
     }
-  }, [slashCommands.length])
+  }, [composer, slashCommands.length])
 
   const handleInterrupt = async () => {
     if (interruptSession.isPending) return
@@ -139,97 +108,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
       textarea.style.height = 'auto'
       textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`
     }
-  }, [message])
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-
-    // Stop voice recording first — use returned text since React state won't update synchronously
-    let voiceText: string | undefined
-    if (voiceInput.isRecording || voiceInput.isConnecting) {
-      voiceText = voiceInput.stopRecording()
-    }
-
-    const effectiveMessage = voiceText ?? message
-    const hasContent = effectiveMessage.trim() || attachments.length > 0
-    if (!hasContent || sendMessage.isPending || isActive || isUploading) return
-
-    let content = effectiveMessage.trim()
-
-    // Upload attachments first
-    if (attachments.length > 0) {
-      setIsUploading(true)
-      try {
-        const uploadResults: { path: string }[] = []
-        const mountResults: { containerPath: string; hostPath: string }[] = []
-
-        for (const a of attachments) {
-          if (a.type === 'mount') {
-            const result = await addMountMutation.mutateAsync({ agentSlug, hostPath: a.hostPath, restart: true })
-            mountResults.push({ containerPath: result.containerPath, hostPath: a.hostPath })
-          } else if (a.type === 'folder' && a.folderPath) {
-            // Electron: copy folder directly on the server filesystem
-            const result = await uploadFolder.mutateAsync({ sessionId, agentSlug, sourcePath: a.folderPath })
-            uploadResults.push(result)
-          } else if (a.type === 'folder') {
-            // Web fallback: zip files in browser and upload as single archive
-            const zipBlob = await zipFolderFiles(a.files)
-            const zipFile = new File([zipBlob], `${a.folderName}.zip`, { type: 'application/zip' })
-            const result = await uploadFile.mutateAsync({ sessionId, agentSlug, file: zipFile })
-            uploadResults.push(result)
-          } else {
-            const result = await uploadFile.mutateAsync({ sessionId, agentSlug, file: a.file })
-            uploadResults.push(result)
-          }
-        }
-
-        // Append file paths to message
-        // Append mounts before files — parseAttachedFiles strips from its marker onward,
-        // so [Attached files:] must come last for both blocks to be parseable.
-        content = appendMountedFolders(content, mountResults)
-        content = appendAttachedFiles(content, uploadResults.map((r) => r.path))
-      } catch (error) {
-        console.error('Failed to upload attachments:', error)
-        setIsUploading(false)
-        return
-      }
-      setIsUploading(false)
-    }
-
-    // Clear state before sending
-    onMessageSent?.(content)
-    setMessage('')
-    clearAttachments()
-
-    try {
-      await sendMessage.mutateAsync({
-        sessionId,
-        agentSlug,
-        content,
-      })
-      track('message_sent')
-    } catch (error) {
-      console.error('Failed to send message:', error)
-    }
-  }
-
-  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const items = e.clipboardData?.items
-    if (!items) return
-
-    const pastedFiles: File[] = []
-    for (const item of items) {
-      if (item.kind === 'file') {
-        const file = item.getAsFile()
-        if (file) pastedFiles.push(file)
-      }
-    }
-
-    if (pastedFiles.length > 0) {
-      e.preventDefault()
-      addFiles(pastedFiles.map((file) => ({ file })))
-    }
-  }, [addFiles])
+  }, [composer.message])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Slash command menu keyboard navigation
@@ -258,11 +137,11 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
 
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      handleSubmit(e)
+      composer.handleSubmit(e)
     }
   }
 
-  const isDisabled = sendMessage.isPending || isActive || isUploading || isOffline
+  const isDisabled = sendMessage.isPending || isActive || composer.isUploading || isOffline
 
   if (isViewOnly) {
     return null
@@ -270,14 +149,14 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
 
   return (
     <form
-      onSubmit={handleSubmit}
-      className={`relative pl-2 pr-4 py-[18px] border-t bg-background ${isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
-      {...dragHandlers}
+      onSubmit={composer.handleSubmit}
+      className={`relative pl-2 pr-4 py-[18px] border-t bg-background ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
+      {...composer.dragHandlers}
     >
       <MountChoiceDialog
-        open={showMountDialog}
-        onChoice={handleMountChoice}
-        folderName={pendingFolders.length === 1 ? pendingFolders[0].folderName : undefined}
+        open={composer.mountDialog.open}
+        onChoice={composer.mountDialog.onChoice}
+        folderName={composer.mountDialog.folderName}
       />
       <SlashCommandMenu
         commands={filteredCommands}
@@ -286,20 +165,20 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
         visible={slashMenuOpen}
         filter={slashFilter ?? ''}
       />
-      <AttachmentPreview attachments={attachments} onRemove={removeAttachment} />
-      <div className={`flex items-center gap-1 ${attachments.length > 0 ? 'mt-2' : ''}`}>
+      <AttachmentPreview attachments={composer.attachments} onRemove={composer.removeAttachment} />
+      <div className={`flex items-center gap-1 ${composer.attachments.length > 0 ? 'mt-2' : ''}`}>
         <AttachmentPicker
-          onFileSelect={handleFileSelect}
-          onFolderSelect={handleFolderSelect}
+          onFileSelect={composer.handleFileSelect}
+          onFolderSelect={composer.handleFolderSelect}
           disabled={isDisabled}
         />
-        <VoiceInputButton voiceInput={voiceInput} message={message} disabled={isDisabled} />
+        <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} />
         <textarea
           ref={textareaRef}
-          value={message}
+          value={composer.message}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
+          onPaste={composer.handlePaste}
           onFocus={() => { if (slashFilter !== null && slashCommands.length > 0) setSlashMenuOpen(true) }}
           onBlur={() => setSlashMenuOpen(false)}
           placeholder={
@@ -335,10 +214,10 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
             type="submit"
             size="icon"
             className="h-[34px] w-[34px]"
-            disabled={(!message.trim() && attachments.length === 0 && !voiceInput.isRecording) || sendMessage.isPending || isUploading}
+            disabled={!composer.canSubmit || sendMessage.isPending}
             data-testid="send-button"
           >
-            {sendMessage.isPending || isUploading ? (
+            {sendMessage.isPending || composer.isUploading ? (
               <Loader2 className="h-4 w-4 animate-spin" />
             ) : (
               <Send className="h-4 w-4" />
@@ -352,7 +231,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
           <span>No internet connection. Messages cannot be sent.</span>
         </div>
       )}
-      <VoiceInputError error={voiceInput.error} onDismiss={voiceInput.clearError} className="mt-2" />
+      <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="mt-2" />
     </form>
   )
 }
