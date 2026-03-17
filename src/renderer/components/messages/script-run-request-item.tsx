@@ -132,7 +132,7 @@ export function ScriptRunRequestItem({
             <div className="font-medium text-orange-900 dark:text-orange-100">
               Script Execution Requested
             </div>
-            <p className="text-sm text-orange-700 dark:text-orange-300 mt-0.5">{explanation}</p>
+            <p className="text-sm text-orange-700 dark:text-orange-300 mt-0.5 whitespace-pre-line">{explanation}</p>
           </div>
           <span className="text-xs text-orange-600 dark:text-orange-400 shrink-0">Waiting for approval</span>
         </div>
@@ -158,7 +158,7 @@ export function ScriptRunRequestItem({
                 {SCRIPT_TYPE_LABELS[scriptType] || scriptType}
               </span>
             </div>
-            <p className="text-sm text-orange-800 dark:text-orange-200 mt-1">{explanation}</p>
+            <p className="text-sm text-orange-800 dark:text-orange-200 mt-1 whitespace-pre-line">{explanation}</p>
           </div>
 
           <div className="rounded-md bg-orange-100/50 dark:bg-orange-900/30 border border-orange-200 dark:border-orange-700 overflow-hidden">

@@ -101,7 +101,7 @@ export function BrowserInputRequestItem({
           </div>
           <div className="flex-1 min-w-0">
             <div className="font-medium text-blue-900 dark:text-blue-100">Browser Input Needed</div>
-            <div className="text-xs text-blue-700 dark:text-blue-300 mt-0.5">{message}</div>
+            <div className="text-xs text-blue-700 dark:text-blue-300 mt-0.5 whitespace-pre-line">{message}</div>
           </div>
           <span className="text-xs text-blue-600 dark:text-blue-400 shrink-0">Waiting for input</span>
         </div>
@@ -119,7 +119,7 @@ export function BrowserInputRequestItem({
         <div className="flex-1 min-w-0 space-y-3">
           <div className="font-medium text-blue-900 dark:text-blue-100">Browser Input Needed</div>
 
-          <p className="text-blue-800 dark:text-blue-200">{message}</p>
+          <p className="text-blue-800 dark:text-blue-200 whitespace-pre-line">{message}</p>
 
           {requirements.length > 0 && (
             <div className="rounded-md bg-blue-100/50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-700 p-3 space-y-2">
