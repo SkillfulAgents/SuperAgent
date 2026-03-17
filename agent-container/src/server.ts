@@ -1718,17 +1718,18 @@ function switchScreencastTarget(target: PageTarget, clientWs: WebSocket): void {
   }
 }
 
-/** Broadcast tab list to the connected frontend viewer */
-async function broadcastTabList(): Promise<void> {
+/** Broadcast tab list to the connected frontend viewer.
+ *  Accepts pre-fetched data to avoid redundant calls when used alongside findActivePageTarget. */
+async function broadcastTabList(prefetched?: { allTargets: PageTarget[]; daemonTabs: Awaited<ReturnType<typeof tabManager.queryTabs>> }): Promise<void> {
   if (!cdpScreencast) return;
   const clientWs = cdpScreencast.clientWs;
   if (clientWs.readyState !== WebSocket.OPEN) return;
 
   try {
-    const [allTargets, daemonTabs] = await Promise.all([
-      getAllPageTargets(),
-      tabManager.queryTabs(),
-    ]);
+    const { allTargets, daemonTabs } = prefetched ?? {
+      allTargets: await getAllPageTargets(),
+      daemonTabs: await tabManager.queryTabs(),
+    };
 
     const claimedTargetIds = new Set<string>();
     const tabs: BrowserTabInfo[] = [];
@@ -1766,16 +1767,27 @@ function notifyBrowserAction() {
     if (!cdpScreencast || cdpScreencast.clientWs !== currentClient) return;
 
     try {
-      const target = await findActivePageTarget();
+      // Fetch once and share across both operations
+      const [allTargets, daemonTabs] = await Promise.all([
+        getAllPageTargets(),
+        tabManager.queryTabs(),
+      ]);
+
+      // Resolve the active target from daemon info
+      const activeDaemonTab = daemonTabs.find(t => t.active);
+      let activeTarget: PageTarget | null = allTargets[0] ?? null;
+      if (activeDaemonTab && allTargets.length > 1) {
+        activeTarget = allTargets.find(p => tabManager.urlsMatch(p.url, activeDaemonTab.url)) ?? activeTarget;
+      }
 
       // Switch screencast only if auto-following and target changed
-      if (target && target.id !== cdpScreencast.currentTargetId && viewerAutoFollow) {
-        console.log(`[CDP] Auto-following to target ${target.id}`);
-        switchScreencastTarget(target, currentClient);
+      if (activeTarget && activeTarget.id !== cdpScreencast.currentTargetId && viewerAutoFollow) {
+        console.log(`[CDP] Auto-following to target ${activeTarget.id}`);
+        switchScreencastTarget(activeTarget, currentClient);
       }
 
       // Always broadcast updated tab list (so frontend sees agent's active tab move)
-      broadcastTabList();
+      broadcastTabList({ allTargets, daemonTabs });
     } catch (err) {
       console.error('[CDP] notifyBrowserAction failed:', err);
     }
