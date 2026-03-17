@@ -65,6 +65,7 @@ import { getSessionIdsWithUnreadNotifications } from '@shared/lib/services/notif
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import {
   exportAgentTemplate,
+  exportAgentFull,
   importAgentFromTemplate,
   installAgentFromSkillset,
   updateAgentFromSkillset,
@@ -167,6 +168,7 @@ agents.post('/import-template', async (c) => {
     const formData = await c.req.formData()
     const file = formData.get('file') as File | null
     const nameOverride = formData.get('name') as string | null
+    const mode = formData.get('mode') as string | null
 
     if (!file) {
       return c.json({ error: 'No file provided' }, 400)
@@ -175,7 +177,8 @@ agents.post('/import-template', async (c) => {
     const arrayBuffer = await file.arrayBuffer()
     const zipBuffer = Buffer.from(arrayBuffer)
 
-    const agent = await importAgentFromTemplate(zipBuffer, nameOverride || undefined)
+    const importMode = mode === 'full' ? 'full' : 'template'
+    const agent = await importAgentFromTemplate(zipBuffer, nameOverride || undefined, importMode)
     await createOwnerAcl(c, agent.slug)
     const hasOnboarding = await hasOnboardingSkill(agent.slug)
     const requiredEnvVars = await collectAgentRequiredEnvVars(agent.slug)
@@ -2512,6 +2515,27 @@ agents.post('/:id/export-template', AgentAdmin(), async (c) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to export template'
     console.error('Failed to export template:', error)
+    return c.json({ error: message }, 500)
+  }
+})
+
+// POST /api/agents/:id/export-full - Export full agent as ZIP download (includes .env, data, etc.)
+agents.post('/:id/export-full', AgentAdmin(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const zipBuffer = await exportAgentFull(slug)
+
+    return new Response(new Uint8Array(zipBuffer), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/zip',
+        'Content-Disposition': `attachment; filename="${slug}-full.zip"`,
+        'Content-Length': zipBuffer.byteLength.toString(),
+      },
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to export agent'
+    console.error('Failed to export full agent:', error)
     return c.json({ error: message }, 500)
   }
 })

@@ -98,6 +98,7 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
   // Import tab state
   const [importFile, setImportFile] = useState<File | null>(null)
   const [importName, setImportName] = useState('')
+  const [importFull, setImportFull] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const importTemplate = useImportAgentTemplate()
 
@@ -273,6 +274,7 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
       const result = await importTemplate.mutateAsync({
         file: importFile,
         nameOverride: importName.trim() || undefined,
+        mode: importFull ? 'full' : 'template',
       })
 
       if (result.requiredEnvVars && result.requiredEnvVars.length > 0) {
@@ -352,6 +354,7 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
       setActiveTab('new')
       setImportFile(null)
       setImportName('')
+      setImportFull(false)
       setSelectedTemplate(null)
       setSkillsetAgentName('')
       setSecretsPrompt(null)
@@ -536,6 +539,20 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
                   value={importName}
                   onChange={(e) => setImportName(e.target.value)}
                 />
+
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="import-full"
+                    checked={importFull}
+                    onCheckedChange={(checked) => setImportFull(checked === true)}
+                  />
+                  <label
+                    htmlFor="import-full"
+                    className="text-sm text-muted-foreground cursor-pointer select-none"
+                  >
+                    Full import (includes environment variables and data)
+                  </label>
+                </div>
 
                 {importTemplate.error && (
                   <p className="text-sm text-destructive">{importTemplate.error.message}</p>

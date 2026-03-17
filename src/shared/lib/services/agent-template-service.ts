@@ -51,8 +51,8 @@ const execFileAsync = promisify(execFile)
 // Constants
 // ============================================================================
 
-const MAX_UNCOMPRESSED_SIZE = 100 * 1024 * 1024 // 100MB
-const MAX_FILE_COUNT = 1000
+const MAX_UNCOMPRESSED_SIZE = 200 * 1024 * 1024 // 200MB
+const MAX_FILE_COUNT = 2000
 
 /** Files/dirs excluded from templates (matched by name at any level) */
 const TEMPLATE_EXCLUDE = new Set([
@@ -210,6 +210,36 @@ export async function exportAgentTemplate(agentSlug: string): Promise<Buffer> {
   })
 }
 
+/**
+ * Export a full agent workspace as a ZIP buffer (includes .env, sessions, etc).
+ * Used for migrating agents between machines.
+ */
+export async function exportAgentFull(agentSlug: string): Promise<Buffer> {
+  const workspaceDir = getAgentWorkspaceDir(agentSlug)
+
+  if (!(await directoryExists(workspaceDir))) {
+    throw new Error('Agent workspace not found')
+  }
+
+  return new Promise((resolve, reject) => {
+    const archive = archiver('zip', { zlib: { level: 9 } })
+    const chunks: Buffer[] = []
+
+    archive.on('data', (chunk: Buffer) => chunks.push(chunk))
+    archive.on('end', () => resolve(Buffer.concat(chunks)))
+    archive.on('error', reject)
+
+    // Include everything except OS junk and heavy caches
+    archive.glob('**/*', {
+      cwd: workspaceDir,
+      dot: true,
+      ignore: ['.DS_Store', 'node_modules/**', '__pycache__/**', '.browser-profile/**'],
+    })
+
+    archive.finalize()
+  })
+}
+
 // ============================================================================
 // ZIP Helpers
 // ============================================================================
@@ -263,18 +293,22 @@ export interface TemplateValidationResult {
 /**
  * Validate a ZIP buffer as an agent template.
  * Handles ZIPs with or without a wrapper directory (e.g., from macOS Finder).
+ * In 'full' mode, only __MACOSX entries are filtered — all other entries count
+ * toward size/count limits and are checked for path traversal.
  */
-export function validateAgentTemplate(zipBuffer: Buffer): TemplateValidationResult {
+export function validateAgentTemplate(zipBuffer: Buffer, mode: 'template' | 'full' = 'template'): TemplateValidationResult {
   try {
     const zip = new AdmZip(zipBuffer)
     const entries = zip.getEntries()
 
-    // Filter out macOS resource fork entries and node_modules for all checks
+    // Filter out macOS resource fork entries; in template mode also filter excluded files
     const realEntries = entries.filter((e) => {
       if (e.entryName.startsWith('__MACOSX/')) return false
-      const parts = e.entryName.split('/')
-      if (parts.some((p) => TEMPLATE_EXCLUDE.has(p))) return false
-      if (!e.isDirectory && TEMPLATE_EXCLUDE_EXTENSIONS.has(path.extname(e.entryName))) return false
+      if (mode === 'template') {
+        const parts = e.entryName.split('/')
+        if (parts.some((p) => TEMPLATE_EXCLUDE.has(p))) return false
+        if (!e.isDirectory && TEMPLATE_EXCLUDE_EXTENSIONS.has(path.extname(e.entryName))) return false
+      }
       return true
     })
 
@@ -342,8 +376,9 @@ export function validateAgentTemplate(zipBuffer: Buffer): TemplateValidationResu
 export async function importAgentFromTemplate(
   zipBuffer: Buffer,
   nameOverride?: string,
+  mode: 'template' | 'full' = 'template',
 ): Promise<ApiAgent> {
-  const validation = validateAgentTemplate(zipBuffer)
+  const validation = validateAgentTemplate(zipBuffer, mode)
   if (!validation.valid) {
     throw new Error(validation.error || 'Invalid template')
   }
@@ -364,10 +399,6 @@ export async function importAgentFromTemplate(
   for (const entry of entries) {
     if (entry.isDirectory) continue
     if (entry.entryName.startsWith('__MACOSX/')) continue
-    // Skip excluded directories (node_modules, __pycache__, etc.) and extensions (.pyc)
-    const entryParts = entry.entryName.split('/')
-    if (entryParts.some((p) => TEMPLATE_EXCLUDE.has(p))) continue
-    if (TEMPLATE_EXCLUDE_EXTENSIONS.has(path.extname(entry.entryName))) continue
 
     // Strip wrapper directory prefix and normalize
     let entryName = stripPrefix
@@ -377,9 +408,16 @@ export async function importAgentFromTemplate(
 
     if (!entryName) continue
 
-    // Security: skip secrets and excluded files even if present
-    const baseName = path.basename(entryName)
-    if (baseName === '.env' || baseName === 'session-metadata.json') continue
+    if (mode === 'template') {
+      // Skip excluded directories (node_modules, __pycache__, etc.) and extensions (.pyc)
+      const entryParts = entry.entryName.split('/')
+      if (entryParts.some((p) => TEMPLATE_EXCLUDE.has(p))) continue
+      if (TEMPLATE_EXCLUDE_EXTENSIONS.has(path.extname(entry.entryName))) continue
+
+      // Security: skip secrets and excluded files even if present
+      const baseName = path.basename(entryName)
+      if (baseName === '.env' || baseName === 'session-metadata.json') continue
+    }
 
     // Path traversal protection
     const destPath = path.resolve(workspaceDir, entryName)

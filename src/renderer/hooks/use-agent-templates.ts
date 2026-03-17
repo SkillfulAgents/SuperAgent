@@ -72,16 +72,47 @@ export function useExportAgentTemplate() {
   })
 }
 
+export function useExportAgentFull() {
+  const { track } = useAnalyticsTracking()
+
+  return useMutation<void, Error, { agentSlug: string; agentName: string }>({
+    mutationFn: async ({ agentSlug, agentName }) => {
+      track('agent_full_exported')
+      const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/export-full`, {
+        method: 'POST',
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || 'Failed to export agent')
+      }
+
+      // Trigger browser download
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${agentName || agentSlug}-full.zip`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    },
+  })
+}
+
 export function useImportAgentTemplate() {
   const queryClient = useQueryClient()
   const { track } = useAnalyticsTracking()
 
-  return useMutation<ApiAgent & { hasOnboarding?: boolean; requiredEnvVars?: Array<{ name: string; description: string }> }, Error, { file: File; nameOverride?: string }>({
-    mutationFn: async ({ file, nameOverride }) => {
+  return useMutation<ApiAgent & { hasOnboarding?: boolean; requiredEnvVars?: Array<{ name: string; description: string }> }, Error, { file: File; nameOverride?: string; mode?: 'template' | 'full' }>({
+    mutationFn: async ({ file, nameOverride, mode }) => {
       const formData = new FormData()
       formData.append('file', file)
       if (nameOverride) {
         formData.append('name', nameOverride)
+      }
+      if (mode) {
+        formData.append('mode', mode)
       }
 
       const res = await apiFetch('/api/agents/import-template', {
