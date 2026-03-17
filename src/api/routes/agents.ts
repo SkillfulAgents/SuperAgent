@@ -27,7 +27,7 @@ import {
   removeMessage,
   removeToolCall,
 } from '@shared/lib/services/session-service'
-import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile } from '@shared/lib/utils/file-storage'
+import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile, getTempUploadsDir, ensureDirectory, removeDirectory } from '@shared/lib/utils/file-storage'
 import { getMountsWithHealth, addMount, removeMount } from '@shared/lib/services/mount-service'
 import {
   listSecrets,
@@ -163,34 +163,106 @@ agents.use('*', Authenticated())
 // ============================================================
 
 // POST /api/agents/import-template - Import agent from uploaded ZIP
+// Supports both single-request (file field) and chunked upload (chunk field)
 agents.post('/import-template', async (c) => {
   try {
     const formData = await c.req.formData()
-    const file = formData.get('file') as File | null
-    const nameOverride = formData.get('name') as string | null
-    const mode = formData.get('mode') as string | null
 
+    // Check if this is a chunked upload
+    const chunk = formData.get('chunk') as File | null
+    if (chunk) {
+      return await handleChunkedImport(c, formData, chunk)
+    }
+
+    // Legacy single-request upload
+    const file = formData.get('file') as File | null
     if (!file) {
-      return c.json({ error: 'No file provided' }, 400)
+      return c.json({ error: 'No file or chunk provided' }, 400)
     }
 
     const arrayBuffer = await file.arrayBuffer()
     const zipBuffer = Buffer.from(arrayBuffer)
 
-    const importMode = mode === 'full' ? 'full' : 'template'
-    const agent = await importAgentFromTemplate(zipBuffer, nameOverride || undefined, importMode)
-    await createOwnerAcl(c, agent.slug)
-    const hasOnboarding = await hasOnboardingSkill(agent.slug)
-    const requiredEnvVars = await collectAgentRequiredEnvVars(agent.slug, {
-      excludeExistingSecrets: importMode === 'full',
-    })
-    return c.json({ ...agent, hasOnboarding, requiredEnvVars }, 201)
+    return await processImport(c, zipBuffer, formData)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to import template'
     console.error('Failed to import template:', error)
     return c.json({ error: message }, 500)
   }
 })
+
+async function handleChunkedImport(c: Context, formData: FormData, chunk: File) {
+  const uploadId = formData.get('uploadId') as string | null
+  const chunkIndexStr = formData.get('chunkIndex') as string | null
+  const totalChunksStr = formData.get('totalChunks') as string | null
+
+  if (!uploadId || chunkIndexStr === null || totalChunksStr === null) {
+    return c.json({ error: 'Missing chunked upload fields: uploadId, chunkIndex, totalChunks' }, 400)
+  }
+
+  // Validate uploadId format (UUID only — prevent path traversal)
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uploadId)) {
+    return c.json({ error: 'Invalid uploadId format' }, 400)
+  }
+
+  const chunkIndex = parseInt(chunkIndexStr, 10)
+  const totalChunks = parseInt(totalChunksStr, 10)
+
+  if (isNaN(chunkIndex) || isNaN(totalChunks) || chunkIndex < 0 || totalChunks < 1 || chunkIndex >= totalChunks || totalChunks > 200) {
+    return c.json({ error: 'Invalid chunkIndex or totalChunks' }, 400)
+  }
+
+  const uploadDir = path.join(getTempUploadsDir(), uploadId)
+  await ensureDirectory(uploadDir)
+
+  // Write this chunk to disk
+  const chunkBuffer = Buffer.from(await chunk.arrayBuffer())
+  await fs.promises.writeFile(path.join(uploadDir, `chunk-${chunkIndex}`), chunkBuffer)
+
+  // Check if all chunks are present
+  const files = await fs.promises.readdir(uploadDir)
+  const chunkFiles = files.filter((f) => f.startsWith('chunk-'))
+
+  if (chunkFiles.length < totalChunks) {
+    return c.json({ status: 'chunk_received', chunkIndex })
+  }
+
+  // Prevent duplicate assembly from concurrent requests
+  const lockPath = path.join(uploadDir, '.assembling')
+  try {
+    await fs.promises.writeFile(lockPath, '', { flag: 'wx' }) // fails if already exists
+  } catch {
+    return c.json({ status: 'chunk_received', chunkIndex })
+  }
+
+  // All chunks received — assemble and process
+  try {
+    const buffers: Buffer[] = []
+    for (let i = 0; i < totalChunks; i++) {
+      buffers.push(await fs.promises.readFile(path.join(uploadDir, `chunk-${i}`)))
+    }
+    const zipBuffer = Buffer.concat(buffers)
+
+    return await processImport(c, zipBuffer, formData)
+  } finally {
+    // Clean up temp chunks
+    try { await removeDirectory(uploadDir) } catch { /* ignore cleanup errors */ }
+  }
+}
+
+async function processImport(c: Context, zipBuffer: Buffer, formData: FormData) {
+  const nameOverride = formData.get('name') as string | null
+  const mode = formData.get('mode') as string | null
+  const importMode = mode === 'full' ? 'full' : 'template'
+
+  const agent = await importAgentFromTemplate(zipBuffer, nameOverride || undefined, importMode)
+  await createOwnerAcl(c, agent.slug)
+  const hasOnboarding = await hasOnboardingSkill(agent.slug)
+  const requiredEnvVars = await collectAgentRequiredEnvVars(agent.slug, {
+    excludeExistingSecrets: importMode === 'full',
+  })
+  return c.json({ ...agent, hasOnboarding, requiredEnvVars }, 201)
+}
 
 // GET /api/agents/discoverable-agents - List agents available from skillsets
 // Uses ?refresh=true to force a cache refresh before reading
@@ -3484,5 +3556,32 @@ agents.post('/:id/browser/:action', AgentUser(), async (c) => {
     return c.json({ error: error.message || 'Failed to proxy browser action' }, 500)
   }
 })
+
+// ============================================================================
+// Cleanup stale chunked uploads (older than 1 hour)
+// ============================================================================
+const STALE_UPLOAD_MS = 60 * 60 * 1000 // 1 hour
+
+async function cleanupStaleUploads() {
+  try {
+    const uploadsDir = getTempUploadsDir()
+    const entries = await fs.promises.readdir(uploadsDir, { withFileTypes: true }).catch(() => [])
+    const now = Date.now()
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      const dirPath = path.join(uploadsDir, entry.name)
+      const stat = await fs.promises.stat(dirPath).catch(() => null)
+      if (stat && now - stat.mtimeMs > STALE_UPLOAD_MS) {
+        await removeDirectory(dirPath).catch(() => {})
+      }
+    }
+  } catch {
+    // Ignore cleanup errors
+  }
+}
+
+// Run cleanup on startup and every 30 minutes
+cleanupStaleUploads()
+setInterval(cleanupStaleUploads, 30 * 60 * 1000).unref()
 
 export default agents

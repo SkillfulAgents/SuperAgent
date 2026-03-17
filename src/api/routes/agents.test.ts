@@ -274,6 +274,9 @@ vi.mock('@shared/lib/utils/file-storage', () => ({
   getAgentSessionsDir: vi.fn(() => '/mock/sessions'),
   readJsonlFile: vi.fn(),
   getAgentWorkspaceDir: (slug: string) => mockGetAgentWorkspaceDir(slug),
+  getTempUploadsDir: vi.fn(() => '/mock/tmp/uploads'),
+  ensureDirectory: vi.fn(),
+  removeDirectory: vi.fn(),
 }))
 
 vi.mock('@anthropic-ai/sdk', () => ({ default: vi.fn() }))
@@ -391,6 +394,190 @@ describe('POST /api/agents/import-template', () => {
       { name: 'API_KEY', description: 'Shared API key' },
       { name: 'SECRET_A', description: 'Secret for A' },
     ])
+  })
+})
+
+// ============================================================================
+// Chunked Import Template Tests
+// ============================================================================
+
+describe('POST /api/agents/import-template (chunked)', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(importAgentFromTemplate).mockResolvedValue({
+      slug: 'imported-agent',
+      name: 'Imported Agent',
+    } as any)
+    vi.mocked(hasOnboardingSkill).mockResolvedValue(false)
+    vi.mocked(collectAgentRequiredEnvVars).mockResolvedValue([])
+  })
+
+  function buildChunkForm(opts: {
+    chunk: string
+    uploadId: string
+    chunkIndex: number
+    totalChunks: number
+    mode?: string
+    name?: string
+  }) {
+    const form = new FormData()
+    form.append('chunk', new File([opts.chunk], 'chunk.bin', { type: 'application/octet-stream' }))
+    form.append('uploadId', opts.uploadId)
+    form.append('chunkIndex', String(opts.chunkIndex))
+    form.append('totalChunks', String(opts.totalChunks))
+    if (opts.mode) form.append('mode', opts.mode)
+    if (opts.name) form.append('name', opts.name)
+    return form
+  }
+
+  it('accepts intermediate chunks and returns chunk_received', async () => {
+    // Simulate first of 2 chunks — readdir returns only 1 file
+    mockFsWriteFile.mockResolvedValue(undefined)
+    mockFsMkdir.mockResolvedValue(undefined)
+    mockFsReaddir.mockResolvedValue(['chunk-0'])
+
+    const form = buildChunkForm({
+      chunk: 'data-part-0',
+      uploadId: '11111111-1111-1111-1111-111111111111',
+      chunkIndex: 0,
+      totalChunks: 2,
+      mode: 'full',
+    })
+
+    const res = await postFormData(app, '/api/agents/import-template', form)
+    expect(res.status).toBe(200)
+
+    const body = await res.json()
+    expect(body.status).toBe('chunk_received')
+    expect(body.chunkIndex).toBe(0)
+    expect(importAgentFromTemplate).not.toHaveBeenCalled()
+  })
+
+  it('assembles and processes on final chunk', async () => {
+    mockFsWriteFile.mockResolvedValue(undefined)
+    mockFsMkdir.mockResolvedValue(undefined)
+    // readdir returns both chunks → triggers assembly
+    mockFsReaddir.mockResolvedValue(['chunk-0', 'chunk-1'])
+    // readFile for each chunk during assembly
+    mockFsReadFile.mockImplementation((filePath: string) => {
+      if (filePath.endsWith('chunk-0')) return Promise.resolve(Buffer.from('part0'))
+      if (filePath.endsWith('chunk-1')) return Promise.resolve(Buffer.from('part1'))
+      return Promise.reject(new Error('unexpected read'))
+    })
+
+    const form = buildChunkForm({
+      chunk: 'data-part-1',
+      uploadId: '22222222-2222-2222-2222-222222222222',
+      chunkIndex: 1,
+      totalChunks: 2,
+      mode: 'full',
+    })
+
+    const res = await postFormData(app, '/api/agents/import-template', form)
+    expect(res.status).toBe(201)
+
+    const body = await res.json()
+    expect(body.slug).toBe('imported-agent')
+    expect(importAgentFromTemplate).toHaveBeenCalledWith(
+      Buffer.concat([Buffer.from('part0'), Buffer.from('part1')]),
+      undefined,
+      'full',
+    )
+  })
+
+  it('passes name override on final chunk', async () => {
+    mockFsWriteFile.mockResolvedValue(undefined)
+    mockFsMkdir.mockResolvedValue(undefined)
+    mockFsReaddir.mockResolvedValue(['chunk-0'])
+    mockFsReadFile.mockResolvedValue(Buffer.from('zipdata'))
+
+    const form = buildChunkForm({
+      chunk: 'zipdata',
+      uploadId: '33333333-3333-3333-3333-333333333333',
+      chunkIndex: 0,
+      totalChunks: 1,
+      mode: 'template',
+      name: 'My Agent',
+    })
+
+    const res = await postFormData(app, '/api/agents/import-template', form)
+    expect(res.status).toBe(201)
+    expect(importAgentFromTemplate).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      'My Agent',
+      'template',
+    )
+  })
+
+  it('rejects invalid uploadId format', async () => {
+    const form = buildChunkForm({
+      chunk: 'data',
+      uploadId: '../../../etc/passwd',
+      chunkIndex: 0,
+      totalChunks: 1,
+    })
+
+    const res = await postFormData(app, '/api/agents/import-template', form)
+    expect(res.status).toBe(400)
+
+    const body = await res.json()
+    expect(body.error).toContain('Invalid uploadId')
+  })
+
+  it('rejects missing chunked upload fields', async () => {
+    const form = new FormData()
+    form.append('chunk', new File(['data'], 'chunk.bin'))
+    // Missing uploadId, chunkIndex, totalChunks
+
+    const res = await postFormData(app, '/api/agents/import-template', form)
+    expect(res.status).toBe(400)
+
+    const body = await res.json()
+    expect(body.error).toContain('Missing chunked upload fields')
+  })
+
+  it('rejects invalid chunkIndex (negative)', async () => {
+    const form = buildChunkForm({
+      chunk: 'data',
+      uploadId: '44444444-4444-4444-4444-444444444444',
+      chunkIndex: -1,
+      totalChunks: 2,
+    })
+
+    const res = await postFormData(app, '/api/agents/import-template', form)
+    expect(res.status).toBe(400)
+
+    const body = await res.json()
+    expect(body.error).toContain('Invalid chunkIndex')
+  })
+
+  it('rejects chunkIndex >= totalChunks', async () => {
+    const form = buildChunkForm({
+      chunk: 'data',
+      uploadId: '55555555-5555-5555-5555-555555555555',
+      chunkIndex: 3,
+      totalChunks: 2,
+    })
+
+    const res = await postFormData(app, '/api/agents/import-template', form)
+    expect(res.status).toBe(400)
+
+    const body = await res.json()
+    expect(body.error).toContain('Invalid chunkIndex')
+  })
+
+  it('returns 400 when neither file nor chunk is provided', async () => {
+    const form = new FormData()
+    form.append('mode', 'template')
+
+    const res = await postFormData(app, '/api/agents/import-template', form)
+    expect(res.status).toBe(400)
+
+    const body = await res.json()
+    expect(body.error).toContain('No file or chunk provided')
   })
 })
 
