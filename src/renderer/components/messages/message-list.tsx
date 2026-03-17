@@ -81,11 +81,14 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
   // messages array, we clear the optimistic pending copy to avoid duplication.
   // We match by both text AND timestamp to handle duplicate message text correctly:
   // only messages created around the time the pending was set can match.
+  // Text comparison uses trimmed values to handle trailing whitespace/newlines
+  // that the SDK may add when persisting to JSONL.
   useEffect(() => {
     if (pendingUserMessage && messages) {
+      const pendingText = pendingUserMessage.text.trim()
       const found = messages.some(
         (m) => m.type === 'user' &&
-          m.content.text === pendingUserMessage.text &&
+          (m.content as { text?: string }).text?.trim() === pendingText &&
           new Date(m.createdAt).getTime() >= pendingUserMessage.sentAt - 5000
       )
       if (found) {
@@ -93,6 +96,17 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
       }
     }
   }, [messages, pendingUserMessage, onPendingMessageAppeared])
+
+  // Safety net: clear pending message after 10 seconds even if text matching
+  // fails (e.g., due to filesystem sync delays or unexpected text transforms).
+  // By this time the message has certainly been persisted.
+  useEffect(() => {
+    if (!pendingUserMessage) return
+    const timerId = setTimeout(() => {
+      onPendingMessageAppeared?.()
+    }, 10000)
+    return () => clearTimeout(timerId)
+  }, [pendingUserMessage, onPendingMessageAppeared])
   const {
     isActive,
     streamingMessage,

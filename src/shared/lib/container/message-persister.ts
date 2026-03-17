@@ -436,6 +436,9 @@ class MessagePersister {
         }
         // Tool results come as 'user' type messages
         this.handleToolResults(sessionId, content)
+        // Broadcast refresh so frontend can detect the persisted user message
+        // and clear the optimistic pending copy promptly.
+        this.broadcastToSSE(sessionId, { type: 'messages_updated' })
         break
 
       case 'system':
