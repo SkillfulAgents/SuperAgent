@@ -20,6 +20,7 @@ vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => mockGetSettings(),
   VALID_SCRIPT_TYPES: {
     darwin: ['applescript', 'shell'],
+    linux: ['shell'],
     win32: ['powershell'],
   },
 }))
