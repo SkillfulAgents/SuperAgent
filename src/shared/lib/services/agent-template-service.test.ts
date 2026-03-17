@@ -1827,6 +1827,75 @@ metadata:
     const result = await collectAgentRequiredEnvVars('nonexistent-agent')
     expect(result).toEqual([])
   })
+
+  it('filters out required env vars already present in the agent .env when requested', async () => {
+    createWorkspace('test-agent', {
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      '.env': 'API_KEY=present\n',
+      '.claude/skills/skill-a/SKILL.md': `---
+description: Skill A
+metadata:
+  required_env_vars:
+    - name: API_KEY
+      description: Shared API key
+    - name: SECRET_A
+      description: Secret for A
+---
+# Skill A`,
+    })
+
+    const result = await collectAgentRequiredEnvVars('test-agent', {
+      excludeExistingSecrets: true,
+    })
+
+    expect(result).toEqual([{ name: 'SECRET_A', description: 'Secret for A' }])
+  })
+
+  it('treats quoted and commented .env entries as existing secrets', async () => {
+    createWorkspace('test-agent', {
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      '.env': 'API_KEY="abc 123"\nTOKEN=value  # Auth token\n',
+      '.claude/skills/skill-a/SKILL.md': `---
+description: Skill A
+metadata:
+  required_env_vars:
+    - name: API_KEY
+      description: Shared API key
+    - name: TOKEN
+      description: Access token
+    - name: SECRET_A
+      description: Secret for A
+---
+# Skill A`,
+    })
+
+    const result = await collectAgentRequiredEnvVars('test-agent', {
+      excludeExistingSecrets: true,
+    })
+
+    expect(result).toEqual([{ name: 'SECRET_A', description: 'Secret for A' }])
+  })
+
+  it('matches existing secrets by exact env var name', async () => {
+    createWorkspace('test-agent', {
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      '.env': 'api_key=present\n',
+      '.claude/skills/skill-a/SKILL.md': `---
+description: Skill A
+metadata:
+  required_env_vars:
+    - name: API_KEY
+      description: Shared API key
+---
+# Skill A`,
+    })
+
+    const result = await collectAgentRequiredEnvVars('test-agent', {
+      excludeExistingSecrets: true,
+    })
+
+    expect(result).toEqual([{ name: 'API_KEY', description: 'Shared API key' }])
+  })
 })
 
 // ============================================================================
@@ -1982,6 +2051,31 @@ describe('importAgentFromTemplate (full mode)', () => {
     const envPath = path.join(workspaceDir, '.env')
     expect(fs.existsSync(envPath)).toBe(true)
     expect(fs.readFileSync(envPath, 'utf-8')).toBe('SECRET=abc')
+  })
+
+  it('full import can satisfy required env vars from imported .env', async () => {
+    setupAgentMock('import-full-env-agent')
+    const zipBuffer = createZipBuffer({
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      '.env': 'API_KEY=present\n',
+      '.claude/skills/skill-a/SKILL.md': `---
+description: Skill A
+metadata:
+  required_env_vars:
+    - name: API_KEY
+      description: Shared API key
+    - name: SECRET_A
+      description: Secret for A
+---
+# Skill A`,
+    })
+
+    const agent = await importAgentFromTemplate(zipBuffer, undefined, 'full')
+    const result = await collectAgentRequiredEnvVars(agent.slug, {
+      excludeExistingSecrets: true,
+    })
+
+    expect(result).toEqual([{ name: 'SECRET_A', description: 'Secret for A' }])
   })
 
   it('strips .env in template mode', async () => {

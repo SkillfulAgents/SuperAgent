@@ -181,7 +181,9 @@ agents.post('/import-template', async (c) => {
     const agent = await importAgentFromTemplate(zipBuffer, nameOverride || undefined, importMode)
     await createOwnerAcl(c, agent.slug)
     const hasOnboarding = await hasOnboardingSkill(agent.slug)
-    const requiredEnvVars = await collectAgentRequiredEnvVars(agent.slug)
+    const requiredEnvVars = await collectAgentRequiredEnvVars(agent.slug, {
+      excludeExistingSecrets: importMode === 'full',
+    })
     return c.json({ ...agent, hasOnboarding, requiredEnvVars }, 201)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to import template'

@@ -35,6 +35,7 @@ import {
   parseSkillFrontmatter,
 } from '@shared/lib/services/skillset-service'
 import { createAgentFromExistingWorkspace } from '@shared/lib/services/agent-service'
+import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import type {
   SkillsetConfig,
   InstalledAgentMetadata,
@@ -628,7 +629,10 @@ export async function hasOnboardingSkill(agentSlug: string): Promise<boolean> {
  * Scan all skills in an agent workspace and collect required_env_vars from SKILL.md frontmatter.
  * De-duplicates by env var name.
  */
-export async function collectAgentRequiredEnvVars(agentSlug: string): Promise<RequiredEnvVar[]> {
+export async function collectAgentRequiredEnvVars(
+  agentSlug: string,
+  options?: { excludeExistingSecrets?: boolean },
+): Promise<RequiredEnvVar[]> {
   const workspaceDir = getAgentWorkspaceDir(agentSlug)
   const skillsDir = path.join(workspaceDir, '.claude', 'skills')
 
@@ -650,7 +654,14 @@ export async function collectAgentRequiredEnvVars(agentSlug: string): Promise<Re
       }
     }
 
-    return Array.from(allEnvVars.values())
+    let requiredEnvVars = Array.from(allEnvVars.values())
+
+    if (options?.excludeExistingSecrets) {
+      const existingEnvVars = new Set(await getSecretEnvVars(agentSlug))
+      requiredEnvVars = requiredEnvVars.filter((envVar) => !existingEnvVars.has(envVar.name))
+    }
+
+    return requiredEnvVars
   } catch {
     return []
   }

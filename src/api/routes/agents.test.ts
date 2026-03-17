@@ -281,6 +281,11 @@ vi.mock('hono/streaming', () => ({ streamSSE: vi.fn() }))
 
 // Import the agents router after all mocks are set up
 import agents from './agents'
+import {
+  importAgentFromTemplate,
+  hasOnboardingSkill,
+  collectAgentRequiredEnvVars,
+} from '@shared/lib/services/agent-template-service'
 
 // ============================================================================
 // Test Helpers
@@ -322,6 +327,72 @@ async function postFormData(app: Hono, url: string, body: FormData): Promise<Res
     body,
   })
 }
+
+// ============================================================================
+// Import Template Tests
+// ============================================================================
+
+describe('POST /api/agents/import-template', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(importAgentFromTemplate).mockResolvedValue({
+      slug: 'imported-agent',
+      name: 'Imported Agent',
+    } as any)
+    vi.mocked(hasOnboardingSkill).mockResolvedValue(false)
+    vi.mocked(collectAgentRequiredEnvVars).mockResolvedValue([])
+  })
+
+  function buildImportForm(mode?: 'template' | 'full') {
+    const form = new FormData()
+    form.append('file', new File(['zip'], 'agent.zip', { type: 'application/zip' }))
+    if (mode) form.append('mode', mode)
+    return form
+  }
+
+  it('uses full-mode secret filtering and returns only missing vars for full imports', async () => {
+    vi.mocked(collectAgentRequiredEnvVars).mockResolvedValue([
+      { name: 'SECRET_A', description: 'Secret for A' },
+    ])
+
+    const res = await postFormData(app, '/api/agents/import-template', buildImportForm('full'))
+
+    expect(res.status).toBe(201)
+    expect(importAgentFromTemplate).toHaveBeenCalledWith(expect.any(Buffer), undefined, 'full')
+    expect(collectAgentRequiredEnvVars).toHaveBeenCalledWith('imported-agent', {
+      excludeExistingSecrets: true,
+    })
+
+    const body = await res.json()
+    expect(body.requiredEnvVars).toEqual([
+      { name: 'SECRET_A', description: 'Secret for A' },
+    ])
+  })
+
+  it('does not filter required vars for template imports', async () => {
+    vi.mocked(collectAgentRequiredEnvVars).mockResolvedValue([
+      { name: 'API_KEY', description: 'Shared API key' },
+      { name: 'SECRET_A', description: 'Secret for A' },
+    ])
+
+    const res = await postFormData(app, '/api/agents/import-template', buildImportForm('template'))
+
+    expect(res.status).toBe(201)
+    expect(importAgentFromTemplate).toHaveBeenCalledWith(expect.any(Buffer), undefined, 'template')
+    expect(collectAgentRequiredEnvVars).toHaveBeenCalledWith('imported-agent', {
+      excludeExistingSecrets: false,
+    })
+
+    const body = await res.json()
+    expect(body.requiredEnvVars).toEqual([
+      { name: 'API_KEY', description: 'Shared API key' },
+      { name: 'SECRET_A', description: 'Secret for A' },
+    ])
+  })
+})
 
 // ============================================================================
 // ACL Role Management Tests
