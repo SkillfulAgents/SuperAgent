@@ -36,6 +36,7 @@ const mockStreamState = {
   pendingQuestionRequests: [] as any[],
   pendingFileRequests: [] as any[],
   pendingBrowserInputRequests: [] as any[],
+  pendingScriptRunRequests: [] as any[],
 }
 
 const mockClearCompacting = vi.fn()
@@ -48,6 +49,7 @@ vi.mock('@renderer/hooks/use-message-stream', () => ({
   removeQuestionRequest: vi.fn(),
   removeFileRequest: vi.fn(),
   removeBrowserInputRequest: vi.fn(),
+  removeScriptRunRequest: vi.fn(),
   clearCompacting: (...args: unknown[]) => mockClearCompacting(...args),
 }))
 
