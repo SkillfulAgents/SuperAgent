@@ -12,7 +12,7 @@ import { Input } from '@renderer/components/ui/input'
 import { Checkbox } from '@renderer/components/ui/checkbox'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@renderer/components/ui/tabs'
 import { useState, useRef, useEffect } from 'react'
-import { useCreateAgent } from '@renderer/hooks/use-agents'
+import { useCreateAgent, useDeleteAgent } from '@renderer/hooks/use-agents'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
 import { useSelection } from '@renderer/context/selection-context'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
@@ -82,6 +82,7 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
   const [isInstalling, setIsInstalling] = useState(false)
   const [activeTab, setActiveTab] = useState(initialTemplate ? 'skillset' : 'new')
   const createAgent = useCreateAgent()
+  const deleteAgent = useDeleteAgent()
   const createSession = useCreateSession()
   const { selectAgent, selectSession } = useSelection()
   const { track } = useAnalyticsTracking()
@@ -755,6 +756,8 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
           open={!!templateSecretsPrompt}
           onOpenChange={(open) => {
             if (!open) {
+              // User cancelled — delete the already-created agent
+              deleteAgent.mutate(templateSecretsPrompt.agentSlug)
               setTemplateSecretsPrompt(null)
             }
           }}
