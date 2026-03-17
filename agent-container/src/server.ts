@@ -1455,21 +1455,36 @@ function getCdpHttpEndpoint(): string {
   return 'http://localhost:9222';
 }
 
-/** Result from findActivePageTarget */
-interface ActivePageTarget {
+/** A discovered CDP page target */
+interface PageTarget {
   id: string;
+  url: string;
+  title: string;
   wsUrl: string;
   /** If true, wsUrl is a browser-level URL; connectCdpToTarget must use Target.attachToTarget */
   requiresSession: boolean;
 }
 
-/** Find the CDP page target that corresponds to agent-browser's active page */
-async function findActivePageTarget(): Promise<ActivePageTarget | null> {
+// Protocol: see src/renderer/components/browser/browser-preview.tsx
+interface BrowserTabInfo {
+  targetId: string;
+  index: number;
+  url: string;
+  title: string;
+  active: boolean;
+}
+
+// Viewer tab-selection state — persists across CDP target switches
+let viewerAutoFollow = true;
+let tabPollInterval: NodeJS.Timeout | null = null;
+
+/** Get ALL CDP page targets across all strategies */
+async function getAllPageTargets(): Promise<PageTarget[]> {
   // Try Chrome's HTTP /json endpoint first (works for local Chrome)
   const endpoint = getCdpHttpEndpoint();
   try {
     const res = await fetch(`${endpoint}/json`);
-    const targets = await res.json() as Array<{ id: string; type: string; url: string; webSocketDebuggerUrl: string }>;
+    const targets = await res.json() as Array<{ id: string; type: string; url: string; title?: string; webSocketDebuggerUrl: string }>;
 
     const pages = targets.filter(t => t.type === 'page');
     if (pages.length > 0) {
@@ -1480,31 +1495,19 @@ async function findActivePageTarget(): Promise<ActivePageTarget | null> {
         page.webSocketDebuggerUrl = page.webSocketDebuggerUrl.replace(/^ws:\/\/[^/]+/, `ws://${cdpHost}`);
       }
 
-      if (pages.length === 1) return { id: pages[0].id, wsUrl: pages[0].webSocketDebuggerUrl, requiresSession: false };
-
-      // Ask agent-browser daemon which tab is active and match to a CDP target
-      try {
-        const tabs = await tabManager.queryTabs();
-        const active = tabs.find(t => t.active);
-        if (active) {
-          const byUrl = pages.find(p => p.url === active.url);
-          if (byUrl) return { id: byUrl.id, wsUrl: byUrl.webSocketDebuggerUrl, requiresSession: false };
-          if (active.index < pages.length) return { id: pages[active.index].id, wsUrl: pages[active.index].webSocketDebuggerUrl, requiresSession: false };
-        }
-      } catch (err) {
-        console.error('[CDP] Daemon tab query failed:', err);
-      }
-
-      // Fallback: last page (most recently created)
-      const last = pages[pages.length - 1];
-      return { id: last.id, wsUrl: last.webSocketDebuggerUrl, requiresSession: false };
+      return pages.map(p => ({
+        id: p.id,
+        url: p.url,
+        title: p.title || '',
+        wsUrl: p.webSocketDebuggerUrl,
+        requiresSession: false,
+      }));
     }
   } catch {
     // HTTP /json not available — fall through to WebSocket CDP approach
   }
 
   // For remote CDP providers (e.g. Browserbase), try the host API debug endpoint first.
-  // This returns fresh page-level debug URLs that can be connected to directly.
   const hostAppUrl = process.env.HOST_APP_URL;
   const agentId = process.env.AGENT_ID;
   if (hostAppUrl && agentId) {
@@ -1519,11 +1522,16 @@ async function findActivePageTarget(): Promise<ActivePageTarget | null> {
         body: JSON.stringify({ agentId }),
       });
       if (debugRes.ok) {
-        const debugInfo = await debugRes.json() as { pages?: Array<{ id: string; url: string; wsUrl: string }> };
+        const debugInfo = await debugRes.json() as { pages?: Array<{ id: string; url: string; title?: string; wsUrl: string }> };
         const pages = debugInfo.pages || [];
         if (pages.length > 0) {
-          const page = pages[pages.length - 1];
-          return { id: page.id, wsUrl: page.wsUrl, requiresSession: false };
+          return pages.map(p => ({
+            id: p.id,
+            url: p.url,
+            title: p.title || '',
+            wsUrl: p.wsUrl,
+            requiresSession: false,
+          }));
         }
       }
     } catch (err) {
@@ -1531,13 +1539,35 @@ async function findActivePageTarget(): Promise<ActivePageTarget | null> {
     }
   }
 
-  // Fallback: try CDP Target.getTargets over WebSocket (may not work for single-use URLs)
-  if (!browserState.cdpUrl) return null;
-  return findPageTargetViaCdp(browserState.cdpUrl);
+  // Fallback: try CDP Target.getTargets over WebSocket
+  if (!browserState.cdpUrl) return [];
+  const target = await findPageTargetViaCdp(browserState.cdpUrl);
+  return target ? [target] : [];
+}
+
+/** Find the CDP page target that corresponds to agent-browser's active page */
+async function findActivePageTarget(): Promise<PageTarget | null> {
+  const allTargets = await getAllPageTargets();
+  if (allTargets.length === 0) return null;
+  if (allTargets.length === 1) return allTargets[0];
+
+  // Use daemon to find which is active
+  try {
+    const tabs = await tabManager.queryTabs();
+    const active = tabs.find(t => t.active);
+    if (active) {
+      const byUrl = allTargets.find(p => tabManager.urlsMatch(p.url, active.url));
+      if (byUrl) return byUrl;
+    }
+  } catch (err) {
+    console.error('[CDP] Daemon tab query failed:', err);
+  }
+
+  return allTargets[0]; // fallback: first target (most recently active per Chrome's /json ordering)
 }
 
 /** Discover page targets via CDP WebSocket protocol (for remote providers) */
-function findPageTargetViaCdp(browserWsUrl: string): Promise<ActivePageTarget | null> {
+function findPageTargetViaCdp(browserWsUrl: string): Promise<PageTarget | null> {
   return new Promise((resolve) => {
     const ws = new WebSocket(browserWsUrl);
     const timeout = setTimeout(() => { ws.close(); resolve(null); }, 5000);
@@ -1557,7 +1587,7 @@ function findPageTargetViaCdp(browserWsUrl: string): Promise<ActivePageTarget | 
           );
           if (pages.length === 0) { resolve(null); return; }
           const target = pages[pages.length - 1];
-          resolve({ id: target.targetId, wsUrl: browserWsUrl, requiresSession: true });
+          resolve({ id: target.targetId, url: target.url || '', title: target.title || '', wsUrl: browserWsUrl, requiresSession: true });
         }
       } catch { /* wait for next message */ }
     });
@@ -1644,10 +1674,22 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
   });
 
   cdpWs.on('close', () => {
-    // If this was our active connection, close the client so the frontend reconnects
-    if (cdpScreencast?.cdpWs === cdpWs && clientWs.readyState === WebSocket.OPEN) {
-      clientWs.close();
-    }
+    // If this wasn't our active connection (already replaced by a tab switch), ignore
+    if (cdpScreencast?.cdpWs !== cdpWs) return;
+
+    // Unexpected close — try to recover by switching to agent's active tab
+    findActivePageTarget().then(target => {
+      if (target && cdpScreencast?.clientWs === clientWs && clientWs.readyState === WebSocket.OPEN) {
+        console.log('[CDP] Recovering from closed target, switching to', target.id);
+        viewerAutoFollow = true;
+        switchScreencastTarget(target, clientWs);
+        broadcastTabList();
+      } else if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.close();
+      }
+    }).catch(() => {
+      if (clientWs.readyState === WebSocket.OPEN) clientWs.close();
+    });
   });
 
   cdpWs.on('error', (err) => {
@@ -1664,23 +1706,79 @@ function cleanupCdpScreencast() {
   cdpScreencast = null;
 }
 
+/** Switch the CDP screencast to a different target, keeping the client WS alive */
+function switchScreencastTarget(target: PageTarget, clientWs: WebSocket): void {
+  if (cdpScreencast?.cdpWs.readyState === WebSocket.OPEN) {
+    cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Page.stopScreencast'));
+    cdpScreencast.cdpWs.close();
+  }
+  connectCdpToTarget(target.id, target.wsUrl, clientWs, target.requiresSession);
+  if (clientWs.readyState === WebSocket.OPEN) {
+    clientWs.send(JSON.stringify({ type: 'tab_switched', targetId: target.id }));
+  }
+}
+
+/** Broadcast tab list to the connected frontend viewer */
+async function broadcastTabList(): Promise<void> {
+  if (!cdpScreencast) return;
+  const clientWs = cdpScreencast.clientWs;
+  if (clientWs.readyState !== WebSocket.OPEN) return;
+
+  try {
+    const [allTargets, daemonTabs] = await Promise.all([
+      getAllPageTargets(),
+      tabManager.queryTabs(),
+    ]);
+
+    const claimedTargetIds = new Set<string>();
+    const tabs: BrowserTabInfo[] = [];
+    for (const dt of daemonTabs) {
+      const target = allTargets.find(t => tabManager.urlsMatch(t.url, dt.url) && !claimedTargetIds.has(t.id));
+      if (!target) continue; // skip tabs with no CDP match (timing edge case, resolves on next poll)
+      claimedTargetIds.add(target.id);
+      tabs.push({
+        targetId: target.id,
+        index: dt.index,
+        url: dt.url,
+        title: dt.title || target.title || '',
+        active: dt.active,
+      });
+    }
+
+    const activeEntry = tabs.find(t => t.active);
+
+    clientWs.send(JSON.stringify({
+      type: 'tab_list',
+      tabs,
+      activeTargetId: activeEntry?.targetId ?? cdpScreencast?.currentTargetId ?? '',
+    }));
+  } catch (err) {
+    console.error('[CDP] Failed to broadcast tab list:', err);
+  }
+}
+
 /** After a browser action, check if the active tab changed and switch screencast */
 function notifyBrowserAction() {
   if (!cdpScreencast) return;
   const currentClient = cdpScreencast.clientWs;
   // Brief delay to let agent-browser update its internal state after the action
-  setTimeout(() => {
+  setTimeout(async () => {
     if (!cdpScreencast || cdpScreencast.clientWs !== currentClient) return;
-    findActivePageTarget().then((target) => {
-      if (!target || !cdpScreencast || target.id === cdpScreencast.currentTargetId) return;
-      console.log(`[CDP] Switching screencast to target ${target.id}`);
-      // Stop old screencast and connect to the new target
-      if (cdpScreencast.cdpWs.readyState === WebSocket.OPEN) {
-        cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Page.stopScreencast'));
-        cdpScreencast.cdpWs.close();
+
+    try {
+      const target = await findActivePageTarget();
+
+      // Switch screencast only if auto-following and target changed
+      if (target && target.id !== cdpScreencast.currentTargetId && viewerAutoFollow) {
+        console.log(`[CDP] Auto-following to target ${target.id}`);
+        switchScreencastTarget(target, currentClient);
       }
-      connectCdpToTarget(target.id, target.wsUrl, currentClient, target.requiresSession);
-    }).catch(err => console.error('[CDP] Recheck failed:', err));
+
+      // Always broadcast updated tab list (so frontend sees agent's active tab move)
+      broadcastTabList();
+    } catch (err) {
+      console.error('[CDP] notifyBrowserAction failed:', err);
+    }
   }, 300);
 }
 
@@ -1689,6 +1787,9 @@ function handleBrowserStreamConnection(ws: WebSocket) {
   // If there's an existing screencast, close it (single viewer)
   cleanupCdpScreencast();
 
+  // Reset viewer state for new connection
+  viewerAutoFollow = true;
+
   findActivePageTarget().then((target) => {
     if (!target) {
       console.error('[CDP] No active page target found');
@@ -1696,50 +1797,75 @@ function handleBrowserStreamConnection(ws: WebSocket) {
       return;
     }
     connectCdpToTarget(target.id, target.wsUrl, ws, target.requiresSession);
+    broadcastTabList();
   }).catch((err) => {
     console.error('[CDP] Failed to start screencast:', err);
     ws.close();
   });
 
-  // Forward input events from client to the active page via CDP
-  ws.on('message', (rawData) => {
+  // Start tab list polling
+  tabPollInterval = setInterval(() => broadcastTabList(), 2000);
+
+  // Forward input events and handle tab control messages from client
+  // Protocol: see src/renderer/components/browser/browser-preview.tsx
+  ws.on('message', async (rawData) => {
     try {
       const data = JSON.parse(rawData.toString());
-      if (!cdpScreencast || cdpScreencast.cdpWs.readyState !== WebSocket.OPEN) return;
+      if (!cdpScreencast) return;
 
-      if (data.type === 'input_mouse') {
-        cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Input.dispatchMouseEvent', {
-          type: data.eventType,
-          x: Math.round(data.x),
-          y: Math.round(data.y),
-          button: data.button,
-          clickCount: data.clickCount || 0,
-          deltaX: data.deltaX || 0,
-          deltaY: data.deltaY || 0,
-          modifiers: data.modifiers || 0,
-        }));
-      } else if (data.type === 'input_keyboard') {
-        cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Input.dispatchKeyEvent', {
-          type: data.eventType,
-          key: data.key,
-          code: data.code,
-          text: data.text,
-          modifiers: data.modifiers || 0,
-        }));
-      } else if (data.type === 'input_paste' && data.text) {
-        // Paste: inject clipboard text from the client into the remote page
-        cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Input.insertText', {
-          text: data.text,
-        }));
+      if (data.type === 'switch_tab' && data.targetId) {
+        // User wants to view a specific tab
+        const allTargets = await getAllPageTargets();
+        const target = allTargets.find(t => t.id === data.targetId);
+        if (target && cdpScreencast && cdpScreencast.cdpWs.readyState === WebSocket.OPEN) {
+          viewerAutoFollow = false;
+          switchScreencastTarget(target, ws);
+        }
+      } else if (data.type === 'follow_agent') {
+        viewerAutoFollow = data.enabled !== false;
+        if (viewerAutoFollow) {
+          // Snap to agent's active tab immediately
+          const target = await findActivePageTarget();
+          if (target && cdpScreencast && target.id !== cdpScreencast.currentTargetId) {
+            switchScreencastTarget(target, ws);
+          }
+        }
+      } else if (cdpScreencast.cdpWs.readyState === WebSocket.OPEN) {
+        if (data.type === 'input_mouse') {
+          cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Input.dispatchMouseEvent', {
+            type: data.eventType,
+            x: Math.round(data.x),
+            y: Math.round(data.y),
+            button: data.button,
+            clickCount: data.clickCount || 0,
+            deltaX: data.deltaX || 0,
+            deltaY: data.deltaY || 0,
+            modifiers: data.modifiers || 0,
+          }));
+        } else if (data.type === 'input_keyboard') {
+          cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Input.dispatchKeyEvent', {
+            type: data.eventType,
+            key: data.key,
+            code: data.code,
+            text: data.text,
+            modifiers: data.modifiers || 0,
+          }));
+        } else if (data.type === 'input_paste' && data.text) {
+          cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Input.insertText', {
+            text: data.text,
+          }));
+        }
       }
     } catch { /* ignore */ }
   });
 
   ws.on('close', () => {
+    if (tabPollInterval) { clearInterval(tabPollInterval); tabPollInterval = null; }
     if (cdpScreencast?.clientWs === ws) cleanupCdpScreencast();
   });
 
   ws.on('error', () => {
+    if (tabPollInterval) { clearInterval(tabPollInterval); tabPollInterval = null; }
     if (cdpScreencast?.clientWs === ws) cleanupCdpScreencast();
   });
 }
