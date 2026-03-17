@@ -423,6 +423,9 @@ function getOrCreateEventSource(
             ...current,
             pendingSecretRequests: [...current.pendingSecretRequests, newRequest],
           })
+          // Invalidate sessions so sidebar picks up awaiting-input state
+          // (redundant safety net for global SSE race condition)
+          queryClient.invalidateQueries({ queryKey: ['sessions'] })
         }
       }
       else if (data.type === 'connected_account_request') {
@@ -437,6 +440,7 @@ function getOrCreateEventSource(
             ...current,
             pendingConnectedAccountRequests: [...current.pendingConnectedAccountRequests, newRequest],
           })
+          queryClient.invalidateQueries({ queryKey: ['sessions'] })
         }
       }
       else if (data.type === 'user_question_request') {
@@ -450,6 +454,7 @@ function getOrCreateEventSource(
             ...current,
             pendingQuestionRequests: [...current.pendingQuestionRequests, newRequest],
           })
+          queryClient.invalidateQueries({ queryKey: ['sessions'] })
         }
       }
       else if (data.type === 'file_request') {
@@ -464,6 +469,7 @@ function getOrCreateEventSource(
             ...current,
             pendingFileRequests: [...current.pendingFileRequests, newRequest],
           })
+          queryClient.invalidateQueries({ queryKey: ['sessions'] })
         }
       }
       else if (data.type === 'remote_mcp_request') {
@@ -480,6 +486,7 @@ function getOrCreateEventSource(
             ...current,
             pendingRemoteMcpRequests: [...current.pendingRemoteMcpRequests, newRequest],
           })
+          queryClient.invalidateQueries({ queryKey: ['sessions'] })
         }
       }
       else if (data.type === 'browser_input_request') {
@@ -494,6 +501,7 @@ function getOrCreateEventSource(
             ...current,
             pendingBrowserInputRequests: [...current.pendingBrowserInputRequests, newRequest],
           })
+          queryClient.invalidateQueries({ queryKey: ['sessions'] })
         }
       }
       else if (data.type === 'script_run_request') {
@@ -509,6 +517,7 @@ function getOrCreateEventSource(
             ...current,
             pendingScriptRunRequests: [...current.pendingScriptRunRequests, newRequest],
           })
+          queryClient.invalidateQueries({ queryKey: ['sessions'] })
         }
       }
       else if (data.type === 'compact_start') {
