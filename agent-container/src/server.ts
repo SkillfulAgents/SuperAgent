@@ -1263,7 +1263,15 @@ app.post('/browser/run', async (c) => {
       return c.json({ error: 'Empty command' }, 400);
     }
 
-    const result = await execBrowser(commandArgs, browserState.cdpUrl || undefined);
+    // Workaround: agent-browser@0.12.0 newTab() fails with --profile (persistent context).
+    // Rewrite "tab new [url]" to use window.open() which works in any context.
+    let actualArgs = commandArgs;
+    if (commandArgs[0] === 'tab' && commandArgs[1] === 'new') {
+      const url = commandArgs[2] || 'about:blank';
+      actualArgs = ['eval', `(() => { window.open('${url.replace(/'/g, "\\'")}', '_blank'); return 'opened'; })()`];
+    }
+
+    const result = await execBrowser(actualArgs, browserState.cdpUrl || undefined);
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
