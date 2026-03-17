@@ -1747,6 +1747,15 @@ async function broadcastTabList(prefetched?: { allTargets: PageTarget[]; daemonT
     }
 
     const activeEntry = tabs.find(t => t.active);
+    const activeTargetId = activeEntry?.targetId;
+
+    // Auto-follow: switch screencast if active target changed (e.g. user clicked a link that opened a new tab)
+    if (viewerAutoFollow && activeTargetId && activeTargetId !== cdpScreencast?.currentTargetId) {
+      const target = allTargets.find(t => t.id === activeTargetId);
+      if (target) {
+        switchScreencastTarget(target, clientWs);
+      }
+    }
 
     clientWs.send(JSON.stringify({
       type: 'tab_list',
