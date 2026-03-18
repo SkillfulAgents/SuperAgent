@@ -60,7 +60,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
   const { data: messages, isLoading } = useMessages(sessionId, agentSlug)
   const deleteMessage = useDeleteMessage()
   const deleteToolCall = useDeleteToolCall()
-  const { canUseAgent } = useUser()
+  const { canUseAgent, user } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
 
   const handleRemoveMessage = useCallback(
@@ -116,6 +116,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     isCompacting,
     activeSubagents,
     completedSubagents,
+    typingUser,
+    peerUserMessage,
     pendingSecretRequests: sseSecretRequests,
     pendingConnectedAccountRequests: sseConnectedAccountRequests,
     pendingRemoteMcpRequests: sseRemoteMcpRequests,
@@ -645,6 +647,25 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
           </Fragment>
         ))}
 
+        {/* Peer user message — optimistic display until persisted data arrives.
+            Hidden if sender is the current user (they see their own pendingUserMessage)
+            or if the message already appeared in the fetched messages list. */}
+        {peerUserMessage &&
+          peerUserMessage.sender.id !== user?.id &&
+          !messages?.some((m) => m.type === 'user' && (m.content as { text?: string }).text?.trim() === peerUserMessage.content.trim()) && (
+          <MessageItem
+            message={{
+              id: 'peer-user-message',
+              type: 'user',
+              content: { text: peerUserMessage.content },
+              toolCalls: [],
+              createdAt: new Date(),
+              ...(peerUserMessage.sender.name ? { sender: { id: peerUserMessage.sender.id, name: peerUserMessage.sender.name, email: peerUserMessage.sender.email || '' } } : {}),
+            }}
+            agentSlug={agentSlug}
+          />
+        )}
+
         {/* Pending user message - shown immediately after sending */}
         {pendingUserMessage && (
           <MessageItem
@@ -658,6 +679,20 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
             }}
             agentSlug={agentSlug}
           />
+        )}
+
+        {/* Typing indicator - shown when another user is typing */}
+        {typingUser && !peerUserMessage && (
+          <div className="flex gap-3 flex-row-reverse">
+            <div className="h-8 w-8 rounded-full items-center justify-center shrink-0 hidden md:flex bg-primary text-primary-foreground">
+              <span className="text-xs font-medium">
+                {typingUser.name?.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2) || '?'}
+              </span>
+            </div>
+            <div className="rounded-lg px-4 py-2 bg-primary text-primary-foreground">
+              <span className="animate-pulse tracking-widest">...</span>
+            </div>
+          </div>
         )}
 
         {/* Streaming text message - keep visible until persisted data arrives */}

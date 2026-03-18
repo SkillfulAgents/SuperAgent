@@ -46,12 +46,13 @@ vi.mock('stream', () => ({
   },
 }))
 
-// Auth middleware — passthrough
+// Auth middleware — passthrough (sets mock user on context for auth mode tests)
+const mockAuthUser = { id: 'test-user-id', name: 'Test User', email: 'test@example.com' }
 vi.mock('../middleware/auth', () => ({
-  Authenticated: () => async (_c: unknown, next: () => Promise<void>) => next(),
-  AgentRead: () => async (_c: unknown, next: () => Promise<void>) => next(),
-  AgentUser: () => async (_c: unknown, next: () => Promise<void>) => next(),
-  AgentAdmin: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  Authenticated: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
+  AgentRead: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
+  AgentUser: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
+  AgentAdmin: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
 }))
 
 // Container manager
@@ -83,6 +84,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     isSubscribed: vi.fn(() => true),
     subscribeToSession: vi.fn(),
     markSessionActive: vi.fn(),
+    broadcastSessionEvent: vi.fn(),
   },
 }))
 
@@ -299,6 +301,7 @@ import {
 } from '@shared/lib/services/agent-template-service'
 import { getAgent } from '@shared/lib/services/agent-service'
 import { getSessionMessagesWithCompact } from '@shared/lib/services/session-service'
+import { messagePersister } from '@shared/lib/container/message-persister'
 
 // ============================================================================
 // Test Helpers
@@ -1983,5 +1986,74 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
 
     // No DB query since there are no user messages to look up
     expect(mockDbSelectFrom).not.toHaveBeenCalled()
+  })
+})
+
+// ============================================================================
+// User Message Broadcast & Typing Indicator Tests
+// ============================================================================
+
+describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/messages'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(getAgent).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
+    mockSendMessage.mockResolvedValue(undefined)
+  })
+
+  it('broadcasts user_message via SSE in auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+
+    const res = await postJson(app, URL, { content: 'hello everyone' })
+    expect(res.status).toBe(201)
+
+    expect(messagePersister.broadcastSessionEvent).toHaveBeenCalledWith('sess-1', {
+      type: 'user_message',
+      content: 'hello everyone',
+      sender: { id: 'test-user-id', name: 'Test User' },
+    })
+  })
+
+  it('does not broadcast user_message in non-auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+
+    const res = await postJson(app, URL, { content: 'hello' })
+    expect(res.status).toBe(201)
+
+    expect(messagePersister.broadcastSessionEvent).not.toHaveBeenCalled()
+  })
+})
+
+describe('typing indicator — POST /:id/sessions/:sessionId/typing', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/typing'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+  })
+
+  it('broadcasts user_typing event in auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+
+    const res = await postJson(app, URL, {})
+    expect(res.status).toBe(200)
+
+    expect(messagePersister.broadcastSessionEvent).toHaveBeenCalledWith('sess-1', {
+      type: 'user_typing',
+      sender: { id: 'test-user-id', name: 'Test User' },
+    })
+  })
+
+  it('does not broadcast in non-auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+
+    const res = await postJson(app, URL, {})
+    expect(res.status).toBe(200)
+
+    expect(messagePersister.broadcastSessionEvent).not.toHaveBeenCalled()
   })
 })

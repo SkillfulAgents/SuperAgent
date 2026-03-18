@@ -80,6 +80,8 @@ interface StreamState {
   contextUsage: SessionUsage | null // Latest context window usage data
   activeSubagents: SubagentInfo[] // Currently running subagent(s) info
   completedSubagents: Set<string> | null // parentToolIds of completed subagents (for status logic)
+  typingUser: { id: string; name?: string } | null // User currently typing (auth mode shared agents)
+  peerUserMessage: { content: string; sender: { id: string; name?: string; email?: string } } | null // User message from another user
 }
 
 // Upsert a subagent entry in the array by parentToolId (immutable)
@@ -157,6 +159,8 @@ function getOrCreateEventSource(
           contextUsage: current?.contextUsage ?? null,
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
+          typingUser: current?.typingUser ?? null,
+          peerUserMessage: current?.peerUserMessage ?? null,
         })
         // Fetch current browser status to sync state (handles missed events)
         fetch(`${baseUrl}/api/agents/${agentSlug}/browser/status`)
@@ -194,6 +198,8 @@ function getOrCreateEventSource(
           contextUsage: current?.contextUsage ?? null,
           activeSubagents: [],
           completedSubagents: null,
+          typingUser: null,
+          peerUserMessage: current?.peerUserMessage ?? null,
         })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
       }
@@ -226,6 +232,8 @@ function getOrCreateEventSource(
           // Cleared on next session_active.
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
+          typingUser: null,
+          peerUserMessage: current?.peerUserMessage ?? null,
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -251,6 +259,8 @@ function getOrCreateEventSource(
           contextUsage: current?.contextUsage ?? null,
           activeSubagents: [],
           completedSubagents: null,
+          typingUser: null,
+          peerUserMessage: current?.peerUserMessage ?? null,
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -285,6 +295,8 @@ function getOrCreateEventSource(
           contextUsage: current?.contextUsage ?? null,
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
+          typingUser: current?.typingUser ?? null,
+          peerUserMessage: current?.peerUserMessage ?? null,
         })
       }
       else if (data.type === 'stream_delta') {
@@ -307,6 +319,8 @@ function getOrCreateEventSource(
           contextUsage: current?.contextUsage ?? null,
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
+          typingUser: current?.typingUser ?? null,
+          peerUserMessage: current?.peerUserMessage ?? null,
         })
       }
       else if (data.type === 'tool_use_start' || data.type === 'tool_use_streaming') {
@@ -333,6 +347,8 @@ function getOrCreateEventSource(
           contextUsage: current?.contextUsage ?? null,
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
+          typingUser: current?.typingUser ?? null,
+          peerUserMessage: current?.peerUserMessage ?? null,
         })
       }
       else if (data.type === 'tool_use_ready') {
@@ -356,6 +372,8 @@ function getOrCreateEventSource(
           contextUsage: current?.contextUsage ?? null,
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
+          typingUser: current?.typingUser ?? null,
+          peerUserMessage: current?.peerUserMessage ?? null,
         })
       }
       else if (data.type === 'stream_end') {
@@ -378,9 +396,37 @@ function getOrCreateEventSource(
           contextUsage: current?.contextUsage ?? null,
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
+          typingUser: current?.typingUser ?? null,
+          peerUserMessage: current?.peerUserMessage ?? null,
         })
       }
+      else if (data.type === 'user_message') {
+        // Another user sent a message in this shared session
+        streamStates.set(sessionId, {
+          ...current!,
+          peerUserMessage: { content: data.content, sender: data.sender },
+          typingUser: null, // Clear typing since they sent
+        })
+        // Refetch to pick up the persisted message shortly
+        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+      }
+      else if (data.type === 'user_typing') {
+        // Another user is typing in this shared session
+        if (current) {
+          streamStates.set(sessionId, { ...current, typingUser: data.sender })
+          // Auto-clear after 5s if no follow-up
+          setTimeout(() => {
+            const latest = streamStates.get(sessionId)
+            if (latest && latest.typingUser?.id === data.sender.id) {
+              streamStates.set(sessionId, { ...latest, typingUser: null })
+              streamListeners.get(sessionId)?.forEach((l) => l())
+            }
+          }, 5000)
+        }
+      }
       else if (data.type === 'messages_updated') {
+        // Don't clear peerUserMessage here — the render dedup in MessageList
+        // hides it once the fetched messages include the matching text.
         // Server signals that a message has been persisted to JSONL.
         // Refetch so that persisted data is available before stream_start
         // clears the streaming tool use state (prevents tool call flicker).
@@ -857,6 +903,8 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     contextUsage: null,
     activeSubagents: [],
     completedSubagents: null,
+    typingUser: null,
+    peerUserMessage: null,
   })
   const [slashCommands, setSlashCommands] = useState<SlashCommandInfo[]>([])
   const queryClient = useQueryClient()
@@ -904,6 +952,8 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
         contextUsage: null,
         activeSubagents: [],
         completedSubagents: null,
+        typingUser: null,
+        peerUserMessage: null,
       })
     }
     updateState()

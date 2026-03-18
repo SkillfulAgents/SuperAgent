@@ -321,6 +321,11 @@ class MessagePersister {
     }
   }
 
+  // Broadcast an arbitrary event to all SSE clients for a session (public)
+  broadcastSessionEvent(sessionId: string, data: unknown): void {
+    this.broadcastToSSE(sessionId, data)
+  }
+
   // Broadcast to SSE clients
   private broadcastToSSE(sessionId: string, data: unknown): void {
     const clients = this.sseClients.get(sessionId)

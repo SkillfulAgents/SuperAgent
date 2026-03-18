@@ -1,6 +1,7 @@
 
 import { Button } from '@renderer/components/ui/button'
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
+import { getApiBaseUrl } from '@renderer/lib/env'
 import { useSendMessage, useUploadFile, useUploadFolder, useInterruptSession } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { Send, Loader2, StopCircle, WifiOff } from 'lucide-react'
@@ -21,8 +22,9 @@ interface MessageInputProps {
 }
 
 export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInputProps) {
-  const { canUseAgent } = useUser()
+  const { canUseAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
+  const lastTypingNotification = useRef(0)
   const [slashMenuOpen, setSlashMenuOpen] = useState(false)
   const [slashMenuIndex, setSlashMenuIndex] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -90,7 +92,21 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
     } else {
       setSlashMenuOpen(false)
     }
-  }, [composer, slashCommands.length])
+
+    // Debounced typing notification for shared agents (auth mode)
+    if (isAuthMode && value.length > 0) {
+      const now = Date.now()
+      if (now - lastTypingNotification.current > 3000) {
+        lastTypingNotification.current = now
+        fetch(`${getApiBaseUrl()}/api/agents/${agentSlug}/sessions/${sessionId}/typing`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+          credentials: 'include',
+        }).catch(() => {})
+      }
+    }
+  }, [composer, slashCommands.length, isAuthMode, agentSlug, sessionId])
 
   const handleInterrupt = async () => {
     if (interruptSession.isPending) return

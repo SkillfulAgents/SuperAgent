@@ -1187,6 +1187,16 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       })
     }
 
+    // Broadcast user message to other SSE viewers (auth mode shared agents)
+    if (isAuthMode()) {
+      const user = c.get('user' as never) as { id: string; name: string }
+      messagePersister.broadcastSessionEvent(sessionId, {
+        type: 'user_message',
+        content: content.trim(),
+        sender: { id: user.id, name: user.name },
+      })
+    }
+
     await client.sendMessage(sessionId, content.trim(), messageUuid)
 
     return c.json({ success: true }, 201)
@@ -1194,6 +1204,21 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     console.error('Failed to send message:', error)
     return c.json({ error: 'Failed to send message' }, 500)
   }
+})
+
+// POST /api/agents/:id/sessions/:sessionId/typing - Broadcast typing indicator (auth mode only)
+agents.post('/:id/sessions/:sessionId/typing', AgentUser(), async (c) => {
+  if (!isAuthMode()) return c.json({ ok: true })
+
+  const sessionId = c.req.param('sessionId')
+  const user = c.get('user' as never) as { id: string; name: string }
+
+  messagePersister.broadcastSessionEvent(sessionId, {
+    type: 'user_typing',
+    sender: { id: user.id, name: user.name },
+  })
+
+  return c.json({ ok: true })
 })
 
 // GET /api/agents/:id/sessions/:sessionId - Get a single session
