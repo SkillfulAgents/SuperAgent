@@ -1,6 +1,6 @@
 {
   "name": "superagent",
-  "version": "0.2.9-rc.2",
+  "version": "0.2.9",
   "private": true,
   "main": "dist/main/index.js",
   "scripts": {
