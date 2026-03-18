@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the agent can successfully open a browser, navigate to https://example.com, retrieve the page title, and return a response mentioning \"Example Domain\"",
+  "steps": [
+    "Navigated to http://localhost:47891 - Page loaded successfully showing Super Agent dashboard with three agents in the sidebar",
+    "Clicked on agent \"QA-20260318-230912-e72p\" in the sidebar - Agent chat interface opened with message input field ready",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field - Message was entered correctly and displayed in the input field",
+    "Sent message by pressing Ctrl+Enter - Message was successfully sent and appeared in a dark bubble in the chat",
+    "Waited up to 3 minutes (180 seconds) for agent response - Agent completed the task in 16 seconds",
+    "Verified response mentions \"Example Domain\" - Response clearly states \"The page title is Example Domain.\" with additional context about the IANA example domain page, and all browser tool calls (Open Browser, Page Snapshot, Browser Command, Close Browser) completed successfully with green checkmarks"
+  ],
+  "bugs": [],
+  "durationMs": 93258,
+  "sessionId": "f5f2d7bb-008d-4414-b7c9-7006dc6ce3db",
+  "cost": {
+    "inputTokens": 315,
+    "outputTokens": 3907,
+    "cacheCreationTokens": 35527,
+    "cacheReadTokens": 955706,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.159829
+  }
+}
