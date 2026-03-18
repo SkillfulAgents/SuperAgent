@@ -30,8 +30,11 @@ async function authenticateWs(
   minRole: AgentRole,
 ): Promise<boolean> {
   if (!isAuthMode()) {
-    const addr = request.socket?.remoteAddress
-    if (!addr || !LOCALHOST_ADDRS.has(addr)) return false
+    // Only restrict to localhost in Electron
+    if (process.type === 'browser') {
+      const addr = request.socket?.remoteAddress
+      if (!addr || !LOCALHOST_ADDRS.has(addr)) return false
+    }
     return true
   }
 
