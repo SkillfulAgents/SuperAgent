@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Globe, ChevronUp, ChevronDown, X, Loader2, MousePointerClick } from 'lucide-react'
+import { Globe, ChevronUp, ChevronDown, X, MousePointerClick } from 'lucide-react'
 import { BrowserTabBar, type BrowserTabInfo } from './browser-tab-bar'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { clearBrowserActive, useMessageStream } from '@renderer/hooks/use-message-stream'
@@ -43,7 +43,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
   const isViewOnly = !canUseAgent(agentSlug)
   const [expanded, setExpanded] = useState(false)
   const [connected, setConnected] = useState(false)
-  const [pageLoading, setPageLoading] = useState(false)
+  const [, setPageLoading] = useState(false)
   const [reconnectKey, setReconnectKey] = useState(0)
   const [showCloseWarning, setShowCloseWarning] = useState(false)
   const [isClosing, setIsClosing] = useState(false)

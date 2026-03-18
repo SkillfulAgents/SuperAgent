@@ -546,7 +546,7 @@ let browserState: BrowserState = { active: false, sessionId: null, cdpUrl: null 
 
 const execFileAsync = promisify(execFile);
 
-import { splitCommandArgs, buildRunCommandArgs } from './browser-command-args';
+import { splitCommandArgs, buildRunCommandArgs, rewriteTabNewCommand } from './browser-command-args';
 
 // Ensure Chrome download preferences are set in the browser profile directory.
 // Merges with existing preferences to avoid overwriting other settings.
@@ -1263,13 +1263,7 @@ app.post('/browser/run', async (c) => {
       return c.json({ error: 'Empty command' }, 400);
     }
 
-    // Workaround: agent-browser@0.12.0 newTab() fails with --profile (persistent context).
-    // Rewrite "tab new [url]" to use window.open() which works in any context.
-    let actualArgs = commandArgs;
-    if (commandArgs[0] === 'tab' && commandArgs[1] === 'new') {
-      const url = commandArgs[2] || 'about:blank';
-      actualArgs = ['eval', `(() => { window.open('${url.replace(/'/g, "\\'")}', '_blank'); return 'opened'; })()`];
-    }
+    const actualArgs = rewriteTabNewCommand(commandArgs);
 
     const result = await execBrowser(actualArgs, browserState.cdpUrl || undefined);
 
