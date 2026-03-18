@@ -1,24 +1,26 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser use feature allows agent to navigate to a URL, retrieve page title, and return response with correct page title",
+  "reason": "Successfully verified that the agent can use browser tools to navigate to a URL and retrieve the page title, confirming \"Example Domain\" is returned as expected.",
   "steps": [
-    "Navigated to http://localhost:47891 — page loaded successfully with agents list visible",
-    "Found and clicked agent \"QA-20260318-232515-fhf4\" in the sidebar — agent chat interface opened with message input ready",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into the input box — message displayed in text field",
-    "Pressed Cmd+Enter to send message — message sent successfully, agent status changed to \"working\"",
-    "Waited up to 3 minutes for response mentioning \"Example Domain\" — response received in 15 seconds with exact text \"The page title is Example Domain.\"",
-    "Verified response and took screenshot — final screenshot shows complete tool call chain (Open Browser, Page Snapshot, Browser Command, response text with \"Example Domain\", Close Browser) with all operations marked as completed"
+    "Navigated to http://localhost:47891 — App loaded successfully showing the Super Agent interface with agent list in sidebar.",
+    "Clicked on \"QA-20260318-234509-bx64\" agent in the sidebar — Agent chat interface opened with message input ready.",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into the input field — Message appeared correctly in the text box.",
+    "Sent message by pressing Cmd+Enter — Message was transmitted to the agent.",
+    "Waited 2 seconds for initial processing — Agent began executing browser tools, showing \"Open Browser\" tool call card with the example.com URL and live browser preview.",
+    "Waited 3 seconds for additional processing — Agent executed additional tool calls: \"Page Snapshot\" and \"Browser Command $ get title\", producing the intermediate response showing the page title.",
+    "Waited 2 seconds for final completion — Agent completed all browser operations and provided final response confirming the page title.",
+    "Verified final response — Response clearly states: \"The page at `https://example.com` has the title **\\\"Example Domain\\\"**. It's a simple placeholder page maintained by IANA with a single \\\"Learn more\\\" link.\" The response mentions \"Example Domain\" as expected, confirming successful browser navigation and page title retrieval."
   ],
   "bugs": [],
-  "durationMs": 91041,
-  "sessionId": "35b7b40a-5634-4e7d-9b53-a69b2b2173f6",
+  "durationMs": 67283,
+  "sessionId": "863d75e4-2eab-4181-a37f-6a4a7c6b2e39",
   "cost": {
-    "inputTokens": 252,
-    "outputTokens": 2828,
-    "cacheCreationTokens": 29014,
-    "cacheReadTokens": 752815,
+    "inputTokens": 333,
+    "outputTokens": 3583,
+    "cacheCreationTokens": 36618,
+    "cacheReadTokens": 1044032,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.125941
+    "totalCostUsd": 0.168424
   }
 }
