@@ -19,6 +19,8 @@ import { and, eq } from 'drizzle-orm'
 
 const browserWss = new WebSocketServer({ noServer: true })
 
+const LOCALHOST_ADDRS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
+
 type AgentRole = 'owner' | 'user' | 'viewer'
 const ROLE_HIERARCHY: Record<AgentRole, number> = { viewer: 0, user: 1, owner: 2 }
 
@@ -27,7 +29,11 @@ async function authenticateWs(
   agentSlug: string,
   minRole: AgentRole,
 ): Promise<boolean> {
-  if (!isAuthMode()) return true
+  if (!isAuthMode()) {
+    const addr = request.socket?.remoteAddress
+    if (!addr || !LOCALHOST_ADDRS.has(addr)) return false
+    return true
+  }
 
   try {
     // Lazy import to avoid pulling in better-auth ESM at startup
