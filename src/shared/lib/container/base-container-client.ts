@@ -642,6 +642,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           systemPrompt: options.systemPrompt,
           availableEnvVars: options.availableEnvVars,
           initialMessage: options.initialMessage,
+          initialMessageUuid: options.initialMessageUuid,
           model: options.model,
           browserModel: options.browserModel,
           maxOutputTokens: options.maxOutputTokens,
@@ -741,7 +742,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return response.ok
   }
 
-  async sendMessage(sessionId: string, content: string): Promise<void> {
+  async sendMessage(sessionId: string, content: string, uuid?: string): Promise<void> {
     const port = await this.getPortOrThrow()
     const timeoutMs = 30000 // 30 second timeout
 
@@ -754,7 +755,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content }),
+          body: JSON.stringify({ content, ...(uuid ? { uuid } : {}) }),
           signal: controller.signal,
         }
       )

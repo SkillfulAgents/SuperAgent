@@ -36,6 +36,7 @@ const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] '
 interface PendingMessage {
   text: string
   sentAt: number
+  sender?: { id: string; name: string; email: string }
 }
 
 function DeliveredFiles({ files, agentSlug }: { files: { filePath: string }[]; agentSlug: string }) {
@@ -653,6 +654,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
               content: { text: pendingUserMessage.text },
               toolCalls: [],
               createdAt: new Date(),
+              sender: pendingUserMessage.sender,
             }}
             agentSlug={agentSlug}
           />

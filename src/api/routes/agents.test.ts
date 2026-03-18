@@ -56,10 +56,12 @@ vi.mock('../middleware/auth', () => ({
 
 // Container manager
 const mockContainerFetch = vi.fn()
+const mockSendMessage = vi.fn()
 vi.mock('@shared/lib/container/container-manager', () => ({
   containerManager: {
     getClient: () => ({
       fetch: (...args: unknown[]) => mockContainerFetch(...args),
+      sendMessage: (...args: unknown[]) => mockSendMessage(...args),
       start: vi.fn(),
       stop: vi.fn(),
     }),
@@ -78,6 +80,9 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     persistMessage: vi.fn(),
     markAllSessionsInactiveForAgent: vi.fn(),
     isSessionActive: vi.fn(() => false),
+    isSubscribed: vi.fn(() => true),
+    subscribeToSession: vi.fn(),
+    markSessionActive: vi.fn(),
   },
 }))
 
@@ -143,6 +148,7 @@ vi.mock('@shared/lib/db/schema', () => ({
   mcpAuditLog: { agentSlug: 'agent_slug', createdAt: 'created_at' },
   agentAcl: { id: 'id', userId: 'user_id', agentSlug: 'agent_slug', role: 'role' },
   user: { id: 'id', name: 'name', email: 'email' },
+  messageAuthor: { id: 'id', sessionId: 'session_id', agentSlug: 'agent_slug', userId: 'user_id' },
 }))
 
 vi.mock('drizzle-orm', () => ({
@@ -250,8 +256,10 @@ vi.mock('@shared/lib/utils/retry', () => ({
   withRetry: vi.fn(),
 }))
 
+const mockTransformMessages = vi.fn()
 vi.mock('@shared/lib/utils/message-transform', () => ({
-  transformMessages: vi.fn(() => []),
+  transformMessages: (...args: unknown[]) => mockTransformMessages(),
+  resolveInterruptedSubagents: vi.fn(),
 }))
 
 vi.mock('@shared/lib/config/settings', () => ({
@@ -289,6 +297,8 @@ import {
   hasOnboardingSkill,
   collectAgentRequiredEnvVars,
 } from '@shared/lib/services/agent-template-service'
+import { getAgent } from '@shared/lib/services/agent-service'
+import { getSessionMessagesWithCompact } from '@shared/lib/services/session-service'
 
 // ============================================================================
 // Test Helpers
@@ -1832,5 +1842,146 @@ describe('folder upload — POST /:id/upload-folder', () => {
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.path).toBe('/workspace/uploads/project/')
+  })
+})
+
+// ============================================================================
+// Message Author Attribution Tests
+// ============================================================================
+
+describe('message author attribution — POST /:id/sessions/:sessionId/messages', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/messages'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(getAgent).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
+    mockSendMessage.mockResolvedValue(undefined)
+  })
+
+  it('does not generate UUID or insert messageAuthor in non-auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+
+    const res = await postJson(app, URL, { content: 'hello' })
+    expect(res.status).toBe(201)
+
+    // sendMessage called with only sessionId and content (no uuid)
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', undefined)
+
+    // No DB insert for message author
+    expect(mockDbInsertValues).not.toHaveBeenCalled()
+  })
+
+  it('generates UUID, inserts messageAuthor, and passes UUID to sendMessage in auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+
+    const res = await postJson(app, URL, { content: 'hello from user' })
+    expect(res.status).toBe(201)
+
+    // DB insert should have been called with author record
+    expect(mockDbInsertValues).toHaveBeenCalledTimes(1)
+    const insertedValues = mockDbInsertValues.mock.calls[0][0]
+    expect(insertedValues).toMatchObject({
+      sessionId: 'sess-1',
+      agentSlug: 'test-agent',
+      userId: 'test-user-id',
+    })
+    expect(insertedValues.id).toBeDefined()
+    expect(typeof insertedValues.id).toBe('string')
+
+    // sendMessage should receive the same UUID
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello from user', insertedValues.id)
+  })
+})
+
+describe('message author attribution — GET /:id/sessions/:sessionId/messages', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/messages'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(getSessionMessagesWithCompact).mockResolvedValue([])
+  })
+
+  it('does not query messageAuthor in non-auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    mockTransformMessages.mockReturnValue([
+      { id: 'msg-1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
+    ])
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+
+    const body = await res.json()
+    // No sender field attached
+    expect(body[0].sender).toBeUndefined()
+    // DB select should not have been called for author lookup
+    expect(mockDbSelectFrom).not.toHaveBeenCalled()
+  })
+
+  it('annotates user messages with sender info in auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    mockTransformMessages.mockReturnValue([
+      { id: 'msg-1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
+      { id: 'msg-2', type: 'assistant', content: { text: 'hello' }, toolCalls: [], createdAt: new Date() },
+    ])
+
+    // Mock the DB select chain for author lookup: db.select().from().innerJoin().where()
+    mockDbSelectFrom.mockReturnValue({
+      innerJoin: () => ({
+        where: () => Promise.resolve([
+          { messageId: 'msg-1', userId: 'user-1', userName: 'Alice', userEmail: 'alice@example.com' },
+        ]),
+      }),
+    })
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+
+    const body = await res.json()
+    // User message should have sender
+    expect(body[0].sender).toEqual({
+      id: 'user-1',
+      name: 'Alice',
+      email: 'alice@example.com',
+    })
+    // Assistant message should not have sender
+    expect(body[1].sender).toBeUndefined()
+  })
+
+  it('handles sessions with no author records gracefully', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    mockTransformMessages.mockReturnValue([
+      { id: 'msg-old', type: 'user', content: { text: 'old message' }, toolCalls: [], createdAt: new Date() },
+    ])
+
+    // DB returns no author records (messages from before feature was added)
+    mockDbSelectFrom.mockReturnValue({
+      innerJoin: () => ({
+        where: () => Promise.resolve([]),
+      }),
+    })
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+
+    const body = await res.json()
+    // Message returned without sender — no crash
+    expect(body[0].sender).toBeUndefined()
+  })
+
+  it('skips author query when there are no user messages', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    mockTransformMessages.mockReturnValue([
+      { id: 'msg-1', type: 'assistant', content: { text: 'hello' }, toolCalls: [], createdAt: new Date() },
+    ])
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+
+    // No DB query since there are no user messages to look up
+    expect(mockDbSelectFrom).not.toHaveBeenCalled()
   })
 })

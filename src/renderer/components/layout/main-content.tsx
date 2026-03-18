@@ -42,7 +42,7 @@ export function MainContent() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [contextBarExpanded, setContextBarExpanded] = useState(false)
   // Pending user messages per session — survives navigation between sessions
-  const pendingMessagesRef = useRef(new Map<string, { text: string; sentAt: number }>())
+  const pendingMessagesRef = useRef(new Map<string, { text: string; sentAt: number; sender?: { id: string; name: string; email: string } }>())
   const [, forceUpdate] = useState(0)
   const { data: agent } = useAgent(agentSlug)
   const { data: sessions } = useSessions(agentSlug)
@@ -56,7 +56,7 @@ export function MainContent() {
   const isFullScreen = useFullScreen()
   const markSessionNotificationsRead = useMarkSessionNotificationsRead()
   const { browserActive, isActive, contextUsage: streamContextUsage } = useMessageStream(sessionId ?? null, agentSlug ?? null)
-  const { canUseAgent } = useUser()
+  const { canUseAgent, user, isAuthMode } = useUser()
   const isViewOnly = agentSlug ? !canUseAgent(agentSlug) : false
   const { warning: mountWarning, dismiss: dismissMountWarning } = useMountWarnings(agentSlug ?? null)
   const { data: runtimeStatus, isPending: isRuntimePending } = useRuntimeStatus()
@@ -100,10 +100,14 @@ export function MainContent() {
 
   const handleMessageSent = useCallback((content: string) => {
     if (sessionId) {
-      pendingMessagesRef.current.set(sessionId, { text: content, sentAt: Date.now() })
+      pendingMessagesRef.current.set(sessionId, {
+        text: content,
+        sentAt: Date.now(),
+        sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email } : undefined,
+      })
       forceUpdate((n) => n + 1)
     }
-  }, [sessionId])
+  }, [sessionId, isAuthMode, user])
 
   const handlePendingMessageAppeared = useCallback(() => {
     if (sessionId) {
@@ -114,9 +118,13 @@ export function MainContent() {
 
   // Callback for AgentLanding when a new session is created with initial message
   const handleSessionCreated = useCallback((newSessionId: string, initialMessage: string) => {
-    pendingMessagesRef.current.set(newSessionId, { text: initialMessage, sentAt: Date.now() })
+    pendingMessagesRef.current.set(newSessionId, {
+      text: initialMessage,
+      sentAt: Date.now(),
+      sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email } : undefined,
+    })
     selectSession(newSessionId)
-  }, [selectSession])
+  }, [selectSession, isAuthMode, user])
 
   if (!agentSlug) {
     return <HomePage />

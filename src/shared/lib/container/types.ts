@@ -39,6 +39,7 @@ export interface CreateSessionOptions {
   systemPrompt?: string
   availableEnvVars?: string[]
   initialMessage: string // Required: first message to send (triggers session ID generation)
+  initialMessageUuid?: string // Optional UUID for message author attribution
   model?: string // Claude model to use for this session
   browserModel?: string // Model for browser subagent
   maxOutputTokens?: number // Max tokens per response (CLAUDE_CODE_MAX_OUTPUT_TOKENS)
@@ -103,7 +104,7 @@ export interface ContainerClient {
   deleteSession(sessionId: string): Promise<boolean>
 
   // Message operations
-  sendMessage(sessionId: string, content: string): Promise<void>
+  sendMessage(sessionId: string, content: string, uuid?: string): Promise<void>
   getMessages(sessionId: string): Promise<any[]>
   interruptSession(sessionId: string): Promise<boolean>
 

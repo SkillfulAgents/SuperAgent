@@ -852,7 +852,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   // Message operations
 
-  async sendMessage(sessionId: string, content: string): Promise<void> {
+  async sendMessage(sessionId: string, content: string, _uuid?: string): Promise<void> {
     const session = this.sessions.get(sessionId)
     if (!session) {
       throw new Error(`Session ${sessionId} not found`)

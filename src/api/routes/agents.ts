@@ -43,7 +43,7 @@ import {
   listCancelledScheduledTasks,
 } from '@shared/lib/services/scheduled-task-service'
 import { db } from '@shared/lib/db'
-import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, user as userTable } from '@shared/lib/db/schema'
+import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, user as userTable, messageAuthor } from '@shared/lib/db/schema'
 import { eq, and, inArray, desc, count, like, or } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
@@ -543,8 +543,11 @@ agents.delete('/:id', AgentAdmin(), async (c) => {
       console.error('Failed to revoke proxy token:', error)
     }
 
-    // Clean up ACL entries
+    // Clean up ACL entries and message author records
     await db.delete(agentAcl).where(eq(agentAcl.agentSlug, slug))
+    if (isAuthMode()) {
+      await db.delete(messageAuthor).where(eq(messageAuthor.agentSlug, slug))
+    }
 
     return c.body(null, 204)
   } catch (error) {
@@ -933,9 +936,17 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
 
     const agentLimits = getEffectiveAgentLimits()
     const customEnvVars = getCustomEnvVars()
+
+    // In auth mode, generate a UUID for the initial message author attribution
+    let initialMessageUuid: string | undefined
+    if (isAuthMode()) {
+      initialMessageUuid = randomUUID()
+    }
+
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: message.trim(),
+      initialMessageUuid,
       model: getEffectiveModels().agentModel,
       browserModel: getEffectiveModels().browserModel,
       maxOutputTokens: agentLimits.maxOutputTokens,
@@ -946,6 +957,17 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       maxBrowserTabs: getSettings().app?.maxBrowserTabs,
     })
     const sessionId = containerSession.id
+
+    // Record author for initial message after we know the sessionId
+    if (isAuthMode() && initialMessageUuid) {
+      const userId = getCurrentUserId(c)
+      await db.insert(messageAuthor).values({
+        id: initialMessageUuid,
+        sessionId,
+        agentSlug: slug,
+        userId,
+      })
+    }
 
     await registerSession(slug, sessionId, 'New Session')
     await messagePersister.subscribeToSession(sessionId, client, sessionId, slug)
@@ -994,6 +1016,40 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
 
     // Discover subagent IDs for interrupted Task tool calls that have no result
     await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
+
+    // In auth mode, annotate user messages with sender info
+    if (isAuthMode()) {
+      const userMessageIds = transformed
+        .filter((m) => m.type === 'user')
+        .map((m) => m.id)
+
+      if (userMessageIds.length > 0) {
+        const authors = await db
+          .select({
+            messageId: messageAuthor.id,
+            userId: messageAuthor.userId,
+            userName: userTable.name,
+            userEmail: userTable.email,
+          })
+          .from(messageAuthor)
+          .innerJoin(userTable, eq(messageAuthor.userId, userTable.id))
+          .where(eq(messageAuthor.sessionId, sessionId))
+
+        const authorMap = new Map(authors.map((a) => [a.messageId, a]))
+
+        for (const msg of transformed) {
+          if (msg.type !== 'user') continue
+          const author = authorMap.get(msg.id)
+          if (author) {
+            msg.sender = {
+              id: author.userId,
+              name: author.userName,
+              email: author.userEmail,
+            }
+          }
+        }
+      }
+    }
 
     return c.json(transformed)
   } catch (error) {
@@ -1117,7 +1173,21 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     }
 
     messagePersister.markSessionActive(sessionId, agentSlug)
-    await client.sendMessage(sessionId, content.trim())
+
+    // In auth mode, generate a UUID and record the sender for message attribution
+    let messageUuid: string | undefined
+    if (isAuthMode()) {
+      const userId = getCurrentUserId(c)
+      messageUuid = randomUUID()
+      await db.insert(messageAuthor).values({
+        id: messageUuid,
+        sessionId,
+        agentSlug,
+        userId,
+      })
+    }
+
+    await client.sendMessage(sessionId, content.trim(), messageUuid)
 
     return c.json({ success: true }, 201)
   } catch (error) {
@@ -1208,6 +1278,11 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
 
     messagePersister.unsubscribeFromSession(sessionId)
     await deleteSession(agentSlug, sessionId)
+
+    // Clean up message author records for this session
+    if (isAuthMode()) {
+      await db.delete(messageAuthor).where(eq(messageAuthor.sessionId, sessionId))
+    }
 
     return c.body(null, 204)
   } catch (error) {

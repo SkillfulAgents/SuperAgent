@@ -102,12 +102,19 @@ export interface ApiMessageContent {
 /**
  * Message response from API
  */
+export interface ApiMessageSender {
+  id: string
+  name: string
+  email: string
+}
+
 export interface ApiMessage {
   id: string
   type: 'user' | 'assistant'
   content: ApiMessageContent
   toolCalls: ApiToolCall[]
   createdAt: Date
+  sender?: ApiMessageSender
 }
 
 /**

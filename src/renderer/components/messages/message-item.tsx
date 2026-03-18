@@ -1,6 +1,7 @@
 
 import { cn } from '@shared/lib/utils/cn'
 import { User, Bot, Terminal, Link2 } from 'lucide-react'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { ToolCallItem } from './tool-call-item'
 import { SubAgentBlock } from './subagent-block'
 import { MessageContextMenu } from './message-context-menu'
@@ -40,6 +41,14 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
   // Detect slash commands (user messages starting with /)
   const isSlashCommand = isUser && hasText && text.startsWith('/')
 
+  // Compute sender initials for the avatar
+  const senderInitials = message.sender?.name
+    ?.split(' ')
+    .map((w) => w[0])
+    .join('')
+    .toUpperCase()
+    .slice(0, 2)
+
   // Don't render assistant messages that have no text and no tool calls
   // (and aren't streaming). These are transient empty entries from partially-
   // persisted JSONL that will be filled in on the next refetch.
@@ -54,6 +63,20 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
     ? (hasText || attachedFiles.length === 0)
     : (hasText || isStreaming)
 
+  const avatarContent = (
+    <div
+      className={cn(
+        'h-8 w-8 rounded-full items-center justify-center shrink-0 hidden md:flex',
+        isUser && 'bg-primary text-primary-foreground',
+        isAssistant && 'bg-muted'
+      )}
+    >
+      {isSlashCommand && <Terminal className="h-4 w-4" />}
+      {isUser && !isSlashCommand && (senderInitials ? <span className="text-xs font-medium">{senderInitials}</span> : <User className="h-4 w-4" />)}
+      {isAssistant && <Bot className="h-4 w-4" />}
+    </div>
+  )
+
   return (
     <div
       className={cn(
@@ -63,17 +86,14 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
       data-testid={isUser ? 'message-user' : isAssistant ? 'message-assistant' : undefined}
     >
       {/* Avatar */}
-      <div
-        className={cn(
-          'h-8 w-8 rounded-full items-center justify-center shrink-0 hidden md:flex',
-          isUser && 'bg-primary text-primary-foreground',
-          isAssistant && 'bg-muted'
-        )}
-      >
-        {isSlashCommand && <Terminal className="h-4 w-4" />}
-        {isUser && !isSlashCommand && <User className="h-4 w-4" />}
-        {isAssistant && <Bot className="h-4 w-4" />}
-      </div>
+      {message.sender ? (
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>{avatarContent}</TooltipTrigger>
+            <TooltipContent>{message.sender.name}</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      ) : avatarContent}
 
       {/* Message content */}
       <div
