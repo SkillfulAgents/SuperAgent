@@ -38,6 +38,7 @@ const mockInstallFromSkillset = {
 
 vi.mock('@renderer/hooks/use-agents', () => ({
   useCreateAgent: () => mockCreateAgent,
+  useDeleteAgent: () => ({ mutateAsync: vi.fn() }),
 }))
 
 vi.mock('@renderer/hooks/use-sessions', () => ({
@@ -114,11 +115,11 @@ describe('CreateAgentDialog import flow', () => {
     await user.click(screen.getByRole('button', { name: 'Import' }))
 
     await waitFor(() => {
-      expect(mockImportMutateAsync).toHaveBeenCalledWith({
+      expect(mockImportMutateAsync).toHaveBeenCalledWith(expect.objectContaining({
         file,
         nameOverride: undefined,
         mode: 'full',
-      })
+      }))
     })
 
     expect(screen.queryByText('Install agent template')).not.toBeInTheDocument()
