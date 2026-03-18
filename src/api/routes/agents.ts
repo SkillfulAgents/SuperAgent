@@ -40,6 +40,7 @@ import {
 import {
   listScheduledTasks,
   listPendingScheduledTasks,
+  listCancelledScheduledTasks,
 } from '@shared/lib/services/scheduled-task-service'
 import { db } from '@shared/lib/db'
 import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, user as userTable } from '@shared/lib/db/schema'
@@ -1912,6 +1913,8 @@ agents.get('/:id/scheduled-tasks', AgentRead(), async (c) => {
     let tasks
     if (status === 'pending') {
       tasks = await listPendingScheduledTasks(slug)
+    } else if (status === 'cancelled') {
+      tasks = await listCancelledScheduledTasks(slug)
     } else {
       tasks = await listScheduledTasks(slug)
     }

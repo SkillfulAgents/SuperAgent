@@ -1,5 +1,5 @@
 
-import { ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard, Loader2, WifiOff, LogOut, User, Users, CircleHelp } from 'lucide-react'
+import { ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard, Loader2, WifiOff, LogOut, User, Users, CircleHelp, Ban } from 'lucide-react'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
@@ -137,25 +137,94 @@ function ScheduledTaskSubItem({
     selectScheduledTask(task.id)
   }
 
-  // Format next execution time for tooltip
-  const nextExecution = new Date(task.nextExecutionAt)
-  const timeString = nextExecution.toLocaleString()
+  // Format tooltip based on task status
+  const tooltip = task.status === 'cancelled'
+    ? `Cancelled${task.cancelledAt ? ': ' + new Date(task.cancelledAt).toLocaleString() : ''}`
+    : `Scheduled for: ${new Date(task.nextExecutionAt).toLocaleString()}`
 
   return (
     <SidebarMenuSubItem>
       <SidebarMenuSubButton
         asChild
         isActive={isSelected}
-        title={`Scheduled for: ${timeString}`}
+        title={tooltip}
       >
         <button
           onClick={handleClick}
-          className="flex items-center gap-2 w-full text-muted-foreground opacity-70"
+          className={`flex items-center gap-2 w-full text-muted-foreground ${task.status === 'cancelled' ? 'opacity-50' : 'opacity-70'}`}
         >
-          <Clock className="h-3 w-3 shrink-0" />
+          {task.status === 'cancelled' ? <Ban className="h-3 w-3 shrink-0" /> : <Clock className="h-3 w-3 shrink-0" />}
           <span className="truncate">{task.name || 'Scheduled Task'}</span>
         </button>
       </SidebarMenuSubButton>
+    </SidebarMenuSubItem>
+  )
+}
+
+// Collapsible group for multiple scheduled tasks
+function ScheduledTasksGroup({
+  pendingTasks,
+  cancelledTasks,
+  agentSlug,
+}: {
+  pendingTasks: ApiScheduledTask[]
+  cancelledTasks: ApiScheduledTask[]
+  agentSlug: string
+}) {
+  const [isOpen, setIsOpen] = useState(false)
+  const [cancelledOpen, setCancelledOpen] = useState(false)
+  const totalCount = pendingTasks.length + cancelledTasks.length
+
+  return (
+    <SidebarMenuSubItem>
+      <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+        <CollapsibleTrigger asChild>
+          <SidebarMenuSubButton asChild>
+            <button className="flex items-center gap-2 w-full text-muted-foreground opacity-70">
+              <Clock className="h-3 w-3 shrink-0" />
+              <span className="truncate">Scheduled Jobs ({totalCount})</span>
+              <ChevronRight className="ml-auto h-3 w-3 shrink-0 transition-transform duration-200 data-[state=open]:rotate-90" data-state={isOpen ? 'open' : 'closed'} />
+            </button>
+          </SidebarMenuSubButton>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <SidebarMenuSub>
+            {pendingTasks.map((task) => (
+              <ScheduledTaskSubItem
+                key={task.id}
+                task={task}
+                agentSlug={agentSlug}
+              />
+            ))}
+            {cancelledTasks.length > 0 && (
+              <SidebarMenuSubItem>
+                <Collapsible open={cancelledOpen} onOpenChange={setCancelledOpen}>
+                  <CollapsibleTrigger asChild>
+                    <SidebarMenuSubButton asChild>
+                      <button className="flex items-center gap-2 w-full text-muted-foreground opacity-50">
+                        <Ban className="h-3 w-3 shrink-0" />
+                        <span className="truncate">Cancelled ({cancelledTasks.length})</span>
+                        <ChevronRight className="ml-auto h-3 w-3 shrink-0 transition-transform duration-200 data-[state=open]:rotate-90" data-state={cancelledOpen ? 'open' : 'closed'} />
+                      </button>
+                    </SidebarMenuSubButton>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <SidebarMenuSub>
+                      {cancelledTasks.map((task) => (
+                        <ScheduledTaskSubItem
+                          key={task.id}
+                          task={task}
+                          agentSlug={agentSlug}
+                        />
+                      ))}
+                    </SidebarMenuSub>
+                  </CollapsibleContent>
+                </Collapsible>
+              </SidebarMenuSubItem>
+            )}
+          </SidebarMenuSub>
+        </CollapsibleContent>
+      </Collapsible>
     </SidebarMenuSubItem>
   )
 }
@@ -291,6 +360,7 @@ export const AgentMenuItem = React.forwardRef<
   const { agentMemberCount } = useUser()
   const { data: sessions } = useSessions(agent.slug)
   const { data: scheduledTasks } = useScheduledTasks(agent.slug, 'pending')
+  const { data: cancelledScheduledTasks } = useScheduledTasks(agent.slug, 'cancelled')
   const { data: artifacts } = useArtifacts(agent.slug)
   const isSelected = agent.slug === selectedAgentSlug
   const [isOpen, setIsOpen] = useState(isSelected)
@@ -300,6 +370,8 @@ export const AgentMenuItem = React.forwardRef<
   const visibleSessions = showAll ? sessions : sessions?.slice(0, 5)
   const hasMore = (sessions?.length ?? 0) > 5
   const pendingTasks = scheduledTasks || []
+  const cancelledTasks = cancelledScheduledTasks || []
+  const allScheduledTasks = pendingTasks.length + cancelledTasks.length
   const dashboards = Array.isArray(artifacts) ? artifacts : []
 
   const handleClick = () => {
@@ -328,7 +400,7 @@ export const AgentMenuItem = React.forwardRef<
             />
           </SidebarMenuButton>
         </AgentContextMenu>
-        {(sessions?.length || pendingTasks.length || dashboards.length) ? (
+        {(sessions?.length || allScheduledTasks || dashboards.length) ? (
           <>
             <CollapsibleTrigger asChild>
               <SidebarMenuAction className="data-[state=open]:rotate-90">
@@ -346,14 +418,19 @@ export const AgentMenuItem = React.forwardRef<
                     agentSlug={agent.slug}
                   />
                 ))}
-                {/* Pending scheduled tasks */}
-                {pendingTasks.map((task) => (
-                  <ScheduledTaskSubItem
-                    key={task.id}
-                    task={task}
+                {/* Scheduled tasks */}
+                {cancelledTasks.length > 0 || allScheduledTasks > 1 ? (
+                  <ScheduledTasksGroup
+                    pendingTasks={pendingTasks}
+                    cancelledTasks={cancelledTasks}
                     agentSlug={agent.slug}
                   />
-                ))}
+                ) : pendingTasks.length === 1 ? (
+                  <ScheduledTaskSubItem
+                    task={pendingTasks[0]}
+                    agentSlug={agent.slug}
+                  />
+                ) : null}
                 {/* Regular sessions */}
                 {visibleSessions?.map((session) => (
                   <SessionSubItem
