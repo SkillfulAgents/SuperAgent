@@ -1,0 +1,2 @@
+[   52442ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:47891/api/agents/qa-20260319-004009-wrn3-w1szjp/artifacts:0
+[   52583ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:47891/api/agents/qa-20260319-004009-wrn3-w1szjp/artifacts:0

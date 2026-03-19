@@ -1,24 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the agent can execute browser operations and retrieve page titles from external URLs",
+  "reason": "Verified that the agent can successfully execute browser operations, navigate to a URL, extract the page title, and report it back correctly.",
   "steps": [
-    "Navigated to http://localhost:47891 - Successfully loaded the Super Agent application with list of agents visible in sidebar",
-    "Found and clicked on agent \"QA-20260319-000741-6lqk\" - Agent chat view opened with message input field ready",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message was entered into the input field",
-    "Sent message by clicking send button - Message was successfully transmitted to the agent",
-    "Waited up to 180 seconds for response - Agent executed browser operations within 16 seconds and returned complete response",
-    "Verified response mentions \"Example Domain\" - Response clearly states \"The page title is Example Domain.\" confirming the browser tool successfully navigated to the URL and retrieved the correct page title"
+    "Navigated to http://localhost:47891 - Page loaded successfully showing Super Agent application with agent list in sidebar.",
+    "Clicked on \"QA-20260319-004010-snhx\" agent in the sidebar - Agent opened successfully, displaying chat interface with message input field.",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into the input field - Message appeared correctly in the textbox.",
+    "Clicked the send button to submit the message - Message was sent, agent status changed to \"working\", and execution began.",
+    "Waited up to 3 minutes for agent response - Agent completed execution in 16 seconds with full response.",
+    "Verified response mentions \"Example Domain\" - Response clearly displays: \"The page title is Example Domain. It's the classic IANA example domain page with a \"Learn more\" link.\" All browser tool calls (Open Browser, Page Snapshot, Browser Command, Close Browser) completed successfully as indicated by green checkmarks."
   ],
   "bugs": [],
-  "durationMs": 119908,
-  "sessionId": "24e6693e-e459-48ef-b8e3-00f0804b27d4",
+  "durationMs": 103095,
+  "sessionId": "e5c8faba-64df-4ddf-a6ff-55e445c03841",
   "cost": {
-    "inputTokens": 459,
-    "outputTokens": 3914,
-    "cacheCreationTokens": 45262,
-    "cacheReadTokens": 1512030,
+    "inputTokens": 342,
+    "outputTokens": 3545,
+    "cacheCreationTokens": 50108,
+    "cacheReadTokens": 1110151,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.22781
+    "totalCostUsd": 0.191717
   }
 }
