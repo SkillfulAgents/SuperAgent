@@ -323,6 +323,7 @@ The web-browser agent:
 - Track the URLs reported by the agent so you know where the browser is
 - Remember to close the browser when you're done to free resources
 - Downloads triggered in the browser will be saved to `/workspace/downloads/`
+- Before delegating a browser task, check if an existing skill covers it (browser workflow skills have `task_type: browser-workflow` in metadata). If one exists, include its instructions in the web-browser agent's prompt for faster execution.
 
 ## Other Guidelines
 
