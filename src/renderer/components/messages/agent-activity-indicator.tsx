@@ -19,7 +19,7 @@ interface AgentActivityIndicatorProps {
 
 export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIndicatorProps) {
   const {
-    isActive, error, activeStartTime, isCompacting, activeSubagents, completedSubagents,
+    isActive, error, activeStartTime, activeSubagents, completedSubagents,
     pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests,
     pendingFileRequests, pendingRemoteMcpRequests, pendingBrowserInputRequests,
   } = useMessageStream(sessionId, agentSlug)
@@ -126,9 +126,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
 
   const statusText = isAwaitingInput
     ? 'Waiting for input...'
-    : isCompacting
-      ? 'Compacting conversation...'
-      : (activeItem?.activeForm || 'Working...')
+    : (activeItem?.activeForm || 'Working...')
 
   return (
     <div className="mx-4 mb-2 rounded-lg border bg-muted/50 p-3" data-testid="activity-indicator">
@@ -137,11 +135,11 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
         <span className="relative flex h-3 w-3">
           <span className={cn(
             "animate-ping absolute inline-flex h-full w-full rounded-full opacity-75",
-            isAwaitingInput ? "bg-orange-500" : isCompacting ? "bg-violet-500" : "bg-primary"
+            isAwaitingInput ? "bg-orange-500" : "bg-primary"
           )}></span>
           <span className={cn(
             "relative inline-flex rounded-full h-3 w-3",
-            isAwaitingInput ? "bg-orange-500" : isCompacting ? "bg-violet-500" : "bg-primary"
+            isAwaitingInput ? "bg-orange-500" : "bg-primary"
           )}></span>
         </span>
         <span className="text-sm font-medium">{statusText}</span>
