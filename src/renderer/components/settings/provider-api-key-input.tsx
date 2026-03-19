@@ -3,6 +3,16 @@ import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Button } from '@renderer/components/ui/button'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@renderer/components/ui/alert-dialog'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { apiFetch } from '@renderer/lib/api'
 import { AlertTriangle, Eye, EyeOff, Check, Loader2 } from 'lucide-react'
@@ -41,6 +51,7 @@ export function ProviderApiKeyInput({
   const [isValidating, setIsValidating] = useState(false)
   const [validationResult, setValidationResult] = useState<{ valid: boolean; error?: string } | null>(null)
   const [isRemoving, setIsRemoving] = useState(false)
+  const [showRemoveConfirm, setShowRemoveConfirm] = useState(false)
 
   const apiKeyStatus: ApiKeyStatus | undefined = settings?.apiKeyStatus?.[providerId]
 
@@ -79,6 +90,7 @@ export function ProviderApiKeyInput({
         apiKeys: { [apiKeySettingsField]: '' },
       })
       setValidationResult(null)
+      setShowRemoveConfirm(false)
     } catch (error) {
       console.error('Failed to remove API key:', error)
     } finally {
@@ -183,13 +195,34 @@ export function ProviderApiKeyInput({
           <Button
             size="sm"
             variant="outline"
-            onClick={handleRemoveApiKey}
+            onClick={() => setShowRemoveConfirm(true)}
             disabled={isBusy}
           >
             {isRemoving ? 'Removing...' : 'Remove Saved Key'}
           </Button>
         )}
       </div>
+
+      <AlertDialog open={showRemoveConfirm} onOpenChange={setShowRemoveConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove Saved Key</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to remove the saved API key? This will disable agent features until a new key is configured.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isRemoving}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleRemoveApiKey}
+              disabled={isRemoving}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {isRemoving ? 'Removing...' : 'Remove'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
