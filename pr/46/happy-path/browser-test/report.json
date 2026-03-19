@@ -1,23 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the agent successfully opens a browser, navigates to a URL, retrieves page title, and reports results mentioning \"Example Domain\"",
+  "reason": "Verified that the SuperAgent browser-use feature successfully navigates to example.com, captures the page title \"Example Domain\", and reports it back in the chat interface.",
   "steps": [
-    "Navigated to http://localhost:47891 - Successfully loaded Super Agent application with agents list visible in sidebar",
-    "Clicked on \"QA-20260319-180409-yqrx\" agent in sidebar - Agent chat interface loaded with message input box ready",
-    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message was typed in the textbox and submitted successfully using Ctrl+Enter keyboard shortcut",
-    "Waited up to 3 minutes for response - Agent responded in 22 seconds with full browser execution results",
-    "Verified response mentions \"Example Domain\" and took screenshot - Response clearly visible on screen stating \"The page title is Example Domain.\" with complete tool call cards showing: Open Browser (success), Page Snapshot (success), Browser Command $ get title (success), and Close Browser (success). Additional context provided: \"The page at https://example.com has the title \"Example Domain\". It's a simple placeholder page maintained by IANA with a single \"Learn more\" link.\""
+    "Navigated to http://localhost:47891 - Successfully loaded the Super Agent dashboard with multiple agents listed in the sidebar.",
+    "Found and clicked the \"QA-20260319-181339-kq2c\" agent in the sidebar - Successfully opened the agent's chat interface with the title \"Browser Navigation and Page Title\".",
+    "Sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" - Successfully submitted the message; agent status changed to \"working\".",
+    "Waited up to 3 minutes for a response - Agent completed successfully in 18 seconds and returned a detailed response.",
+    "Verified the response mentions \"Example Domain\" - Confirmed the response text explicitly states: \"The page title is \\\"Example Domain\\\". The page contains a brief description stating that the domain is for use in documentation examples, along with a \"Learn more\" link pointing to IANA's domains page.\"",
+    "Took a screenshot documenting the successful response - Screenshot saved showing the complete conversation and agent response with tool call cards for browser operations (Open Browser, Page Snapshot x2, and Close Browser)."
   ],
   "bugs": [],
-  "durationMs": 87353,
-  "sessionId": "47709a47-a127-47a1-a61e-54d843b52463",
+  "durationMs": 76482,
+  "sessionId": "43262cde-9656-4178-a91a-62e68d14e512",
   "cost": {
-    "inputTokens": 261,
-    "outputTokens": 3008,
-    "cacheCreationTokens": 57778,
-    "cacheReadTokens": 781858,
+    "inputTokens": 234,
+    "outputTokens": 2748,
+    "cacheCreationTokens": 52438,
+    "cacheReadTokens": 651304,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.165709
+    "totalCostUsd": 0.144652
   }
 }
