@@ -36,6 +36,9 @@ const mockStreamState = {
   pendingQuestionRequests: [] as any[],
   pendingFileRequests: [] as any[],
   pendingBrowserInputRequests: [] as any[],
+  pendingScriptRunRequests: [] as any[],
+  typingUser: null as { id: string; name?: string } | null,
+  peerUserMessage: null as { content: string; sender: { id: string; name?: string; email?: string } } | null,
 }
 
 const mockClearCompacting = vi.fn()
@@ -48,7 +51,29 @@ vi.mock('@renderer/hooks/use-message-stream', () => ({
   removeQuestionRequest: vi.fn(),
   removeFileRequest: vi.fn(),
   removeBrowserInputRequest: vi.fn(),
+  removeScriptRunRequest: vi.fn(),
   clearCompacting: (...args: unknown[]) => mockClearCompacting(...args),
+}))
+
+// Mock useUser — default no user, override per test
+let mockCurrentUser: { id: string; name: string; email: string } | null = null
+vi.mock('@renderer/context/user-context', () => ({
+  useUser: () => ({
+    user: mockCurrentUser,
+    isAuthMode: !!mockCurrentUser,
+    isAuthenticated: !!mockCurrentUser,
+    isAdmin: false,
+    isPending: false,
+    mustChangePassword: false,
+    rolesReady: true,
+    canAccessAgent: () => true,
+    canUseAgent: () => true,
+    canAdminAgent: () => false,
+    agentRole: () => null,
+    agentMemberCount: () => 0,
+    signOut: async () => {},
+  }),
+  UserProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
 // Mock useIsOnline — default online, override per test
@@ -85,6 +110,13 @@ vi.mock('./message-context-menu', () => ({
   MessageContextMenu: ({ children }: any) => <>{children}</>,
 }))
 
+vi.mock('@renderer/components/ui/tooltip', () => ({
+  TooltipProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  TooltipTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  TooltipContent: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
+}))
+
 vi.mock('./secret-request-item', () => ({
   SecretRequestItem: ({ secretName }: any) => <div data-testid="secret-request">{secretName}</div>,
 }))
@@ -111,6 +143,7 @@ describe('MessageList', () => {
     mockMessagesData.data = undefined
     mockMessagesData.isLoading = false
     mockIsOnline = true
+    mockCurrentUser = null
     Object.assign(mockStreamState, {
       isActive: false,
       isStreaming: false,
@@ -125,6 +158,8 @@ describe('MessageList', () => {
       pendingQuestionRequests: [],
       pendingFileRequests: [],
       pendingBrowserInputRequests: [],
+      typingUser: null,
+      peerUserMessage: null,
     })
   })
 
@@ -1335,5 +1370,99 @@ describe('MessageList', () => {
 
     // The file should still render (deferred position, after streaming content)
     expect(screen.getByText('deferred.csv')).toBeInTheDocument()
+  })
+
+  describe('peer user message (SSE)', () => {
+    it('renders peer user message from another user', () => {
+      mockCurrentUser = { id: 'me', name: 'Me', email: 'me@test.com' }
+      mockMessagesData.data = []
+      Object.assign(mockStreamState, {
+        peerUserMessage: { content: 'Hello from peer', sender: { id: 'other-user', name: 'Alice Baker' } },
+      })
+
+      renderWithProviders(
+        <MessageList sessionId="s-1" agentSlug="agent-1" />
+      )
+
+      expect(screen.getByText('Hello from peer')).toBeInTheDocument()
+    })
+
+    it('does not render peer message if sender is the current user', () => {
+      mockCurrentUser = { id: 'me', name: 'Me', email: 'me@test.com' }
+      mockMessagesData.data = []
+      Object.assign(mockStreamState, {
+        peerUserMessage: { content: 'My own message', sender: { id: 'me', name: 'Me' } },
+      })
+
+      renderWithProviders(
+        <MessageList sessionId="s-1" agentSlug="agent-1" />
+      )
+
+      expect(screen.queryByText('My own message')).not.toBeInTheDocument()
+    })
+
+    it('does not render peer message if already in fetched messages (dedup)', () => {
+      mockCurrentUser = { id: 'me', name: 'Me', email: 'me@test.com' }
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Hello from peer' } }),
+      ]
+      Object.assign(mockStreamState, {
+        peerUserMessage: { content: 'Hello from peer', sender: { id: 'other-user', name: 'Alice' } },
+      })
+
+      renderWithProviders(
+        <MessageList sessionId="s-1" agentSlug="agent-1" />
+      )
+
+      // Only one instance — from fetched messages, not the optimistic peer copy
+      const matches = screen.getAllByText('Hello from peer')
+      expect(matches).toHaveLength(1)
+    })
+  })
+
+  describe('typing indicator (SSE)', () => {
+    it('renders typing indicator with initials and speech bubble', () => {
+      mockMessagesData.data = []
+      Object.assign(mockStreamState, {
+        typingUser: { id: 'other-user', name: 'Alice Baker' },
+      })
+
+      renderWithProviders(
+        <MessageList sessionId="s-1" agentSlug="agent-1" />
+      )
+
+      expect(screen.getByText('AB')).toBeInTheDocument()
+      expect(screen.getByText('...')).toBeInTheDocument()
+    })
+
+    it('does not render typing indicator when no one is typing', () => {
+      mockMessagesData.data = []
+      Object.assign(mockStreamState, { typingUser: null })
+
+      renderWithProviders(
+        <MessageList sessionId="s-1" agentSlug="agent-1" />
+      )
+
+      expect(screen.queryByText('...')).not.toBeInTheDocument()
+    })
+
+    it('hides typing indicator when peer message arrives', () => {
+      mockMessagesData.data = []
+      Object.assign(mockStreamState, {
+        typingUser: { id: 'other-user', name: 'Alice Baker' },
+        peerUserMessage: { content: 'Done typing', sender: { id: 'other-user', name: 'Alice Baker' } },
+      })
+
+      renderWithProviders(
+        <MessageList sessionId="s-1" agentSlug="agent-1" />
+      )
+
+      // Peer message shown, typing indicator hidden
+      expect(screen.getByText('Done typing')).toBeInTheDocument()
+      // The "..." from typing indicator should not be present
+      // (the "AB" initials will appear on the peer message avatar instead)
+      const dots = screen.queryAllByText('...')
+      expect(dots).toHaveLength(0)
+    })
   })
 })

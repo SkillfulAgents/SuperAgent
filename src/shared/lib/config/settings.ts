@@ -131,6 +131,19 @@ export const DEFAULT_AUTH_SETTINGS: AuthSettings = {
   accountLockoutDurationMin: 30,
 }
 
+export interface HostShellUseSettings {
+  allowScriptExecution?: boolean
+}
+
+export type ScriptType = 'applescript' | 'shell' | 'powershell'
+
+/** Script types supported on each host platform. Used for validation in both message-persister and the run-script API endpoint. */
+export const VALID_SCRIPT_TYPES: Record<string, ScriptType[]> = {
+  darwin: ['applescript', 'shell'],
+  linux: ['shell'],
+  win32: ['powershell'],
+}
+
 export type AnalyticsTargetType = 'amplitude' | 'google-analytics' | 'mixpanel'
 
 export interface AnalyticsTarget {
@@ -152,6 +165,7 @@ export interface AppSettings {
   skillsets?: SkillsetConfig[]
   auth?: AuthSettings
   voice?: VoiceSettings
+  hostShellUse?: HostShellUseSettings
   shareAnalytics?: boolean
   analyticsTargets?: AnalyticsTarget[]
 }
@@ -215,6 +229,7 @@ export interface GlobalSettingsResponse {
   runtimeReadiness: RuntimeReadiness
   auth?: AuthSettings
   tenantId: string
+  hostShellUse?: HostShellUseSettings
   shareAnalytics: boolean
   analyticsTargets?: AnalyticsTarget[]
 }
@@ -324,6 +339,7 @@ export function loadSettings(): AppSettings {
           ...loaded.auth,
         },
         voice: loaded.voice,
+        hostShellUse: loaded.hostShellUse,
         shareAnalytics: loaded.shareAnalytics ?? false,
         analyticsTargets: loaded.analyticsTargets,
       }

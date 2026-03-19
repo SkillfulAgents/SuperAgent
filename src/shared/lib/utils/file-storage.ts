@@ -345,6 +345,18 @@ export async function* streamJsonlFile<T = unknown>(
 }
 
 // ============================================================================
+// Temp Upload Helpers
+// ============================================================================
+
+/**
+ * Get the temp uploads directory for chunked file uploads
+ * ~/.superagent/tmp/uploads/
+ */
+export function getTempUploadsDir(): string {
+  return path.join(getDataDir(), 'tmp', 'uploads')
+}
+
+// ============================================================================
 // Agent Path Helpers
 // ============================================================================
 

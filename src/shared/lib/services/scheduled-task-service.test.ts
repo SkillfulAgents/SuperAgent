@@ -30,6 +30,7 @@ import {
   getScheduledTask,
   listScheduledTasks,
   listPendingScheduledTasks,
+  listCancelledScheduledTasks,
   getDueTasks,
   cancelScheduledTask,
   markTaskExecuted,
@@ -197,6 +198,94 @@ describe('scheduled-task-service', () => {
       const pendingTasks = await listPendingScheduledTasks('test-agent')
       expect(pendingTasks).toHaveLength(1)
       expect(pendingTasks[0].id).toBe(taskId1)
+    })
+  })
+
+  // ============================================================================
+  // listCancelledScheduledTasks Tests
+  // ============================================================================
+
+  describe('listCancelledScheduledTasks', () => {
+    it('returns only cancelled recurring (cron) tasks', async () => {
+      const cronTaskId = await createScheduledTask({
+        agentSlug: 'test-agent',
+        scheduleType: 'cron',
+        scheduleExpression: '*/15 * * * *',
+        prompt: 'Recurring task',
+      })
+
+      await cancelScheduledTask(cronTaskId)
+
+      const cancelled = await listCancelledScheduledTasks('test-agent')
+      expect(cancelled).toHaveLength(1)
+      expect(cancelled[0].id).toBe(cronTaskId)
+      expect(cancelled[0].status).toBe('cancelled')
+      expect(cancelled[0].scheduleType).toBe('cron')
+    })
+
+    it('excludes cancelled one-time (at) tasks', async () => {
+      const atTaskId = await createScheduledTask({
+        agentSlug: 'test-agent',
+        scheduleType: 'at',
+        scheduleExpression: 'at now + 1 hour',
+        prompt: 'One-time task',
+      })
+
+      const cronTaskId = await createScheduledTask({
+        agentSlug: 'test-agent',
+        scheduleType: 'cron',
+        scheduleExpression: '0 * * * *',
+        prompt: 'Recurring task',
+      })
+
+      await cancelScheduledTask(atTaskId)
+      await cancelScheduledTask(cronTaskId)
+
+      const cancelled = await listCancelledScheduledTasks('test-agent')
+      expect(cancelled).toHaveLength(1)
+      expect(cancelled[0].id).toBe(cronTaskId)
+    })
+
+    it('excludes pending tasks', async () => {
+      await createScheduledTask({
+        agentSlug: 'test-agent',
+        scheduleType: 'cron',
+        scheduleExpression: '*/15 * * * *',
+        prompt: 'Still pending',
+      })
+
+      const cancelled = await listCancelledScheduledTasks('test-agent')
+      expect(cancelled).toHaveLength(0)
+    })
+
+    it('scopes results to the given agent', async () => {
+      const taskId = await createScheduledTask({
+        agentSlug: 'agent-a',
+        scheduleType: 'cron',
+        scheduleExpression: '0 * * * *',
+        prompt: 'Agent A task',
+      })
+
+      await createScheduledTask({
+        agentSlug: 'agent-b',
+        scheduleType: 'cron',
+        scheduleExpression: '0 * * * *',
+        prompt: 'Agent B task',
+      })
+
+      await cancelScheduledTask(taskId)
+
+      const cancelled = await listCancelledScheduledTasks('agent-a')
+      expect(cancelled).toHaveLength(1)
+      expect(cancelled[0].agentSlug).toBe('agent-a')
+
+      const cancelledB = await listCancelledScheduledTasks('agent-b')
+      expect(cancelledB).toHaveLength(0)
+    })
+
+    it('returns empty array when no cancelled tasks exist', async () => {
+      const cancelled = await listCancelledScheduledTasks('nonexistent-agent')
+      expect(cancelled).toEqual([])
     })
   })
 

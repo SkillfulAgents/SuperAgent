@@ -3,7 +3,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import AdmZip from 'adm-zip'
-import type { SkillsetConfig, InstalledAgentMetadata, SkillsetIndex } from '@shared/lib/types/skillset'
+import type { SkillsetConfig, InstalledAgentMetadata } from '@shared/lib/types/skillset'
 
 // ============================================================================
 // Hoisted Mocks - must come before imports of the module under test
@@ -47,6 +47,8 @@ vi.mock('@shared/lib/utils/retry', () => ({
 import {
   validateAgentTemplate,
   exportAgentTemplate,
+  exportAgentFull,
+  importAgentFromTemplate,
   computeAgentTemplateHash,
   getAgentTemplateStatus,
   collectAgentRequiredEnvVars,
@@ -54,6 +56,7 @@ import {
   hasOnboardingSkill,
   getDiscoverableAgents,
 } from './agent-template-service'
+import { createAgentFromExistingWorkspace, getAgentWithStatus } from '@shared/lib/services/agent-service'
 import { getSkillsetIndex } from '@shared/lib/services/skillset-service'
 
 // ============================================================================
@@ -343,31 +346,31 @@ describe('validateAgentTemplate', () => {
   // --------------------------------------------------------------------------
 
   describe('file count limits', () => {
-    it('rejects template with too many files (> 1000)', () => {
+    it('rejects template with too many files (> 2000)', () => {
       const files: Record<string, string> = {
         'CLAUDE.md': MINIMAL_CLAUDE_MD,
       }
-      // Create 1001 actual files (beyond the limit)
-      for (let i = 0; i < 1001; i++) {
+      // Create 2001 actual files (beyond the limit)
+      for (let i = 0; i < 2001; i++) {
         files[`files/file-${i}.txt`] = `content ${i}`
       }
       const result = validateAgentTemplate(createZipBuffer(files))
       expect(result.valid).toBe(false)
       expect(result.error).toContain('Too many files')
-      expect(result.error).toContain('max 1000')
+      expect(result.error).toContain('max 2000')
     })
 
     it('accepts template at exactly the file count limit', () => {
       const files: Record<string, string> = {
         'CLAUDE.md': MINIMAL_CLAUDE_MD,
       }
-      // 999 additional files + CLAUDE.md = 1000 exactly
-      for (let i = 0; i < 999; i++) {
+      // 1999 additional files + CLAUDE.md = 2000 exactly
+      for (let i = 0; i < 1999; i++) {
         files[`files/file-${i}.txt`] = `content ${i}`
       }
       const result = validateAgentTemplate(createZipBuffer(files))
       expect(result.valid).toBe(true)
-      expect(result.fileCount).toBe(1000)
+      expect(result.fileCount).toBe(2000)
     })
   })
 
@@ -376,21 +379,21 @@ describe('validateAgentTemplate', () => {
   // --------------------------------------------------------------------------
 
   describe('total size limits', () => {
-    it('rejects template exceeding 100MB uncompressed', () => {
+    it('rejects template exceeding 200MB uncompressed', () => {
       // Create a file that reports large size via header.
       // AdmZip sets header.size from the actual content, so we create a large content.
-      // Use a string that's about 10MB and have 11 of them (110MB total)
+      // Use a string that's about 10MB and have 21 of them (210MB total)
       const largeContent = 'x'.repeat(10 * 1024 * 1024)
       const files: Record<string, string> = {
         'CLAUDE.md': MINIMAL_CLAUDE_MD,
       }
-      for (let i = 0; i < 11; i++) {
+      for (let i = 0; i < 21; i++) {
         files[`large-${i}.bin`] = largeContent
       }
       const result = validateAgentTemplate(createZipBuffer(files))
       expect(result.valid).toBe(false)
       expect(result.error).toContain('too large')
-      expect(result.error).toContain('100MB')
+      expect(result.error).toContain('200MB')
     })
   })
 
@@ -480,6 +483,96 @@ describe('validateAgentTemplate', () => {
       // CLAUDE.md is not at root -> should fail
       expect(result.valid).toBe(false)
     })
+  })
+})
+
+// ============================================================================
+// validateAgentTemplate - full mode
+// ============================================================================
+
+describe('validateAgentTemplate (full mode)', () => {
+  it('counts .env files toward fileCount in full mode', () => {
+    const files: Record<string, string> = {
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      '.env': 'SECRET=abc',
+      'session-metadata.json': '{}',
+    }
+    const result = validateAgentTemplate(createZipBuffer(files), 'full')
+    expect(result.valid).toBe(true)
+    expect(result.fileCount).toBe(3)
+  })
+
+  it('excludes .env files from fileCount in template mode', () => {
+    const files: Record<string, string> = {
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      '.env': 'SECRET=abc',
+      'session-metadata.json': '{}',
+    }
+    const result = validateAgentTemplate(createZipBuffer(files), 'template')
+    expect(result.valid).toBe(true)
+    expect(result.fileCount).toBe(1)
+  })
+
+  it('enforces file count limit including excluded files in full mode', () => {
+    const files: Record<string, string> = {
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+    }
+    for (let i = 0; i < 2001; i++) {
+      files[`.env.${i}`] = `SECRET_${i}=value`
+    }
+    const result = validateAgentTemplate(createZipBuffer(files), 'full')
+    expect(result.valid).toBe(false)
+    expect(result.error).toContain('Too many files')
+  })
+
+  it('enforces size limit including excluded files in full mode', () => {
+    const largeEnv = 'x'.repeat(10 * 1024 * 1024)
+    const files: Record<string, string> = {
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+    }
+    for (let i = 0; i < 21; i++) {
+      files[`data/large-${i}.env`] = largeEnv
+    }
+    const result = validateAgentTemplate(createZipBuffer(files), 'full')
+    expect(result.valid).toBe(false)
+    expect(result.error).toContain('too large')
+  })
+
+  it('still filters __MACOSX entries in full mode', () => {
+    const files: Record<string, string> = {
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      '__MACOSX/._CLAUDE.md': 'resource fork',
+    }
+    const result = validateAgentTemplate(createZipBuffer(files), 'full')
+    expect(result.valid).toBe(true)
+    expect(result.fileCount).toBe(1)
+  })
+
+  it('checks path traversal on excluded entries in full mode', () => {
+    const zip = new AdmZip()
+    zip.addFile('CLAUDE.md', Buffer.from(MINIMAL_CLAUDE_MD, 'utf-8'))
+    zip.addFile('safe/evil.txt', Buffer.from('data', 'utf-8'))
+    const buf = zip.toBuffer()
+    // Replace 'safe/evil.txt' with '../evil..txt' in the buffer
+    const searchStr = Buffer.from('safe/evil.txt')
+    const replaceStr = Buffer.from('../evil..txt')
+    let idx = buf.indexOf(searchStr)
+    while (idx !== -1) {
+      replaceStr.copy(buf, idx)
+      idx = buf.indexOf(searchStr, idx + 1)
+    }
+    const result = validateAgentTemplate(buf, 'full')
+    expect(result.valid).toBe(false)
+    expect(result.error).toContain('Invalid path')
+  })
+
+  it('defaults to template mode when mode is omitted', () => {
+    const files: Record<string, string> = {
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      '.env': 'SECRET=abc',
+    }
+    const result = validateAgentTemplate(createZipBuffer(files))
+    expect(result.fileCount).toBe(1) // .env excluded
   })
 })
 
@@ -1083,7 +1176,7 @@ describe('getAgentTemplateStatus', () => {
   // ---------- locally_modified (hash mismatch) ----------
 
   it('returns { type: "locally_modified" } when current hash differs from original', async () => {
-    const workspaceDir = createWorkspace('modified-agent', {
+    createWorkspace('modified-agent', {
       'CLAUDE.md': MINIMAL_CLAUDE_MD,
     })
 
@@ -1734,6 +1827,75 @@ metadata:
     const result = await collectAgentRequiredEnvVars('nonexistent-agent')
     expect(result).toEqual([])
   })
+
+  it('filters out required env vars already present in the agent .env when requested', async () => {
+    createWorkspace('test-agent', {
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      '.env': 'API_KEY=present\n',
+      '.claude/skills/skill-a/SKILL.md': `---
+description: Skill A
+metadata:
+  required_env_vars:
+    - name: API_KEY
+      description: Shared API key
+    - name: SECRET_A
+      description: Secret for A
+---
+# Skill A`,
+    })
+
+    const result = await collectAgentRequiredEnvVars('test-agent', {
+      excludeExistingSecrets: true,
+    })
+
+    expect(result).toEqual([{ name: 'SECRET_A', description: 'Secret for A' }])
+  })
+
+  it('treats quoted and commented .env entries as existing secrets', async () => {
+    createWorkspace('test-agent', {
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      '.env': 'API_KEY="abc 123"\nTOKEN=value  # Auth token\n',
+      '.claude/skills/skill-a/SKILL.md': `---
+description: Skill A
+metadata:
+  required_env_vars:
+    - name: API_KEY
+      description: Shared API key
+    - name: TOKEN
+      description: Access token
+    - name: SECRET_A
+      description: Secret for A
+---
+# Skill A`,
+    })
+
+    const result = await collectAgentRequiredEnvVars('test-agent', {
+      excludeExistingSecrets: true,
+    })
+
+    expect(result).toEqual([{ name: 'SECRET_A', description: 'Secret for A' }])
+  })
+
+  it('matches existing secrets by exact env var name', async () => {
+    createWorkspace('test-agent', {
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      '.env': 'api_key=present\n',
+      '.claude/skills/skill-a/SKILL.md': `---
+description: Skill A
+metadata:
+  required_env_vars:
+    - name: API_KEY
+      description: Shared API key
+---
+# Skill A`,
+    })
+
+    const result = await collectAgentRequiredEnvVars('test-agent', {
+      excludeExistingSecrets: true,
+    })
+
+    expect(result).toEqual([{ name: 'API_KEY', description: 'Shared API key' }])
+  })
 })
 
 // ============================================================================
@@ -1771,5 +1933,218 @@ describe('exportAgentTemplate - error cases', () => {
     await expect(exportAgentTemplate('no-claude')).rejects.toThrow(
       'CLAUDE.md not found'
     )
+  })
+})
+
+// ============================================================================
+// exportAgentFull
+// ============================================================================
+
+describe('exportAgentFull', () => {
+  let testDir: string
+  let originalEnv: string | undefined
+
+  beforeEach(async () => {
+    testDir = await fs.promises.mkdtemp(
+      path.join(os.tmpdir(), 'agent-export-full-test-')
+    )
+    originalEnv = process.env.SUPERAGENT_DATA_DIR
+    process.env.SUPERAGENT_DATA_DIR = testDir
+  })
+
+  afterEach(async () => {
+    process.env.SUPERAGENT_DATA_DIR = originalEnv
+    await fs.promises.rm(testDir, { recursive: true, force: true })
+  })
+
+  it('throws when workspace does not exist', async () => {
+    await expect(exportAgentFull('nonexistent-agent')).rejects.toThrow(
+      'Agent workspace not found'
+    )
+  })
+
+  it('includes .env in the export', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    fs.writeFileSync(path.join(workspaceDir, '.env'), 'SECRET=abc')
+
+    const zipBuffer = await exportAgentFull('full-agent')
+    const zip = new AdmZip(zipBuffer)
+    const entryNames = zip.getEntries().map((e) => e.entryName)
+
+    expect(entryNames).toContain('CLAUDE.md')
+    expect(entryNames).toContain('.env')
+  })
+
+  it('includes session-metadata.json in the export', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    fs.writeFileSync(path.join(workspaceDir, 'session-metadata.json'), '{}')
+
+    const zipBuffer = await exportAgentFull('full-agent')
+    const zip = new AdmZip(zipBuffer)
+    const entryNames = zip.getEntries().map((e) => e.entryName)
+
+    expect(entryNames).toContain('session-metadata.json')
+  })
+
+  it('excludes node_modules from the export', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    const nmDir = path.join(workspaceDir, 'node_modules', 'pkg')
+    fs.mkdirSync(nmDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    fs.writeFileSync(path.join(nmDir, 'index.js'), 'module.exports = 1')
+
+    const zipBuffer = await exportAgentFull('full-agent')
+    const zip = new AdmZip(zipBuffer)
+    const entryNames = zip.getEntries().map((e) => e.entryName)
+
+    expect(entryNames).not.toContain('node_modules/pkg/index.js')
+  })
+})
+
+// ============================================================================
+// importAgentFromTemplate - full mode
+// ============================================================================
+
+describe('importAgentFromTemplate (full mode)', () => {
+  let testDir: string
+  let originalEnv: string | undefined
+  const mockCreateAgent = vi.mocked(createAgentFromExistingWorkspace)
+  const mockGetAgentWithStatus = vi.mocked(getAgentWithStatus)
+
+  beforeEach(async () => {
+    testDir = await fs.promises.mkdtemp(
+      path.join(os.tmpdir(), 'agent-import-test-')
+    )
+    originalEnv = process.env.SUPERAGENT_DATA_DIR
+    process.env.SUPERAGENT_DATA_DIR = testDir
+    vi.clearAllMocks()
+  })
+
+  afterEach(async () => {
+    process.env.SUPERAGENT_DATA_DIR = originalEnv
+    await fs.promises.rm(testDir, { recursive: true, force: true })
+  })
+
+  function setupAgentMock(slug: string) {
+    const agent = { slug, name: 'Test Agent' } as any
+    mockCreateAgent.mockResolvedValue(agent)
+    mockGetAgentWithStatus.mockResolvedValue(agent)
+    // Ensure workspace dir exists for the mock agent
+    const workspaceDir = path.join(testDir, 'agents', slug, 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    return workspaceDir
+  }
+
+  it('imports .env in full mode', async () => {
+    const workspaceDir = setupAgentMock('import-full-agent')
+    const zipBuffer = createZipBuffer({
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      '.env': 'SECRET=abc',
+    })
+
+    await importAgentFromTemplate(zipBuffer, undefined, 'full')
+
+    const envPath = path.join(workspaceDir, '.env')
+    expect(fs.existsSync(envPath)).toBe(true)
+    expect(fs.readFileSync(envPath, 'utf-8')).toBe('SECRET=abc')
+  })
+
+  it('full import can satisfy required env vars from imported .env', async () => {
+    setupAgentMock('import-full-env-agent')
+    const zipBuffer = createZipBuffer({
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      '.env': 'API_KEY=present\n',
+      '.claude/skills/skill-a/SKILL.md': `---
+description: Skill A
+metadata:
+  required_env_vars:
+    - name: API_KEY
+      description: Shared API key
+    - name: SECRET_A
+      description: Secret for A
+---
+# Skill A`,
+    })
+
+    const agent = await importAgentFromTemplate(zipBuffer, undefined, 'full')
+    const result = await collectAgentRequiredEnvVars(agent.slug, {
+      excludeExistingSecrets: true,
+    })
+
+    expect(result).toEqual([{ name: 'SECRET_A', description: 'Secret for A' }])
+  })
+
+  it('strips .env in template mode', async () => {
+    const workspaceDir = setupAgentMock('import-template-agent')
+    const zipBuffer = createZipBuffer({
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      '.env': 'SECRET=abc',
+    })
+
+    await importAgentFromTemplate(zipBuffer, undefined, 'template')
+
+    const envPath = path.join(workspaceDir, '.env')
+    expect(fs.existsSync(envPath)).toBe(false)
+  })
+
+  it('imports session-metadata.json in full mode', async () => {
+    const workspaceDir = setupAgentMock('import-session-agent')
+    const zipBuffer = createZipBuffer({
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'session-metadata.json': '{"sessions":[]}',
+    })
+
+    await importAgentFromTemplate(zipBuffer, undefined, 'full')
+
+    const sessionPath = path.join(workspaceDir, 'session-metadata.json')
+    expect(fs.existsSync(sessionPath)).toBe(true)
+  })
+
+  it('still blocks path traversal in full mode', async () => {
+    setupAgentMock('import-traversal-agent')
+    // Create a zip with path traversal — the import should silently skip it
+    const zip = new AdmZip()
+    zip.addFile('CLAUDE.md', Buffer.from(MINIMAL_CLAUDE_MD, 'utf-8'))
+    zip.addFile('safe/evil.txt', Buffer.from('data', 'utf-8'))
+    const buf = zip.toBuffer()
+    const searchStr = Buffer.from('safe/evil.txt')
+    const replaceStr = Buffer.from('../evil..txt')
+    let idx = buf.indexOf(searchStr)
+    while (idx !== -1) {
+      replaceStr.copy(buf, idx)
+      idx = buf.indexOf(searchStr, idx + 1)
+    }
+    // The validation step will reject this
+    await expect(importAgentFromTemplate(buf, undefined, 'full')).rejects.toThrow('Invalid path')
+  })
+
+  it('still filters __MACOSX in full mode', async () => {
+    const workspaceDir = setupAgentMock('import-macosx-agent')
+    const zipBuffer = createZipBuffer({
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      '__MACOSX/._CLAUDE.md': 'resource fork junk',
+    })
+
+    await importAgentFromTemplate(zipBuffer, undefined, 'full')
+
+    // __MACOSX should not be extracted
+    expect(fs.existsSync(path.join(workspaceDir, '__MACOSX'))).toBe(false)
+  })
+
+  it('defaults to template mode', async () => {
+    const workspaceDir = setupAgentMock('import-default-agent')
+    const zipBuffer = createZipBuffer({
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      '.env': 'SECRET=abc',
+    })
+
+    await importAgentFromTemplate(zipBuffer)
+
+    const envPath = path.join(workspaceDir, '.env')
+    expect(fs.existsSync(envPath)).toBe(false)
   })
 })

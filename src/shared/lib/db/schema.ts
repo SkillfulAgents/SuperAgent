@@ -281,6 +281,19 @@ export const userSettings = sqliteTable('user_settings', {
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 })
 
+// Message author attribution - tracks who sent each user message (auth mode only)
+export const messageAuthor = sqliteTable('message_author', {
+  id: text('id').primaryKey(), // Same UUID passed to the SDK and written into JSONL
+  sessionId: text('session_id').notNull(),
+  agentSlug: text('agent_slug').notNull(),
+  userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' })
+    .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+    .notNull(),
+}, (table) => ({
+  sessionIdx: index('message_author_session_idx').on(table.sessionId),
+}))
+
 // Type exports for convenience
 export type ConnectedAccount = typeof connectedAccounts.$inferSelect
 export type NewConnectedAccount = typeof connectedAccounts.$inferInsert

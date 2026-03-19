@@ -5,6 +5,7 @@ import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { updateSessionMetadata } from '@shared/lib/services/session-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
+import { getSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
 import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
 import * as path from 'path'
 import { promises as fsPromises } from 'fs'
@@ -37,6 +38,17 @@ interface StreamingState {
   activeSubagents: Map<string, SubagentStreamingState>
   slashCommands: SlashCommandInfo[] // Available slash commands from SDK
   isAwaitingInput: boolean // True when session is waiting for user input (e.g., secret, file, question)
+}
+
+// Lazy import to break circular dependency: container-manager -> message-persister
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _containerManagerModule: any = null
+function getContainerManager() {
+  if (!_containerManagerModule) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    _containerManagerModule = require('./container-manager')
+  }
+  return _containerManagerModule.containerManager
 }
 
 class MessagePersister {
@@ -309,6 +321,11 @@ class MessagePersister {
     }
   }
 
+  // Broadcast an arbitrary event to all SSE clients for a session (public)
+  broadcastSessionEvent(sessionId: string, data: unknown): void {
+    this.broadcastToSSE(sessionId, data)
+  }
+
   // Broadcast to SSE clients
   private broadcastToSSE(sessionId: string, data: unknown): void {
     const clients = this.sseClients.get(sessionId)
@@ -424,6 +441,9 @@ class MessagePersister {
         }
         // Tool results come as 'user' type messages
         this.handleToolResults(sessionId, content)
+        // Broadcast refresh so frontend can detect the persisted user message
+        // and clear the optimistic pending copy promptly.
+        this.broadcastToSSE(sessionId, { type: 'messages_updated' })
         break
 
       case 'system':
@@ -650,6 +670,14 @@ class MessagePersister {
                 state.agentSlug
               )
             }
+            if (block.type === 'tool_use' && block.name === 'mcp__user-input__request_script_run') {
+              this.handleScriptRunRequestTool(
+                sessionId,
+                block.id,
+                JSON.stringify(block.input || {}),
+                state.agentSlug
+              )
+            }
           }
         }
       }
@@ -826,6 +854,15 @@ class MessagePersister {
             )
           }
 
+          if (sub.currentToolUse.name === 'mcp__user-input__request_script_run') {
+            this.handleScriptRunRequestTool(
+              sessionId,
+              sub.currentToolUse.id,
+              sub.currentToolInput,
+              state.agentSlug
+            )
+          }
+
           this.broadcastToSSE(sessionId, {
             type: 'subagent_tool_use_ready',
             parentToolId,
@@ -969,6 +1006,15 @@ class MessagePersister {
 
           if (state.currentToolUse.name === 'mcp__user-input__request_browser_input') {
             this.handleBrowserInputRequestTool(
+              sessionId,
+              state.currentToolUse.id,
+              state.currentToolInput,
+              state.agentSlug
+            )
+          }
+
+          if (state.currentToolUse.name === 'mcp__user-input__request_script_run') {
+            this.handleScriptRunRequestTool(
               sessionId,
               state.currentToolUse.id,
               state.currentToolInput,
@@ -1353,6 +1399,81 @@ class MessagePersister {
       }
     } catch (error) {
       console.error('[MessagePersister] Error handling browser input request:', error)
+    }
+  }
+
+  /** Auto-reject a pending input request on the container with a reason message. */
+  private autoRejectInput(agentSlug: string | undefined, toolUseId: string, reason: string): void {
+    if (!agentSlug) return
+    getContainerManager().getClient(agentSlug)
+      .fetch(`/inputs/${encodeURIComponent(toolUseId)}/reject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason }),
+      })
+      .catch((err: Error) => {
+        console.error('[MessagePersister] Failed to auto-reject input request:', err)
+      })
+  }
+
+  // Handle script run request tool - broadcast to SSE clients or auto-reject
+  private handleScriptRunRequestTool(
+    sessionId: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug?: string
+  ): void {
+    try {
+      let input: { script: string; explanation: string; scriptType: string } = { script: '', explanation: '', scriptType: '' }
+      try {
+        input = JSON.parse(toolInput)
+      } catch {
+        console.error('[MessagePersister] Failed to parse script run request:', toolInput)
+        return
+      }
+
+      if (!input.script || !input.scriptType) {
+        console.error('[MessagePersister] Script run request missing required fields')
+        return
+      }
+
+      // Check if feature is enabled
+      const settings = getSettings()
+      if (!settings.hostShellUse?.allowScriptExecution) {
+        this.autoRejectInput(agentSlug, toolUseId, 'Host script execution is not enabled. The user needs to enable it in Settings > Host Shell Use.')
+        return
+      }
+
+      // Check platform support
+      const platform = process.platform
+      if (!VALID_SCRIPT_TYPES[platform]) {
+        this.autoRejectInput(agentSlug, toolUseId, `Host script execution is not supported on this platform (${platform}). Only macOS and Windows are supported.`)
+        return
+      }
+
+      // Check script type matches platform
+      if (!VALID_SCRIPT_TYPES[platform].includes(input.scriptType as any)) {
+        this.autoRejectInput(agentSlug, toolUseId, `Script type "${input.scriptType}" is not supported on ${platform}. Supported types: ${VALID_SCRIPT_TYPES[platform].join(', ')}`)
+        return
+      }
+
+      // All checks passed - broadcast to UI for user approval
+      this.broadcastToSSE(sessionId, {
+        type: 'script_run_request',
+        toolUseId,
+        script: input.script,
+        explanation: input.explanation,
+        scriptType: input.scriptType,
+        agentSlug,
+      })
+
+      if (agentSlug && !this.hasActiveViewers(sessionId)) {
+        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'script_run').catch((err) => {
+          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
+        })
+      }
+    } catch (error) {
+      console.error('[MessagePersister] Error handling script run request:', error)
     }
   }
 

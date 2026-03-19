@@ -1,6 +1,6 @@
 {
   "name": "superagent",
-  "version": "0.2.7",
+  "version": "0.2.9",
   "private": true,
   "main": "dist/main/index.js",
   "scripts": {
@@ -15,8 +15,8 @@
     "preview": "npm run build && node dist/web/server.mjs",
     "download:lima": "bash scripts/download-lima.sh",
     "download:wsl-rootfs": "bash scripts/download-wsl-rootfs.sh",
-    "dist:mac": "npm run download:lima && electron-vite build && electron-builder --mac",
-    "dist:win": "npm run download:wsl-rootfs && electron-vite build && electron-builder --win",
+    "dist:mac": "npm run download:lima && electron-vite build && electron-builder --mac --publish never",
+    "dist:win": "npm run download:wsl-rootfs && electron-vite build && electron-builder --win --publish never",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts,.tsx",
     "test": "vitest",

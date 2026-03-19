@@ -46,20 +46,23 @@ vi.mock('stream', () => ({
   },
 }))
 
-// Auth middleware — passthrough
+// Auth middleware — passthrough (sets mock user on context for auth mode tests)
+const mockAuthUser = { id: 'test-user-id', name: 'Test User', email: 'test@example.com' }
 vi.mock('../middleware/auth', () => ({
-  Authenticated: () => async (_c: unknown, next: () => Promise<void>) => next(),
-  AgentRead: () => async (_c: unknown, next: () => Promise<void>) => next(),
-  AgentUser: () => async (_c: unknown, next: () => Promise<void>) => next(),
-  AgentAdmin: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  Authenticated: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
+  AgentRead: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
+  AgentUser: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
+  AgentAdmin: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
 }))
 
 // Container manager
 const mockContainerFetch = vi.fn()
+const mockSendMessage = vi.fn()
 vi.mock('@shared/lib/container/container-manager', () => ({
   containerManager: {
     getClient: () => ({
       fetch: (...args: unknown[]) => mockContainerFetch(...args),
+      sendMessage: (...args: unknown[]) => mockSendMessage(...args),
       start: vi.fn(),
       stop: vi.fn(),
     }),
@@ -78,6 +81,10 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     persistMessage: vi.fn(),
     markAllSessionsInactiveForAgent: vi.fn(),
     isSessionActive: vi.fn(() => false),
+    isSubscribed: vi.fn(() => true),
+    subscribeToSession: vi.fn(),
+    markSessionActive: vi.fn(),
+    broadcastSessionEvent: vi.fn(),
   },
 }))
 
@@ -143,6 +150,7 @@ vi.mock('@shared/lib/db/schema', () => ({
   mcpAuditLog: { agentSlug: 'agent_slug', createdAt: 'created_at' },
   agentAcl: { id: 'id', userId: 'user_id', agentSlug: 'agent_slug', role: 'role' },
   user: { id: 'id', name: 'name', email: 'email' },
+  messageAuthor: { id: 'id', sessionId: 'session_id', agentSlug: 'agent_slug', userId: 'user_id' },
 }))
 
 vi.mock('drizzle-orm', () => ({
@@ -250,8 +258,10 @@ vi.mock('@shared/lib/utils/retry', () => ({
   withRetry: vi.fn(),
 }))
 
+const mockTransformMessages = vi.fn()
 vi.mock('@shared/lib/utils/message-transform', () => ({
-  transformMessages: vi.fn(() => []),
+  transformMessages: (...args: unknown[]) => mockTransformMessages(),
+  resolveInterruptedSubagents: vi.fn(),
 }))
 
 vi.mock('@shared/lib/config/settings', () => ({
@@ -274,6 +284,9 @@ vi.mock('@shared/lib/utils/file-storage', () => ({
   getAgentSessionsDir: vi.fn(() => '/mock/sessions'),
   readJsonlFile: vi.fn(),
   getAgentWorkspaceDir: (slug: string) => mockGetAgentWorkspaceDir(slug),
+  getTempUploadsDir: vi.fn(() => '/mock/tmp/uploads'),
+  ensureDirectory: vi.fn(),
+  removeDirectory: vi.fn(),
 }))
 
 vi.mock('@anthropic-ai/sdk', () => ({ default: vi.fn() }))
@@ -281,6 +294,14 @@ vi.mock('hono/streaming', () => ({ streamSSE: vi.fn() }))
 
 // Import the agents router after all mocks are set up
 import agents from './agents'
+import {
+  importAgentFromTemplate,
+  hasOnboardingSkill,
+  collectAgentRequiredEnvVars,
+} from '@shared/lib/services/agent-template-service'
+import { getAgent } from '@shared/lib/services/agent-service'
+import { getSessionMessagesWithCompact } from '@shared/lib/services/session-service'
+import { messagePersister } from '@shared/lib/container/message-persister'
 
 // ============================================================================
 // Test Helpers
@@ -322,6 +343,256 @@ async function postFormData(app: Hono, url: string, body: FormData): Promise<Res
     body,
   })
 }
+
+// ============================================================================
+// Import Template Tests
+// ============================================================================
+
+describe('POST /api/agents/import-template', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(importAgentFromTemplate).mockResolvedValue({
+      slug: 'imported-agent',
+      name: 'Imported Agent',
+    } as any)
+    vi.mocked(hasOnboardingSkill).mockResolvedValue(false)
+    vi.mocked(collectAgentRequiredEnvVars).mockResolvedValue([])
+  })
+
+  function buildImportForm(mode?: 'template' | 'full') {
+    const form = new FormData()
+    form.append('file', new File(['zip'], 'agent.zip', { type: 'application/zip' }))
+    if (mode) form.append('mode', mode)
+    return form
+  }
+
+  it('uses full-mode secret filtering and returns only missing vars for full imports', async () => {
+    vi.mocked(collectAgentRequiredEnvVars).mockResolvedValue([
+      { name: 'SECRET_A', description: 'Secret for A' },
+    ])
+
+    const res = await postFormData(app, '/api/agents/import-template', buildImportForm('full'))
+
+    expect(res.status).toBe(201)
+    expect(importAgentFromTemplate).toHaveBeenCalledWith(expect.any(Buffer), undefined, 'full')
+    expect(collectAgentRequiredEnvVars).toHaveBeenCalledWith('imported-agent', {
+      excludeExistingSecrets: true,
+    })
+
+    const body = await res.json()
+    expect(body.requiredEnvVars).toEqual([
+      { name: 'SECRET_A', description: 'Secret for A' },
+    ])
+  })
+
+  it('does not filter required vars for template imports', async () => {
+    vi.mocked(collectAgentRequiredEnvVars).mockResolvedValue([
+      { name: 'API_KEY', description: 'Shared API key' },
+      { name: 'SECRET_A', description: 'Secret for A' },
+    ])
+
+    const res = await postFormData(app, '/api/agents/import-template', buildImportForm('template'))
+
+    expect(res.status).toBe(201)
+    expect(importAgentFromTemplate).toHaveBeenCalledWith(expect.any(Buffer), undefined, 'template')
+    expect(collectAgentRequiredEnvVars).toHaveBeenCalledWith('imported-agent', {
+      excludeExistingSecrets: false,
+    })
+
+    const body = await res.json()
+    expect(body.requiredEnvVars).toEqual([
+      { name: 'API_KEY', description: 'Shared API key' },
+      { name: 'SECRET_A', description: 'Secret for A' },
+    ])
+  })
+})
+
+// ============================================================================
+// Chunked Import Template Tests
+// ============================================================================
+
+describe('POST /api/agents/import-template (chunked)', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(importAgentFromTemplate).mockResolvedValue({
+      slug: 'imported-agent',
+      name: 'Imported Agent',
+    } as any)
+    vi.mocked(hasOnboardingSkill).mockResolvedValue(false)
+    vi.mocked(collectAgentRequiredEnvVars).mockResolvedValue([])
+  })
+
+  function buildChunkForm(opts: {
+    chunk: string
+    uploadId: string
+    chunkIndex: number
+    totalChunks: number
+    mode?: string
+    name?: string
+  }) {
+    const form = new FormData()
+    form.append('chunk', new File([opts.chunk], 'chunk.bin', { type: 'application/octet-stream' }))
+    form.append('uploadId', opts.uploadId)
+    form.append('chunkIndex', String(opts.chunkIndex))
+    form.append('totalChunks', String(opts.totalChunks))
+    if (opts.mode) form.append('mode', opts.mode)
+    if (opts.name) form.append('name', opts.name)
+    return form
+  }
+
+  it('accepts intermediate chunks and returns chunk_received', async () => {
+    // Simulate first of 2 chunks — readdir returns only 1 file
+    mockFsWriteFile.mockResolvedValue(undefined)
+    mockFsMkdir.mockResolvedValue(undefined)
+    mockFsReaddir.mockResolvedValue(['chunk-0'])
+
+    const form = buildChunkForm({
+      chunk: 'data-part-0',
+      uploadId: '11111111-1111-1111-1111-111111111111',
+      chunkIndex: 0,
+      totalChunks: 2,
+      mode: 'full',
+    })
+
+    const res = await postFormData(app, '/api/agents/import-template', form)
+    expect(res.status).toBe(200)
+
+    const body = await res.json()
+    expect(body.status).toBe('chunk_received')
+    expect(body.chunkIndex).toBe(0)
+    expect(importAgentFromTemplate).not.toHaveBeenCalled()
+  })
+
+  it('assembles and processes on final chunk', async () => {
+    mockFsWriteFile.mockResolvedValue(undefined)
+    mockFsMkdir.mockResolvedValue(undefined)
+    // readdir returns both chunks → triggers assembly
+    mockFsReaddir.mockResolvedValue(['chunk-0', 'chunk-1'])
+    // readFile for each chunk during assembly
+    mockFsReadFile.mockImplementation((filePath: string) => {
+      if (filePath.endsWith('chunk-0')) return Promise.resolve(Buffer.from('part0'))
+      if (filePath.endsWith('chunk-1')) return Promise.resolve(Buffer.from('part1'))
+      return Promise.reject(new Error('unexpected read'))
+    })
+
+    const form = buildChunkForm({
+      chunk: 'data-part-1',
+      uploadId: '22222222-2222-2222-2222-222222222222',
+      chunkIndex: 1,
+      totalChunks: 2,
+      mode: 'full',
+    })
+
+    const res = await postFormData(app, '/api/agents/import-template', form)
+    expect(res.status).toBe(201)
+
+    const body = await res.json()
+    expect(body.slug).toBe('imported-agent')
+    expect(importAgentFromTemplate).toHaveBeenCalledWith(
+      Buffer.concat([Buffer.from('part0'), Buffer.from('part1')]),
+      undefined,
+      'full',
+    )
+  })
+
+  it('passes name override on final chunk', async () => {
+    mockFsWriteFile.mockResolvedValue(undefined)
+    mockFsMkdir.mockResolvedValue(undefined)
+    mockFsReaddir.mockResolvedValue(['chunk-0'])
+    mockFsReadFile.mockResolvedValue(Buffer.from('zipdata'))
+
+    const form = buildChunkForm({
+      chunk: 'zipdata',
+      uploadId: '33333333-3333-3333-3333-333333333333',
+      chunkIndex: 0,
+      totalChunks: 1,
+      mode: 'template',
+      name: 'My Agent',
+    })
+
+    const res = await postFormData(app, '/api/agents/import-template', form)
+    expect(res.status).toBe(201)
+    expect(importAgentFromTemplate).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      'My Agent',
+      'template',
+    )
+  })
+
+  it('rejects invalid uploadId format', async () => {
+    const form = buildChunkForm({
+      chunk: 'data',
+      uploadId: '../../../etc/passwd',
+      chunkIndex: 0,
+      totalChunks: 1,
+    })
+
+    const res = await postFormData(app, '/api/agents/import-template', form)
+    expect(res.status).toBe(400)
+
+    const body = await res.json()
+    expect(body.error).toContain('Invalid uploadId')
+  })
+
+  it('rejects missing chunked upload fields', async () => {
+    const form = new FormData()
+    form.append('chunk', new File(['data'], 'chunk.bin'))
+    // Missing uploadId, chunkIndex, totalChunks
+
+    const res = await postFormData(app, '/api/agents/import-template', form)
+    expect(res.status).toBe(400)
+
+    const body = await res.json()
+    expect(body.error).toContain('Missing chunked upload fields')
+  })
+
+  it('rejects invalid chunkIndex (negative)', async () => {
+    const form = buildChunkForm({
+      chunk: 'data',
+      uploadId: '44444444-4444-4444-4444-444444444444',
+      chunkIndex: -1,
+      totalChunks: 2,
+    })
+
+    const res = await postFormData(app, '/api/agents/import-template', form)
+    expect(res.status).toBe(400)
+
+    const body = await res.json()
+    expect(body.error).toContain('Invalid chunkIndex')
+  })
+
+  it('rejects chunkIndex >= totalChunks', async () => {
+    const form = buildChunkForm({
+      chunk: 'data',
+      uploadId: '55555555-5555-5555-5555-555555555555',
+      chunkIndex: 3,
+      totalChunks: 2,
+    })
+
+    const res = await postFormData(app, '/api/agents/import-template', form)
+    expect(res.status).toBe(400)
+
+    const body = await res.json()
+    expect(body.error).toContain('Invalid chunkIndex')
+  })
+
+  it('returns 400 when neither file nor chunk is provided', async () => {
+    const form = new FormData()
+    form.append('mode', 'template')
+
+    const res = await postFormData(app, '/api/agents/import-template', form)
+    expect(res.status).toBe(400)
+
+    const body = await res.json()
+    expect(body.error).toContain('No file or chunk provided')
+  })
+})
 
 // ============================================================================
 // ACL Role Management Tests
@@ -1574,5 +1845,215 @@ describe('folder upload — POST /:id/upload-folder', () => {
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.path).toBe('/workspace/uploads/project/')
+  })
+})
+
+// ============================================================================
+// Message Author Attribution Tests
+// ============================================================================
+
+describe('message author attribution — POST /:id/sessions/:sessionId/messages', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/messages'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(getAgent).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
+    mockSendMessage.mockResolvedValue(undefined)
+  })
+
+  it('does not generate UUID or insert messageAuthor in non-auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+
+    const res = await postJson(app, URL, { content: 'hello' })
+    expect(res.status).toBe(201)
+
+    // sendMessage called with only sessionId and content (no uuid)
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', undefined)
+
+    // No DB insert for message author
+    expect(mockDbInsertValues).not.toHaveBeenCalled()
+  })
+
+  it('generates UUID, inserts messageAuthor, and passes UUID to sendMessage in auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+
+    const res = await postJson(app, URL, { content: 'hello from user' })
+    expect(res.status).toBe(201)
+
+    // DB insert should have been called with author record
+    expect(mockDbInsertValues).toHaveBeenCalledTimes(1)
+    const insertedValues = mockDbInsertValues.mock.calls[0][0]
+    expect(insertedValues).toMatchObject({
+      sessionId: 'sess-1',
+      agentSlug: 'test-agent',
+      userId: 'test-user-id',
+    })
+    expect(insertedValues.id).toBeDefined()
+    expect(typeof insertedValues.id).toBe('string')
+
+    // sendMessage should receive the same UUID
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello from user', insertedValues.id)
+  })
+})
+
+describe('message author attribution — GET /:id/sessions/:sessionId/messages', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/messages'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(getSessionMessagesWithCompact).mockResolvedValue([])
+  })
+
+  it('does not query messageAuthor in non-auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    mockTransformMessages.mockReturnValue([
+      { id: 'msg-1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
+    ])
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+
+    const body = await res.json()
+    // No sender field attached
+    expect(body[0].sender).toBeUndefined()
+    // DB select should not have been called for author lookup
+    expect(mockDbSelectFrom).not.toHaveBeenCalled()
+  })
+
+  it('annotates user messages with sender info in auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    mockTransformMessages.mockReturnValue([
+      { id: 'msg-1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
+      { id: 'msg-2', type: 'assistant', content: { text: 'hello' }, toolCalls: [], createdAt: new Date() },
+    ])
+
+    // Mock the DB select chain for author lookup: db.select().from().innerJoin().where()
+    mockDbSelectFrom.mockReturnValue({
+      innerJoin: () => ({
+        where: () => Promise.resolve([
+          { messageId: 'msg-1', userId: 'user-1', userName: 'Alice', userEmail: 'alice@example.com' },
+        ]),
+      }),
+    })
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+
+    const body = await res.json()
+    // User message should have sender
+    expect(body[0].sender).toEqual({
+      id: 'user-1',
+      name: 'Alice',
+      email: 'alice@example.com',
+    })
+    // Assistant message should not have sender
+    expect(body[1].sender).toBeUndefined()
+  })
+
+  it('handles sessions with no author records gracefully', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    mockTransformMessages.mockReturnValue([
+      { id: 'msg-old', type: 'user', content: { text: 'old message' }, toolCalls: [], createdAt: new Date() },
+    ])
+
+    // DB returns no author records (messages from before feature was added)
+    mockDbSelectFrom.mockReturnValue({
+      innerJoin: () => ({
+        where: () => Promise.resolve([]),
+      }),
+    })
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+
+    const body = await res.json()
+    // Message returned without sender — no crash
+    expect(body[0].sender).toBeUndefined()
+  })
+
+  it('skips author query when there are no user messages', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    mockTransformMessages.mockReturnValue([
+      { id: 'msg-1', type: 'assistant', content: { text: 'hello' }, toolCalls: [], createdAt: new Date() },
+    ])
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+
+    // No DB query since there are no user messages to look up
+    expect(mockDbSelectFrom).not.toHaveBeenCalled()
+  })
+})
+
+// ============================================================================
+// User Message Broadcast & Typing Indicator Tests
+// ============================================================================
+
+describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/messages'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(getAgent).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
+    mockSendMessage.mockResolvedValue(undefined)
+  })
+
+  it('broadcasts user_message via SSE in auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+
+    const res = await postJson(app, URL, { content: 'hello everyone' })
+    expect(res.status).toBe(201)
+
+    expect(messagePersister.broadcastSessionEvent).toHaveBeenCalledWith('sess-1', {
+      type: 'user_message',
+      content: 'hello everyone',
+      sender: { id: 'test-user-id', name: 'Test User' },
+    })
+  })
+
+  it('does not broadcast user_message in non-auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+
+    const res = await postJson(app, URL, { content: 'hello' })
+    expect(res.status).toBe(201)
+
+    expect(messagePersister.broadcastSessionEvent).not.toHaveBeenCalled()
+  })
+})
+
+describe('typing indicator — POST /:id/sessions/:sessionId/typing', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/typing'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+  })
+
+  it('broadcasts user_typing event in auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+
+    const res = await postJson(app, URL, {})
+    expect(res.status).toBe(200)
+
+    expect(messagePersister.broadcastSessionEvent).toHaveBeenCalledWith('sess-1', {
+      type: 'user_typing',
+      sender: { id: 'test-user-id', name: 'Test User' },
+    })
+  })
+
+  it('does not broadcast in non-auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+
+    const res = await postJson(app, URL, {})
+    expect(res.status).toBe(200)
+
+    expect(messagePersister.broadcastSessionEvent).not.toHaveBeenCalled()
   })
 })

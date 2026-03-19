@@ -16,6 +16,7 @@ import { useSelection } from '@renderer/context/selection-context'
 import { useUser } from '@renderer/context/user-context'
 import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
+import { setMountWarning } from '@renderer/hooks/use-mount-warnings'
 import type { UserSettingsData } from '@shared/lib/services/user-settings-service'
 
 function isNotificationTypeEnabled(
@@ -131,6 +132,15 @@ export function GlobalNotificationHandler() {
             if (agentSlug) {
               queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', agentSlug] })
             }
+            break
+          }
+
+          case 'mount_health_warning': {
+            // Some mounted folders are missing — show banner in agent view
+            setMountWarning(queryClient, {
+              agentSlug: data.agentSlug,
+              missingMounts: data.missingMounts,
+            })
             break
           }
 

@@ -71,6 +71,13 @@
       "when": 1772824655203,
       "tag": "0009_awesome_micromacro",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1773801909114,
+      "tag": "0010_sudden_lady_deathstrike",
+      "breakpoints": true
     }
   ]
 }

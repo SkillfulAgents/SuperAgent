@@ -125,6 +125,22 @@ export async function listPendingScheduledTasks(agentSlug: string): Promise<Sche
 }
 
 /**
+ * List cancelled recurring scheduled tasks for an agent (excludes one-time tasks)
+ */
+export async function listCancelledScheduledTasks(agentSlug: string): Promise<ScheduledTask[]> {
+  return db
+    .select()
+    .from(scheduledTasks)
+    .where(
+      and(
+        eq(scheduledTasks.agentSlug, agentSlug),
+        eq(scheduledTasks.status, 'cancelled'),
+        eq(scheduledTasks.scheduleType, 'cron')
+      )
+    )
+}
+
+/**
  * Get all tasks that are due for execution
  * (nextExecutionAt <= now and status = 'pending')
  */

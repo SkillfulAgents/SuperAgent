@@ -14,7 +14,7 @@ export type { ApiScheduledTask }
 /**
  * Fetch all scheduled tasks for an agent
  */
-export function useScheduledTasks(agentSlug: string | null, status?: 'pending') {
+export function useScheduledTasks(agentSlug: string | null, status?: 'pending' | 'cancelled') {
   return useQuery<ApiScheduledTask[]>({
     queryKey: ['scheduled-tasks', agentSlug, status],
     queryFn: async () => {

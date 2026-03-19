@@ -139,7 +139,7 @@ app.post('/sessions/:id/messages', async (c) => {
     const body = await c.req.json<SendMessageRequest>();
     const content = typeof body.content === 'string' ? body.content : JSON.stringify(body.content);
 
-    await sessionManager.sendMessage(sessionId, content);
+    await sessionManager.sendMessage(sessionId, content, body.uuid);
 
     return c.json({ success: true }, 201);
   } catch (error: any) {

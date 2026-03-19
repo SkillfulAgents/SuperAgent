@@ -70,6 +70,7 @@ settings.get('/', async (c) => {
       auth: currentSettings.auth,
       voice: getVoiceSettings(),
       tenantId: getTenantId(),
+      hostShellUse: currentSettings.hostShellUse,
       shareAnalytics: !!currentSettings.shareAnalytics,
       analyticsTargets: currentSettings.analyticsTargets,
     }
@@ -177,6 +178,9 @@ settings.put('/', async (c) => {
       shareAnalytics: body.shareAnalytics !== undefined
         ? body.shareAnalytics
         : currentSettings.shareAnalytics,
+      hostShellUse: body.hostShellUse !== undefined
+        ? { ...currentSettings.hostShellUse, ...body.hostShellUse }
+        : currentSettings.hostShellUse,
       analyticsTargets: body.analyticsTargets !== undefined
         ? body.analyticsTargets
         : currentSettings.analyticsTargets,
@@ -348,6 +352,7 @@ settings.put('/', async (c) => {
       auth: newSettings.auth,
       voice: getVoiceSettings(),
       tenantId: getTenantId(),
+      hostShellUse: newSettings.hostShellUse,
       shareAnalytics: !!newSettings.shareAnalytics,
       analyticsTargets: newSettings.analyticsTargets,
     })

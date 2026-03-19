@@ -1,6 +1,6 @@
 
 import * as React from 'react'
-import { Settings, FileText, KeyRound, Sparkles, Link2, ScrollText, Plug, Users } from 'lucide-react'
+import { Settings, FileText, KeyRound, Sparkles, Link2, ScrollText, Plug, Users, HardDrive } from 'lucide-react'
 import { useUser } from '@renderer/context/user-context'
 import { Button } from '@renderer/components/ui/button'
 import { SettingsDialog, SettingsDialogTab } from '@renderer/components/ui/settings-dialog'
@@ -13,6 +13,7 @@ import { ConnectedAccountsTab } from './settings/connected-accounts-tab'
 import { RemoteMcpsTab } from './settings/remote-mcps-tab'
 import { AuditLogTab } from './settings/audit-log-tab'
 import { AccessTab } from './settings/access-tab'
+import { VolumesTab } from './settings/volumes-tab'
 
 interface AgentSettingsDialogProps {
   agent: ApiAgent
@@ -104,6 +105,11 @@ export function AgentSettingsDialog({
       <SettingsDialogTab id="skills" label="Skills" icon={<Sparkles className="h-4 w-4" />}>
         <SkillsTab agentSlug={agent.slug} />
       </SettingsDialogTab>
+      {!!window.electronAPI && (
+        <SettingsDialogTab id="volumes" label="Volumes" icon={<HardDrive className="h-4 w-4" />}>
+          <VolumesTab agentSlug={agent.slug} />
+        </SettingsDialogTab>
+      )}
       <SettingsDialogTab id="connected-accounts" label="Accounts" icon={<Link2 className="h-4 w-4" />}>
         <ConnectedAccountsTab agentSlug={agent.slug} />
       </SettingsDialogTab>

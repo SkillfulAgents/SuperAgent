@@ -1,5 +1,5 @@
 
-import { Settings, Link2, Container, Bell, Globe, Library, BarChart3, Plug, Brain, Users, Shield, ShieldEllipsis, User, Mic, Activity } from 'lucide-react'
+import { Settings, Link2, Container, Bell, Globe, Library, BarChart3, Plug, Brain, Users, Shield, ShieldEllipsis, User, Mic, Activity, Terminal } from 'lucide-react'
 import { SettingsDialog, SettingsDialogTab, SettingsDialogGroup } from '@renderer/components/ui/settings-dialog'
 import { ProfileTab } from './profile-tab'
 import { GeneralTab } from './general-tab'
@@ -17,7 +17,9 @@ import { AuthTab } from './auth-tab'
 import { AdminTab } from './admin-tab'
 import { VoiceTab } from './voice-tab'
 import { AnalyticsTab } from './analytics-tab'
+import { HostShellUseTab } from './host-shell-use-tab'
 import { useUser } from '@renderer/context/user-context'
+import { isElectron } from '@renderer/lib/env'
 
 interface GlobalSettingsDialogProps {
   open: boolean
@@ -73,6 +75,11 @@ export function GlobalSettingsDialog({
       <SettingsDialogTab id="browser" label="Browser Use" icon={<Globe className="h-4 w-4" />}>
         <BrowserTab />
       </SettingsDialogTab>
+      {isElectron() && (
+        <SettingsDialogTab id="host-shell-use" label="Host Shell Use" icon={<Terminal className="h-4 w-4" />}>
+          <HostShellUseTab />
+        </SettingsDialogTab>
+      )}
       <SettingsDialogTab id="composio" label="Account Provider" icon={<ShieldEllipsis className="h-4 w-4" />}>
         <ComposioTab />
       </SettingsDialogTab>

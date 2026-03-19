@@ -1,4 +1,5 @@
 import { query, Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { UUID } from 'crypto';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -627,7 +628,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
   }
 
-  async sendMessage(content: string): Promise<void> {
+  async sendMessage(content: string, uuid?: UUID): Promise<void> {
     // Auto-restart session if not running
     if (!this.messageQueue || !this.isReady) {
       console.log(`[Session ${this.sessionId}] Session not running, restarting...`);
@@ -648,6 +649,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         ],
       },
       parent_tool_use_id: null,
+      ...(uuid ? { uuid } : {}),
     };
 
     console.log(`[Session ${this.sessionId}] Sending message:`, content.substring(0, 100));

@@ -297,7 +297,7 @@ export function QuestionRequestItem({
                       <div className="flex-1 min-w-0">
                         <div className="font-medium text-blue-900 dark:text-blue-100">{option.label}</div>
                         {option.description && (
-                          <div className="text-xs text-blue-700 dark:text-blue-300">{option.description}</div>
+                          <div className="text-xs text-blue-700 dark:text-blue-300 whitespace-pre-line">{option.description}</div>
                         )}
                       </div>
                     </label>

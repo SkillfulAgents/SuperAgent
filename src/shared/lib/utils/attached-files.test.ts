@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { appendAttachedFiles, parseAttachedFiles } from './attached-files'
+import { appendAttachedFiles, parseAttachedFiles, appendMountedFolders, parseMountedFolders } from './attached-files'
 
 describe('appendAttachedFiles', () => {
   it('appends files to a message with content', () => {
@@ -73,5 +73,88 @@ describe('parseAttachedFiles', () => {
     const { cleanText, attachedFiles } = parseAttachedFiles(encoded)
     expect(cleanText).toBe('')
     expect(attachedFiles).toEqual(files)
+  })
+})
+
+describe('appendMountedFolders', () => {
+  it('appends mounts to a message with content', () => {
+    const result = appendMountedFolders('Hello', [{ containerPath: '/mounts/project', hostPath: '/Users/joe/project' }])
+    expect(result).toBe('Hello\n\n[Mounted folders (read-write):]\n- /mounts/project (from /Users/joe/project)')
+  })
+
+  it('creates a mount-only message when content is empty', () => {
+    const result = appendMountedFolders('', [{ containerPath: '/mounts/src', hostPath: '/tmp/src' }])
+    expect(result).toBe('[Mounted folders (read-write):]\n- /mounts/src (from /tmp/src)')
+  })
+
+  it('handles multiple mounts', () => {
+    const result = appendMountedFolders('Hi', [
+      { containerPath: '/mounts/a', hostPath: '/host/a' },
+      { containerPath: '/mounts/b', hostPath: '/host/b' },
+    ])
+    expect(result).toBe('Hi\n\n[Mounted folders (read-write):]\n- /mounts/a (from /host/a)\n- /mounts/b (from /host/b)')
+  })
+
+  it('returns message unchanged when mounts array is empty', () => {
+    expect(appendMountedFolders('Hello', [])).toBe('Hello')
+  })
+})
+
+describe('parseMountedFolders', () => {
+  it('parses mounts from a message with content', () => {
+    const text = 'Hello\n\n[Mounted folders (read-write):]\n- /mounts/project (from /Users/joe/project)'
+    const result = parseMountedFolders(text)
+    expect(result.cleanText).toBe('Hello')
+    expect(result.mountedFolders).toEqual([{ containerPath: '/mounts/project', hostPath: '/Users/joe/project' }])
+  })
+
+  it('parses mount-only message', () => {
+    const text = '[Mounted folders (read-write):]\n- /mounts/src (from /tmp/src)'
+    const result = parseMountedFolders(text)
+    expect(result.cleanText).toBe('')
+    expect(result.mountedFolders).toEqual([{ containerPath: '/mounts/src', hostPath: '/tmp/src' }])
+  })
+
+  it('returns original text when no marker present', () => {
+    const result = parseMountedFolders('Just a normal message')
+    expect(result.cleanText).toBe('Just a normal message')
+    expect(result.mountedFolders).toEqual([])
+  })
+
+  it('roundtrips with appendMountedFolders', () => {
+    const message = 'Work on this project'
+    const mounts = [
+      { containerPath: '/mounts/app', hostPath: '/Users/joe/app' },
+      { containerPath: '/mounts/lib', hostPath: '/Users/joe/lib' },
+    ]
+    const encoded = appendMountedFolders(message, mounts)
+    const { cleanText, mountedFolders } = parseMountedFolders(encoded)
+    expect(cleanText).toBe(message)
+    expect(mountedFolders).toEqual(mounts)
+  })
+
+  it('roundtrips with empty message', () => {
+    const mounts = [{ containerPath: '/mounts/data', hostPath: '/host/data' }]
+    const encoded = appendMountedFolders('', mounts)
+    const { cleanText, mountedFolders } = parseMountedFolders(encoded)
+    expect(cleanText).toBe('')
+    expect(mountedFolders).toEqual(mounts)
+  })
+
+  it('coexists with attached files block (mounts appended first)', () => {
+    const msg = 'Check these'
+    // In the real flow, mounts are appended after files: appendAttachedFiles then appendMountedFolders
+    // But parseAttachedFiles strips everything from its marker onward, so we parse mounts first
+    const withMounts = appendMountedFolders(msg, [{ containerPath: '/mounts/src', hostPath: '/host/src' }])
+    const withBoth = appendAttachedFiles(withMounts, ['/workspace/uploads/file.md'])
+
+    // Parse attached files first (its marker is last, so it strips cleanly)
+    const { cleanText: afterFiles, attachedFiles } = parseAttachedFiles(withBoth)
+    expect(attachedFiles).toEqual(['/workspace/uploads/file.md'])
+
+    // Parse mounted folders from the remainder
+    const { cleanText, mountedFolders } = parseMountedFolders(afterFiles)
+    expect(cleanText).toBe('Check these')
+    expect(mountedFolders).toEqual([{ containerPath: '/mounts/src', hostPath: '/host/src' }])
   })
 })

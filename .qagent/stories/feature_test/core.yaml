@@ -1,0 +1,13 @@
+id: core
+name: "Core workflow: chat, lifecycle, basic settings"
+mode: feature-test
+baseUrl: http://localhost:47891
+features:
+  - session-chat
+  - agent-settings
+  - agent-lifecycle
+setup:
+  - ensureSecrets
+  - ensureAgent
+teardown:
+  - deleteAgent

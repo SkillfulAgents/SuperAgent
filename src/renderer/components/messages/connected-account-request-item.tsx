@@ -299,7 +299,7 @@ export function ConnectedAccountRequestItem({
               <span className="capitalize">{provider?.displayName || toolkit}</span>
             </div>
             {reason && (
-              <p className="text-sm text-blue-700 dark:text-blue-300 mt-1">{reason}</p>
+              <p className="text-sm text-blue-700 dark:text-blue-300 mt-1 whitespace-pre-line">{reason}</p>
             )}
           </div>
           <span className="text-xs text-blue-600 dark:text-blue-400 shrink-0">Waiting for response</span>
@@ -328,7 +328,7 @@ export function ConnectedAccountRequestItem({
               </span>
             </div>
             {reason && (
-              <p className="text-sm text-blue-700 dark:text-blue-300 mt-1">{reason}</p>
+              <p className="text-sm text-blue-700 dark:text-blue-300 mt-1 whitespace-pre-line">{reason}</p>
             )}
           </div>
 

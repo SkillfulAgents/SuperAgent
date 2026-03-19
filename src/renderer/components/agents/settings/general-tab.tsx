@@ -20,11 +20,12 @@ import {
   useAgentTemplateStatus,
   useUpdateAgentTemplate,
   useExportAgentTemplate,
+  useExportAgentFull,
 } from '@renderer/hooks/use-agent-templates'
 import { StatusBadge } from '@renderer/components/agents/status-badge'
 import { AgentTemplatePRDialog } from '@renderer/components/agents/agent-template-pr-dialog'
 import { AgentTemplatePublishDialog } from '@renderer/components/agents/agent-template-publish-dialog'
-import { Trash2, Download, RefreshCw, GitPullRequest, Upload, Loader2 } from 'lucide-react'
+import { Trash2, Download, HardDriveDownload, RefreshCw, GitPullRequest, Upload, Loader2 } from 'lucide-react'
 
 interface GeneralTabProps {
   name: string
@@ -42,6 +43,7 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
   const { data: templateStatus } = useAgentTemplateStatus(agentSlug)
   const updateTemplate = useUpdateAgentTemplate()
   const exportTemplate = useExportAgentTemplate()
+  const exportFull = useExportAgentFull()
 
   const handleDelete = async () => {
     setIsDeleting(true)
@@ -127,6 +129,40 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
             )}
             Export as Template
           </Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={exportFull.isPending}
+              >
+                {exportFull.isPending ? (
+                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                ) : (
+                  <HardDriveDownload className="h-3 w-3 mr-1" />
+                )}
+                Export Full Agent
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Export Full Agent</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This will export the entire agent workspace including environment
+                  variables, API keys, and other potentially sensitive data. Only share
+                  this file with people you trust.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={() => exportFull.mutate({ agentSlug, agentName: name })}
+                >
+                  Export
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
           {templateStatus?.type === 'local' && (
             <Button
               size="sm"

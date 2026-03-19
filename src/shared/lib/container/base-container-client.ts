@@ -257,6 +257,14 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   /**
+   * Build a -v flag value for a volume mount.
+   * Encapsulates hostPathForRuntime() + getVolumeMountSuffix().
+   */
+  public buildVolumeFlag(hostPath: string, containerPath: string): string {
+    return `"${this.hostPathForRuntime(hostPath)}:${containerPath}${this.getVolumeMountSuffix()}"`
+  }
+
+  /**
    * Returns resource limit flags for the container.
    * Subclasses can override if the runtime uses different flag syntax.
    */
@@ -420,6 +428,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         '--name', containerName,
         '-p', `${port}:${CONTAINER_INTERNAL_PORT}`,
         '-v', `"${this.hostPathForRuntime(workspaceDir)}:/workspace${this.getVolumeMountSuffix()}"`,
+        ...(options?.additionalVolumes || []).flatMap(v => ['-v', v]),
         resourceFlags,
         additionalFlags,
         envFileFlag,
@@ -457,7 +466,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
   }
 
-  async stop(): Promise<void> {
+  async stop(): Promise<{ forceStopUsed: boolean }> {
+    let forceStopUsed = false
+
     try {
       // Terminate all WebSocket connections immediately (no graceful close handshake)
       // to avoid ECONNRESET errors when the container is stopped
@@ -467,10 +478,33 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       }
       this.wsConnections.clear()
 
-      // Stop and remove container by name
+      // Stop and remove container by name, with escalation if the container is unresponsive.
+      // 1. Try graceful stop with 5s SIGTERM grace period (enough for clean Node.js shutdown)
+      // 2. If that times out (e.g., VM is overloaded), escalate to kill (immediate SIGKILL)
+      // 3. If kill also fails, call forceStop() hook (e.g., Lima kills the VM directly)
+      // 4. Remove the container
       const runner = this.getRunnerCommand()
       const containerName = this.getContainerName()
-      await execWithPathSilent(`${runner} stop ${containerName}`)
+
+      const stopped = await Promise.race([
+        execWithPathSilent(`${runner} stop -t 5 ${containerName}`).then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 10000)),
+      ])
+
+      if (!stopped) {
+        console.warn(`Container ${containerName} did not stop gracefully, escalating to kill`)
+        const killed = await Promise.race([
+          execWithPathSilent(`${runner} kill ${containerName}`).then(() => true),
+          new Promise<false>((resolve) => setTimeout(() => resolve(false), 5000)),
+        ])
+
+        if (!killed) {
+          console.warn(`Container ${containerName} kill also timed out, attempting force stop`)
+          await this.forceStop()
+          forceStopUsed = true
+        }
+      }
+
       await execWithPathSilent(`${runner} rm ${containerName}`)
 
       console.log(`Stopped container ${containerName}`)
@@ -479,6 +513,17 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       this.emit('error', error)
       throw error
     }
+
+    return { forceStopUsed }
+  }
+
+  /**
+   * Last-resort force stop when both `stop` and `kill` fail (e.g., VM is unresponsive).
+   * Subclasses can override to kill the VM directly.
+   * No-op by default for runtimes like Docker/Podman where kill should always work.
+   */
+  protected async forceStop(): Promise<void> {
+    // No-op — subclasses override for VM-based runtimes
   }
 
   stopSync(): void {
@@ -491,13 +536,19 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       }
       this.wsConnections.clear()
 
-      // Stop and remove container by name synchronously
+      // Stop and remove container by name synchronously, with escalation.
+      // Use 5s grace period so process can shut down cleanly before SIGKILL.
       const runner = this.getRunnerCommand()
       const containerName = this.getContainerName()
       try {
-        execSyncWithPath(`${runner} stop ${containerName}`, { stdio: 'pipe', timeout: 10000 })
+        execSyncWithPath(`${runner} stop -t 5 ${containerName}`, { stdio: 'pipe', timeout: 10000 })
       } catch {
-        // Container might not exist, ignore
+        // Graceful stop failed or timed out — escalate to kill
+        try {
+          execSyncWithPath(`${runner} kill ${containerName}`, { stdio: 'pipe', timeout: 5000 })
+        } catch {
+          // Container might not exist or already stopped
+        }
       }
       try {
         execSyncWithPath(`${runner} rm ${containerName}`, { stdio: 'pipe', timeout: 5000 })
@@ -591,6 +642,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           systemPrompt: options.systemPrompt,
           availableEnvVars: options.availableEnvVars,
           initialMessage: options.initialMessage,
+          initialMessageUuid: options.initialMessageUuid,
           model: options.model,
           browserModel: options.browserModel,
           maxOutputTokens: options.maxOutputTokens,
@@ -690,7 +742,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return response.ok
   }
 
-  async sendMessage(sessionId: string, content: string): Promise<void> {
+  async sendMessage(sessionId: string, content: string, uuid?: string): Promise<void> {
     const port = await this.getPortOrThrow()
     const timeoutMs = 30000 // 30 second timeout
 
@@ -703,7 +755,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content }),
+          body: JSON.stringify({ content, ...(uuid ? { uuid } : {}) }),
           signal: controller.signal,
         }
       )

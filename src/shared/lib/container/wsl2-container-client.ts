@@ -187,6 +187,24 @@ export class WSL2ContainerClient extends BaseContainerClient {
   }
 
   /**
+   * Force-stop by terminating the WSL2 distro directly.
+   * Called when nerdctl stop + kill both time out because the distro is unresponsive.
+   */
+  protected async forceStop(): Promise<void> {
+    console.warn('Force-terminating WSL2 distro')
+    try {
+      await Promise.race([
+        execWithPath(`wsl --terminate ${WSL2_DISTRO_NAME}`),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('WSL2 terminate timed out')), 10000)
+        ),
+      ])
+    } catch {
+      console.error('WSL2 distro terminate failed')
+    }
+  }
+
+  /**
    * Check if WSL2 is available (wsl.exe exists and WSL2 is enabled).
    */
   static async isAvailable(): Promise<boolean> {

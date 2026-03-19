@@ -1,11 +1,12 @@
 
 import { cn } from '@shared/lib/utils/cn'
-import { User, Bot, Terminal } from 'lucide-react'
+import { User, Bot, Terminal, Link2 } from 'lucide-react'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { ToolCallItem } from './tool-call-item'
 import { SubAgentBlock } from './subagent-block'
 import { MessageContextMenu } from './message-context-menu'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
-import { parseAttachedFiles } from '@shared/lib/utils/attached-files'
+import { parseAttachedFiles, parseMountedFolders } from '@shared/lib/utils/attached-files'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
@@ -31,13 +32,22 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
   const isAssistant = message.type === 'assistant'
 
   const rawText = message.content.text
-  const { cleanText, attachedFiles } = isUser && rawText ? parseAttachedFiles(rawText) : { cleanText: rawText, attachedFiles: [] }
+  const { cleanText: textAfterFiles, attachedFiles } = isUser && rawText ? parseAttachedFiles(rawText) : { cleanText: rawText, attachedFiles: [] }
+  const { cleanText, mountedFolders } = isUser && textAfterFiles ? parseMountedFolders(textAfterFiles) : { cleanText: textAfterFiles, mountedFolders: [] }
   const text = cleanText
   const hasText = text && text.length > 0
   const toolCalls = message.toolCalls || []
 
   // Detect slash commands (user messages starting with /)
   const isSlashCommand = isUser && hasText && text.startsWith('/')
+
+  // Compute sender initials for the avatar
+  const senderInitials = message.sender?.name
+    ?.split(' ')
+    .map((w) => w[0])
+    .join('')
+    .toUpperCase()
+    .slice(0, 2)
 
   // Don't render assistant messages that have no text and no tool calls
   // (and aren't streaming). These are transient empty entries from partially-
@@ -53,6 +63,20 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
     ? (hasText || attachedFiles.length === 0)
     : (hasText || isStreaming)
 
+  const avatarContent = (
+    <div
+      className={cn(
+        'h-8 w-8 rounded-full items-center justify-center shrink-0 hidden md:flex',
+        isUser && 'bg-primary text-primary-foreground',
+        isAssistant && 'bg-muted'
+      )}
+    >
+      {isSlashCommand && <Terminal className="h-4 w-4" />}
+      {isUser && !isSlashCommand && (senderInitials ? <span className="text-xs font-medium">{senderInitials}</span> : <User className="h-4 w-4" />)}
+      {isAssistant && <Bot className="h-4 w-4" />}
+    </div>
+  )
+
   return (
     <div
       className={cn(
@@ -62,17 +86,14 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
       data-testid={isUser ? 'message-user' : isAssistant ? 'message-assistant' : undefined}
     >
       {/* Avatar */}
-      <div
-        className={cn(
-          'h-8 w-8 rounded-full items-center justify-center shrink-0 hidden md:flex',
-          isUser && 'bg-primary text-primary-foreground',
-          isAssistant && 'bg-muted'
-        )}
-      >
-        {isSlashCommand && <Terminal className="h-4 w-4" />}
-        {isUser && !isSlashCommand && <User className="h-4 w-4" />}
-        {isAssistant && <Bot className="h-4 w-4" />}
-      </div>
+      {message.sender ? (
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>{avatarContent}</TooltipTrigger>
+            <TooltipContent>{message.sender.name}</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      ) : avatarContent}
 
       {/* Message content */}
       <div
@@ -199,6 +220,23 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
           <div className="flex flex-wrap gap-1.5 justify-end">
             {attachedFiles.map((filePath, idx) => (
               <FileDownloadPill key={idx} filePath={filePath} agentSlug={agentSlug} />
+            ))}
+          </div>
+        )}
+
+        {/* Mounted folder pills for user messages */}
+        {isUser && mountedFolders.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 justify-end">
+            {mountedFolders.map((mount, idx) => (
+              <div
+                key={idx}
+                className="flex items-center gap-1.5 rounded-full border bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800 px-3 py-1 text-xs"
+                title={`Host: ${mount.hostPath}`}
+              >
+                <Link2 className="h-3 w-3 text-blue-500" />
+                <span className="font-medium">{mount.containerPath}</span>
+                <span className="text-muted-foreground">mounted</span>
+              </div>
             ))}
           </div>
         )}

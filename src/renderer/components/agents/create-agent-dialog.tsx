@@ -12,7 +12,7 @@ import { Input } from '@renderer/components/ui/input'
 import { Checkbox } from '@renderer/components/ui/checkbox'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@renderer/components/ui/tabs'
 import { useState, useRef, useEffect } from 'react'
-import { useCreateAgent } from '@renderer/hooks/use-agents'
+import { useCreateAgent, useDeleteAgent } from '@renderer/hooks/use-agents'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
 import { useSelection } from '@renderer/context/selection-context'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
@@ -21,6 +21,7 @@ import {
   useDiscoverableAgents,
   useImportAgentTemplate,
   useInstallAgentFromSkillset,
+  type ImportProgress,
 } from '@renderer/hooks/use-agent-templates'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { apiFetch } from '@renderer/lib/api'
@@ -81,6 +82,7 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
   const [isInstalling, setIsInstalling] = useState(false)
   const [activeTab, setActiveTab] = useState(initialTemplate ? 'skillset' : 'new')
   const createAgent = useCreateAgent()
+  const deleteAgent = useDeleteAgent()
   const createSession = useCreateSession()
   const { selectAgent, selectSession } = useSelection()
   const { track } = useAnalyticsTracking()
@@ -98,6 +100,8 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
   // Import tab state
   const [importFile, setImportFile] = useState<File | null>(null)
   const [importName, setImportName] = useState('')
+  const [importFull, setImportFull] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState<ImportProgress | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const importTemplate = useImportAgentTemplate()
 
@@ -270,10 +274,15 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
     if (!importFile) return
 
     try {
+      setUploadProgress({ phase: 'uploading', percent: 0 })
       const result = await importTemplate.mutateAsync({
         file: importFile,
         nameOverride: importName.trim() || undefined,
+        mode: importFull ? 'full' : 'template',
+        onProgress: setUploadProgress,
       })
+
+      setUploadProgress(null)
 
       if (result.requiredEnvVars && result.requiredEnvVars.length > 0) {
         setTemplateSecretsPrompt({
@@ -299,6 +308,7 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
         }
       }
     } catch (error) {
+      setUploadProgress(null)
       console.error('Failed to import template:', error)
     }
   }
@@ -352,6 +362,7 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
       setActiveTab('new')
       setImportFile(null)
       setImportName('')
+      setImportFull(false)
       setSelectedTemplate(null)
       setSkillsetAgentName('')
       setSecretsPrompt(null)
@@ -489,16 +500,21 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
             <form onSubmit={handleImport}>
               <div className="py-4 space-y-4">
                 <div
-                  className="border-2 border-dashed rounded-lg p-6 text-center cursor-pointer hover:bg-muted/50 transition-colors"
-                  onClick={() => fileInputRef.current?.click()}
+                  className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
+                    importTemplate.isPending
+                      ? 'opacity-50 pointer-events-none'
+                      : 'cursor-pointer hover:bg-muted/50'
+                  }`}
+                  onClick={() => !importTemplate.isPending && fileInputRef.current?.click()}
                   onDragOver={(e) => e.preventDefault()}
-                  onDrop={handleFileDrop}
+                  onDrop={importTemplate.isPending ? undefined : handleFileDrop}
                 >
                   <input
                     ref={fileInputRef}
                     type="file"
                     accept=".zip"
                     className="hidden"
+                    disabled={importTemplate.isPending}
                     onChange={(e) => {
                       const file = e.target.files?.[0]
                       if (file) setImportFile(file)
@@ -508,18 +524,20 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
                     <div className="flex items-center justify-center gap-2">
                       <FileArchive className="h-5 w-5 text-primary" />
                       <span className="text-sm font-medium">{importFile.name}</span>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 text-xs"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          setImportFile(null)
-                        }}
-                      >
-                        Remove
-                      </Button>
+                      {!importTemplate.isPending && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 text-xs"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setImportFile(null)
+                          }}
+                        >
+                          Remove
+                        </Button>
+                      )}
                     </div>
                   ) : (
                     <>
@@ -535,7 +553,49 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
                   placeholder="Name override (optional)"
                   value={importName}
                   onChange={(e) => setImportName(e.target.value)}
+                  disabled={importTemplate.isPending}
                 />
+
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="import-full"
+                    checked={importFull}
+                    onCheckedChange={(checked) => setImportFull(checked === true)}
+                    disabled={importTemplate.isPending}
+                  />
+                  <label
+                    htmlFor="import-full"
+                    className="text-sm text-muted-foreground cursor-pointer select-none"
+                  >
+                    Full import (includes environment variables and data)
+                  </label>
+                </div>
+
+                {uploadProgress && (
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span className="flex items-center gap-1.5">
+                        {uploadProgress.phase === 'processing' && (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        )}
+                        {uploadProgress.phase === 'uploading' ? 'Uploading...' : 'Processing...'}
+                      </span>
+                      {uploadProgress.phase === 'uploading' && (
+                        <span>{Math.round(uploadProgress.percent)}%</span>
+                      )}
+                    </div>
+                    <div className="h-2 rounded-full bg-muted overflow-hidden">
+                      <div
+                        className="h-full bg-primary rounded-full transition-all duration-300"
+                        style={{
+                          width: uploadProgress.phase === 'processing'
+                            ? '100%'
+                            : `${uploadProgress.percent}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
 
                 {importTemplate.error && (
                   <p className="text-sm text-destructive">{importTemplate.error.message}</p>
@@ -547,6 +607,7 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
                   type="button"
                   variant="outline"
                   onClick={() => handleOpenChange(false)}
+                  disabled={importTemplate.isPending}
                 >
                   Cancel
                 </Button>
@@ -554,7 +615,7 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
                   {importTemplate.isPending ? (
                     <>
                       <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      Importing...
+                      {uploadProgress?.phase === 'uploading' ? 'Uploading...' : 'Processing...'}
                     </>
                   ) : (
                     'Import'
@@ -695,6 +756,8 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
           open={!!templateSecretsPrompt}
           onOpenChange={(open) => {
             if (!open) {
+              // User cancelled — delete the already-created agent
+              deleteAgent.mutate(templateSecretsPrompt.agentSlug)
               setTemplateSecretsPrompt(null)
             }
           }}

@@ -1,4 +1,4 @@
-import { X, FolderIcon } from 'lucide-react'
+import { X, FolderIcon, Link2 } from 'lucide-react'
 import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
 
 export interface FileAttachment {
@@ -17,7 +17,14 @@ export interface FolderAttachment {
   totalSize: number
 }
 
-export type Attachment = FileAttachment | FolderAttachment
+export interface MountAttachment {
+  type: 'mount'
+  id: string
+  folderName: string
+  hostPath: string
+}
+
+export type Attachment = FileAttachment | FolderAttachment | MountAttachment
 
 interface AttachmentPreviewProps {
   attachments: Attachment[]
@@ -40,7 +47,20 @@ export function AttachmentPreview({ attachments, onRemove }: AttachmentPreviewPr
           key={attachment.id}
           className="flex items-center gap-2 rounded-md border bg-muted/50 px-2 py-1.5 text-xs"
         >
-          {attachment.type === 'folder' ? (
+          {attachment.type === 'mount' ? (
+            <>
+              <div className="relative">
+                <FolderIcon className="h-4 w-4 text-muted-foreground" />
+                <Link2 className="h-2.5 w-2.5 absolute -bottom-0.5 -right-0.5 text-blue-500" />
+              </div>
+              <div className="flex flex-col min-w-0">
+                <span className="truncate max-w-[160px] font-medium" title={attachment.folderName}>
+                  {attachment.folderName}
+                </span>
+                <span className="text-muted-foreground">mounted, read-write</span>
+              </div>
+            </>
+          ) : attachment.type === 'folder' ? (
             <>
               <FolderIcon className="h-4 w-4 text-muted-foreground" />
               <div className="flex flex-col min-w-0">

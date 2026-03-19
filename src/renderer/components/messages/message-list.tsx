@@ -8,6 +8,7 @@ import {
   removeQuestionRequest,
   removeFileRequest,
   removeBrowserInputRequest,
+  removeScriptRunRequest,
   clearCompacting,
 } from '@renderer/hooks/use-message-stream'
 import { MessageItem } from './message-item'
@@ -19,6 +20,7 @@ import { RemoteMcpRequestItem } from './remote-mcp-request-item'
 import { QuestionRequestItem } from './question-request-item'
 import { FileRequestItem } from './file-request-item'
 import { BrowserInputRequestItem } from './browser-input-request-item'
+import { ScriptRunRequestItem } from './script-run-request-item'
 import { Loader2, Wrench, WifiOff } from 'lucide-react'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { useIsOnline } from '@renderer/context/connectivity-context'
@@ -34,6 +36,7 @@ const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] '
 interface PendingMessage {
   text: string
   sentAt: number
+  sender?: { id: string; name: string; email: string }
 }
 
 function DeliveredFiles({ files, agentSlug }: { files: { filePath: string }[]; agentSlug: string }) {
@@ -57,7 +60,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
   const { data: messages, isLoading } = useMessages(sessionId, agentSlug)
   const deleteMessage = useDeleteMessage()
   const deleteToolCall = useDeleteToolCall()
-  const { canUseAgent } = useUser()
+  const { canUseAgent, user } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
 
   const handleRemoveMessage = useCallback(
@@ -79,11 +82,14 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
   // messages array, we clear the optimistic pending copy to avoid duplication.
   // We match by both text AND timestamp to handle duplicate message text correctly:
   // only messages created around the time the pending was set can match.
+  // Text comparison uses trimmed values to handle trailing whitespace/newlines
+  // that the SDK may add when persisting to JSONL.
   useEffect(() => {
     if (pendingUserMessage && messages) {
+      const pendingText = pendingUserMessage.text.trim()
       const found = messages.some(
         (m) => m.type === 'user' &&
-          m.content.text === pendingUserMessage.text &&
+          (m.content as { text?: string }).text?.trim() === pendingText &&
           new Date(m.createdAt).getTime() >= pendingUserMessage.sentAt - 5000
       )
       if (found) {
@@ -91,6 +97,17 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
       }
     }
   }, [messages, pendingUserMessage, onPendingMessageAppeared])
+
+  // Safety net: clear pending message after 10 seconds even if text matching
+  // fails (e.g., due to filesystem sync delays or unexpected text transforms).
+  // By this time the message has certainly been persisted.
+  useEffect(() => {
+    if (!pendingUserMessage) return
+    const timerId = setTimeout(() => {
+      onPendingMessageAppeared?.()
+    }, 10000)
+    return () => clearTimeout(timerId)
+  }, [pendingUserMessage, onPendingMessageAppeared])
   const {
     isActive,
     streamingMessage,
@@ -99,12 +116,15 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     isCompacting,
     activeSubagents,
     completedSubagents,
+    typingUser,
+    peerUserMessage,
     pendingSecretRequests: sseSecretRequests,
     pendingConnectedAccountRequests: sseConnectedAccountRequests,
     pendingRemoteMcpRequests: sseRemoteMcpRequests,
     pendingQuestionRequests: sseQuestionRequests,
     pendingFileRequests: sseFileRequests,
     pendingBrowserInputRequests: sseBrowserInputRequests,
+    pendingScriptRunRequests: sseScriptRunRequests,
   } = useMessageStream(sessionId, agentSlug)
   const isOnline = useIsOnline()
 
@@ -126,8 +146,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     const fileRequests: { toolUseId: string; description: string; fileTypes?: string }[] = []
     const remoteMcpRequests: { toolUseId: string; url: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer' }[] = []
     const browserInputRequests: { toolUseId: string; message: string; requirements: string[] }[] = []
+    const scriptRunRequests: { toolUseId: string; script: string; explanation: string; scriptType: 'applescript' | 'shell' | 'powershell' }[] = []
 
-    if (!messages) return { secretRequests, connectedAccountRequests, questionRequests, fileRequests, remoteMcpRequests, browserInputRequests }
+    if (!messages) return { secretRequests, connectedAccountRequests, questionRequests, fileRequests, remoteMcpRequests, browserInputRequests, scriptRunRequests }
 
     for (let i = 0; i < messages.length; i++) {
       const message = messages[i]
@@ -205,11 +226,21 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
               requirements: input.requirements || [],
             })
           }
+        } else if (toolCall.name === 'mcp__user-input__request_script_run') {
+          const input = toolCall.input as { script?: string; explanation?: string; scriptType?: 'applescript' | 'shell' | 'powershell' }
+          if (input.script && input.scriptType) {
+            scriptRunRequests.push({
+              toolUseId: toolCall.id,
+              script: input.script,
+              explanation: input.explanation || '',
+              scriptType: input.scriptType,
+            })
+          }
         }
       }
     }
 
-    return { secretRequests, connectedAccountRequests, questionRequests, fileRequests, remoteMcpRequests, browserInputRequests }
+    return { secretRequests, connectedAccountRequests, questionRequests, fileRequests, remoteMcpRequests, browserInputRequests, scriptRunRequests }
   }, [messages, pendingUserMessage])
 
   // Track toolUseIds the user has already answered, so that the message-based
@@ -321,6 +352,20 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     return merged
   }, [sseBrowserInputRequests, messagesBasedPendingRequests.browserInputRequests, isActive])
 
+  const pendingScriptRunRequests = useMemo(() => {
+    const seen = new Set<string>()
+    const merged: { toolUseId: string; script: string; explanation: string; scriptType: 'applescript' | 'shell' | 'powershell' }[] = []
+
+    const messageBased = isActive ? messagesBasedPendingRequests.scriptRunRequests : []
+    for (const req of [...sseScriptRunRequests, ...messageBased]) {
+      if (!seen.has(req.toolUseId) && !dismissedRequestIds.current.has(req.toolUseId)) {
+        seen.add(req.toolUseId)
+        merged.push(req)
+      }
+    }
+    return merged
+  }, [sseScriptRunRequests, messagesBasedPendingRequests.scriptRunRequests, isActive])
+
   const scrollRef = useRef<HTMLDivElement>(null)
   const isScrolledToBottomRef = useRef(true)
 
@@ -391,6 +436,15 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     (toolUseId: string) => {
       dismissedRequestIds.current.add(toolUseId)
       removeFileRequest(sessionId, toolUseId)
+    },
+    [sessionId]
+  )
+
+  // Handler to remove a completed script run request
+  const handleScriptRunRequestComplete = useCallback(
+    (toolUseId: string) => {
+      dismissedRequestIds.current.add(toolUseId)
+      removeScriptRunRequest(sessionId, toolUseId)
     },
     [sessionId]
   )
@@ -553,7 +607,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     if (scrollRef.current && isScrolledToBottomRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [messages, pendingUserMessage, streamingMessage, streamingToolUse, isCompacting, pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests, pendingFileRequests, pendingRemoteMcpRequests, pendingBrowserInputRequests, activeSubagents])
+  }, [messages, pendingUserMessage, streamingMessage, streamingToolUse, isCompacting, pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests, pendingFileRequests, pendingRemoteMcpRequests, pendingBrowserInputRequests, pendingScriptRunRequests, activeSubagents])
 
   if (isLoading && !pendingUserMessage) {
     return (
@@ -593,6 +647,25 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
           </Fragment>
         ))}
 
+        {/* Peer user message — optimistic display until persisted data arrives.
+            Hidden if sender is the current user (they see their own pendingUserMessage)
+            or if the message already appeared in the fetched messages list. */}
+        {peerUserMessage &&
+          peerUserMessage.sender.id !== user?.id &&
+          !messages?.some((m) => m.type === 'user' && (m.content as { text?: string }).text?.trim() === peerUserMessage.content.trim()) && (
+          <MessageItem
+            message={{
+              id: 'peer-user-message',
+              type: 'user',
+              content: { text: peerUserMessage.content },
+              toolCalls: [],
+              createdAt: new Date(),
+              ...(peerUserMessage.sender.name ? { sender: { id: peerUserMessage.sender.id, name: peerUserMessage.sender.name, email: peerUserMessage.sender.email || '' } } : {}),
+            }}
+            agentSlug={agentSlug}
+          />
+        )}
+
         {/* Pending user message - shown immediately after sending */}
         {pendingUserMessage && (
           <MessageItem
@@ -602,9 +675,24 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
               content: { text: pendingUserMessage.text },
               toolCalls: [],
               createdAt: new Date(),
+              sender: pendingUserMessage.sender,
             }}
             agentSlug={agentSlug}
           />
+        )}
+
+        {/* Typing indicator - shown when another user is typing */}
+        {typingUser && !peerUserMessage && (
+          <div className="flex gap-3 flex-row-reverse">
+            <div className="h-8 w-8 rounded-full items-center justify-center shrink-0 hidden md:flex bg-primary text-primary-foreground">
+              <span className="text-xs font-medium">
+                {typingUser.name?.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2) || '?'}
+              </span>
+            </div>
+            <div className="rounded-lg px-4 py-2 bg-primary text-primary-foreground">
+              <span className="animate-pulse tracking-widest">...</span>
+            </div>
+          </div>
         )}
 
         {/* Streaming text message - keep visible until persisted data arrives */}
@@ -739,6 +827,19 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
             agentSlug={agentSlug}
             readOnly={isViewOnly}
             onComplete={() => handleBrowserInputRequestComplete(request.toolUseId)}
+          />
+        ))}
+        {pendingScriptRunRequests.map((request) => (
+          <ScriptRunRequestItem
+            key={request.toolUseId}
+            toolUseId={request.toolUseId}
+            script={request.script}
+            explanation={request.explanation}
+            scriptType={request.scriptType}
+            sessionId={sessionId}
+            agentSlug={agentSlug}
+            readOnly={isViewOnly}
+            onComplete={() => handleScriptRunRequestComplete(request.toolUseId)}
           />
         ))}
       </div>
