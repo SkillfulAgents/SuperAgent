@@ -87,8 +87,9 @@ vi.mock('@renderer/hooks/use-settings', () => ({
   }),
 }))
 
+const mockUseScheduledTasks = vi.fn((_slug?: string, _status?: string): { data: any[] } => ({ data: [] }))
 vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
-  useScheduledTasks: () => ({ data: [] }),
+  useScheduledTasks: (slug: string, status?: string) => mockUseScheduledTasks(slug, status),
 }))
 
 vi.mock('@renderer/hooks/use-artifacts', () => ({
@@ -199,11 +200,49 @@ vi.mock('@renderer/components/ui/alert', () => ({
   AlertDescription: ({ children }: any) => <span>{children}</span>,
 }))
 
+// Factory for creating mock scheduled tasks
+function createMockScheduledTask(overrides: Record<string, any> = {}) {
+  return {
+    id: overrides.id ?? 'task-1',
+    agentSlug: overrides.agentSlug ?? 'test-agent',
+    scheduleType: overrides.scheduleType ?? 'cron',
+    scheduleExpression: overrides.scheduleExpression ?? '*/15 * * * *',
+    prompt: overrides.prompt ?? 'Do something',
+    name: overrides.name ?? 'Test Task',
+    status: overrides.status ?? 'pending',
+    nextExecutionAt: overrides.nextExecutionAt ?? new Date('2025-01-01T12:00:00Z'),
+    lastExecutedAt: overrides.lastExecutedAt ?? null,
+    isRecurring: overrides.isRecurring ?? true,
+    executionCount: overrides.executionCount ?? 0,
+    lastSessionId: overrides.lastSessionId ?? null,
+    createdBySessionId: overrides.createdBySessionId ?? null,
+    timezone: overrides.timezone ?? null,
+    createdAt: overrides.createdAt ?? new Date('2025-01-01T00:00:00Z'),
+    cancelledAt: overrides.cancelledAt ?? null,
+  }
+}
+
+// Helper to configure scheduled tasks mock for a specific agent
+function setScheduledTasksMock(
+  agentSlug: string,
+  pending: ReturnType<typeof createMockScheduledTask>[],
+  cancelled: ReturnType<typeof createMockScheduledTask>[] = [],
+) {
+  mockUseScheduledTasks.mockImplementation((slug?: string, status?: string): { data: any[] } => {
+    if (slug !== agentSlug) return { data: [] }
+    if (status === 'pending') return { data: pending }
+    if (status === 'cancelled') return { data: cancelled }
+    return { data: [] }
+  })
+}
+
 describe('AppSidebar', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockSelectionContext.selectedAgentSlug = null
     mockSelectionContext.selectedSessionId = null
+    // Reset scheduled tasks mock to return empty arrays
+    mockUseScheduledTasks.mockImplementation(() => ({ data: [] }))
   })
 
   it('renders "Super Agent" title', () => {
@@ -268,5 +307,117 @@ describe('AppSidebar', () => {
   it('shows notification bell', () => {
     renderWithProviders(<AppSidebar />)
     expect(screen.getByTestId('notification-bell')).toBeInTheDocument()
+  })
+
+  // ==========================================================================
+  // Scheduled Tasks Display Tests
+  // ==========================================================================
+
+  describe('scheduled tasks display', () => {
+    it('does not show scheduled section when no tasks exist', () => {
+      renderWithProviders(<AppSidebar />)
+      expect(screen.queryByText(/Scheduled Jobs/)).not.toBeInTheDocument()
+    })
+
+    it('shows a single pending task flat (no group) when only 1 pending and 0 cancelled', () => {
+      setScheduledTasksMock('test-agent', [
+        createMockScheduledTask({ name: 'Daily Check' }),
+      ])
+
+      renderWithProviders(<AppSidebar />)
+      expect(screen.getByText('Daily Check')).toBeInTheDocument()
+      expect(screen.queryByText(/Scheduled Jobs/)).not.toBeInTheDocument()
+    })
+
+    it('shows "Scheduled Jobs (N)" group when there are 2+ pending tasks', () => {
+      setScheduledTasksMock('test-agent', [
+        createMockScheduledTask({ id: 'task-1', name: 'Task A' }),
+        createMockScheduledTask({ id: 'task-2', name: 'Task B' }),
+      ])
+
+      renderWithProviders(<AppSidebar />)
+      expect(screen.getByText('Scheduled Jobs (2)')).toBeInTheDocument()
+      expect(screen.getByText('Task A')).toBeInTheDocument()
+      expect(screen.getByText('Task B')).toBeInTheDocument()
+    })
+
+    it('shows "Scheduled Jobs (N)" group when there are cancelled tasks, even with only 1 pending', () => {
+      setScheduledTasksMock('test-agent',
+        [createMockScheduledTask({ id: 'task-1', name: 'Active Job' })],
+        [createMockScheduledTask({ id: 'task-2', name: 'Old Job', status: 'cancelled' })],
+      )
+
+      renderWithProviders(<AppSidebar />)
+      expect(screen.getByText('Scheduled Jobs (2)')).toBeInTheDocument()
+      expect(screen.getByText('Active Job')).toBeInTheDocument()
+    })
+
+    it('shows "Scheduled Jobs (1)" group with "Cancelled" when 0 pending and 1 cancelled', () => {
+      setScheduledTasksMock('test-agent', [], [
+        createMockScheduledTask({ id: 'task-1', name: 'Cancelled Cron', status: 'cancelled' }),
+      ])
+
+      renderWithProviders(<AppSidebar />)
+      expect(screen.getByText('Scheduled Jobs (1)')).toBeInTheDocument()
+      expect(screen.getByText('Cancelled (1)')).toBeInTheDocument()
+    })
+
+    it('shows "Cancelled (N)" section inside the group with correct count', () => {
+      setScheduledTasksMock('test-agent',
+        [createMockScheduledTask({ id: 'task-1', name: 'Active' })],
+        [
+          createMockScheduledTask({ id: 'task-2', name: 'Cancelled A', status: 'cancelled' }),
+          createMockScheduledTask({ id: 'task-3', name: 'Cancelled B', status: 'cancelled' }),
+        ],
+      )
+
+      renderWithProviders(<AppSidebar />)
+      expect(screen.getByText('Scheduled Jobs (3)')).toBeInTheDocument()
+      expect(screen.getByText('Cancelled (2)')).toBeInTheDocument()
+      expect(screen.getByText('Cancelled A')).toBeInTheDocument()
+      expect(screen.getByText('Cancelled B')).toBeInTheDocument()
+    })
+
+    it('does not show "Cancelled" section when there are no cancelled tasks', () => {
+      setScheduledTasksMock('test-agent', [
+        createMockScheduledTask({ id: 'task-1', name: 'Task A' }),
+        createMockScheduledTask({ id: 'task-2', name: 'Task B' }),
+      ])
+
+      renderWithProviders(<AppSidebar />)
+      expect(screen.getByText('Scheduled Jobs (2)')).toBeInTheDocument()
+      expect(screen.queryByText(/Cancelled/)).not.toBeInTheDocument()
+    })
+
+    it('counts total (pending + cancelled) in "Scheduled Jobs" header', () => {
+      setScheduledTasksMock('test-agent',
+        [
+          createMockScheduledTask({ id: 'task-1', name: 'P1' }),
+          createMockScheduledTask({ id: 'task-2', name: 'P2' }),
+        ],
+        [createMockScheduledTask({ id: 'task-3', name: 'C1', status: 'cancelled' })],
+      )
+
+      renderWithProviders(<AppSidebar />)
+      expect(screen.getByText('Scheduled Jobs (3)')).toBeInTheDocument()
+    })
+
+    it('selects scheduled task on click', async () => {
+      const user = userEvent.setup()
+      setScheduledTasksMock('test-agent', [
+        createMockScheduledTask({ id: 'task-42', name: 'Clickable Task' }),
+      ])
+
+      renderWithProviders(<AppSidebar />)
+      await user.click(screen.getByText('Clickable Task'))
+      expect(mockSelectionContext.selectAgent).toHaveBeenCalledWith('test-agent')
+      expect(mockSelectionContext.selectScheduledTask).toHaveBeenCalledWith('task-42')
+    })
+
+    it('calls useScheduledTasks with both pending and cancelled status', () => {
+      renderWithProviders(<AppSidebar />)
+      expect(mockUseScheduledTasks).toHaveBeenCalledWith('test-agent', 'pending')
+      expect(mockUseScheduledTasks).toHaveBeenCalledWith('test-agent', 'cancelled')
+    })
   })
 })

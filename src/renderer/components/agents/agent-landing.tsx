@@ -7,7 +7,6 @@ import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui
 import { Checkbox } from '@renderer/components/ui/checkbox'
 import { Send, Loader2, Sparkles, Search, RefreshCw, ChevronLeft, ChevronRight, Filter, Eye, Maximize2, Minimize2 } from 'lucide-react'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
-import { useVoiceInput } from '@renderer/hooks/use-voice-input'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { useAgentSkills, useDiscoverableSkills, useRefreshAgentSkills } from '@renderer/hooks/use-agent-skills'
 import { AgentSkillCard } from './agent-skill-card'
@@ -16,9 +15,9 @@ import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { useUser } from '@renderer/context/user-context'
 import { apiFetch } from '@renderer/lib/api'
 import { AttachmentPreview } from '@renderer/components/messages/attachment-preview'
-import { useAttachments } from '@renderer/hooks/use-attachments'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
-import { appendAttachedFiles } from '@shared/lib/utils/attached-files'
+import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
+import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 
 interface AgentLandingProps {
@@ -26,14 +25,10 @@ interface AgentLandingProps {
   onSessionCreated: (sessionId: string, initialMessage: string) => void
 }
 
-// todo - tons of duplicated code between this and message-input. Should refactor to use it.
-
 export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
   const { canUseAgent, canAdminAgent } = useUser()
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)
-  const [message, setMessage] = useState('')
-  const [isUploading, setIsUploading] = useState(false)
   const [isExpanded, setIsExpanded] = useState(false)
   const [manuallyCollapsed, setManuallyCollapsed] = useState(false)
   const [skillSearch, setSkillSearch] = useState('')
@@ -41,6 +36,7 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
   const [selectedSkillsets, setSelectedSkillsets] = useState<Set<string> | null>(null)
   const SKILLS_PER_PAGE = 6
   const createSession = useCreateSession()
+
   const { data: skillsData } = useAgentSkills(agent.slug)
   const skills = Array.isArray(skillsData) ? skillsData : []
   const { data: discoverableSkillsData } = useDiscoverableSkills(agent.slug)
@@ -52,98 +48,52 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
   const isPulling = readiness?.status === 'PULLING_IMAGE'
   const apiKeyConfigured = runtimeStatus?.apiKeyConfigured !== false
 
-  const {
-    attachments,
-    isDragOver,
-    removeAttachment,
-    clearAttachments,
-    handleFileSelect,
-    handleFolderSelect,
-    dragHandlers,
-  } = useAttachments()
-
-  // Auto-expand when message gets long (5+ lines)
-  useEffect(() => {
-    const lineCount = message.split('\n').length
-    if (lineCount >= 5 && !isExpanded && !manuallyCollapsed) {
-      setIsExpanded(true)
-    }
-  }, [message, isExpanded, manuallyCollapsed])
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-
-    // Stop voice recording first — use returned text since React state won't update synchronously
-    let voiceText: string | undefined
-    if (voiceInput.isRecording || voiceInput.isConnecting) {
-      voiceText = voiceInput.stopRecording()
-    }
-
-    const effectiveMessage = voiceText ?? message
-    const hasContent = effectiveMessage.trim() || attachments.length > 0
-    if (!hasContent || createSession.isPending || isUploading) return
-
-    try {
-      let content = effectiveMessage.trim()
-
-      // Upload attachments first (using agent-level endpoint, no session needed)
-      if (attachments.length > 0) {
-        setIsUploading(true)
-        try {
-          const uploadPromises = attachments.flatMap((a) => {
-            if (a.type === 'folder') {
-              return a.files.map((f) => {
-                const formData = new FormData()
-                formData.append('file', f.file)
-                formData.append('relativePath', f.relativePath)
-                return apiFetch(
-                  `/api/agents/${agent.slug}/upload-file`,
-                  { method: 'POST', body: formData }
-                ).then(async (res) => {
-                  if (!res.ok) throw new Error('Failed to upload file')
-                  return res.json() as Promise<{ path: string; filename: string; size: number }>
-                })
-              })
-            }
-            const formData = new FormData()
-            formData.append('file', a.file)
-            return [apiFetch(
-              `/api/agents/${agent.slug}/upload-file`,
-              { method: 'POST', body: formData }
-            ).then(async (res) => {
-              if (!res.ok) throw new Error('Failed to upload file')
-              return res.json() as Promise<{ path: string; filename: string; size: number }>
-            })]
-          })
-          const uploadResults = await Promise.all(uploadPromises)
-
-          content = appendAttachedFiles(content, uploadResults.map((r) => r.path))
-        } catch (error) {
-          console.error('Failed to upload attachments:', error)
-          setIsUploading(false)
-          return
+  const composer = useMessageComposer({
+    agentSlug: agent.slug,
+    uploadFile: useCallback(async ({ file }: { file: File }) => {
+      const formData = new FormData()
+      formData.append('file', file)
+      const res = await apiFetch(
+        `/api/agents/${agent.slug}/upload-file`,
+        { method: 'POST', body: formData }
+      )
+      if (!res.ok) throw new Error('Failed to upload file')
+      return res.json() as Promise<{ path: string }>
+    }, [agent.slug]),
+    uploadFolder: useCallback(async ({ sourcePath }: { sourcePath: string }) => {
+      const res = await apiFetch(
+        `/api/agents/${agent.slug}/upload-folder`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sourcePath }),
         }
-        setIsUploading(false)
-      }
-
-      // Create session with the message (including file paths)
+      )
+      if (!res.ok) throw new Error('Failed to upload folder')
+      return res.json() as Promise<{ path: string }>
+    }, [agent.slug]),
+    onSubmit: useCallback(async (content: string) => {
       const session = await createSession.mutateAsync({
         agentSlug: agent.slug,
         message: content,
       })
-
-      setMessage('')
-      clearAttachments()
       onSessionCreated(session.id, content)
-    } catch (error) {
-      console.error('Failed to start session:', error)
+    }, [createSession, agent.slug, onSessionCreated]),
+    submitDisabled: createSession.isPending || !isRuntimeReady,
+  })
+
+  // Auto-expand when message gets long (5+ lines)
+  useEffect(() => {
+    const lineCount = composer.message.split('\n').length
+    if (lineCount >= 5 && !isExpanded && !manuallyCollapsed) {
+      setIsExpanded(true)
     }
-  }
+  }, [composer.message, isExpanded, manuallyCollapsed])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault()
-      handleSubmit(e)
+      composer.handleSubmit(e)
     }
   }
 
@@ -182,13 +132,7 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
     setSkillPage(0)
   }, [skillSearch, selectedSkillsets])
 
-  const voiceInput = useVoiceInput({
-    onTranscriptUpdate: useCallback((text: string) => {
-      setMessage(text)
-    }, []),
-  })
-
-  const isDisabled = createSession.isPending || isUploading || !isRuntimeReady
+  const isDisabled = createSession.isPending || composer.isUploading || !isRuntimeReady
 
   return (
     <div className="flex-1 flex flex-col items-center overflow-y-auto p-8">
@@ -226,17 +170,23 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
               </div>
             )}
 
+            <MountChoiceDialog
+              open={composer.mountDialog.open}
+              onChoice={composer.mountDialog.onChoice}
+              folderName={composer.mountDialog.folderName}
+            />
             <form
-              onSubmit={handleSubmit}
-              className={`space-y-4 ${isDragOver ? 'ring-2 ring-primary rounded-lg' : ''}`}
-              {...dragHandlers}
+              onSubmit={composer.handleSubmit}
+              className={`space-y-4 ${composer.isDragOver ? 'ring-2 ring-primary rounded-lg' : ''}`}
+              {...composer.dragHandlers}
             >
               <div className="relative">
                 <Textarea
                   placeholder="Type your message..."
-                  value={message}
-                  onChange={(e) => setMessage(e.target.value)}
+                  value={composer.message}
+                  onChange={(e) => composer.setMessage(e.target.value)}
                   onKeyDown={handleKeyDown}
+                  onPaste={composer.handlePaste}
                   className={`pr-12 resize-none text-base transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh]' : 'min-h-[120px]'}`}
                   disabled={isDisabled}
                   autoFocus
@@ -260,18 +210,18 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
                     {isExpanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
                   </Button>
                   <AttachmentPicker
-                    onFileSelect={handleFileSelect}
-                    onFolderSelect={handleFolderSelect}
+                    onFileSelect={composer.handleFileSelect}
+                    onFolderSelect={composer.handleFolderSelect}
                     disabled={isDisabled}
                     buttonClassName="h-8 w-8"
                     popoverAlign="end"
                   />
-                  <VoiceInputButton voiceInput={voiceInput} message={message} disabled={isDisabled} size="sm" />
+                  <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} size="sm" />
                   <Button
                     type="submit"
                     size="icon"
                     className="h-8 w-8"
-                    disabled={(!message.trim() && attachments.length === 0 && !voiceInput.isRecording) || isDisabled}
+                    disabled={!composer.canSubmit}
                     data-testid="landing-send-button"
                   >
                     {isDisabled ? (
@@ -282,8 +232,8 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
                   </Button>
                 </div>
               </div>
-              <AttachmentPreview attachments={attachments} onRemove={removeAttachment} />
-              <VoiceInputError error={voiceInput.error} onDismiss={voiceInput.clearError} className="justify-center" />
+              <AttachmentPreview attachments={composer.attachments} onRemove={composer.removeAttachment} />
+              <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="justify-center" />
               <p className="text-xs text-muted-foreground text-center">
                 Press Cmd+Enter to send
               </p>

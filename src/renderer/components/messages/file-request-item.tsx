@@ -180,7 +180,7 @@ export function FileRequestItem({
           </div>
           <div className="flex-1 min-w-0">
             <div className="font-medium text-blue-900 dark:text-blue-100">File Requested</div>
-            <p className="text-sm text-blue-700 dark:text-blue-300 mt-1">{description}</p>
+            <p className="text-sm text-blue-700 dark:text-blue-300 mt-1 whitespace-pre-line">{description}</p>
           </div>
           <span className="text-xs text-blue-600 dark:text-blue-400 shrink-0">Waiting for response</span>
         </div>
@@ -202,7 +202,7 @@ export function FileRequestItem({
           {/* Header */}
           <div>
             <div className="font-medium text-blue-900 dark:text-blue-100">File Requested</div>
-            <p className="text-sm text-blue-700 dark:text-blue-300 mt-1">{description}</p>
+            <p className="text-sm text-blue-700 dark:text-blue-300 mt-1 whitespace-pre-line">{description}</p>
             {fileTypes && (
               <p className="text-xs text-blue-500 dark:text-blue-400 mt-0.5">
                 Suggested types: {fileTypes}

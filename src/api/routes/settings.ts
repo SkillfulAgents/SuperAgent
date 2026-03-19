@@ -1,6 +1,7 @@
 import path from 'path'
 import { Hono } from 'hono'
-import Anthropic from '@anthropic-ai/sdk'
+import { getLlmProvider, getAllProviderInfo } from '@shared/lib/llm-provider'
+import type { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provider'
 import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
 import { Authenticated, IsAdmin } from '../middleware/auth'
 import { isAuthMode } from '@shared/lib/auth/mode'
@@ -8,7 +9,6 @@ import {
   getSettings,
   updateSettings,
   clearSettingsCache,
-  getAnthropicApiKeyStatus,
   getBrowserbaseApiKeyStatus,
   getComposioApiKeyStatus,
   getComposioUserId,
@@ -23,7 +23,8 @@ import {
 import { getTenantId } from '@shared/lib/analytics/tenant-id'
 import { getSttProvider } from '@shared/lib/stt'
 import { containerManager } from '@shared/lib/container/container-manager'
-import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
+import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
+import { VALID_LIMA_VM_MEMORY_OPTIONS } from '@shared/lib/container/types'
 import { detectAllProviders } from '../../main/host-browser'
 import { db } from '@shared/lib/db'
 import { proxyAuditLog, proxyTokens, agentConnectedAccounts, scheduledTasks, notifications, connectedAccounts } from '@shared/lib/db/schema'
@@ -48,8 +49,12 @@ settings.get('/', async (c) => {
       app: currentSettings.app || { showMenuBarIcon: true },
       hasRunningAgents,
       runnerAvailability,
+      llmProvider: currentSettings.llmProvider ?? 'anthropic',
+      llmProviderStatus: getAllProviderInfo(),
       apiKeyStatus: {
-        anthropic: getAnthropicApiKeyStatus(),
+        anthropic: getLlmProvider('anthropic').getApiKeyStatus(),
+        openrouter: getLlmProvider('openrouter').getApiKeyStatus(),
+        bedrock: getLlmProvider('bedrock').getApiKeyStatus(),
         browserbase: getBrowserbaseApiKeyStatus(),
         composio: getComposioApiKeyStatus(),
         deepgram: getSttProvider('deepgram').getApiKeyStatus(),
@@ -65,6 +70,7 @@ settings.get('/', async (c) => {
       auth: currentSettings.auth,
       voice: getVoiceSettings(),
       tenantId: getTenantId(),
+      hostShellUse: currentSettings.hostShellUse,
       shareAnalytics: !!currentSettings.shareAnalytics,
       analyticsTargets: currentSettings.analyticsTargets,
     }
@@ -108,6 +114,14 @@ settings.put('/', async (c) => {
       }
     }
 
+    // Validate runtimeSettings if provided
+    if (body.container?.runtimeSettings) {
+      const limaSettings = body.container.runtimeSettings.lima
+      if (limaSettings?.vmMemory && !VALID_LIMA_VM_MEMORY_OPTIONS.includes(limaSettings.vmMemory)) {
+        return c.json({ error: `Invalid VM memory setting. Must be one of: ${VALID_LIMA_VM_MEMORY_OPTIONS.join(', ')}` }, 400)
+      }
+    }
+
     // Merge new settings with current settings
     const newSettings: AppSettings = {
       container: {
@@ -119,6 +133,12 @@ settings.put('/', async (c) => {
               ...body.container.resourceLimits,
             }
           : currentSettings.container.resourceLimits,
+        runtimeSettings: body.container?.runtimeSettings
+          ? {
+              ...currentSettings.container.runtimeSettings,
+              ...body.container.runtimeSettings,
+            }
+          : currentSettings.container.runtimeSettings,
       },
       app: {
         ...currentSettings.app,
@@ -130,6 +150,9 @@ settings.put('/', async (c) => {
           : {}),
       },
       apiKeys: currentSettings.apiKeys,
+      llmProvider: body.llmProvider !== undefined
+        ? body.llmProvider
+        : currentSettings.llmProvider,
       models: body.models
         ? {
             ...currentSettings.models,
@@ -155,6 +178,9 @@ settings.put('/', async (c) => {
       shareAnalytics: body.shareAnalytics !== undefined
         ? body.shareAnalytics
         : currentSettings.shareAnalytics,
+      hostShellUse: body.hostShellUse !== undefined
+        ? { ...currentSettings.hostShellUse, ...body.hostShellUse }
+        : currentSettings.hostShellUse,
       analyticsTargets: body.analyticsTargets !== undefined
         ? body.analyticsTargets
         : currentSettings.analyticsTargets,
@@ -170,6 +196,30 @@ settings.put('/', async (c) => {
         newSettings.apiKeys = {
           ...newSettings.apiKeys,
           anthropicApiKey: body.apiKeys.anthropicApiKey,
+        }
+      }
+
+      // Handle OpenRouter API key
+      if (body.apiKeys.openrouterApiKey === '') {
+        newSettings.apiKeys = { ...newSettings.apiKeys }
+        delete newSettings.apiKeys.openrouterApiKey
+      } else if (body.apiKeys.openrouterApiKey) {
+        newSettings.apiKeys = {
+          ...newSettings.apiKeys,
+          openrouterApiKey: body.apiKeys.openrouterApiKey,
+        }
+      }
+
+      // Handle Bedrock credentials
+      for (const field of ['bedrockApiKey', 'bedrockAccessKeyId', 'bedrockSecretAccessKey', 'bedrockRegion'] as const) {
+        if (body.apiKeys[field] === '') {
+          newSettings.apiKeys = { ...newSettings.apiKeys }
+          delete newSettings.apiKeys[field]
+        } else if (body.apiKeys[field]) {
+          newSettings.apiKeys = {
+            ...newSettings.apiKeys,
+            [field]: body.apiKeys[field],
+          }
         }
       }
 
@@ -281,8 +331,12 @@ settings.put('/', async (c) => {
       app: newSettings.app || { showMenuBarIcon: true },
       hasRunningAgents,
       runnerAvailability,
+      llmProvider: newSettings.llmProvider ?? 'anthropic',
+      llmProviderStatus: getAllProviderInfo(),
       apiKeyStatus: {
-        anthropic: getAnthropicApiKeyStatus(),
+        anthropic: getLlmProvider('anthropic').getApiKeyStatus(),
+        openrouter: getLlmProvider('openrouter').getApiKeyStatus(),
+        bedrock: getLlmProvider('bedrock').getApiKeyStatus(),
         browserbase: getBrowserbaseApiKeyStatus(),
         composio: getComposioApiKeyStatus(),
         deepgram: getSttProvider('deepgram').getApiKeyStatus(),
@@ -298,6 +352,7 @@ settings.put('/', async (c) => {
       auth: newSettings.auth,
       voice: getVoiceSettings(),
       tenantId: getTenantId(),
+      hostShellUse: newSettings.hostShellUse,
       shareAnalytics: !!newSettings.shareAnalytics,
       analyticsTargets: newSettings.analyticsTargets,
     })
@@ -316,6 +371,9 @@ settings.post('/start-runner', async (c) => {
     if (!runner || !SUPPORTED_RUNNERS.includes(runner)) {
       return c.json({ error: `Invalid runner. Must be one of: ${SUPPORTED_RUNNERS.join(', ')}` }, 400)
     }
+
+    // Immediately broadcast CHECKING state so the frontend shows the starting banner
+    containerManager.resetReadiness(`Starting ${runner} runtime...`)
 
     const result = await startRunner(runner)
 
@@ -342,6 +400,40 @@ settings.post('/start-runner', async (c) => {
   }
 })
 
+// POST /api/settings/restart-runner - Restart a container runtime (e.g., after changing runtime settings)
+settings.post('/restart-runner', async (c) => {
+  try {
+    const body = await c.req.json()
+    const runner = body.runner as ContainerRunner
+
+    if (!runner || !SUPPORTED_RUNNERS.includes(runner)) {
+      return c.json({ error: `Invalid runner. Must be one of: ${SUPPORTED_RUNNERS.join(', ')}` }, 400)
+    }
+
+    // Immediately broadcast CHECKING state so the frontend blocks agent creation
+    // and shows the "restarting" banner before the actual restart begins
+    containerManager.resetReadiness(`Restarting ${runner} runtime...`)
+
+    const result = await restartRunner(runner)
+
+    if (result.success) {
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+      const runnerAvailability = await refreshRunnerAvailability()
+
+      containerManager.ensureImageReady().catch((error) => {
+        console.error('Failed to check image after restarting runner:', error)
+      })
+
+      return c.json({ ...result, runnerAvailability })
+    }
+
+    return c.json(result, 400)
+  } catch (error) {
+    console.error('Failed to restart runner:', error)
+    return c.json({ error: 'Failed to restart runner' }, 500)
+  }
+})
+
 // POST /api/settings/refresh-availability - Force-refresh runner availability (clears cache)
 settings.post('/refresh-availability', async (c) => {
   try {
@@ -357,7 +449,7 @@ settings.post('/refresh-availability', async (c) => {
   }
 })
 
-// POST /api/settings/validate-anthropic-key - Validate an Anthropic API key
+// POST /api/settings/validate-anthropic-key - Validate an Anthropic API key (kept for backward compat)
 settings.post('/validate-anthropic-key', async (c) => {
   try {
     const { apiKey } = await c.req.json()
@@ -365,17 +457,53 @@ settings.post('/validate-anthropic-key', async (c) => {
       return c.json({ valid: false, error: 'API key is required' }, 400)
     }
 
-    const client = new Anthropic({ apiKey })
-    const { summarizerModel } = getEffectiveModels()
-    await client.messages.create({
-      model: summarizerModel,
-      max_tokens: 1,
-      messages: [{ role: 'user', content: 'Hi' }],
-    })
-
-    return c.json({ valid: true })
+    const result = await getLlmProvider('anthropic').validateKey(apiKey)
+    return c.json(result)
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Invalid API key'
+    return c.json({ valid: false, error: message })
+  }
+})
+
+// POST /api/settings/validate-llm-key - Validate an API key for any LLM provider
+settings.post('/validate-llm-key', async (c) => {
+  try {
+    const { provider, apiKey } = await c.req.json()
+    if (!apiKey || typeof apiKey !== 'string') {
+      return c.json({ valid: false, error: 'API key is required' }, 400)
+    }
+    if (!provider || typeof provider !== 'string') {
+      return c.json({ valid: false, error: 'Provider is required' }, 400)
+    }
+    if (provider !== 'anthropic' && provider !== 'openrouter' && provider !== 'bedrock') {
+      return c.json({ valid: false, error: `Unknown provider: ${provider}` }, 400)
+    }
+
+    const llmProvider = getLlmProvider(provider)
+    const result = await llmProvider.validateKey(apiKey)
+    return c.json(result)
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Invalid API key'
+    return c.json({ valid: false, error: message })
+  }
+})
+
+// POST /api/settings/validate-bedrock - Validate AWS credentials for Bedrock
+settings.post('/validate-bedrock', async (c) => {
+  try {
+    const { accessKeyId, secretAccessKey, region } = await c.req.json()
+    if (!accessKeyId || !secretAccessKey) {
+      return c.json({ valid: false, error: 'Access Key ID and Secret Access Key are required' }, 400)
+    }
+    const bedrockProvider = getLlmProvider('bedrock') as BedrockLlmProvider
+    const result = await bedrockProvider.validateAwsCredentials(
+      accessKeyId,
+      secretAccessKey,
+      region || 'us-east-1'
+    )
+    return c.json(result)
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Invalid credentials'
     return c.json({ valid: false, error: message })
   }
 })

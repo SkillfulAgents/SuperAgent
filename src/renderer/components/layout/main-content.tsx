@@ -28,6 +28,7 @@ import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import { useMarkSessionNotificationsRead } from '@renderer/hooks/use-notifications'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useUser } from '@renderer/context/user-context'
+import { useMountWarnings } from '@renderer/hooks/use-mount-warnings'
 import { computeContextPercent } from '@shared/lib/utils/context-usage'
 
 export function MainContent() {
@@ -41,7 +42,7 @@ export function MainContent() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [contextBarExpanded, setContextBarExpanded] = useState(false)
   // Pending user messages per session — survives navigation between sessions
-  const pendingMessagesRef = useRef(new Map<string, { text: string; sentAt: number }>())
+  const pendingMessagesRef = useRef(new Map<string, { text: string; sentAt: number; sender?: { id: string; name: string; email: string } }>())
   const [, forceUpdate] = useState(0)
   const { data: agent } = useAgent(agentSlug)
   const { data: sessions } = useSessions(agentSlug)
@@ -50,12 +51,14 @@ export function MainContent() {
   const startAgent = useStartAgent()
   const stopAgent = useStopAgent()
   const hasActiveSessions = sessions?.some((s) => s.isActive) ?? false
+  const hasSessionsAwaitingInput = sessions?.some((s) => s.isAwaitingInput) ?? false
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
   const markSessionNotificationsRead = useMarkSessionNotificationsRead()
   const { browserActive, isActive, contextUsage: streamContextUsage } = useMessageStream(sessionId ?? null, agentSlug ?? null)
-  const { canUseAgent } = useUser()
+  const { canUseAgent, user, isAuthMode } = useUser()
   const isViewOnly = agentSlug ? !canUseAgent(agentSlug) : false
+  const { warning: mountWarning, dismiss: dismissMountWarning } = useMountWarnings(agentSlug ?? null)
   const { data: runtimeStatus, isPending: isRuntimePending } = useRuntimeStatus()
   const readiness = runtimeStatus?.runtimeReadiness
   const isRuntimeReady = isRuntimePending || readiness?.status === 'READY'
@@ -97,10 +100,14 @@ export function MainContent() {
 
   const handleMessageSent = useCallback((content: string) => {
     if (sessionId) {
-      pendingMessagesRef.current.set(sessionId, { text: content, sentAt: Date.now() })
+      pendingMessagesRef.current.set(sessionId, {
+        text: content,
+        sentAt: Date.now(),
+        sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email } : undefined,
+      })
       forceUpdate((n) => n + 1)
     }
-  }, [sessionId])
+  }, [sessionId, isAuthMode, user])
 
   const handlePendingMessageAppeared = useCallback(() => {
     if (sessionId) {
@@ -111,9 +118,13 @@ export function MainContent() {
 
   // Callback for AgentLanding when a new session is created with initial message
   const handleSessionCreated = useCallback((newSessionId: string, initialMessage: string) => {
-    pendingMessagesRef.current.set(newSessionId, { text: initialMessage, sentAt: Date.now() })
+    pendingMessagesRef.current.set(newSessionId, {
+      text: initialMessage,
+      sentAt: Date.now(),
+      sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email } : undefined,
+    })
     selectSession(newSessionId)
-  }, [selectSession])
+  }, [selectSession, isAuthMode, user])
 
   if (!agentSlug) {
     return <HomePage />
@@ -131,7 +142,7 @@ export function MainContent() {
         <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-2 min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="text-sm md:text-base font-semibold truncate">{agent?.name || 'Loading...'}</span>
-            {agent && <AgentStatus status={agent.status} hasActiveSessions={hasActiveSessions} />}
+            {agent && <AgentStatus status={agent.status} hasActiveSessions={hasActiveSessions} hasSessionsAwaitingInput={hasSessionsAwaitingInput} />}
           </div>
           {sessionId && session?.agentSlug === agentSlug && (
             <div className="flex items-center gap-2 min-w-0">
@@ -289,6 +300,24 @@ export function MainContent() {
           </div>
         </div>
       ))}
+
+      {/* Missing mount warning banner */}
+      {mountWarning && mountWarning.missingMounts.length > 0 && (
+        <div className="shrink-0 border-b bg-yellow-500/10 px-4 py-2">
+          <div className="flex items-center gap-2 text-xs text-yellow-700 dark:text-yellow-400">
+            <AlertTriangle className="h-3 w-3 shrink-0" />
+            <span className="flex-1">
+              Some mounted folders were not found and have been skipped: {mountWarning.missingMounts.map((m) => m.folderName).join(', ')}
+            </span>
+            <button
+              onClick={dismissMountWarning}
+              className="text-yellow-700 dark:text-yellow-400 hover:text-foreground transition-colors"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Context window usage bar (expanded) */}
       {sessionId && contextPercent != null && contextBarExpanded && (

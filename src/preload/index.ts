@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 // Expose protected methods that allow the renderer process to use
 // ipcRenderer without exposing the entire object
@@ -109,6 +109,31 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('set-native-theme', theme)
   },
 
+  // Open dashboard in a separate window
+  openDashboardWindow: (agentSlug: string, dashboardSlug: string, dashboardName?: string): Promise<void> => {
+    return ipcRenderer.invoke('open-dashboard-window', { agentSlug, dashboardSlug, dashboardName })
+  },
+
+  // Show the native emoji picker
+  showEmojiPanel: (): Promise<void> => {
+    return ipcRenderer.invoke('show-emoji-panel')
+  },
+
+  // Create a macOS dock shortcut for a dashboard
+  createDockShortcut: (agentSlug: string, dashboardSlug: string, dashboardName: string, iconPng: Uint8Array): Promise<void> => {
+    return ipcRenderer.invoke('create-dock-shortcut', { agentSlug, dashboardSlug, dashboardName, iconPng: Array.from(iconPng) })
+  },
+
+  // Get the real filesystem path for a dropped/selected file
+  getPathForFile: (file: File): string => {
+    return webUtils.getPathForFile(file)
+  },
+
+  // Open a native directory picker dialog
+  openDirectory: (): Promise<string | null> => {
+    return ipcRenderer.invoke('open-directory')
+  },
+
   // Auto-update
   checkForUpdates: (): Promise<void> => {
     return ipcRenderer.invoke('check-for-updates')
@@ -168,6 +193,11 @@ declare global {
       setBadgeCount: (count: number) => Promise<void>
       detectHostBrowser: () => Promise<{ available: boolean; browser: string | null; path: string | null }>
       setNativeTheme: (theme: string) => Promise<void>
+      openDashboardWindow: (agentSlug: string, dashboardSlug: string, dashboardName?: string) => Promise<void>
+      showEmojiPanel: () => Promise<void>
+      createDockShortcut: (agentSlug: string, dashboardSlug: string, dashboardName: string, iconPng: Uint8Array) => Promise<void>
+      getPathForFile: (file: File) => string
+      openDirectory: () => Promise<string | null>
       checkForUpdates: () => Promise<void>
       downloadUpdate: () => Promise<void>
       installUpdate: () => Promise<void>

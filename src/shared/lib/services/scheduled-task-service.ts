@@ -125,6 +125,22 @@ export async function listPendingScheduledTasks(agentSlug: string): Promise<Sche
 }
 
 /**
+ * List cancelled recurring scheduled tasks for an agent (excludes one-time tasks)
+ */
+export async function listCancelledScheduledTasks(agentSlug: string): Promise<ScheduledTask[]> {
+  return db
+    .select()
+    .from(scheduledTasks)
+    .where(
+      and(
+        eq(scheduledTasks.agentSlug, agentSlug),
+        eq(scheduledTasks.status, 'cancelled'),
+        eq(scheduledTasks.scheduleType, 'cron')
+      )
+    )
+}
+
+/**
  * Get all tasks that are due for execution
  * (nextExecutionAt <= now and status = 'pending')
  */
@@ -271,6 +287,47 @@ export async function updateTaskTimezone(taskId: string, timezone: string): Prom
 // ============================================================================
 // Delete Operations
 // ============================================================================
+
+/**
+ * Update a recurring task's schedule expression and recalculate next execution time.
+ */
+export async function updateScheduleExpression(
+  taskId: string,
+  scheduleExpression: string
+): Promise<boolean> {
+  const task = await getScheduledTask(taskId)
+  if (!task || task.status !== 'pending' || task.scheduleType !== 'cron') return false
+
+  const tz = task.timezone || undefined
+  const nextExecutionAt = getNextCronTime(scheduleExpression, tz)
+
+  const result = await db
+    .update(scheduledTasks)
+    .set({ scheduleExpression, nextExecutionAt })
+    .where(eq(scheduledTasks.id, taskId))
+
+  return (result.changes ?? 0) > 0
+}
+
+/**
+ * Record that a task was run manually (bump counts without changing schedule).
+ */
+export async function recordManualExecution(
+  taskId: string,
+  sessionId: string
+): Promise<void> {
+  const task = await getScheduledTask(taskId)
+  if (!task) return
+
+  await db
+    .update(scheduledTasks)
+    .set({
+      lastExecutedAt: new Date(),
+      lastSessionId: sessionId,
+      executionCount: task.executionCount + 1,
+    })
+    .where(eq(scheduledTasks.id, taskId))
+}
 
 /**
  * Delete a scheduled task (hard delete)

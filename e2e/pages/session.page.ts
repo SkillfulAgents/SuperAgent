@@ -267,4 +267,24 @@ export class SessionPage {
       this.page.locator(`[data-testid="question-request-completed"][data-status="${status}"]`).first()
     ).toBeVisible({ timeout })
   }
+
+  // --- Script Run Request Helpers ---
+
+  async waitForScriptRunRequest(timeout = 15000) {
+    await expect(this.page.locator('[data-testid="script-run-request"]').first()).toBeVisible({ timeout })
+  }
+
+  getScriptRunRequests() {
+    return this.page.locator('[data-testid="script-run-request"]')
+  }
+
+  async approveScriptRun() {
+    const container = this.page.locator('[data-testid="script-run-request"]').first()
+    await container.locator('[data-testid="script-run-btn"]').click()
+  }
+
+  async denyScriptRun() {
+    const container = this.page.locator('[data-testid="script-run-request"]').first()
+    await container.locator('[data-testid="script-deny-btn"]').click()
+  }
 }

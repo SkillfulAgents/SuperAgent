@@ -328,7 +328,7 @@ export function RemoteMcpRequestItem({
               MCP Server Requested: {name || url}
             </div>
             {reason && (
-              <p className="text-sm text-purple-700 dark:text-purple-300 mt-1">{reason}</p>
+              <p className="text-sm text-purple-700 dark:text-purple-300 mt-1 whitespace-pre-line">{reason}</p>
             )}
           </div>
           <span className="text-xs text-purple-600 dark:text-purple-400 shrink-0">Waiting for response</span>
@@ -352,7 +352,7 @@ export function RemoteMcpRequestItem({
             </div>
             <p className="text-xs text-purple-600 dark:text-purple-400 mt-0.5 truncate">{url}</p>
             {reason && (
-              <p className="text-sm text-purple-700 dark:text-purple-300 mt-1">{reason}</p>
+              <p className="text-sm text-purple-700 dark:text-purple-300 mt-1 whitespace-pre-line">{reason}</p>
             )}
           </div>
 

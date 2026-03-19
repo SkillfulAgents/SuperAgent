@@ -1,7 +1,11 @@
+import fs from 'fs'
+import path from 'path'
 import { getSettings, getEffectiveBrowserbaseApiKey, getEffectiveBrowserbaseProjectId } from '@shared/lib/config/settings'
+import { getDataDir } from '@shared/lib/config/data-dir'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo, BrowserDebugInfo } from './types'
 
 const BROWSERBASE_API_BASE = 'https://api.browserbase.com/v1'
+const CONTEXTS_FILE = 'browserbase-contexts.json'
 
 interface BrowserbaseSession {
   id: string
@@ -45,7 +49,7 @@ export class BrowserbaseProvider implements HostBrowserProvider {
     return { id: this.id, name: this.name, available: true }
   }
 
-  async launch(instanceId: string): Promise<BrowserConnectionInfo> {
+  async launch(instanceId: string, _options?: Record<string, string>, agentId?: string): Promise<BrowserConnectionInfo> {
     const apiKey = getEffectiveBrowserbaseApiKey()
     const projectId = getEffectiveBrowserbaseProjectId()
 
@@ -72,17 +76,25 @@ export class BrowserbaseProvider implements HostBrowserProvider {
       this.sessions.delete(instanceId)
     }
 
+    // Get or create a persistent context for this agent (preserves cookies/storage across sessions)
+    const contextKey = agentId || instanceId
+    const contextId = await this.getOrCreateContext(contextKey, projectId, apiKey)
+
     // Build session creation payload with optional stealth & proxy settings
     const settings = getSettings()
-    const sessionPayload: Record<string, unknown> = { projectId, keepAlive: true }
+    const browserSettings: Record<string, unknown> = {
+      context: { id: contextId, persist: true },
+    }
 
     // Advanced Stealth Mode
     if (settings.app?.browserbaseAdvancedStealth) {
-      sessionPayload.browserSettings = {
-        advancedStealth: true,
-        ...(settings.app.browserbaseStealthOs && { os: settings.app.browserbaseStealthOs }),
+      browserSettings.advancedStealth = true
+      if (settings.app.browserbaseStealthOs) {
+        browserSettings.os = settings.app.browserbaseStealthOs
       }
     }
+
+    const sessionPayload: Record<string, unknown> = { projectId, keepAlive: true, browserSettings }
 
     // Proxy configuration
     if (settings.app?.browserbaseProxies) {
@@ -194,6 +206,51 @@ export class BrowserbaseProvider implements HostBrowserProvider {
       return this.sessions.has(instanceId)
     }
     return this.sessions.size > 0
+  }
+
+  /** Load the persistent instanceId → contextId map from disk */
+  private loadContextMap(): Record<string, string> {
+    try {
+      const filePath = path.join(getDataDir(), CONTEXTS_FILE)
+      return JSON.parse(fs.readFileSync(filePath, 'utf-8'))
+    } catch {
+      return {}
+    }
+  }
+
+  /** Save the persistent instanceId → contextId map to disk */
+  private saveContextMap(map: Record<string, string>): void {
+    const filePath = path.join(getDataDir(), CONTEXTS_FILE)
+    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    fs.writeFileSync(filePath, JSON.stringify(map, null, 2))
+  }
+
+  /** Get or create a Browserbase context for the given instance */
+  private async getOrCreateContext(instanceId: string, projectId: string, apiKey: string): Promise<string> {
+    const map = this.loadContextMap()
+    if (map[instanceId]) {
+      return map[instanceId]
+    }
+
+    const response = await fetch(`${BROWSERBASE_API_BASE}/contexts`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-BB-API-Key': apiKey,
+      },
+      body: JSON.stringify({ projectId }),
+    })
+
+    if (!response.ok) {
+      const body = await response.text()
+      throw new Error(`Failed to create Browserbase context: ${response.status} ${body}`)
+    }
+
+    const context = await response.json() as { id: string }
+    map[instanceId] = context.id
+    this.saveContextMap(map)
+    console.log(`[BrowserbaseProvider] Created context ${context.id} for instance ${instanceId}`)
+    return context.id
   }
 
   /** Get the debug browser-level WebSocket URL for a session */

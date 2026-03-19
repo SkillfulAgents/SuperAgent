@@ -1,5 +1,5 @@
 import path from 'path'
-import { createContainerClient, checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, startRunner, refreshRunnerAvailability, type ContainerRunner } from './client-factory'
+import { createContainerClient, checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, startRunner, refreshRunnerAvailability, clearRunnerAvailabilityCache, getRunnerDisplayName, type ContainerRunner } from './client-factory'
 import type { ContainerClient, ContainerConfig, ContainerInfo, HealthCheckResult, RuntimeReadiness } from './types'
 import { healthMonitor } from './health-monitor'
 import { db } from '@shared/lib/db'
@@ -12,6 +12,7 @@ import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
 import { messagePersister } from './message-persister'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
+import { getMountsWithHealth } from '@shared/lib/services/mount-service'
 
 /** Interval for syncing container status with reality (in ms). Default: 300 seconds */
 const STATUS_SYNC_INTERVAL_MS = parseInt(
@@ -43,6 +44,8 @@ class ContainerManager {
   private healthCheckIntervalId: NodeJS.Timeout | null = null
   /** Cached health warnings per agent */
   private healthWarnings: Map<string, HealthCheckResult[]> = new Map()
+  /** Agents currently being stopped — skip health checks, sync, and connection error recovery */
+  private stoppingAgents: Set<string> = new Set()
 
   /** Unified runtime readiness state */
   private _readiness: RuntimeReadiness = process.env.E2E_MOCK === 'true'
@@ -57,6 +60,9 @@ class ContainerManager {
       const config: ContainerConfig = {
         agentId,
         onConnectionError: () => {
+          // Skip if the agent is being stopped — don't spawn more CLI commands
+          if (this.stoppingAgents.has(agentId)) return
+
           // When a connection error is detected, sync status with Docker
           // This handles cases where the container crashed or was stopped externally
           console.log(`[ContainerManager] Connection error for ${agentId}, syncing status...`)
@@ -116,23 +122,77 @@ class ContainerManager {
   /**
    * Stop a container and update all related state.
    * This is the preferred way to stop a container - handles cache, broadcasts, and session state.
+   *
+   * Marks the agent as "stopping" so health checks, status sync, and connection
+   * error handlers stop spawning CLI commands into a potentially overloaded VM.
    */
   async stopContainer(agentId: string): Promise<void> {
-    const client = this.getClient(agentId)
-    await client.stop()
+    // Mark as stopping immediately to prevent health checks / sync from spawning
+    // more CLI processes into an overloaded VM
+    this.stoppingAgents.add(agentId)
 
-    // Update cached status
-    this.markAsStopped(agentId)
+    let forceStopUsed = false
 
-    // Mark all sessions for this agent as inactive
-    messagePersister.markAllSessionsInactiveForAgent(agentId)
+    try {
+      const client = this.getClient(agentId)
+      const result = await client.stop()
+      forceStopUsed = result.forceStopUsed
+    } finally {
+      this.stoppingAgents.delete(agentId)
 
-    // Broadcast status change so UI updates
-    messagePersister.broadcastGlobal({
-      type: 'agent_status_changed',
-      agentSlug: agentId,
-      status: 'stopped',
-    })
+      // Update cached status
+      this.markAsStopped(agentId)
+
+      // Mark all sessions for this agent as inactive
+      messagePersister.markAllSessionsInactiveForAgent(agentId)
+
+      // Broadcast status change so UI updates
+      messagePersister.broadcastGlobal({
+        type: 'agent_status_changed',
+        agentSlug: agentId,
+        status: 'stopped',
+      })
+
+      // If we had to force-kill the VM (e.g., Lima QEMU process):
+      // 1. Mark ALL other running containers as stopped — they died with the VM
+      // 2. Clear stale runner availability cache so ensureImageReady sees the dead VM
+      // 3. Re-check runtime readiness so the VM restarts in the background
+      if (forceStopUsed) {
+        for (const otherId of this.getRunningAgentIds()) {
+          if (otherId === agentId) continue
+          this.markAsStopped(otherId)
+          messagePersister.markAllSessionsInactiveForAgent(otherId)
+          messagePersister.broadcastGlobal({
+            type: 'agent_status_changed',
+            agentSlug: otherId,
+            status: 'stopped',
+          })
+        }
+
+        // Alert the user that we had to kill the VM
+        messagePersister.broadcastGlobal({
+          type: 'system_alert',
+          level: 'warning',
+          title: 'Container runtime restarting',
+          body: 'The agent was unresponsive and required force-stopping the container runtime. All running agents have been stopped. The runtime will restart automatically.',
+        })
+
+        clearRunnerAvailabilityCache()
+
+        this.ensureImageReady().catch((err) => {
+          console.error('[ContainerManager] Failed to re-check readiness after force stop:', err)
+        })
+      }
+    }
+  }
+
+  /**
+   * Restart a container by stopping and re-starting it.
+   * Mounts are re-loaded from mounts.json on start.
+   */
+  async restartContainer(agentId: string): Promise<ContainerClient> {
+    await this.stopContainer(agentId)
+    return this.ensureRunning(agentId)
   }
 
   /**
@@ -180,6 +240,9 @@ class ContainerManager {
       const agentIds = Array.from(this.clients.keys())
 
       for (const agentId of agentIds) {
+        // Skip agents currently being stopped
+        if (this.stoppingAgents.has(agentId)) continue
+
         try {
           await this.syncAgentStatus(agentId)
         } catch (error) {
@@ -288,6 +351,9 @@ class ContainerManager {
 
     for (const agentId of runningIds) {
       try {
+        // Skip agents currently being stopped — don't spawn CLI commands into an overloaded VM
+        if (this.stoppingAgents.has(agentId)) continue
+
         const client = this.clients.get(agentId)
         if (!client) continue
 
@@ -421,13 +487,34 @@ class ContainerManager {
       const tz = resolveTimezoneForAgent(agentId)
       envVars['TZ'] = tz
 
+      // Tell the agent container which host OS is running (for script type selection)
+      envVars['HOST_PLATFORM'] = process.platform
+
       // Inject user-defined custom env vars (set in global settings)
       if (settings.customEnvVars) {
         Object.assign(envVars, settings.customEnvVars)
       }
 
+      // Load mounts and build volume flags for healthy ones
+      const mountsWithHealth = getMountsWithHealth(agentId)
+      const healthyMounts = mountsWithHealth.filter((m) => m.health === 'ok')
+      const missingMounts = mountsWithHealth.filter((m) => m.health === 'missing')
+
+      if (missingMounts.length > 0) {
+        console.warn(`[ContainerManager] Skipping ${missingMounts.length} missing mount(s) for ${agentId}:`, missingMounts.map((m) => m.hostPath))
+        messagePersister.broadcastGlobal({
+          type: 'mount_health_warning',
+          agentSlug: agentId,
+          missingMounts: missingMounts.map((m) => ({ folderName: m.folderName, hostPath: m.hostPath })),
+        })
+      }
+
+      const additionalVolumes = healthyMounts.map((m) =>
+        client.buildVolumeFlag(m.hostPath, m.containerPath)
+      )
+
       // Start container (user secrets are in .env file in workspace)
-      await client.start({ envVars })
+      await client.start({ envVars, additionalVolumes })
 
       // Sync status from Docker to get the actual port
       const info = await this.syncAgentStatus(agentId)
@@ -458,6 +545,7 @@ class ContainerManager {
     this.containerStartedAt.delete(agentId)
     this.containerStatuses.delete(agentId)
     this.healthWarnings.delete(agentId)
+    this.stoppingAgents.delete(agentId)
   }
 
   // Clear all cached clients (e.g., when container runner setting changes).
@@ -467,14 +555,23 @@ class ContainerManager {
     this.containerStartedAt.clear()
     this.containerStatuses.clear()
     this.healthWarnings.clear()
+    this.stoppingAgents.clear()
   }
 
-  // Stop all containers
+  // Stop all containers (with per-container timeout to prevent blocking shutdown)
   async stopAll(): Promise<void> {
+    // Timeout must accommodate the full escalation chain:
+    // nerdctl stop (10s) + nerdctl kill (5s) + forceStop (10s) = 25s max
+    const STOP_TIMEOUT_MS = 30000
     const agentIds = Array.from(this.clients.keys())
     const stopPromises = agentIds.map(async (agentId) => {
       try {
-        await this.stopContainer(agentId)
+        await Promise.race([
+          this.stopContainer(agentId),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('Container stop timed out')), STOP_TIMEOUT_MS)
+          ),
+        ])
       } catch (error) {
         console.error(`Failed to stop container for agent ${agentId}:`, error)
       }
@@ -484,6 +581,7 @@ class ContainerManager {
     this.containerStartedAt.clear()
     this.containerStatuses.clear()
     this.healthWarnings.clear()
+    this.stoppingAgents.clear()
   }
 
   // Synchronous stop - used for exit handlers where async isn't available
@@ -530,6 +628,19 @@ class ContainerManager {
     return this._readiness
   }
 
+  /** Reset readiness to CHECKING state and broadcast. Used when restarting a runtime.
+   *  Skips reset if an image pull is in progress to avoid losing pull progress UI. */
+  resetReadiness(message = 'Restarting runtime...'): void {
+    if (this._readiness.status === 'PULLING_IMAGE') {
+      return
+    }
+    this.setReadiness({
+      status: 'CHECKING',
+      message,
+      pullProgress: null,
+    })
+  }
+
   /** Update readiness state and broadcast change via SSE. */
   private setReadiness(readiness: RuntimeReadiness): void {
     this._readiness = readiness
@@ -565,7 +676,7 @@ class ContainerManager {
 
     this.setReadiness({
       status: 'CHECKING',
-      message: `Checking ${configuredRunner} availability...`,
+      message: `Checking ${getRunnerDisplayName(configuredRunner)} availability...`,
       pullProgress: null,
     })
 
@@ -573,22 +684,24 @@ class ContainerManager {
     const runnerStatus = allAvailability.find((r) => r.runner === configuredRunner)
 
     if (!runnerStatus?.available) {
-      // Auto-start Apple Container runtime if it's installed but not running
-      if (configuredRunner === 'apple-container' && runnerStatus?.installed && !runnerStatus?.running) {
+      // Auto-start runtimes that support it (Apple Container, Lima, WSL2)
+      if ((configuredRunner === 'apple-container' || configuredRunner === 'lima' || configuredRunner === 'wsl2') && runnerStatus?.installed && !runnerStatus?.running) {
         this.setReadiness({
           status: 'CHECKING',
-          message: 'Starting Apple Container runtime...',
+          message: `Starting ${getRunnerDisplayName(configuredRunner)} runtime...`,
           pullProgress: null,
         })
 
-        const startResult = await startRunner('apple-container')
+        const startResult = await startRunner(configuredRunner)
         if (startResult.success) {
-          // Poll for runtime to become available (up to ~15s)
+          // Poll for runtime to become available
+          // Lima VM / WSL2 distro boot can take up to ~30s, Apple Container ~15s
+          const maxPollSeconds = (configuredRunner === 'lima' || configuredRunner === 'wsl2') ? 60 : 15
           let available = false
-          for (let i = 0; i < 15; i++) {
+          for (let i = 0; i < maxPollSeconds; i++) {
             await new Promise((r) => setTimeout(r, 1000))
             const refreshed = await refreshRunnerAvailability()
-            const status = refreshed.find((r) => r.runner === 'apple-container')
+            const status = refreshed.find((r) => r.runner === configuredRunner)
             if (status?.available) {
               available = true
               break
@@ -598,7 +711,7 @@ class ContainerManager {
           if (!available) {
             this.setReadiness({
               status: 'RUNTIME_UNAVAILABLE',
-              message: 'Apple Container runtime failed to start in time.',
+              message: `${getRunnerDisplayName(configuredRunner)} runtime failed to start in time.`,
               pullProgress: null,
             })
             return
@@ -607,13 +720,13 @@ class ContainerManager {
         } else {
           this.setReadiness({
             status: 'RUNTIME_UNAVAILABLE',
-            message: `Failed to start Apple Container runtime: ${startResult.message}`,
+            message: `Failed to start ${getRunnerDisplayName(configuredRunner)} runtime: ${startResult.message}`,
             pullProgress: null,
           })
           return
         }
       } else {
-        // Configured runner not available — check if another runner is available and auto-switch
+        // Configured runner not available — check if another runner is already running and auto-switch
         const alternativeRunner = allAvailability.find((r) => r.available && r.runner !== configuredRunner)
         if (alternativeRunner) {
           console.log(`Configured runner ${configuredRunner} not available, auto-switching to ${alternativeRunner.runner}`)
@@ -621,9 +734,10 @@ class ContainerManager {
           settings = { ...settings, container: { ...settings.container, containerRunner: configuredRunner } }
           updateSettings(settings)
         } else {
+          const displayName = getRunnerDisplayName(configuredRunner)
           const detail = !runnerStatus?.installed
-            ? `${configuredRunner} is not installed.`
-            : `${configuredRunner} is not running. Please start it and refresh.`
+            ? `${displayName} is not installed.`
+            : `${displayName} is not running. Please start it and refresh.`
           this.setReadiness({
             status: 'RUNTIME_UNAVAILABLE',
             message: detail,

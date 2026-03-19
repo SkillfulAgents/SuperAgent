@@ -416,6 +416,18 @@ export class UserInputRequestScenario implements MockScenario {
  * Mock implementation of ContainerClient for E2E testing.
  * Simulates container behavior without requiring Docker/Podman.
  */
+// Browser scenario cleanup function — set by dynamic import below
+let cleanupBrowserSessionFn: ((sessionId: string) => void) | null = null
+
+// Register browser scenario only when E2E_CHROMIUM_PATH is available
+if (process.env.E2E_MOCK === 'true' && process.env.E2E_CHROMIUM_PATH) {
+  import('./mock-browser-scenario').then(({ BrowserScenario, cleanupBrowserSession }) => {
+    MockContainerClient.scenarios.set('browse ', new BrowserScenario())
+    cleanupBrowserSessionFn = cleanupBrowserSession
+    console.log('[MockContainerClient] Registered BrowserScenario (E2E_CHROMIUM_PATH available)')
+  })
+}
+
 export class MockContainerClient extends EventEmitter implements ContainerClient {
   // Global scenario registry - tests can register scenarios by message pattern
   static scenarios = new Map<string, MockScenario>([
@@ -455,6 +467,12 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         },
       },
     ])],
+    ['ask script', new UserInputRequestScenario([
+      {
+        name: 'mcp__user-input__request_script_run',
+        input: { script: 'sw_vers', explanation: 'Check macOS version', scriptType: 'shell' },
+      },
+    ])],
     ['ask parallel', new UserInputRequestScenario([
       {
         name: 'mcp__user-input__request_secret',
@@ -475,6 +493,64 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         },
       },
     ])],
+    // Tool rendering scenarios for E2E tests
+    ['read file', new ToolUseScenario(
+      'Read',
+      { file_path: '/workspace/src/index.ts' },
+      'const app = express();\napp.listen(3000);',
+      'Here is the content of the file.'
+    )],
+    ['write file', new ToolUseScenario(
+      'Write',
+      { file_path: '/workspace/src/hello.ts', content: 'console.log("hello")' },
+      'File written successfully.',
+      'I created the file for you.'
+    )],
+    ['search code', new ToolUseScenario(
+      'Grep',
+      { pattern: 'TODO', include: '*.ts' },
+      'src/index.ts:5: // TODO: add error handling\nsrc/utils.ts:12: // TODO: refactor',
+      'I found 2 TODO comments in the codebase.'
+    )],
+    ['find files', new ToolUseScenario(
+      'Glob',
+      { pattern: 'src/**/*.ts' },
+      'src/index.ts\nsrc/utils.ts\nsrc/types.ts',
+      'I found 3 TypeScript files.'
+    )],
+    ['search web', new ToolUseScenario(
+      'WebSearch',
+      { query: 'TypeScript best practices 2025' },
+      'Web search results for query: TypeScript best practices 2025\n\n1. Use strict mode\n2. Prefer interfaces over types',
+      'Here are the search results.'
+    )],
+    // Connected account request scenario
+    ['ask account', new UserInputRequestScenario([
+      {
+        name: 'mcp__user-input__request_connected_account',
+        input: { toolkit: 'github', reason: 'Need access to your GitHub repositories' },
+      },
+    ])],
+    // Remote MCP request scenario - URL will be overridden by test via registerScenario
+    ['request mcp', new UserInputRequestScenario([
+      {
+        name: 'mcp__user-input__request_remote_mcp',
+        input: { url: 'http://localhost:9876/mcp', name: 'Test MCP', reason: 'Need access to test tools' },
+      },
+    ])],
+    // Schedule task scenario
+    ['schedule task', new ToolUseScenario(
+      'mcp__user-input__schedule_task',
+      {
+        scheduleType: 'cron',
+        scheduleExpression: '0 9 * * 1-5',
+        prompt: 'Check for new issues and summarize them',
+        name: 'Daily Issue Summary',
+        timezone: 'America/New_York',
+      },
+      'Task scheduled successfully. ID: task_123',
+      'I\'ve scheduled the daily issue summary task.'
+    )],
   ])
   static defaultScenario: MockScenario = new SimpleTextResponseScenario(
     'This is a mock response from the E2E test container.'
@@ -482,6 +558,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   private config: ContainerConfig
   private running: boolean = false
+  private activeBrowserSessionId: string | null = null
   private sessions: Map<string, ContainerSession> = new Map()
   private sessionMessages: Map<string, unknown[]> = new Map()
   private streamCallbacks: Map<string, Set<(message: StreamMessage) => void>> = new Map()
@@ -493,6 +570,14 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   constructor(config: ContainerConfig) {
     super()
     this.config = config
+  }
+
+  getAgentId(): string {
+    return this.config.agentId
+  }
+
+  setActiveBrowserSession(sessionId: string | null): void {
+    this.activeBrowserSessionId = sessionId
   }
 
   /**
@@ -560,6 +645,11 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     }
   }
 
+  // Volume flag builder (no-op in mock — mounts are not simulated)
+  buildVolumeFlag(hostPath: string, containerPath: string): string {
+    return `"${hostPath}:${containerPath}"`
+  }
+
   // Lifecycle management
 
   async start(_options?: StartOptions): Promise<void> {
@@ -567,15 +657,24 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     console.log(`[MockContainerClient] Started mock container for agent ${this.config.agentId}`)
   }
 
-  async stop(): Promise<void> {
+  async stop(): Promise<{ forceStopUsed: boolean }> {
+    if (this.activeBrowserSessionId && cleanupBrowserSessionFn) {
+      cleanupBrowserSessionFn(this.activeBrowserSessionId)
+      this.activeBrowserSessionId = null
+    }
     this.running = false
     this.sessions.clear()
     this.sessionMessages.clear()
     this.streamCallbacks.clear()
     console.log(`[MockContainerClient] Stopped mock container for agent ${this.config.agentId}`)
+    return { forceStopUsed: false }
   }
 
   stopSync(): void {
+    if (this.activeBrowserSessionId && cleanupBrowserSessionFn) {
+      cleanupBrowserSessionFn(this.activeBrowserSessionId)
+      this.activeBrowserSessionId = null
+    }
     this.running = false
     this.sessions.clear()
     this.sessionMessages.clear()
@@ -598,6 +697,18 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   async fetch(fetchPath: string, _init?: RequestInit): Promise<Response> {
     // Mock fetch - return appropriate empty responses based on path
+
+    // Browser status — used by frontend when WebSocket closes to check if browser is still active
+    if (fetchPath === '/browser/status') {
+      return new Response(JSON.stringify({
+        active: this.activeBrowserSessionId !== null,
+        sessionId: this.activeBrowserSessionId,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+
     // Endpoints that return arrays need to return [] not {}
     if (fetchPath === '/artifacts') {
       return new Response(JSON.stringify([]), {
@@ -741,7 +852,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   // Message operations
 
-  async sendMessage(sessionId: string, content: string): Promise<void> {
+  async sendMessage(sessionId: string, content: string, _uuid?: string): Promise<void> {
     const session = this.sessions.get(sessionId)
     if (!session) {
       throw new Error(`Session ${sessionId} not found`)

@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono'
 import { streamSSE } from 'hono/streaming'
-import Anthropic from '@anthropic-ai/sdk'
+import type Anthropic from '@anthropic-ai/sdk'
 import { randomUUID } from 'crypto'
 import { Authenticated, AgentRead, AgentUser, AgentAdmin } from '../middleware/auth'
 import {
@@ -27,7 +27,8 @@ import {
   removeMessage,
   removeToolCall,
 } from '@shared/lib/services/session-service'
-import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile } from '@shared/lib/utils/file-storage'
+import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile, getTempUploadsDir, ensureDirectory, removeDirectory } from '@shared/lib/utils/file-storage'
+import { getMountsWithHealth, addMount, removeMount } from '@shared/lib/services/mount-service'
 import {
   listSecrets,
   getSecret,
@@ -39,9 +40,10 @@ import {
 import {
   listScheduledTasks,
   listPendingScheduledTasks,
+  listCancelledScheduledTasks,
 } from '@shared/lib/services/scheduled-task-service'
 import { db } from '@shared/lib/db'
-import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, user as userTable } from '@shared/lib/db/schema'
+import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, user as userTable, messageAuthor } from '@shared/lib/db/schema'
 import { eq, and, inArray, desc, count, like, or } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
@@ -59,10 +61,12 @@ import {
   publishSkillToSkillset,
   refreshAgentSkills,
 } from '@shared/lib/services/skillset-service'
-import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
+import { listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
+import { getSessionIdsWithUnreadNotifications } from '@shared/lib/services/notification-service'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import {
   exportAgentTemplate,
+  exportAgentFull,
   importAgentFromTemplate,
   installAgentFromSkillset,
   updateAgentFromSkillset,
@@ -79,7 +83,8 @@ import {
 } from '@shared/lib/services/agent-template-service'
 import { withRetry } from '@shared/lib/utils/retry'
 import { transformMessages, type TransformedMessage, type TransformedItem } from '@shared/lib/utils/message-transform'
-import { getEffectiveAnthropicApiKey, getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings } from '@shared/lib/config/settings'
+import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings } from '@shared/lib/config/settings'
+import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import * as fs from 'fs'
@@ -159,30 +164,106 @@ agents.use('*', Authenticated())
 // ============================================================
 
 // POST /api/agents/import-template - Import agent from uploaded ZIP
+// Supports both single-request (file field) and chunked upload (chunk field)
 agents.post('/import-template', async (c) => {
   try {
     const formData = await c.req.formData()
-    const file = formData.get('file') as File | null
-    const nameOverride = formData.get('name') as string | null
 
+    // Check if this is a chunked upload
+    const chunk = formData.get('chunk') as File | null
+    if (chunk) {
+      return await handleChunkedImport(c, formData, chunk)
+    }
+
+    // Legacy single-request upload
+    const file = formData.get('file') as File | null
     if (!file) {
-      return c.json({ error: 'No file provided' }, 400)
+      return c.json({ error: 'No file or chunk provided' }, 400)
     }
 
     const arrayBuffer = await file.arrayBuffer()
     const zipBuffer = Buffer.from(arrayBuffer)
 
-    const agent = await importAgentFromTemplate(zipBuffer, nameOverride || undefined)
-    await createOwnerAcl(c, agent.slug)
-    const hasOnboarding = await hasOnboardingSkill(agent.slug)
-    const requiredEnvVars = await collectAgentRequiredEnvVars(agent.slug)
-    return c.json({ ...agent, hasOnboarding, requiredEnvVars }, 201)
+    return await processImport(c, zipBuffer, formData)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to import template'
     console.error('Failed to import template:', error)
     return c.json({ error: message }, 500)
   }
 })
+
+async function handleChunkedImport(c: Context, formData: FormData, chunk: File) {
+  const uploadId = formData.get('uploadId') as string | null
+  const chunkIndexStr = formData.get('chunkIndex') as string | null
+  const totalChunksStr = formData.get('totalChunks') as string | null
+
+  if (!uploadId || chunkIndexStr === null || totalChunksStr === null) {
+    return c.json({ error: 'Missing chunked upload fields: uploadId, chunkIndex, totalChunks' }, 400)
+  }
+
+  // Validate uploadId format (UUID only — prevent path traversal)
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uploadId)) {
+    return c.json({ error: 'Invalid uploadId format' }, 400)
+  }
+
+  const chunkIndex = parseInt(chunkIndexStr, 10)
+  const totalChunks = parseInt(totalChunksStr, 10)
+
+  if (isNaN(chunkIndex) || isNaN(totalChunks) || chunkIndex < 0 || totalChunks < 1 || chunkIndex >= totalChunks || totalChunks > 200) {
+    return c.json({ error: 'Invalid chunkIndex or totalChunks' }, 400)
+  }
+
+  const uploadDir = path.join(getTempUploadsDir(), uploadId)
+  await ensureDirectory(uploadDir)
+
+  // Write this chunk to disk
+  const chunkBuffer = Buffer.from(await chunk.arrayBuffer())
+  await fs.promises.writeFile(path.join(uploadDir, `chunk-${chunkIndex}`), chunkBuffer)
+
+  // Check if all chunks are present
+  const files = await fs.promises.readdir(uploadDir)
+  const chunkFiles = files.filter((f) => f.startsWith('chunk-'))
+
+  if (chunkFiles.length < totalChunks) {
+    return c.json({ status: 'chunk_received', chunkIndex })
+  }
+
+  // Prevent duplicate assembly from concurrent requests
+  const lockPath = path.join(uploadDir, '.assembling')
+  try {
+    await fs.promises.writeFile(lockPath, '', { flag: 'wx' }) // fails if already exists
+  } catch {
+    return c.json({ status: 'chunk_received', chunkIndex })
+  }
+
+  // All chunks received — assemble and process
+  try {
+    const buffers: Buffer[] = []
+    for (let i = 0; i < totalChunks; i++) {
+      buffers.push(await fs.promises.readFile(path.join(uploadDir, `chunk-${i}`)))
+    }
+    const zipBuffer = Buffer.concat(buffers)
+
+    return await processImport(c, zipBuffer, formData)
+  } finally {
+    // Clean up temp chunks
+    try { await removeDirectory(uploadDir) } catch { /* ignore cleanup errors */ }
+  }
+}
+
+async function processImport(c: Context, zipBuffer: Buffer, formData: FormData) {
+  const nameOverride = formData.get('name') as string | null
+  const mode = formData.get('mode') as string | null
+  const importMode = mode === 'full' ? 'full' : 'template'
+
+  const agent = await importAgentFromTemplate(zipBuffer, nameOverride || undefined, importMode)
+  await createOwnerAcl(c, agent.slug)
+  const hasOnboarding = await hasOnboardingSkill(agent.slug)
+  const requiredEnvVars = await collectAgentRequiredEnvVars(agent.slug, {
+    excludeExistingSecrets: importMode === 'full',
+  })
+  return c.json({ ...agent, hasOnboarding, requiredEnvVars }, 201)
+}
 
 // GET /api/agents/discoverable-agents - List agents available from skillsets
 // Uses ?refresh=true to force a cache refresh before reading
@@ -341,13 +422,9 @@ export async function pushRemoteMcpsToContainer(agentSlug: string): Promise<void
   }
 }
 
-// Create Anthropic client lazily to use API key from settings
-function getAnthropicClient(): Anthropic {
-  const apiKey = getEffectiveAnthropicApiKey()
-  if (!apiKey) {
-    throw new Error('Anthropic API key not configured')
-  }
-  return new Anthropic({ apiKey })
+// Create LLM client using the active provider
+function getLlmClient(): Anthropic {
+  return getActiveLlmProvider().createClient()
 }
 
 // Model used for generating session names (lightweight task)
@@ -363,7 +440,7 @@ async function generateAndUpdateSessionNameAsync(
   agentName: string
 ): Promise<void> {
   try {
-    const anthropic = getAnthropicClient()
+    const anthropic = getLlmClient()
     const response = await withRetry(() =>
       anthropic.messages.create({
         model: getSummarizerModel(),
@@ -505,8 +582,11 @@ agents.delete('/:id', AgentAdmin(), async (c) => {
       console.error('Failed to revoke proxy token:', error)
     }
 
-    // Clean up ACL entries
+    // Clean up ACL entries and message author records
     await db.delete(agentAcl).where(eq(agentAcl.agentSlug, slug))
+    if (isAuthMode()) {
+      await db.delete(messageAuthor).where(eq(messageAuthor.agentSlug, slug))
+    }
 
     return c.body(null, 204)
   } catch (error) {
@@ -859,9 +939,12 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
 
 
     const sessionList = await listSessions(slug)
+    const unreadSessionIds = await getSessionIdsWithUnreadNotifications(slug)
     const sessionsWithStatus = sessionList.map((session) => ({
       ...session,
       isActive: messagePersister.isSessionActive(session.id),
+      isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id),
+      hasUnreadNotifications: unreadSessionIds.has(session.id),
     }))
 
     return c.json(sessionsWithStatus)
@@ -892,9 +975,17 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
 
     const agentLimits = getEffectiveAgentLimits()
     const customEnvVars = getCustomEnvVars()
+
+    // In auth mode, generate a UUID for the initial message author attribution
+    let initialMessageUuid: string | undefined
+    if (isAuthMode()) {
+      initialMessageUuid = randomUUID()
+    }
+
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: message.trim(),
+      initialMessageUuid,
       model: getEffectiveModels().agentModel,
       browserModel: getEffectiveModels().browserModel,
       maxOutputTokens: agentLimits.maxOutputTokens,
@@ -902,8 +993,20 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       maxTurns: agentLimits.maxTurns,
       maxBudgetUsd: agentLimits.maxBudgetUsd,
       customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
+      maxBrowserTabs: getSettings().app?.maxBrowserTabs,
     })
     const sessionId = containerSession.id
+
+    // Record author for initial message after we know the sessionId
+    if (isAuthMode() && initialMessageUuid) {
+      const userId = getCurrentUserId(c)
+      await db.insert(messageAuthor).values({
+        id: initialMessageUuid,
+        sessionId,
+        agentSlug: slug,
+        userId,
+      })
+    }
 
     await registerSession(slug, sessionId, 'New Session')
     await messagePersister.subscribeToSession(sessionId, client, sessionId, slug)
@@ -952,6 +1055,40 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
 
     // Discover subagent IDs for interrupted Task tool calls that have no result
     await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
+
+    // In auth mode, annotate user messages with sender info
+    if (isAuthMode()) {
+      const userMessageIds = transformed
+        .filter((m) => m.type === 'user')
+        .map((m) => m.id)
+
+      if (userMessageIds.length > 0) {
+        const authors = await db
+          .select({
+            messageId: messageAuthor.id,
+            userId: messageAuthor.userId,
+            userName: userTable.name,
+            userEmail: userTable.email,
+          })
+          .from(messageAuthor)
+          .innerJoin(userTable, eq(messageAuthor.userId, userTable.id))
+          .where(eq(messageAuthor.sessionId, sessionId))
+
+        const authorMap = new Map(authors.map((a) => [a.messageId, a]))
+
+        for (const msg of transformed) {
+          if (msg.type !== 'user') continue
+          const author = authorMap.get(msg.id)
+          if (author) {
+            msg.sender = {
+              id: author.userId,
+              name: author.userName,
+              email: author.userEmail,
+            }
+          }
+        }
+      }
+    }
 
     return c.json(transformed)
   } catch (error) {
@@ -1075,13 +1212,52 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     }
 
     messagePersister.markSessionActive(sessionId, agentSlug)
-    await client.sendMessage(sessionId, content.trim())
+
+    // In auth mode, generate a UUID and record the sender for message attribution
+    let messageUuid: string | undefined
+    if (isAuthMode()) {
+      const userId = getCurrentUserId(c)
+      messageUuid = randomUUID()
+      await db.insert(messageAuthor).values({
+        id: messageUuid,
+        sessionId,
+        agentSlug,
+        userId,
+      })
+    }
+
+    // Broadcast user message to other SSE viewers (auth mode shared agents)
+    if (isAuthMode()) {
+      const user = c.get('user' as never) as { id: string; name: string }
+      messagePersister.broadcastSessionEvent(sessionId, {
+        type: 'user_message',
+        content: content.trim(),
+        sender: { id: user.id, name: user.name },
+      })
+    }
+
+    await client.sendMessage(sessionId, content.trim(), messageUuid)
 
     return c.json({ success: true }, 201)
   } catch (error) {
     console.error('Failed to send message:', error)
     return c.json({ error: 'Failed to send message' }, 500)
   }
+})
+
+// POST /api/agents/:id/sessions/:sessionId/typing - Broadcast typing indicator (auth mode only)
+agents.post('/:id/sessions/:sessionId/typing', AgentUser(), async (c) => {
+  if (!isAuthMode()) return c.json({ ok: true })
+
+  const sessionId = c.req.param('sessionId')
+  const user = c.get('user' as never) as { id: string; name: string }
+
+  messagePersister.broadcastSessionEvent(sessionId, {
+    type: 'user_typing',
+    sender: { id: user.id, name: user.name },
+  })
+
+  return c.json({ ok: true })
 })
 
 // GET /api/agents/:id/sessions/:sessionId - Get a single session
@@ -1166,6 +1342,11 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
 
     messagePersister.unsubscribeFromSession(sessionId)
     await deleteSession(agentSlug, sessionId)
+
+    // Clean up message author records for this session
+    if (isAuthMode()) {
+      await db.delete(messageAuthor).where(eq(messageAuthor.sessionId, sessionId))
+    }
 
     return c.body(null, 204)
   } catch (error) {
@@ -1652,6 +1833,215 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
   }
 })
 
+// POST /api/agents/:id/sessions/:sessionId/complete-browser-input - Complete or cancel a browser input request
+agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const body = await c.req.json()
+    const { toolUseId, decline, declineReason } = body
+
+    if (!toolUseId) {
+      return c.json({ error: 'toolUseId is required' }, 400)
+    }
+
+    const client = containerManager.getClient(agentSlug)
+
+    if (decline) {
+      const reason = declineReason || 'User wants to chat with the agent'
+
+      const rejectResponse = await client.fetch(
+        `/inputs/${encodeURIComponent(toolUseId)}/reject`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason }),
+        }
+      )
+
+      if (!rejectResponse.ok) {
+        let errorDetails = 'Unknown error'
+        try {
+          const error = await rejectResponse.json()
+          errorDetails = JSON.stringify(error)
+        } catch {
+          errorDetails = await rejectResponse.text()
+        }
+        console.error(`[complete-browser-input] Failed to reject: ${errorDetails}`)
+        return c.json({ error: 'Failed to reject browser input request' }, 500)
+      }
+
+      // Interrupt the session so the user can chat directly with the agent
+      const sessionId = c.req.param('sessionId')
+      try {
+        await client.interruptSession(sessionId)
+      } catch (e) {
+        console.error(`[complete-browser-input] Failed to interrupt session: ${e}`)
+      }
+      await messagePersister.markSessionInterrupted(sessionId)
+
+      trackServerEvent('request_declined', { type: 'browser_input', withReason: !!declineReason })
+      return c.json({ success: true, declined: true })
+    }
+
+    // User completed the browser interaction
+    const resolveResponse = await client.fetch(
+      `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: 'completed' }),
+      }
+    )
+
+    if (!resolveResponse.ok) {
+      let errorDetails = 'Unknown error'
+      try {
+        const error = await resolveResponse.json()
+        errorDetails = JSON.stringify(error)
+      } catch {
+        errorDetails = await resolveResponse.text()
+      }
+      console.error(`[complete-browser-input] Failed to resolve: ${errorDetails}`)
+      return c.json({ error: 'Failed to complete browser input request' }, 500)
+    }
+
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('Failed to complete browser input:', error)
+    return c.json({ error: 'Failed to complete browser input' }, 500)
+  }
+})
+
+// POST /api/agents/:id/sessions/:sessionId/run-script - Run or deny a script execution request
+agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const body = await c.req.json()
+    const { toolUseId, script, scriptType, decline, declineReason } = body
+
+    if (!toolUseId) {
+      return c.json({ error: 'toolUseId is required' }, 400)
+    }
+
+    const client = containerManager.getClient(agentSlug)
+
+    if (decline) {
+      const reason = declineReason || 'User denied script execution'
+
+      const rejectResponse = await client.fetch(
+        `/inputs/${encodeURIComponent(toolUseId)}/reject`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason }),
+        }
+      )
+
+      if (!rejectResponse.ok) {
+        let errorDetails = 'Unknown error'
+        try {
+          const error = await rejectResponse.json()
+          errorDetails = JSON.stringify(error)
+        } catch {
+          errorDetails = await rejectResponse.text()
+        }
+        console.error(`[run-script] Failed to reject: ${errorDetails}`)
+        return c.json({ error: 'Failed to reject script run request' }, 500)
+      }
+
+      trackServerEvent('request_declined', { type: 'script_run', withReason: !!declineReason })
+      return c.json({ success: true, declined: true })
+    }
+
+    // Run path: verify settings, validate platform, execute script
+    const { getSettings, VALID_SCRIPT_TYPES } = await import('@shared/lib/config/settings')
+    const settings = getSettings()
+    if (!settings.hostShellUse?.allowScriptExecution) {
+      return c.json({ error: 'Host script execution is not enabled' }, 403)
+    }
+
+    if (!script || !scriptType) {
+      return c.json({ error: 'script and scriptType are required' }, 400)
+    }
+
+    // Validate scriptType against platform
+    const platform = process.platform
+    if (!VALID_SCRIPT_TYPES[platform]?.includes(scriptType)) {
+      return c.json({ error: `Script type "${scriptType}" is not supported on ${platform}` }, 400)
+    }
+
+    // Execute the script with a 30s timeout
+    const { exec, execFile } = await import('child_process')
+    const { promisify } = await import('util')
+    const execAsync = promisify(exec)
+    const execFileAsync = promisify(execFile)
+
+    let stdout = ''
+    let stderr = ''
+    let exitCode = 0
+
+    try {
+      if (scriptType === 'applescript') {
+        // Use execFile to avoid shell escaping issues with quotes/newlines.
+        // Split into one -e arg per line (how osascript handles multi-line scripts).
+        const lines = script.split('\n').filter((l: string) => l.trim())
+        const args = lines.flatMap((line: string) => ['-e', line])
+        const result = await execFileAsync('osascript', args, { timeout: 30000 })
+        stdout = result.stdout || ''
+        stderr = result.stderr || ''
+      } else if (scriptType === 'shell') {
+        const result = await execAsync(script, { timeout: 30000, shell: '/bin/zsh' })
+        stdout = result.stdout || ''
+        stderr = result.stderr || ''
+      } else {
+        // powershell — use execFile to avoid shell escaping issues
+        const result = await execFileAsync('powershell.exe', ['-Command', script], { timeout: 30000 })
+        stdout = result.stdout || ''
+        stderr = result.stderr || ''
+      }
+    } catch (execError: any) {
+      stdout = execError.stdout || ''
+      stderr = execError.stderr || ''
+      exitCode = execError.code ?? 1
+    }
+
+    // Format output for the agent
+    const output = [
+      `Exit code: ${exitCode}`,
+      stdout ? `stdout:\n${stdout}` : '',
+      stderr ? `stderr:\n${stderr}` : '',
+    ].filter(Boolean).join('\n\n')
+
+    // Resolve the pending input
+    const resolveResponse = await client.fetch(
+      `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: output }),
+      }
+    )
+
+    if (!resolveResponse.ok) {
+      let errorDetails = 'Unknown error'
+      try {
+        const error = await resolveResponse.json()
+        errorDetails = JSON.stringify(error)
+      } catch {
+        errorDetails = await resolveResponse.text()
+      }
+      console.error(`[run-script] Failed to resolve: ${errorDetails}`)
+      return c.json({ error: 'Failed to resolve script run request' }, 500)
+    }
+
+    trackServerEvent('script_executed', { scriptType, exitCode })
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('Failed to run script:', error)
+    return c.json({ error: 'Failed to run script' }, 500)
+  }
+})
+
 // GET /api/agents/:id/scheduled-tasks - List scheduled tasks for an agent
 agents.get('/:id/scheduled-tasks', AgentRead(), async (c) => {
   try {
@@ -1662,6 +2052,8 @@ agents.get('/:id/scheduled-tasks', AgentRead(), async (c) => {
     let tasks
     if (status === 'pending') {
       tasks = await listPendingScheduledTasks(slug)
+    } else if (status === 'cancelled') {
+      tasks = await listCancelledScheduledTasks(slug)
     } else {
       tasks = await listScheduledTasks(slug)
     }
@@ -2313,6 +2705,27 @@ agents.post('/:id/export-template', AgentAdmin(), async (c) => {
   }
 })
 
+// POST /api/agents/:id/export-full - Export full agent as ZIP download (includes .env, data, etc.)
+agents.post('/:id/export-full', AgentAdmin(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const zipBuffer = await exportAgentFull(slug)
+
+    return new Response(new Uint8Array(zipBuffer), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/zip',
+        'Content-Disposition': `attachment; filename="${slug}-full.zip"`,
+        'Content-Length': zipBuffer.byteLength.toString(),
+      },
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to export agent'
+    console.error('Failed to export full agent:', error)
+    return c.json({ error: message }, 500)
+  }
+})
+
 // GET /api/agents/:id/template-status - Get skillset status
 agents.get('/:id/template-status', AgentRead(), async (c) => {
   try {
@@ -2712,6 +3125,124 @@ agents.post('/:id/sessions/:sessionId/upload-file', AgentUser(), async (c) => {
   }
 })
 
+async function handleFolderUpload(agentSlug: string, sourcePath: string) {
+  const stat = await fs.promises.stat(sourcePath)
+  if (!stat.isDirectory()) {
+    throw new Error('Source is not a directory')
+  }
+
+  const folderName = path.basename(sourcePath)
+  const workspaceDir = getAgentWorkspaceDir(agentSlug)
+  const destPath = path.resolve(workspaceDir, 'uploads', folderName)
+
+  // Security: ensure dest doesn't escape uploads directory
+  if (!destPath.startsWith(path.resolve(workspaceDir, 'uploads'))) {
+    throw new Error('Invalid path')
+  }
+
+  await fs.promises.mkdir(path.dirname(destPath), { recursive: true })
+  await fs.promises.cp(sourcePath, destPath, { recursive: true })
+
+  return {
+    success: true,
+    path: `/workspace/uploads/${folderName}/`,
+    folderName,
+  }
+}
+
+// POST /api/agents/:id/upload-folder - Copy a local folder to the agent workspace (Electron only)
+agents.post('/:id/upload-folder', AgentUser(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const { sourcePath } = await c.req.json<{ sourcePath: string }>()
+    if (!sourcePath) return c.json({ error: 'No source path provided' }, 400)
+    const result = await handleFolderUpload(agentSlug, sourcePath)
+    return c.json(result)
+  } catch (error) {
+    console.error('Failed to upload folder:', error)
+    return c.json({ error: 'Failed to upload folder' }, 500)
+  }
+})
+
+// POST /api/agents/:id/sessions/:sessionId/upload-folder - Copy a local folder to the agent workspace (Electron only)
+agents.post('/:id/sessions/:sessionId/upload-folder', AgentUser(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const { sourcePath } = await c.req.json<{ sourcePath: string }>()
+    if (!sourcePath) return c.json({ error: 'No source path provided' }, 400)
+    const result = await handleFolderUpload(agentSlug, sourcePath)
+    return c.json(result)
+  } catch (error) {
+    console.error('Failed to upload folder:', error)
+    return c.json({ error: 'Failed to upload folder' }, 500)
+  }
+})
+
+// --- Mount CRUD endpoints ---
+
+// GET /api/agents/:id/mounts - List mounts with health status
+agents.get('/:id/mounts', AgentRead(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const mounts = getMountsWithHealth(agentSlug)
+    return c.json(mounts)
+  } catch (error) {
+    console.error('Failed to list mounts:', error)
+    return c.json({ error: 'Failed to list mounts' }, 500)
+  }
+})
+
+// POST /api/agents/:id/mounts - Add a mount
+agents.post('/:id/mounts', AgentUser(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const { hostPath, restart } = await c.req.json<{ hostPath: string; restart?: boolean }>()
+    if (!hostPath) return c.json({ error: 'hostPath is required' }, 400)
+
+    let mount
+    try {
+      mount = addMount(agentSlug, hostPath)
+    } catch (err: any) {
+      return c.json({ error: err.message || 'Invalid path' }, 400)
+    }
+
+    if (restart) {
+      const cachedInfo = containerManager.getCachedInfo(agentSlug)
+      if (cachedInfo.status === 'running') {
+        await containerManager.restartContainer(agentSlug)
+      }
+    }
+
+    return c.json(mount, 201)
+  } catch (error) {
+    console.error('Failed to add mount:', error)
+    return c.json({ error: 'Failed to add mount' }, 500)
+  }
+})
+
+// DELETE /api/agents/:id/mounts/:mountId - Remove a mount
+agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const mountId = c.req.param('mountId')
+    const restart = c.req.query('restart') === 'true'
+
+    removeMount(agentSlug, mountId)
+
+    if (restart) {
+      const cachedInfo = containerManager.getCachedInfo(agentSlug)
+      if (cachedInfo.status === 'running') {
+        await containerManager.restartContainer(agentSlug)
+      }
+    }
+
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('Failed to remove mount:', error)
+    return c.json({ error: 'Failed to remove mount' }, 500)
+  }
+})
+
 // GET /api/agents/:id/files/* - Download a file from the agent workspace
 agents.get('/:id/files/*', AgentRead(), async (c) => {
   try {
@@ -2863,6 +3394,160 @@ agents.get('/:id/artifacts', AgentRead(), async (c) => {
   }
 })
 
+// DELETE /api/agents/:id/artifacts/:artifactSlug - Delete a dashboard
+agents.delete('/:id/artifacts/:artifactSlug', AgentAdmin(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const artifactSlug = c.req.param('artifactSlug')
+
+    // Stop the dashboard process in the container (if running), then delete files
+    try {
+      const client = containerManager.getClient(agentSlug)
+      const info = containerManager.getCachedInfo(agentSlug)
+      if (info.status === 'running') {
+        await client.fetch(`/artifacts/${encodeURIComponent(artifactSlug)}`, { method: 'DELETE' })
+      }
+    } catch {
+      // Container not running — just delete files
+    }
+
+    await deleteArtifactFromFilesystem(agentSlug, artifactSlug)
+    return c.body(null, 204)
+  } catch (error) {
+    console.error('Failed to delete artifact:', error)
+    return c.json({ error: 'Failed to delete artifact' }, 500)
+  }
+})
+
+// PATCH /api/agents/:id/artifacts/:artifactSlug - Rename a dashboard
+agents.patch('/:id/artifacts/:artifactSlug', AgentAdmin(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const artifactSlug = c.req.param('artifactSlug')
+    const { name } = await c.req.json()
+
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      return c.json({ error: 'Name is required' }, 400)
+    }
+
+    await renameArtifactOnFilesystem(agentSlug, artifactSlug, name.trim())
+    return c.json({ ok: true })
+  } catch (error) {
+    console.error('Failed to rename artifact:', error)
+    return c.json({ error: 'Failed to rename artifact' }, 500)
+  }
+})
+
+// GET /api/agents/:id/artifacts/:artifactSlug/view - Standalone dashboard wrapper
+// Serves a self-contained HTML page that handles agent lifecycle (auto-start, wait, then load dashboard)
+agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
+  const agentSlug = c.req.param('id')
+  const artifactSlug = c.req.param('artifactSlug')
+  const basePath = `/api/agents/${agentSlug}`
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Loading dashboard…</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0a0a0a; color: #e5e5e5; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+    .container { text-align: center; max-width: 400px; padding: 2rem; }
+    .spinner { width: 40px; height: 40px; border: 3px solid #333; border-top-color: #888; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 1.5rem; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .status { font-size: 14px; color: #999; margin-top: 0.5rem; }
+    .error { color: #ef4444; }
+    iframe { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; border: 0; }
+  </style>
+</head>
+<body>
+  <div class="container" id="loading">
+    <div class="spinner"></div>
+    <div id="status" class="status">Checking agent status…</div>
+  </div>
+  <script>
+    const agentSlug = ${JSON.stringify(agentSlug)};
+    const artifactSlug = ${JSON.stringify(artifactSlug)};
+    const basePath = ${JSON.stringify(basePath)};
+    const dashboardUrl = basePath + '/artifacts/' + encodeURIComponent(artifactSlug) + '/';
+    const statusEl = document.getElementById('status');
+    const loadingEl = document.getElementById('loading');
+
+    function setTitle(name) {
+      document.title = (name || artifactSlug) + ' \\u2014 SuperAgent';
+    }
+
+    async function fetchDashboardName() {
+      try {
+        const res = await fetch(basePath + '/artifacts');
+        if (res.ok) {
+          const artifacts = await res.json();
+          const d = Array.isArray(artifacts) && artifacts.find(a => a.slug === artifactSlug);
+          if (d && d.name) { setTitle(d.name); return d.name; }
+        }
+      } catch {}
+      return null;
+    }
+
+    async function run() {
+      try {
+        // 1. Resolve dashboard name (works even when agent is stopped)
+        await fetchDashboardName();
+
+        // 2. Check agent status
+        const agentRes = await fetch(basePath);
+        if (!agentRes.ok) { throw new Error('Failed to fetch agent info'); }
+        const agent = await agentRes.json();
+
+        if (agent.status !== 'running') {
+          // 3. Start the agent
+          statusEl.textContent = 'Starting agent…';
+          const startRes = await fetch(basePath + '/start', { method: 'POST' });
+          if (!startRes.ok) {
+            const err = await startRes.json().catch(() => ({}));
+            throw new Error(err.error || 'Failed to start agent');
+          }
+        }
+
+        // 4. Poll until dashboard is running
+        statusEl.textContent = 'Waiting for dashboard…';
+        await pollDashboard();
+
+        // 5. Show the dashboard
+        loadingEl.remove();
+        const iframe = document.createElement('iframe');
+        iframe.src = dashboardUrl;
+        iframe.sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups';
+        document.body.appendChild(iframe);
+      } catch (err) {
+        statusEl.textContent = err.message;
+        statusEl.classList.add('error');
+      }
+    }
+
+    async function pollDashboard() {
+      for (let i = 0; i < 120; i++) {
+        const res = await fetch(basePath + '/artifacts');
+        if (res.ok) {
+          const artifacts = await res.json();
+          const d = Array.isArray(artifacts) && artifacts.find(a => a.slug === artifactSlug);
+          if (d && d.status === 'running') { setTitle(d.name); return; }
+        }
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      throw new Error('Dashboard did not start in time');
+    }
+
+    run();
+  </script>
+</body>
+</html>`
+
+  return c.html(html)
+})
+
 // Shared handler for proxying artifact requests to the container
 const skipProxyRequestHeaders = new Set([
   'host', 'connection', 'transfer-encoding',
@@ -2983,5 +3668,32 @@ agents.post('/:id/browser/:action', AgentUser(), async (c) => {
     return c.json({ error: error.message || 'Failed to proxy browser action' }, 500)
   }
 })
+
+// ============================================================================
+// Cleanup stale chunked uploads (older than 1 hour)
+// ============================================================================
+const STALE_UPLOAD_MS = 60 * 60 * 1000 // 1 hour
+
+async function cleanupStaleUploads() {
+  try {
+    const uploadsDir = getTempUploadsDir()
+    const entries = await fs.promises.readdir(uploadsDir, { withFileTypes: true }).catch(() => [])
+    const now = Date.now()
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      const dirPath = path.join(uploadsDir, entry.name)
+      const stat = await fs.promises.stat(dirPath).catch(() => null)
+      if (stat && now - stat.mtimeMs > STALE_UPLOAD_MS) {
+        await removeDirectory(dirPath).catch(() => {})
+      }
+    }
+  } catch {
+    // Ignore cleanup errors
+  }
+}
+
+// Run cleanup on startup and every 30 minutes
+cleanupStaleUploads()
+setInterval(cleanupStaleUploads, 30 * 60 * 1000).unref()
 
 export default agents

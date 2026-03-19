@@ -1,3 +1,5 @@
+import type { UUID } from 'crypto';
+
 // Re-export types from Claude Agent SDK
 export type {
   SDKMessage,
@@ -53,6 +55,7 @@ export interface CreateSessionRequest {
   systemPrompt?: string; // Custom system prompt to append to default
   availableEnvVars?: string[]; // List of env var names available to the agent
   initialMessage: string; // Required: first message to send (triggers session ID generation)
+  initialMessageUuid?: UUID; // Optional UUID for message author attribution
   model?: string; // Claude model to use for this session
   browserModel?: string; // Model for browser subagent
   maxOutputTokens?: number; // Max tokens per response (CLAUDE_CODE_MAX_OUTPUT_TOKENS)
@@ -60,9 +63,11 @@ export interface CreateSessionRequest {
   maxTurns?: number; // Max conversation turns
   maxBudgetUsd?: number; // Max cost in USD per session
   customEnvVars?: Record<string, string>; // User-defined env vars for the agent process
+  maxBrowserTabs?: number; // Max browser tabs allowed (default 10)
 }
 
 export interface SendMessageRequest {
   content: any;
   type?: 'user' | 'system';
+  uuid?: UUID;
 }

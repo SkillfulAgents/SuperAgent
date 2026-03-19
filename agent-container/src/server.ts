@@ -6,13 +6,14 @@ import * as http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import * as fs from 'fs';
 import * as path from 'path';
-import { execFile } from 'child_process';
+import { execFile, execSync } from 'child_process';
 import { promisify } from 'util';
 import * as dns from 'dns';
-import * as net from 'net';
+
 import { inputManager } from './input-manager';
 import { dashboardManager } from './dashboard-manager';
 import { getCurrentProcess } from './claude-code';
+import { tabManager } from './tab-manager';
 
 // Global error handlers to prevent crashes from AbortError during interrupts
 // The SDK throws AbortError when queries are aborted, which can propagate uncaught
@@ -56,6 +57,9 @@ app.post('/sessions', async (c) => {
       return c.json({ error: 'initialMessage is required' }, 400);
     }
 
+    if (body.maxBrowserTabs) {
+      tabManager.setMaxTabs(body.maxBrowserTabs);
+    }
     const session = await sessionManager.createSession(body);
     return c.json(session, 201);
   } catch (error: any) {
@@ -136,7 +140,7 @@ app.post('/sessions/:id/messages', async (c) => {
     const body = await c.req.json<SendMessageRequest>();
     const content = typeof body.content === 'string' ? body.content : JSON.stringify(body.content);
 
-    await sessionManager.sendMessage(sessionId, content);
+    await sessionManager.sendMessage(sessionId, content, body.uuid);
 
     return c.json({ success: true }, 201);
   } catch (error: any) {
@@ -490,6 +494,18 @@ app.post('/artifacts/:slug/start', async (c) => {
   }
 });
 
+// DELETE /artifacts/:slug - Stop dashboard process and clean up
+app.delete('/artifacts/:slug', async (c) => {
+  try {
+    const slug = c.req.param('slug');
+    await dashboardManager.stopDashboard(slug);
+    return c.json({ success: true });
+  } catch (error: any) {
+    console.error('[Artifacts] Error deleting dashboard:', error);
+    return c.json({ error: error.message || 'Failed to delete dashboard' }, 500);
+  }
+});
+
 // GET /artifacts/:slug/logs - Get dashboard logs
 app.get('/artifacts/:slug/logs', async (c) => {
   try {
@@ -605,6 +621,20 @@ function ensureRemoteDebuggingPort(args: string): string {
   return args + ',--remote-debugging-port=9222';
 }
 
+// Clean up any stale agent-browser daemon process and socket file.
+// Prevents "Daemon failed to start" errors when a previous daemon is left
+// running (e.g. browser closed externally, conversation ended without closing,
+// or previous execBrowser timed out).
+function cleanupAgentBrowserDaemon(): void {
+  const socketDir = process.env.AGENT_BROWSER_SOCKET_DIR
+    || (process.env.XDG_RUNTIME_DIR ? path.join(process.env.XDG_RUNTIME_DIR, 'agent-browser') : null)
+    || path.join(process.env.HOME || '/home/claude', '.agent-browser');
+  const session = process.env.AGENT_BROWSER_SESSION || 'default';
+  const socketPath = path.join(socketDir, `${session}.sock`);
+  try { fs.unlinkSync(socketPath); } catch { /* ignore missing */ }
+  try { execSync('pkill -f "agent-browser" 2>/dev/null || true', { timeout: 3000 }); } catch { /* ignore */ }
+}
+
 // Execute an agent-browser CLI command and return the result.
 // Uses execFile (no shell) to prevent command injection.
 async function execBrowser(args: string[], cdpUrl?: string): Promise<{ stdout: string; exitCode: number }> {
@@ -620,8 +650,19 @@ async function execBrowser(args: string[], cdpUrl?: string): Promise<{ stdout: s
     });
     return { stdout: stdout.trim(), exitCode: 0 };
   } catch (error: any) {
+    if (error.stderr) {
+      console.error('[Browser] agent-browser stderr:', error.stderr);
+    }
+    // Combine stdout, stderr, and message for maximum debuggability.
+    // The error shown to users includes the full command line (from error.message)
+    // which contains the CDP URL — helpful for diagnosing connectivity issues.
+    const parts = [
+      error.stdout?.trim(),
+      error.stderr?.trim(),
+    ].filter(Boolean);
+    const detail = parts.length > 0 ? parts.join('\n') : (error.message || 'Command failed');
     return {
-      stdout: error.stdout?.trim() || error.message || 'Command failed',
+      stdout: detail,
       exitCode: error.code || 1,
     };
   }
@@ -819,6 +860,17 @@ app.post('/browser/open', async (c) => {
       return c.json({ error: validationError }, 409);
     }
 
+    // If browser is already active, check for a matching tab before opening a new one
+    if (browserState.active) {
+      const matchingTab = await tabManager.findMatchingTab(body.url);
+      if (matchingTab) {
+        await execBrowser(['tab', String(matchingTab.index)], browserState.cdpUrl || undefined);
+        await tabManager.syncTabCount();
+        notifyBrowserAction();
+        return c.json({ success: true, switchedToExisting: true, tabIndex: matchingTab.index, url: matchingTab.url });
+      }
+    }
+
     const hostBrowser = await launchHostBrowserIfNeeded();
     const cdpUrl = hostBrowser?.cdpUrl;
     const profile = process.env.AGENT_BROWSER_PROFILE || '/workspace/.browser-profile';
@@ -826,10 +878,22 @@ app.post('/browser/open', async (c) => {
     // Configure Chrome to save downloads to /workspace/downloads so the agent can access them
     await ensureBrowserDownloadPreferences(profile, WORKSPACE_DOWNLOADS_DIR);
 
-    const result = await execBrowser(['open', body.url, '--profile', profile], cdpUrl);
+    // Clean up any leftover daemon state before starting
+    cleanupAgentBrowserDaemon();
+
+    let result = await execBrowser(['open', body.url, '--profile', profile], cdpUrl);
+
+    // Retry once on failure — agent-browser daemon startup can be flaky
+    if (result.exitCode !== 0) {
+      console.error('[Browser] First open attempt failed, retrying:', result.stdout);
+      cleanupAgentBrowserDaemon();
+      await new Promise(r => setTimeout(r, 1000));
+      result = await execBrowser(['open', body.url, '--profile', profile], cdpUrl);
+    }
 
     if (result.exitCode !== 0) {
-      return c.json({ error: result.stdout, success: false }, 500);
+      const debugInfo = cdpUrl ? ` [cdp=${cdpUrl}, mode=host, attempts=2]` : ' [mode=local, attempts=2]';
+      return c.json({ error: `${result.stdout}${debugInfo}`, success: false }, 500);
     }
 
     // Override Playwright's download interception via CDP so downloads go to workspace.
@@ -845,6 +909,7 @@ app.post('/browser/open', async (c) => {
     }
 
     browserState = { active: true, sessionId: body.sessionId, cdpUrl: cdpUrl || null };
+    tabManager.resetTabCount();
     broadcastBrowserEvent(true);
 
     return c.json({ success: true });
@@ -869,6 +934,7 @@ app.post('/browser/close', async (c) => {
     }
 
     await execBrowser(['close'], browserState.cdpUrl || undefined);
+    cleanupAgentBrowserDaemon();
 
     // If using host browser, tell the host to kill the Chrome process
     await stopHostBrowserIfNeeded();
@@ -876,6 +942,7 @@ app.post('/browser/close', async (c) => {
     cleanupCdpScreencast();
     broadcastBrowserEvent(false);
     browserState = { active: false, sessionId: null, cdpUrl: null };
+    tabManager.resetTabCount();
 
     return c.json({ success: true });
   } catch (error: any) {
@@ -887,9 +954,11 @@ app.post('/browser/close', async (c) => {
 // POST /browser/notify-closed - Host browser was closed externally, clean up state
 app.post('/browser/notify-closed', (c) => {
   if (browserState.active) {
+    cleanupAgentBrowserDaemon();
     cleanupCdpScreencast();
     broadcastBrowserEvent(false);
     browserState = { active: false, sessionId: null, cdpUrl: null };
+    tabManager.resetTabCount();
     console.log('[Browser] Browser closed externally, state cleaned up');
   }
   return c.json({ success: true });
@@ -926,10 +995,10 @@ app.post('/browser/snapshot', async (c) => {
     // Try to parse JSON output
     try {
       const parsed = JSON.parse(result.stdout);
-      return c.json(parsed);
+      return c.json({ ...parsed, tabCount: tabManager.getTabCount() });
     } catch {
       // Return raw output if not valid JSON
-      return c.json({ snapshot: result.stdout });
+      return c.json({ snapshot: result.stdout, tabCount: tabManager.getTabCount() });
     }
   } catch (error: any) {
     console.error('[Browser] Error taking snapshot:', error);
@@ -961,8 +1030,9 @@ app.post('/browser/click', async (c) => {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
+    const tabInfo = await tabManager.detectNewTab();
     notifyBrowserAction();
-    return c.json({ success: true });
+    return c.json({ success: true, ...(tabInfo && { tabInfo }) });
   } catch (error: any) {
     console.error('[Browser] Error clicking:', error);
     return c.json({ error: error.message || 'Failed to click' }, 500);
@@ -1102,8 +1172,9 @@ app.post('/browser/press', async (c) => {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
+    const tabInfo = await tabManager.detectNewTab();
     notifyBrowserAction();
-    return c.json({ success: true });
+    return c.json({ success: true, ...(tabInfo && { tabInfo }) });
   } catch (error: any) {
     console.error('[Browser] Error pressing key:', error);
     return c.json({ error: error.message || 'Failed to press key' }, 500);
@@ -1237,12 +1308,23 @@ app.post('/browser/run', async (c) => {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
+    const cmd = body.command.trim().toLowerCase();
+    let tabInfo = null;
+    if (cmd.startsWith('tab') || cmd.includes('.click(') || cmd.startsWith('click') || cmd.startsWith('dblclick')) {
+      tabInfo = await tabManager.detectNewTab();
+    }
+
     notifyBrowserAction();
-    return c.json({ success: true, output: result.stdout });
+    return c.json({ success: true, output: result.stdout, ...(tabInfo && { tabInfo }) });
   } catch (error: any) {
     console.error('[Browser] Error running command:', error);
     return c.json({ error: error.message || 'Failed to run browser command' }, 500);
   }
+});
+
+// GET /browser/tab-status - Return cached tab count (instant, no daemon query)
+app.get('/browser/tab-status', (c) => {
+  return c.json({ tabCount: tabManager.getTabCount() });
 });
 
 async function buildFileTree(
@@ -1412,35 +1494,6 @@ function getCdpHttpEndpoint(): string {
   return 'http://localhost:9222';
 }
 
-/** Query the agent-browser daemon for its tab list via Unix socket */
-async function queryDaemonTabs(): Promise<Array<{ index: number; url: string; title: string; active: boolean }>> {
-  const socketDir = process.env.AGENT_BROWSER_SOCKET_DIR
-    || (process.env.XDG_RUNTIME_DIR ? path.join(process.env.XDG_RUNTIME_DIR, 'agent-browser') : null)
-    || path.join(process.env.HOME || '/home/claude', '.agent-browser');
-  const session = process.env.AGENT_BROWSER_SESSION || 'default';
-  const socketPath = path.join(socketDir, `${session}.sock`);
-
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => { client.destroy(); reject(new Error('Timeout')); }, 3000);
-    const client = net.createConnection(socketPath, () => {
-      client.write(JSON.stringify({ id: 'tab-q', action: 'tab_list' }) + '\n');
-    });
-    let buf = '';
-    client.on('data', (chunk: Buffer) => {
-      buf += chunk.toString();
-      try {
-        const resp = JSON.parse(buf);
-        clearTimeout(timeout);
-        client.end();
-        // Response format: { id, success, data: { tabs, active } }
-        const tabs = resp.data?.tabs;
-        resp.success && tabs ? resolve(tabs) : reject(new Error(resp.error || 'No tabs'));
-      } catch { /* incomplete JSON, wait for more */ }
-    });
-    client.on('error', (err: Error) => { clearTimeout(timeout); reject(err); });
-  });
-}
-
 /** Result from findActivePageTarget */
 interface ActivePageTarget {
   id: string;
@@ -1470,7 +1523,7 @@ async function findActivePageTarget(): Promise<ActivePageTarget | null> {
 
       // Ask agent-browser daemon which tab is active and match to a CDP target
       try {
-        const tabs = await queryDaemonTabs();
+        const tabs = await tabManager.queryTabs();
         const active = tabs.find(t => t.active);
         if (active) {
           const byUrl = pages.find(p => p.url === active.url);

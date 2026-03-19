@@ -1,0 +1,17 @@
+id: browser-test
+name: "Agent opens browser and visits a page"
+mode: happy-path
+baseUrl: http://localhost:47891
+features:
+  - browser-use
+setup:
+  - ensureSecrets
+  - ensureAgent
+teardown:
+  - deleteAgent
+steps: |
+  1. Navigate to http://localhost:47891.
+  2. Find the "{{agentName}}" agent in the sidebar, click it.
+  3. Send message: "Open a browser and go to https://example.com. Tell me the page title."
+  4. Wait up to 3 minutes for a response.
+  5. Verify the response mentions "Example Domain". Take a screenshot.

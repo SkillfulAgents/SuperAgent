@@ -77,7 +77,7 @@ RUN apt-get update && apt-get install -y \
 # Set PLAYWRIGHT_BROWSERS_PATH so browsers are installed to a shared location
 # accessible by both root (build) and claude (runtime) users
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
-RUN npm install -g agent-browser && \
+RUN npm install -g agent-browser@0.12.0 && \
     npx playwright install chromium && \
     chmod -R o+rx /opt/playwright-browsers
 

@@ -36,7 +36,7 @@ describe('findAvailablePort', () => {
     const port = await findAvailablePort(3000)
 
     expect(port).toBe(3000)
-    expect(mockServer.listen).toHaveBeenCalledWith(3000)
+    expect(mockServer.listen).toHaveBeenCalledWith(3000, '0.0.0.0')
   })
 
   it('skips unavailable ports and returns the first available one', async () => {
@@ -105,7 +105,7 @@ describe('findAvailablePort', () => {
     expect(port).toBe(3001)
   })
 
-  it('listens without specifying host to match serve() binding', async () => {
+  it('listens on 0.0.0.0 to match serve() IPv4 binding', async () => {
     mockServer.once.mockImplementation((event: string, callback: () => void) => {
       if (event === 'listening') {
         mockServer.close.mockImplementation((cb: () => void) => cb())
@@ -116,7 +116,7 @@ describe('findAvailablePort', () => {
 
     await findAvailablePort(8080)
 
-    expect(mockServer.listen).toHaveBeenCalledWith(8080)
+    expect(mockServer.listen).toHaveBeenCalledWith(8080, '0.0.0.0')
   })
 
   it('properly closes the server after checking availability', async () => {

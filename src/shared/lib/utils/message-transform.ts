@@ -26,6 +26,11 @@ export interface TransformedMessage {
     }
   }>
   createdAt: Date
+  sender?: {
+    id: string
+    name: string
+    email: string
+  }
 }
 
 export interface TransformedCompactBoundary {

@@ -39,6 +39,7 @@ export interface CreateSessionOptions {
   systemPrompt?: string
   availableEnvVars?: string[]
   initialMessage: string // Required: first message to send (triggers session ID generation)
+  initialMessageUuid?: string // Optional UUID for message author attribution
   model?: string // Claude model to use for this session
   browserModel?: string // Model for browser subagent
   maxOutputTokens?: number // Max tokens per response (CLAUDE_CODE_MAX_OUTPUT_TOKENS)
@@ -46,10 +47,12 @@ export interface CreateSessionOptions {
   maxTurns?: number // Max conversation turns
   maxBudgetUsd?: number // Max cost in USD per session
   customEnvVars?: Record<string, string> // User-defined env vars for the agent process
+  maxBrowserTabs?: number // Max browser tabs allowed (default 10)
 }
 
 export interface StartOptions {
   envVars?: Record<string, string>
+  additionalVolumes?: string[] // Extra -v flag values for bind mounts
 }
 
 // Container resource usage stats
@@ -71,8 +74,11 @@ export interface HealthCheckResult {
 export interface ContainerClient {
   // Lifecycle management
   start(options?: StartOptions): Promise<void>
-  stop(): Promise<void>
+  stop(): Promise<{ forceStopUsed: boolean }>
   stopSync(): void // Synchronous stop for exit handlers
+
+  // Build a -v flag value for a volume mount (hostPath:containerPath with runtime-specific suffix)
+  buildVolumeFlag(hostPath: string, containerPath: string): string
 
   // Query the container runtime for current state (spawns CLI process)
   // Use containerManager.getCachedInfo() for cached status instead
@@ -98,7 +104,7 @@ export interface ContainerClient {
   deleteSession(sessionId: string): Promise<boolean>
 
   // Message operations
-  sendMessage(sessionId: string, content: string): Promise<void>
+  sendMessage(sessionId: string, content: string, uuid?: string): Promise<void>
   getMessages(sessionId: string): Promise<any[]>
   interruptSession(sessionId: string): Promise<boolean>
 
@@ -113,6 +119,10 @@ export interface ContainerClient {
   on(event: 'message', callback: (sessionId: string, message: any) => void): void
   off(event: string, callback: (...args: any[]) => void): void
 }
+
+// Lima VM defaults (shared between server and UI)
+export const DEFAULT_LIMA_VM_MEMORY = '4GiB'
+export const VALID_LIMA_VM_MEMORY_OPTIONS = ['2GiB', '4GiB', '6GiB', '8GiB', '12GiB', '16GiB'] as const
 
 // Runtime readiness types
 

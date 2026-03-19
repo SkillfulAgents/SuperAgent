@@ -41,6 +41,19 @@ interface RemoteMcpRequest {
   authHint?: 'oauth' | 'bearer'
 }
 
+interface BrowserInputRequest {
+  toolUseId: string
+  message: string
+  requirements: string[]
+}
+
+interface ScriptRunRequest {
+  toolUseId: string
+  script: string
+  explanation: string
+  scriptType: 'applescript' | 'shell' | 'powershell'
+}
+
 export interface SubagentInfo {
   parentToolId: string | null
   agentId: string | null
@@ -58,6 +71,8 @@ interface StreamState {
   pendingQuestionRequests: QuestionRequest[]
   pendingFileRequests: FileRequest[]
   pendingRemoteMcpRequests: RemoteMcpRequest[]
+  pendingBrowserInputRequests: BrowserInputRequest[]
+  pendingScriptRunRequests: ScriptRunRequest[]
   error: string | null // Error message if session encountered an error
   browserActive: boolean // Whether browser is running for this session
   activeStartTime: number | null // Timestamp when session became active (for elapsed timer)
@@ -65,6 +80,8 @@ interface StreamState {
   contextUsage: SessionUsage | null // Latest context window usage data
   activeSubagents: SubagentInfo[] // Currently running subagent(s) info
   completedSubagents: Set<string> | null // parentToolIds of completed subagents (for status logic)
+  typingUser: { id: string; name?: string } | null // User currently typing (auth mode shared agents)
+  peerUserMessage: { content: string; sender: { id: string; name?: string; email?: string } } | null // User message from another user
 }
 
 // Upsert a subagent entry in the array by parentToolId (immutable)
@@ -133,6 +150,8 @@ function getOrCreateEventSource(
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
+          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
+          pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           error: null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -140,14 +159,18 @@ function getOrCreateEventSource(
           contextUsage: current?.contextUsage ?? null,
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
+          typingUser: current?.typingUser ?? null,
+          peerUserMessage: current?.peerUserMessage ?? null,
         })
         // Fetch current browser status to sync state (handles missed events)
         fetch(`${baseUrl}/api/agents/${agentSlug}/browser/status`)
           .then((res) => res.json())
-          .then((status: { active?: boolean }) => {
+          .then((status: { active?: boolean; sessionId?: string }) => {
             const latest = streamStates.get(sessionId)
-            if (latest && latest.browserActive !== (status.active ?? false)) {
-              streamStates.set(sessionId, { ...latest, browserActive: status.active ?? false })
+            // Only mark browser active if it belongs to THIS session
+            const activeForThisSession = (status.active ?? false) && status.sessionId === sessionId
+            if (latest && latest.browserActive !== activeForThisSession) {
+              streamStates.set(sessionId, { ...latest, browserActive: activeForThisSession })
               streamListeners.get(sessionId)?.forEach((listener) => listener())
             }
           })
@@ -166,6 +189,8 @@ function getOrCreateEventSource(
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
+          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
+          pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           error: null, // Clear any previous error when starting new request
           browserActive: current?.browserActive ?? false,
           activeStartTime: Date.now(),
@@ -173,6 +198,8 @@ function getOrCreateEventSource(
           contextUsage: current?.contextUsage ?? null,
           activeSubagents: [],
           completedSubagents: null,
+          typingUser: null,
+          peerUserMessage: current?.peerUserMessage ?? null,
         })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
       }
@@ -193,6 +220,8 @@ function getOrCreateEventSource(
           pendingQuestionRequests: [],
           pendingFileRequests: [],
           pendingRemoteMcpRequests: [],
+          pendingBrowserInputRequests: [],
+          pendingScriptRunRequests: [],
           error: null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: null,
@@ -203,6 +232,8 @@ function getOrCreateEventSource(
           // Cleared on next session_active.
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
+          typingUser: null,
+          peerUserMessage: current?.peerUserMessage ?? null,
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -219,6 +250,8 @@ function getOrCreateEventSource(
           pendingQuestionRequests: [],
           pendingFileRequests: [],
           pendingRemoteMcpRequests: [],
+          pendingBrowserInputRequests: [],
+          pendingScriptRunRequests: [],
           error: data.error || 'An unknown error occurred',
           browserActive: current?.browserActive ?? false,
           activeStartTime: null,
@@ -226,6 +259,8 @@ function getOrCreateEventSource(
           contextUsage: current?.contextUsage ?? null,
           activeSubagents: [],
           completedSubagents: null,
+          typingUser: null,
+          peerUserMessage: current?.peerUserMessage ?? null,
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -251,6 +286,8 @@ function getOrCreateEventSource(
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
+          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
+          pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           error: null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -258,6 +295,8 @@ function getOrCreateEventSource(
           contextUsage: current?.contextUsage ?? null,
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
+          typingUser: current?.typingUser ?? null,
+          peerUserMessage: current?.peerUserMessage ?? null,
         })
       }
       else if (data.type === 'stream_delta') {
@@ -271,6 +310,8 @@ function getOrCreateEventSource(
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
+          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
+          pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -278,6 +319,8 @@ function getOrCreateEventSource(
           contextUsage: current?.contextUsage ?? null,
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
+          typingUser: current?.typingUser ?? null,
+          peerUserMessage: current?.peerUserMessage ?? null,
         })
       }
       else if (data.type === 'tool_use_start' || data.type === 'tool_use_streaming') {
@@ -295,6 +338,8 @@ function getOrCreateEventSource(
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
+          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
+          pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -302,6 +347,8 @@ function getOrCreateEventSource(
           contextUsage: current?.contextUsage ?? null,
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
+          typingUser: current?.typingUser ?? null,
+          peerUserMessage: current?.peerUserMessage ?? null,
         })
       }
       else if (data.type === 'tool_use_ready') {
@@ -316,6 +363,8 @@ function getOrCreateEventSource(
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
+          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
+          pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -323,6 +372,8 @@ function getOrCreateEventSource(
           contextUsage: current?.contextUsage ?? null,
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
+          typingUser: current?.typingUser ?? null,
+          peerUserMessage: current?.peerUserMessage ?? null,
         })
       }
       else if (data.type === 'stream_end') {
@@ -336,6 +387,8 @@ function getOrCreateEventSource(
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
           pendingFileRequests: current?.pendingFileRequests ?? [],
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
+          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
+          pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -343,9 +396,37 @@ function getOrCreateEventSource(
           contextUsage: current?.contextUsage ?? null,
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
+          typingUser: current?.typingUser ?? null,
+          peerUserMessage: current?.peerUserMessage ?? null,
         })
       }
+      else if (data.type === 'user_message') {
+        // Another user sent a message in this shared session
+        streamStates.set(sessionId, {
+          ...current!,
+          peerUserMessage: { content: data.content, sender: data.sender },
+          typingUser: null, // Clear typing since they sent
+        })
+        // Refetch to pick up the persisted message shortly
+        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+      }
+      else if (data.type === 'user_typing') {
+        // Another user is typing in this shared session
+        if (current) {
+          streamStates.set(sessionId, { ...current, typingUser: data.sender })
+          // Auto-clear after 5s if no follow-up
+          setTimeout(() => {
+            const latest = streamStates.get(sessionId)
+            if (latest && latest.typingUser?.id === data.sender.id) {
+              streamStates.set(sessionId, { ...latest, typingUser: null })
+              streamListeners.get(sessionId)?.forEach((l) => l())
+            }
+          }, 5000)
+        }
+      }
       else if (data.type === 'messages_updated') {
+        // Don't clear peerUserMessage here — the render dedup in MessageList
+        // hides it once the fetched messages include the matching text.
         // Server signals that a message has been persisted to JSONL.
         // Refetch so that persisted data is available before stream_start
         // clears the streaming tool use state (prevents tool call flicker).
@@ -388,6 +469,9 @@ function getOrCreateEventSource(
             ...current,
             pendingSecretRequests: [...current.pendingSecretRequests, newRequest],
           })
+          // Invalidate sessions so sidebar picks up awaiting-input state
+          // (redundant safety net for global SSE race condition)
+          queryClient.invalidateQueries({ queryKey: ['sessions'] })
         }
       }
       else if (data.type === 'connected_account_request') {
@@ -402,6 +486,7 @@ function getOrCreateEventSource(
             ...current,
             pendingConnectedAccountRequests: [...current.pendingConnectedAccountRequests, newRequest],
           })
+          queryClient.invalidateQueries({ queryKey: ['sessions'] })
         }
       }
       else if (data.type === 'user_question_request') {
@@ -415,6 +500,7 @@ function getOrCreateEventSource(
             ...current,
             pendingQuestionRequests: [...current.pendingQuestionRequests, newRequest],
           })
+          queryClient.invalidateQueries({ queryKey: ['sessions'] })
         }
       }
       else if (data.type === 'file_request') {
@@ -429,6 +515,7 @@ function getOrCreateEventSource(
             ...current,
             pendingFileRequests: [...current.pendingFileRequests, newRequest],
           })
+          queryClient.invalidateQueries({ queryKey: ['sessions'] })
         }
       }
       else if (data.type === 'remote_mcp_request') {
@@ -445,6 +532,38 @@ function getOrCreateEventSource(
             ...current,
             pendingRemoteMcpRequests: [...current.pendingRemoteMcpRequests, newRequest],
           })
+          queryClient.invalidateQueries({ queryKey: ['sessions'] })
+        }
+      }
+      else if (data.type === 'browser_input_request') {
+        // Dedupe: the server may broadcast the same toolUseId from multiple detection points
+        if (current && !current.pendingBrowserInputRequests.some(r => r.toolUseId === data.toolUseId)) {
+          const newRequest: BrowserInputRequest = {
+            toolUseId: data.toolUseId,
+            message: data.message,
+            requirements: data.requirements || [],
+          }
+          streamStates.set(sessionId, {
+            ...current,
+            pendingBrowserInputRequests: [...current.pendingBrowserInputRequests, newRequest],
+          })
+          queryClient.invalidateQueries({ queryKey: ['sessions'] })
+        }
+      }
+      else if (data.type === 'script_run_request') {
+        // Agent is requesting script execution on the host
+        if (current && !current.pendingScriptRunRequests.some(r => r.toolUseId === data.toolUseId)) {
+          const newRequest: ScriptRunRequest = {
+            toolUseId: data.toolUseId,
+            script: data.script,
+            explanation: data.explanation,
+            scriptType: data.scriptType,
+          }
+          streamStates.set(sessionId, {
+            ...current,
+            pendingScriptRunRequests: [...current.pendingScriptRunRequests, newRequest],
+          })
+          queryClient.invalidateQueries({ queryKey: ['sessions'] })
         }
       }
       else if (data.type === 'compact_start') {
@@ -718,6 +837,34 @@ export function removeRemoteMcpRequest(sessionId: string, toolUseId: string): vo
   }
 }
 
+// Helper function to remove a browser input request from a session
+export function removeBrowserInputRequest(sessionId: string, toolUseId: string): void {
+  const current = streamStates.get(sessionId)
+  if (current) {
+    streamStates.set(sessionId, {
+      ...current,
+      pendingBrowserInputRequests: current.pendingBrowserInputRequests.filter(
+        (r) => r.toolUseId !== toolUseId
+      ),
+    })
+    streamListeners.get(sessionId)?.forEach((listener) => listener())
+  }
+}
+
+// Helper function to remove a script run request from a session
+export function removeScriptRunRequest(sessionId: string, toolUseId: string): void {
+  const current = streamStates.get(sessionId)
+  if (current) {
+    streamStates.set(sessionId, {
+      ...current,
+      pendingScriptRunRequests: current.pendingScriptRunRequests.filter(
+        (r) => r.toolUseId !== toolUseId
+      ),
+    })
+    streamListeners.get(sessionId)?.forEach((listener) => listener())
+  }
+}
+
 // Helper to clear isCompacting state (used when persisted messages already show the boundary)
 export function clearCompacting(sessionId: string): void {
   const current = streamStates.get(sessionId)
@@ -747,6 +894,8 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     pendingQuestionRequests: [],
     pendingFileRequests: [],
     pendingRemoteMcpRequests: [],
+    pendingBrowserInputRequests: [],
+    pendingScriptRunRequests: [],
     error: null,
     browserActive: false,
     activeStartTime: null,
@@ -754,6 +903,8 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     contextUsage: null,
     activeSubagents: [],
     completedSubagents: null,
+    typingUser: null,
+    peerUserMessage: null,
   })
   const [slashCommands, setSlashCommands] = useState<SlashCommandInfo[]>([])
   const queryClient = useQueryClient()
@@ -792,6 +943,8 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
         pendingQuestionRequests: [],
         pendingFileRequests: [],
         pendingRemoteMcpRequests: [],
+        pendingBrowserInputRequests: [],
+        pendingScriptRunRequests: [],
         error: null,
         browserActive: false,
         activeStartTime: null,
@@ -799,6 +952,8 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
         contextUsage: null,
         activeSubagents: [],
         completedSubagents: null,
+        typingUser: null,
+        peerUserMessage: null,
       })
     }
     updateState()

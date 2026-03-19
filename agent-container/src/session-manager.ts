@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import type { UUID } from 'crypto';
 import { Session, SDKMessage, CreateSessionRequest } from './types';
 import { ClaudeCodeProcess } from './claude-code';
 import { SessionPersistence } from './session-persistence';
@@ -100,7 +101,7 @@ export class SessionManager extends EventEmitter {
     await process.start();
 
     // Send the initial message - this triggers Claude to emit the session ID
-    await process.sendMessage(request.initialMessage);
+    await process.sendMessage(request.initialMessage, request.initialMessageUuid);
 
     // Wait for init to complete (session ID + slash commands)
     const claudeSessionId = await initCompletePromise;
@@ -269,7 +270,7 @@ export class SessionManager extends EventEmitter {
     return true;
   }
 
-  async sendMessage(sessionId: string, content: string): Promise<void> {
+  async sendMessage(sessionId: string, content: string, uuid?: UUID): Promise<void> {
     let sessionData = this.sessions.get(sessionId);
 
     // Try to resume if not in memory
@@ -285,7 +286,7 @@ export class SessionManager extends EventEmitter {
     this.persistence.updateLastActivity(sessionId);
 
     // Send to Claude Code process (messages are stored via handleMessage)
-    await sessionData.process.sendMessage(content);
+    await sessionData.process.sendMessage(content, uuid);
   }
 
   getMessages(sessionId: string): SDKMessage[] {

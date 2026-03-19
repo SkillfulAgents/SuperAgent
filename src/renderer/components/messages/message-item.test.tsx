@@ -25,6 +25,14 @@ vi.mock('./message-context-menu', () => ({
   MessageContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
+// Mock tooltip to render inline (avoids Radix portal issues in tests)
+vi.mock('@renderer/components/ui/tooltip', () => ({
+  TooltipProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  TooltipTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  TooltipContent: ({ children }: { children: React.ReactNode }) => <span data-testid="tooltip-content">{children}</span>,
+}))
+
 describe('MessageItem', () => {
   describe('user messages', () => {
     it('renders with user data-testid', () => {
@@ -151,6 +159,40 @@ describe('MessageItem', () => {
       const msg = createUserMessage({ content: { text: '/status' } })
       render(<MessageItem message={msg} />)
       expect(screen.getByText('/status')).toBeInTheDocument()
+    })
+  })
+
+  describe('sender attribution', () => {
+    it('renders sender initials in avatar when sender is present', () => {
+      const msg = createUserMessage({
+        content: { text: 'Hello' },
+        sender: { id: 'user-1', name: 'Alice Baker', email: 'alice@example.com' },
+      })
+      render(<MessageItem message={msg} />)
+      expect(screen.getByText('AB')).toBeInTheDocument()
+    })
+
+    it('renders sender name in tooltip when sender is present', () => {
+      const msg = createUserMessage({
+        content: { text: 'Hello' },
+        sender: { id: 'user-1', name: 'Alice Baker', email: 'alice@example.com' },
+      })
+      render(<MessageItem message={msg} />)
+      expect(screen.getByTestId('tooltip-content')).toHaveTextContent('Alice Baker')
+    })
+
+    it('renders default user icon when sender is absent', () => {
+      const msg = createUserMessage({ content: { text: 'Hello' } })
+      render(<MessageItem message={msg} />)
+      expect(screen.queryByTestId('tooltip-content')).not.toBeInTheDocument()
+    })
+
+    it('does not render sender on assistant messages', () => {
+      const msg = createAssistantMessage({
+        content: { text: 'Hi there' },
+      })
+      render(<MessageItem message={msg} />)
+      expect(screen.queryByTestId('tooltip-content')).not.toBeInTheDocument()
     })
   })
 })

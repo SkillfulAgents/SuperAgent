@@ -1,0 +1,13 @@
+id: product-surface
+name: "Product surface: global settings, notifications, skills"
+mode: feature-test
+baseUrl: http://localhost:47891
+features:
+  - settings-global
+  - notifications
+  - skills
+setup:
+  - ensureSecrets
+  - ensureAgent
+teardown:
+  - deleteAgent

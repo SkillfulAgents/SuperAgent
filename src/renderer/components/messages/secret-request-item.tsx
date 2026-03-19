@@ -159,7 +159,7 @@ export function SecretRequestItem({
               </code>
             </div>
             {reason && (
-              <p className="text-sm text-amber-700 dark:text-amber-300 mt-1">{reason}</p>
+              <p className="text-sm text-amber-700 dark:text-amber-300 mt-1 whitespace-pre-line">{reason}</p>
             )}
           </div>
           <span className="text-xs text-amber-600 dark:text-amber-400 shrink-0">Waiting for response</span>
@@ -188,7 +188,7 @@ export function SecretRequestItem({
               </code>
             </div>
             {reason && (
-              <p className="text-sm text-amber-700 dark:text-amber-300 mt-1">{reason}</p>
+              <p className="text-sm text-amber-700 dark:text-amber-300 mt-1 whitespace-pre-line">{reason}</p>
             )}
           </div>
 
