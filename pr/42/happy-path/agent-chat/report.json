@@ -1,17 +1,25 @@
 {
   "storyId": "agent-chat",
-  "passed": false,
-  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: gent responded within 3 seconds (as shown in the message \"Agent took 3s\").\n\n**[STEP] Verify response mentions \"4\" and take screenshot — Response clearly shows \"4.\" as the agent's answer to the math question. Screenshot captured showing the complete conversation with user message and agent response.\n",
-  "steps": [],
+  "passed": true,
+  "reason": "Successfully tested agent chat functionality - agent correctly answered \"2+2=4\"",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded with sidebar showing three agents",
+    "Found and clicked agent \"QA-20260319-203514-6iq4\" in sidebar — Agent detail page opened",
+    "Verified agent status \"idle\" — Status indicator shows \"idle\" in blue",
+    "Clicked message input and typed \"Hello! What is 2+2?\" — Message text entered in input field",
+    "Clicked send button — Message submitted, agent status changed to \"working\"",
+    "Waited up to 3 minutes for response — Agent responded in 3 seconds with \"4.\"",
+    "Verified response mentions \"4\" — Response clearly shows \"4.\" as the correct answer to the math question"
+  ],
   "bugs": [],
-  "durationMs": 77765,
-  "sessionId": "adebcdde-e807-4802-b5d2-29f351b171e1",
+  "durationMs": 96437,
+  "sessionId": "ecd0b59a-123d-43e4-9bc4-7d6e7406ff41",
   "cost": {
-    "inputTokens": 216,
-    "outputTokens": 2142,
-    "cacheCreationTokens": 49713,
-    "cacheReadTokens": 600136,
+    "inputTokens": 315,
+    "outputTokens": 2875,
+    "cacheCreationTokens": 61556,
+    "cacheReadTokens": 961622,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.133081
+    "totalCostUsd": 0.187797
   }
 }
