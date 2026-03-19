@@ -29,7 +29,7 @@ interface StreamingState {
   currentToolInput: string // Accumulated partial JSON input for current tool
   isActive: boolean // True from user message until result received
   isInterrupted: boolean // True after user interrupts, prevents race conditions
-  isCompacting: boolean // True after compact_boundary, cleared on next user message (compact summary)
+  isCompacting: boolean // True while compaction is in progress, cleared on compact completion
   agentSlug?: string // The agent slug for this session
   lastContextWindow: number // Last known context window size (default 200k)
   lastAssistantUsage: SessionUsage | null // Per-call usage from most recent assistant message
@@ -419,7 +419,9 @@ class MessagePersister {
           }
         }
 
-        // After a compact_boundary, the next user message is always the compact summary.
+        // After SDK compaction starts, the next relevant user message is the compact summary.
+        // This can follow either automatic compaction or a manual /compact path,
+        // depending on which compact-related events the SDK emits.
         // Use position-based detection (state.isCompacting flag) as primary check,
         // with content.isCompactSummary as fallback, since the WebSocket payload
         // may not always carry the isCompactSummary metadata flag.
@@ -461,10 +463,18 @@ class MessagePersister {
             type: 'stream_start',
             slashCommands: state.slashCommands.length > 0 ? state.slashCommands : undefined,
           })
+        } else if (content.subtype === 'status') {
+          // Prefer the SDK's explicit compacting status when available.
+          if (content.status === 'compacting' && !state.isCompacting) {
+            state.isCompacting = true
+            this.broadcastToSSE(sessionId, { type: 'compact_start' })
+          }
         } else if (content.subtype === 'compact_boundary') {
-          // Compaction has started — set flag so we recognize the next user message as compact summary
-          state.isCompacting = true
-          this.broadcastToSSE(sessionId, { type: 'compact_start' })
+          // Fallback for SDK paths that surface compaction via boundary without an earlier status.
+          if (!state.isCompacting) {
+            state.isCompacting = true
+            this.broadcastToSSE(sessionId, { type: 'compact_start' })
+          }
         }
         break
 

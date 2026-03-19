@@ -19,7 +19,7 @@ interface AgentActivityIndicatorProps {
 
 export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIndicatorProps) {
   const {
-    isActive, error, activeStartTime, activeSubagents, completedSubagents,
+    isActive, error, activeStartTime, isCompacting, activeSubagents, completedSubagents,
     pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests,
     pendingFileRequests, pendingRemoteMcpRequests, pendingBrowserInputRequests,
   } = useMessageStream(sessionId, agentSlug)
@@ -126,7 +126,9 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
 
   const statusText = isAwaitingInput
     ? 'Waiting for input...'
-    : (activeItem?.activeForm || 'Working...')
+    : isCompacting
+      ? 'Compacting...'
+      : (activeItem?.activeForm || 'Working...')
 
   return (
     <div className="mx-4 mb-2 rounded-lg border bg-muted/50 p-3" data-testid="activity-indicator">
