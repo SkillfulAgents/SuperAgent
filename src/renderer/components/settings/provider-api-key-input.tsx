@@ -8,6 +8,20 @@ import { apiFetch } from '@renderer/lib/api'
 import { AlertTriangle, Eye, EyeOff, Check, Loader2 } from 'lucide-react'
 import type { ApiKeyStatus, LlmProviderId } from '@shared/lib/config/settings'
 
+function formatApiError(error: string | undefined): string {
+  if (!error) return 'Invalid API key'
+
+  try {
+    const parsed = JSON.parse(error) as {
+      message?: string
+      error?: { message?: string }
+    }
+    return parsed.message || parsed.error?.message || 'Invalid API key'
+  } catch {
+    return error
+  }
+}
+
 interface ProviderApiKeyInputProps {
   providerId: LlmProviderId
   label: string
@@ -151,7 +165,7 @@ export function ProviderApiKeyInput({
           <AlertDescription>
             {validationResult.valid
               ? 'API key is valid and has been saved.'
-              : validationResult.error || 'Invalid API key'}
+              : formatApiError(validationResult.error)}
           </AlertDescription>
         </Alert>
       )}
