@@ -186,14 +186,16 @@ export function RuntimeTab() {
   }, [containerRunner, agentImage, cpuLimit, memoryLimit, settings])
 
   const memoryTooLow = parseMemoryToBytes(memoryLimit) > 0 && parseMemoryToBytes(memoryLimit) < MIN_MEMORY_BYTES
+  const trimmedAgentImage = agentImage.trim()
+  const agentImageMissing = trimmedAgentImage.length === 0
 
   const handleSave = async () => {
-    if (memoryTooLow) return
+    if (memoryTooLow || agentImageMissing) return
     try {
       await updateSettings.mutateAsync({
         container: {
           containerRunner,
-          agentImage,
+          agentImage: trimmedAgentImage,
           resourceLimits: {
             cpu: parseFloat(cpuLimit) || 1,
             memory: memoryLimit,
@@ -523,6 +525,9 @@ export function RuntimeTab() {
         <p className="text-xs text-muted-foreground">
           Docker image to use for agent containers.
         </p>
+        {agentImageMissing && (
+          <p className="text-xs text-destructive">Agent image is required.</p>
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-4">
@@ -792,7 +797,7 @@ export function RuntimeTab() {
           </Button>
           <Button
             onClick={handleSave}
-            disabled={updateSettings.isPending || saveBlocked || memoryTooLow}
+            disabled={updateSettings.isPending || saveBlocked || memoryTooLow || agentImageMissing}
           >
             {updateSettings.isPending ? 'Saving...' : 'Save'}
           </Button>
