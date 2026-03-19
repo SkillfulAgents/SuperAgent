@@ -127,7 +127,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
   const statusText = isAwaitingInput
     ? 'Waiting for input...'
     : isCompacting
-      ? 'Compacting conversation...'
+      ? 'Compacting...'
       : (activeItem?.activeForm || 'Working...')
 
   return (
