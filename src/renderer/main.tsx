@@ -9,10 +9,10 @@ if (isElectron() && getPlatform() === 'darwin') {
   document.documentElement.classList.add('electron-vibrancy')
 }
 
-// Initialize API URL before rendering (needed for Electron where port may vary)
+// Initialize API URL before rendering
 initApiBaseUrl()
   .catch((error) => {
-    console.error('Failed to initialize API URL:', error)
+    console.error('Failed to initialize:', error)
   })
   .finally(() => {
     ReactDOM.createRoot(document.getElementById('root')!).render(

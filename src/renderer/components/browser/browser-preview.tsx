@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Globe, ChevronUp, ChevronDown, X, Loader2, MousePointerClick } from 'lucide-react'
 import { getApiBaseUrl } from '@renderer/lib/env'
+import { apiFetch } from '@renderer/lib/api'
 import { clearBrowserActive, useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useUser } from '@renderer/context/user-context'
 import { cn } from '@shared/lib/utils/cn'
@@ -262,7 +263,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
     ws.onclose = () => {
       setConnected(false)
       setPageLoading(false)
-      fetch(`${baseUrl}/api/agents/${agentSlug}/browser/status`)
+      apiFetch(`/api/agents/${agentSlug}/browser/status`)
         .then((res) => res.json())
         .then((status: { active?: boolean; sessionId?: string }) => {
           if (!status.active || status.sessionId !== sessionId) {
@@ -401,8 +402,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
       parts.push(key)
       const combo = parts.join('+')
 
-      const baseUrl = getApiBaseUrl()
-      fetch(`${baseUrl}/api/agents/${agentSlug}/browser/press`, {
+      apiFetch(`/api/agents/${agentSlug}/browser/press`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId, key: combo }),
@@ -475,17 +475,16 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
   )
 
   const closeBrowser = useCallback(async () => {
-    const baseUrl = getApiBaseUrl()
     setIsClosing(true)
     try {
       if (isActive) {
         // Interrupt the session first
-        await fetch(`${baseUrl}/api/agents/${agentSlug}/sessions/${sessionId}/interrupt`, {
+        await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/interrupt`, {
           method: 'POST',
         })
       }
       // Close the browser
-      await fetch(`${baseUrl}/api/agents/${agentSlug}/browser/close`, {
+      await apiFetch(`/api/agents/${agentSlug}/browser/close`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId }),
