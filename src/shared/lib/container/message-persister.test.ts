@@ -198,6 +198,47 @@ describe('MessagePersister', () => {
     })
   })
 
+  describe('compaction status events', () => {
+    it('broadcasts compact_start on early compacting status', () => {
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'status',
+        status: 'compacting',
+        session_id: SESSION_ID,
+        uuid: 'status-1',
+      })
+
+      const compactStarts = sseEvents.filter(e => e.type === 'compact_start')
+      expect(compactStarts).toHaveLength(1)
+    })
+
+    it('does not broadcast duplicate compact_start when boundary follows status', () => {
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'status',
+        status: 'compacting',
+        session_id: SESSION_ID,
+        uuid: 'status-1',
+      })
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'compact_boundary',
+        content: 'Conversation compacted',
+        session_id: SESSION_ID,
+        uuid: 'boundary-1',
+        compactMetadata: { trigger: 'auto', preTokens: 170000 },
+      })
+
+      const compactStarts = sseEvents.filter(e => e.type === 'compact_start')
+      expect(compactStarts).toHaveLength(1)
+    })
+  })
+
   // ============================================================================
   // Task tool tracking
   // ============================================================================
