@@ -91,10 +91,16 @@ export function RuntimeTab() {
   const [hasChanges, setHasChanges] = useState(false)
 
   // Get saved runtime settings for the current runner
-  const savedRuntimeSettings = settings?.container.runtimeSettings?.[containerRunner] ?? {}
+  const savedRuntimeSettings = useMemo(
+    () => settings?.container.runtimeSettings?.[containerRunner] ?? {},
+    [settings, containerRunner]
+  )
 
   // Get the field definitions for the current runner
-  const currentRunnerFields = RUNTIME_SETTINGS[containerRunner] ?? []
+  const currentRunnerFields = useMemo(
+    () => RUNTIME_SETTINGS[containerRunner] ?? [],
+    [containerRunner]
+  )
 
   // Check if runtime-specific settings have changed
   const runtimeSettingsChanged = useMemo(() => {
