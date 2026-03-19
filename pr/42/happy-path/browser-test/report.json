@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the agent can successfully open a browser, navigate to https://example.com, retrieve the page title \"Example Domain\", and return the result in the chat interface with proper tool call tracking and browser preview integration.",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 — Page loaded successfully showing Super Agent interface with agent list in sidebar",
+    "Step 2: Found and clicked on \"QA-20260319-201840-er31\" agent in sidebar — Agent chat interface opened successfully with message input field ready",
+    "Step 3: Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in input field — Message text appeared in input box, ready to send",
+    "Step 4: Clicked send button — Message was sent successfully, agent status changed to \"working\", and new session \"Browser Navigation and Page Title Check\" was created",
+    "Step 5: Waited up to 3 minutes for response mentioning \"Example Domain\" — Agent completed task in 17 seconds, showing successful execution of: Open Browser tool, Page Snapshot tool, Browser Command (get title) tool, response text stating \"The page title is Example Domain\", and Close Browser tool. Response explicitly contains required text \"Example Domain\"."
+  ],
+  "bugs": [],
+  "durationMs": 95180,
+  "sessionId": "c28d86f8-1135-4e8b-be80-afb9744c7c6a",
+  "cost": {
+    "inputTokens": 342,
+    "outputTokens": 3733,
+    "cacheCreationTokens": 49248,
+    "cacheReadTokens": 1103708,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.190938
+  }
+}
