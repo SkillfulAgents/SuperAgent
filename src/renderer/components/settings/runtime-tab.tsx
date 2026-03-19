@@ -536,7 +536,7 @@ export function RuntimeTab() {
           onClick={() => setAgentImage(latestAgentImage)}
           disabled={isLoading || isLatestAgentImage}
         >
-          Back to latest
+          Use default
         </Button>
         {agentImageMissing && (
           <p className="text-xs text-destructive">Agent image is required.</p>

@@ -119,7 +119,7 @@ describe('RuntimeTab', () => {
 
     renderWithProviders(<RuntimeTab />)
 
-    await user.click(screen.getByRole('button', { name: 'Back to latest' }))
+    await user.click(screen.getByRole('button', { name: 'Use default' }))
 
     expect(screen.getByLabelText('Agent Image')).toHaveValue(getDefaultAgentImage())
   })
