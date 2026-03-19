@@ -1,6 +1,6 @@
 # SuperAgent — QAgent Test Configuration
 
-This directory contains the [QAgent](https://github.com/yiw190/QAgent) test configuration for SuperAgent.
+This directory contains the [QAgent](https://github.com/SkillfulAgents/qagent) test configuration for SuperAgent.
 
 QAgent is the agentic E2E testing framework. All orchestration, prompt building, and driver logic lives there. This `.qagent/` folder is purely **configuration**:
 
@@ -35,7 +35,7 @@ npx qagent run --project-dir .qagent --filter smoke
 npx qagent run --project-dir .qagent --filter feature_test/
 
 # Single feature test
-npx qagent run --project-dir .qagent --filter core
+npx qagent run --project-dir .qagent --filter feature_test/core
 
 # Chaos monkey
 npx qagent run --project-dir .qagent --filter chaos

@@ -43,7 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      QAGENT_VERSION: v0.1.1
+      QAGENT_VERSION: v0.1.2
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       COMPOSIO_API_KEY: ${{ secrets.COMPOSIO_API_KEY }}
       COMPOSIO_USER_ID: ${{ secrets.COMPOSIO_USER_ID }}
