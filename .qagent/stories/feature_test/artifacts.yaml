@@ -1,0 +1,13 @@
+id: artifacts
+name: "Artifacts: dashboards, scheduled tasks, browser use"
+mode: feature-test
+baseUrl: http://localhost:47891
+features:
+  - browser-use
+  - dashboard
+  - scheduled-tasks
+setup:
+  - ensureSecrets
+  - ensureAgent
+teardown:
+  - deleteAgent

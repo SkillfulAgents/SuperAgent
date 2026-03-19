@@ -1,0 +1,14 @@
+id: integrations
+name: "Integrations: MCP, connected accounts, request interactions"
+mode: feature-test
+baseUrl: http://localhost:47891
+features:
+  - mcp
+  - connected-accounts
+  - request-interactions
+setup:
+  - ensureSecrets
+  - ensureOAuth
+  - ensureAgent
+teardown:
+  - deleteAgent

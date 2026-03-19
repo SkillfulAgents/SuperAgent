@@ -1,0 +1,8 @@
+id: agent-create
+name: "Agent creation and deletion via UI"
+mode: feature-test
+baseUrl: http://localhost:47891
+features:
+  - agent-create
+setup:
+  - ensureSecrets

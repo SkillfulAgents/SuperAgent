@@ -1,0 +1,10 @@
+id: chaos
+name: "Chaos monkey: go wild and break everything"
+mode: chaos-monkey
+baseUrl: http://localhost:47891
+duration: 2h
+setup:
+  - ensureSecrets
+  - ensureAgent
+teardown:
+  - deleteAgent
