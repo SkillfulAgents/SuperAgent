@@ -13,6 +13,7 @@ import { Alert, AlertDescription, AlertTitle } from '@renderer/components/ui/ale
 import { useSettings, useUpdateSettings, useStartRunner, useRestartRunner, useRefreshAvailability } from '@renderer/hooks/use-settings'
 import { AlertCircle, AlertTriangle, Play, Loader2, RefreshCw, Plus, X } from 'lucide-react'
 import { DEFAULT_LIMA_VM_MEMORY, VALID_LIMA_VM_MEMORY_OPTIONS } from '@shared/lib/container/types'
+import { getDefaultAgentImage } from '@shared/lib/config/version'
 
 const MIN_MEMORY_BYTES = 512 * 1024 * 1024 // 512 MiB
 
@@ -186,8 +187,10 @@ export function RuntimeTab() {
   }, [containerRunner, agentImage, cpuLimit, memoryLimit, settings])
 
   const memoryTooLow = parseMemoryToBytes(memoryLimit) > 0 && parseMemoryToBytes(memoryLimit) < MIN_MEMORY_BYTES
+  const latestAgentImage = getDefaultAgentImage()
   const trimmedAgentImage = agentImage.trim()
   const agentImageMissing = trimmedAgentImage.length === 0
+  const isLatestAgentImage = trimmedAgentImage === latestAgentImage
 
   const handleSave = async () => {
     if (memoryTooLow || agentImageMissing) return
@@ -525,6 +528,16 @@ export function RuntimeTab() {
         <p className="text-xs text-muted-foreground">
           Docker image to use for agent containers.
         </p>
+        <Button
+          type="button"
+          variant="link"
+          size="sm"
+          className="h-auto px-0 text-xs"
+          onClick={() => setAgentImage(latestAgentImage)}
+          disabled={isLoading || isLatestAgentImage}
+        >
+          Back to latest
+        </Button>
         {agentImageMissing && (
           <p className="text-xs text-destructive">Agent image is required.</p>
         )}

@@ -4,6 +4,7 @@ import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { RuntimeTab } from './runtime-tab'
 import { renderWithProviders } from '@renderer/test/test-utils'
+import { getDefaultAgentImage } from '@shared/lib/config/version'
 
 const mockSettings = {
   data: {
@@ -110,5 +111,16 @@ describe('RuntimeTab', () => {
         },
       },
     })
+  })
+
+  it('resets agent image to the latest default', async () => {
+    const user = userEvent.setup()
+    mockSettings.data.container.agentImage = 'ghcr.io/custom/image:latest'
+
+    renderWithProviders(<RuntimeTab />)
+
+    await user.click(screen.getByRole('button', { name: 'Back to latest' }))
+
+    expect(screen.getByLabelText('Agent Image')).toHaveValue(getDefaultAgentImage())
   })
 })
