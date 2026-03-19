@@ -1,24 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that agent can use browser tools to navigate to a URL and report the page title accurately.",
+  "reason": "QA test of browser agent capability to open a browser, navigate to a URL, and report page title through chat interface",
   "steps": [
-    "Navigated to http://localhost:47891 - Successfully loaded the Super Agent interface with agents listed in the sidebar.",
-    "Found and clicked on agent \"QA-20260319-185930-zfnu\" in the sidebar - Agent interface loaded with message input ready.",
-    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message was successfully submitted and agent status changed to \"working\".",
-    "Waited up to 3 minutes for response - Agent completed task in 21 seconds and returned to \"idle\" status.",
-    "Verified response mentions \"Example Domain\" - Response confirmed: \"The page title is Example Domain\" and \"The page at https://example.com has the title 'Example Domain'. It's a simple placeholder page maintained by IANA with a single 'Learn more' link.\"",
-    "Took screenshot of the complete response - Screenshot captured showing all browser tool calls (Open Browser, Page Snapshot, Browser Command get title, Close Browser) and the final response text clearly displaying \"Example Domain\"."
+    "Navigated to http://localhost:47891 — page loaded successfully showing Super Agent interface with multiple agents in sidebar",
+    "Clicked on agent \"QA-20260319-191208-u9jp\" in the sidebar — agent opened successfully, displaying chat interface with message input field and \"Start a conversation\" prompt",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into the message input field — message successfully entered into active textbox",
+    "Clicked send button to submit the message — message sent successfully, agent status changed to \"working\", and a new session \"Browser Page Title Lookup\" was created",
+    "Waited up to 3 minutes for response — agent completed task in 17 seconds and displayed response containing:",
+    "Took screenshot of final response — full-page screenshot captured showing complete conversation with agent response mentioning \"Example Domain\" as required"
   ],
   "bugs": [],
-  "durationMs": 81208,
-  "sessionId": "0ec703c5-fd43-4c7e-a764-13a4b0c97bda",
+  "durationMs": 82971,
+  "sessionId": "bf0d29f2-1edf-48c8-9874-a4924e4b3f6e",
   "cost": {
-    "inputTokens": 234,
-    "outputTokens": 2142,
-    "cacheCreationTokens": 29379,
-    "cacheReadTokens": 670982,
+    "inputTokens": 207,
+    "outputTokens": 2260,
+    "cacheCreationTokens": 29434,
+    "cacheReadTokens": 592766,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.114766
+    "totalCostUsd": 0.107576
   }
 }

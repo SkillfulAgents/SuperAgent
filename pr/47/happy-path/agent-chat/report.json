@@ -1,24 +1,24 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "Agent received message and responded with correct answer \"4\" to math question \"What is 2+2?\"",
+  "reason": "Verified agent communication works correctly - agent responded to math question with correct answer",
   "steps": [
-    "Navigated to http://localhost:47891 - Page loaded successfully with Super Agent app and sidebar showing three agents",
-    "Found and clicked \"QA-20260319-185928-d26z\" agent in sidebar - Agent page opened with landing page showing conversation prompt",
-    "Verified agent status is \"idle\" or \"running\" - Status confirmed as \"idle\" in the agent header",
-    "Sent message \"Hello! What is 2+2?\" - Message entered in input field and send button clicked successfully",
-    "Waited up to 3 minutes for response - Agent responded within 2 seconds with the answer",
-    "Verified response mentions \"4\" - Screenshot confirms agent responded with \"4.\" as the answer"
+    "Navigated to http://localhost:47891 - page loaded successfully with sidebar showing three agents",
+    "Found \"QA-20260319-191207-zldm\" agent in sidebar with status \"idle\" - clicked it to open agent detail page",
+    "Verified agent status is \"idle\" - confirmed in agent header and sidebar indicator",
+    "Sent message \"Hello! What is 2+2?\" - message entered in message input and sent button clicked",
+    "Waited up to 3 minutes for response - agent responded within 3 seconds with the answer \"4.\"",
+    "Verified response mentions \"4\" - agent's response clearly displays \"4.\" as the answer to the math question"
   ],
   "bugs": [],
-  "durationMs": 88367,
-  "sessionId": "73a5b8b5-17b9-48d1-ae5e-804a397f98a5",
+  "durationMs": 82102,
+  "sessionId": "b5e59d68-ec79-4ae8-b66f-c0de641af291",
   "cost": {
-    "inputTokens": 252,
-    "outputTokens": 2394,
-    "cacheCreationTokens": 53920,
-    "cacheReadTokens": 728520,
+    "inputTokens": 207,
+    "outputTokens": 2566,
+    "cacheCreationTokens": 49415,
+    "cacheReadTokens": 572202,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.152474
+    "totalCostUsd": 0.132026
   }
 }
