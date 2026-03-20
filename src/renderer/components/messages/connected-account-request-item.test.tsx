@@ -41,6 +41,14 @@ vi.mock('@shared/lib/composio/providers', () => ({
   }),
 }))
 
+vi.mock('@renderer/components/ui/policy-summary-pill', () => ({
+  PolicySummaryPill: () => null,
+}))
+
+vi.mock('@renderer/components/settings/scope-policy-editor', () => ({
+  ScopePolicyEditor: () => null,
+}))
+
 const defaultProps = {
   toolUseId: 'tu-1',
   toolkit: 'github',
