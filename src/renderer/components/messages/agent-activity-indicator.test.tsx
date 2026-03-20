@@ -60,6 +60,7 @@ describe('AgentActivityIndicator', () => {
       pendingFileRequests: [],
       pendingRemoteMcpRequests: [],
       pendingBrowserInputRequests: [],
+      isCompacting: false,
     })
     mockMessages.length = 0
   })
@@ -242,6 +243,51 @@ describe('AgentActivityIndicator', () => {
     )
     // Component should return null when not active
     expect(container.innerHTML).toBe('')
+  })
+
+  it('shows "Compacting..." when isCompacting is true', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.isCompacting = true
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByText('Compacting...')).toBeInTheDocument()
+    expect(screen.queryByText('Working...')).not.toBeInTheDocument()
+  })
+
+  it('"Compacting..." takes priority over TodoWrite activeForm', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.isCompacting = true
+    mockMessages.push({
+      id: 'msg-1',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [{
+        id: 'tc-1',
+        name: 'TodoWrite',
+        input: {
+          todos: [{ content: 'Doing work', status: 'in_progress', activeForm: 'Setting things up' }],
+        },
+        result: 'ok',
+      }],
+      createdAt: new Date(),
+    })
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByText('Compacting...')).toBeInTheDocument()
+    expect(screen.queryByText('Setting things up')).not.toBeInTheDocument()
+  })
+
+  it('"Waiting for input..." takes priority over "Compacting..."', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.isCompacting = true
+    mockStreamState.pendingSecretRequests = [{ toolUseId: 't1', secretName: 'KEY' }]
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
+    expect(screen.queryByText('Compacting...')).not.toBeInTheDocument()
   })
 
   it('"Waiting for input..." takes priority over TodoWrite activeForm', () => {
