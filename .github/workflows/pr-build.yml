@@ -34,6 +34,7 @@ jobs:
 
       - name: Build and sign macOS app
         env:
+          CSC_FOR_PULL_REQUEST: true
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
