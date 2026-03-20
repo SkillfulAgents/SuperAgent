@@ -255,7 +255,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
           }
         } else if (data.type === 'frame' && data.data) {
           const blob = base64ToBlob(data.data, 'image/jpeg')
-          renderFrame(blob)
+          if (blob) renderFrame(blob)
 
           if (data.metadata) {
             metadataRef.current = {
@@ -714,11 +714,15 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
   )
 }
 
-function base64ToBlob(base64: string, mimeType: string): Blob {
-  const byteCharacters = atob(base64)
-  const byteNumbers = new Array(byteCharacters.length)
-  for (let i = 0; i < byteCharacters.length; i++) {
-    byteNumbers[i] = byteCharacters.charCodeAt(i)
+function base64ToBlob(base64: string, mimeType: string): Blob | null {
+  try {
+    const byteCharacters = atob(base64)
+    const byteNumbers = new Array(byteCharacters.length)
+    for (let i = 0; i < byteCharacters.length; i++) {
+      byteNumbers[i] = byteCharacters.charCodeAt(i)
+    }
+    return new Blob([new Uint8Array(byteNumbers)], { type: mimeType })
+  } catch {
+    return null
   }
-  return new Blob([new Uint8Array(byteNumbers)], { type: mimeType })
 }

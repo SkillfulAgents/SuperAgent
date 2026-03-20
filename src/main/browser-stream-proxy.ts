@@ -70,6 +70,7 @@ async function authenticateWs(
 
 export function setupBrowserStreamProxy(server: ServerType): void {
   server.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
+    // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- request.url from HTTP server is always valid
     const url = new URL(request.url || '', `http://${request.headers.host}`)
     const match = url.pathname.match(/^\/api\/agents\/([^/]+)\/browser\/stream$/)
 
@@ -99,6 +100,7 @@ export function setupBrowserStreamProxy(server: ServerType): void {
   })
 
   browserWss.on('connection', async (ws: WebSocket, request: IncomingMessage) => {
+    // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- request.url from HTTP server is always valid
     const url = new URL(request.url || '', `http://${request.headers.host}`)
     const match = url.pathname.match(/^\/api\/agents\/([^/]+)\/browser\/stream$/)
     if (!match) { ws.close(1011, 'Invalid path'); return }

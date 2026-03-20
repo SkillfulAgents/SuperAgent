@@ -10,6 +10,15 @@ import { isAuthMode } from '@shared/lib/auth/mode'
 import { Authenticated, UsersMcpServer, IsAdmin, Or } from '../middleware/auth'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 
+function safeParseTools(json: string | null): McpToolInfo[] {
+  if (!json) return []
+  try {
+    return JSON.parse(json)
+  } catch {
+    return []
+  }
+}
+
 /**
  * Escape a string for safe inclusion in HTML content
  */
@@ -136,7 +145,7 @@ remoteMcps.get('/', async (c) => {
       accessToken: undefined,
       refreshToken: undefined,
       oauthClientSecret: undefined,
-      tools: s.toolsJson ? JSON.parse(s.toolsJson) : [],
+      tools: safeParseTools(s.toolsJson),
     })),
   })
 })
@@ -206,7 +215,7 @@ remoteMcps.post('/', async (c) => {
       accessToken: undefined,
       refreshToken: undefined,
       oauthClientSecret: undefined,
-      tools: server.toolsJson ? JSON.parse(server.toolsJson) : [],
+      tools: safeParseTools(server.toolsJson),
     },
   }, 201)
 })
@@ -366,7 +375,7 @@ remoteMcps.get('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
       accessToken: undefined,
       refreshToken: undefined,
       oauthClientSecret: undefined,
-      tools: server.toolsJson ? JSON.parse(server.toolsJson) : [],
+      tools: safeParseTools(server.toolsJson),
     },
   })
 })
@@ -416,7 +425,7 @@ remoteMcps.patch('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
       accessToken: undefined,
       refreshToken: undefined,
       oauthClientSecret: undefined,
-      tools: updated.toolsJson ? JSON.parse(updated.toolsJson) : [],
+      tools: safeParseTools(updated.toolsJson),
     },
   })
 })

@@ -235,7 +235,12 @@ export async function initiateOAuthFlow(
   })
 
   // Build authorization URL
-  const authUrl = new URL(metadata.authorization_endpoint)
+  let authUrl: URL
+  try {
+    authUrl = new URL(metadata.authorization_endpoint)
+  } catch {
+    throw new Error(`Invalid authorization endpoint URL: ${metadata.authorization_endpoint}`)
+  }
   authUrl.searchParams.set('response_type', 'code')
   authUrl.searchParams.set('client_id', clientId)
   authUrl.searchParams.set('redirect_uri', redirectUri)
@@ -311,7 +316,12 @@ export async function initiateNewServerOAuth(
     userId,
   })
 
-  const authUrl = new URL(metadata.authorization_endpoint)
+  let authUrl: URL
+  try {
+    authUrl = new URL(metadata.authorization_endpoint)
+  } catch {
+    throw new Error(`Invalid authorization endpoint URL: ${metadata.authorization_endpoint}`)
+  }
   authUrl.searchParams.set('response_type', 'code')
   authUrl.searchParams.set('client_id', clientId)
   authUrl.searchParams.set('redirect_uri', redirectUri)

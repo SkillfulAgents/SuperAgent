@@ -187,6 +187,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   // The MCP server URL is the base; append the rest path if any
   const baseUrl = mcp.url.replace(/\/$/, '')
   const targetPath = rest ? `/${rest}` : ''
+  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
   const queryString = new URL(c.req.url).search
   const targetUrl = `${baseUrl}${targetPath}${queryString}`
 

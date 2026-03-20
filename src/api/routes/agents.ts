@@ -3557,6 +3557,7 @@ async function proxyArtifactRequest(c: any) {
   }
 
   // Build the container path
+  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
   const url = new URL(c.req.url)
   const prefix = `/api/agents/${agentSlug}/artifacts/${artifactSlug}`
   const subPath = url.pathname.slice(url.pathname.indexOf(prefix) + prefix.length) || '/'
