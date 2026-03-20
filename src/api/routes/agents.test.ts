@@ -260,7 +260,7 @@ vi.mock('@shared/lib/utils/retry', () => ({
 
 const mockTransformMessages = vi.fn()
 vi.mock('@shared/lib/utils/message-transform', () => ({
-  transformMessages: (...args: unknown[]) => mockTransformMessages(),
+  transformMessages: (..._args: unknown[]) => mockTransformMessages(),
   resolveInterruptedSubagents: vi.fn(),
 }))
 

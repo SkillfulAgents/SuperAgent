@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import crypto from 'crypto'
 
 // Mock DB with chainable query builder
 const mockLimit = vi.fn()

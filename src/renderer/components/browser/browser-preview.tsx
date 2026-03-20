@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Globe, ChevronUp, ChevronDown, X, Loader2, MousePointerClick } from 'lucide-react'
+import { Globe, ChevronUp, ChevronDown, X, MousePointerClick } from 'lucide-react'
 import { BrowserTabBar, type BrowserTabInfo } from './browser-tab-bar'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { apiFetch } from '@renderer/lib/api'
