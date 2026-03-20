@@ -112,6 +112,11 @@ export function GlobalNotificationHandler() {
             }
             // Artifacts may have been created/modified during the session
             queryClient.invalidateQueries({ queryKey: ['artifacts'] })
+
+            // Proxy review created or resolved — refetch review list
+            if (eventAgentSlug && data.review) {
+              queryClient.invalidateQueries({ queryKey: ['proxy-reviews', eventAgentSlug] })
+            }
             break
           }
 

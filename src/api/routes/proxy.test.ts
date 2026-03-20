@@ -46,6 +46,30 @@ vi.mock('drizzle-orm', () => ({
   and: (...args: unknown[]) => args,
 }))
 
+// Mock policy enforcement
+const mockMatchScopes = vi.fn()
+const mockResolveApiPolicy = vi.fn()
+const mockRequestReview = vi.fn()
+
+vi.mock('@shared/lib/proxy/scope-matcher', () => ({
+  matchScopes: (...args: unknown[]) => mockMatchScopes(...args),
+}))
+
+vi.mock('@shared/lib/proxy/policy-resolver', () => ({
+  resolveApiPolicy: (...args: unknown[]) => mockResolveApiPolicy(...args),
+}))
+
+vi.mock('@shared/lib/proxy/review-manager', () => ({
+  reviewManager: {
+    requestReview: (...args: unknown[]) => mockRequestReview(...args),
+  },
+}))
+
+// Mock analytics
+vi.mock('@shared/lib/analytics/server-analytics', () => ({
+  trackServerEvent: vi.fn(),
+}))
+
 // Mock fetch for forwarded requests
 const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
@@ -67,6 +91,15 @@ describe('proxy route', () => {
 
     // Default: DB insert for audit log succeeds
     mockInsertValues.mockResolvedValue(undefined)
+
+    // Default: policy allows everything (non-breaking for existing tests)
+    mockMatchScopes.mockReturnValue({ matched: true, scopes: ['test.scope'], descriptions: {} })
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'allow',
+      matchedScopes: ['test.scope'],
+      scopeDescriptions: {},
+      resolvedFrom: 'global_default',
+    })
   })
 
   async function makeRequest(
@@ -657,6 +690,221 @@ describe('proxy route', () => {
 })
 
 // ===========================================================================
+// Policy enforcement tests
+// ===========================================================================
+describe('proxy policy enforcement', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockInsertValues.mockResolvedValue(undefined)
+  })
+
+  async function makeRequest(
+    path: string,
+    options?: RequestInit
+  ): Promise<Response> {
+    return app.request(`http://localhost${path}`, options)
+  }
+
+  // Set up mocks through host validation, then let policy take over
+  function setupThroughHostValidation() {
+    mockValidateProxyToken.mockResolvedValue('my-agent')
+    mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
+    mockInnerJoin.mockReturnValue({ where: mockWhere })
+    mockWhere.mockReturnValue({ limit: mockLimit })
+    mockLimit.mockResolvedValue([
+      {
+        account: {
+          id: 'acc-123',
+          toolkitSlug: 'gmail',
+          composioConnectionId: 'comp-123',
+          userId: 'user-1',
+        },
+      },
+    ])
+    mockIsHostAllowed.mockReturnValue(true)
+  }
+
+  it('policy "allow" → request forwarded, returns 200', async () => {
+    setupThroughHostValidation()
+    mockMatchScopes.mockReturnValue({ matched: true, scopes: ['gmail.readonly'], descriptions: {} })
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'allow',
+      matchedScopes: ['gmail.readonly'],
+      scopeDescriptions: {},
+      resolvedFrom: 'scope_policy',
+    })
+    mockGetConnectionToken.mockResolvedValue({ accessToken: 'tok' })
+    mockFetch.mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+
+    const res = await makeRequest(
+      '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+      { headers: { Authorization: 'Bearer synth_valid' } }
+    )
+    expect(res.status).toBe(200)
+    expect(mockFetch).toHaveBeenCalledOnce()
+  })
+
+  it('policy "block" → returns 403, body has error: "blocked_by_policy"', async () => {
+    setupThroughHostValidation()
+    mockMatchScopes.mockReturnValue({ matched: true, scopes: ['gmail.full'], descriptions: {} })
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'block',
+      matchedScopes: ['gmail.full'],
+      scopeDescriptions: {},
+      resolvedFrom: 'scope_policy',
+    })
+
+    const res = await makeRequest(
+      '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+      { headers: { Authorization: 'Bearer synth_valid' } }
+    )
+    expect(res.status).toBe(403)
+    const body = await res.json()
+    expect(body.error).toBe('blocked_by_policy')
+  })
+
+  it('block does NOT call getConnectionToken (token not fetched)', async () => {
+    setupThroughHostValidation()
+    mockMatchScopes.mockReturnValue({ matched: true, scopes: ['gmail.full'], descriptions: {} })
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'block',
+      matchedScopes: ['gmail.full'],
+      scopeDescriptions: {},
+      resolvedFrom: 'scope_policy',
+    })
+
+    await makeRequest(
+      '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+      { headers: { Authorization: 'Bearer synth_valid' } }
+    )
+    expect(mockGetConnectionToken).not.toHaveBeenCalled()
+  })
+
+  it('review → user allows → request forwarded, returns 200', async () => {
+    setupThroughHostValidation()
+    mockMatchScopes.mockReturnValue({ matched: true, scopes: ['gmail.modify'], descriptions: {} })
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'review',
+      matchedScopes: ['gmail.modify'],
+      scopeDescriptions: {},
+      resolvedFrom: 'scope_policy',
+    })
+    mockRequestReview.mockResolvedValue('allow')
+    mockGetConnectionToken.mockResolvedValue({ accessToken: 'tok' })
+    mockFetch.mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+
+    const res = await makeRequest(
+      '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+      { headers: { Authorization: 'Bearer synth_valid' } }
+    )
+    expect(res.status).toBe(200)
+    expect(mockRequestReview).toHaveBeenCalledOnce()
+  })
+
+  it('review → user denies → returns 403, error: "denied_by_user"', async () => {
+    setupThroughHostValidation()
+    mockMatchScopes.mockReturnValue({ matched: true, scopes: ['gmail.modify'], descriptions: {} })
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'review',
+      matchedScopes: ['gmail.modify'],
+      scopeDescriptions: {},
+      resolvedFrom: 'scope_policy',
+    })
+    mockRequestReview.mockResolvedValue('deny')
+
+    const res = await makeRequest(
+      '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+      { headers: { Authorization: 'Bearer synth_valid' } }
+    )
+    expect(res.status).toBe(403)
+    const body = await res.json()
+    expect(body.error).toBe('denied_by_user')
+  })
+
+  it('review → timeout → returns 408, error: "review_timeout"', async () => {
+    setupThroughHostValidation()
+    mockMatchScopes.mockReturnValue({ matched: true, scopes: ['gmail.modify'], descriptions: {} })
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'review',
+      matchedScopes: ['gmail.modify'],
+      scopeDescriptions: {},
+      resolvedFrom: 'scope_policy',
+    })
+    mockRequestReview.mockRejectedValue(new Error('Review timeout'))
+
+    const res = await makeRequest(
+      '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+      { headers: { Authorization: 'Bearer synth_valid' } }
+    )
+    expect(res.status).toBe(408)
+    const body = await res.json()
+    expect(body.error).toBe('review_timeout')
+  })
+
+  it('unmatched endpoint (matchScopes returns matched: false) → still calls resolveApiPolicy', async () => {
+    setupThroughHostValidation()
+    mockMatchScopes.mockReturnValue({ matched: false, scopes: [], descriptions: {} })
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'allow',
+      matchedScopes: [],
+      scopeDescriptions: {},
+      resolvedFrom: 'global_default',
+    })
+    mockGetConnectionToken.mockResolvedValue({ accessToken: 'tok' })
+    mockFetch.mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+
+    const res = await makeRequest(
+      '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/unknown',
+      { headers: { Authorization: 'Bearer synth_valid' } }
+    )
+    expect(res.status).toBe(200)
+    expect(mockResolveApiPolicy).toHaveBeenCalledOnce()
+  })
+
+  it('audit log includes policyDecision and matchedScopes', async () => {
+    setupThroughHostValidation()
+    mockMatchScopes.mockReturnValue({ matched: true, scopes: ['gmail.readonly'], descriptions: {} })
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'block',
+      matchedScopes: ['gmail.readonly'],
+      scopeDescriptions: {},
+      resolvedFrom: 'scope_policy',
+    })
+
+    await makeRequest(
+      '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+      { headers: { Authorization: 'Bearer synth_valid' } }
+    )
+
+    expect(mockInsertValues).toHaveBeenCalled()
+    const entry = mockInsertValues.mock.calls[0][0]
+    expect(entry.policyDecision).toBe('block')
+    expect(entry.matchedScopes).toBe(JSON.stringify(['gmail.readonly']))
+  })
+
+  it('policy enforcement error defaults to review (not allow)', async () => {
+    setupThroughHostValidation()
+    mockMatchScopes.mockImplementation(() => { throw new Error('scope map exploded') })
+    // If fallback were 'allow', the request would be forwarded.
+    // Since fallback is 'review', reviewManager.requestReview is called.
+    mockRequestReview.mockResolvedValue('allow')
+    mockGetConnectionToken.mockResolvedValue({ accessToken: 'tok' })
+    mockFetch.mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+
+    const res = await makeRequest(
+      '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+      { headers: { Authorization: 'Bearer synth_valid' } }
+    )
+    expect(res.status).toBe(200)
+    // The key assertion: reviewManager was called because fallback is 'review'
+    expect(mockRequestReview).toHaveBeenCalledOnce()
+  })
+})
+
+// ===========================================================================
 // Token caching tests — use resetModules to get a fresh tokenCache per test
 // ===========================================================================
 describe('proxy token caching', () => {
@@ -707,6 +955,14 @@ describe('proxy token caching', () => {
       },
     ])
     mockIsHostAllowed.mockReturnValue(true)
+    // Policy enforcement: default allow
+    mockMatchScopes.mockReturnValue({ matched: true, scopes: ['test.scope'], descriptions: {} })
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'allow',
+      matchedScopes: ['test.scope'],
+      scopeDescriptions: {},
+      resolvedFrom: 'global_default',
+    })
     const tokenResult: { accessToken: string; expiresAt?: string } = {
       accessToken: opts.accessToken,
     }

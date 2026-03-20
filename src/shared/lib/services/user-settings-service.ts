@@ -26,6 +26,7 @@ export const userSettingsSchema = z.object({
   allowPrereleaseUpdates: z.boolean().default(false),
   timezone: z.string().optional(),
   agentOrder: z.array(z.string()).optional(),
+  defaultApiPolicy: z.enum(['allow', 'review', 'block']).default('review'),
 })
 
 export type UserSettingsData = z.infer<typeof userSettingsSchema>

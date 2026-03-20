@@ -78,6 +78,13 @@
       "when": 1773801909114,
       "tag": "0010_sudden_lady_deathstrike",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1773868062138,
+      "tag": "0011_curly_morph",
+      "breakpoints": true
     }
   ]
 }

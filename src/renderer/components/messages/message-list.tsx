@@ -21,6 +21,7 @@ import { QuestionRequestItem } from './question-request-item'
 import { FileRequestItem } from './file-request-item'
 import { BrowserInputRequestItem } from './browser-input-request-item'
 import { ScriptRunRequestItem } from './script-run-request-item'
+import { PendingAgentReviews } from '@renderer/components/dashboards/pending-agent-reviews'
 import { Loader2, Wrench, WifiOff } from 'lucide-react'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { useIsOnline } from '@renderer/context/connectivity-context'
@@ -842,6 +843,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
             onComplete={() => handleScriptRunRequestComplete(request.toolUseId)}
           />
         ))}
+        <PendingAgentReviews agentSlug={agentSlug} readOnly={isViewOnly} />
       </div>
     </div>
   )

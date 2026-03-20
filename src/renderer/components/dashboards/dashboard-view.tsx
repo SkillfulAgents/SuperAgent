@@ -6,6 +6,7 @@ import { useArtifacts } from '@renderer/hooks/use-artifacts'
 import { useUser } from '@renderer/context/user-context'
 import { getApiBaseUrl, isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
 import { AddToDockDialog } from './add-to-dock-dialog'
+import { PendingAgentReviews } from './pending-agent-reviews'
 
 interface DashboardViewProps {
   agentSlug: string
@@ -99,6 +100,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
           </Button>
         </div>
       </div>
+      <PendingAgentReviews agentSlug={agentSlug} onReviewResolved={handleRefresh} />
       <AddToDockDialog
         open={dockDialogOpen}
         onOpenChange={setDockDialogOpen}

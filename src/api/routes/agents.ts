@@ -43,7 +43,7 @@ import {
   listCancelledScheduledTasks,
 } from '@shared/lib/services/scheduled-task-service'
 import { db } from '@shared/lib/db'
-import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, user as userTable, messageAuthor } from '@shared/lib/db/schema'
+import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, user as userTable, messageAuthor, apiScopePolicies } from '@shared/lib/db/schema'
 import { eq, and, inArray, desc, count, like, or } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
@@ -63,6 +63,7 @@ import {
 } from '@shared/lib/services/skillset-service'
 import { listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
 import { getSessionIdsWithUnreadNotifications } from '@shared/lib/services/notification-service'
+import { reviewManager } from '@shared/lib/proxy/review-manager'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import {
   exportAgentTemplate,
@@ -901,12 +902,16 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
 
     const sessionList = await listSessions(slug)
     const unreadSessionIds = await getSessionIdsWithUnreadNotifications(slug)
-    const sessionsWithStatus = sessionList.map((session) => ({
-      ...session,
-      isActive: messagePersister.isSessionActive(session.id),
-      isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id),
-      hasUnreadNotifications: unreadSessionIds.has(session.id),
-    }))
+    const hasAgentLevelReviews = reviewManager.getPendingReviewsForAgent(slug).length > 0
+    const sessionsWithStatus = sessionList.map((session) => {
+      const isActive = messagePersister.isSessionActive(session.id)
+      return {
+        ...session,
+        isActive,
+        isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id) || (isActive && hasAgentLevelReviews),
+        hasUnreadNotifications: unreadSessionIds.has(session.id),
+      }
+    })
 
     return c.json(sessionsWithStatus)
   } catch (error) {
@@ -1338,11 +1343,11 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
       })
 
       // Send initial connection message (include slash commands for late-joining clients)
+      const agentSlug = c.req.param('id')
       const isActive = messagePersister.isSessionActive(sessionId)
       let slashCommands = messagePersister.getSlashCommands(sessionId)
       // Fall back to persisted metadata (e.g. after container restart)
       if (slashCommands.length === 0) {
-        const agentSlug = c.req.param('id')
         const meta = await getSessionMetadata(agentSlug, sessionId)
         if (meta?.slashCommands && meta.slashCommands.length > 0) {
           slashCommands = meta.slashCommands
@@ -3008,6 +3013,8 @@ agents.get('/:id/audit-log', AgentAdmin(), async (c) => {
         statusCode: e.statusCode ?? null,
         errorMessage: e.errorMessage ?? null,
         durationMs: null as number | null,
+        policyDecision: e.policyDecision ?? null,
+        matchedScopes: e.matchedScopes ?? null,
         createdAt: e.createdAt,
       })),
       ...mcpEntries.map((e) => ({
@@ -3020,6 +3027,8 @@ agents.get('/:id/audit-log', AgentAdmin(), async (c) => {
         statusCode: e.statusCode ?? null,
         errorMessage: e.errorMessage ?? null,
         durationMs: e.durationMs ?? null,
+        policyDecision: e.policyDecision ?? null,
+        matchedScopes: e.matchedTool ? JSON.stringify([e.matchedTool]) : null,
         createdAt: e.createdAt,
       })),
     ]
@@ -3686,5 +3695,88 @@ async function cleanupStaleUploads() {
 // Run cleanup on startup and every 30 minutes
 cleanupStaleUploads()
 setInterval(cleanupStaleUploads, 30 * 60 * 1000).unref()
+
+// =============================================================================
+// Proxy review endpoints
+// =============================================================================
+
+// GET /api/agents/:id/proxy-reviews - List pending reviews for this agent
+agents.get('/:id/proxy-reviews', AgentRead(), async (c) => {
+  const slug = c.req.param('id')
+  const reviews = reviewManager.getPendingReviewsForAgent(slug)
+  return c.json({ reviews })
+})
+
+// POST /api/agents/:id/proxy-review/:reviewId - Submit a review decision
+agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
+  const reviewId = c.req.param('reviewId')
+  const body = await c.req.json<{ decision: 'allow' | 'deny' }>()
+
+  if (!body.decision || !['allow', 'deny'].includes(body.decision)) {
+    return c.json({ error: 'Invalid decision. Must be "allow" or "deny".' }, 400)
+  }
+
+  const success = reviewManager.submitDecision(reviewId, body.decision)
+  if (!success) {
+    return c.json({ error: 'Review not found or already resolved' }, 404)
+  }
+
+  return c.json({ ok: true })
+})
+
+// POST /api/agents/:id/proxy-review/:reviewId/always - Submit decision and save as policy
+agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
+  const reviewId = c.req.param('reviewId')
+  const slug = c.req.param('id')
+  const body = await c.req.json<{
+    decision: 'allow' | 'deny'
+    scope: string
+    accountId: string
+  }>()
+
+  if (!body.decision || !['allow', 'deny'].includes(body.decision)) {
+    return c.json({ error: 'Invalid decision' }, 400)
+  }
+
+  // Verify account ownership before saving policy
+  if (body.accountId && isAuthMode()) {
+    const userId = getCurrentUserId(c)
+    const [acct] = await db
+      .select({ userId: connectedAccounts.userId })
+      .from(connectedAccounts)
+      .where(eq(connectedAccounts.id, body.accountId))
+      .limit(1)
+    if (acct && acct.userId !== userId) {
+      return c.json({ error: 'Forbidden: you do not own this account' }, 403)
+    }
+  }
+
+  // Save the scope policy (may fail if account doesn't exist, e.g. in mock/E2E)
+  const policyDecision = body.decision === 'allow' ? 'allow' : 'block'
+  const now = new Date()
+  try {
+    await db.insert(apiScopePolicies).values({
+      id: randomUUID(),
+      accountId: body.accountId,
+      scope: body.scope,
+      decision: policyDecision,
+      createdAt: now,
+      updatedAt: now,
+    }).onConflictDoUpdate({
+      target: [apiScopePolicies.accountId, apiScopePolicies.scope],
+      set: { decision: policyDecision, updatedAt: now },
+    })
+  } catch (err) {
+    console.warn('Failed to save scope policy (account may not exist):', err)
+  }
+
+  // Submit decision for this review
+  reviewManager.submitDecision(reviewId, body.decision)
+
+  // Resolve all pending reviews for this agent that match the scope
+  reviewManager.resolveMatchingPending(slug, body.scope, body.decision)
+
+  return c.json({ ok: true })
+})
 
 export default agents

@@ -28,6 +28,9 @@ import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { useQuery } from '@tanstack/react-query'
 import type { Provider } from '@shared/lib/composio/providers'
 import { formatDistanceToNow } from 'date-fns'
+import { ScopePolicyEditor } from '@renderer/components/settings/scope-policy-editor'
+import { PolicySummaryPill } from '@renderer/components/ui/policy-summary-pill'
+import { HighlightMatch } from '@renderer/components/ui/highlight-match'
 
 /**
  * Shared component for managing connected OAuth accounts.
@@ -55,6 +58,7 @@ export function ConnectedAccountsSection() {
   const [editingAccount, setEditingAccount] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
   const [providerFilter, setProviderFilter] = useState('')
+  const [policyEditorAccount, setPolicyEditorAccount] = useState<{ id: string; toolkit: string } | null>(null)
 
   // Listen for OAuth callback messages (both IPC in Electron and postMessage in web)
   useEffect(() => {
@@ -246,18 +250,25 @@ export function ConnectedAccountsSection() {
                   </div>
                 </div>
                 {!isEditing && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => handleDelete(account)}
-                    disabled={deletingAccount === account.id}
-                  >
-                    {deletingAccount === account.id ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Trash2 className="h-4 w-4 text-destructive" />
-                    )}
-                  </Button>
+                  <div className="flex items-center gap-1">
+                    <PolicySummaryPill
+                      accountId={account.id}
+                      toolkit={account.toolkitSlug}
+                      onClick={() => setPolicyEditorAccount({ id: account.id, toolkit: account.toolkitSlug })}
+                    />
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => handleDelete(account)}
+                      disabled={deletingAccount === account.id}
+                    >
+                      {deletingAccount === account.id ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-4 w-4 text-destructive" />
+                      )}
+                    </Button>
+                  </div>
                 )}
               </div>
             )
@@ -342,21 +353,18 @@ export function ConnectedAccountsSection() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Scope policy editor modal */}
+      {policyEditorAccount && (
+        <ScopePolicyEditor
+          accountId={policyEditorAccount.id}
+          toolkit={policyEditorAccount.toolkit}
+          open={!!policyEditorAccount}
+          onOpenChange={(open) => {
+            if (!open) setPolicyEditorAccount(null)
+          }}
+        />
+      )}
     </div>
-  )
-}
-
-function HighlightMatch({ text, query }: { text: string; query: string }) {
-  if (!query) return <>{text}</>
-
-  const idx = text.toLowerCase().indexOf(query.toLowerCase())
-  if (idx === -1) return <>{text}</>
-
-  return (
-    <span>
-      {text.slice(0, idx)}
-      <span className="bg-yellow-200 dark:bg-yellow-800 rounded-sm">{text.slice(idx, idx + query.length)}</span>
-      {text.slice(idx + query.length)}
-    </span>
   )
 }

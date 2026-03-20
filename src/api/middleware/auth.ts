@@ -187,6 +187,58 @@ export function UsersMcpServer(): MiddlewareHandler {
 }
 
 /**
+ * OwnsAccountByParam — like OwnsAccount but reads the account ID from a named
+ * route parameter (e.g. `:accountId`) instead of the default `:id`.
+ * Falls through in non-auth mode. Admins always pass.
+ */
+export function OwnsAccountByParam(param: string): MiddlewareHandler {
+  return async (c: Context, next: Next) => {
+    if (!isAuthMode()) return next()
+
+    const user = getUser(c)
+    if (isAdmin(user)) return next()
+
+    const accountId = c.req.param(param)
+    const row = await db
+      .select({ userId: connectedAccounts.userId })
+      .from(connectedAccounts)
+      .where(eq(connectedAccounts.id, accountId))
+      .limit(1)
+
+    if (!row[0] || row[0].userId !== user.id) {
+      return c.json({ error: 'Forbidden' }, 403)
+    }
+    return next()
+  }
+}
+
+/**
+ * OwnsMcpByParam — like UsersMcpServer but reads the MCP ID from a named
+ * route parameter (e.g. `:mcpId`) instead of the default `:id`.
+ * Falls through in non-auth mode. Admins always pass.
+ */
+export function OwnsMcpByParam(param: string): MiddlewareHandler {
+  return async (c: Context, next: Next) => {
+    if (!isAuthMode()) return next()
+
+    const user = getUser(c)
+    if (isAdmin(user)) return next()
+
+    const mcpId = c.req.param(param)
+    const row = await db
+      .select({ userId: remoteMcpServers.userId })
+      .from(remoteMcpServers)
+      .where(eq(remoteMcpServers.id, mcpId))
+      .limit(1)
+
+    if (!row[0] || row[0].userId !== user.id) {
+      return c.json({ error: 'Forbidden' }, 403)
+    }
+    return next()
+  }
+}
+
+/**
  * HasNotificationAccess — user has access to the notification's agent.
  * Admins can access any notification. Regular users need an agentAcl entry
  * for the notification's agentSlug. Expects `:id` route param.

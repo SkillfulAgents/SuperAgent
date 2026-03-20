@@ -2,6 +2,9 @@ import { Hono } from 'hono'
 import crypto from 'crypto'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { isHostAllowed } from '@shared/lib/proxy/allowed-hosts'
+import { matchScopes } from '@shared/lib/proxy/scope-matcher'
+import { resolveApiPolicy } from '@shared/lib/proxy/policy-resolver'
+import { reviewManager } from '@shared/lib/proxy/review-manager'
 import { getConnectionToken } from '@shared/lib/composio/client'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { db } from '@shared/lib/db'
@@ -56,6 +59,8 @@ async function logAuditEntry(entry: {
   method: string
   statusCode?: number
   errorMessage?: string
+  policyDecision?: string
+  matchedScopes?: string
 }): Promise<void> {
   try {
     await db.insert(proxyAuditLog).values({
@@ -63,6 +68,8 @@ async function logAuditEntry(entry: {
       ...entry,
       statusCode: entry.statusCode ?? null,
       errorMessage: entry.errorMessage ?? null,
+      policyDecision: entry.policyDecision ?? null,
+      matchedScopes: entry.matchedScopes ?? null,
       createdAt: new Date(),
     })
     trackServerEvent('api_called', { slug: entry.toolkit })
@@ -82,6 +89,8 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
   const firstSlash = rest.indexOf('/')
   const targetHost = firstSlash === -1 ? rest : rest.slice(0, firstSlash)
   const targetPath = firstSlash === -1 ? '' : rest.slice(firstSlash + 1)
+
+  const method = c.req.method
 
   if (!targetHost) {
     return c.json({ error: 'Missing target host in proxy URL' }, 400)
@@ -180,6 +189,82 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     )
   }
 
+  // 3.5 Policy enforcement
+  let policyResult
+  try {
+    const matchResult = matchScopes(account.toolkitSlug, method, '/' + targetPath)
+    const userId = account.userId ?? 'local'
+    policyResult = await resolveApiPolicy(accountId, matchResult, userId)
+  } catch (policyError) {
+    console.error('[proxy] Policy enforcement failed, defaulting to review:', policyError)
+    policyResult = { decision: 'review' as const, matchedScopes: [] as string[], scopeDescriptions: {} as Record<string, string>, resolvedFrom: 'global_default' as const }
+  }
+
+  if (policyResult.decision === 'block') {
+    await logAuditEntry({
+      agentSlug,
+      accountId,
+      toolkit: account.toolkitSlug,
+      targetHost,
+      targetPath,
+      method,
+      policyDecision: 'block',
+      matchedScopes: JSON.stringify(policyResult.matchedScopes),
+    })
+    return c.json({
+      error: 'blocked_by_policy',
+      message: 'This request was blocked by your API access policy.',
+      scopes: policyResult.matchedScopes,
+      toolkit: account.toolkitSlug,
+      settingsHint: 'You can adjust policies in Settings > Accounts > Policies',
+    }, 403)
+  }
+
+  // Track the precise outcome for audit logging
+  let resolvedPolicyDecision: string = policyResult.decision // 'allow' or 'review'
+
+  if (policyResult.decision === 'review') {
+    try {
+      const decision = await reviewManager.requestReview({
+        agentSlug,
+        accountId,
+        toolkit: account.toolkitSlug,
+        method,
+        targetPath,
+        matchedScopes: policyResult.matchedScopes,
+        scopeDescriptions: policyResult.scopeDescriptions,
+      })
+      if (decision === 'deny') {
+        await logAuditEntry({
+          agentSlug,
+          accountId,
+          toolkit: account.toolkitSlug,
+          targetHost,
+          targetPath,
+          method,
+          policyDecision: 'denied_by_user',
+          matchedScopes: JSON.stringify(policyResult.matchedScopes),
+        })
+        return c.json({ error: 'denied_by_user', message: 'Request denied by user.' }, 403)
+      }
+      resolvedPolicyDecision = 'approved_by_user'
+    } catch {
+      await logAuditEntry({
+        agentSlug,
+        accountId,
+        toolkit: account.toolkitSlug,
+        targetHost,
+        targetPath,
+        method,
+        policyDecision: 'review_timeout',
+        matchedScopes: JSON.stringify(policyResult.matchedScopes),
+      })
+      return c.json({ error: 'review_timeout', message: 'Request required user approval but timed out.' }, 408)
+    }
+  }
+
+  // resolvedPolicyDecision is now 'allow' (auto) or 'approved_by_user' (manual)
+
   // 4. Fetch real token (with cache)
   let realToken: string
   try {
@@ -193,6 +278,8 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
       targetPath,
       method: c.req.method,
       errorMessage: `Failed to fetch access token: ${error}`,
+      policyDecision: resolvedPolicyDecision,
+      matchedScopes: JSON.stringify(policyResult.matchedScopes),
     })
     return c.json({ error: 'Failed to fetch access token' }, 502)
   }
@@ -202,7 +289,6 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
   const targetUrl = `https://${targetHost}/${targetPath}${queryString}`
 
   // 6. Forward request
-  const method = c.req.method
   const forwardHeaders = new Headers()
   const skipHeaders = new Set([
     'host',
@@ -239,6 +325,8 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
       targetPath,
       method,
       statusCode,
+      policyDecision: resolvedPolicyDecision,
+      matchedScopes: JSON.stringify(policyResult.matchedScopes),
     })
 
     // Pass response through
@@ -267,6 +355,8 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
       targetPath,
       method,
       errorMessage: `Proxy request failed: ${error}`,
+      policyDecision: resolvedPolicyDecision,
+      matchedScopes: JSON.stringify(policyResult.matchedScopes),
     })
     return c.json(
       { error: 'Proxy request failed', details: String(error) },

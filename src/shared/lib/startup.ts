@@ -1,6 +1,7 @@
 import type { ServerType } from '@hono/node-server'
 import { containerManager } from './container/container-manager'
 import { shutdownActiveRunner } from './container/client-factory'
+import { reviewManager } from './proxy/review-manager'
 import { taskScheduler } from './scheduler/task-scheduler'
 import { autoSleepMonitor } from './scheduler/auto-sleep-monitor'
 import { stopAllProviders } from '../../main/host-browser'
@@ -72,6 +73,7 @@ export function setupServerHandlers(server: ServerType): void {
  * - vite.config.ts: Vite dev server close
  */
 export async function shutdownServices() {
+  reviewManager.rejectAll()
   await stopAllProviders()
   taskScheduler.stop()
   autoSleepMonitor.stop()

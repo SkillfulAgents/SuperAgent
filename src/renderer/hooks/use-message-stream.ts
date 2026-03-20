@@ -73,6 +73,7 @@ interface StreamState {
   pendingRemoteMcpRequests: RemoteMcpRequest[]
   pendingBrowserInputRequests: BrowserInputRequest[]
   pendingScriptRunRequests: ScriptRunRequest[]
+
   error: string | null // Error message if session encountered an error
   browserActive: boolean // Whether browser is running for this session
   activeStartTime: number | null // Timestamp when session became active (for elapsed timer)
@@ -191,6 +192,7 @@ function getOrCreateEventSource(
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
+
           error: null, // Clear any previous error when starting new request
           browserActive: current?.browserActive ?? false,
           activeStartTime: Date.now(),
@@ -222,6 +224,7 @@ function getOrCreateEventSource(
           pendingRemoteMcpRequests: [],
           pendingBrowserInputRequests: [],
           pendingScriptRunRequests: [],
+
           error: null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: null,
@@ -252,6 +255,7 @@ function getOrCreateEventSource(
           pendingRemoteMcpRequests: [],
           pendingBrowserInputRequests: [],
           pendingScriptRunRequests: [],
+
           error: data.error || 'An unknown error occurred',
           browserActive: current?.browserActive ?? false,
           activeStartTime: null,
@@ -288,6 +292,7 @@ function getOrCreateEventSource(
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
+
           error: null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -312,6 +317,7 @@ function getOrCreateEventSource(
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
+
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -340,6 +346,7 @@ function getOrCreateEventSource(
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
+
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -365,6 +372,7 @@ function getOrCreateEventSource(
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
+
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -389,6 +397,7 @@ function getOrCreateEventSource(
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
+
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
           activeStartTime: current?.activeStartTime ?? null,
@@ -896,6 +905,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     pendingRemoteMcpRequests: [],
     pendingBrowserInputRequests: [],
     pendingScriptRunRequests: [],
+
     error: null,
     browserActive: false,
     activeStartTime: null,
@@ -945,6 +955,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
         pendingRemoteMcpRequests: [],
         pendingBrowserInputRequests: [],
         pendingScriptRunRequests: [],
+    
         error: null,
         browserActive: false,
         activeStartTime: null,
