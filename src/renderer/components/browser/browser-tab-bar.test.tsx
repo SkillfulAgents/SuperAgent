@@ -95,4 +95,16 @@ describe('BrowserTabBar', () => {
     await user.click(screen.getByTitle('Auto-following agent (click to pin)'))
     expect(onToggleAutoFollow).toHaveBeenCalledOnce()
   })
+
+  it('shows loading spinner when loading is true', () => {
+    const { container } = render(<BrowserTabBar {...defaultProps} loading={true} />)
+    const spinner = container.querySelector('.animate-spin')
+    expect(spinner).toBeInTheDocument()
+  })
+
+  it('does not show loading spinner when loading is false', () => {
+    const { container } = render(<BrowserTabBar {...defaultProps} loading={false} />)
+    const spinner = container.querySelector('.animate-spin')
+    expect(spinner).not.toBeInTheDocument()
+  })
 })

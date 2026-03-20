@@ -50,7 +50,7 @@ export function buildRunCommandArgs(command: string): string[] {
 export function rewriteTabNewCommand(args: string[]): string[] {
   if (args[0] === 'tab' && args[1] === 'new') {
     const url = args[2] || 'about:blank';
-    return ['eval', `(() => { window.open('${url.replace(/'/g, "\\'")}', '_blank'); return 'opened'; })()`];
+    return ['eval', `(() => { window.open(${JSON.stringify(url)}, '_blank'); return 'opened'; })()`];
   }
   return args;
 }

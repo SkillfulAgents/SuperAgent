@@ -24,6 +24,7 @@ vi.mock('lucide-react', () => ({
   ChevronUp: (props: any) => <span data-testid="icon-chevron-up" {...props} />,
   ChevronDown: (props: any) => <span data-testid="icon-chevron-down" {...props} />,
   X: (props: any) => <span data-testid="icon-x" {...props} />,
+  Loader2: (props: any) => <span data-testid="icon-loader" {...props} />,
   MousePointerClick: (props: any) => <span data-testid="icon-mouse" {...props} />,
   Eye: (props: any) => <span data-testid="icon-eye" {...props} />,
   EyeOff: (props: any) => <span data-testid="icon-eye-off" {...props} />,
@@ -255,5 +256,39 @@ describe('BrowserPreview multi-tab', () => {
     const aButton = screen.getByText('A').closest('button')!
     expect(aButton.className).toContain('bg-background')
     expect(screen.getByTitle('Auto-following agent (click to pin)')).toBeInTheDocument()
+  })
+
+  it('shows loading spinner when page_loading is true', async () => {
+    render(<BrowserPreview {...defaultProps} />)
+    await act(async () => { await new Promise(r => setTimeout(r, 10)) })
+
+    const ws = getLatestWs()
+    // Send tabs first so tab bar is visible
+    act(() => {
+      simulateWsMessage(ws, {
+        type: 'tab_list',
+        tabs: [
+          { targetId: 't1', index: 0, url: 'https://a.com', title: 'A', active: true },
+        ],
+        activeTargetId: 't1',
+      })
+    })
+
+    // No spinner before page_loading
+    expect(screen.queryByTestId('icon-loader')).not.toBeInTheDocument()
+
+    // Send page_loading = true
+    act(() => {
+      simulateWsMessage(ws, { type: 'page_loading', loading: true })
+    })
+
+    expect(screen.getByTestId('icon-loader')).toBeInTheDocument()
+
+    // Send page_loading = false
+    act(() => {
+      simulateWsMessage(ws, { type: 'page_loading', loading: false })
+    })
+
+    expect(screen.queryByTestId('icon-loader')).not.toBeInTheDocument()
   })
 })

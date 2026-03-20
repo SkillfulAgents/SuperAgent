@@ -6,7 +6,7 @@ describe('rewriteTabNewCommand', () => {
     const result = rewriteTabNewCommand(['tab', 'new', 'https://example.com'])
     expect(result).toEqual([
       'eval',
-      "(() => { window.open('https://example.com', '_blank'); return 'opened'; })()",
+      '(() => { window.open("https://example.com", \'_blank\'); return \'opened\'; })()',
     ])
   })
 
@@ -14,16 +14,22 @@ describe('rewriteTabNewCommand', () => {
     const result = rewriteTabNewCommand(['tab', 'new'])
     expect(result).toEqual([
       'eval',
-      "(() => { window.open('about:blank', '_blank'); return 'opened'; })()",
+      '(() => { window.open("about:blank", \'_blank\'); return \'opened\'; })()',
     ])
   })
 
-  it('escapes single quotes in url', () => {
-    const result = rewriteTabNewCommand(['tab', 'new', "url'with'quotes"])
-    expect(result).toEqual([
-      'eval',
-      "(() => { window.open('url\\'with\\'quotes', '_blank'); return 'opened'; })()",
-    ])
+  it('escapes special characters in url safely', () => {
+    const result = rewriteTabNewCommand(['tab', 'new', "url'with\"quotes"])
+    expect(result[0]).toBe('eval')
+    // JSON.stringify handles all escaping — no breakout possible
+    expect(result[1]).toContain('window.open("url\'with\\"quotes"')
+  })
+
+  it('handles backslash-quote sequences safely', () => {
+    // This input would break the old single-quote escaping approach
+    const result = rewriteTabNewCommand(['tab', 'new', "test\\'breakout"])
+    expect(result[0]).toBe('eval')
+    expect(result[1]).toContain('window.open("test\\\\\'breakout"')
   })
 
   it('passes non-tab commands through unchanged', () => {

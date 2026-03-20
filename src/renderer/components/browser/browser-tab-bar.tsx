@@ -1,4 +1,4 @@
-import { Eye, EyeOff } from 'lucide-react'
+import { Eye, EyeOff, Loader2 } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 
 // Protocol: see agent-container/src/server.ts
@@ -14,11 +14,12 @@ interface BrowserTabBarProps {
   tabs: BrowserTabInfo[]
   viewingTargetId: string | null
   autoFollow: boolean
+  loading?: boolean
   onTabClick: (targetId: string) => void
   onToggleAutoFollow: () => void
 }
 
-export function BrowserTabBar({ tabs, viewingTargetId, autoFollow, onTabClick, onToggleAutoFollow }: BrowserTabBarProps) {
+export function BrowserTabBar({ tabs, viewingTargetId, autoFollow, loading, onTabClick, onToggleAutoFollow }: BrowserTabBarProps) {
   return (
     <div className="flex items-center gap-0.5 px-1 py-0.5 bg-muted/30 border-b overflow-x-auto shrink-0" style={{ height: 24 }}>
       {tabs.map((tab) => {
@@ -42,9 +43,13 @@ export function BrowserTabBar({ tabs, viewingTargetId, autoFollow, onTabClick, o
           </button>
         )
       })}
+      {loading && (
+        <Loader2 className="h-3 w-3 animate-spin text-muted-foreground shrink-0 ml-auto" />
+      )}
       <button
         className={cn(
-          'ml-auto p-0.5 rounded transition-colors shrink-0',
+          loading ? '' : 'ml-auto',
+          'p-0.5 rounded transition-colors shrink-0',
           autoFollow ? 'text-blue-500 hover:text-blue-600' : 'text-muted-foreground hover:text-foreground'
         )}
         onClick={onToggleAutoFollow}

@@ -1446,6 +1446,8 @@ let cdpScreencast: {
   lastDeviceHeight: number;
   /** CDP session ID for flattened session mode (remote providers like Browserbase) */
   cdpSessionId: string | null;
+  /** Whether the viewer auto-follows the agent's active tab */
+  autoFollow: boolean;
 } | null = null;
 
 /** Derive the CDP HTTP endpoint from the current browser state */
@@ -1476,8 +1478,6 @@ interface BrowserTabInfo {
   active: boolean;
 }
 
-// Viewer tab-selection state — persists across CDP target switches
-let viewerAutoFollow = true;
 let tabPollInterval: NodeJS.Timeout | null = null;
 
 /** Get ALL CDP page targets across all strategies */
@@ -1609,7 +1609,8 @@ function cdpMsg(state: NonNullable<typeof cdpScreencast>, method: string, params
 /** Connect CDP screencast to a page target and forward frames to the client */
 function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket, requiresSession = false) {
   const cdpWs = new WebSocket(wsUrl);
-  cdpScreencast = { clientWs, cdpWs, currentTargetId: targetId, msgId: 0, lastDeviceWidth: 0, lastDeviceHeight: 0, cdpSessionId: null };
+  const prevAutoFollow = cdpScreencast?.autoFollow ?? true;
+  cdpScreencast = { clientWs, cdpWs, currentTargetId: targetId, msgId: 0, lastDeviceWidth: 0, lastDeviceHeight: 0, cdpSessionId: null, autoFollow: prevAutoFollow };
   const state = cdpScreencast;
 
   cdpWs.on('open', () => {
@@ -1683,7 +1684,7 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
     findActivePageTarget().then(target => {
       if (target && cdpScreencast?.clientWs === clientWs && clientWs.readyState === WebSocket.OPEN) {
         console.log('[CDP] Recovering from closed target, switching to', target.id);
-        viewerAutoFollow = true;
+        cdpScreencast.autoFollow = true;
         switchScreencastTarget(target, clientWs);
         broadcastTabList();
       } else if (clientWs.readyState === WebSocket.OPEN) {
@@ -1752,7 +1753,7 @@ async function broadcastTabList(prefetched?: { allTargets: PageTarget[]; daemonT
     const activeTargetId = activeEntry?.targetId;
 
     // Auto-follow: switch screencast if active target changed (e.g. user clicked a link that opened a new tab)
-    if (viewerAutoFollow && activeTargetId && activeTargetId !== cdpScreencast?.currentTargetId) {
+    if (cdpScreencast?.autoFollow && activeTargetId && activeTargetId !== cdpScreencast?.currentTargetId) {
       const target = allTargets.find(t => t.id === activeTargetId);
       if (target) {
         switchScreencastTarget(target, clientWs);
@@ -1792,7 +1793,7 @@ function notifyBrowserAction() {
       }
 
       // Switch screencast only if auto-following and target changed
-      if (activeTarget && activeTarget.id !== cdpScreencast.currentTargetId && viewerAutoFollow) {
+      if (activeTarget && activeTarget.id !== cdpScreencast.currentTargetId && cdpScreencast.autoFollow) {
         console.log(`[CDP] Auto-following to target ${activeTarget.id}`);
         switchScreencastTarget(activeTarget, currentClient);
       }
@@ -1810,12 +1811,12 @@ function handleBrowserStreamConnection(ws: WebSocket) {
   // If there's an existing screencast, close it (single viewer)
   cleanupCdpScreencast();
 
-  // Reset viewer state for new connection
-  viewerAutoFollow = true;
-
   findActivePageTarget().then((target) => {
     if (!target) {
       console.error('[CDP] No active page target found');
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'error', message: 'No browser tab found — the page may still be loading' }));
+      }
       ws.close();
       return;
     }
@@ -1823,6 +1824,9 @@ function handleBrowserStreamConnection(ws: WebSocket) {
     broadcastTabList();
   }).catch((err) => {
     console.error('[CDP] Failed to start screencast:', err);
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'error', message: 'Failed to connect to browser' }));
+    }
     ws.close();
   });
 
@@ -1841,12 +1845,12 @@ function handleBrowserStreamConnection(ws: WebSocket) {
         const allTargets = await getAllPageTargets();
         const target = allTargets.find(t => t.id === data.targetId);
         if (target && cdpScreencast && cdpScreencast.cdpWs.readyState === WebSocket.OPEN) {
-          viewerAutoFollow = false;
+          cdpScreencast.autoFollow = false;
           switchScreencastTarget(target, ws);
         }
       } else if (data.type === 'follow_agent') {
-        viewerAutoFollow = data.enabled !== false;
-        if (viewerAutoFollow) {
+        if (cdpScreencast) cdpScreencast.autoFollow = data.enabled !== false;
+        if (cdpScreencast?.autoFollow) {
           // Snap to agent's active tab immediately
           const target = await findActivePageTarget();
           if (target && cdpScreencast && target.id !== cdpScreencast.currentTargetId) {
