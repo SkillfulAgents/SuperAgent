@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Agent successfully navigated to example.com, retrieved the page title \"Example Domain\", and reported it back with browser tool execution details.",
+  "steps": [
+    "Navigated to http://localhost:47891 - Page loaded successfully showing Super Agent interface with three agents listed in sidebar.",
+    "Clicked on agent \"QA-20260320-024130-0epg\" in the sidebar - Chat interface opened with message input field ready.",
+    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message appeared in chat and agent status changed to \"working\".",
+    "Waited for agent response - Agent successfully executed browser tools in sequence: (1) Opened browser, (2) Navigated to https://example.com, (3) Took page snapshot, (4) Retrieved page title using \"get title\" command, (5) Closed browser.",
+    "Verified response mentions \"Example Domain\" - Response clearly states \"The page title is **Example Domain**\" and provides additional context: \"The page at https://example.com has the title \\\"Example Domain\\\". It's a simple placeholder page maintained by IANA with a single \\\"Learn more\\\" link.\" Agent completed in 17 seconds."
+  ],
+  "bugs": [],
+  "durationMs": 70882,
+  "sessionId": "8df875c2-2012-4ea2-8e44-a1b7bb9e22bc",
+  "cost": {
+    "inputTokens": 342,
+    "outputTokens": 4352,
+    "cacheCreationTokens": 54436,
+    "cacheReadTokens": 1136361,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.203783
+  }
+}

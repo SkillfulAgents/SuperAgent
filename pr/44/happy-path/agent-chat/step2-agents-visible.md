@@ -1,0 +1,58 @@
+- generic [ref=e3]:
+  - generic [ref=e6]:
+    - button "Super Agent" [ref=e9] [cursor=pointer]
+    - generic [ref=e11]:
+      - generic [ref=e12]: Agents
+      - button "New Agent" [ref=e13] [cursor=pointer]:
+        - img [ref=e14]
+        - generic [ref=e15]: New Agent
+      - list [ref=e17]:
+        - button "QA-20260320-024131-1yps idle" [ref=e54] [cursor=pointer]:
+          - button "QA-20260320-024131-1yps idle" [ref=e55]:
+            - generic [ref=e57]: QA-20260320-024131-1yps
+            - generic [ref=e60]: idle
+        - button "QA-20260320-024130-0epg idle" [ref=e61] [cursor=pointer]:
+          - button "QA-20260320-024130-0epg idle" [ref=e62]:
+            - generic [ref=e64]: QA-20260320-024130-0epg
+            - generic [ref=e67]: idle
+        - button "QA-20260320-024128-cpos idle" [ref=e68] [cursor=pointer]:
+          - button "QA-20260320-024128-cpos idle" [ref=e69]:
+            - generic [ref=e71]: QA-20260320-024128-cpos
+            - generic [ref=e74]: idle
+        - status [ref=e75]
+    - generic [ref=e27]:
+      - list [ref=e28]:
+        - listitem [ref=e29]:
+          - generic [ref=e30]:
+            - button "Settings" [ref=e31] [cursor=pointer]:
+              - img [ref=e32]
+              - generic [ref=e35]: Settings
+            - button "Notifications" [ref=e36] [cursor=pointer]:
+              - img
+              - generic [ref=e37]: Notifications
+      - generic [ref=e38]: "Version: 0.2.9"
+    - button "Toggle Sidebar" [ref=e39]
+  - main [ref=e40]:
+    - generic [ref=e41]:
+      - button "Toggle Sidebar" [ref=e43] [cursor=pointer]:
+        - img
+        - generic [ref=e44]: Toggle Sidebar
+      - generic [ref=e47]:
+        - generic [ref=e48]:
+          - heading "Your Agents" [level=2] [ref=e49]
+          - button "New Agent" [ref=e50] [cursor=pointer]:
+            - img
+            - text: New Agent
+        - generic [ref=e51]:
+          - button "QA-20260320-024131-1yps idle" [ref=e76] [cursor=pointer]:
+            - generic [ref=e77]:
+              - generic [ref=e78]: QA-20260320-024131-1yps
+              - generic [ref=e81]: idle
+          - button "QA-20260320-024130-0epg idle" [ref=e82] [cursor=pointer]:
+            - generic [ref=e83]:
+              - generic [ref=e84]: QA-20260320-024130-0epg
+              - generic [ref=e87]: idle
+          - button "QA-20260320-024128-cpos idle" [ref=e88] [cursor=pointer]:
+            - generic [ref=e89]:
+              - generic [ref=e90]: QA-20260320-024128-cpos
+              - generic [ref=e93]: idle
