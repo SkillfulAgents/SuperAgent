@@ -655,7 +655,15 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
           {showOverlay && (
             <div
               className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 backdrop-blur-sm cursor-pointer z-10 transition-opacity duration-300"
+              role="button"
+              tabIndex={0}
               onClick={() => setOverlayDismissedForId(latestRequestId)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  setOverlayDismissedForId(latestRequestId)
+                }
+              }}
             >
               <span className="relative flex h-3 w-3 mb-2">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>

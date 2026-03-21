@@ -21,6 +21,7 @@ function ProfileAvatar({ name, avatarUrl }: { name: string; avatarUrl?: string }
 
   if (avatarUrl && !imgError) {
     return (
+      // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
       <img
         src={avatarUrl}
         alt=""
