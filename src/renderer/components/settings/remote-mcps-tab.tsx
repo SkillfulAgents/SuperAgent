@@ -45,7 +45,7 @@ export function RemoteMcpsTab() {
     },
   })
 
-  // Listen for MCP OAuth callback from main process
+  // Listen for MCP OAuth callback from main process (Electron)
   useEffect(() => {
     if (!window.electronAPI) return
 
@@ -71,6 +71,27 @@ export function RemoteMcpsTab() {
   const [newToken, setNewToken] = useState('')
   const [oAuthPending, setOAuthPending] = useState<string | null>(null)
   const [oAuthError, setOAuthError] = useState<string | null>(null)
+
+  // Listen for MCP OAuth callback via postMessage (web mode)
+  useEffect(() => {
+    if (!oAuthPending) return
+
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'mcp-oauth-callback') {
+        setOAuthPending(null)
+        if (event.data.success) {
+          setOAuthError(null)
+          invalidateRemoteMcps()
+        } else {
+          setOAuthError(event.data.error || 'OAuth failed')
+        }
+      }
+    }
+
+    window.addEventListener('message', handleMessage)
+    return () => window.removeEventListener('message', handleMessage)
+  }, [oAuthPending, invalidateRemoteMcps])
+
   const [searchQuery, setSearchQuery] = useState('')
   const addFormRef = useRef<HTMLDivElement>(null)
 
