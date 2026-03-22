@@ -110,6 +110,31 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
     }
   }, [browserActive, pos])
 
+  // Clamp position when size changes (e.g. aspect ratio update) to keep window in bounds
+  useEffect(() => {
+    const parent = containerRef.current?.parentElement
+    if (!parent || !posRef.current) return
+    const rect = parent.getBoundingClientRect()
+    const currentPos = posRef.current
+
+    let newX = currentPos.x
+    let newY = currentPos.y
+    let changed = false
+
+    if (currentPos.x + size.width > rect.width) {
+      newX = Math.max(0, rect.width - size.width)
+      changed = true
+    }
+    if (currentPos.y + size.height > rect.height) {
+      newY = Math.max(0, rect.height - size.height)
+      changed = true
+    }
+
+    if (changed) {
+      setPos({ x: newX, y: newY })
+    }
+  }, [size])
+
   // --- Drag handlers ---
   const handleDragStart = useCallback((e: React.PointerEvent) => {
     if (!pos) return
