@@ -475,6 +475,22 @@ class MessagePersister {
             state.isCompacting = true
             this.broadcastToSSE(sessionId, { type: 'compact_start' })
           }
+        } else if (content.subtype === 'api_retry') {
+          // API retry in progress — broadcast details so the UI can show retry state
+          this.broadcastToSSE(sessionId, {
+            type: 'api_retry',
+            attempt: content.attempt,
+            maxRetries: content.max_retries,
+            delayMs: content.delay_ms,
+            errorStatus: content.error_status,
+          })
+        } else if (content.subtype === 'task_progress') {
+          // Subagent progress summary (from agentProgressSummaries option)
+          this.broadcastToSSE(sessionId, {
+            type: 'subagent_progress',
+            parentToolId: content.parent_tool_use_id,
+            summary: content.summary,
+          })
         }
         break
 
@@ -520,7 +536,8 @@ class MessagePersister {
             isActive: false,
           })
           // Trigger session complete notification (only if no one is viewing the session)
-          if (state.agentSlug && !this.hasActiveViewers(sessionId)) {
+          // Skip for 'resume' exits — the session is pausing for a resume, not truly finished
+          if (content.subtype !== 'resume' && state.agentSlug && !this.hasActiveViewers(sessionId)) {
             notificationManager.triggerSessionComplete(sessionId, state.agentSlug).catch((err) => {
               console.error('[MessagePersister] Failed to trigger session complete notification:', err)
             })

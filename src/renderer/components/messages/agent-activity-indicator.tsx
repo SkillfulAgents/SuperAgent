@@ -22,6 +22,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     isActive, error, activeStartTime, isCompacting, activeSubagents, completedSubagents,
     pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests,
     pendingFileRequests, pendingRemoteMcpRequests, pendingBrowserInputRequests,
+    apiRetry,
   } = useMessageStream(sessionId, agentSlug)
 
   const isAwaitingInput = isActive && (
@@ -52,20 +53,22 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
   // Collect subagent display info by matching activeSubagents (SSE-tracked) with tool calls in messages
   const subagentItems = useMemo(() => {
     if (!messages || activeSubagents.length === 0) return []
-    const activeIds = new Set(activeSubagents.map(s => s.parentToolId))
-    const items: { id: string; name: string; description: string; status: 'running' | 'completed' }[] = []
+    const activeMap = new Map(activeSubagents.map(s => [s.parentToolId, s]))
+    const items: { id: string; name: string; description: string; status: 'running' | 'completed'; progressSummary: string | null }[] = []
     for (const msg of messages) {
       if (msg.type === 'compact_boundary') continue
       for (const tc of msg.toolCalls || []) {
-        if ((tc.name === 'Agent' || tc.name === 'Task') && activeIds.has(tc.id)) {
+        if ((tc.name === 'Agent' || tc.name === 'Task') && activeMap.has(tc.id)) {
           if (tc.isError) continue
           const input = tc.input as { subagent_type?: string; description?: string }
           const isCompleted = completedSubagents?.has(tc.id) || tc.result != null
+          const sub = activeMap.get(tc.id)
           items.push({
             id: tc.id,
             name: input.subagent_type || tc.name,
             description: input.description || '',
             status: isCompleted ? 'completed' : 'running',
+            progressSummary: sub?.progressSummary ?? null,
           })
         }
       }
@@ -128,7 +131,9 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     ? 'Waiting for input...'
     : isCompacting
       ? 'Compacting...'
-      : (activeItem?.activeForm || 'Working...')
+      : apiRetry
+        ? `Retrying... (attempt ${apiRetry.attempt}${apiRetry.maxRetries ? `/${apiRetry.maxRetries}` : ''})`
+        : (activeItem?.activeForm || 'Working...')
 
   return (
     <div className="mx-4 mb-2 rounded-lg border bg-muted/50 p-3" data-testid="activity-indicator">
@@ -137,11 +142,11 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
         <span className="relative flex h-3 w-3">
           <span className={cn(
             "animate-ping absolute inline-flex h-full w-full rounded-full opacity-75",
-            isAwaitingInput ? "bg-orange-500" : "bg-primary"
+            (isAwaitingInput || apiRetry) ? "bg-orange-500" : "bg-primary"
           )}></span>
           <span className={cn(
             "relative inline-flex rounded-full h-3 w-3",
-            isAwaitingInput ? "bg-orange-500" : "bg-primary"
+            (isAwaitingInput || apiRetry) ? "bg-orange-500" : "bg-primary"
           )}></span>
         </span>
         <span className="text-sm font-medium">{statusText}</span>
@@ -154,24 +159,31 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
       {subagentItems.length > 0 && (
         <ul className="mt-2 space-y-1 text-sm pl-5">
           {subagentItems.map((item) => (
-            <li key={item.id} className="flex items-center gap-2">
-              {item.status === 'running' ? (
-                <span className="relative flex h-2 w-2 shrink-0">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+            <li key={item.id} className="flex flex-col gap-0.5">
+              <div className="flex items-center gap-2">
+                {item.status === 'running' ? (
+                  <span className="relative flex h-2 w-2 shrink-0">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+                  </span>
+                ) : (
+                  <span className="text-xs text-green-500 shrink-0">✓</span>
+                )}
+                <span className={cn(
+                  'font-mono text-xs',
+                  item.status === 'completed' && 'text-muted-foreground'
+                )}>
+                  {item.name}
                 </span>
-              ) : (
-                <span className="text-xs text-green-500 shrink-0">✓</span>
-              )}
-              <span className={cn(
-                'font-mono text-xs',
-                item.status === 'completed' && 'text-muted-foreground'
-              )}>
-                {item.name}
-              </span>
-              {item.description && (
-                <span className="text-xs text-muted-foreground truncate">
-                  {item.description}
+                {item.description && (
+                  <span className="text-xs text-muted-foreground truncate">
+                    {item.description}
+                  </span>
+                )}
+              </div>
+              {item.progressSummary && item.status === 'running' && (
+                <span className="text-xs text-muted-foreground ml-4 italic">
+                  {item.progressSummary}
                 </span>
               )}
             </li>

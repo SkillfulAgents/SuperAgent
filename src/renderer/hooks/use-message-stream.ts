@@ -59,6 +59,14 @@ export interface SubagentInfo {
   agentId: string | null
   streamingMessage: string | null
   streamingToolUse: { id: string; name: string; partialInput: string } | null
+  progressSummary: string | null // AI-generated progress summary from agentProgressSummaries
+}
+
+interface ApiRetryInfo {
+  attempt: number
+  maxRetries?: number
+  delayMs?: number
+  errorStatus?: number
 }
 
 interface StreamState {
@@ -82,6 +90,7 @@ interface StreamState {
   completedSubagents: Set<string> | null // parentToolIds of completed subagents (for status logic)
   typingUser: { id: string; name?: string } | null // User currently typing (auth mode shared agents)
   peerUserMessage: { content: string; sender: { id: string; name?: string; email?: string } } | null // User message from another user
+  apiRetry: ApiRetryInfo | null // Non-null while API is retrying a transient error
 }
 
 // Upsert a subagent entry in the array by parentToolId (immutable)
@@ -161,6 +170,7 @@ function getOrCreateEventSource(
           completedSubagents: current?.completedSubagents ?? null,
           typingUser: current?.typingUser ?? null,
           peerUserMessage: current?.peerUserMessage ?? null,
+          apiRetry: current?.apiRetry ?? null,
         })
         // Fetch current browser status to sync state (handles missed events)
         fetch(`${baseUrl}/api/agents/${agentSlug}/browser/status`)
@@ -200,6 +210,7 @@ function getOrCreateEventSource(
           completedSubagents: null,
           typingUser: null,
           peerUserMessage: current?.peerUserMessage ?? null,
+          apiRetry: null,
         })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
       }
@@ -234,6 +245,7 @@ function getOrCreateEventSource(
           completedSubagents: current?.completedSubagents ?? null,
           typingUser: null,
           peerUserMessage: current?.peerUserMessage ?? null,
+          apiRetry: current?.apiRetry ?? null,
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -261,6 +273,7 @@ function getOrCreateEventSource(
           completedSubagents: null,
           typingUser: null,
           peerUserMessage: current?.peerUserMessage ?? null,
+          apiRetry: current?.apiRetry ?? null,
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -297,6 +310,7 @@ function getOrCreateEventSource(
           completedSubagents: current?.completedSubagents ?? null,
           typingUser: current?.typingUser ?? null,
           peerUserMessage: current?.peerUserMessage ?? null,
+          apiRetry: null, // Clear retry state — API call succeeded
         })
       }
       else if (data.type === 'stream_delta') {
@@ -321,6 +335,7 @@ function getOrCreateEventSource(
           completedSubagents: current?.completedSubagents ?? null,
           typingUser: current?.typingUser ?? null,
           peerUserMessage: current?.peerUserMessage ?? null,
+          apiRetry: current?.apiRetry ?? null,
         })
       }
       else if (data.type === 'tool_use_start' || data.type === 'tool_use_streaming') {
@@ -349,6 +364,7 @@ function getOrCreateEventSource(
           completedSubagents: current?.completedSubagents ?? null,
           typingUser: current?.typingUser ?? null,
           peerUserMessage: current?.peerUserMessage ?? null,
+          apiRetry: current?.apiRetry ?? null,
         })
       }
       else if (data.type === 'tool_use_ready') {
@@ -374,6 +390,7 @@ function getOrCreateEventSource(
           completedSubagents: current?.completedSubagents ?? null,
           typingUser: current?.typingUser ?? null,
           peerUserMessage: current?.peerUserMessage ?? null,
+          apiRetry: current?.apiRetry ?? null,
         })
       }
       else if (data.type === 'stream_end') {
@@ -398,6 +415,7 @@ function getOrCreateEventSource(
           completedSubagents: current?.completedSubagents ?? null,
           typingUser: current?.typingUser ?? null,
           peerUserMessage: current?.peerUserMessage ?? null,
+          apiRetry: current?.apiRetry ?? null,
         })
       }
       else if (data.type === 'user_message') {
@@ -585,6 +603,20 @@ function getOrCreateEventSource(
         }
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
       }
+      else if (data.type === 'api_retry') {
+        // API is retrying a transient error — show retry state in activity indicator
+        if (current) {
+          streamStates.set(sessionId, {
+            ...current,
+            apiRetry: {
+              attempt: data.attempt,
+              maxRetries: data.maxRetries,
+              delayMs: data.delayMs,
+              errorStatus: data.errorStatus,
+            },
+          })
+        }
+      }
       else if (data.type === 'browser_active') {
         // Browser state changed
         if (current) {
@@ -617,6 +649,7 @@ function getOrCreateEventSource(
             agentId: data.agentId ?? existing?.agentId ?? null,
             streamingMessage: existing?.streamingMessage ?? null,
             streamingToolUse: existing?.streamingToolUse ?? null,
+            progressSummary: existing?.progressSummary ?? null,
           }
           streamStates.set(sessionId, {
             ...current,
@@ -655,6 +688,7 @@ function getOrCreateEventSource(
             agentId: data.agentId ?? existing?.agentId ?? null,
             streamingMessage: '',
             streamingToolUse: null,
+            progressSummary: existing?.progressSummary ?? null,
           }
           streamStates.set(sessionId, {
             ...current,
@@ -670,6 +704,7 @@ function getOrCreateEventSource(
             agentId: data.agentId ?? existing?.agentId ?? null,
             streamingMessage: (existing?.streamingMessage || '') + data.text,
             streamingToolUse: existing?.streamingToolUse ?? null,
+            progressSummary: existing?.progressSummary ?? null,
           }
           streamStates.set(sessionId, {
             ...current,
@@ -689,6 +724,24 @@ function getOrCreateEventSource(
               name: data.toolName,
               partialInput: data.partialInput ?? '',
             },
+            progressSummary: existing?.progressSummary ?? null,
+          }
+          streamStates.set(sessionId, {
+            ...current,
+            activeSubagents: upsertSubagent(current.activeSubagents, updated),
+          })
+        }
+      }
+      else if (data.type === 'subagent_progress') {
+        // AI-generated progress summary for a running subagent
+        if (current) {
+          const existing = current.activeSubagents.find(s => s.parentToolId === data.parentToolId)
+          const updated: SubagentInfo = {
+            parentToolId: data.parentToolId,
+            agentId: existing?.agentId ?? null,
+            streamingMessage: existing?.streamingMessage ?? null,
+            streamingToolUse: existing?.streamingToolUse ?? null,
+            progressSummary: data.summary ?? null,
           }
           streamStates.set(sessionId, {
             ...current,
@@ -905,6 +958,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     completedSubagents: null,
     typingUser: null,
     peerUserMessage: null,
+    apiRetry: null,
   })
   const [slashCommands, setSlashCommands] = useState<SlashCommandInfo[]>([])
   const queryClient = useQueryClient()
@@ -954,6 +1008,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
         completedSubagents: null,
         typingUser: null,
         peerUserMessage: null,
+        apiRetry: null,
       })
     }
     updateState()

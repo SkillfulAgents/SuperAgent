@@ -376,6 +376,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         resume: this.claudeSessionId || undefined,
         permissionMode: 'bypassPermissions',
         includePartialMessages: true,
+        agentProgressSummaries: true,
         settingSources: ['user', 'project'],
         allowedTools: ['Skill', 'Task', 'Agent', ...remoteMcpToolPatterns],
         ...(this.maxThinkingTokens && { maxThinkingTokens: this.maxThinkingTokens }),
