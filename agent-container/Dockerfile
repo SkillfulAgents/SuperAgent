@@ -122,6 +122,8 @@ ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-blink-features=AutomationControll
 ENV AGENT_BROWSER_USER_AGENT="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 ENV AGENT_BROWSER_PROFILE=/workspace/.browser-profile
 ENV DISABLE_AUTOUPDATER=1
+# Disable automatic MCP tool deferral until tested — re-enable with 'auto:10' or 'true'
+ENV ENABLE_TOOL_SEARCH=false
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
