@@ -262,12 +262,13 @@ describe('oauth', () => {
   // registerDynamicClient
   // =========================================================================
   describe('registerDynamicClient', () => {
-    it('returns clientId and clientSecret on success', async () => {
+    it('returns clientId, clientSecret, and scope on success', async () => {
       mockFetch.mockResolvedValueOnce(
         new Response(
           JSON.stringify({
             client_id: 'new-client-id',
             client_secret: 'new-secret',
+            scope: 'mcp:read mcp:write',
           }),
           { status: 200 }
         )
@@ -281,6 +282,7 @@ describe('oauth', () => {
       expect(result).toEqual({
         clientId: 'new-client-id',
         clientSecret: 'new-secret',
+        scope: 'mcp:read mcp:write',
       })
     })
 
@@ -376,8 +378,9 @@ describe('oauth', () => {
       expect(url.searchParams.get('code_challenge_method')).toBe('S256')
       expect(url.searchParams.get('code_challenge')).toBeTruthy()
       expect(url.searchParams.get('state')).toBe(result!.state)
-      expect(url.searchParams.get('resource')).toBe('https://mcp.example.com')
-      expect(url.searchParams.get('scope')).toBe('read write')
+      expect(url.searchParams.has('resource')).toBe(false)
+      // No scope when using existing client (scope only from fresh registration)
+      expect(url.searchParams.has('scope')).toBe(false)
     })
 
     it('returns null when discovery fails', async () => {
@@ -483,10 +486,10 @@ describe('oauth', () => {
           { status: 200 }
         )
       )
-      // Dynamic client registration
+      // Dynamic client registration (server returns scope)
       mockFetch.mockResolvedValueOnce(
         new Response(
-          JSON.stringify({ client_id: 'dyn-client-abc' }),
+          JSON.stringify({ client_id: 'dyn-client-abc', scope: 'mcp:read mcp:write' }),
           { status: 200 }
         )
       )
@@ -505,6 +508,8 @@ describe('oauth', () => {
       expect(url.searchParams.get('redirect_uri')).toBe(
         'http://localhost/callback'
       )
+      // Scope from registration response is included in authorize URL
+      expect(url.searchParams.get('scope')).toBe('mcp:read mcp:write')
       expect(result!.state).toBeTruthy()
       expect(result!.state).toHaveLength(32) // 16 bytes hex
     })

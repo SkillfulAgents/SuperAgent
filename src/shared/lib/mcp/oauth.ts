@@ -109,7 +109,7 @@ export async function registerDynamicClient(
   registrationEndpoint: string,
   redirectUri: string,
   clientName: string,
-): Promise<{ clientId: string; clientSecret?: string } | null> {
+): Promise<{ clientId: string; clientSecret?: string; scope?: string } | null> {
   try {
     const res = await fetch(registrationEndpoint, {
       method: 'POST',
@@ -128,8 +128,9 @@ export async function registerDynamicClient(
     const data = (await res.json()) as {
       client_id: string
       client_secret?: string
+      scope?: string
     }
-    return { clientId: data.client_id, clientSecret: data.client_secret }
+    return { clientId: data.client_id, clientSecret: data.client_secret, scope: data.scope }
   } catch {
     return null
   }
@@ -179,6 +180,7 @@ export async function initiateOAuthFlow(
   // Try dynamic client registration if available
   let clientId: string | undefined
   let clientSecret: string | undefined
+  let registeredScope: string | undefined
 
   // Check if we already have client credentials stored
   const [existing] = await db
@@ -199,6 +201,7 @@ export async function initiateOAuthFlow(
     if (registration) {
       clientId = registration.clientId
       clientSecret = registration.clientSecret
+      registeredScope = registration.scope
     }
   }
 
@@ -247,9 +250,9 @@ export async function initiateOAuthFlow(
   authUrl.searchParams.set('code_challenge', codeChallenge)
   authUrl.searchParams.set('code_challenge_method', 'S256')
   authUrl.searchParams.set('state', state)
-  authUrl.searchParams.set('resource', resource)
-  if (metadata.scopes_supported?.length) {
-    authUrl.searchParams.set('scope', metadata.scopes_supported.join(' '))
+  // Use scope from client registration response if available
+  if (registeredScope) {
+    authUrl.searchParams.set('scope', registeredScope)
   }
 
   return {
@@ -284,6 +287,7 @@ export async function initiateNewServerOAuth(
 
   let clientId: string | undefined
   let clientSecret: string | undefined
+  let registeredScope: string | undefined
 
   if (metadata.registration_endpoint) {
     const registration = await registerDynamicClient(
@@ -294,6 +298,7 @@ export async function initiateNewServerOAuth(
     if (registration) {
       clientId = registration.clientId
       clientSecret = registration.clientSecret
+      registeredScope = registration.scope
     }
   }
 
@@ -328,9 +333,9 @@ export async function initiateNewServerOAuth(
   authUrl.searchParams.set('code_challenge', codeChallenge)
   authUrl.searchParams.set('code_challenge_method', 'S256')
   authUrl.searchParams.set('state', state)
-  authUrl.searchParams.set('resource', resource)
-  if (metadata.scopes_supported?.length) {
-    authUrl.searchParams.set('scope', metadata.scopes_supported.join(' '))
+  // Use scope from client registration response if available
+  if (registeredScope) {
+    authUrl.searchParams.set('scope', registeredScope)
   }
 
   return { authorizationUrl: authUrl.toString(), state }
