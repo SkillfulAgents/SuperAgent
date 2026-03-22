@@ -48,7 +48,7 @@ const ROLE_HIERARCHY: Record<AgentRole, number> = { viewer: 0, user: 1, owner: 2
  */
 function TaskAgentRole(minRole: AgentRole): MiddlewareHandler {
   return async (c: Context, next: Next) => {
-    const taskId = c.req.param('taskId')
+    const taskId = c.req.param('taskId')!
     const task = await getScheduledTask(taskId)
     if (!task) {
       return c.json({ error: 'Scheduled task not found' }, 404)

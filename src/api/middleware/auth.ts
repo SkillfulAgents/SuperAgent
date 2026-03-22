@@ -74,7 +74,7 @@ export function AgentRead(): MiddlewareHandler {
 
     const user = getUser(c)
     if (isAdmin(user)) return next()
-    const agentSlug = c.req.param('id')
+    const agentSlug = c.req.param('id')!
     const role = await getUserAgentRole(user.id, agentSlug)
     if (!hasMinRole(role, 'viewer')) {
       return c.json({ error: 'Forbidden' }, 403)
@@ -93,7 +93,7 @@ export function AgentUser(): MiddlewareHandler {
 
     const user = getUser(c)
     if (isAdmin(user)) return next()
-    const agentSlug = c.req.param('id')
+    const agentSlug = c.req.param('id')!
     const role = await getUserAgentRole(user.id, agentSlug)
     if (!hasMinRole(role, 'user')) {
       return c.json({ error: 'Forbidden' }, 403)
@@ -112,7 +112,7 @@ export function AgentAdmin(): MiddlewareHandler {
 
     const user = getUser(c)
     if (isAdmin(user)) return next()
-    const agentSlug = c.req.param('id')
+    const agentSlug = c.req.param('id')!
     const role = await getUserAgentRole(user.id, agentSlug)
     if (!hasMinRole(role, 'owner')) {
       return c.json({ error: 'Forbidden' }, 403)
@@ -149,7 +149,7 @@ export function OwnsAccount(): MiddlewareHandler {
     if (!isAuthMode()) return next()
 
     const user = getUser(c)
-    const accountId = c.req.param('id')
+    const accountId = c.req.param('id')!
     const row = await db
       .select({ userId: connectedAccounts.userId })
       .from(connectedAccounts)
@@ -172,7 +172,7 @@ export function UsersMcpServer(): MiddlewareHandler {
     if (!isAuthMode()) return next()
 
     const user = getUser(c)
-    const mcpId = c.req.param('id')
+    const mcpId = c.req.param('id')!
     const row = await db
       .select({ userId: remoteMcpServers.userId })
       .from(remoteMcpServers)
@@ -198,7 +198,7 @@ export function HasNotificationAccess(): MiddlewareHandler {
     const user = getUser(c)
     if (isAdmin(user)) return next()
 
-    const notificationId = c.req.param('id')
+    const notificationId = c.req.param('id')!
     const row = await db
       .select({ agentSlug: notifications.agentSlug })
       .from(notifications)
