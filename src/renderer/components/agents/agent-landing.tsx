@@ -223,6 +223,7 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
                     className="h-8 w-8"
                     disabled={!composer.canSubmit}
                     data-testid="landing-send-button"
+                    aria-label="Send message"
                   >
                     {isDisabled ? (
                       <Loader2 className="h-4 w-4 animate-spin" />

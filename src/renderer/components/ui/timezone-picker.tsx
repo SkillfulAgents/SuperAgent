@@ -67,6 +67,7 @@ export function TimezonePicker({ value, onValueChange, disabled, className }: Ti
         <Button
           variant="outline"
           role="combobox"
+          aria-label="Select timezone"
           aria-expanded={open}
           disabled={disabled}
           className={cn('w-full justify-between font-normal', className)}

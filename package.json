@@ -96,6 +96,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.11.1",
     "@electron/rebuild": "^3.7.2",
     "@hono/vite-dev-server": "^0.24.1",
     "@playwright/test": "^1.58.0",
