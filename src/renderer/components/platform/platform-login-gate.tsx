@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import { ArrowRight, KeyRound, Loader2 } from 'lucide-react'
 
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
-import { Button } from '@renderer/components/ui/button'
 import {
   Card,
   CardContent,
@@ -56,30 +55,30 @@ export function PlatformLoginGate({ children }: { children: React.ReactNode }) {
     return <LoadingScreen />
   }
 
+  async function handlePlatformLogin() {
+    const popup = prepareOAuthPopup()
+    setError(null)
+    setIsLaunching(true)
+
+    try {
+      window.localStorage.setItem(AUTH_CHOICE_STORAGE_KEY, 'platform')
+      setAuthChoice('platform')
+      const result = await initiateLogin.mutateAsync()
+      await popup.navigate(result.loginUrl)
+    } catch (err) {
+      popup.close()
+      setIsLaunching(false)
+      setError(err instanceof Error ? err.message : 'Failed to open Datawizz Platform login.')
+    }
+  }
+
+  function handleBringYourOwnKey() {
+    window.localStorage.setItem(AUTH_CHOICE_STORAGE_KEY, 'byok')
+    setAuthChoice('byok')
+    setError(null)
+  }
+
   if (!data?.connected && authChoice !== 'byok') {
-    async function handlePlatformLogin() {
-      const popup = prepareOAuthPopup()
-      setError(null)
-      setIsLaunching(true)
-
-      try {
-        window.localStorage.setItem(AUTH_CHOICE_STORAGE_KEY, 'platform')
-        setAuthChoice('platform')
-        const result = await initiateLogin.mutateAsync()
-        await popup.navigate(result.loginUrl)
-      } catch (err) {
-        popup.close()
-        setIsLaunching(false)
-        setError(err instanceof Error ? err.message : 'Failed to open Datawizz Platform login.')
-      }
-    }
-
-    function handleBringYourOwnKey() {
-      window.localStorage.setItem(AUTH_CHOICE_STORAGE_KEY, 'byok')
-      setAuthChoice('byok')
-      setError(null)
-    }
-
     return (
       <div className="flex min-h-screen items-center justify-center bg-background px-6 py-10">
         <Card className="w-full max-w-xl border-border/70 shadow-lg">
