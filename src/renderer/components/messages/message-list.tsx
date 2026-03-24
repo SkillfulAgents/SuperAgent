@@ -21,11 +21,11 @@ import { QuestionRequestItem } from './question-request-item'
 import { FileRequestItem } from './file-request-item'
 import { BrowserInputRequestItem } from './browser-input-request-item'
 import { ScriptRunRequestItem } from './script-run-request-item'
-import { Loader2, Wrench, WifiOff } from 'lucide-react'
+import { ArrowDown, Loader2, Wrench, WifiOff } from 'lucide-react'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
-import { useEffect, useRef, useCallback, useMemo, Fragment } from 'react'
+import { useEffect, useRef, useState, useCallback, useMemo, Fragment } from 'react'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import type { ApiMessage, ApiCompactBoundary } from '@shared/lib/types/api'
 
@@ -368,14 +368,23 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const isScrolledToBottomRef = useRef(true)
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false)
 
   const handleScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
     // Consider "at bottom" if within 80px of the bottom edge
     const threshold = 80
-    isScrolledToBottomRef.current =
-      el.scrollHeight - el.scrollTop - el.clientHeight < threshold
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    isScrolledToBottomRef.current = distanceFromBottom < threshold
+    // Show "scroll to bottom" button when scrolled up more than 300px
+    setShowScrollToBottom(distanceFromBottom > 300)
+  }, [])
+
+  const scrollToBottom = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
   }, [])
 
   // Safety net: if isCompacting is true but a NEW compact boundary appears in fetched
@@ -598,6 +607,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
   useEffect(() => {
     if (pendingUserMessage) {
       isScrolledToBottomRef.current = true
+      setShowScrollToBottom(false)
     }
   }, [pendingUserMessage])
 
@@ -618,8 +628,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
   }
 
   return (
-    <div className="overflow-y-auto" ref={scrollRef} onScroll={handleScroll} data-testid="message-list">
-      <div className="p-4 space-y-4">
+    <div className="relative flex-1 min-h-0">
+      <div className="overflow-y-auto h-full" ref={scrollRef} onScroll={handleScroll} data-testid="message-list">
+        <div className="p-4 space-y-4">
         {messages?.filter((item) => {
           // Hide system-injected user messages (e.g., MCP registration continuation)
           if (item.type === 'user') {
@@ -842,7 +853,17 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
             onComplete={() => handleScriptRunRequestComplete(request.toolUseId)}
           />
         ))}
+        </div>
       </div>
+      {showScrollToBottom && (
+        <button
+          onClick={scrollToBottom}
+          className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 rounded-full bg-primary text-primary-foreground px-3 py-1.5 text-xs font-medium shadow-lg hover:bg-primary/90 transition-opacity cursor-pointer"
+        >
+          <ArrowDown className="h-3.5 w-3.5" />
+          Scroll to bottom
+        </button>
+      )}
     </div>
   )
 }
