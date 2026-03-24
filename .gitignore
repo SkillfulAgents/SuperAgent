@@ -51,3 +51,5 @@ tsconfig.tsbuildinfo
 
 # QAgent results
 .qagent/results/
+
+.claude/settings.local.json
