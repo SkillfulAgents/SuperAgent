@@ -1,5 +1,5 @@
 
-import { Settings, Link2, Container, Bell, Globe, Library, BarChart3, Plug, Brain, Users, Shield, ShieldEllipsis, User, Mic, Activity, Terminal } from 'lucide-react'
+import { Settings, Link2, Container, Bell, Globe, Library, BarChart3, Plug, Brain, Users, Shield, ShieldEllipsis, User, Mic, Activity, Terminal, Waypoints } from 'lucide-react'
 import { SettingsDialog, SettingsDialogTab, SettingsDialogGroup } from '@renderer/components/ui/settings-dialog'
 import { ProfileTab } from './profile-tab'
 import { GeneralTab } from './general-tab'
@@ -18,6 +18,7 @@ import { AdminTab } from './admin-tab'
 import { VoiceTab } from './voice-tab'
 import { AnalyticsTab } from './analytics-tab'
 import { HostShellUseTab } from './host-shell-use-tab'
+import { PlatformTab } from './platform-tab'
 import { useUser } from '@renderer/context/user-context'
 import { isElectron } from '@renderer/lib/env'
 
@@ -51,6 +52,9 @@ export function GlobalSettingsDialog({
       </SettingsDialogTab>
       <SettingsDialogTab id="notifications" label="Notifications" icon={<Bell className="h-4 w-4" />}>
         <NotificationsTab />
+      </SettingsDialogTab>
+      <SettingsDialogTab id="platform" label="Platform" icon={<Waypoints className="h-4 w-4" />}>
+        <PlatformTab />
       </SettingsDialogTab>
       <SettingsDialogTab id="accounts" label="Accounts" icon={<Link2 className="h-4 w-4" />}>
         <AccountsTab />

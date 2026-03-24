@@ -154,6 +154,17 @@ export interface AnalyticsTarget {
 
 export type LlmProviderId = 'anthropic' | 'openrouter' | 'bedrock'
 
+export interface PlatformAuthSettings {
+  token: string
+  tokenPreview: string
+  email: string | null
+  label: string | null
+  orgName: string | null
+  role: string | null
+  createdAt: string
+  updatedAt: string
+}
+
 export interface AppSettings {
   container: ContainerSettings
   apiKeys?: ApiKeySettings
@@ -168,6 +179,7 @@ export interface AppSettings {
   hostShellUse?: HostShellUseSettings
   shareAnalytics?: boolean
   analyticsTargets?: AnalyticsTarget[]
+  platformAuth?: PlatformAuthSettings
 }
 
 // API key source types
@@ -342,6 +354,7 @@ export function loadSettings(): AppSettings {
         hostShellUse: loaded.hostShellUse,
         shareAnalytics: loaded.shareAnalytics ?? false,
         analyticsTargets: loaded.analyticsTargets,
+        platformAuth: loaded.platformAuth,
       }
     }
   } catch (error) {
