@@ -17,6 +17,7 @@ import {
   getEffectiveAgentLimits,
   getCustomEnvVars,
   type AppSettings,
+  type ApiKeySettings,
   type ContainerSettings,
   type GlobalSettingsResponse,
 } from '@shared/lib/config/settings'
@@ -34,48 +35,68 @@ const settings = new Hono()
 
 settings.use('*', Authenticated(), IsAdmin())
 
+/** All keys in ApiKeySettings — used to generically handle set/delete in PUT. */
+const API_KEY_FIELDS: (keyof ApiKeySettings)[] = [
+  'anthropicApiKey',
+  'openrouterApiKey',
+  'bedrockApiKey',
+  'bedrockAccessKeyId',
+  'bedrockSecretAccessKey',
+  'bedrockRegion',
+  'composioApiKey',
+  'composioUserId',
+  'browserbaseApiKey',
+  'browserbaseProjectId',
+  'deepgramApiKey',
+  'openaiApiKey',
+]
+
+/** Build the GlobalSettingsResponse shared by GET and PUT handlers. */
+function buildSettingsResponse(
+  appSettings: AppSettings,
+  hasRunningAgents: boolean,
+  runnerAvailability: Awaited<ReturnType<typeof checkAllRunnersAvailability>>,
+): GlobalSettingsResponse {
+  return {
+    dataDir: getDataDir(),
+    container: appSettings.container,
+    app: appSettings.app || { showMenuBarIcon: true },
+    hasRunningAgents,
+    runnerAvailability,
+    llmProvider: appSettings.llmProvider ?? 'anthropic',
+    llmProviderStatus: getAllProviderInfo(),
+    apiKeyStatus: {
+      anthropic: getLlmProvider('anthropic').getApiKeyStatus(),
+      openrouter: getLlmProvider('openrouter').getApiKeyStatus(),
+      bedrock: getLlmProvider('bedrock').getApiKeyStatus(),
+      browserbase: getBrowserbaseApiKeyStatus(),
+      composio: getComposioApiKeyStatus(),
+      deepgram: getSttProvider('deepgram').getApiKeyStatus(),
+      openai: getSttProvider('openai').getApiKeyStatus(),
+    },
+    models: getEffectiveModels(),
+    agentLimits: getEffectiveAgentLimits(),
+    customEnvVars: getCustomEnvVars(),
+    composioUserId: getComposioUserId(),
+    setupCompleted: !!appSettings.app?.setupCompleted,
+    hostBrowserStatus: { providers: detectAllProviders() },
+    runtimeReadiness: containerManager.getReadiness(),
+    auth: appSettings.auth,
+    voice: getVoiceSettings(),
+    tenantId: getTenantId(),
+    hostShellUse: appSettings.hostShellUse,
+    shareAnalytics: !!appSettings.shareAnalytics,
+    analyticsTargets: appSettings.analyticsTargets,
+  }
+}
+
 // GET /api/settings - Get global settings
 settings.get('/', async (c) => {
   try {
     const currentSettings = getSettings()
-    // hasRunningAgents uses cached status (no docker process spawned)
     const hasRunningAgents = containerManager.hasRunningAgents()
-    // checkAllRunnersAvailability still spawns docker commands, but only on explicit request
     const runnerAvailability = await checkAllRunnersAvailability()
-
-    const response: GlobalSettingsResponse = {
-      dataDir: getDataDir(),
-      container: currentSettings.container,
-      app: currentSettings.app || { showMenuBarIcon: true },
-      hasRunningAgents,
-      runnerAvailability,
-      llmProvider: currentSettings.llmProvider ?? 'anthropic',
-      llmProviderStatus: getAllProviderInfo(),
-      apiKeyStatus: {
-        anthropic: getLlmProvider('anthropic').getApiKeyStatus(),
-        openrouter: getLlmProvider('openrouter').getApiKeyStatus(),
-        bedrock: getLlmProvider('bedrock').getApiKeyStatus(),
-        browserbase: getBrowserbaseApiKeyStatus(),
-        composio: getComposioApiKeyStatus(),
-        deepgram: getSttProvider('deepgram').getApiKeyStatus(),
-        openai: getSttProvider('openai').getApiKeyStatus(),
-      },
-      models: getEffectiveModels(),
-      agentLimits: getEffectiveAgentLimits(),
-      customEnvVars: getCustomEnvVars(),
-      composioUserId: getComposioUserId(),
-      setupCompleted: !!currentSettings.app?.setupCompleted,
-      hostBrowserStatus: { providers: detectAllProviders() },
-      runtimeReadiness: containerManager.getReadiness(),
-      auth: currentSettings.auth,
-      voice: getVoiceSettings(),
-      tenantId: getTenantId(),
-      hostShellUse: currentSettings.hostShellUse,
-      shareAnalytics: !!currentSettings.shareAnalytics,
-      analyticsTargets: currentSettings.analyticsTargets,
-    }
-
-    return c.json(response)
+    return c.json(buildSettingsResponse(currentSettings, hasRunningAgents, runnerAvailability))
   } catch (error) {
     console.error('Failed to fetch settings:', error)
     return c.json({ error: 'Failed to fetch settings' }, 500)
@@ -83,12 +104,10 @@ settings.get('/', async (c) => {
 })
 
 // PUT /api/settings - Update settings
-// todo this is a disgusting function - rewrite!
 settings.put('/', async (c) => {
   try {
     const body = await c.req.json()
     const currentSettings = getSettings()
-    // hasRunningAgents uses cached status (no docker process spawned)
     const hasRunningAgents = containerManager.hasRunningAgents()
 
     // Check if trying to change restricted settings while agents are running
@@ -128,16 +147,10 @@ settings.put('/', async (c) => {
         ...currentSettings.container,
         ...body.container,
         resourceLimits: body.container?.resourceLimits
-          ? {
-              ...currentSettings.container.resourceLimits,
-              ...body.container.resourceLimits,
-            }
+          ? { ...currentSettings.container.resourceLimits, ...body.container.resourceLimits }
           : currentSettings.container.resourceLimits,
         runtimeSettings: body.container?.runtimeSettings
-          ? {
-              ...currentSettings.container.runtimeSettings,
-              ...body.container.runtimeSettings,
-            }
+          ? { ...currentSettings.container.runtimeSettings, ...body.container.runtimeSettings }
           : currentSettings.container.runtimeSettings,
       },
       app: {
@@ -150,150 +163,37 @@ settings.put('/', async (c) => {
           : {}),
       },
       apiKeys: currentSettings.apiKeys,
-      llmProvider: body.llmProvider !== undefined
-        ? body.llmProvider
-        : currentSettings.llmProvider,
+      llmProvider: body.llmProvider !== undefined ? body.llmProvider : currentSettings.llmProvider,
       models: body.models
-        ? {
-            ...currentSettings.models,
-            ...body.models,
-          }
+        ? { ...currentSettings.models, ...body.models }
         : currentSettings.models,
       agentLimits: body.agentLimits !== undefined
-        ? {
-            ...currentSettings.agentLimits,
-            ...body.agentLimits,
-          }
+        ? { ...currentSettings.agentLimits, ...body.agentLimits }
         : currentSettings.agentLimits,
-      customEnvVars: body.customEnvVars !== undefined
-        ? body.customEnvVars
-        : currentSettings.customEnvVars,
+      customEnvVars: body.customEnvVars !== undefined ? body.customEnvVars : currentSettings.customEnvVars,
       skillsets: currentSettings.skillsets,
-      auth: body.auth !== undefined
-        ? { ...currentSettings.auth, ...body.auth }
-        : currentSettings.auth,
-      voice: body.voice !== undefined
-        ? { ...currentSettings.voice, ...body.voice }
-        : currentSettings.voice,
-      shareAnalytics: body.shareAnalytics !== undefined
-        ? body.shareAnalytics
-        : currentSettings.shareAnalytics,
+      auth: body.auth !== undefined ? { ...currentSettings.auth, ...body.auth } : currentSettings.auth,
+      voice: body.voice !== undefined ? { ...currentSettings.voice, ...body.voice } : currentSettings.voice,
+      shareAnalytics: body.shareAnalytics !== undefined ? body.shareAnalytics : currentSettings.shareAnalytics,
       hostShellUse: body.hostShellUse !== undefined
         ? { ...currentSettings.hostShellUse, ...body.hostShellUse }
         : currentSettings.hostShellUse,
-      analyticsTargets: body.analyticsTargets !== undefined
-        ? body.analyticsTargets
-        : currentSettings.analyticsTargets,
+      analyticsTargets: body.analyticsTargets !== undefined ? body.analyticsTargets : currentSettings.analyticsTargets,
     }
 
-    // Handle API key updates
+    // Handle API key updates: empty string = delete, truthy = set, absent = keep
     if (body.apiKeys !== undefined) {
-      // Handle Anthropic API key
-      if (body.apiKeys.anthropicApiKey === '') {
-        newSettings.apiKeys = { ...newSettings.apiKeys }
-        delete newSettings.apiKeys.anthropicApiKey
-      } else if (body.apiKeys.anthropicApiKey) {
-        newSettings.apiKeys = {
-          ...newSettings.apiKeys,
-          anthropicApiKey: body.apiKeys.anthropicApiKey,
-        }
-      }
-
-      // Handle OpenRouter API key
-      if (body.apiKeys.openrouterApiKey === '') {
-        newSettings.apiKeys = { ...newSettings.apiKeys }
-        delete newSettings.apiKeys.openrouterApiKey
-      } else if (body.apiKeys.openrouterApiKey) {
-        newSettings.apiKeys = {
-          ...newSettings.apiKeys,
-          openrouterApiKey: body.apiKeys.openrouterApiKey,
-        }
-      }
-
-      // Handle Bedrock credentials
-      for (const field of ['bedrockApiKey', 'bedrockAccessKeyId', 'bedrockSecretAccessKey', 'bedrockRegion'] as const) {
-        if (body.apiKeys[field] === '') {
+      for (const field of API_KEY_FIELDS) {
+        const value = body.apiKeys[field]
+        if (value === '') {
           newSettings.apiKeys = { ...newSettings.apiKeys }
           delete newSettings.apiKeys[field]
-        } else if (body.apiKeys[field]) {
-          newSettings.apiKeys = {
-            ...newSettings.apiKeys,
-            [field]: body.apiKeys[field],
-          }
+        } else if (value) {
+          newSettings.apiKeys = { ...newSettings.apiKeys, [field]: value }
         }
       }
 
-      // Handle Composio API key
-      if (body.apiKeys.composioApiKey === '') {
-        newSettings.apiKeys = { ...newSettings.apiKeys }
-        delete newSettings.apiKeys.composioApiKey
-      } else if (body.apiKeys.composioApiKey) {
-        newSettings.apiKeys = {
-          ...newSettings.apiKeys,
-          composioApiKey: body.apiKeys.composioApiKey,
-        }
-      }
-
-      // Handle Composio User ID
-      if (body.apiKeys.composioUserId === '') {
-        newSettings.apiKeys = { ...newSettings.apiKeys }
-        delete newSettings.apiKeys.composioUserId
-      } else if (body.apiKeys.composioUserId) {
-        newSettings.apiKeys = {
-          ...newSettings.apiKeys,
-          composioUserId: body.apiKeys.composioUserId,
-        }
-      }
-
-      // Handle Browserbase API key
-      if (body.apiKeys.browserbaseApiKey === '') {
-        newSettings.apiKeys = { ...newSettings.apiKeys }
-        delete newSettings.apiKeys.browserbaseApiKey
-      } else if (body.apiKeys.browserbaseApiKey) {
-        newSettings.apiKeys = {
-          ...newSettings.apiKeys,
-          browserbaseApiKey: body.apiKeys.browserbaseApiKey,
-        }
-      }
-
-      // Handle Browserbase Project ID
-      if (body.apiKeys.browserbaseProjectId === '') {
-        newSettings.apiKeys = { ...newSettings.apiKeys }
-        delete newSettings.apiKeys.browserbaseProjectId
-      } else if (body.apiKeys.browserbaseProjectId) {
-        newSettings.apiKeys = {
-          ...newSettings.apiKeys,
-          browserbaseProjectId: body.apiKeys.browserbaseProjectId,
-        }
-      }
-
-      // Handle Deepgram API key
-      if (body.apiKeys.deepgramApiKey === '') {
-        newSettings.apiKeys = { ...newSettings.apiKeys }
-        delete newSettings.apiKeys.deepgramApiKey
-      } else if (body.apiKeys.deepgramApiKey) {
-        newSettings.apiKeys = {
-          ...newSettings.apiKeys,
-          deepgramApiKey: body.apiKeys.deepgramApiKey,
-        }
-      }
-
-      // Handle OpenAI API key
-      if (body.apiKeys.openaiApiKey === '') {
-        newSettings.apiKeys = { ...newSettings.apiKeys }
-        delete newSettings.apiKeys.openaiApiKey
-      } else if (body.apiKeys.openaiApiKey) {
-        newSettings.apiKeys = {
-          ...newSettings.apiKeys,
-          openaiApiKey: body.apiKeys.openaiApiKey,
-        }
-      }
-
-      // Clean up empty object
-      if (
-        newSettings.apiKeys &&
-        Object.keys(newSettings.apiKeys).length === 0
-      ) {
+      if (newSettings.apiKeys && Object.keys(newSettings.apiKeys).length === 0) {
         delete newSettings.apiKeys
       }
     }
@@ -306,10 +206,7 @@ settings.put('/', async (c) => {
     }
 
     // If container runner changed, clear cached clients so new ones use the updated runner
-    if (
-      newSettings.container.containerRunner !==
-      currentSettings.container.containerRunner
-    ) {
+    if (newSettings.container.containerRunner !== currentSettings.container.containerRunner) {
       containerManager.clearClients()
     }
 
@@ -324,38 +221,7 @@ settings.put('/', async (c) => {
     }
 
     const runnerAvailability = await checkAllRunnersAvailability()
-
-    return c.json({
-      dataDir: getDataDir(),
-      container: newSettings.container,
-      app: newSettings.app || { showMenuBarIcon: true },
-      hasRunningAgents,
-      runnerAvailability,
-      llmProvider: newSettings.llmProvider ?? 'anthropic',
-      llmProviderStatus: getAllProviderInfo(),
-      apiKeyStatus: {
-        anthropic: getLlmProvider('anthropic').getApiKeyStatus(),
-        openrouter: getLlmProvider('openrouter').getApiKeyStatus(),
-        bedrock: getLlmProvider('bedrock').getApiKeyStatus(),
-        browserbase: getBrowserbaseApiKeyStatus(),
-        composio: getComposioApiKeyStatus(),
-        deepgram: getSttProvider('deepgram').getApiKeyStatus(),
-        openai: getSttProvider('openai').getApiKeyStatus(),
-      },
-      models: getEffectiveModels(),
-      agentLimits: getEffectiveAgentLimits(),
-      customEnvVars: getCustomEnvVars(),
-      composioUserId: getComposioUserId(),
-      setupCompleted: !!newSettings.app?.setupCompleted,
-      hostBrowserStatus: { providers: detectAllProviders() },
-      runtimeReadiness: containerManager.getReadiness(),
-      auth: newSettings.auth,
-      voice: getVoiceSettings(),
-      tenantId: getTenantId(),
-      hostShellUse: newSettings.hostShellUse,
-      shareAnalytics: !!newSettings.shareAnalytics,
-      analyticsTargets: newSettings.analyticsTargets,
-    })
+    return c.json(buildSettingsResponse(newSettings, hasRunningAgents, runnerAvailability))
   } catch (error) {
     console.error('Failed to update settings:', error)
     return c.json({ error: 'Failed to update settings' }, 500)

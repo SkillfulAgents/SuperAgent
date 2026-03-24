@@ -689,4 +689,530 @@ describe('settings route', () => {
       expect(body.apiKeyStatus.openai).toEqual({ isConfigured: false, source: 'none' })
     })
   })
+
+  // =========================================================================
+  // API key handling — all key types
+  // =========================================================================
+  describe('API key handling — all key types', () => {
+    it('sets OpenRouter API key when non-empty', async () => {
+      const res = await putSettings({ apiKeys: { openrouterApiKey: 'or-key' } })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.apiKeys.openrouterApiKey).toBe('or-key')
+      // existing key preserved
+      expect(saved.apiKeys.anthropicApiKey).toBe('sk-existing')
+    })
+
+    it('deletes OpenRouter API key when empty string', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        apiKeys: { anthropicApiKey: 'sk-existing', openrouterApiKey: 'or-old' },
+      })
+      const res = await putSettings({ apiKeys: { openrouterApiKey: '' } })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.apiKeys.openrouterApiKey).toBeUndefined()
+      expect(saved.apiKeys.anthropicApiKey).toBe('sk-existing')
+    })
+
+    it('sets all Bedrock credential fields', async () => {
+      const res = await putSettings({
+        apiKeys: {
+          bedrockApiKey: 'brk-key',
+          bedrockAccessKeyId: 'AKIA123',
+          bedrockSecretAccessKey: 'secret123',
+          bedrockRegion: 'us-west-2',
+        },
+      })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.apiKeys.bedrockApiKey).toBe('brk-key')
+      expect(saved.apiKeys.bedrockAccessKeyId).toBe('AKIA123')
+      expect(saved.apiKeys.bedrockSecretAccessKey).toBe('secret123')
+      expect(saved.apiKeys.bedrockRegion).toBe('us-west-2')
+    })
+
+    it('deletes individual Bedrock credential fields', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        apiKeys: {
+          anthropicApiKey: 'sk-existing',
+          bedrockAccessKeyId: 'AKIA123',
+          bedrockSecretAccessKey: 'secret123',
+          bedrockRegion: 'us-west-2',
+        },
+      })
+      const res = await putSettings({
+        apiKeys: { bedrockAccessKeyId: '', bedrockRegion: '' },
+      })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.apiKeys.bedrockAccessKeyId).toBeUndefined()
+      expect(saved.apiKeys.bedrockRegion).toBeUndefined()
+      // untouched fields preserved
+      expect(saved.apiKeys.bedrockSecretAccessKey).toBe('secret123')
+      expect(saved.apiKeys.anthropicApiKey).toBe('sk-existing')
+    })
+
+    it('sets Composio User ID when non-empty', async () => {
+      const res = await putSettings({ apiKeys: { composioUserId: 'user-123' } })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.apiKeys.composioUserId).toBe('user-123')
+    })
+
+    it('deletes Composio User ID when empty string', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        apiKeys: { anthropicApiKey: 'sk-existing', composioUserId: 'old-user' },
+      })
+      const res = await putSettings({ apiKeys: { composioUserId: '' } })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.apiKeys.composioUserId).toBeUndefined()
+    })
+
+    it('deletes Browserbase Project ID when empty string', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        apiKeys: { anthropicApiKey: 'sk-existing', browserbaseProjectId: 'old-proj' },
+      })
+      const res = await putSettings({ apiKeys: { browserbaseProjectId: '' } })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.apiKeys.browserbaseProjectId).toBeUndefined()
+    })
+
+    it('sets Deepgram API key when non-empty', async () => {
+      const res = await putSettings({ apiKeys: { deepgramApiKey: 'dg-key' } })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.apiKeys.deepgramApiKey).toBe('dg-key')
+    })
+
+    it('deletes Deepgram API key when empty string', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        apiKeys: { anthropicApiKey: 'sk-existing', deepgramApiKey: 'dg-old' },
+      })
+      const res = await putSettings({ apiKeys: { deepgramApiKey: '' } })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.apiKeys.deepgramApiKey).toBeUndefined()
+    })
+
+    it('sets OpenAI API key when non-empty', async () => {
+      const res = await putSettings({ apiKeys: { openaiApiKey: 'sk-openai' } })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.apiKeys.openaiApiKey).toBe('sk-openai')
+    })
+
+    it('deletes OpenAI API key when empty string', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        apiKeys: { anthropicApiKey: 'sk-existing', openaiApiKey: 'sk-openai-old' },
+      })
+      const res = await putSettings({ apiKeys: { openaiApiKey: '' } })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.apiKeys.openaiApiKey).toBeUndefined()
+    })
+
+    it('sets and deletes multiple keys in one request', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        apiKeys: { anthropicApiKey: 'sk-existing', openrouterApiKey: 'or-old' },
+      })
+      const res = await putSettings({
+        apiKeys: {
+          anthropicApiKey: 'sk-new',
+          openrouterApiKey: '',
+          composioApiKey: 'comp-new',
+          deepgramApiKey: 'dg-new',
+        },
+      })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.apiKeys.anthropicApiKey).toBe('sk-new')
+      expect(saved.apiKeys.openrouterApiKey).toBeUndefined()
+      expect(saved.apiKeys.composioApiKey).toBe('comp-new')
+      expect(saved.apiKeys.deepgramApiKey).toBe('dg-new')
+    })
+
+    it('removes apiKeys entirely when all keys are deleted at once', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        apiKeys: { anthropicApiKey: 'sk-old', openrouterApiKey: 'or-old' },
+      })
+      const res = await putSettings({
+        apiKeys: { anthropicApiKey: '', openrouterApiKey: '' },
+      })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.apiKeys).toBeUndefined()
+    })
+
+    it('leaves apiKeys unchanged when apiKeys key absent but not undefined', async () => {
+      // sending body without apiKeys field at all
+      const res = await putSettings({ llmProvider: 'openrouter' })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.apiKeys).toEqual({ anthropicApiKey: 'sk-existing' })
+    })
+  })
+
+  // =========================================================================
+  // Lima VM memory validation
+  // =========================================================================
+  describe('Lima VM memory validation', () => {
+    it('returns 400 for invalid VM memory value', async () => {
+      const res = await putSettings({
+        container: {
+          runtimeSettings: { lima: { vmMemory: '3GiB' } },
+        },
+      })
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toContain('Invalid VM memory')
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+
+    it('accepts valid VM memory values', async () => {
+      for (const validMemory of ['2GiB', '4GiB', '8GiB', '16GiB']) {
+        vi.clearAllMocks()
+        setupDefaults()
+        app = createApp()
+
+        const res = await putSettings({
+          container: {
+            runtimeSettings: { lima: { vmMemory: validMemory } },
+          },
+        })
+        expect(res.status).toBe(200)
+        expect(mockUpdateSettings).toHaveBeenCalledOnce()
+      }
+    })
+
+    it('allows runtimeSettings without lima vmMemory', async () => {
+      const res = await putSettings({
+        container: {
+          runtimeSettings: { lima: { somethingElse: 'value' } },
+        },
+      })
+      expect(res.status).toBe(200)
+      expect(mockUpdateSettings).toHaveBeenCalledOnce()
+    })
+  })
+
+  // =========================================================================
+  // Settings merge — hostBrowserProvider null handling
+  // =========================================================================
+  describe('hostBrowserProvider null handling', () => {
+    it('removes hostBrowserProvider when explicitly set to null', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        app: { showMenuBarIcon: true, hostBrowserProvider: 'chrome' },
+      })
+      const res = await putSettings({
+        app: { hostBrowserProvider: null },
+      })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.app.hostBrowserProvider).toBeUndefined()
+    })
+
+    it('sets hostBrowserProvider when given a valid value', async () => {
+      const res = await putSettings({
+        app: { hostBrowserProvider: 'browserbase' },
+      })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.app.hostBrowserProvider).toBe('browserbase')
+    })
+
+    it('preserves hostBrowserProvider when app is updated but hostBrowserProvider not mentioned', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        app: { showMenuBarIcon: true, hostBrowserProvider: 'chrome' },
+      })
+      const res = await putSettings({
+        app: { showMenuBarIcon: false },
+      })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.app.hostBrowserProvider).toBe('chrome')
+      expect(saved.app.showMenuBarIcon).toBe(false)
+    })
+  })
+
+  // =========================================================================
+  // Settings merge — llmProvider
+  // =========================================================================
+  describe('llmProvider handling', () => {
+    it('updates llmProvider when provided', async () => {
+      const res = await putSettings({ llmProvider: 'openrouter' })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.llmProvider).toBe('openrouter')
+    })
+
+    it('preserves llmProvider when not provided', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        llmProvider: 'bedrock',
+      })
+      const res = await putSettings({ app: { showMenuBarIcon: false } })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.llmProvider).toBe('bedrock')
+    })
+
+    it('allows setting llmProvider to undefined explicitly', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        llmProvider: 'openrouter',
+      })
+      // When body.llmProvider is undefined (key not present), existing value preserved
+      const res = await putSettings({ app: { showMenuBarIcon: true } })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.llmProvider).toBe('openrouter')
+    })
+  })
+
+  // =========================================================================
+  // Settings merge — shareAnalytics
+  // =========================================================================
+  describe('shareAnalytics handling', () => {
+    it('updates shareAnalytics when provided', async () => {
+      const res = await putSettings({ shareAnalytics: true })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.shareAnalytics).toBe(true)
+    })
+
+    it('preserves shareAnalytics when not provided', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        shareAnalytics: true,
+      })
+      const res = await putSettings({ app: { showMenuBarIcon: false } })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.shareAnalytics).toBe(true)
+    })
+
+    it('can set shareAnalytics to false', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        shareAnalytics: true,
+      })
+      const res = await putSettings({ shareAnalytics: false })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.shareAnalytics).toBe(false)
+    })
+  })
+
+  // =========================================================================
+  // Settings merge — hostShellUse
+  // =========================================================================
+  describe('hostShellUse handling', () => {
+    it('merges hostShellUse with existing', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        hostShellUse: { allowScriptExecution: false },
+      })
+      const res = await putSettings({ hostShellUse: { allowScriptExecution: true } })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.hostShellUse.allowScriptExecution).toBe(true)
+    })
+
+    it('preserves hostShellUse when not provided', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        hostShellUse: { allowScriptExecution: true },
+      })
+      const res = await putSettings({ app: { showMenuBarIcon: false } })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.hostShellUse).toEqual({ allowScriptExecution: true })
+    })
+  })
+
+  // =========================================================================
+  // Settings merge — analyticsTargets
+  // =========================================================================
+  describe('analyticsTargets handling', () => {
+    it('replaces analyticsTargets when provided', async () => {
+      const newTargets = [
+        { type: 'amplitude', config: { apiKey: 'amp-key' }, enabled: true },
+      ]
+      const res = await putSettings({ analyticsTargets: newTargets })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.analyticsTargets).toEqual(newTargets)
+    })
+
+    it('preserves analyticsTargets when not provided', async () => {
+      const existingTargets = [
+        { type: 'mixpanel', config: { token: 'mp-tok' }, enabled: true },
+      ]
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        analyticsTargets: existingTargets,
+      })
+      const res = await putSettings({ app: { showMenuBarIcon: false } })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.analyticsTargets).toEqual(existingTargets)
+    })
+  })
+
+  // =========================================================================
+  // Settings merge — runtimeSettings
+  // =========================================================================
+  describe('runtimeSettings handling', () => {
+    it('merges runtimeSettings with existing', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        container: {
+          ...defaultSettings().container,
+          runtimeSettings: { docker: { network: 'bridge' } },
+        },
+      })
+      const res = await putSettings({
+        container: {
+          runtimeSettings: { lima: { vmMemory: '8GiB' } },
+        },
+      })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      // shallow merge: lima added, docker from existing merged at top level
+      expect(saved.container.runtimeSettings.lima).toEqual({ vmMemory: '8GiB' })
+      expect(saved.container.runtimeSettings.docker).toEqual({ network: 'bridge' })
+    })
+
+    it('preserves runtimeSettings when not provided in body', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        container: {
+          ...defaultSettings().container,
+          runtimeSettings: { docker: { network: 'host' } },
+        },
+      })
+      const res = await putSettings({
+        container: { agentImage: 'new:v2' },
+      })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.container.runtimeSettings).toEqual({ docker: { network: 'host' } })
+    })
+  })
+
+  // =========================================================================
+  // Empty / minimal body
+  // =========================================================================
+  describe('empty body handling', () => {
+    it('preserves all settings when body is empty object', async () => {
+      const res = await putSettings({})
+      expect(res.status).toBe(200)
+      expect(mockUpdateSettings).toHaveBeenCalledOnce()
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      // all fields preserved from defaults
+      expect(saved.container).toEqual(defaultSettings().container)
+      expect(saved.app).toEqual(defaultSettings().app)
+      expect(saved.apiKeys).toEqual(defaultSettings().apiKeys)
+      expect(saved.models).toEqual(defaultSettings().models)
+      expect(saved.agentLimits).toEqual(defaultSettings().agentLimits)
+      expect(saved.skillsets).toEqual(defaultSettings().skillsets)
+    })
+
+    it('handles body with only non-settings fields gracefully', async () => {
+      const res = await putSettings({ unknownField: 'ignored' } as Record<string, unknown>)
+      expect(res.status).toBe(200)
+      expect(mockUpdateSettings).toHaveBeenCalledOnce()
+    })
+  })
+
+  // =========================================================================
+  // PUT response shape
+  // =========================================================================
+  describe('PUT response shape', () => {
+    it('returns all expected GlobalSettingsResponse fields', async () => {
+      const res = await putSettings({ app: { showMenuBarIcon: false } })
+      expect(res.status).toBe(200)
+      const body = await res.json()
+
+      // Verify all expected top-level keys exist
+      expect(body).toHaveProperty('dataDir')
+      expect(body).toHaveProperty('container')
+      expect(body).toHaveProperty('app')
+      expect(body).toHaveProperty('hasRunningAgents')
+      expect(body).toHaveProperty('runnerAvailability')
+      expect(body).toHaveProperty('llmProvider')
+      expect(body).toHaveProperty('llmProviderStatus')
+      expect(body).toHaveProperty('apiKeyStatus')
+      expect(body).toHaveProperty('models')
+      expect(body).toHaveProperty('agentLimits')
+      expect(body).toHaveProperty('customEnvVars')
+      expect(body).toHaveProperty('setupCompleted')
+      expect(body).toHaveProperty('hostBrowserStatus')
+      expect(body).toHaveProperty('runtimeReadiness')
+      expect(body).toHaveProperty('voice')
+      expect(body).toHaveProperty('tenantId')
+      expect(body).toHaveProperty('shareAnalytics')
+
+      // Verify apiKeyStatus sub-keys
+      expect(body.apiKeyStatus).toHaveProperty('anthropic')
+      expect(body.apiKeyStatus).toHaveProperty('openrouter')
+      expect(body.apiKeyStatus).toHaveProperty('bedrock')
+      expect(body.apiKeyStatus).toHaveProperty('browserbase')
+      expect(body.apiKeyStatus).toHaveProperty('composio')
+      expect(body.apiKeyStatus).toHaveProperty('deepgram')
+      expect(body.apiKeyStatus).toHaveProperty('openai')
+    })
+
+    it('PUT response reflects the updated settings', async () => {
+      const res = await putSettings({
+        app: { showMenuBarIcon: false },
+        llmProvider: 'openrouter',
+      })
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.app.showMenuBarIcon).toBe(false)
+      expect(body.llmProvider).toBe('openrouter')
+    })
+  })
+
+  // =========================================================================
+  // GET response shape
+  // =========================================================================
+  describe('GET response shape', () => {
+    it('returns all expected GlobalSettingsResponse fields', async () => {
+      const res = await app.request('http://localhost/api/settings')
+      expect(res.status).toBe(200)
+      const body = await res.json()
+
+      expect(body).toHaveProperty('dataDir')
+      expect(body).toHaveProperty('container')
+      expect(body).toHaveProperty('app')
+      expect(body).toHaveProperty('hasRunningAgents')
+      expect(body).toHaveProperty('runnerAvailability')
+      expect(body).toHaveProperty('llmProvider')
+      expect(body).toHaveProperty('llmProviderStatus')
+      expect(body).toHaveProperty('apiKeyStatus')
+      expect(body).toHaveProperty('models')
+      expect(body).toHaveProperty('agentLimits')
+      expect(body).toHaveProperty('customEnvVars')
+      expect(body).toHaveProperty('setupCompleted')
+      expect(body).toHaveProperty('hostBrowserStatus')
+      expect(body).toHaveProperty('runtimeReadiness')
+      expect(body).toHaveProperty('voice')
+      expect(body).toHaveProperty('tenantId')
+      expect(body).toHaveProperty('shareAnalytics')
+    })
+  })
 })
