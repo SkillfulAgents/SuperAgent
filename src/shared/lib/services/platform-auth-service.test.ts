@@ -60,6 +60,8 @@ describe('platform-auth-service', () => {
       tokenPreview: null,
       email: null,
       label: null,
+      orgName: null,
+      role: null,
       createdAt: null,
       updatedAt: null,
     })
