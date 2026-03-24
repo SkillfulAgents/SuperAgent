@@ -71,6 +71,14 @@ const TEMPLATE_EXCLUDE_EXTENSIONS = new Set([
   '.pyc',
 ])
 
+/** Dirs/files excluded from full exports (matched by name at any level) */
+const FULL_EXPORT_EXCLUDE = new Set([
+  '.DS_Store',
+  'node_modules',
+  '__pycache__',
+  '.browser-profile',
+])
+
 /** Top-level directories excluded from templates entirely */
 const TEMPLATE_EXCLUDE_TOP_DIRS = new Set([
   'uploads',
@@ -172,6 +180,42 @@ async function walkTemplateFiles(workspaceDir: string): Promise<string[]> {
   return files
 }
 
+/**
+ * Walk the agent workspace for a full export, returning all file paths.
+ * Uses explicit walking instead of archive.glob() to avoid hangs on Windows
+ * caused by broken symlinks and permission issues with readdir-glob.
+ */
+async function walkFullExportFiles(workspaceDir: string): Promise<string[]> {
+  const files: string[] = []
+
+  async function walk(dir: string, relativeBase: string): Promise<void> {
+    let entries: fs.Dirent[]
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true })
+    } catch {
+      return // skip directories we can't read
+    }
+
+    for (const entry of entries) {
+      if (FULL_EXPORT_EXCLUDE.has(entry.name)) continue
+
+      const relativePath = relativeBase ? path.join(relativeBase, entry.name) : entry.name
+
+      // Skip symlinks — they may be broken or point outside the workspace
+      if (entry.isSymbolicLink()) continue
+
+      if (entry.isDirectory()) {
+        await walk(path.join(dir, entry.name), relativePath)
+      } else if (entry.isFile()) {
+        files.push(relativePath)
+      }
+    }
+  }
+
+  await walk(workspaceDir, '')
+  return files
+}
+
 // ============================================================================
 // ZIP Export
 // ============================================================================
@@ -222,6 +266,8 @@ export async function exportAgentFull(agentSlug: string): Promise<Buffer> {
     throw new Error('Agent workspace not found')
   }
 
+  const fullFiles = await walkFullExportFiles(workspaceDir)
+
   return new Promise((resolve, reject) => {
     const archive = archiver('zip', { zlib: { level: 9 } })
     const chunks: Buffer[] = []
@@ -230,12 +276,10 @@ export async function exportAgentFull(agentSlug: string): Promise<Buffer> {
     archive.on('end', () => resolve(Buffer.concat(chunks)))
     archive.on('error', reject)
 
-    // Include everything except OS junk and heavy caches
-    archive.glob('**/*', {
-      cwd: workspaceDir,
-      dot: true,
-      ignore: ['.DS_Store', 'node_modules/**', '__pycache__/**', '.browser-profile/**'],
-    })
+    for (const relativePath of fullFiles) {
+      const fullPath = path.join(workspaceDir, relativePath)
+      archive.file(fullPath, { name: relativePath })
+    }
 
     archive.finalize()
   })
