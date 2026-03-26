@@ -2,6 +2,7 @@ export interface UsageByAgent {
   agentSlug: string
   agentName: string
   cost: number
+  totalTokens: number
 }
 
 export interface UsageByModel {
@@ -12,6 +13,7 @@ export interface UsageByModel {
 export interface DailyUsageEntry {
   date: string
   totalCost: number
+  totalTokens: number
   byAgent: UsageByAgent[]
   byModel: UsageByModel[]
 }

@@ -153,6 +153,7 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
         nextScheduledTaskAt,
         dashboardCount: artifacts.length,
         dashboardNames: artifacts.map((a) => a.name || a.slug),
+        dashboardSlugs: artifacts.map((a) => a.slug),
       }
     })
   )

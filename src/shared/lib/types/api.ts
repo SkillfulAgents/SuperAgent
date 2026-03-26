@@ -35,6 +35,7 @@ export interface ApiAgent {
   nextScheduledTaskAt?: Date | null
   dashboardCount?: number
   dashboardNames?: string[]
+  dashboardSlugs?: string[]
 }
 
 /**

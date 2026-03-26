@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { screen } from '@testing-library/react'
+import { renderWithProviders } from '@renderer/test/test-utils'
 import { formatRelativeTime } from './home-page'
 
 // ============================================================================
@@ -108,8 +109,14 @@ vi.mock('@shared/lib/utils/cn', () => ({
 }))
 
 const mockSelectAgent = vi.fn()
+const mockSelectSession = vi.fn()
+const mockSelectDashboard = vi.fn()
 vi.mock('@renderer/context/selection-context', () => ({
-  useSelection: () => ({ selectAgent: mockSelectAgent, selectedAgent: null }),
+  useSelection: () => ({ selectAgent: mockSelectAgent, selectSession: mockSelectSession, selectDashboard: mockSelectDashboard, selectedAgent: null }),
+}))
+
+vi.mock('@renderer/hooks/use-sessions', () => ({
+  useSessions: () => ({ data: [] }),
 }))
 
 const mockAgentsData = vi.fn()
@@ -125,6 +132,10 @@ vi.mock('@renderer/hooks/use-agent-templates', () => ({
   useDiscoverableAgents: () => ({ data: [] }),
 }))
 
+vi.mock('@renderer/hooks/use-usage', () => ({
+  useUsageData: () => ({ data: undefined, refetch: vi.fn() }),
+}))
+
 vi.mock('@renderer/lib/agent-ordering', () => ({
   applyAgentOrder: (agents: unknown[]) => agents,
 }))
@@ -135,6 +146,7 @@ vi.mock('@renderer/components/agents/agent-context-menu', () => ({
 
 vi.mock('@renderer/components/agents/agent-status', () => ({
   AgentStatus: ({ status }: { status: string }) => <span data-testid="agent-status">{status}</span>,
+  getAgentActivityStatus: () => 'sleeping',
 }))
 
 vi.mock('@renderer/components/agents/create-agent-dialog', () => ({
@@ -199,7 +211,7 @@ describe('HomePage AgentCard', () => {
       data: [makeAgent()],
       isLoading: false,
     })
-    render(<HomePage />)
+    renderWithProviders(<HomePage />)
     expect(screen.getByText('Test Agent')).toBeInTheDocument()
     expect(screen.getByText('A test description')).toBeInTheDocument()
   })
@@ -209,7 +221,7 @@ describe('HomePage AgentCard', () => {
       data: [makeAgent({ lastActivityAt: new Date('2026-03-26T09:00:00Z') })],
       isLoading: false,
     })
-    render(<HomePage />)
+    renderWithProviders(<HomePage />)
     expect(screen.getByText('3h ago')).toBeInTheDocument()
   })
 
@@ -218,7 +230,7 @@ describe('HomePage AgentCard', () => {
       data: [makeAgent({ lastActivityAt: null })],
       isLoading: false,
     })
-    render(<HomePage />)
+    renderWithProviders(<HomePage />)
     expect(screen.queryByText(/ago/)).not.toBeInTheDocument()
   })
 
@@ -227,7 +239,7 @@ describe('HomePage AgentCard', () => {
       data: [makeAgent({ scheduledTaskCount: 1, nextScheduledTaskAt: new Date('2026-03-26T14:00:00Z') })],
       isLoading: false,
     })
-    render(<HomePage />)
+    renderWithProviders(<HomePage />)
     expect(screen.getByText('1 task')).toBeInTheDocument()
     expect(screen.getByText(/in 2h/)).toBeInTheDocument()
   })
@@ -237,7 +249,7 @@ describe('HomePage AgentCard', () => {
       data: [makeAgent({ scheduledTaskCount: 3, nextScheduledTaskAt: new Date('2026-03-27T12:00:00Z') })],
       isLoading: false,
     })
-    render(<HomePage />)
+    renderWithProviders(<HomePage />)
     expect(screen.getByText('3 tasks')).toBeInTheDocument()
   })
 
@@ -246,7 +258,7 @@ describe('HomePage AgentCard', () => {
       data: [makeAgent({ scheduledTaskCount: 0 })],
       isLoading: false,
     })
-    render(<HomePage />)
+    renderWithProviders(<HomePage />)
     expect(screen.queryByText(/task/)).not.toBeInTheDocument()
   })
 
@@ -255,7 +267,7 @@ describe('HomePage AgentCard', () => {
       data: [makeAgent({ dashboardCount: 2, dashboardNames: ['Sales', 'Metrics'] })],
       isLoading: false,
     })
-    render(<HomePage />)
+    renderWithProviders(<HomePage />)
     expect(screen.getByText('Sales')).toBeInTheDocument()
     expect(screen.getByText('Metrics')).toBeInTheDocument()
   })
@@ -265,7 +277,7 @@ describe('HomePage AgentCard', () => {
       data: [makeAgent({ dashboardCount: 4, dashboardNames: ['A', 'B', 'C', 'D'] })],
       isLoading: false,
     })
-    render(<HomePage />)
+    renderWithProviders(<HomePage />)
     expect(screen.getByText('4 dashboards')).toBeInTheDocument()
     // Popover content should list all names
     expect(screen.getByText('A')).toBeInTheDocument()
@@ -277,7 +289,7 @@ describe('HomePage AgentCard', () => {
       data: [makeAgent({ dashboardCount: 0, dashboardNames: [] })],
       isLoading: false,
     })
-    render(<HomePage />)
+    renderWithProviders(<HomePage />)
     expect(screen.queryByText(/dashboard/i)).not.toBeInTheDocument()
   })
 
@@ -286,7 +298,7 @@ describe('HomePage AgentCard', () => {
       data: [],
       isLoading: false,
     })
-    render(<HomePage />)
+    renderWithProviders(<HomePage />)
     expect(screen.getByText('No agents yet')).toBeInTheDocument()
   })
 
@@ -301,7 +313,7 @@ describe('HomePage AgentCard', () => {
       })],
       isLoading: false,
     })
-    render(<HomePage />)
+    renderWithProviders(<HomePage />)
     expect(screen.getByText('1h ago')).toBeInTheDocument()
     expect(screen.getByText('2 tasks')).toBeInTheDocument()
     expect(screen.getByText(/in 1h/)).toBeInTheDocument()
@@ -313,7 +325,7 @@ describe('HomePage AgentCard', () => {
       data: [makeAgent({ hasActiveSessions: true, hasSessionsAwaitingInput: true })],
       isLoading: false,
     })
-    render(<HomePage />)
+    renderWithProviders(<HomePage />)
     // The mocked AgentStatus just renders the status prop
     expect(screen.getByTestId('agent-status')).toBeInTheDocument()
   })
