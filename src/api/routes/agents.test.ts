@@ -196,6 +196,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
   deleteSession: vi.fn(),
   removeMessage: vi.fn(),
   removeToolCall: vi.fn(),
+  getSessionSummary: vi.fn().mockResolvedValue({ sessionIds: [], sessionCount: 0, lastActivityAt: null }),
 }))
 
 vi.mock('@shared/lib/services/secrets-service', () => ({
@@ -314,7 +315,7 @@ import {
   collectAgentRequiredEnvVars,
 } from '@shared/lib/services/agent-template-service'
 import { getAgent, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listSessions, getSessionMessagesWithCompact } from '@shared/lib/services/session-service'
+import { listSessions, getSessionMessagesWithCompact, getSessionSummary } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
@@ -2095,6 +2096,7 @@ describe('GET /api/agents (enriched summary)', () => {
     app = createApp()
     mockIsAuthMode.mockReturnValue(false)
     // Default: no sessions, no tasks, no artifacts
+    vi.mocked(getSessionSummary).mockResolvedValue({ sessionIds: [], sessionCount: 0, lastActivityAt: null })
     vi.mocked(listSessions).mockResolvedValue([])
     vi.mocked(listPendingScheduledTasks).mockResolvedValue([])
     vi.mocked(listArtifactsFromFilesystem).mockResolvedValue([])
@@ -2102,16 +2104,11 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('returns enriched agents with summary fields', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessions).mockResolvedValue([
-      {
-        id: 'sess-1',
-        agentSlug: 'agent-1',
-        name: 'Session 1',
-        createdAt: new Date('2026-01-01T10:00:00Z'),
-        lastActivityAt: new Date('2026-01-01T12:00:00Z'),
-        messageCount: 5,
-      },
-    ])
+    vi.mocked(getSessionSummary).mockResolvedValue({
+      sessionIds: ['sess-1'],
+      sessionCount: 1,
+      lastActivityAt: new Date('2026-01-01T12:00:00Z'),
+    })
 
     const res = await getReq(app, '/api/agents')
     expect(res.status).toBe(200)
@@ -2130,16 +2127,11 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('detects active sessions via messagePersister', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessions).mockResolvedValue([
-      {
-        id: 'sess-active',
-        agentSlug: 'agent-1',
-        name: 'Active Session',
-        createdAt: new Date(),
-        lastActivityAt: new Date(),
-        messageCount: 1,
-      },
-    ])
+    vi.mocked(getSessionSummary).mockResolvedValue({
+      sessionIds: ['sess-active'],
+      sessionCount: 1,
+      lastActivityAt: new Date(),
+    })
     vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
 
     const res = await getReq(app, '/api/agents')
@@ -2151,16 +2143,11 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('detects sessions awaiting input', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessions).mockResolvedValue([
-      {
-        id: 'sess-waiting',
-        agentSlug: 'agent-1',
-        name: 'Waiting Session',
-        createdAt: new Date(),
-        lastActivityAt: new Date(),
-        messageCount: 1,
-      },
-    ])
+    vi.mocked(getSessionSummary).mockResolvedValue({
+      sessionIds: ['sess-waiting'],
+      sessionCount: 1,
+      lastActivityAt: new Date(),
+    })
     vi.mocked(messagePersister.isSessionAwaitingInput).mockReturnValue(true)
 
     const res = await getReq(app, '/api/agents')
@@ -2171,16 +2158,11 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('detects awaiting input from agent-level proxy reviews on active sessions', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessions).mockResolvedValue([
-      {
-        id: 'sess-active',
-        agentSlug: 'agent-1',
-        name: 'Active Session',
-        createdAt: new Date(),
-        lastActivityAt: new Date(),
-        messageCount: 1,
-      },
-    ])
+    vi.mocked(getSessionSummary).mockResolvedValue({
+      sessionIds: ['sess-active'],
+      sessionCount: 1,
+      lastActivityAt: new Date(),
+    })
     // Session is active but messagePersister doesn't know about the proxy review
     vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
     vi.mocked(messagePersister.isSessionAwaitingInput).mockReturnValue(false)
@@ -2198,16 +2180,11 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('does not set awaiting input from proxy reviews when no sessions are active', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessions).mockResolvedValue([
-      {
-        id: 'sess-idle',
-        agentSlug: 'agent-1',
-        name: 'Idle Session',
-        createdAt: new Date(),
-        lastActivityAt: new Date(),
-        messageCount: 1,
-      },
-    ])
+    vi.mocked(getSessionSummary).mockResolvedValue({
+      sessionIds: ['sess-idle'],
+      sessionCount: 1,
+      lastActivityAt: new Date(),
+    })
     // Session is NOT active
     vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
     vi.mocked(messagePersister.isSessionAwaitingInput).mockReturnValue(false)
@@ -2224,24 +2201,11 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('picks the latest lastActivityAt across sessions', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessions).mockResolvedValue([
-      {
-        id: 'sess-old',
-        agentSlug: 'agent-1',
-        name: 'Old Session',
-        createdAt: new Date('2026-01-01T08:00:00Z'),
-        lastActivityAt: new Date('2026-01-01T09:00:00Z'),
-        messageCount: 3,
-      },
-      {
-        id: 'sess-new',
-        agentSlug: 'agent-1',
-        name: 'New Session',
-        createdAt: new Date('2026-01-01T10:00:00Z'),
-        lastActivityAt: new Date('2026-01-01T15:00:00Z'),
-        messageCount: 7,
-      },
-    ])
+    vi.mocked(getSessionSummary).mockResolvedValue({
+      sessionIds: ['sess-old', 'sess-new'],
+      sessionCount: 2,
+      lastActivityAt: new Date('2026-01-01T15:00:00Z'),
+    })
 
     const res = await getReq(app, '/api/agents')
     const body = await res.json()
@@ -2332,7 +2296,6 @@ describe('GET /api/agents (enriched summary)', () => {
     })
     const { getAgentWithStatus } = await import('@shared/lib/services/agent-service')
     vi.mocked(getAgentWithStatus).mockResolvedValue(baseAgent)
-    vi.mocked(listSessions).mockResolvedValue([])
 
     const res = await getReq(app, '/api/agents')
     expect(res.status).toBe(200)
@@ -2347,7 +2310,6 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('returns lastActivityAt as null when agent has no sessions', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessions).mockResolvedValue([])
 
     const res = await getReq(app, '/api/agents')
     const body = await res.json()
@@ -2358,7 +2320,6 @@ describe('GET /api/agents (enriched summary)', () => {
   it('enriches multiple agents in parallel', async () => {
     const agent2 = { ...baseAgent, slug: 'agent-2', name: 'Agent Two' }
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent, agent2])
-    vi.mocked(listSessions).mockResolvedValue([])
 
     const res = await getReq(app, '/api/agents')
     const body = await res.json()
@@ -2367,9 +2328,9 @@ describe('GET /api/agents (enriched summary)', () => {
     // Both agents should have summary fields
     expect(body[0]).toHaveProperty('dashboardCount', 0)
     expect(body[1]).toHaveProperty('dashboardCount', 0)
-    // listSessions called once per agent
-    expect(listSessions).toHaveBeenCalledTimes(2)
-    expect(listSessions).toHaveBeenCalledWith('agent-1')
-    expect(listSessions).toHaveBeenCalledWith('agent-2')
+    // getSessionSummary called once per agent
+    expect(getSessionSummary).toHaveBeenCalledTimes(2)
+    expect(getSessionSummary).toHaveBeenCalledWith('agent-1')
+    expect(getSessionSummary).toHaveBeenCalledWith('agent-2')
   })
 })

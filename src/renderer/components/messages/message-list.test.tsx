@@ -433,9 +433,9 @@ describe('MessageList', () => {
     )
 
     // First turn: 60s
-    expect(screen.getByText('Agent took 60s')).toBeInTheDocument()
+    expect(screen.getByText('Worked for 60s')).toBeInTheDocument()
     // Second turn not shown (session is active=false so it should be shown)
-    expect(screen.getByText('Agent took 30s')).toBeInTheDocument()
+    expect(screen.getByText('Worked for 30s')).toBeInTheDocument()
   })
 
   it('detects running tool calls only for trailing assistant messages when active', () => {
@@ -682,7 +682,7 @@ describe('MessageList', () => {
     )
 
     // Session is active → last turn's elapsed should not show
-    expect(screen.queryByText('Agent took 60s')).not.toBeInTheDocument()
+    expect(screen.queryByText('Worked for 60s')).not.toBeInTheDocument()
   })
 
   it('keeps last turn elapsed time visible when user sends a new message (pendingUserMessage)', () => {
@@ -707,7 +707,7 @@ describe('MessageList', () => {
     )
 
     // Even though isActive=true, pendingUserMessage closes the previous turn
-    expect(screen.getByText('Agent took 60s')).toBeInTheDocument()
+    expect(screen.getByText('Worked for 60s')).toBeInTheDocument()
   })
 
   it('does not defer elapsed/files after streaming when pendingUserMessage exists', () => {
@@ -742,13 +742,13 @@ describe('MessageList', () => {
     )
 
     // Elapsed + files should render inline (not deferred after streaming)
-    expect(screen.getByText('Agent took 60s')).toBeInTheDocument()
+    expect(screen.getByText('Worked for 60s')).toBeInTheDocument()
     expect(screen.getByText('result.csv')).toBeInTheDocument()
 
     // Verify order: files and elapsed appear BEFORE the streaming message
     const allText = container.textContent || ''
     const filesPos = allText.indexOf('result.csv')
-    const elapsedPos = allText.indexOf('Agent took 60s')
+    const elapsedPos = allText.indexOf('Worked for 60s')
     const streamingPos = allText.indexOf('New turn streaming...')
     expect(filesPos).toBeLessThan(streamingPos)
     expect(elapsedPos).toBeLessThan(streamingPos)
@@ -789,7 +789,7 @@ describe('MessageList', () => {
 
     // Previous turn's files and elapsed should render inline (not deferred)
     expect(screen.getByText('output.csv')).toBeInTheDocument()
-    expect(screen.getByText('Agent took 60s')).toBeInTheDocument()
+    expect(screen.getByText('Worked for 60s')).toBeInTheDocument()
 
     // They should appear BEFORE the streaming content
     const allText = container.textContent || ''
@@ -1026,9 +1026,9 @@ describe('MessageList', () => {
     )
 
     // Elapsed renders inline (before streaming), not deferred
-    expect(screen.getByText('Agent took 60s')).toBeInTheDocument()
+    expect(screen.getByText('Worked for 60s')).toBeInTheDocument()
     const allText = container.textContent || ''
-    expect(allText.indexOf('Agent took 60s')).toBeLessThan(allText.indexOf('Streaming text...'))
+    expect(allText.indexOf('Worked for 60s')).toBeLessThan(allText.indexOf('Streaming text...'))
   })
 
   it('defers elapsed time when streaming continues the same turn', () => {
@@ -1055,9 +1055,9 @@ describe('MessageList', () => {
     )
 
     // Elapsed is deferred (after streaming), not inline
-    expect(screen.getByText('Agent took 60s')).toBeInTheDocument()
+    expect(screen.getByText('Worked for 60s')).toBeInTheDocument()
     const allText = container.textContent || ''
-    expect(allText.indexOf('Still going...')).toBeLessThan(allText.indexOf('Agent took 60s'))
+    expect(allText.indexOf('Still going...')).toBeLessThan(allText.indexOf('Worked for 60s'))
   })
 
   // ---- Shows loading spinner only when no pending message ----
