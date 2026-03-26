@@ -127,6 +127,6 @@ describe('getAppIconBase64', () => {
     const allArgs = JSON.stringify(callArgs)
     // JSON.stringify('App "With Quotes"') produces "App \"With Quotes\""
     // In the double-serialized form, that's: App \\\"With Quotes\\\"
-    expect(allArgs).toContain('App \\\\\\\"With Quotes\\\\\\\"')
+    expect(allArgs).toContain('App \\\\\\"With Quotes\\\\\\"')
   })
 })

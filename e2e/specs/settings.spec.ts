@@ -151,22 +151,25 @@ test.describe('Settings persistence', () => {
     await goToTab(page, 'general')
 
     const toggle = page.locator('#share-analytics')
-    // Initial state: unchecked (not set in e2e seed data)
-    await expect(toggle).toHaveAttribute('data-state', 'unchecked')
+    await expect(toggle).toBeVisible()
 
-    // Toggle on and wait for save
+    // Read the current state, then toggle and verify persistence
+    const initialState = await toggle.getAttribute('data-state')
+    const oppositeState = initialState === 'checked' ? 'unchecked' : 'checked'
+
+    // Toggle and wait for save
     const savePromise = waitForSettingsSave(page)
     await toggle.click()
     await savePromise
-    await expect(toggle).toHaveAttribute('data-state', 'checked')
+    await expect(toggle).toHaveAttribute('data-state', oppositeState)
 
-    // Close, reopen, verify
+    // Close, reopen, verify the toggled state persisted
     await closeSettings(page)
     await openSettings(page)
     await goToTab(page, 'general')
-    await expect(page.locator('#share-analytics')).toHaveAttribute('data-state', 'checked')
+    await expect(page.locator('#share-analytics')).toHaveAttribute('data-state', oppositeState)
 
-    // Toggle back off for cleanup
+    // Toggle back for cleanup
     const savePromise2 = waitForSettingsSave(page)
     await page.locator('#share-analytics').click()
     await savePromise2

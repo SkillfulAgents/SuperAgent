@@ -46,10 +46,9 @@ interface StreamingState {
 // Lazy import to break circular dependency: container-manager -> message-persister
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _containerManagerModule: any = null
-function getContainerManager() {
+async function getContainerManager() {
   if (!_containerManagerModule) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    _containerManagerModule = require('./container-manager')
+    _containerManagerModule = await import('./container-manager')
   }
   return _containerManagerModule.containerManager
 }
@@ -1496,15 +1495,16 @@ class MessagePersister {
   /** Auto-reject a pending input request on the container with a reason message. */
   private autoRejectInput(agentSlug: string | undefined, toolUseId: string, reason: string): void {
     if (!agentSlug) return
-    getContainerManager().getClient(agentSlug)
-      .fetch(`/inputs/${encodeURIComponent(toolUseId)}/reject`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason }),
-      })
-      .catch((err: Error) => {
-        console.error('[MessagePersister] Failed to auto-reject input request:', err)
-      })
+    getContainerManager().then((cm) =>
+      cm.getClient(agentSlug)
+        .fetch(`/inputs/${encodeURIComponent(toolUseId)}/reject`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason }),
+        })
+    ).catch((err: Error) => {
+      console.error('[MessagePersister] Failed to auto-reject input request:', err)
+    })
   }
 
   // Handle script run request tool - broadcast to SSE clients or auto-reject
@@ -1605,8 +1605,8 @@ class MessagePersister {
         return
       }
 
-      // Check platform support — computer use requires macOS or Windows
-      if (process.platform !== 'darwin' && process.platform !== 'win32') {
+      // Check platform support — computer use requires macOS or Windows (skip in E2E mock mode)
+      if (process.env.E2E_MOCK !== 'true' && process.platform !== 'darwin' && process.platform !== 'win32') {
         this.autoRejectInput(agentSlug, toolUseId, `Computer use is not supported on this platform (${process.platform}). macOS and Windows are supported.`)
         return
       }
@@ -1719,15 +1719,16 @@ class MessagePersister {
       .catch((err: Error) => {
         clearTimeout(timeout)
         console.error('[MessagePersister] Failed to auto-execute computer use command:', err)
-        getContainerManager().getClient(agentSlug)
-          .fetch(`/inputs/${encodeURIComponent(toolUseId)}/reject`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ reason: `Auto-execute failed: ${err.message}` }),
-          })
-          .catch((rejectErr: Error) => {
-            console.error('[MessagePersister] Failed to reject after auto-execute failure:', rejectErr)
-          })
+        getContainerManager().then((cm) =>
+          cm.getClient(agentSlug)
+            .fetch(`/inputs/${encodeURIComponent(toolUseId)}/reject`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ reason: `Auto-execute failed: ${err.message}` }),
+            })
+        ).catch((rejectErr: Error) => {
+          console.error('[MessagePersister] Failed to reject after auto-execute failure:', rejectErr)
+        })
       })
   }
 

@@ -158,7 +158,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
   }
 
   const isDisabled = sendMessage.isPending || isActive || composer.isUploading || isOffline
-  const hasTypedMessage = composer.message.trim().length > 0
+
 
   if (isViewOnly) {
     return null
@@ -238,7 +238,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
               type="submit"
               size="icon"
               className="h-[34px] w-[34px]"
-              disabled={!hasTypedMessage || sendMessage.isPending || composer.isUploading}
+              disabled={!composer.canSubmit || sendMessage.isPending}
               data-testid="send-button"
             >
               {sendMessage.isPending || composer.isUploading ? (

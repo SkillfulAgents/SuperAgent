@@ -201,8 +201,16 @@ export function AuditLogTab({ agentSlug }: AuditLogTabProps) {
               return (
                 <div
                   key={entry.id}
+                  role="button"
+                  tabIndex={0}
                   className="rounded-md border bg-muted/30 px-3 py-2 text-xs cursor-pointer hover:bg-muted/50 transition-colors"
                   onClick={() => setExpandedId(isExpanded ? null : entry.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      setExpandedId(isExpanded ? null : entry.id)
+                    }
+                  }}
                 >
                   <div className="grid grid-cols-[auto_auto_auto_auto_auto_1fr_auto] items-center gap-2">
                     <SourceBadge source={entry.source} />

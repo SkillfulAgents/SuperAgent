@@ -600,6 +600,7 @@ function AccountOption({
           >
             <Pencil className="h-3 w-3 text-blue-400" />
           </Button>
+          {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
           <span onClick={(e) => e.stopPropagation()}>
             <PolicySummaryPill
               accountId={account.id}
