@@ -2,9 +2,10 @@
 import { useMessages } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
+import { apiFetch } from '@renderer/lib/api'
 import { cn } from '@shared/lib/utils'
-import { AlertTriangle } from 'lucide-react'
-import { useMemo } from 'react'
+import { AlertTriangle, Monitor, X } from 'lucide-react'
+import { useCallback, useMemo, useState } from 'react'
 
 interface Todo {
   content: string
@@ -22,8 +23,23 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     isActive, error, activeStartTime, isCompacting, activeSubagents, completedSubagents,
     pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests,
     pendingFileRequests, pendingRemoteMcpRequests, pendingBrowserInputRequests,
-    apiRetry,
+    apiRetry, computerUseApp, computerUseAppIcon,
   } = useMessageStream(sessionId, agentSlug)
+
+  const [revoking, setRevoking] = useState(false)
+  const [revokeError, setRevokeError] = useState(false)
+  const handleRevokeComputerUse = useCallback(async () => {
+    setRevoking(true)
+    setRevokeError(false)
+    try {
+      const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/computer-use/revoke`, { method: 'POST' })
+      if (!res.ok) throw new Error()
+    } catch {
+      setRevokeError(true)
+    } finally {
+      setRevoking(false)
+    }
+  }, [agentSlug, sessionId])
 
   const isAwaitingInput = isActive && (
     pendingSecretRequests.length > 0 ||
@@ -150,6 +166,27 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
           )}></span>
         </span>
         <span className="text-sm font-medium">{statusText}</span>
+        {computerUseApp && (
+          <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300">
+            {computerUseAppIcon ? (
+              <img src={`data:image/png;base64,${computerUseAppIcon}`} alt="" className="h-4 w-4" />
+            ) : (
+              <Monitor className="h-3 w-3" />
+            )}
+            {computerUseApp}
+            <button
+              onClick={handleRevokeComputerUse}
+              disabled={revoking}
+              className={cn(
+                "ml-0.5 rounded-full p-0.5 transition-colors cursor-pointer",
+                revokeError ? "bg-red-200 dark:bg-red-800" : "hover:bg-blue-200 dark:hover:bg-blue-800"
+              )}
+              title={revokeError ? "Failed to revoke — click to retry" : "Release app and revoke permission"}
+            >
+              <X className={cn("h-3 w-3", revokeError && "text-red-600 dark:text-red-400")} />
+            </button>
+          </span>
+        )}
         {elapsed && (
           <span className="text-xs text-muted-foreground tabular-nums">{elapsed}</span>
         )}

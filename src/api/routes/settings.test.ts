@@ -1016,29 +1016,29 @@ describe('settings route', () => {
   })
 
   // =========================================================================
-  // Settings merge — hostShellUse
+  // Settings merge — computerUse
   // =========================================================================
-  describe('hostShellUse handling', () => {
-    it('merges hostShellUse with existing', async () => {
+  describe('computerUse handling', () => {
+    it('merges computerUse with existing', async () => {
       mockGetSettings.mockReturnValue({
         ...defaultSettings(),
-        hostShellUse: { allowScriptExecution: false },
+        computerUse: { agentPermissions: { 'agent-1': { grants: [{ level: 'use_host_shell', grantType: 'always' }] } } },
       })
-      const res = await putSettings({ hostShellUse: { allowScriptExecution: true } })
+      const res = await putSettings({ computerUse: { agentPermissions: { 'agent-2': { grants: [{ level: 'list_apps_windows', grantType: 'always' }] } } } })
       expect(res.status).toBe(200)
       const saved = mockUpdateSettings.mock.calls[0][0]
-      expect(saved.hostShellUse.allowScriptExecution).toBe(true)
+      expect(saved.computerUse.agentPermissions).toHaveProperty('agent-2')
     })
 
-    it('preserves hostShellUse when not provided', async () => {
+    it('preserves computerUse when not provided', async () => {
       mockGetSettings.mockReturnValue({
         ...defaultSettings(),
-        hostShellUse: { allowScriptExecution: true },
+        computerUse: { agentPermissions: { 'agent-1': { grants: [{ level: 'use_host_shell', grantType: 'always' }] } } },
       })
       const res = await putSettings({ app: { showMenuBarIcon: false } })
       expect(res.status).toBe(200)
       const saved = mockUpdateSettings.mock.calls[0][0]
-      expect(saved.hostShellUse).toEqual({ allowScriptExecution: true })
+      expect(saved.computerUse).toEqual({ agentPermissions: { 'agent-1': { grants: [{ level: 'use_host_shell', grantType: 'always' }] } } })
     })
   })
 

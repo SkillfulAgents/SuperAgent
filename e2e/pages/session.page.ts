@@ -287,4 +287,34 @@ export class SessionPage {
     const container = this.page.locator('[data-testid="script-run-request"]').first()
     await container.locator('[data-testid="script-deny-btn"]').click()
   }
+
+  // --- Computer Use Request Helpers ---
+
+  async waitForComputerUseRequest(timeout = 15000) {
+    await expect(this.page.locator('[data-testid="computer-use-request"]').first()).toBeVisible({ timeout })
+  }
+
+  getComputerUseRequests() {
+    return this.page.locator('[data-testid="computer-use-request"]')
+  }
+
+  async approveComputerUseOnce() {
+    const container = this.page.locator('[data-testid="computer-use-request"]').first()
+    await container.locator('[data-testid="computer-use-allow-once-btn"]').click()
+  }
+
+  async approveComputerUseTimed() {
+    const container = this.page.locator('[data-testid="computer-use-request"]').first()
+    await container.locator('[data-testid="computer-use-allow-timed-btn"]').click()
+  }
+
+  async approveComputerUseAlways() {
+    const container = this.page.locator('[data-testid="computer-use-request"]').first()
+    await container.locator('[data-testid="computer-use-allow-always-btn"]').click()
+  }
+
+  async denyComputerUse() {
+    const container = this.page.locator('[data-testid="computer-use-request"]').first()
+    await container.locator('[data-testid="computer-use-deny-btn"]').click()
+  }
 }

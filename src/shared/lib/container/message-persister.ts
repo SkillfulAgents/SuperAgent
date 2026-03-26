@@ -5,7 +5,9 @@ import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { updateSessionMetadata } from '@shared/lib/services/session-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
-import { getSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
+import { VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
+import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
+import { getRequiredPermissionLevel, resolveTargetApp, type ComputerUsePermissionLevel } from '@shared/lib/computer-use/types'
 import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
 import * as path from 'path'
 import { promises as fsPromises } from 'fs'
@@ -38,6 +40,7 @@ interface StreamingState {
   activeSubagents: Map<string, SubagentStreamingState>
   slashCommands: SlashCommandInfo[] // Available slash commands from SDK
   isAwaitingInput: boolean // True when session is waiting for user input (e.g., secret, file, question)
+  pendingComputerUseRequests: Map<string, { toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string; agentSlug?: string }> // Pending computer use requests awaiting user approval (keyed by toolUseId)
 }
 
 // Lazy import to break circular dependency: container-manager -> message-persister
@@ -89,6 +92,7 @@ class MessagePersister {
       activeSubagents: new Map(),
       slashCommands: [],
       isAwaitingInput: false,
+      pendingComputerUseRequests: new Map(),
     })
 
     // Store container client for reconnection checks
@@ -127,6 +131,31 @@ class MessagePersister {
   isSessionAwaitingInput(sessionId: string): boolean {
     const state = this.streamingStates.get(sessionId)
     return state?.isAwaitingInput ?? false
+  }
+
+  // Get pending computer use requests for a session (for SSE replay on reconnect)
+  getPendingComputerUseRequests(sessionId: string): Array<{ toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string; agentSlug?: string }> {
+    const state = this.streamingStates.get(sessionId)
+    if (!state) return []
+    return Array.from(state.pendingComputerUseRequests.values())
+  }
+
+  // Clear a pending computer use request (after approval/rejection)
+  clearPendingComputerUseRequest(sessionId: string, toolUseId: string): void {
+    const state = this.streamingStates.get(sessionId)
+    if (state) {
+      state.pendingComputerUseRequests.delete(toolUseId)
+      // Broadcast so the sidebar updates immediately.
+      // Don't clear isAwaitingInput here — other input types (secrets, questions, etc.)
+      // may still be pending. The flag is cleared when the tool result arrives in the stream.
+      if (state.pendingComputerUseRequests.size === 0) {
+        this.broadcastGlobal({
+          type: 'session_input_provided',
+          sessionId,
+          agentSlug: state.agentSlug,
+        })
+      }
+    }
   }
 
   // Get available slash commands for a session
@@ -286,6 +315,7 @@ class MessagePersister {
         activeSubagents: new Map(),
         slashCommands: [],
         isAwaitingInput: false,
+        pendingComputerUseRequests: new Map(),
       }
       this.streamingStates.set(sessionId, state)
     }
@@ -705,6 +735,15 @@ class MessagePersister {
                 state.agentSlug
               )
             }
+            if (block.type === 'tool_use' && block.name.startsWith('mcp__computer-use__')) {
+              this.handleComputerUseRequestTool(
+                sessionId,
+                block.id,
+                block.name,
+                JSON.stringify(block.input || {}),
+                state.agentSlug
+              )
+            }
           }
         }
       }
@@ -890,6 +929,16 @@ class MessagePersister {
             )
           }
 
+          if (sub.currentToolUse.name.startsWith('mcp__computer-use__')) {
+            this.handleComputerUseRequestTool(
+              sessionId,
+              sub.currentToolUse.id,
+              sub.currentToolUse.name,
+              sub.currentToolInput,
+              state.agentSlug
+            )
+          }
+
           this.broadcastToSSE(sessionId, {
             type: 'subagent_tool_use_ready',
             parentToolId,
@@ -1049,10 +1098,25 @@ class MessagePersister {
             )
           }
 
+          if (state.currentToolUse.name.startsWith('mcp__computer-use__')) {
+            this.handleComputerUseRequestTool(
+              sessionId,
+              state.currentToolUse.id,
+              state.currentToolUse.name,
+              state.currentToolInput,
+              state.agentSlug
+            )
+          }
+
           // Mark session as awaiting input when a blocking user-input tool fires
           // Only tools with 'request_' prefix actually block waiting for user response
           // (schedule_task, deliver_file, search_* resolve immediately and don't block)
-          if (state.currentToolUse.name === 'AskUserQuestion' || state.currentToolUse.name.startsWith('mcp__user-input__request_')) {
+          // Note: computer-use tools are handled by handleComputerUseRequestTool which
+          // only marks awaiting input when user approval is actually needed (not auto-executed)
+          if (
+            state.currentToolUse.name === 'AskUserQuestion' ||
+            state.currentToolUse.name.startsWith('mcp__user-input__request_')
+          ) {
             this.markSessionAwaitingInput(sessionId)
           }
 
@@ -1464,13 +1528,6 @@ class MessagePersister {
         return
       }
 
-      // Check if feature is enabled
-      const settings = getSettings()
-      if (!settings.hostShellUse?.allowScriptExecution) {
-        this.autoRejectInput(agentSlug, toolUseId, 'Host script execution is not enabled. The user needs to enable it in Settings > Host Shell Use.')
-        return
-      }
-
       // Check platform support
       const platform = process.platform
       if (!VALID_SCRIPT_TYPES[platform]) {
@@ -1484,7 +1541,16 @@ class MessagePersister {
         return
       }
 
-      // All checks passed - broadcast to UI for user approval
+      // Check computer use permissions (use_host_shell level)
+      if (agentSlug) {
+        const permissionResult = computerUsePermissionManager.checkPermission(agentSlug, 'use_host_shell')
+        if (permissionResult === 'granted') {
+          // Auto-approved — broadcast will still happen for UI to show, but no approval needed
+          // The run-script endpoint will handle execution
+        }
+      }
+
+      // Broadcast to UI for user approval (or showing auto-approved state)
       this.broadcastToSSE(sessionId, {
         type: 'script_run_request',
         toolUseId,
@@ -1502,6 +1568,167 @@ class MessagePersister {
     } catch (error) {
       console.error('[MessagePersister] Error handling script run request:', error)
     }
+  }
+
+  /**
+   * Handle computer use request tools — check permissions and either auto-execute or prompt user.
+   */
+  private async handleComputerUseRequestTool(
+    sessionId: string,
+    toolUseId: string,
+    toolName: string,
+    toolInput: string,
+    agentSlug?: string,
+  ): Promise<void> {
+    try {
+      // Extract AC method from tool name: mcp__computer-use__computer_launch → launch
+      // Tool names follow the pattern: mcp__computer-use__computer_{method}
+      const toolSuffix = toolName.replace('mcp__computer-use__computer_', '')
+      // Map tool suffixes to AC method names
+      const methodMap: Record<string, string> = {
+        apps: 'apps', windows: 'windows', snapshot: 'snapshot', find: 'find',
+        screenshot: 'screenshot', read: 'read', status: 'status', displays: 'displays',
+        permissions: 'permissions', click: 'click', type: 'type', fill: 'fill',
+        key: 'key', scroll: 'scroll', select: 'select', hover: 'hover',
+        launch: 'launch', quit: 'quit', grab: 'grab', ungrab: 'ungrab',
+        menu: 'menuClick', dialog: 'dialog', run: 'run',
+      }
+      const method = methodMap[toolSuffix] || toolSuffix
+
+      // The toolInput is the raw MCP tool input (e.g., { name: "Calculator" } for computer_launch)
+      // Empty input is valid for tools like screenshot, apps, ungrab that take no required params
+      let params: Record<string, unknown>
+      try {
+        params = toolInput.trim() ? JSON.parse(toolInput) : {}
+      } catch {
+        console.error('[MessagePersister] Failed to parse computer use request:', toolInput)
+        return
+      }
+
+      // Check platform support — computer use requires macOS or Windows
+      if (process.platform !== 'darwin' && process.platform !== 'win32') {
+        this.autoRejectInput(agentSlug, toolUseId, `Computer use is not supported on this platform (${process.platform}). macOS and Windows are supported.`)
+        return
+      }
+
+      // Determine the actual permission level and app name
+      const permissionLevel = getRequiredPermissionLevel(method)
+      const grabbedApp = agentSlug ? computerUsePermissionManager.getGrabbedApp(agentSlug) : undefined
+      let appName = resolveTargetApp(method, params, grabbedApp)
+
+      // For grab-by-window-ref, resolve the owning app name via AC.
+      // Done before permission check and before adding to pending Map
+      // so that failures here don't leave orphaned pending entries.
+      if (method === 'grab' && !appName && params.ref && typeof params.ref === 'string') {
+        try {
+          const { resolveAppFromWindowRef } = await import('@shared/lib/computer-use/executor')
+          appName = await resolveAppFromWindowRef(params.ref)
+        } catch {
+          // Non-fatal — proceed without app name
+        }
+      }
+
+      // Check cached permissions
+      if (agentSlug) {
+        const permissionResult = computerUsePermissionManager.checkPermission(agentSlug, permissionLevel, appName)
+
+        if (permissionResult === 'granted') {
+          // Auto-execute: permission already granted
+          this.autoExecuteComputerUseCommand(sessionId, agentSlug, toolUseId, method, params, permissionLevel, appName)
+          return
+        }
+      }
+
+      // Permission needed — track and broadcast to UI for user approval
+      const state = this.streamingStates.get(sessionId)
+      if (state) {
+        // Guard against duplicate entries (e.g., SSE event replayed)
+        if (!state.pendingComputerUseRequests.has(toolUseId)) {
+          state.pendingComputerUseRequests.set(toolUseId, { toolUseId, method, params, permissionLevel, appName, agentSlug })
+        }
+      }
+      this.markSessionAwaitingInput(sessionId)
+
+      this.broadcastToSSE(sessionId, {
+        type: 'computer_use_request',
+        toolUseId,
+        method,
+        params,
+        permissionLevel,
+        appName,
+        agentSlug,
+      })
+
+      if (agentSlug && !this.hasActiveViewers(sessionId)) {
+        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'computer_use').catch((err) => {
+          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
+        })
+      }
+    } catch (error) {
+      console.error('[MessagePersister] Error handling computer use request:', error)
+    }
+  }
+
+  /**
+   * Auto-execute a computer use command when permission is already cached.
+   * Calls the internal /computer-use API endpoint which handles AC execution.
+   */
+  private autoExecuteComputerUseCommand(
+    sessionId: string,
+    agentSlug: string,
+    toolUseId: string,
+    method: string,
+    params: Record<string, unknown>,
+    permissionLevel: ComputerUsePermissionLevel,
+    appName?: string,
+  ): void {
+    // Use the same API endpoint the UI calls, but with _auto session
+    // since permission is already verified
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 30_000)
+    fetch(`http://localhost:${process.env.PORT || '3000'}/api/agents/${encodeURIComponent(agentSlug)}/sessions/_auto/computer-use`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ toolUseId, method, params, permissionLevel, appName }),
+      signal: controller.signal,
+    })
+      .then((res) => {
+        clearTimeout(timeout)
+        if (!res.ok) {
+          console.error('[MessagePersister] Auto-execute computer use failed:', res.status)
+          return
+        }
+        // Broadcast grab state change to the real session SSE clients
+        if (method === 'grab' || method === 'launch') {
+          const targetApp = appName || (params.name as string) || (params.app as string)
+          if (targetApp) {
+            this.broadcastToSSE(sessionId, { type: 'computer_use_grab_changed', app: targetApp })
+            // Resolve icon async and send update
+            import('@shared/lib/computer-use/app-icon').then(({ getAppIconBase64 }) =>
+              getAppIconBase64(targetApp).then((icon) => {
+                if (icon) {
+                  this.broadcastToSSE(sessionId, { type: 'computer_use_grab_changed', app: targetApp, appIcon: icon })
+                }
+              })
+            ).catch(() => {})
+          }
+        } else if (method === 'ungrab' || method === 'quit') {
+          this.broadcastToSSE(sessionId, { type: 'computer_use_grab_changed', app: null })
+        }
+      })
+      .catch((err: Error) => {
+        clearTimeout(timeout)
+        console.error('[MessagePersister] Failed to auto-execute computer use command:', err)
+        getContainerManager().getClient(agentSlug)
+          .fetch(`/inputs/${encodeURIComponent(toolUseId)}/reject`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason: `Auto-execute failed: ${err.message}` }),
+          })
+          .catch((rejectErr: Error) => {
+            console.error('[MessagePersister] Failed to reject after auto-execute failure:', rejectErr)
+          })
+      })
   }
 
   // Broadcast context usage from an assistant message's per-call usage field.

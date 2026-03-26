@@ -9,6 +9,7 @@ import {
   removeFileRequest,
   removeBrowserInputRequest,
   removeScriptRunRequest,
+  removeComputerUseRequest,
   clearCompacting,
 } from '@renderer/hooks/use-message-stream'
 import { MessageItem } from './message-item'
@@ -21,6 +22,7 @@ import { QuestionRequestItem } from './question-request-item'
 import { FileRequestItem } from './file-request-item'
 import { BrowserInputRequestItem } from './browser-input-request-item'
 import { ScriptRunRequestItem } from './script-run-request-item'
+import { ComputerUseRequestItem } from './computer-use-request-item'
 import { ArrowDown, Loader2, Wrench, WifiOff } from 'lucide-react'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { useIsOnline } from '@renderer/context/connectivity-context'
@@ -125,6 +127,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     pendingFileRequests: sseFileRequests,
     pendingBrowserInputRequests: sseBrowserInputRequests,
     pendingScriptRunRequests: sseScriptRunRequests,
+    pendingComputerUseRequests: sseComputerUseRequests,
   } = useMessageStream(sessionId, agentSlug)
   const isOnline = useIsOnline()
 
@@ -287,7 +290,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     }
     return merged
   }, [sseConnectedAccountRequests, messagesBasedPendingRequests.connectedAccountRequests, isActive])
-
+  // TODO: currently request handling is super duplicative for different types (question, browser, permission) --> need to unify it
   const pendingQuestionRequests = useMemo(() => {
     const seen = new Set<string>()
     const merged: {
@@ -365,6 +368,19 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     }
     return merged
   }, [sseScriptRunRequests, messagesBasedPendingRequests.scriptRunRequests, isActive])
+
+  const pendingComputerUseRequests = useMemo(() => {
+    const seen = new Set<string>()
+    const merged: { toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string }[] = []
+
+    for (const req of sseComputerUseRequests) {
+      if (!seen.has(req.toolUseId) && !dismissedRequestIds.current.has(req.toolUseId)) {
+        seen.add(req.toolUseId)
+        merged.push(req)
+      }
+    }
+    return merged
+  }, [sseComputerUseRequests])
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const isScrolledToBottomRef = useRef(true)
@@ -454,6 +470,15 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     (toolUseId: string) => {
       dismissedRequestIds.current.add(toolUseId)
       removeScriptRunRequest(sessionId, toolUseId)
+    },
+    [sessionId]
+  )
+
+  // Handler to remove a completed computer use request
+  const handleComputerUseRequestComplete = useCallback(
+    (toolUseId: string) => {
+      dismissedRequestIds.current.add(toolUseId)
+      removeComputerUseRequest(sessionId, toolUseId)
     },
     [sessionId]
   )
@@ -617,7 +642,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     if (scrollRef.current && isScrolledToBottomRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [messages, pendingUserMessage, streamingMessage, streamingToolUse, isCompacting, pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests, pendingFileRequests, pendingRemoteMcpRequests, pendingBrowserInputRequests, pendingScriptRunRequests, activeSubagents])
+  }, [messages, pendingUserMessage, streamingMessage, streamingToolUse, isCompacting, pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests, pendingFileRequests, pendingRemoteMcpRequests, pendingBrowserInputRequests, pendingScriptRunRequests, sseComputerUseRequests, activeSubagents])
 
   if (isLoading && !pendingUserMessage) {
     return (
@@ -851,6 +876,20 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
             agentSlug={agentSlug}
             readOnly={isViewOnly}
             onComplete={() => handleScriptRunRequestComplete(request.toolUseId)}
+          />
+        ))}
+        {pendingComputerUseRequests.map((request) => (
+          <ComputerUseRequestItem
+            key={request.toolUseId}
+            toolUseId={request.toolUseId}
+            method={request.method}
+            params={request.params}
+            permissionLevel={request.permissionLevel}
+            appName={request.appName}
+            sessionId={sessionId}
+            agentSlug={agentSlug}
+            readOnly={isViewOnly}
+            onComplete={() => handleComputerUseRequestComplete(request.toolUseId)}
           />
         ))}
         </div>

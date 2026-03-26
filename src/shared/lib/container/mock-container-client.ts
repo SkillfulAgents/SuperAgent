@@ -473,6 +473,12 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         input: { script: 'sw_vers', explanation: 'Check macOS version', scriptType: 'shell' },
       },
     ])],
+    ['use computer', new UserInputRequestScenario([
+      {
+        name: 'mcp__computer-use__computer_apps',
+        input: { method: 'apps', params: {}, permissionLevel: 'list_apps_windows' },
+      },
+    ])],
     ['ask parallel', new UserInputRequestScenario([
       {
         name: 'mcp__user-input__request_secret',

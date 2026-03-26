@@ -84,7 +84,7 @@ function buildSettingsResponse(
     auth: appSettings.auth,
     voice: getVoiceSettings(),
     tenantId: getTenantId(),
-    hostShellUse: appSettings.hostShellUse,
+    computerUse: appSettings.computerUse,
     shareAnalytics: !!appSettings.shareAnalytics,
     analyticsTargets: appSettings.analyticsTargets,
   }
@@ -175,9 +175,9 @@ settings.put('/', async (c) => {
       auth: body.auth !== undefined ? { ...currentSettings.auth, ...body.auth } : currentSettings.auth,
       voice: body.voice !== undefined ? { ...currentSettings.voice, ...body.voice } : currentSettings.voice,
       shareAnalytics: body.shareAnalytics !== undefined ? body.shareAnalytics : currentSettings.shareAnalytics,
-      hostShellUse: body.hostShellUse !== undefined
-        ? { ...currentSettings.hostShellUse, ...body.hostShellUse }
-        : currentSettings.hostShellUse,
+      computerUse: body.computerUse !== undefined
+        ? { ...currentSettings.computerUse, ...body.computerUse }
+        : currentSettings.computerUse,
       analyticsTargets: body.analyticsTargets !== undefined ? body.analyticsTargets : currentSettings.analyticsTargets,
     }
 
