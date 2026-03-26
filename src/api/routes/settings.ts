@@ -55,6 +55,7 @@ settings.get('/', async (c) => {
         anthropic: getLlmProvider('anthropic').getApiKeyStatus(),
         openrouter: getLlmProvider('openrouter').getApiKeyStatus(),
         bedrock: getLlmProvider('bedrock').getApiKeyStatus(),
+        datawizz: getLlmProvider('datawizz').getApiKeyStatus(),
         browserbase: getBrowserbaseApiKeyStatus(),
         composio: getComposioApiKeyStatus(),
         deepgram: getSttProvider('deepgram').getApiKeyStatus(),
@@ -169,6 +170,7 @@ settings.put('/', async (c) => {
         ? body.customEnvVars
         : currentSettings.customEnvVars,
       skillsets: currentSettings.skillsets,
+      platformAuth: currentSettings.platformAuth,
       auth: body.auth !== undefined
         ? { ...currentSettings.auth, ...body.auth }
         : currentSettings.auth,

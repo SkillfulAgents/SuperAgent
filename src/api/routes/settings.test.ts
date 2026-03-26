@@ -143,6 +143,16 @@ function defaultSettings() {
     customEnvVars: { FOO: 'bar' },
     skillsets: [],
     auth: { signupMode: 'open' as const },
+    platformAuth: {
+      token: 'plat_sa_testtoken',
+      tokenPreview: 'plat_s...oken',
+      email: 'user@example.com',
+      label: 'SuperAgent',
+      orgName: 'Test Org',
+      role: 'owner',
+      createdAt: '2026-03-24T00:00:00.000Z',
+      updatedAt: '2026-03-24T00:00:00.000Z',
+    },
   }
 }
 
@@ -239,6 +249,21 @@ describe('settings route', () => {
       expect(res.status).toBe(200)
       const saved = mockUpdateSettings.mock.calls[0][0]
       expect(saved.container.resourceLimits).toEqual({ cpu: 8, memory: '16g' })
+    })
+  })
+
+  describe('platform auth persistence', () => {
+    it('preserves platformAuth when updating unrelated settings', async () => {
+      const res = await putSettings({
+        llmProvider: 'datawizz',
+      })
+
+      expect(res.status).toBe(200)
+      expect(mockUpdateSettings).toHaveBeenCalledOnce()
+
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.platformAuth).toEqual(defaultSettings().platformAuth)
+      expect(saved.llmProvider).toBe('datawizz')
     })
   })
 

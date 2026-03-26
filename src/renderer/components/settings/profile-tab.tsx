@@ -9,7 +9,6 @@ import { Input } from '@renderer/components/ui/input'
 import { Button } from '@renderer/components/ui/button'
 import { Label } from '@renderer/components/ui/label'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
-import { PlatformConnectCard } from '@renderer/components/platform/platform-connect-card'
 import { Loader2, Check } from 'lucide-react'
 
 // --- Name form ---
@@ -203,16 +202,6 @@ export function ProfileTab() {
   return (
     <div className="space-y-6">
       <ProfileSection />
-
-      <div className="pt-4 border-t space-y-4">
-        <div className="space-y-1">
-          <Label className="text-base">Datawizz Platform</Label>
-          <p className="text-sm text-muted-foreground">
-            Manage the platform account and local token tied to your SuperAgent login.
-          </p>
-        </div>
-        <PlatformConnectCard />
-      </div>
 
       <div className="pt-4 border-t space-y-4">
         <Label className="text-base">Change Password</Label>

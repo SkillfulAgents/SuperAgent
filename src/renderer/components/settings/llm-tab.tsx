@@ -9,6 +9,7 @@ import { Label } from '@renderer/components/ui/label'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { AlertTriangle } from 'lucide-react'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { ProviderApiKeyInput } from './provider-api-key-input'
 import { BedrockCredentialsInput } from './bedrock-credentials-input'
 import type { LlmProviderId } from '@shared/lib/config/settings'
@@ -35,6 +36,7 @@ const SIMPLE_PROVIDER_KEY_CONFIG: Record<string, {
 
 export function LlmTab() {
   const { data: settings, isLoading } = useSettings()
+  const { data: platformAuth } = usePlatformAuthStatus()
   const updateSettings = useUpdateSettings()
 
   const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
@@ -81,9 +83,21 @@ export function LlmTab() {
 
       {/* Credentials Section */}
       <div className="pt-4 border-t space-y-4">
-        <h3 className="text-sm font-medium">{activeProvider === 'bedrock' ? 'Credentials' : 'API Key'}</h3>
+        <h3 className="text-sm font-medium">
+          {activeProvider === 'bedrock'
+            ? 'Credentials'
+            : activeProvider === 'datawizz'
+              ? 'Platform Connection'
+              : 'API Key'}
+        </h3>
         {activeProvider === 'bedrock' ? (
           <BedrockCredentialsInput key="bedrock" disabled={isLoading} />
+        ) : activeProvider === 'datawizz' ? (
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              {platformAuth?.connected ? 'Platform connected.' : 'Platform not connected. Connect it from the `Platform` settings tab.'}
+            </p>
+          </div>
         ) : (
           <ProviderApiKeyInput
             key={activeProvider}

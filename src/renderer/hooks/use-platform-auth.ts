@@ -1,7 +1,10 @@
-import { useEffect } from 'react'
+import { useCallback, useEffect } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { apiFetch } from '@renderer/lib/api'
+import { useUpdateSettings } from '@renderer/hooks/use-settings'
+
+export const PLATFORM_AUTH_CHOICE_STORAGE_KEY = 'superagent-auth-choice'
 
 export interface PlatformAuthStatus {
   connected: boolean
@@ -90,4 +93,17 @@ export function usePlatformAuthCallbackListener(
       window.electronAPI?.removePlatformAuthCallback?.()
     }
   }, [onCallback, queryClient])
+}
+
+export function useApplyPlatformDefaults() {
+  const updateSettings = useUpdateSettings()
+
+  return useCallback(async () => {
+    await updateSettings.mutateAsync({
+      llmProvider: 'datawizz',
+      voice: {
+        sttProvider: 'datawizz',
+      },
+    })
+  }, [updateSettings])
 }

@@ -34,7 +34,7 @@ export interface ApiKeySettings {
   openaiApiKey?: string
 }
 
-export type SttProvider = 'deepgram' | 'openai'
+export type SttProvider = 'deepgram' | 'openai' | 'datawizz'
 
 export interface VoiceSettings {
   sttProvider?: SttProvider
@@ -152,7 +152,7 @@ export interface AnalyticsTarget {
   enabled: boolean
 }
 
-export type LlmProviderId = 'anthropic' | 'openrouter' | 'bedrock'
+export type LlmProviderId = 'anthropic' | 'openrouter' | 'bedrock' | 'datawizz'
 
 export interface PlatformAuthSettings {
   token: string
@@ -226,6 +226,7 @@ export interface GlobalSettingsResponse {
     anthropic: ApiKeyStatus
     openrouter: ApiKeyStatus
     bedrock: ApiKeyStatus
+    datawizz: ApiKeyStatus
     composio: ApiKeyStatus
     browserbase: ApiKeyStatus
     deepgram: ApiKeyStatus

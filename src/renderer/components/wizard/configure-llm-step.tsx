@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { Alert, AlertDescription } from '@renderer/components/ui/alert'
+import { Button } from '@renderer/components/ui/button'
 import { Label } from '@renderer/components/ui/label'
 import {
   Select,
@@ -10,10 +12,25 @@ import {
 import { ProviderApiKeyInput } from '@renderer/components/settings/provider-api-key-input'
 import { BedrockCredentialsInput } from '@renderer/components/settings/bedrock-credentials-input'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
-import { ChevronRight } from 'lucide-react'
+import {
+  PLATFORM_AUTH_CHOICE_STORAGE_KEY,
+  useApplyPlatformDefaults,
+  useInitiatePlatformLogin,
+  usePlatformAuthCallbackListener,
+  usePlatformAuthStatus,
+} from '@renderer/hooks/use-platform-auth'
+import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
+import { ChevronRight, Loader2, LogIn } from 'lucide-react'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 
 const PROVIDER_INSTRUCTIONS: Record<string, { steps: { text: string; link?: { href: string; label: string } }[] }> = {
+  datawizz: {
+    steps: [
+      { text: 'Choose Datawizz Platform as your provider' },
+      { text: 'Connect your Datawizz account from the Platform settings tab' },
+      { text: 'SuperAgent will use your platform token and the hosted proxy automatically' },
+    ],
+  },
   anthropic: {
     steps: [
       { text: 'Sign up for an account at', link: { href: 'https://console.anthropic.com/login', label: 'console.anthropic.com' } },
@@ -59,19 +76,52 @@ const SIMPLE_PROVIDER_KEY_CONFIG: Record<string, {
 
 export function ConfigureLLMStep() {
   const [showInstructions, setShowInstructions] = useState(false)
+  const [platformError, setPlatformError] = useState<string | null>(null)
+  const [isLaunchingPlatformLogin, setIsLaunchingPlatformLogin] = useState(false)
   const { data: settings } = useSettings()
+  const { data: platformAuth } = usePlatformAuthStatus()
+  const applyPlatformDefaults = useApplyPlatformDefaults()
+  const initiatePlatformLogin = useInitiatePlatformLogin()
   const updateSettings = useUpdateSettings()
 
   const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
   const providerStatus = settings?.llmProviderStatus ?? []
   const instructions = PROVIDER_INSTRUCTIONS[activeProvider]
 
+  usePlatformAuthCallbackListener((params) => {
+    setIsLaunchingPlatformLogin(false)
+    if (params.success) {
+      window.localStorage.setItem(PLATFORM_AUTH_CHOICE_STORAGE_KEY, 'platform')
+      setPlatformError(null)
+      void applyPlatformDefaults().catch((err) => {
+        setPlatformError(err instanceof Error ? err.message : 'Failed to apply platform defaults.')
+      })
+      return
+    }
+    setPlatformError(params.error || 'Platform login failed.')
+  })
+
+  async function handlePlatformConnect() {
+    const popup = prepareOAuthPopup()
+    setPlatformError(null)
+    setIsLaunchingPlatformLogin(true)
+
+    try {
+      const result = await initiatePlatformLogin.mutateAsync()
+      await popup.navigate(result.loginUrl)
+    } catch (err) {
+      popup.close()
+      setIsLaunchingPlatformLogin(false)
+      setPlatformError(err instanceof Error ? err.message : 'Failed to open platform login.')
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div>
         <h2 className="text-xl font-bold">Configure LLM Provider</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Superagent needs an API key to communicate with AI models.
+          Superagent needs either an API key or a Datawizz Platform connection to communicate with AI models.
         </p>
       </div>
 
@@ -101,6 +151,38 @@ export function ConfigureLLMStep() {
           key="bedrock"
           showNotConfiguredAlert={false}
         />
+      ) : activeProvider === 'datawizz' ? (
+        <div className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            {platformAuth?.connected
+              ? 'Platform connected. SuperAgent will use your Datawizz Platform subscription automatically.'
+              : 'Platform not connected yet. Connect now to use your Datawizz Platform subscription.'}
+          </p>
+          {!platformAuth?.connected ? (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  void handlePlatformConnect()
+                }}
+                disabled={isLaunchingPlatformLogin || initiatePlatformLogin.isPending}
+              >
+                {isLaunchingPlatformLogin || initiatePlatformLogin.isPending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <LogIn className="mr-2 h-4 w-4" />
+                )}
+                Connect Platform
+              </Button>
+              {platformError ? (
+                <Alert variant="destructive">
+                  <AlertDescription>{platformError}</AlertDescription>
+                </Alert>
+              ) : null}
+            </>
+          ) : null}
+        </div>
       ) : (
         <ProviderApiKeyInput
           key={activeProvider}

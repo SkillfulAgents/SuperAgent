@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   Dialog,
   DialogContent,
@@ -18,14 +18,17 @@ import { DockerSetupStep } from './docker-setup-step'
 import { BrowserSetupStep } from './browser-setup-step'
 import { ComposioStep } from './composio-step'
 import { CreateAgentStep } from './create-agent-step'
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 
-const STEPS = [
-  { label: 'Welcome' },
-  { label: 'LLM' },
-  { label: 'Browser' },
-  { label: 'Composio' },
-  { label: 'Runtime' },
-  { label: 'Agent' },
+type WizardStepId = 'welcome' | 'llm' | 'browser' | 'composio' | 'runtime' | 'agent'
+
+const ALL_STEPS: { id: WizardStepId; label: string; skippable: boolean }[] = [
+  { id: 'welcome', label: 'Welcome', skippable: false },
+  { id: 'llm', label: 'LLM', skippable: false },
+  { id: 'browser', label: 'Browser', skippable: true },
+  { id: 'composio', label: 'Composio', skippable: true },
+  { id: 'runtime', label: 'Runtime', skippable: true },
+  { id: 'agent', label: 'Agent', skippable: true },
 ]
 
 interface GettingStartedWizardProps {
@@ -38,6 +41,16 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
   const [composioCanProceed, setComposioCanProceed] = useState(false)
   const composioSaveRef = useRef<(() => Promise<void>) | null>(null)
   const updateUserSettings = useUpdateUserSettings()
+  const { data: platformAuth } = usePlatformAuthStatus()
+
+  const steps = useMemo(() => {
+    if (platformAuth?.connected) {
+      return ALL_STEPS.filter((step) => step.id !== 'llm' && step.id !== 'composio')
+    }
+    return ALL_STEPS
+  }, [platformAuth?.connected])
+
+  const activeStep = steps[currentStep]
 
   // Reset step when dialog opens
   useEffect(() => {
@@ -63,7 +76,14 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
     setCurrentStep((s) => s + 1)
   }
 
-  const isLastStep = currentStep === STEPS.length - 1
+  useEffect(() => {
+    if (currentStep > steps.length - 1) {
+      setCurrentStep(Math.max(steps.length - 1, 0))
+    }
+  }, [currentStep, steps.length])
+
+  const isLastStep = currentStep === steps.length - 1
+  const canSkipStep = activeStep?.skippable ?? false
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -75,7 +95,7 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
 
         {/* Progress indicator */}
         <div className="flex items-center justify-center gap-0 px-8 pt-6 pb-2">
-          {STEPS.map((step, i) => (
+          {steps.map((step, i) => (
             <div key={i} className="flex items-center">
               <div className="flex flex-col items-center">
                 <div
@@ -93,7 +113,7 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
                   {step.label}
                 </span>
               </div>
-              {i < STEPS.length - 1 && (
+              {i < steps.length - 1 && (
                 <div
                   className={`w-12 h-0.5 mx-1 mb-4 ${
                     i < currentStep ? 'bg-primary' : 'bg-muted-foreground/30'
@@ -106,12 +126,12 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
 
         {/* Step content */}
         <div className="px-6 py-4 min-h-[320px]" data-testid="wizard-step-content" data-step={currentStep}>
-          {currentStep === 0 && <WelcomeStep />}
-          {currentStep === 1 && <ConfigureLLMStep />}
-          {currentStep === 2 && <BrowserSetupStep />}
-          {currentStep === 3 && <ComposioStep onCanProceedChange={setComposioCanProceed} saveRef={composioSaveRef} />}
-          {currentStep === 4 && <DockerSetupStep />}
-          {currentStep === 5 && <CreateAgentStep />}
+          {activeStep?.id === 'welcome' && <WelcomeStep />}
+          {activeStep?.id === 'llm' && <ConfigureLLMStep />}
+          {activeStep?.id === 'browser' && <BrowserSetupStep />}
+          {activeStep?.id === 'composio' && <ComposioStep onCanProceedChange={setComposioCanProceed} saveRef={composioSaveRef} />}
+          {activeStep?.id === 'runtime' && <DockerSetupStep />}
+          {activeStep?.id === 'agent' && <CreateAgentStep />}
         </div>
 
         {/* Navigation buttons */}
@@ -127,9 +147,7 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
           </Button>
 
           <div className="flex gap-2">
-            {/* TODO: this is disgusting - lets just hold all strps in a better data structure that has this info in it */}
-            {/* Skip available on Browser (2), Composio (3), Runtime (4), Agent (5) */}
-            {(currentStep === 2 || currentStep === 3 || currentStep === 4 || currentStep === 5) && (
+            {canSkipStep && (
               <Button
                 variant="ghost"
                 onClick={() => {
@@ -150,8 +168,8 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
               </Button>
             ) : (
               <Button
-                onClick={currentStep === 3 ? handleComposioNext : () => setCurrentStep((s) => s + 1)}
-                disabled={currentStep === 3 && !composioCanProceed}
+                onClick={activeStep?.id === 'composio' ? handleComposioNext : () => setCurrentStep((s) => s + 1)}
+                disabled={activeStep?.id === 'composio' && !composioCanProceed}
                 data-testid="wizard-next"
               >
                 Next

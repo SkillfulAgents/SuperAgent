@@ -1,12 +1,13 @@
 import { useMemo, useState } from 'react'
-import { ExternalLink, Loader2, LogIn, RefreshCw, Unplug } from 'lucide-react'
+import { ExternalLink, Loader2, LogIn, RefreshCw } from 'lucide-react'
 
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Button } from '@renderer/components/ui/button'
 import { Label } from '@renderer/components/ui/label'
 import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
 import {
-  useDisconnectPlatformAuth,
+  PLATFORM_AUTH_CHOICE_STORAGE_KEY,
+  useApplyPlatformDefaults,
   useInitiatePlatformLogin,
   usePlatformAuthCallbackListener,
   usePlatformAuthStatus,
@@ -23,8 +24,8 @@ function formatTimestamp(value: string | null): string {
 
 export function PlatformTab() {
   const { data, isLoading } = usePlatformAuthStatus()
+  const applyPlatformDefaults = useApplyPlatformDefaults()
   const initiateLogin = useInitiatePlatformLogin()
-  const disconnect = useDisconnectPlatformAuth()
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isLaunching, setIsLaunching] = useState(false)
@@ -32,8 +33,12 @@ export function PlatformTab() {
   usePlatformAuthCallbackListener((params) => {
     setIsLaunching(false)
     if (params.success) {
+      window.localStorage.setItem(PLATFORM_AUTH_CHOICE_STORAGE_KEY, 'platform')
       setError(null)
-      setMessage(null)
+      setMessage('Connected. SuperAgent now defaults to Datawizz Platform.')
+      void applyPlatformDefaults().catch((err) => {
+        setError(err instanceof Error ? err.message : 'Failed to apply platform defaults.')
+      })
       return
     }
     setMessage(null)
@@ -59,17 +64,6 @@ export function PlatformTab() {
       popup.close()
       setIsLaunching(false)
       setError(err instanceof Error ? err.message : 'Failed to open platform login.')
-    }
-  }
-
-  async function handleDisconnect() {
-    setMessage(null)
-    setError(null)
-    try {
-      await disconnect.mutateAsync()
-      setMessage('Disconnected from Datawizz Platform.')
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to disconnect.')
     }
   }
 
@@ -158,16 +152,6 @@ export function PlatformTab() {
           Open Platform
         </Button>
 
-        {isConnected && (
-          <Button size="sm" variant="ghost" onClick={handleDisconnect} disabled={disconnect.isPending}>
-            {disconnect.isPending ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <Unplug className="mr-2 h-4 w-4" />
-            )}
-            Disconnect
-          </Button>
-        )}
       </div>
     </div>
   )

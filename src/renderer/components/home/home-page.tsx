@@ -91,6 +91,7 @@ export function HomePage() {
 
       <div className="flex-1 overflow-y-auto p-6">
         <div className="max-w-4xl mx-auto space-y-8">
+          {/* Agents Section */}
           <section>
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold">Your Agents</h2>
