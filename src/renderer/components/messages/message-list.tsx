@@ -24,7 +24,7 @@ import { BrowserInputRequestItem } from './browser-input-request-item'
 import { ScriptRunRequestItem } from './script-run-request-item'
 import { ComputerUseRequestItem } from './computer-use-request-item'
 import { PendingAgentReviews } from '@renderer/components/dashboards/pending-agent-reviews'
-import { ArrowDown, Loader2, Wrench, WifiOff } from 'lucide-react'
+import { ArrowDown, Loader2, WifiOff } from 'lucide-react'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
@@ -749,16 +749,11 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
 
         {/* Tool use streaming - keep visible until persisted data arrives */}
         {streamingToolUse && !isStreamingToolUsePersisted && (
-          <div className="flex gap-3">
-            <div className="h-8 w-8 rounded-full flex items-center justify-center shrink-0 bg-muted">
-              <Wrench className="h-4 w-4" />
-            </div>
-            <div className="flex-1 max-w-[80%]">
-              <StreamingToolCallItem
-                name={streamingToolUse.name}
-                partialInput={streamingToolUse.partialInput}
-              />
-            </div>
+          <div className="max-w-[80%]">
+            <StreamingToolCallItem
+              name={streamingToolUse.name}
+              partialInput={streamingToolUse.partialInput}
+            />
           </div>
         )}
 
