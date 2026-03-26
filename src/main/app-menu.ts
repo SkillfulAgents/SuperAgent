@@ -162,6 +162,19 @@ async function buildAppMenu(): Promise<void> {
         { role: 'selectAll' },
       ],
     },
+    // View menu
+    {
+      label: 'View',
+      submenu: [
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+      ],
+    },
     // Agents menu
     {
       label: 'Agents',
