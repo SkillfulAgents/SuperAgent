@@ -242,6 +242,15 @@ vi.mock('@shared/lib/proxy/host-url', () => ({
   getAppPort: () => 3000,
 }))
 
+const mockGetPendingReviewsForAgent = vi.fn(() => [])
+vi.mock('@shared/lib/proxy/review-manager', () => ({
+  reviewManager: {
+    getPendingReviewsForAgent: (...args: unknown[]) => mockGetPendingReviewsForAgent(...args),
+    submitDecision: vi.fn(),
+    resolveMatchingPending: vi.fn(),
+  },
+}))
+
 vi.mock('@shared/lib/services/agent-template-service', () => ({
   exportAgentTemplate: vi.fn(),
   importAgentFromTemplate: vi.fn(),
@@ -2158,6 +2167,59 @@ describe('GET /api/agents (enriched summary)', () => {
     const body = await res.json()
 
     expect(body[0].hasSessionsAwaitingInput).toBe(true)
+  })
+
+  it('detects awaiting input from agent-level proxy reviews on active sessions', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listSessions).mockResolvedValue([
+      {
+        id: 'sess-active',
+        agentSlug: 'agent-1',
+        name: 'Active Session',
+        createdAt: new Date(),
+        lastActivityAt: new Date(),
+        messageCount: 1,
+      },
+    ])
+    // Session is active but messagePersister doesn't know about the proxy review
+    vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+    vi.mocked(messagePersister.isSessionAwaitingInput).mockReturnValue(false)
+    // Agent has pending proxy reviews
+    mockGetPendingReviewsForAgent.mockReturnValue([
+      { id: 'review-1', agentSlug: 'agent-1', accountId: 'acc-1', toolkit: 'gmail', method: 'GET', targetPath: '/messages', matchedScopes: ['gmail.readonly'], scopeDescriptions: {} },
+    ])
+
+    const res = await getReq(app, '/api/agents')
+    const body = await res.json()
+
+    expect(body[0].hasActiveSessions).toBe(true)
+    expect(body[0].hasSessionsAwaitingInput).toBe(true)
+  })
+
+  it('does not set awaiting input from proxy reviews when no sessions are active', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listSessions).mockResolvedValue([
+      {
+        id: 'sess-idle',
+        agentSlug: 'agent-1',
+        name: 'Idle Session',
+        createdAt: new Date(),
+        lastActivityAt: new Date(),
+        messageCount: 1,
+      },
+    ])
+    // Session is NOT active
+    vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
+    vi.mocked(messagePersister.isSessionAwaitingInput).mockReturnValue(false)
+    // Agent has pending proxy reviews, but no active session to associate them with
+    mockGetPendingReviewsForAgent.mockReturnValue([
+      { id: 'review-1', agentSlug: 'agent-1', accountId: 'acc-1', toolkit: 'gmail', method: 'GET', targetPath: '/messages', matchedScopes: ['gmail.readonly'], scopeDescriptions: {} },
+    ])
+
+    const res = await getReq(app, '/api/agents')
+    const body = await res.json()
+
+    expect(body[0].hasSessionsAwaitingInput).toBe(false)
   })
 
   it('picks the latest lastActivityAt across sessions', async () => {

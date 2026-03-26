@@ -447,8 +447,8 @@ export const AgentMenuItem = React.forwardRef<
             </span>
             <AgentStatus
               status={agent.status}
-              hasActiveSessions={agent.hasActiveSessions ?? false}
-              hasSessionsAwaitingInput={agent.hasSessionsAwaitingInput ?? false}
+              hasActiveSessions={sessions ? sessions.some((s) => s.isActive) : (agent.hasActiveSessions ?? false)}
+              hasSessionsAwaitingInput={sessions ? sessions.some((s) => s.isAwaitingInput) : (agent.hasSessionsAwaitingInput ?? false)}
             />
           </SidebarMenuButton>
         </AgentContextMenu>

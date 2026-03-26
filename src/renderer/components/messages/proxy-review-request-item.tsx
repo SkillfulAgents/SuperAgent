@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Check, X, Loader2, Shield, ShieldCheck, ShieldX, ChevronDown } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { cn } from '@shared/lib/utils/cn'
+import ReactMarkdown from 'react-markdown'
 
 interface ProxyReviewRequestItemProps {
   reviewId: string
@@ -213,8 +214,20 @@ export function ProxyReviewRequestItem({
                   <div key={scope} className="text-xs">
                     <span className="font-medium text-amber-800 dark:text-amber-200">{scope}</span>
                     {scopeDescriptions[scope] && (
-                      <span className="text-amber-600 dark:text-amber-400 ml-1.5">
-                        — {scopeDescriptions[scope]}
+                      <span className="text-amber-600 dark:text-amber-400 ml-1.5 [&_a]:underline [&_a]:text-amber-700 dark:[&_a]:text-amber-300">
+                        —{' '}
+                        <ReactMarkdown
+                          components={{
+                            p: ({ children }) => <>{children}</>,
+                            a: ({ href, children }) => (
+                              <a href={href} target="_blank" rel="noopener noreferrer">
+                                {children}
+                              </a>
+                            ),
+                          }}
+                        >
+                          {scopeDescriptions[scope]}
+                        </ReactMarkdown>
                       </span>
                     )}
                   </div>

@@ -186,6 +186,7 @@ if gmail_accounts:
 - Always check your available environment variables before requesting access - connected accounts may already be available
 - Tokens are managed by the proxy - you never handle raw OAuth tokens directly
 - Multiple accounts of the same type can be connected (e.g., work and personal Gmail)
+- Some API calls will trigger a user approval request, this is a transparent process handled by the proxy and does not require action from you, but be aware it may cause delays in responses when making certain calls for the first time. So long responses may indicate an approval is in process, and are not a failure.
 
 ## Requesting Remote MCP Servers
 

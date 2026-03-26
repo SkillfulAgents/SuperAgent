@@ -49,22 +49,23 @@ vi.mock('@renderer/hooks/use-agents', () => ({
   useAgents: () => mockUseAgents(),
 }))
 
+const mockUseSessions = vi.fn((slug: string) => ({
+  data: slug === 'test-agent'
+    ? [
+        {
+          id: 'session-1',
+          agentSlug: 'test-agent',
+          name: 'Session 1',
+          messageCount: 5,
+          lastActivityAt: new Date(),
+          createdAt: new Date(),
+          isActive: false,
+        },
+      ]
+    : [],
+}))
 vi.mock('@renderer/hooks/use-sessions', () => ({
-  useSessions: vi.fn((slug: string) => ({
-    data: slug === 'test-agent'
-      ? [
-          {
-            id: 'session-1',
-            agentSlug: 'test-agent',
-            name: 'Session 1',
-            messageCount: 5,
-            lastActivityAt: new Date(),
-            createdAt: new Date(),
-            isActive: false,
-          },
-        ]
-      : [],
-  })),
+  useSessions: (slug: string) => mockUseSessions(slug),
 }))
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
@@ -147,8 +148,8 @@ vi.mock('@renderer/components/agents/create-agent-dialog', () => ({
 }))
 
 vi.mock('@renderer/components/agents/agent-status', () => ({
-  AgentStatus: ({ status }: { status: string }) => (
-    <span data-testid={`agent-status-${status}`}>{status}</span>
+  AgentStatus: ({ status, hasSessionsAwaitingInput }: { status: string; hasSessionsAwaitingInput?: boolean }) => (
+    <span data-testid={`agent-status-${status}`} data-awaiting={hasSessionsAwaitingInput ? 'true' : 'false'}>{status}</span>
   ),
 }))
 
@@ -252,8 +253,23 @@ describe('AppSidebar', () => {
     vi.clearAllMocks()
     mockSelectionContext.selectedAgentSlug = null
     mockSelectionContext.selectedSessionId = null
-    // Reset scheduled tasks mock to return empty arrays
+    // Reset mocks that individual tests may override
     mockUseScheduledTasks.mockImplementation(() => ({ data: [] }))
+    mockUseSessions.mockImplementation((slug: string) => ({
+      data: slug === 'test-agent'
+        ? [
+            {
+              id: 'session-1',
+              agentSlug: 'test-agent',
+              name: 'Session 1',
+              messageCount: 5,
+              lastActivityAt: new Date(),
+              createdAt: new Date(),
+              isActive: false,
+            },
+          ]
+        : [],
+    }))
   })
 
   it('renders "Super Agent" title', () => {
@@ -321,6 +337,80 @@ describe('AppSidebar', () => {
   it('shows notification bell', () => {
     renderWithProviders(<AppSidebar />)
     expect(screen.getByTestId('notification-bell')).toBeInTheDocument()
+  })
+
+  // ==========================================================================
+  // Awaiting Input Status Tests
+  // ==========================================================================
+
+  it('derives awaiting input status from sessions data when available', () => {
+    // Agent data says not awaiting (stale), but sessions data says awaiting (fresh)
+    mockUseAgents.mockReturnValue({
+      data: [
+        {
+          slug: 'test-agent',
+          name: 'Test Agent',
+          status: 'running',
+          containerPort: 3000,
+          createdAt: new Date(),
+          hasActiveSessions: true,
+          hasSessionsAwaitingInput: false, // stale agent-level data
+          sessionCount: 1,
+          scheduledTaskCount: 0,
+          dashboardCount: 0,
+        },
+      ],
+      isLoading: false,
+      error: null,
+    })
+    mockUseSessions.mockReturnValue({
+      data: [
+        {
+          id: 'session-1',
+          agentSlug: 'test-agent',
+          name: 'Session 1',
+          messageCount: 5,
+          lastActivityAt: new Date(),
+          createdAt: new Date(),
+          isActive: true,
+          isAwaitingInput: true, // fresh sessions data shows awaiting
+        },
+      ],
+    })
+    mockSelectionContext.selectedAgentSlug = 'test-agent'
+
+    renderWithProviders(<AppSidebar />)
+
+    const statusEl = screen.getByTestId('agent-status-running')
+    expect(statusEl).toHaveAttribute('data-awaiting', 'true')
+  })
+
+  it('falls back to agent data when sessions are not loaded', () => {
+    mockUseAgents.mockReturnValue({
+      data: [
+        {
+          slug: 'test-agent',
+          name: 'Test Agent',
+          status: 'running',
+          containerPort: 3000,
+          createdAt: new Date(),
+          hasActiveSessions: true,
+          hasSessionsAwaitingInput: true, // agent-level data says awaiting
+          sessionCount: 1,
+          scheduledTaskCount: 0,
+          dashboardCount: 0,
+        },
+      ],
+      isLoading: false,
+      error: null,
+    })
+    // Sessions not loaded (agent not expanded)
+    mockUseSessions.mockReturnValue({ data: undefined })
+
+    renderWithProviders(<AppSidebar />)
+
+    const statusEl = screen.getByTestId('agent-status-running')
+    expect(statusEl).toHaveAttribute('data-awaiting', 'true')
   })
 
   // ==========================================================================

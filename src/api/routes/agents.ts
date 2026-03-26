@@ -113,11 +113,13 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
       let hasSessionsAwaitingInput = false
       let hasUnreadNotifications = false
       let lastActivityAt: Date | null = null
+      const hasAgentLevelReviews = reviewManager.getPendingReviewsForAgent(agent.slug).length > 0
       for (const session of sessions) {
-        if (messagePersister.isSessionActive(session.id)) {
+        const isActive = messagePersister.isSessionActive(session.id)
+        if (isActive) {
           hasActiveSessions = true
         }
-        if (messagePersister.isSessionAwaitingInput(session.id)) {
+        if (messagePersister.isSessionAwaitingInput(session.id) || (isActive && hasAgentLevelReviews)) {
           hasSessionsAwaitingInput = true
         }
         if (unreadSessionIds.has(session.id)) {
