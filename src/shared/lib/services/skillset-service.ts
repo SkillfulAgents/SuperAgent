@@ -302,14 +302,20 @@ export async function readIndexJson(repoDir: string): Promise<SkillsetIndex> {
     throw new Error('index.json not found in skillset repository')
   }
 
-  const parsed = JSON.parse(content)
+  let raw: unknown
+  try {
+    raw = JSON.parse(content)
+  } catch {
+    throw new Error('index.json contains invalid JSON')
+  }
 
   // Validate structure
+  const parsed = raw as Record<string, unknown>
   if (!parsed.skillset_name || !Array.isArray(parsed.skills)) {
     throw new Error('Invalid index.json: missing skillset_name or skills array')
   }
 
-  return parsed as SkillsetIndex
+  return raw as SkillsetIndex
 }
 
 // ============================================================================
@@ -448,7 +454,12 @@ export async function updateSkillFromSkillset(
     return { updated: false }
   }
 
-  const meta: InstalledSkillMetadata = JSON.parse(metaContent)
+  let meta: InstalledSkillMetadata
+  try {
+    meta = JSON.parse(metaContent)
+  } catch {
+    return { updated: false }
+  }
 
   // Refresh the skillset cache
   await refreshSkillset(meta.skillsetId, meta.skillsetUrl)

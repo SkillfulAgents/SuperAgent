@@ -2,9 +2,10 @@
 import { useMessages } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
+import { apiFetch } from '@renderer/lib/api'
 import { cn } from '@shared/lib/utils'
-import { AlertTriangle } from 'lucide-react'
-import { useMemo } from 'react'
+import { AlertTriangle, Monitor, X } from 'lucide-react'
+import { useCallback, useMemo, useState } from 'react'
 
 interface Todo {
   content: string
@@ -19,10 +20,26 @@ interface AgentActivityIndicatorProps {
 
 export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIndicatorProps) {
   const {
-    isActive, error, activeStartTime, activeSubagents, completedSubagents,
+    isActive, error, activeStartTime, isCompacting, activeSubagents, completedSubagents,
     pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests,
     pendingFileRequests, pendingRemoteMcpRequests, pendingBrowserInputRequests,
+    apiRetry, computerUseApp, computerUseAppIcon,
   } = useMessageStream(sessionId, agentSlug)
+
+  const [revoking, setRevoking] = useState(false)
+  const [revokeError, setRevokeError] = useState(false)
+  const handleRevokeComputerUse = useCallback(async () => {
+    setRevoking(true)
+    setRevokeError(false)
+    try {
+      const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/computer-use/revoke`, { method: 'POST' })
+      if (!res.ok) throw new Error()
+    } catch {
+      setRevokeError(true)
+    } finally {
+      setRevoking(false)
+    }
+  }, [agentSlug, sessionId])
 
   const isAwaitingInput = isActive && (
     pendingSecretRequests.length > 0 ||
@@ -52,20 +69,22 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
   // Collect subagent display info by matching activeSubagents (SSE-tracked) with tool calls in messages
   const subagentItems = useMemo(() => {
     if (!messages || activeSubagents.length === 0) return []
-    const activeIds = new Set(activeSubagents.map(s => s.parentToolId))
-    const items: { id: string; name: string; description: string; status: 'running' | 'completed' }[] = []
+    const activeMap = new Map(activeSubagents.map(s => [s.parentToolId, s]))
+    const items: { id: string; name: string; description: string; status: 'running' | 'completed'; progressSummary: string | null }[] = []
     for (const msg of messages) {
       if (msg.type === 'compact_boundary') continue
       for (const tc of msg.toolCalls || []) {
-        if ((tc.name === 'Agent' || tc.name === 'Task') && activeIds.has(tc.id)) {
+        if ((tc.name === 'Agent' || tc.name === 'Task') && activeMap.has(tc.id)) {
           if (tc.isError) continue
           const input = tc.input as { subagent_type?: string; description?: string }
           const isCompleted = completedSubagents?.has(tc.id) || tc.result != null
+          const sub = activeMap.get(tc.id)
           items.push({
             id: tc.id,
             name: input.subagent_type || tc.name,
             description: input.description || '',
             status: isCompleted ? 'completed' : 'running',
+            progressSummary: sub?.progressSummary ?? null,
           })
         }
       }
@@ -126,7 +145,11 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
 
   const statusText = isAwaitingInput
     ? 'Waiting for input...'
-    : (activeItem?.activeForm || 'Working...')
+    : isCompacting
+      ? 'Compacting...'
+      : apiRetry
+        ? `Retrying... (attempt ${apiRetry.attempt}${apiRetry.maxRetries ? `/${apiRetry.maxRetries}` : ''})`
+        : (activeItem?.activeForm || 'Working...')
 
   return (
     <div className="mx-4 mb-2 rounded-lg border bg-muted/50 p-3" data-testid="activity-indicator">
@@ -135,14 +158,35 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
         <span className="relative flex h-3 w-3">
           <span className={cn(
             "animate-ping absolute inline-flex h-full w-full rounded-full opacity-75",
-            isAwaitingInput ? "bg-orange-500" : "bg-primary"
+            (isAwaitingInput || apiRetry) ? "bg-orange-500" : "bg-primary"
           )}></span>
           <span className={cn(
             "relative inline-flex rounded-full h-3 w-3",
-            isAwaitingInput ? "bg-orange-500" : "bg-primary"
+            (isAwaitingInput || apiRetry) ? "bg-orange-500" : "bg-primary"
           )}></span>
         </span>
         <span className="text-sm font-medium">{statusText}</span>
+        {computerUseApp && (
+          <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300">
+            {computerUseAppIcon ? (
+              <img src={`data:image/png;base64,${computerUseAppIcon}`} alt="" className="h-4 w-4" />
+            ) : (
+              <Monitor className="h-3 w-3" />
+            )}
+            {computerUseApp}
+            <button
+              onClick={handleRevokeComputerUse}
+              disabled={revoking}
+              className={cn(
+                "ml-0.5 rounded-full p-0.5 transition-colors cursor-pointer",
+                revokeError ? "bg-red-200 dark:bg-red-800" : "hover:bg-blue-200 dark:hover:bg-blue-800"
+              )}
+              title={revokeError ? "Failed to revoke — click to retry" : "Release app and revoke permission"}
+            >
+              <X className={cn("h-3 w-3", revokeError && "text-red-600 dark:text-red-400")} />
+            </button>
+          </span>
+        )}
         {elapsed && (
           <span className="text-xs text-muted-foreground tabular-nums">{elapsed}</span>
         )}
@@ -152,24 +196,31 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
       {subagentItems.length > 0 && (
         <ul className="mt-2 space-y-1 text-sm pl-5">
           {subagentItems.map((item) => (
-            <li key={item.id} className="flex items-center gap-2">
-              {item.status === 'running' ? (
-                <span className="relative flex h-2 w-2 shrink-0">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+            <li key={item.id} className="flex flex-col gap-0.5">
+              <div className="flex items-center gap-2">
+                {item.status === 'running' ? (
+                  <span className="relative flex h-2 w-2 shrink-0">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+                  </span>
+                ) : (
+                  <span className="text-xs text-green-500 shrink-0">✓</span>
+                )}
+                <span className={cn(
+                  'font-mono text-xs',
+                  item.status === 'completed' && 'text-muted-foreground'
+                )}>
+                  {item.name}
                 </span>
-              ) : (
-                <span className="text-xs text-green-500 shrink-0">✓</span>
-              )}
-              <span className={cn(
-                'font-mono text-xs',
-                item.status === 'completed' && 'text-muted-foreground'
-              )}>
-                {item.name}
-              </span>
-              {item.description && (
-                <span className="text-xs text-muted-foreground truncate">
-                  {item.description}
+                {item.description && (
+                  <span className="text-xs text-muted-foreground truncate">
+                    {item.description}
+                  </span>
+                )}
+              </div>
+              {item.progressSummary && item.status === 'running' && (
+                <span className="text-xs text-muted-foreground ml-4 italic">
+                  {item.progressSummary}
                 </span>
               )}
             </li>

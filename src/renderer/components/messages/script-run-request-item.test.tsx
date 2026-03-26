@@ -43,7 +43,7 @@ describe('ScriptRunRequestItem', () => {
     expect(screen.getByText('PowerShell')).toBeInTheDocument()
   })
 
-  it('calls API with correct payload on Run click', async () => {
+  it('calls API with correct payload on Allow Once click', async () => {
     const user = userEvent.setup()
     mockApiFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ success: true }) })
 
@@ -60,13 +60,14 @@ describe('ScriptRunRequestItem', () => {
             toolUseId: 'tool-1',
             script: 'sw_vers',
             scriptType: 'shell',
+            grantType: 'once',
           }),
         })
       )
     })
   })
 
-  it('calls onComplete after successful Run', async () => {
+  it('calls onComplete after successful Allow Once', async () => {
     const user = userEvent.setup()
     mockApiFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ success: true }) })
 
@@ -79,7 +80,7 @@ describe('ScriptRunRequestItem', () => {
     })
   })
 
-  it('shows executed state after successful Run', async () => {
+  it('shows executed state after successful approval', async () => {
     const user = userEvent.setup()
     mockApiFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ success: true }) })
 
@@ -89,6 +90,42 @@ describe('ScriptRunRequestItem', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Executed')).toBeInTheDocument()
+    })
+  })
+
+  it('calls API with Allow 15 min grant type', async () => {
+    const user = userEvent.setup()
+    mockApiFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ success: true }) })
+
+    render(<ScriptRunRequestItem {...defaultProps} />)
+
+    await user.click(screen.getByTestId('script-run-timed-btn'))
+
+    await waitFor(() => {
+      expect(mockApiFetch).toHaveBeenCalledWith(
+        '/api/agents/agent-1/sessions/session-1/run-script',
+        expect.objectContaining({
+          body: expect.stringContaining('"grantType":"timed"'),
+        })
+      )
+    })
+  })
+
+  it('calls API with Always Allow grant type', async () => {
+    const user = userEvent.setup()
+    mockApiFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ success: true }) })
+
+    render(<ScriptRunRequestItem {...defaultProps} />)
+
+    await user.click(screen.getByTestId('script-run-always-btn'))
+
+    await waitFor(() => {
+      expect(mockApiFetch).toHaveBeenCalledWith(
+        '/api/agents/agent-1/sessions/session-1/run-script',
+        expect.objectContaining({
+          body: expect.stringContaining('"grantType":"always"'),
+        })
+      )
     })
   })
 
@@ -142,7 +179,7 @@ describe('ScriptRunRequestItem', () => {
     })
   })
 
-  it('shows error on API failure for Run and returns to pending', async () => {
+  it('shows error on API failure for Allow Once and returns to pending', async () => {
     const user = userEvent.setup()
     mockApiFetch.mockResolvedValue({ ok: false, json: () => Promise.resolve({ error: 'Server error' }) })
 
@@ -154,7 +191,7 @@ describe('ScriptRunRequestItem', () => {
       expect(screen.getByText('Server error')).toBeInTheDocument()
     })
 
-    // Should still show the Run button (back to pending)
+    // Should still show the Allow Once button (back to pending)
     expect(screen.getByTestId('script-run-btn')).toBeInTheDocument()
   })
 

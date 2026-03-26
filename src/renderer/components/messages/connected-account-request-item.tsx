@@ -568,7 +568,15 @@ function AccountOption({
           : 'bg-white dark:bg-blue-950/30 border-blue-100 dark:border-blue-800 hover:border-blue-200 dark:hover:border-blue-700',
         disabled && 'opacity-50 cursor-not-allowed'
       )}
+      role="button"
+      tabIndex={0}
       onClick={() => !disabled && onToggle()}
+      onKeyDown={(e) => {
+        if ((e.key === 'Enter' || e.key === ' ') && !disabled) {
+          e.preventDefault()
+          onToggle()
+        }
+      }}
     >
       <Checkbox
         checked={selected}

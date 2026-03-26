@@ -34,6 +34,7 @@ export async function authEnforcementMiddleware(c: Context, next: Next) {
   if (c.req.method !== 'POST') return next()
 
   const authSettings = getAuthSettings()
+  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
   const path = new URL(c.req.url).pathname
 
   // Read body without consuming it (clone the request)

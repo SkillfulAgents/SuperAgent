@@ -71,7 +71,12 @@ export async function renameArtifactOnFilesystem(
 
   const pkgPath = path.join(artifactDir, 'package.json')
   const pkgContent = await fs.promises.readFile(pkgPath, 'utf-8')
-  const pkg = JSON.parse(pkgContent)
+  let pkg: Record<string, unknown>
+  try {
+    pkg = JSON.parse(pkgContent)
+  } catch {
+    throw new Error(`Failed to parse ${pkgPath}`)
+  }
   pkg.name = newName
   await fs.promises.writeFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n', 'utf-8')
 }

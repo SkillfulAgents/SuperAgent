@@ -91,6 +91,74 @@ import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import * as fs from 'fs'
 import { Readable } from 'stream'
 import * as path from 'path'
+import type { ApiAgent } from '@shared/lib/types/api'
+
+/**
+ * Enrich an array of ApiAgent objects with summary fields:
+ * active/awaiting sessions, last activity, scheduled tasks, dashboards.
+ * Uses Promise.all per-agent for parallelism.
+ */
+async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> {
+  return Promise.all(
+    agents.map(async (agent) => {
+      const [sessions, pendingTasks, artifacts, unreadSessionIds] = await Promise.all([
+        listSessions(agent.slug),
+        listPendingScheduledTasks(agent.slug),
+        listArtifactsFromFilesystem(agent.slug),
+        getSessionIdsWithUnreadNotifications(agent.slug),
+      ])
+
+      // Compute session summary
+      let hasActiveSessions = false
+      let hasSessionsAwaitingInput = false
+      let hasUnreadNotifications = false
+      let lastActivityAt: Date | null = null
+      for (const session of sessions) {
+        if (messagePersister.isSessionActive(session.id)) {
+          hasActiveSessions = true
+        }
+        if (messagePersister.isSessionAwaitingInput(session.id)) {
+          hasSessionsAwaitingInput = true
+        }
+        if (unreadSessionIds.has(session.id)) {
+          hasUnreadNotifications = true
+        }
+        if (session.lastActivityAt) {
+          const ts = new Date(session.lastActivityAt)
+          if (!lastActivityAt || ts > lastActivityAt) {
+            lastActivityAt = ts
+          }
+        }
+      }
+
+      // Compute scheduled task summary
+      const scheduledTaskCount = pendingTasks.length
+      let nextScheduledTaskAt: Date | null = null
+      for (const task of pendingTasks) {
+        if (task.nextExecutionAt) {
+          const ts = new Date(task.nextExecutionAt)
+          if (!nextScheduledTaskAt || ts < nextScheduledTaskAt) {
+            nextScheduledTaskAt = ts
+          }
+        }
+      }
+
+      return {
+        ...agent,
+        hasActiveSessions,
+        hasSessionsAwaitingInput,
+        hasUnreadNotifications,
+        sessionCount: sessions.length,
+        lastActivityAt,
+        scheduledTaskCount,
+        nextScheduledTaskAt,
+        dashboardCount: artifacts.length,
+        dashboardNames: artifacts.map((a) => a.name || a.slug),
+        dashboardSlugs: artifacts.map((a) => a.slug),
+      }
+    })
+  )
+}
 
 /**
  * For interrupted Task tool calls (no result), discover the subagent ID
@@ -433,6 +501,7 @@ Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
 }
 
 // GET /api/agents - List agents with status (filtered by ACL in auth mode)
+// Response includes pre-aggregated summary: active sessions, scheduled tasks, dashboards.
 agents.get('/', async (c) => {
   try {
     // In auth mode, only return agents the user has explicit ACL entries for.
@@ -441,6 +510,7 @@ agents.get('/', async (c) => {
     // agent routes (via middleware), but agents must be explicitly shared with
     // admins for them to appear in the sidebar. This prevents admins from
     // seeing every agent in large deployments.
+    let agentList: ApiAgent[]
     if (isAuthMode()) {
       const userId = getCurrentUserId(c)
       const rows = await db
@@ -450,10 +520,12 @@ agents.get('/', async (c) => {
       const agents = await Promise.all(
         rows.map((r) => getAgentWithStatus(r.agentSlug))
       )
-      return c.json(agents.filter(Boolean))
+      agentList = agents.filter((a): a is ApiAgent => a !== null)
+    } else {
+      agentList = await listAgentsWithStatus()
     }
 
-    return c.json(await listAgentsWithStatus())
+    return c.json(await enrichAgentsWithSummary(agentList))
   } catch (error) {
     console.error('Failed to fetch agents:', error)
     return c.json({ error: 'Failed to fetch agents' }, 500)
@@ -1363,6 +1435,28 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
         event: 'message',
       })
 
+      // Replay any pending computer use requests (survives SSE reconnection)
+      const pendingCU = messagePersister.getPendingComputerUseRequests(sessionId)
+      for (const req of pendingCU) {
+        await stream.writeSSE({
+          data: JSON.stringify({ type: 'computer_use_request', ...req }),
+          event: 'message',
+        })
+      }
+
+      // Replay current computer use grab state (with icon if cached)
+      const agentSlugForStream = c.req.param('id')
+      const { computerUsePermissionManager: cuPermMgr } = await import('@shared/lib/computer-use/permission-manager')
+      const grabbedApp = cuPermMgr.getGrabbedApp(agentSlugForStream)
+      if (grabbedApp) {
+        const { getAppIconBase64 } = await import('@shared/lib/computer-use/app-icon')
+        const appIcon = await getAppIconBase64(grabbedApp)
+        await stream.writeSSE({
+          data: JSON.stringify({ type: 'computer_use_grab_changed', app: grabbedApp, ...(appIcon && { appIcon }) }),
+          event: 'message',
+        })
+      }
+
       // Keep-alive ping every 30 seconds
       pingInterval = setInterval(async () => {
         try {
@@ -1919,11 +2013,15 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
       return c.json({ success: true, declined: true })
     }
 
-    // Run path: verify settings, validate platform, execute script
-    const { getSettings, VALID_SCRIPT_TYPES } = await import('@shared/lib/config/settings')
-    const settings = getSettings()
-    if (!settings.hostShellUse?.allowScriptExecution) {
-      return c.json({ error: 'Host script execution is not enabled' }, 403)
+    // Run path: validate platform, execute script
+    // Permission is now managed by ComputerUsePermissionManager (use_host_shell level)
+    // The permission grant happens when the user clicks "Allow" in the UI
+    const { VALID_SCRIPT_TYPES } = await import('@shared/lib/config/settings')
+
+    // Record permission grant if grantType is provided
+    if (body.grantType && ['once', 'timed', 'always'].includes(body.grantType)) {
+      const { computerUsePermissionManager } = await import('@shared/lib/computer-use/permission-manager')
+      computerUsePermissionManager.grantPermission(agentSlug, 'use_host_shell', body.grantType)
     }
 
     if (!script || !scriptType) {
@@ -2005,6 +2103,184 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
   } catch (error) {
     console.error('Failed to run script:', error)
     return c.json({ error: 'Failed to run script' }, 500)
+  }
+})
+
+// POST /api/agents/:id/sessions/:sessionId/computer-use - Execute or deny a computer use request
+agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const sessionId = c.req.param('sessionId')
+    const body = await c.req.json()
+    const { toolUseId, method, params, permissionLevel, appName, grantType, decline, declineReason } = body
+
+    if (!toolUseId) {
+      return c.json({ error: 'toolUseId is required' }, 400)
+    }
+
+    // Validate session belongs to this agent (skip for _auto internal calls from auto-execute)
+    if (sessionId !== '_auto') {
+      const session = await getSession(agentSlug, sessionId)
+      if (!session) {
+        return c.json({ error: 'Session not found' }, 404)
+      }
+    }
+
+    const client = containerManager.getClient(agentSlug)
+
+    if (decline) {
+      const reason = declineReason || 'User denied computer use request'
+
+      const rejectResponse = await client.fetch(
+        `/inputs/${encodeURIComponent(toolUseId)}/reject`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason }),
+        }
+      )
+
+      if (!rejectResponse.ok) {
+        let errorDetails = 'Unknown error'
+        try {
+          const error = await rejectResponse.json()
+          errorDetails = JSON.stringify(error)
+        } catch {
+          errorDetails = await rejectResponse.text()
+        }
+        console.error(`[computer-use] Failed to reject: ${errorDetails}`)
+        return c.json({ error: 'Failed to reject computer use request' }, 500)
+      }
+
+      messagePersister.clearPendingComputerUseRequest(sessionId, toolUseId)
+      trackServerEvent('request_declined', { type: 'computer_use', method, withReason: !!declineReason })
+      return c.json({ success: true, declined: true })
+    }
+
+    // Approve path: grant permission, execute, resolve
+    if (!method) {
+      return c.json({ error: 'method is required for execution' }, 400)
+    }
+
+    // Record the permission grant
+    const { computerUsePermissionManager } = await import('@shared/lib/computer-use/permission-manager')
+    if (grantType && ['once', 'timed', 'always'].includes(grantType)) {
+      computerUsePermissionManager.grantPermission(agentSlug, permissionLevel || 'use_application', grantType, appName)
+    }
+
+    // Execute the computer use command
+    const { executeComputerUseCommand } = await import('@shared/lib/computer-use/executor')
+    const { resolveTargetApp } = await import('@shared/lib/computer-use/types')
+    let output: string
+    try {
+      output = await executeComputerUseCommand(method, params || {})
+    } catch (execError: unknown) {
+      // Execution failed — reject the input so the agent sees it as a tool error
+      const errorMsg = execError instanceof Error ? execError.message : String(execError)
+      await client.fetch(
+        `/inputs/${encodeURIComponent(toolUseId)}/reject`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason: `Error executing ${method}: ${errorMsg}` }),
+        }
+      ).catch(() => {})
+      messagePersister.clearPendingComputerUseRequest(sessionId, toolUseId)
+      return c.json({ success: true, error: errorMsg })
+    }
+
+    // Track grab/ungrab state and broadcast to UI
+    // Launch auto-grabs, so treat it like grab
+    if (method === 'grab' || method === 'launch') {
+      // Use appName from the request body (already resolved for grab-by-ref)
+      // and fall back to resolveTargetApp for direct app name params
+      const targetApp = appName || resolveTargetApp(method, params || {})
+      if (targetApp) {
+        computerUsePermissionManager.setGrabbedApp(agentSlug, targetApp)
+        // Broadcast immediately with app name, then resolve icon async
+        messagePersister.broadcastSessionEvent(sessionId, { type: 'computer_use_grab_changed', app: targetApp })
+        const { getAppIconBase64 } = await import('@shared/lib/computer-use/app-icon')
+        getAppIconBase64(targetApp).then((icon) => {
+          if (icon) {
+            messagePersister.broadcastSessionEvent(sessionId, { type: 'computer_use_grab_changed', app: targetApp, appIcon: icon })
+          }
+        }).catch(() => {})
+      }
+    } else if (method === 'ungrab' || method === 'quit') {
+      computerUsePermissionManager.clearGrabbedApp(agentSlug)
+      messagePersister.broadcastSessionEvent(sessionId, { type: 'computer_use_grab_changed', app: null })
+    }
+
+    // Consume "once" grant after use
+    if (grantType === 'once') {
+      computerUsePermissionManager.consumeOnceGrant(agentSlug, permissionLevel || 'use_application', appName)
+    }
+
+    // Resolve the pending input
+    const resolveResponse = await client.fetch(
+      `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: output }),
+      }
+    )
+
+    if (!resolveResponse.ok) {
+      let errorDetails = 'Unknown error'
+      try {
+        const error = await resolveResponse.json()
+        errorDetails = JSON.stringify(error)
+      } catch {
+        errorDetails = await resolveResponse.text()
+      }
+      console.error(`[computer-use] Failed to resolve: ${errorDetails}`)
+      return c.json({ error: 'Failed to resolve computer use request' }, 500)
+    }
+
+    messagePersister.clearPendingComputerUseRequest(sessionId, toolUseId)
+    trackServerEvent('computer_use_executed', { method, permissionLevel, grantType })
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('Failed to execute computer use:', error)
+    return c.json({ error: 'Failed to execute computer use' }, 500)
+  }
+})
+
+// POST /api/agents/:id/sessions/:sessionId/computer-use/revoke - Ungrab window and revoke permission for the app
+agents.post('/:id/sessions/:sessionId/computer-use/revoke', AgentUser(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const sessionId = c.req.param('sessionId')
+
+    const session = await getSession(agentSlug, sessionId)
+    if (!session) {
+      return c.json({ error: 'Session not found' }, 404)
+    }
+
+    const { computerUsePermissionManager } = await import('@shared/lib/computer-use/permission-manager')
+
+    const appName = computerUsePermissionManager.getGrabbedApp(agentSlug)
+
+    // Ungrab via AC
+    const { ungrabAC } = await import('@shared/lib/computer-use/executor')
+    await ungrabAC()
+
+    // Clear grab state
+    computerUsePermissionManager.clearGrabbedApp(agentSlug)
+
+    // Revoke use_application permission for this app
+    if (appName) {
+      computerUsePermissionManager.revokeGrant(agentSlug, 'use_application', appName)
+    }
+
+    // Broadcast to UI
+    messagePersister.broadcastSessionEvent(sessionId, { type: 'computer_use_grab_changed', app: null })
+
+    return c.json({ success: true, revoked: appName || true })
+  } catch (error) {
+    console.error('Failed to revoke computer use:', error)
+    return c.json({ error: 'Failed to revoke computer use' }, 500)
   }
 })
 
@@ -3566,6 +3842,7 @@ async function proxyArtifactRequest(c: any) {
   }
 
   // Build the container path
+  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
   const url = new URL(c.req.url)
   const prefix = `/api/agents/${agentSlug}/artifacts/${artifactSlug}`
   const subPath = url.pathname.slice(url.pathname.indexOf(prefix) + prefix.length) || '/'

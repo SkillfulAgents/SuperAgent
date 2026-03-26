@@ -320,6 +320,23 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   /**
+   * Get the last N lines of container logs. Useful for diagnosing startup failures.
+   */
+  async getLogs(tail: number = 50): Promise<string> {
+    const containerName = this.getContainerName()
+    const runner = this.getRunnerCommand()
+    try {
+      const { stdout, stderr } = await execWithPath(
+        `${runner} logs --tail ${tail} ${containerName}`
+      )
+      // Docker sends stdout/stderr separately; combine them
+      return (stdout + stderr).trim()
+    } catch {
+      return ''
+    }
+  }
+
+  /**
    * Get container resource usage stats (memory, CPU).
    * Returns null if the container is not running or stats are unavailable.
    */
@@ -455,7 +472,10 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // Wait for container to be healthy
       const healthy = await this.waitForHealthy(60000)
       if (!healthy) {
-        throw new Error('Container failed to become healthy')
+        // Grab logs to help diagnose the failure
+        const logs = await this.getLogs(30)
+        const logsSnippet = logs ? `\n\nContainer logs:\n${logs}` : ''
+        throw new Error(`Container failed to become healthy${logsSnippet}`)
       }
 
       console.log(`Container ${containerName} is now running on port ${port}`)
@@ -570,6 +590,13 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       if (await this.isHealthy()) {
         return true
       }
+
+      // If container has already exited, fail immediately instead of polling until timeout
+      const info = await this.getInfo()
+      if (info.status !== 'running') {
+        return false
+      }
+
       await new Promise((resolve) => setTimeout(resolve, pollInterval))
     }
 

@@ -18,6 +18,11 @@ async function getAutoUpdater() {
   return mod.autoUpdater ?? (mod as any).default?.autoUpdater
 }
 
+function semverGt(a: string, b: string): boolean {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require('semver').gt(a, b)
+}
+
 function sendStatusToRenderer() {
   if (mainWindowRef && !mainWindowRef.isDestroyed()) {
     mainWindowRef.webContents.send('update-status', currentStatus)
@@ -46,32 +51,62 @@ export function registerUpdateHandlers() {
     try {
       const autoUpdater = await getAutoUpdater()
       const isPreRelease = app.getVersion().includes('-')
-      // If running a prerelease, always check for newer prereleases
-      // (the user opted in by installing a prerelease)
-      autoUpdater.allowPrerelease = isPreRelease || !!getSettings().app?.allowPrereleaseUpdates
-      const result = await autoUpdater.checkForUpdates()
+      const wantPrerelease = isPreRelease || !!getSettings().app?.allowPrereleaseUpdates
 
-      // If on a pre-release and no prerelease update found, also check the stable channel
-      // so users can upgrade to a stable release when one is published.
-      if (isPreRelease && (!result || !result.updateInfo || currentStatus.state === 'not-available')) {
-        try {
-          suppressErrors = true
-          autoUpdater.allowPrerelease = false
-          autoUpdater.channel = 'latest'
-          // Timeout the stable check — may hang if no stable release exists for this platform
-          await Promise.race([
-            autoUpdater.checkForUpdates(),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000)),
-          ])
-        } catch {
-          // No stable releases exist for this platform, or timed out — ignore
-        } finally {
-          suppressErrors = false
-          // If we're still in 'checking' state, the fallback didn't find anything
-          if (currentStatus.state === 'checking') {
-            setStatus({ state: 'not-available' })
-          }
-        }
+      autoUpdater.allowPrerelease = wantPrerelease
+
+      if (!isPreRelease) {
+        // Stable user: electron-updater handles this correctly.
+        //   wantPrerelease=false → latest stable
+        //   wantPrerelease=true  → absolute latest (feed order = newest first)
+        await autoUpdater.checkForUpdates()
+        return
+      }
+
+      // Pre-release user: electron-updater only matches releases on the same
+      // prerelease channel (e.g. "rc"), so it misses newer stable releases.
+      // Check both channels and offer whichever version is highest.
+
+      // 1. Check prerelease channel
+      let preVer: string | null = null
+      try {
+        autoUpdater.allowPrerelease = true
+        const result = await autoUpdater.checkForUpdates()
+        preVer = result?.updateInfo?.version ?? null
+      } catch {
+        // prerelease check failed — will try stable below
+      }
+
+      // 2. Check stable channel
+      let stableVer: string | null = null
+      const prevChannel = autoUpdater.channel
+      try {
+        suppressErrors = true
+        autoUpdater.allowPrerelease = false
+        autoUpdater.channel = 'latest'
+        const result: any = await Promise.race([
+          autoUpdater.checkForUpdates(),
+          new Promise((resolve) => setTimeout(() => resolve(null), 10_000)),
+        ])
+        stableVer = result?.updateInfo?.version ?? null
+      } catch {
+        // stable check failed or timed out
+      } finally {
+        suppressErrors = false
+        autoUpdater.channel = prevChannel
+      }
+
+      // 3. Pick the higher version. The last checkForUpdates() call determines
+      //    what downloadUpdate() will fetch, so re-run the prerelease check if
+      //    the prerelease version wins (stable was the last call above).
+      if (preVer && (!stableVer || semverGt(preVer, stableVer))) {
+        autoUpdater.allowPrerelease = true
+        await autoUpdater.checkForUpdates()
+      }
+
+      // If neither check found anything newer, make sure UI reflects that
+      if (!preVer && !stableVer) {
+        setStatus({ state: 'not-available' })
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)

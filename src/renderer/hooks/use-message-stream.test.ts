@@ -416,6 +416,7 @@ describe('useMessageStream', () => {
       agentId: 'sub-agent-1',
       streamingMessage: '',
       streamingToolUse: null,
+      progressSummary: null,
     })
 
     act(() => {

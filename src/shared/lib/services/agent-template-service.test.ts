@@ -2003,6 +2003,42 @@ describe('exportAgentFull', () => {
 
     expect(entryNames).not.toContain('node_modules/pkg/index.js')
   })
+
+  it('skips symlinks without hanging', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+
+    // Create a broken symlink (points to a non-existent target)
+    const linkPath = path.join(workspaceDir, 'broken-link')
+    try {
+      fs.symlinkSync('/nonexistent/target/file.txt', linkPath)
+    } catch {
+      // Skip on systems where symlink creation requires elevated privileges
+      return
+    }
+
+    const zipBuffer = await exportAgentFull('full-agent')
+    const zip = new AdmZip(zipBuffer)
+    const entryNames = zip.getEntries().map((e) => e.entryName)
+
+    expect(entryNames).toContain('CLAUDE.md')
+    expect(entryNames).not.toContain('broken-link')
+  })
+
+  it('excludes .browser-profile from the export', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    const bpDir = path.join(workspaceDir, '.browser-profile')
+    fs.mkdirSync(bpDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    fs.writeFileSync(path.join(bpDir, 'cookies.db'), 'data')
+
+    const zipBuffer = await exportAgentFull('full-agent')
+    const zip = new AdmZip(zipBuffer)
+    const entryNames = zip.getEntries().map((e) => e.entryName)
+
+    expect(entryNames).not.toContain('.browser-profile/cookies.db')
+  })
 })
 
 // ============================================================================

@@ -3,7 +3,21 @@ import type { UUID } from 'crypto';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
-import { createUserInputMcpServer, createBrowserMcpServer, createDashboardsMcpServer } from './mcp-server';
+import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer } from './mcp-server';
+import { browserTools } from './tools/browser';
+import { computerUseTools } from './tools/computer-use';
+
+/** Generate prefixed MCP tool names from a tools array, optionally excluding some by name. */
+function mcpToolNames(
+  serverName: string,
+  tools: { name: string }[],
+  exclude?: string[],
+): string[] {
+  const excludeSet = exclude ? new Set(exclude) : null
+  return tools
+    .filter(t => !excludeSet || !excludeSet.has(t.name))
+    .map(t => `mcp__${serverName}__${t.name}`)
+}
 import { inputManager } from './input-manager';
 import { setCurrentBrowserSessionId } from './tools/browser';
 import { sanitizeMcpName } from './sanitize-mcp-name';
@@ -21,6 +35,12 @@ const PLATFORM_SYSTEM_PROMPT = fs.readFileSync(
 // Load web-browser subagent prompt from file
 const WEB_BROWSER_AGENT_PROMPT = fs.readFileSync(
   path.join(__dirname, 'web-browser-agent-prompt.md'),
+  'utf-8'
+);
+
+// Load computer-use subagent prompt from file
+const COMPUTER_USE_AGENT_PROMPT = fs.readFileSync(
+  path.join(__dirname, 'computer-use-agent-prompt.md'),
   'utf-8'
 );
 
@@ -376,6 +396,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         resume: this.claudeSessionId || undefined,
         permissionMode: 'bypassPermissions',
         includePartialMessages: true,
+        agentProgressSummaries: true,
         settingSources: ['user', 'project'],
         allowedTools: ['Skill', 'Task', 'Agent', ...remoteMcpToolPatterns],
         ...(this.maxThinkingTokens && { maxThinkingTokens: this.maxThinkingTokens }),
@@ -392,6 +413,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           'user-input': createUserInputMcpServer(),
           'browser': createBrowserMcpServer(),
           'dashboards': createDashboardsMcpServer(),
+          ...(['darwin', 'win32'].includes(process.env.HOST_PLATFORM || '') ? { 'computer-use': createComputerUseMcpServer() } : {}),
           ...remoteMcpConfigs,
         },
         agents: {
@@ -399,18 +421,7 @@ export class ClaudeCodeProcess extends EventEmitter {
             description: 'Web browsing specialist. Delegate any task that requires interacting with websites — navigating pages, filling forms, clicking buttons, extracting information, searching for products, changing settings on web services, or any multi-step web interaction. The browser should already be open (use browser_open first). This agent runs on a cheaper model and handles all browser interactions autonomously.',
             model: (this.browserModel || 'sonnet') as 'sonnet' | 'opus' | 'haiku',
             tools: [
-              'mcp__browser__browser_open',
-              'mcp__browser__browser_snapshot',
-              'mcp__browser__browser_click',
-              'mcp__browser__browser_fill',
-              'mcp__browser__browser_scroll',
-              'mcp__browser__browser_wait',
-              'mcp__browser__browser_press',
-              'mcp__browser__browser_screenshot',
-              'mcp__browser__browser_select',
-              'mcp__browser__browser_hover',
-              'mcp__browser__browser_run',
-              'mcp__browser__browser_get_state',
+              ...mcpToolNames('browser', browserTools),
               'WebSearch',
               'Read',
               'mcp__user-input__request_browser_input',
@@ -418,6 +429,18 @@ export class ClaudeCodeProcess extends EventEmitter {
             prompt: WEB_BROWSER_AGENT_PROMPT,
             maxTurns: 500,
           },
+          ...(['darwin', 'win32'].includes(process.env.HOST_PLATFORM || '') ? {
+            'computer-use': {
+              description: 'Desktop automation specialist for macOS. Delegate any task that requires interacting with native applications — clicking buttons, filling forms, reading screen content, navigating menus, or any multi-step app interaction. The app should already be launched and grabbed (use computer_launch first). This agent runs on a cheaper model and handles all app interactions autonomously.',
+              model: 'sonnet' as const,
+              tools: [
+                ...mcpToolNames('computer-use', computerUseTools, ['computer_launch', 'computer_quit', 'computer_ungrab']),
+                'Read',
+              ],
+              prompt: COMPUTER_USE_AGENT_PROMPT,
+              maxTurns: 500,
+            },
+          } : {}),
         },
         // Handle AskUserQuestion via canUseTool callback (per SDK docs)
         canUseTool: async (toolName: string, toolInput: Record<string, unknown>, options: { toolUseID: string; signal: AbortSignal }) => {
@@ -471,7 +494,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           // not additive). This is acceptable because they write the same ID,
           // but if two user-input tools fire concurrently the first ID could
           // be overwritten before consumeCurrentToolUseId is called.
-          if (toolName.startsWith('mcp__user-input__') && options.toolUseID) {
+          if ((toolName.startsWith('mcp__user-input__') || toolName.startsWith('mcp__computer-use__')) && options.toolUseID) {
             inputManager.setCurrentToolUseId(options.toolUseID);
           }
 
@@ -482,6 +505,17 @@ export class ClaudeCodeProcess extends EventEmitter {
           PreToolUse: [
             {
               matcher: 'mcp__user-input__.*',
+              hooks: [
+                async (_input, toolUseId) => {
+                  if (toolUseId) {
+                    inputManager.setCurrentToolUseId(toolUseId);
+                  }
+                  return {};
+                },
+              ],
+            },
+            {
+              matcher: 'mcp__computer-use__.*',
               hooks: [
                 async (_input, toolUseId) => {
                   if (toolUseId) {

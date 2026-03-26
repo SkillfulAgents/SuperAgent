@@ -1,5 +1,6 @@
 
 import { ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard, Loader2, WifiOff, LogOut, User, Users, CircleHelp, Ban } from 'lucide-react'
+import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
@@ -351,6 +352,22 @@ function InlineRenameInput({
   )
 }
 
+// Skeleton shown briefly while session data loads on expand
+function SessionsSkeleton() {
+  return (
+    <>
+      {[1, 2, 3].map((i) => (
+        <SidebarMenuSubItem key={i}>
+          <div className="flex items-center gap-2 px-2 py-1">
+            <Skeleton className="h-3 w-3 rounded-full shrink-0" />
+            <Skeleton className="h-3.5 flex-1" />
+          </div>
+        </SidebarMenuSubItem>
+      ))}
+    </>
+  )
+}
+
 // Agent menu item with expandable sessions
 export const AgentMenuItem = React.forwardRef<
   HTMLLIElement,
@@ -358,14 +375,18 @@ export const AgentMenuItem = React.forwardRef<
 >(({ agent, style, ...rest }, ref) => {
   const { selectedAgentSlug, selectAgent } = useSelection()
   const { agentMemberCount } = useUser()
-  const { data: sessions } = useSessions(agent.slug)
-  const { data: scheduledTasks } = useScheduledTasks(agent.slug, 'pending')
-  const { data: cancelledScheduledTasks } = useScheduledTasks(agent.slug, 'cancelled')
-  const { data: artifacts } = useArtifacts(agent.slug)
+  const queryClient = useQueryClient()
   const isSelected = agent.slug === selectedAgentSlug
   const [isOpen, setIsOpen] = useState(isSelected)
   const [showAll, setShowAll] = useState(false)
+  const [showSkeleton, setShowSkeleton] = useState(false)
   const isShared = agentMemberCount(agent.slug) > 1
+
+  // Lazy-load detail data only when expanded
+  const { data: sessions, isLoading: sessionsLoading } = useSessions(isOpen ? agent.slug : null)
+  const { data: scheduledTasks } = useScheduledTasks(isOpen ? agent.slug : null, 'pending')
+  const { data: cancelledScheduledTasks } = useScheduledTasks(isOpen ? agent.slug : null, 'cancelled')
+  const { data: artifacts } = useArtifacts(isOpen ? agent.slug : null)
 
   const visibleSessions = showAll ? sessions : sessions?.slice(0, 5)
   const hasMore = (sessions?.length ?? 0) > 5
@@ -374,6 +395,37 @@ export const AgentMenuItem = React.forwardRef<
   const allScheduledTasks = pendingTasks.length + cancelledTasks.length
   const dashboards = Array.isArray(artifacts) ? artifacts : []
 
+  // Use pre-aggregated counts to determine if the chevron should show
+  const hasExpandableContent =
+    (agent.sessionCount ?? 0) > 0 ||
+    (agent.scheduledTaskCount ?? 0) > 0 ||
+    (agent.dashboardCount ?? 0) > 0
+
+  // Show skeleton after 100ms if sessions haven't loaded yet
+  useEffect(() => {
+    if (!isOpen || !sessionsLoading) {
+      setShowSkeleton(false)
+      return
+    }
+    const timer = setTimeout(() => setShowSkeleton(true), 100)
+    return () => clearTimeout(timer)
+  }, [isOpen, sessionsLoading])
+
+  // Prefetch sessions on hover so expand is instant
+  const handleMouseEnter = useCallback(() => {
+    if (!isOpen) {
+      queryClient.prefetchQuery({
+        queryKey: ['sessions', agent.slug],
+        queryFn: async () => {
+          const res = await apiFetch(`/api/agents/${agent.slug}/sessions`)
+          if (!res.ok) throw new Error('Failed to fetch sessions')
+          return res.json()
+        },
+        staleTime: 30_000,
+      })
+    }
+  }, [isOpen, agent.slug, queryClient])
+
   const handleClick = () => {
     selectAgent(agent.slug)
     setIsOpen((prev) => !prev)
@@ -381,7 +433,7 @@ export const AgentMenuItem = React.forwardRef<
 
   return (
     <Collapsible asChild open={isOpen} onOpenChange={setIsOpen}>
-      <SidebarMenuItem ref={ref} style={style} {...rest}>
+      <SidebarMenuItem ref={ref} style={style} {...rest} onMouseEnter={handleMouseEnter}>
         <AgentContextMenu agent={agent}>
           <SidebarMenuButton
             onClick={handleClick}
@@ -395,12 +447,12 @@ export const AgentMenuItem = React.forwardRef<
             </span>
             <AgentStatus
               status={agent.status}
-              hasActiveSessions={sessions?.some((s) => s.isActive) ?? false}
-              hasSessionsAwaitingInput={sessions?.some((s) => s.isAwaitingInput) ?? false}
+              hasActiveSessions={agent.hasActiveSessions ?? false}
+              hasSessionsAwaitingInput={agent.hasSessionsAwaitingInput ?? false}
             />
           </SidebarMenuButton>
         </AgentContextMenu>
-        {(sessions?.length || allScheduledTasks || dashboards.length) ? (
+        {hasExpandableContent ? (
           <>
             <CollapsibleTrigger asChild>
               <SidebarMenuAction className="data-[state=open]:rotate-90">
@@ -410,51 +462,57 @@ export const AgentMenuItem = React.forwardRef<
             </CollapsibleTrigger>
             <CollapsibleContent>
               <SidebarMenuSub>
-                {/* Dashboards at the top */}
-                {dashboards.map((artifact) => (
-                  <DashboardSubItem
-                    key={artifact.slug}
-                    artifact={artifact}
-                    agentSlug={agent.slug}
-                  />
-                ))}
-                {/* Scheduled tasks */}
-                {cancelledTasks.length > 0 || allScheduledTasks > 1 ? (
-                  <ScheduledTasksGroup
-                    pendingTasks={pendingTasks}
-                    cancelledTasks={cancelledTasks}
-                    agentSlug={agent.slug}
-                  />
-                ) : pendingTasks.length === 1 ? (
-                  <ScheduledTaskSubItem
-                    task={pendingTasks[0]}
-                    agentSlug={agent.slug}
-                  />
-                ) : null}
-                {/* Regular sessions */}
-                {visibleSessions?.map((session) => (
-                  <SessionSubItem
-                    key={session.id}
-                    session={session}
-                    agentSlug={agent.slug}
-                  />
-                ))}
-                {hasMore && (
-                  <SidebarMenuSubItem>
-                    <SidebarMenuSubButton
-                      asChild
-                      className="text-muted-foreground"
-                    >
-                      <button
-                        onClick={() => setShowAll((prev) => !prev)}
-                        className="w-full"
-                      >
-                        <span>
-                          {showAll ? 'Show less' : `Show all (${sessions?.length})`}
-                        </span>
-                      </button>
-                    </SidebarMenuSubButton>
-                  </SidebarMenuSubItem>
+                {isOpen && sessionsLoading && showSkeleton ? (
+                  <SessionsSkeleton />
+                ) : (
+                  <>
+                    {/* Dashboards at the top */}
+                    {dashboards.map((artifact) => (
+                      <DashboardSubItem
+                        key={artifact.slug}
+                        artifact={artifact}
+                        agentSlug={agent.slug}
+                      />
+                    ))}
+                    {/* Scheduled tasks */}
+                    {cancelledTasks.length > 0 || allScheduledTasks > 1 ? (
+                      <ScheduledTasksGroup
+                        pendingTasks={pendingTasks}
+                        cancelledTasks={cancelledTasks}
+                        agentSlug={agent.slug}
+                      />
+                    ) : pendingTasks.length === 1 ? (
+                      <ScheduledTaskSubItem
+                        task={pendingTasks[0]}
+                        agentSlug={agent.slug}
+                      />
+                    ) : null}
+                    {/* Regular sessions */}
+                    {visibleSessions?.map((session) => (
+                      <SessionSubItem
+                        key={session.id}
+                        session={session}
+                        agentSlug={agent.slug}
+                      />
+                    ))}
+                    {hasMore && (
+                      <SidebarMenuSubItem>
+                        <SidebarMenuSubButton
+                          asChild
+                          className="text-muted-foreground"
+                        >
+                          <button
+                            onClick={() => setShowAll((prev) => !prev)}
+                            className="w-full"
+                          >
+                            <span>
+                              {showAll ? 'Show less' : `Show all (${sessions?.length})`}
+                            </span>
+                          </button>
+                        </SidebarMenuSubButton>
+                      </SidebarMenuSubItem>
+                    )}
+                  </>
                 )}
               </SidebarMenuSub>
             </CollapsibleContent>

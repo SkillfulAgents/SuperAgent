@@ -78,12 +78,14 @@ usage.get('/', async (c) => {
   process.env.LOG_LEVEL = prevLogLevel
 
   // Create a pricing fetcher for recalculating costs of models ccusage couldn't price
-  const pricingFetcher = new PricingFetcher(false)
+  // Use offline mode to avoid network calls to LiteLLM on every request
+  const pricingFetcher = new PricingFetcher(true)
 
-  // Aggregate: date -> { totalCost, byAgent, byModel }
+  // Aggregate: date -> { totalCost, totalTokens, byAgent, byModel }
   const dateMap = new Map<string, {
     totalCost: number
-    byAgent: Map<string, { agentSlug: string; agentName: string; cost: number }>
+    totalTokens: number
+    byAgent: Map<string, { agentSlug: string; agentName: string; cost: number; totalTokens: number }>
     byModel: Map<string, number>
   }>()
 
@@ -92,7 +94,7 @@ usage.get('/', async (c) => {
       const claudePath = getAgentClaudeConfigDir(agent.slug)
       const dailyData = await loadDailyUsageData({
         claudePath,
-        offline: false,
+        offline: true,
         since,
       })
       return { agent, dailyData }
@@ -106,20 +108,24 @@ usage.get('/', async (c) => {
     for (const day of dailyData) {
       let entry = dateMap.get(day.date)
       if (!entry) {
-        entry = { totalCost: 0, byAgent: new Map(), byModel: new Map() }
+        entry = { totalCost: 0, totalTokens: 0, byAgent: new Map(), byModel: new Map() }
         dateMap.set(day.date, entry)
       }
 
+      const dayTokens = day.inputTokens + day.outputTokens + day.cacheCreationTokens + day.cacheReadTokens
       entry.totalCost += day.totalCost
+      entry.totalTokens += dayTokens
 
       const existing = entry.byAgent.get(agent.slug)
       if (existing) {
         existing.cost += day.totalCost
+        existing.totalTokens += dayTokens
       } else {
         entry.byAgent.set(agent.slug, {
           agentSlug: agent.slug,
           agentName: agent.frontmatter.name,
           cost: day.totalCost,
+          totalTokens: dayTokens,
         })
       }
 
@@ -159,7 +165,7 @@ usage.get('/', async (c) => {
   for (let d = sinceDate; d <= now; d = addDays(d, 1)) {
     const dateStr = format(d, 'yyyy-MM-dd')
     if (!dateMap.has(dateStr)) {
-      dateMap.set(dateStr, { totalCost: 0, byAgent: new Map(), byModel: new Map() })
+      dateMap.set(dateStr, { totalCost: 0, totalTokens: 0, byAgent: new Map(), byModel: new Map() })
     }
   }
 
@@ -168,6 +174,7 @@ usage.get('/', async (c) => {
     .map(([date, data]) => ({
       date,
       totalCost: data.totalCost,
+      totalTokens: data.totalTokens,
       byAgent: Array.from(data.byAgent.values()),
       byModel: Array.from(data.byModel.entries()).map(([model, cost]) => ({
         model,

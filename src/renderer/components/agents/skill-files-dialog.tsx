@@ -202,6 +202,7 @@ export function SkillFilesDialog({
             )}
           </div>
           {/* Resize handle */}
+          {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
           <div
             className="hidden md:flex h-full w-1 shrink-0 cursor-col-resize flex-col hover:bg-sidebar-border active:bg-sidebar-border transition-colors relative"
             onMouseDown={handleResizeStart}

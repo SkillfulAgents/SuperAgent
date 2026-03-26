@@ -104,6 +104,7 @@ describe('SubAgentBlock', () => {
           agentId: 'sub-1',
           streamingMessage: null,
           streamingToolUse: null,
+          progressSummary: null,
         }}
       />
     )
@@ -159,6 +160,7 @@ describe('SubAgentBlock', () => {
           agentId: 'sub-1',
           streamingMessage: null,
           streamingToolUse: null,
+          progressSummary: null,
         }}
       />
     )
@@ -187,6 +189,7 @@ describe('SubAgentBlock', () => {
           agentId: 'sub-1',
           streamingMessage: 'Found some interesting files...',
           streamingToolUse: null,
+          progressSummary: null,
         }}
       />
     )
@@ -218,6 +221,7 @@ describe('SubAgentBlock', () => {
             name: 'Grep',
             partialInput: '{"pattern": "config"}',
           },
+          progressSummary: null,
         }}
       />
     )

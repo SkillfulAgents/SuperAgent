@@ -34,6 +34,7 @@ export function getAppBaseUrlFromRequest(c: Context): string {
     return getAppBaseUrl()
   }
   // Fall back to request origin (same as current behavior for unconfigured setups)
+  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
   return c.req.header('origin') || new URL(c.req.url).origin
 }
 

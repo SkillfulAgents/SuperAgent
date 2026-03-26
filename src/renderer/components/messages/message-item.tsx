@@ -98,7 +98,7 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
       {/* Message content */}
       <div
         className={cn(
-          'flex-1 max-w-[80%] flex flex-col gap-2',
+          'flex-1 max-w-[80%] min-w-0 flex flex-col gap-2',
           isUser && 'items-end'
         )}
       >

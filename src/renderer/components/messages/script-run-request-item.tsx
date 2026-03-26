@@ -1,6 +1,6 @@
 import { apiFetch } from '@renderer/lib/api'
 import { useState } from 'react'
-import { Terminal, Check, Loader2 } from 'lucide-react'
+import { Terminal, Check, Loader2, Clock, ShieldCheck } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { cn } from '@shared/lib/utils/cn'
 import { DeclineButton } from './decline-button'
@@ -37,7 +37,7 @@ export function ScriptRunRequestItem({
   const [status, setStatus] = useState<RequestStatus>('pending')
   const [error, setError] = useState<string | null>(null)
 
-  const handleRun = async () => {
+  const handleApprove = async (grantType: 'once' | 'timed' | 'always') => {
     setStatus('submitting')
     setError(null)
 
@@ -47,7 +47,7 @@ export function ScriptRunRequestItem({
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ toolUseId, script, scriptType }),
+          body: JSON.stringify({ toolUseId, script, scriptType, grantType }),
         }
       )
 
@@ -167,12 +167,13 @@ export function ScriptRunRequestItem({
             </pre>
           </div>
 
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button
-              onClick={handleRun}
+              onClick={() => handleApprove('once')}
               disabled={status === 'submitting'}
               size="sm"
-              className="bg-orange-600 hover:bg-orange-700 text-white"
+              variant="outline"
+              className="border-orange-200 dark:border-orange-700 text-orange-700 dark:text-orange-300 hover:bg-orange-100 dark:hover:bg-orange-900"
               data-testid="script-run-btn"
             >
               {status === 'submitting' ? (
@@ -180,7 +181,30 @@ export function ScriptRunRequestItem({
               ) : (
                 <Check className="h-4 w-4" />
               )}
-              <span className="ml-1">Run</span>
+              <span className="ml-1">Allow Once</span>
+            </Button>
+
+            <Button
+              onClick={() => handleApprove('timed')}
+              disabled={status === 'submitting'}
+              size="sm"
+              className="bg-orange-600 hover:bg-orange-700 text-white"
+              data-testid="script-run-timed-btn"
+            >
+              <Clock className="h-4 w-4" />
+              <span className="ml-1">Allow 15 min</span>
+            </Button>
+
+            <Button
+              onClick={() => handleApprove('always')}
+              disabled={status === 'submitting'}
+              size="sm"
+              variant="outline"
+              className="border-orange-200 dark:border-orange-700 text-orange-700 dark:text-orange-300 hover:bg-orange-100 dark:hover:bg-orange-900"
+              data-testid="script-run-always-btn"
+            >
+              <ShieldCheck className="h-4 w-4" />
+              <span className="ml-1">Always Allow</span>
             </Button>
 
             <DeclineButton

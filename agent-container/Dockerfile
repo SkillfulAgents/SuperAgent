@@ -49,7 +49,7 @@ RUN apt-get update && apt-get install -y \
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 # Install Claude Code CLI (native binary, pinned version)
-RUN curl -fsSL https://claude.ai/install.sh | bash -s 2.1.63 && \
+RUN curl -fsSL https://claude.ai/install.sh | bash -s 2.1.81 && \
     cp /root/.local/bin/claude /usr/local/bin/claude && \
     chmod 755 /usr/local/bin/claude
 
@@ -122,6 +122,8 @@ ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-blink-features=AutomationControll
 ENV AGENT_BROWSER_USER_AGENT="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 ENV AGENT_BROWSER_PROFILE=/workspace/.browser-profile
 ENV DISABLE_AUTOUPDATER=1
+# Disable automatic MCP tool deferral until tested — re-enable with 'auto:10' or 'true'
+ENV ENABLE_TOOL_SEARCH=false
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

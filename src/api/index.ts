@@ -24,6 +24,7 @@ import { sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { user as userTable } from '@shared/lib/db/schema'
 import { authEnforcementMiddleware, getAuthSettings } from './middleware/auth-enforcement'
+import { LocalModeAuth } from './middleware/local-mode-auth'
 
 const app = new Hono()
 
@@ -38,6 +39,22 @@ if (process.type !== 'browser') {
 // Enable CORS for all routes
 const trustedOrigins = process.env.TRUSTED_ORIGINS?.split(',').map(o => o.trim()).filter(Boolean)
 app.use('*', cors(trustedOrigins?.length ? { origin: trustedOrigins } : undefined))
+
+// Local mode: localhost IP restriction for all API endpoints (except container-facing endpoints)
+if (!isAuthMode()) {
+  const localModeAuth = LocalModeAuth()
+
+  app.use('/api/*', async (c, next) => {
+    const path = c.req.path
+    // Container endpoints: protected by IsAgent() bearer tokens
+    if (path.startsWith('/api/proxy/') ||
+        path.startsWith('/api/mcp-proxy/') ||
+        path.startsWith('/api/browser/')) {
+      return next()
+    }
+    return localModeAuth(c, next)
+  })
+}
 
 // Simple rate limiter for auth endpoints
 const authAttempts = new Map<string, { count: number; resetAt: number }>()

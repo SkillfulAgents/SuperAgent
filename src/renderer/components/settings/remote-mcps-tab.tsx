@@ -47,7 +47,7 @@ export function RemoteMcpsTab() {
     },
   })
 
-  // Listen for MCP OAuth callback from main process
+  // Listen for MCP OAuth callback from main process (Electron)
   useEffect(() => {
     if (!window.electronAPI) return
 
@@ -73,7 +73,29 @@ export function RemoteMcpsTab() {
   const [newToken, setNewToken] = useState('')
   const [oAuthPending, setOAuthPending] = useState<string | null>(null)
   const [oAuthError, setOAuthError] = useState<string | null>(null)
+
+  // Listen for MCP OAuth callback via postMessage (web mode)
+  useEffect(() => {
+    if (!oAuthPending) return
+
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'mcp-oauth-callback') {
+        setOAuthPending(null)
+        if (event.data.success) {
+          setOAuthError(null)
+          invalidateRemoteMcps()
+        } else {
+          setOAuthError(event.data.error || 'OAuth failed')
+        }
+      }
+    }
+
+    window.addEventListener('message', handleMessage)
+    return () => window.removeEventListener('message', handleMessage)
+  }, [oAuthPending, invalidateRemoteMcps])
+
   const [searchQuery, setSearchQuery] = useState('')
+  const [pendingActionId, setPendingActionId] = useState<string | null>(null)
   const addFormRef = useRef<HTMLDivElement>(null)
 
   const servers = Array.isArray(data?.servers) ? data.servers : []
@@ -174,15 +196,18 @@ export function RemoteMcpsTab() {
   }
 
   const handleDelete = async (id: string) => {
-    await deleteMcp.mutateAsync(id)
+    setPendingActionId(id)
+    try { await deleteMcp.mutateAsync(id) } finally { setPendingActionId(null) }
   }
 
   const handleDiscoverTools = async (id: string) => {
-    await discoverTools.mutateAsync(id)
+    setPendingActionId(id)
+    try { await discoverTools.mutateAsync(id) } finally { setPendingActionId(null) }
   }
 
   const handleTestConnection = async (id: string) => {
-    await testConnection.mutateAsync(id)
+    setPendingActionId(id)
+    try { await testConnection.mutateAsync(id) } finally { setPendingActionId(null) }
   }
 
   const handleInitiateOAuth = async (id: string) => {
@@ -320,10 +345,10 @@ export function RemoteMcpsTab() {
                   size="sm"
                   variant="ghost"
                   onClick={() => handleTestConnection(server.id)}
-                  disabled={testConnection.isPending}
+                  disabled={pendingActionId !== null}
                   title="Test connection"
                 >
-                  {testConnection.isPending ? (
+                  {pendingActionId === server.id && testConnection.isPending ? (
                     <Loader2 className="h-3 w-3 animate-spin" />
                   ) : (
                     <RefreshCw className="h-3 w-3" />
@@ -333,10 +358,10 @@ export function RemoteMcpsTab() {
                   size="sm"
                   variant="ghost"
                   onClick={() => handleDiscoverTools(server.id)}
-                  disabled={discoverTools.isPending}
+                  disabled={pendingActionId !== null}
                   title="Discover tools"
                 >
-                  {discoverTools.isPending ? (
+                  {pendingActionId === server.id && discoverTools.isPending ? (
                     <Loader2 className="h-3 w-3 animate-spin" />
                   ) : (
                     <Wrench className="h-3 w-3" />
@@ -360,9 +385,9 @@ export function RemoteMcpsTab() {
                   size="sm"
                   variant="ghost"
                   onClick={() => handleDelete(server.id)}
-                  disabled={deleteMcp.isPending}
+                  disabled={pendingActionId !== null}
                 >
-                  {deleteMcp.isPending ? (
+                  {pendingActionId === server.id && deleteMcp.isPending ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : (
                     <Trash2 className="h-4 w-4 text-destructive" />

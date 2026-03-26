@@ -220,10 +220,18 @@ export function FileRequestItem({
                   ? 'border-green-300 dark:border-green-700 bg-green-50 dark:bg-green-950/50'
                   : 'border-blue-200 dark:border-blue-700 bg-white dark:bg-blue-950/30 hover:border-blue-300 dark:hover:border-blue-600'
             )}
+            role="button"
+            tabIndex={0}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
             onClick={() => fileInputRef.current?.click()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                fileInputRef.current?.click()
+              }
+            }}
           >
             <input
               ref={fileInputRef}

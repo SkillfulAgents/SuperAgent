@@ -15,7 +15,7 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
   },
 }))
 
-const mockGetSettings = vi.fn((): Record<string, unknown> => ({ hostShellUse: { allowScriptExecution: true } }))
+const mockGetSettings = vi.fn((): Record<string, unknown> => ({}))
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => mockGetSettings(),
   VALID_SCRIPT_TYPES: {
@@ -35,6 +35,25 @@ vi.mock('fs', () => ({
 }))
 vi.mock('@shared/lib/utils/file-storage', () => ({
   getAgentSessionsDir: vi.fn(() => '/mock/sessions'),
+}))
+
+// Mock computer-use modules
+const mockCheckPermission = vi.fn((_agentSlug?: string, _level?: string, _appName?: string): string => 'prompt_needed')
+vi.mock('@shared/lib/computer-use/permission-manager', () => ({
+  computerUsePermissionManager: {
+    checkPermission: (a: string, b: string, c?: string) => mockCheckPermission(a, b, c),
+    getGrabbedApp: vi.fn(() => undefined),
+    setGrabbedApp: vi.fn(),
+    clearGrabbedApp: vi.fn(),
+    consumeOnceGrant: vi.fn(),
+  },
+}))
+
+vi.mock('@shared/lib/computer-use/types', () => ({
+  getRequiredPermissionLevel: vi.fn(() => 'use_application'),
+  resolveTargetApp: vi.fn(() => undefined),
+  READ_ONLY_METHODS: new Set(['apps', 'windows', 'status', 'displays', 'permissions']),
+  TIMED_GRANT_DURATION_MS: 15 * 60 * 1000,
 }))
 
 // Import after mocks are set up
@@ -195,6 +214,47 @@ describe('MessagePersister', () => {
 
       const subagentUpdated = sseEvents.filter(e => e.type === 'subagent_updated')
       expect(subagentUpdated).toHaveLength(1)
+    })
+  })
+
+  describe('compaction status events', () => {
+    it('broadcasts compact_start on early compacting status', () => {
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'status',
+        status: 'compacting',
+        session_id: SESSION_ID,
+        uuid: 'status-1',
+      })
+
+      const compactStarts = sseEvents.filter(e => e.type === 'compact_start')
+      expect(compactStarts).toHaveLength(1)
+    })
+
+    it('does not broadcast duplicate compact_start when boundary follows status', () => {
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'status',
+        status: 'compacting',
+        session_id: SESSION_ID,
+        uuid: 'status-1',
+      })
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'compact_boundary',
+        content: 'Conversation compacted',
+        session_id: SESSION_ID,
+        uuid: 'boundary-1',
+        compactMetadata: { trigger: 'auto', preTokens: 170000 },
+      })
+
+      const compactStarts = sseEvents.filter(e => e.type === 'compact_start')
+      expect(compactStarts).toHaveLength(1)
     })
   })
 
@@ -1866,7 +1926,6 @@ describe('MessagePersister', () => {
     }
 
     it('broadcasts script_run_request SSE event when all checks pass', () => {
-      mockGetSettings.mockReturnValue({ hostShellUse: { allowScriptExecution: true } })
       sseEvents.length = 0
 
       simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-1', {
@@ -1887,8 +1946,8 @@ describe('MessagePersister', () => {
       })
     })
 
-    it('auto-rejects when allowScriptExecution is disabled', () => {
-      mockGetSettings.mockReturnValue({ hostShellUse: { allowScriptExecution: false } })
+    it('broadcasts script_run_request even without prior permission (prompts user)', () => {
+      mockCheckPermission.mockReturnValue('prompt_needed')
       sseEvents.length = 0
 
       simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-2', {
@@ -1897,27 +1956,13 @@ describe('MessagePersister', () => {
         scriptType: 'shell',
       })
 
-      // Should NOT broadcast to SSE (auto-reject path)
+      // Should broadcast to SSE for user approval (no cached permission → prompt user)
       const scriptEvents = sseEvents.filter(e => e.type === 'script_run_request')
-      expect(scriptEvents).toHaveLength(0)
-    })
-
-    it('does not broadcast when hostShellUse is undefined', () => {
-      mockGetSettings.mockReturnValue({})
-      sseEvents.length = 0
-
-      simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-3', {
-        script: 'test',
-        explanation: 'Test',
-        scriptType: 'shell',
-      })
-
-      const scriptEvents = sseEvents.filter(e => e.type === 'script_run_request')
-      expect(scriptEvents).toHaveLength(0)
+      expect(scriptEvents).toHaveLength(1)
     })
 
     it('does not broadcast when script is missing from input', () => {
-      mockGetSettings.mockReturnValue({ hostShellUse: { allowScriptExecution: true } })
+      mockCheckPermission.mockReturnValue('prompt_needed')
       sseEvents.length = 0
 
       simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-4', {
@@ -1930,7 +1975,7 @@ describe('MessagePersister', () => {
     })
 
     it('does not broadcast when scriptType is missing', () => {
-      mockGetSettings.mockReturnValue({ hostShellUse: { allowScriptExecution: true } })
+      mockCheckPermission.mockReturnValue('prompt_needed')
       sseEvents.length = 0
 
       simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-5', {
@@ -1943,7 +1988,7 @@ describe('MessagePersister', () => {
     })
 
     it('sets isAwaitingInput after request_script_run tool fires', () => {
-      mockGetSettings.mockReturnValue({ hostShellUse: { allowScriptExecution: true } })
+      mockCheckPermission.mockReturnValue('prompt_needed')
 
       simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-6', {
         script: 'sw_vers',

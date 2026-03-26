@@ -11,6 +11,7 @@ import { validateAuthModeStartup } from './auth/startup-validation'
 import { setupBrowserStreamProxy } from '../../main/browser-stream-proxy'
 import { setServerAnalyticsVersion } from './analytics/server-analytics'
 import { APP_VERSION } from './config/version'
+import { shutdownAC } from './computer-use/executor'
 
 /**
  * Initialize all background services.
@@ -81,4 +82,5 @@ export async function shutdownServices() {
   containerManager.stopHealthMonitor()
   await containerManager.stopAll()
   await shutdownActiveRunner()
+  await shutdownAC()
 }

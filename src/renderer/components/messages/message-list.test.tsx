@@ -37,6 +37,7 @@ const mockStreamState = {
   pendingFileRequests: [] as any[],
   pendingBrowserInputRequests: [] as any[],
   pendingScriptRunRequests: [] as any[],
+  pendingComputerUseRequests: [] as any[],
   typingUser: null as { id: string; name?: string } | null,
   peerUserMessage: null as { content: string; sender: { id: string; name?: string; email?: string } } | null,
 }
@@ -52,6 +53,7 @@ vi.mock('@renderer/hooks/use-message-stream', () => ({
   removeFileRequest: vi.fn(),
   removeBrowserInputRequest: vi.fn(),
   removeScriptRunRequest: vi.fn(),
+  removeComputerUseRequest: vi.fn(),
   clearCompacting: (...args: unknown[]) => mockClearCompacting(...args),
 }))
 

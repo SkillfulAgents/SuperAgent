@@ -48,3 +48,8 @@ npm-debug.log*
 *.swo
 
 tsconfig.tsbuildinfo
+
+# QAgent results
+.qagent/results/
+
+.claude/settings.local.json

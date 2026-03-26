@@ -11,6 +11,8 @@ import { getSettings, updateSettings } from '@shared/lib/config/settings'
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
 import { messagePersister } from './message-persister'
+import { ungrabAC } from '@shared/lib/computer-use/executor'
+import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getMountsWithHealth } from '@shared/lib/services/mount-service'
 
@@ -145,6 +147,12 @@ class ContainerManager {
 
       // Mark all sessions for this agent as inactive
       messagePersister.markAllSessionsInactiveForAgent(agentId)
+
+      // If this agent had grabbed a window, ungrab it so the halo disappears
+      if (computerUsePermissionManager.getGrabbedApp(agentId)) {
+        computerUsePermissionManager.clearGrabbedApp(agentId)
+        ungrabAC().catch(() => {})  // Best-effort, non-blocking
+      }
 
       // Broadcast status change so UI updates
       messagePersister.broadcastGlobal({

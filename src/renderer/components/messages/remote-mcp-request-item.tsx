@@ -378,7 +378,15 @@ export function RemoteMcpRequestItem({
                         : 'bg-white dark:bg-purple-950 border-purple-100 dark:border-purple-800 hover:border-purple-200 dark:hover:border-purple-700',
                       status !== 'pending' && 'opacity-50 cursor-not-allowed'
                     )}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => status === 'pending' && setSelectedMcpId(server.id)}
+                    onKeyDown={(e) => {
+                      if ((e.key === 'Enter' || e.key === ' ') && status === 'pending') {
+                        e.preventDefault()
+                        setSelectedMcpId(server.id)
+                      }
+                    }}
                   >
                     <div className="flex-1 min-w-0">
                       <span className="truncate text-sm font-medium">{server.name}</span>

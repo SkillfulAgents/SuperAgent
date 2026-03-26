@@ -17,6 +17,7 @@ import { requestFileTool } from './tools/request-file'
 import { requestBrowserInputTool } from './tools/request-browser-input'
 import { requestScriptRunTool } from './tools/request-script-run'
 import { browserTools } from './tools/browser'
+import { computerUseTools } from './tools/computer-use'
 import { createDashboardTool } from './tools/create-dashboard'
 import { startDashboardTool } from './tools/start-dashboard'
 import { listDashboardsTool } from './tools/list-dashboards'
@@ -28,7 +29,6 @@ import { getDashboardLogsTool } from './tools/get-dashboard-logs'
  * one transport connection per server at a time. Reusing singletons across
  * sessions causes "Already connected to a transport" errors.
  */
-// TODO in the future - create seperate host computer use MCP servers for platform-specific tools (e.g. script execution) instead of conditionally including tools in a single server based on host platform
 export function createUserInputMcpServer() {
   // Only expose script execution tool on supported host platforms (macOS/Windows)
   const hostPlatform = process.env.HOST_PLATFORM
@@ -51,6 +51,14 @@ export function createBrowserMcpServer() {
     name: 'browser',
     version: '1.0.0',
     tools: browserTools,
+  })
+}
+
+export function createComputerUseMcpServer() {
+  return createSdkMcpServer({
+    name: 'computer-use',
+    version: '1.0.0',
+    tools: computerUseTools,
   })
 }
 

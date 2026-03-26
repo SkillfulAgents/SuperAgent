@@ -159,6 +159,10 @@ export function SettingsDialog({
 
   const groups = extractGroups(children)
   const allTabs = groups.flatMap((g) => g.tabs)
+  const allTabIds = allTabs.map((t) => t.id)
+  const tabIdsKey = allTabIds.join(',')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const stableTabIds = React.useMemo(() => allTabIds, [tabIdsKey])
 
   const [activeTab, setActiveTab] = React.useState(allTabs[0]?.id ?? '')
 
@@ -166,12 +170,12 @@ export function SettingsDialog({
   const prevOpen = React.useRef(false)
   React.useEffect(() => {
     if (open && !prevOpen.current) {
-      const tab = initialTab && allTabs.some((t) => t.id === initialTab) ? initialTab : allTabs[0]?.id ?? ''
+      const tab = initialTab && stableTabIds.includes(initialTab) ? initialTab : stableTabIds[0] ?? ''
       setActiveTab(tab)
       setMobileShowNav(!initialTab)
     }
     prevOpen.current = open
-  })
+  }, [open, initialTab, stableTabIds])
 
   const activeTabInfo = allTabs.find((t) => t.id === activeTab)
 

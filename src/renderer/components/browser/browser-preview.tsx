@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Globe, ChevronUp, ChevronDown, X, Loader2, MousePointerClick } from 'lucide-react'
+import { Globe, ChevronUp, ChevronDown, X, MousePointerClick } from 'lucide-react'
+import { BrowserTabBar, type BrowserTabInfo } from './browser-tab-bar'
 import { getApiBaseUrl } from '@renderer/lib/env'
+import { apiFetch } from '@renderer/lib/api'
 import { clearBrowserActive, useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useUser } from '@renderer/context/user-context'
 import { cn } from '@shared/lib/utils/cn'
@@ -48,6 +50,14 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
   const [isClosing, setIsClosing] = useState(false)
   const [aspectRatio, setAspectRatio] = useState('16 / 9')
   const [overlayDismissedForId, setOverlayDismissedForId] = useState<string | null>(null)
+
+  // Multi-tab state — Protocol: see agent-container/src/server.ts
+  const [tabs, setTabs] = useState<BrowserTabInfo[]>([])
+  const [agentActiveTargetId, setAgentActiveTargetId] = useState<string | null>(null)
+  const [viewingTargetId, setViewingTargetId] = useState<string | null>(null)
+  const [autoFollow, setAutoFollow] = useState(true)
+  const autoFollowRef = useRef(autoFollow)
+  autoFollowRef.current = autoFollow
 
   const { pendingBrowserInputRequests } = useMessageStream(sessionId, agentSlug)
   const needsAttention = browserActive && pendingBrowserInputRequests.length > 0 && !isViewOnly
@@ -99,6 +109,31 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
       })
     }
   }, [browserActive, pos])
+
+  // Clamp position when size changes (e.g. aspect ratio update) to keep window in bounds
+  useEffect(() => {
+    const parent = containerRef.current?.parentElement
+    if (!parent || !posRef.current) return
+    const rect = parent.getBoundingClientRect()
+    const currentPos = posRef.current
+
+    let newX = currentPos.x
+    let newY = currentPos.y
+    let changed = false
+
+    if (currentPos.x + size.width > rect.width) {
+      newX = Math.max(0, rect.width - size.width)
+      changed = true
+    }
+    if (currentPos.y + size.height > rect.height) {
+      newY = Math.max(0, rect.height - size.height)
+      changed = true
+    }
+
+    if (changed) {
+      setPos({ x: newX, y: newY })
+    }
+  }, [size])
 
   // --- Drag handlers ---
   const handleDragStart = useCallback((e: React.PointerEvent) => {
@@ -245,7 +280,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
           }
         } else if (data.type === 'frame' && data.data) {
           const blob = base64ToBlob(data.data, 'image/jpeg')
-          renderFrame(blob)
+          if (blob) renderFrame(blob)
 
           if (data.metadata) {
             metadataRef.current = {
@@ -253,6 +288,15 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
               deviceHeight: data.metadata.deviceHeight || 720,
             }
           }
+        } else if (data.type === 'tab_list') {
+          setTabs(data.tabs)
+          setAgentActiveTargetId(data.activeTargetId)
+          if (autoFollowRef.current) {
+            setViewingTargetId(data.activeTargetId)
+          }
+        } else if (data.type === 'tab_switched') {
+          setAgentActiveTargetId(data.targetId)
+          setViewingTargetId(data.targetId)
         }
       } catch {
         // Ignore parse errors for binary frames
@@ -262,7 +306,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
     ws.onclose = () => {
       setConnected(false)
       setPageLoading(false)
-      fetch(`${baseUrl}/api/agents/${agentSlug}/browser/status`)
+      apiFetch(`/api/agents/${agentSlug}/browser/status`)
         .then((res) => res.json())
         .then((status: { active?: boolean; sessionId?: string }) => {
           if (!status.active || status.sessionId !== sessionId) {
@@ -305,6 +349,14 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
     }
   }, [needsAttention])
 
+  // Fallback when the tab the user is viewing gets closed
+  useEffect(() => {
+    if (viewingTargetId && tabs.length > 0 && !tabs.find(t => t.targetId === viewingTargetId)) {
+      setViewingTargetId(agentActiveTargetId)
+      setAutoFollow(true)
+    }
+  }, [tabs, viewingTargetId, agentActiveTargetId])
+
   // --- Canvas input handlers ---
   const mapCoordinates = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -322,7 +374,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
     []
   )
 
-  const sendInput = useCallback(
+  const sendMessage = useCallback(
     (message: Record<string, unknown>) => {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify(message))
@@ -352,31 +404,31 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
   const handleMouseDown = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       const { x, y } = mapCoordinates(e)
-      sendInput({ type: 'input_mouse', eventType: 'mousePressed', x, y, button: buttonName(e.button), clickCount: 1, modifiers: modifierFlags(e) })
+      sendMessage({ type: 'input_mouse', eventType: 'mousePressed', x, y, button: buttonName(e.button), clickCount: 1, modifiers: modifierFlags(e) })
     },
-    [mapCoordinates, sendInput, buttonName, modifierFlags]
+    [mapCoordinates, sendMessage, buttonName, modifierFlags]
   )
 
   const handleMouseUp = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       const { x, y } = mapCoordinates(e)
-      sendInput({ type: 'input_mouse', eventType: 'mouseReleased', x, y, button: buttonName(e.button), modifiers: modifierFlags(e) })
+      sendMessage({ type: 'input_mouse', eventType: 'mouseReleased', x, y, button: buttonName(e.button), modifiers: modifierFlags(e) })
     },
-    [mapCoordinates, sendInput, buttonName, modifierFlags]
+    [mapCoordinates, sendMessage, buttonName, modifierFlags]
   )
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       const { x, y } = mapCoordinates(e)
-      sendInput({ type: 'input_mouse', eventType: 'mouseMoved', x, y, button: 'none', modifiers: modifierFlags(e) })
+      sendMessage({ type: 'input_mouse', eventType: 'mouseMoved', x, y, button: 'none', modifiers: modifierFlags(e) })
     },
-    [mapCoordinates, sendInput, modifierFlags]
+    [mapCoordinates, sendMessage, modifierFlags]
   )
 
   const handleWheel = useCallback(
     (e: React.WheelEvent<HTMLCanvasElement>) => {
       const { x, y } = mapCoordinates(e)
-      sendInput({
+      sendMessage({
         type: 'input_mouse',
         eventType: 'mouseWheel',
         x,
@@ -387,7 +439,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
         modifiers: modifierFlags(e),
       })
     },
-    [mapCoordinates, sendInput, modifierFlags]
+    [mapCoordinates, sendMessage, modifierFlags]
   )
 
   const pressKeyViaHttp = useCallback(
@@ -401,8 +453,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
       parts.push(key)
       const combo = parts.join('+')
 
-      const baseUrl = getApiBaseUrl()
-      fetch(`${baseUrl}/api/agents/${agentSlug}/browser/press`, {
+      apiFetch(`/api/agents/${agentSlug}/browser/press`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId, key: combo }),
@@ -418,10 +469,10 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
       e.preventDefault()
       const text = e.clipboardData.getData('text/plain')
       if (text) {
-        sendInput({ type: 'input_paste', text })
+        sendMessage({ type: 'input_paste', text })
       }
     },
-    [sendInput]
+    [sendMessage]
   )
 
   const handleKeyDown = useCallback(
@@ -436,7 +487,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
 
       if (printable) {
         // Printable characters: send via WebSocket stream (low latency, works via CDP text field)
-        sendInput({
+        sendMessage({
           type: 'input_keyboard',
           eventType: 'keyDown',
           key: e.key,
@@ -453,7 +504,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
       // Pure modifier keys (Shift, Ctrl, etc.) alone: ignore — they're included
       // in the combo string when a non-modifier key is pressed with them.
     },
-    [sendInput, modifierFlags, pressKeyViaHttp]
+    [sendMessage, modifierFlags, pressKeyViaHttp]
   )
 
   const handleKeyUp = useCallback(
@@ -462,7 +513,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
       // Only send keyUp for printable characters via stream.
       // Non-printable keys use press (which sends both down+up).
       if (e.key.length === 1) {
-        sendInput({
+        sendMessage({
           type: 'input_keyboard',
           eventType: 'keyUp',
           key: e.key,
@@ -471,21 +522,36 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
         })
       }
     },
-    [sendInput, modifierFlags]
+    [sendMessage, modifierFlags]
   )
 
+  const handleTabClick = useCallback((targetId: string) => {
+    if (targetId === viewingTargetId) return
+    setAutoFollow(false)
+    setViewingTargetId(targetId)
+    sendMessage({ type: 'switch_tab', targetId })
+  }, [viewingTargetId, sendMessage])
+
+  const toggleAutoFollow = useCallback(() => {
+    const next = !autoFollow
+    setAutoFollow(next)
+    sendMessage({ type: 'follow_agent', enabled: next })
+    if (next && agentActiveTargetId) {
+      setViewingTargetId(agentActiveTargetId)
+    }
+  }, [autoFollow, agentActiveTargetId, sendMessage])
+
   const closeBrowser = useCallback(async () => {
-    const baseUrl = getApiBaseUrl()
     setIsClosing(true)
     try {
       if (isActive) {
         // Interrupt the session first
-        await fetch(`${baseUrl}/api/agents/${agentSlug}/sessions/${sessionId}/interrupt`, {
+        await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/interrupt`, {
           method: 'POST',
         })
       }
       // Close the browser
-      await fetch(`${baseUrl}/api/agents/${agentSlug}/browser/close`, {
+      await apiFetch(`/api/agents/${agentSlug}/browser/close`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId }),
@@ -577,6 +643,18 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
         )}
       </div>
 
+      {/* Tab bar — shown when any tabs are reported */}
+      {expanded && tabs.length >= 1 && (
+        <BrowserTabBar
+          tabs={tabs}
+          viewingTargetId={viewingTargetId}
+          autoFollow={autoFollow}
+          loading={pageLoading}
+          onTabClick={handleTabClick}
+          onToggleAutoFollow={toggleAutoFollow}
+        />
+      )}
+
       {/* Canvas viewport */}
       {expanded && (
         <div className="relative flex-1 min-h-0 bg-black rounded-b-lg overflow-hidden">
@@ -602,7 +680,15 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
           {showOverlay && (
             <div
               className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 backdrop-blur-sm cursor-pointer z-10 transition-opacity duration-300"
+              role="button"
+              tabIndex={0}
               onClick={() => setOverlayDismissedForId(latestRequestId)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  setOverlayDismissedForId(latestRequestId)
+                }
+              }}
             >
               <span className="relative flex h-3 w-3 mb-2">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
@@ -661,11 +747,15 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
   )
 }
 
-function base64ToBlob(base64: string, mimeType: string): Blob {
-  const byteCharacters = atob(base64)
-  const byteNumbers = new Array(byteCharacters.length)
-  for (let i = 0; i < byteCharacters.length; i++) {
-    byteNumbers[i] = byteCharacters.charCodeAt(i)
+function base64ToBlob(base64: string, mimeType: string): Blob | null {
+  try {
+    const byteCharacters = atob(base64)
+    const byteNumbers = new Array(byteCharacters.length)
+    for (let i = 0; i < byteCharacters.length; i++) {
+      byteNumbers[i] = byteCharacters.charCodeAt(i)
+    }
+    return new Blob([new Uint8Array(byteNumbers)], { type: mimeType })
+  } catch {
+    return null
   }
-  return new Blob([new Uint8Array(byteNumbers)], { type: mimeType })
 }

@@ -7,7 +7,8 @@
   "extends": [
     "eslint:recommended",
     "plugin:react/recommended",
-    "plugin:react/jsx-runtime"
+    "plugin:react/jsx-runtime",
+    "plugin:jsx-a11y/recommended"
   ],
   "parser": "@typescript-eslint/parser",
   "parserOptions": {
@@ -17,16 +18,30 @@
       "jsx": true
     }
   },
-  "plugins": ["@typescript-eslint", "react", "react-hooks"],
+  "plugins": ["@typescript-eslint", "react", "react-hooks", "jsx-a11y", "local-rules"],
   "rules": {
     "no-unused-vars": "off",
     "no-undef": "off",
     "@typescript-eslint/no-unused-vars": ["warn", { "argsIgnorePattern": "^_" }],
+    "no-template-curly-in-string": "error",
+    "react/jsx-no-target-blank": "error",
+    "local-rules/no-unhandled-throwing-builtins": "warn",
     "react-hooks/rules-of-hooks": "error",
     "react-hooks/exhaustive-deps": "warn",
     "no-extra-semi": "off",
-    "react/prop-types": "off"
+    "react/prop-types": "off",
+    "jsx-a11y/no-autofocus": "off",
+    "jsx-a11y/heading-has-content": "off",
+    "jsx-a11y/label-has-associated-control": ["warn", { "controlComponents": ["Checkbox"], "depth": 3 }]
   },
+  "overrides": [
+    {
+      "files": ["**/*.test.ts", "**/*.test.tsx"],
+      "rules": {
+        "local-rules/no-unhandled-throwing-builtins": "off"
+      }
+    }
+  ],
   "settings": {
     "react": {
       "version": "detect"

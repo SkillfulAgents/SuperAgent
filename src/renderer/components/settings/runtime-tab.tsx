@@ -13,6 +13,7 @@ import { Alert, AlertDescription, AlertTitle } from '@renderer/components/ui/ale
 import { useSettings, useUpdateSettings, useStartRunner, useRestartRunner, useRefreshAvailability } from '@renderer/hooks/use-settings'
 import { AlertCircle, AlertTriangle, Play, Loader2, RefreshCw, Plus, X } from 'lucide-react'
 import { DEFAULT_LIMA_VM_MEMORY, VALID_LIMA_VM_MEMORY_OPTIONS } from '@shared/lib/container/types'
+import { getDefaultAgentImage } from '@shared/lib/config/version'
 
 const MIN_MEMORY_BYTES = 512 * 1024 * 1024 // 512 MiB
 
@@ -90,10 +91,16 @@ export function RuntimeTab() {
   const [hasChanges, setHasChanges] = useState(false)
 
   // Get saved runtime settings for the current runner
-  const savedRuntimeSettings = settings?.container.runtimeSettings?.[containerRunner] ?? {}
+  const savedRuntimeSettings = useMemo(
+    () => settings?.container.runtimeSettings?.[containerRunner] ?? {},
+    [settings, containerRunner]
+  )
 
   // Get the field definitions for the current runner
-  const currentRunnerFields = RUNTIME_SETTINGS[containerRunner] ?? []
+  const currentRunnerFields = useMemo(
+    () => RUNTIME_SETTINGS[containerRunner] ?? [],
+    [containerRunner]
+  )
 
   // Check if runtime-specific settings have changed
   const runtimeSettingsChanged = useMemo(() => {
@@ -186,14 +193,18 @@ export function RuntimeTab() {
   }, [containerRunner, agentImage, cpuLimit, memoryLimit, settings])
 
   const memoryTooLow = parseMemoryToBytes(memoryLimit) > 0 && parseMemoryToBytes(memoryLimit) < MIN_MEMORY_BYTES
+  const latestAgentImage = getDefaultAgentImage()
+  const trimmedAgentImage = agentImage.trim()
+  const agentImageMissing = trimmedAgentImage.length === 0
+  const isLatestAgentImage = trimmedAgentImage === latestAgentImage
 
   const handleSave = async () => {
-    if (memoryTooLow) return
+    if (memoryTooLow || agentImageMissing) return
     try {
       await updateSettings.mutateAsync({
         container: {
           containerRunner,
-          agentImage,
+          agentImage: trimmedAgentImage,
           resourceLimits: {
             cpu: parseFloat(cpuLimit) || 1,
             memory: memoryLimit,
@@ -523,6 +534,19 @@ export function RuntimeTab() {
         <p className="text-xs text-muted-foreground">
           Docker image to use for agent containers.
         </p>
+        <Button
+          type="button"
+          variant="link"
+          size="sm"
+          className="h-auto px-0 text-xs"
+          onClick={() => setAgentImage(latestAgentImage)}
+          disabled={isLoading || isLatestAgentImage}
+        >
+          Use default
+        </Button>
+        {agentImageMissing && (
+          <p className="text-xs text-destructive">Agent image is required.</p>
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-4">
@@ -792,7 +816,7 @@ export function RuntimeTab() {
           </Button>
           <Button
             onClick={handleSave}
-            disabled={updateSettings.isPending || saveBlocked || memoryTooLow}
+            disabled={updateSettings.isPending || saveBlocked || memoryTooLow || agentImageMissing}
           >
             {updateSettings.isPending ? 'Saving...' : 'Save'}
           </Button>

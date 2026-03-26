@@ -19,6 +19,8 @@ import { and, eq } from 'drizzle-orm'
 
 const browserWss = new WebSocketServer({ noServer: true })
 
+const LOCALHOST_ADDRS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
+
 type AgentRole = 'owner' | 'user' | 'viewer'
 const ROLE_HIERARCHY: Record<AgentRole, number> = { viewer: 0, user: 1, owner: 2 }
 
@@ -27,7 +29,14 @@ async function authenticateWs(
   agentSlug: string,
   minRole: AgentRole,
 ): Promise<boolean> {
-  if (!isAuthMode()) return true
+  if (!isAuthMode()) {
+    // Only restrict to localhost in Electron
+    if (process.type === 'browser') {
+      const addr = request.socket?.remoteAddress
+      if (!addr || !LOCALHOST_ADDRS.has(addr)) return false
+    }
+    return true
+  }
 
   try {
     // Lazy import to avoid pulling in better-auth ESM at startup
@@ -61,6 +70,7 @@ async function authenticateWs(
 
 export function setupBrowserStreamProxy(server: ServerType): void {
   server.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
+    // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- request.url from HTTP server is always valid
     const url = new URL(request.url || '', `http://${request.headers.host}`)
     const match = url.pathname.match(/^\/api\/agents\/([^/]+)\/browser\/stream$/)
 
@@ -90,6 +100,7 @@ export function setupBrowserStreamProxy(server: ServerType): void {
   })
 
   browserWss.on('connection', async (ws: WebSocket, request: IncomingMessage) => {
+    // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- request.url from HTTP server is always valid
     const url = new URL(request.url || '', `http://${request.headers.host}`)
     const match = url.pathname.match(/^\/api\/agents\/([^/]+)\/browser\/stream$/)
     if (!match) { ws.close(1011, 'Invalid path'); return }

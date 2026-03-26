@@ -1,0 +1,23 @@
+id: github-whoami
+name: "Agent requests GitHub account, perform who-am-i"
+mode: happy-path
+baseUrl: http://localhost:47891
+features:
+  - agent-create
+  - session-chat
+  - connected-accounts
+  - request-interactions
+setup:
+  - ensureSecrets
+  - ensureOAuth
+  - ensureAgent
+teardown:
+  - deleteAgent
+steps: |
+  1. Navigate to http://localhost:47891.
+  2. Find the "{{agentName}}" agent in the sidebar, click it.
+  3. Verify agent status is "running" or "idle".
+  4. Send message: "Use the GitHub tool to check who I am. Tell me my GitHub username."
+  5. If a card appears asking to grant GitHub account access, select GitHub and grant it.
+  6. Wait up to 4 minutes for a response.
+  7. Verify the response includes a GitHub username. Take a screenshot.

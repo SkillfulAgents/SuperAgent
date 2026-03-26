@@ -505,7 +505,15 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
                       ? 'opacity-50 pointer-events-none'
                       : 'cursor-pointer hover:bg-muted/50'
                   }`}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => !importTemplate.isPending && fileInputRef.current?.click()}
+                  onKeyDown={(e) => {
+                    if ((e.key === 'Enter' || e.key === ' ') && !importTemplate.isPending) {
+                      e.preventDefault()
+                      fileInputRef.current?.click()
+                    }
+                  }}
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={importTemplate.isPending ? undefined : handleFileDrop}
                 >
