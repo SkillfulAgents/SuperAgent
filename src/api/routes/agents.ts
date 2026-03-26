@@ -17,6 +17,7 @@ import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import {
   listSessions,
+  getSessionSummary,
   updateSessionName,
   registerSession,
   getSessionMessagesWithCompact,
@@ -101,35 +102,28 @@ import type { ApiAgent } from '@shared/lib/types/api'
 async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> {
   return Promise.all(
     agents.map(async (agent) => {
-      const [sessions, pendingTasks, artifacts, unreadSessionIds] = await Promise.all([
-        listSessions(agent.slug),
+      const [sessionSummary, pendingTasks, artifacts, unreadSessionIds] = await Promise.all([
+        getSessionSummary(agent.slug),
         listPendingScheduledTasks(agent.slug),
         listArtifactsFromFilesystem(agent.slug),
         getSessionIdsWithUnreadNotifications(agent.slug),
       ])
 
-      // Compute session summary
+      // Compute session flags from in-memory state (no I/O needed)
       let hasActiveSessions = false
       let hasSessionsAwaitingInput = false
       let hasUnreadNotifications = false
-      let lastActivityAt: Date | null = null
       const hasAgentLevelReviews = reviewManager.getPendingReviewsForAgent(agent.slug).length > 0
-      for (const session of sessions) {
-        const isActive = messagePersister.isSessionActive(session.id)
+      for (const sessionId of sessionSummary.sessionIds) {
+        const isActive = messagePersister.isSessionActive(sessionId)
         if (isActive) {
           hasActiveSessions = true
         }
-        if (messagePersister.isSessionAwaitingInput(session.id) || (isActive && hasAgentLevelReviews)) {
+        if (messagePersister.isSessionAwaitingInput(sessionId) || (isActive && hasAgentLevelReviews)) {
           hasSessionsAwaitingInput = true
         }
-        if (unreadSessionIds.has(session.id)) {
+        if (unreadSessionIds.has(sessionId)) {
           hasUnreadNotifications = true
-        }
-        if (session.lastActivityAt) {
-          const ts = new Date(session.lastActivityAt)
-          if (!lastActivityAt || ts > lastActivityAt) {
-            lastActivityAt = ts
-          }
         }
       }
 
@@ -150,8 +144,8 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
         hasActiveSessions,
         hasSessionsAwaitingInput,
         hasUnreadNotifications,
-        sessionCount: sessions.length,
-        lastActivityAt,
+        sessionCount: sessionSummary.sessionCount,
+        lastActivityAt: sessionSummary.lastActivityAt,
         scheduledTaskCount,
         nextScheduledTaskAt,
         dashboardCount: artifacts.length,

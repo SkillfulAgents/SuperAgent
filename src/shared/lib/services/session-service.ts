@@ -185,6 +185,38 @@ function parseSessionInfo(
 // ============================================================================
 
 /**
+ * Lightweight session summary from filesystem stats only (no JSONL parsing).
+ * Returns session IDs, count, and latest activity time.
+ */
+export async function getSessionSummary(agentSlug: string): Promise<{
+  sessionIds: string[]
+  sessionCount: number
+  lastActivityAt: Date | null
+}> {
+  const sessionsDir = getAgentSessionsDir(agentSlug)
+
+  if (!(await directoryExists(sessionsDir))) {
+    return { sessionIds: [], sessionCount: 0, lastActivityAt: null }
+  }
+
+  const files = await fs.promises.readdir(sessionsDir)
+  const jsonlFiles = files.filter((f) => f.endsWith('.jsonl'))
+
+  let lastActivityAt: Date | null = null
+  const sessionIds: string[] = []
+
+  for (const file of jsonlFiles) {
+    sessionIds.push(path.basename(file, '.jsonl'))
+    const stat = await fs.promises.stat(path.join(sessionsDir, file))
+    if (!lastActivityAt || stat.mtimeMs > lastActivityAt.getTime()) {
+      lastActivityAt = new Date(stat.mtimeMs)
+    }
+  }
+
+  return { sessionIds, sessionCount: jsonlFiles.length, lastActivityAt }
+}
+
+/**
  * List all sessions for an agent
  */
 export async function listSessions(agentSlug: string): Promise<SessionInfo[]> {
