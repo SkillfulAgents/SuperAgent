@@ -4,16 +4,16 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { useSendMessage, useUploadFile, useUploadFolder, useInterruptSession } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
-import { Send, Loader2, StopCircle, WifiOff } from 'lucide-react'
+import { ArrowUp, Loader2, StopCircle, WifiOff } from 'lucide-react'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
-import { AttachmentPreview } from './attachment-preview'
 import { SlashCommandMenu } from './slash-command-menu'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
+import { ChatComposerBox } from './chat-composer-box'
 
 interface MessageInputProps {
   sessionId: string
@@ -158,6 +158,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
   }
 
   const isDisabled = sendMessage.isPending || isActive || composer.isUploading || isOffline
+  const hasTypedMessage = composer.message.trim().length > 0
 
   if (isViewOnly) {
     return null
@@ -166,7 +167,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
   return (
     <form
       onSubmit={composer.handleSubmit}
-      className={`relative pl-2 pr-4 py-[18px] border-t bg-background ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
+      className={`relative px-4 pb-10 pt-3 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
       {...composer.dragHandlers}
     >
       <MountChoiceDialog
@@ -181,40 +182,38 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
         visible={slashMenuOpen}
         filter={slashFilter ?? ''}
       />
-      <AttachmentPreview attachments={composer.attachments} onRemove={composer.removeAttachment} />
-      <div className={`flex items-center gap-1 ${composer.attachments.length > 0 ? 'mt-2' : ''}`}>
-        <AttachmentPicker
-          onFileSelect={composer.handleFileSelect}
-          onFolderSelect={composer.handleFolderSelect}
-          disabled={isDisabled}
-        />
-        <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} />
-        <textarea
-          ref={textareaRef}
-          value={composer.message}
-          onChange={handleChange}
-          onKeyDown={handleKeyDown}
-          onPaste={composer.handlePaste}
-          onFocus={() => { if (slashFilter !== null && slashCommands.length > 0) setSlashMenuOpen(true) }}
-          onBlur={() => setSlashMenuOpen(false)}
-          placeholder={
-            isOffline
-              ? 'No internet connection...'
-              : isActive
-                ? 'Agent is responding...'
-                : 'Type a message...'
-          }
-          disabled={isDisabled}
-          className="flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 min-h-9 max-h-[200px] overflow-y-auto"
-          rows={1}
-          data-testid="message-input"
-        />
-        {isActive ? (
+      <ChatComposerBox
+        attachments={composer.attachments}
+        onRemoveAttachment={composer.removeAttachment}
+        textareaRef={textareaRef}
+        value={composer.message}
+        onChange={handleChange}
+        onKeyDown={handleKeyDown}
+        onPaste={composer.handlePaste}
+        onFocus={() => { if (slashFilter !== null && slashCommands.length > 0) setSlashMenuOpen(true) }}
+        onBlur={() => setSlashMenuOpen(false)}
+        placeholder={
+          isOffline
+            ? 'No internet connection...'
+            : isActive
+              ? 'Agent is responding...'
+              : 'Type a message...'
+        }
+        disabled={isDisabled}
+        rows={2}
+        dataTestId="message-input"
+        leftActions={(
+          <AttachmentPicker
+            onFileSelect={composer.handleFileSelect}
+            onFolderSelect={composer.handleFolderSelect}
+            disabled={isDisabled}
+          />
+        )}
+        rightActions={isActive ? (
           <Button
             type="button"
-            size="icon"
             variant="destructive"
-            className="h-[34px] w-[34px]"
+            className="h-[34px] px-3"
             onClick={handleInterrupt}
             disabled={interruptSession.isPending}
             data-testid="stop-button"
@@ -222,32 +221,46 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
             {interruptSession.isPending ? (
               <Loader2 className="h-4 w-4 animate-spin" />
             ) : (
-              <StopCircle className="h-4 w-4" />
+              <>
+                <StopCircle className="mr-2 h-4 w-4" />
+                Stop
+              </>
             )}
           </Button>
         ) : (
-          <Button
-            type="submit"
-            size="icon"
-            className="h-[34px] w-[34px]"
-            disabled={!composer.canSubmit || sendMessage.isPending}
-            data-testid="send-button"
-          >
-            {sendMessage.isPending || composer.isUploading ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Send className="h-4 w-4" />
-            )}
-          </Button>
+          <>
+            <VoiceInputButton
+              voiceInput={composer.voiceInput}
+              message={composer.message}
+              disabled={isDisabled}
+            />
+            <Button
+              type="submit"
+              size="icon"
+              className="h-[34px] w-[34px]"
+              disabled={!hasTypedMessage || sendMessage.isPending || composer.isUploading}
+              data-testid="send-button"
+            >
+              {sendMessage.isPending || composer.isUploading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <ArrowUp className="h-4 w-4" />
+              )}
+            </Button>
+          </>
         )}
-      </div>
-      {isOffline && !isActive && (
-        <div className="flex items-center gap-1.5 mt-2 text-xs text-destructive">
-          <WifiOff className="h-3 w-3 shrink-0" />
-          <span>No internet connection. Messages cannot be sent.</span>
-        </div>
-      )}
-      <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="mt-2" />
+        footer={(
+          <>
+            {isOffline && !isActive && (
+              <div className="mt-2 flex items-center gap-1.5 text-xs text-destructive">
+                <WifiOff className="h-3 w-3 shrink-0" />
+                <span>No internet connection. Messages cannot be sent.</span>
+              </div>
+            )}
+            <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="mt-2" />
+          </>
+        )}
+      />
     </form>
   )
 }

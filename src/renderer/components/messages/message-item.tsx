@@ -1,7 +1,5 @@
-
 import { cn } from '@shared/lib/utils/cn'
-import { User, Bot, Terminal, Link2 } from 'lucide-react'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
+import { Link2 } from 'lucide-react'
 import { ToolCallItem } from './tool-call-item'
 import { SubAgentBlock } from './subagent-block'
 import { MessageContextMenu } from './message-context-menu'
@@ -38,16 +36,7 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
   const hasText = text && text.length > 0
   const toolCalls = message.toolCalls || []
 
-  // Detect slash commands (user messages starting with /)
   const isSlashCommand = isUser && hasText && text.startsWith('/')
-
-  // Compute sender initials for the avatar
-  const senderInitials = message.sender?.name
-    ?.split(' ')
-    .map((w) => w[0])
-    .join('')
-    .toUpperCase()
-    .slice(0, 2)
 
   // Don't render assistant messages that have no text and no tool calls
   // (and aren't streaming). These are transient empty entries from partially-
@@ -63,20 +52,6 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
     ? (hasText || attachedFiles.length === 0)
     : (hasText || isStreaming)
 
-  const avatarContent = (
-    <div
-      className={cn(
-        'h-8 w-8 rounded-full items-center justify-center shrink-0 hidden md:flex',
-        isUser && 'bg-primary text-primary-foreground',
-        isAssistant && 'bg-muted'
-      )}
-    >
-      {isSlashCommand && <Terminal className="h-4 w-4" />}
-      {isUser && !isSlashCommand && (senderInitials ? <span className="text-xs font-medium">{senderInitials}</span> : <User className="h-4 w-4" />)}
-      {isAssistant && <Bot className="h-4 w-4" />}
-    </div>
-  )
-
   return (
     <div
       className={cn(
@@ -85,16 +60,6 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
       )}
       data-testid={isUser ? 'message-user' : isAssistant ? 'message-assistant' : undefined}
     >
-      {/* Avatar */}
-      {message.sender ? (
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>{avatarContent}</TooltipTrigger>
-            <TooltipContent>{message.sender.name}</TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-      ) : avatarContent}
-
       {/* Message content */}
       <div
         className={cn(
@@ -102,14 +67,19 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
           isUser && 'items-end'
         )}
       >
+        {/* Sender name for shared agent sessions */}
+        {isUser && message.sender?.name && (
+          <span className="text-xs text-muted-foreground">{message.sender.name}</span>
+        )}
+
         {/* Message bubble - only show if there's text content */}
         {showMessageBubble && (
           <MessageContextMenu text={text || ''} onRemove={onRemoveMessage ? () => onRemoveMessage(message.id) : undefined}>
             <div
               className={cn(
-                'rounded-lg px-4 py-2 max-w-full overflow-hidden',
-                isUser && 'bg-primary text-primary-foreground',
-                isAssistant && 'bg-muted'
+                'rounded-lg max-w-full overflow-hidden text-foreground',
+                isUser && 'bg-zinc-100 dark:bg-zinc-800/70 px-4 py-2',
+                isAssistant && 'py-1'
               )}
             >
               {/* Slash command display */}
@@ -129,10 +99,7 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
               {/* Text content */}
               {hasText && !isSlashCommand && (
                 <div className={cn(
-                  'prose prose-sm max-w-none min-w-0 break-words',
-                  // Use inverted (light) text for user messages (dark bg) and dark mode
-                  // prose-user-message resets prose-invert in dark mode where primary bg is light
-                  isUser ? 'prose-invert prose-user-message' : 'dark:prose-invert'
+                  'prose prose-sm max-w-none min-w-0 break-words font-medium dark:prose-invert'
                 )}>
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
@@ -141,7 +108,7 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
                       pre: ({ children }) => (
                         <pre className={cn(
                           'rounded-md p-3 overflow-x-auto text-[13px] leading-relaxed border',
-                          isUser ? 'bg-black/20 text-inherit border-white/10' : 'bg-black/[0.03] dark:bg-white/[0.06] border-border/60 text-foreground'
+                          'bg-black/[0.03] dark:bg-white/[0.06] border-border/60 text-foreground'
                         )}>
                           {children}
                         </pre>
@@ -151,12 +118,12 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
                         return isInline ? (
                           <code className={cn(
                             'rounded px-1.5 py-0.5 text-[13px] font-medium',
-                            isUser ? 'bg-black/20 text-inherit' : 'bg-black/[0.05] dark:bg-white/[0.08] text-foreground'
+                            'bg-black/[0.05] dark:bg-white/[0.08] text-foreground'
                           )}>
                             {children}
                           </code>
                         ) : (
-                          <code className={cn(className, isUser ? 'text-inherit' : 'text-foreground')}>{children}</code>
+                          <code className={cn(className, 'text-foreground')}>{children}</code>
                         )
                       },
                       // Style tables with borders and horizontal scroll
@@ -170,7 +137,7 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
                       th: ({ children }) => (
                         <th className={cn(
                           'border-b-2 px-3 py-1.5 text-left font-semibold',
-                          isUser ? 'border-white/30 dark:border-black/20' : 'border-border'
+                          'border-border'
                         )}>
                           {children}
                         </th>
@@ -178,7 +145,7 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
                       td: ({ children }) => (
                         <td className={cn(
                           'border-b px-3 py-1.5',
-                          isUser ? 'border-white/20 dark:border-black/10' : 'border-border'
+                          'border-border'
                         )}>
                           {children}
                         </td>
@@ -191,7 +158,7 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
                           rel="noopener noreferrer"
                           className={cn(
                             'hover:underline',
-                            isUser ? 'text-blue-200 dark:text-blue-600' : 'text-blue-500'
+                            'text-blue-500'
                           )}
                         >
                           {children}

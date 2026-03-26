@@ -656,7 +656,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
   return (
     <div className="relative flex-1 min-h-0 overflow-hidden">
       <div className="overflow-y-auto h-full" ref={scrollRef} onScroll={handleScroll} data-testid="message-list">
-        <div className="p-4 space-y-4">
+        <div className="mx-auto w-full max-w-[720px] px-4 pb-4 pt-14 space-y-4">
         {messages?.filter((item) => {
           // Hide system-injected user messages (e.g., MCP registration continuation)
           if (item.type === 'user') {
@@ -675,8 +675,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
                   <DeliveredFiles files={turnDeliveredFiles.get(item.id)!} agentSlug={agentSlug} />
                 )}
                 {turnElapsedTimes.has(item.id) && item.id !== deferredElapsedMessageId && (
-                  <div className="text-xs text-muted-foreground pb-1 -mt-1 tabular-nums ml-11 italic">
-                    Agent took {formatElapsed(turnElapsedTimes.get(item.id)!)}
+                  <div className="flex items-center gap-3 pb-1 -mt-3 text-xs text-muted-foreground tabular-nums italic">
+                    <span>Worked for {formatElapsed(turnElapsedTimes.get(item.id)!)}</span>
+                    <div className="h-px flex-1 bg-border" />
                   </div>
                 )}
               </>
@@ -766,8 +767,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
           <DeliveredFiles files={turnDeliveredFiles.get(deferredElapsedMessageId)!} agentSlug={agentSlug} />
         )}
         {deferredElapsedMessageId && turnElapsedTimes.has(deferredElapsedMessageId) && (
-          <div className="text-xs text-muted-foreground pb-1 -mt-1 tabular-nums ml-11 italic">
-            Agent took {formatElapsed(turnElapsedTimes.get(deferredElapsedMessageId)!)}
+          <div className="flex items-center gap-3 pb-1 -mt-3 text-xs text-muted-foreground tabular-nums italic">
+            <span>Worked for {formatElapsed(turnElapsedTimes.get(deferredElapsedMessageId)!)}</span>
+            <div className="h-px flex-1 bg-border" />
           </div>
         )}
 
