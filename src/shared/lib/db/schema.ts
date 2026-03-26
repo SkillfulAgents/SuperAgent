@@ -205,6 +205,8 @@ export const proxyAuditLog = sqliteTable('proxy_audit_log', {
   method: text('method').notNull(),
   statusCode: integer('status_code'),
   errorMessage: text('error_message'),
+  policyDecision: text('policy_decision'), // allow, block, review, denied_by_user, review_timeout
+  matchedScopes: text('matched_scopes'), // JSON array string of matched scope names
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
 })
 
@@ -259,6 +261,8 @@ export const mcpAuditLog = sqliteTable('mcp_audit_log', {
   statusCode: integer('status_code'),
   errorMessage: text('error_message'),
   durationMs: integer('duration_ms'),
+  policyDecision: text('policy_decision'), // allow, block, review, denied_by_user, review_timeout
+  matchedTool: text('matched_tool'), // tool name for tools/call requests
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
 })
 
@@ -294,6 +298,32 @@ export const messageAuthor = sqliteTable('message_author', {
   sessionIdx: index('message_author_session_idx').on(table.sessionId),
 }))
 
+// API scope policies - per-account scope-level access policies
+export const apiScopePolicies = sqliteTable('api_scope_policies', {
+  id: text('id').primaryKey(),
+  accountId: text('account_id').notNull()
+    .references(() => connectedAccounts.id, { onDelete: 'cascade' }),
+  scope: text('scope').notNull(), // scope name, or '*' for account default
+  decision: text('decision', { enum: ['allow', 'review', 'block'] }).notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  accountScopeUnique: uniqueIndex('api_scope_policies_unique').on(table.accountId, table.scope),
+}))
+
+// MCP tool policies - per-MCP tool-level access policies
+export const mcpToolPolicies = sqliteTable('mcp_tool_policies', {
+  id: text('id').primaryKey(),
+  mcpId: text('mcp_id').notNull()
+    .references(() => remoteMcpServers.id, { onDelete: 'cascade' }),
+  toolName: text('tool_name').notNull(), // tool name, or '*' for MCP default
+  decision: text('decision', { enum: ['allow', 'review', 'block'] }).notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  mcpToolUnique: uniqueIndex('mcp_tool_policies_unique').on(table.mcpId, table.toolName),
+}))
+
 // Type exports for convenience
 export type ConnectedAccount = typeof connectedAccounts.$inferSelect
 export type NewConnectedAccount = typeof connectedAccounts.$inferInsert
@@ -321,3 +351,7 @@ export type User = typeof user.$inferSelect
 export type AuthSession = typeof authSession.$inferSelect
 export type AuthAccount = typeof authAccount.$inferSelect
 export type Verification = typeof verification.$inferSelect
+export type ApiScopePolicy = typeof apiScopePolicies.$inferSelect
+export type NewApiScopePolicy = typeof apiScopePolicies.$inferInsert
+export type McpToolPolicy = typeof mcpToolPolicies.$inferSelect
+export type NewMcpToolPolicy = typeof mcpToolPolicies.$inferInsert

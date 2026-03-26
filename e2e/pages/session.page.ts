@@ -288,6 +288,52 @@ export class SessionPage {
     await container.locator('[data-testid="script-deny-btn"]').click()
   }
 
+  // --- Proxy Review Request Helpers ---
+
+  async waitForProxyReviewRequest(timeout = 15000) {
+    await expect(this.page.locator('[data-testid="proxy-review-request"]').first()).toBeVisible({ timeout })
+  }
+
+  getProxyReviewRequests() {
+    return this.page.locator('[data-testid="proxy-review-request"]')
+  }
+
+  async allowProxyReview() {
+    const container = this.page.locator('[data-testid="proxy-review-request"]').first()
+    await container.locator('[data-testid="proxy-review-allow-btn"]').click()
+  }
+
+  async denyProxyReview() {
+    const container = this.page.locator('[data-testid="proxy-review-request"]').first()
+    await container.locator('[data-testid="proxy-review-deny-btn"]').click()
+  }
+
+  async waitForProxyReviewCompleted(status: 'allowed' | 'denied', timeout = 10000) {
+    await expect(
+      this.page.locator(`[data-testid="proxy-review-completed"][data-status="${status}"]`).first()
+    ).toBeVisible({ timeout })
+  }
+
+  async clickRememberOnProxyReview() {
+    const container = this.page.locator('[data-testid="proxy-review-request"]').first()
+    await container.locator('[data-testid="proxy-review-remember-btn"]').click()
+  }
+
+  async alwaysAllowScope(scope: string) {
+    const container = this.page.locator('[data-testid="proxy-review-request"]').first()
+    await container.locator(`[data-testid="proxy-review-always-allow-${scope}"]`).click()
+  }
+
+  async alwaysDenyScope(scope: string) {
+    const container = this.page.locator('[data-testid="proxy-review-request"]').first()
+    await container.locator(`[data-testid="proxy-review-always-deny-${scope}"]`).click()
+  }
+
+  async alwaysAllowAll() {
+    const container = this.page.locator('[data-testid="proxy-review-request"]').first()
+    await container.locator('[data-testid="proxy-review-always-allow-all"]').click()
+  }
+
   // --- Computer Use Request Helpers ---
 
   async waitForComputerUseRequest(timeout = 15000) {

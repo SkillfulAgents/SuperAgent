@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { Loader2, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
-import { formatDistanceToNow } from 'date-fns'
+import { formatDistanceToNow, format } from 'date-fns'
 
 interface AuditLogEntry {
   id: string
@@ -16,6 +16,8 @@ interface AuditLogEntry {
   statusCode: number | null
   errorMessage: string | null
   durationMs: number | null
+  policyDecision: string | null
+  matchedScopes: string | null
   createdAt: string
 }
 
@@ -64,8 +66,83 @@ function SourceBadge({ source }: { source: 'proxy' | 'mcp' }) {
   )
 }
 
+function PolicyBadge({ decision }: { decision: string | null }) {
+  if (!decision) return null
+  const styles: Record<string, string> = {
+    allow: 'text-green-700 bg-green-100 dark:text-green-300 dark:bg-green-900/40',
+    approved_by_user: 'text-blue-700 bg-blue-100 dark:text-blue-300 dark:bg-blue-900/40',
+    block: 'text-red-700 bg-red-100 dark:text-red-300 dark:bg-red-900/40',
+    denied_by_user: 'text-red-700 bg-red-100 dark:text-red-300 dark:bg-red-900/40',
+    review_timeout: 'text-orange-700 bg-orange-100 dark:text-orange-300 dark:bg-orange-900/40',
+  }
+  const labels: Record<string, string> = {
+    allow: 'auto-allowed',
+    approved_by_user: 'user-approved',
+    block: 'auto-blocked',
+    denied_by_user: 'user-denied',
+    review_timeout: 'timeout',
+  }
+  return (
+    <span
+      className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold leading-none ${styles[decision] ?? 'text-muted-foreground bg-muted'}`}
+      title={`Policy: ${decision}`}
+    >
+      {labels[decision] ?? decision}
+    </span>
+  )
+}
+
+function DetailRow({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex gap-2">
+      <span className="text-muted-foreground shrink-0 w-24">{label}</span>
+      <span className="min-w-0 break-all">{value}</span>
+    </div>
+  )
+}
+
+function EntryDetails({ entry }: { entry: AuditLogEntry }) {
+  const scopes: string[] = entry.matchedScopes ? (() => {
+    try { return JSON.parse(entry.matchedScopes) } catch { return [] }
+  })() : []
+  const ts = new Date(entry.createdAt)
+
+  return (
+    <div className="text-xs space-y-1.5 pt-2 mt-2 border-t border-dashed">
+      <DetailRow label="Full path" value={<span className="font-mono">{entry.targetUrl}</span>} />
+      <DetailRow label="Source" value={entry.source === 'mcp' ? 'MCP Proxy' : 'API Proxy'} />
+      <DetailRow label="Toolkit / MCP" value={entry.label} />
+      <DetailRow label="Method" value={entry.method} />
+      <DetailRow label="Status" value={entry.statusCode ?? '—'} />
+      {entry.policyDecision && (
+        <DetailRow label="Policy" value={<PolicyBadge decision={entry.policyDecision} />} />
+      )}
+      {scopes.length > 0 && (
+        <DetailRow
+          label="Scopes"
+          value={
+            <div className="flex flex-wrap gap-1">
+              {scopes.map((s: string) => (
+                <span key={s} className="font-mono bg-muted rounded px-1 py-0.5">{s}</span>
+              ))}
+            </div>
+          }
+        />
+      )}
+      {entry.durationMs !== null && (
+        <DetailRow label="Duration" value={`${entry.durationMs}ms`} />
+      )}
+      {entry.errorMessage && (
+        <DetailRow label="Error" value={<span className="text-red-600 dark:text-red-400">{entry.errorMessage}</span>} />
+      )}
+      <DetailRow label="Timestamp" value={format(ts, 'yyyy-MM-dd HH:mm:ss.SSS')} />
+    </div>
+  )
+}
+
 export function AuditLogTab({ agentSlug }: AuditLogTabProps) {
   const [page, setPage] = useState(0)
+  const [expandedId, setExpandedId] = useState<string | null>(null)
   const { track } = useAnalyticsTracking()
 
   // Track when the user views the API logs tab
@@ -119,39 +196,49 @@ export function AuditLogTab({ agentSlug }: AuditLogTabProps) {
           <div className="space-y-1.5">
             {entries.map((entry) => {
               const time = formatDistanceToNow(new Date(entry.createdAt), { addSuffix: true })
+              const isExpanded = expandedId === entry.id
 
               return (
                 <div
                   key={entry.id}
-                  className="grid grid-cols-[auto_auto_auto_auto_1fr_auto] items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs"
+                  className="rounded-md border bg-muted/30 px-3 py-2 text-xs cursor-pointer hover:bg-muted/50 transition-colors"
+                  onClick={() => setExpandedId(isExpanded ? null : entry.id)}
                 >
-                  <SourceBadge source={entry.source} />
-                  <MethodBadge method={entry.method} />
-                  <StatusBadge status={entry.statusCode} />
-                  <span className="text-muted-foreground font-medium truncate max-w-[80px]" title={entry.label}>
-                    {entry.label}
-                  </span>
-                  <div className="min-w-0">
-                    <p
-                      className="font-mono text-xs truncate"
-                      title={entry.targetUrl}
-                    >
-                      {entry.targetUrl}
-                    </p>
-                    {entry.errorMessage && (
-                      <p className="text-red-600 dark:text-red-400 mt-0.5 truncate" title={entry.errorMessage}>
-                        {entry.errorMessage}
-                      </p>
+                  <div className="grid grid-cols-[auto_auto_auto_auto_auto_1fr_auto] items-center gap-2">
+                    <SourceBadge source={entry.source} />
+                    <MethodBadge method={entry.method} />
+                    <StatusBadge status={entry.statusCode} />
+                    {entry.policyDecision ? (
+                      <PolicyBadge decision={entry.policyDecision} />
+                    ) : (
+                      <span />
                     )}
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    {entry.durationMs !== null && (
-                      <span className="text-muted-foreground tabular-nums">{entry.durationMs}ms</span>
-                    )}
-                    <span className="text-muted-foreground whitespace-nowrap">
-                      {time}
+                    <span className="text-muted-foreground font-medium truncate max-w-[80px]" title={entry.label}>
+                      {entry.label}
                     </span>
+                    <div className="min-w-0">
+                      <p
+                        className="font-mono text-xs truncate"
+                        title={entry.targetUrl}
+                      >
+                        {entry.targetUrl}
+                      </p>
+                      {!isExpanded && entry.errorMessage && (
+                        <p className="text-red-600 dark:text-red-400 mt-0.5 truncate" title={entry.errorMessage}>
+                          {entry.errorMessage}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {entry.durationMs !== null && (
+                        <span className="text-muted-foreground tabular-nums">{entry.durationMs}ms</span>
+                      )}
+                      <span className="text-muted-foreground whitespace-nowrap">
+                        {time}
+                      </span>
+                    </div>
                   </div>
+                  {isExpanded && <EntryDetails entry={entry} />}
                 </div>
               )
             })}

@@ -1,6 +1,8 @@
 import { Hono } from 'hono'
 import crypto from 'crypto'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
+import { resolveMcpPolicy } from '@shared/lib/proxy/policy-resolver'
+import { reviewManager } from '@shared/lib/proxy/review-manager'
 import { db } from '@shared/lib/db'
 import {
   remoteMcpServers,
@@ -18,6 +20,8 @@ async function logMcpAuditEntry(entry: {
   statusCode?: number
   errorMessage?: string
   durationMs?: number
+  policyDecision?: string
+  matchedTool?: string
 }): Promise<void> {
   try {
     await db.insert(mcpAuditLog).values({
@@ -26,6 +30,8 @@ async function logMcpAuditEntry(entry: {
       statusCode: entry.statusCode ?? null,
       errorMessage: entry.errorMessage ?? null,
       durationMs: entry.durationMs ?? null,
+      policyDecision: entry.policyDecision ?? null,
+      matchedTool: entry.matchedTool ?? null,
       createdAt: new Date(),
     })
   } catch (error) {
@@ -145,6 +151,100 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   }
 
   const mcp = mappings[0].mcp
+  const method = c.req.method
+
+  // 2.5 Parse JSON-RPC body early for policy enforcement and audit logging
+  let bodyBuffer: ArrayBuffer | undefined
+  let mcpMethodInfo = rest || '/'
+  let toolName: string | null = null
+  if (method !== 'GET' && method !== 'HEAD') {
+    bodyBuffer = await c.req.arrayBuffer()
+    try {
+      const text = new TextDecoder().decode(bodyBuffer)
+      const jsonRpc = JSON.parse(text) as {
+        method?: string
+        params?: { name?: string }
+      }
+      if (jsonRpc.method) {
+        mcpMethodInfo = jsonRpc.method
+        if (jsonRpc.method === 'tools/call' && jsonRpc.params?.name) {
+          toolName = jsonRpc.params.name
+          mcpMethodInfo = `tools/call: ${toolName}`
+        }
+      }
+    } catch {
+      // Not JSON or not JSON-RPC — keep the HTTP path
+    }
+  }
+
+  // 2.6 Policy enforcement
+  const userId = mcp.userId ?? 'local'
+  let policyResult
+  try {
+    policyResult = await resolveMcpPolicy(mcpId, toolName, userId)
+  } catch (policyError) {
+    console.error('[mcp-proxy] Policy enforcement failed, defaulting to review:', policyError)
+    policyResult = { decision: 'review' as const, matchedScopes: [] as string[], scopeDescriptions: {} as Record<string, string>, resolvedFrom: 'global_default' as const }
+  }
+
+  if (policyResult.decision === 'block') {
+    await logMcpAuditEntry({
+      agentSlug,
+      remoteMcpId: mcp.id,
+      remoteMcpName: mcp.name,
+      method,
+      requestPath: mcpMethodInfo,
+      policyDecision: 'block',
+      matchedTool: toolName ?? undefined,
+    })
+    return c.json({
+      error: 'blocked_by_policy',
+      message: 'This request was blocked by your MCP access policy.',
+      tool: toolName,
+      settingsHint: 'You can adjust policies in Settings > MCP Servers > Policies',
+    }, 403)
+  }
+
+  // Track precise outcome for audit logging
+  let resolvedPolicyDecision: string = policyResult.decision
+
+  if (policyResult.decision === 'review') {
+    try {
+      const decision = await reviewManager.requestReview({
+        agentSlug,
+        accountId: mcpId,
+        toolkit: mcp.name,
+        method,
+        targetPath: mcpMethodInfo,
+        matchedScopes: policyResult.matchedScopes,
+        scopeDescriptions: policyResult.scopeDescriptions,
+      })
+      if (decision === 'deny') {
+        await logMcpAuditEntry({
+          agentSlug,
+          remoteMcpId: mcp.id,
+          remoteMcpName: mcp.name,
+          method,
+          requestPath: mcpMethodInfo,
+          policyDecision: 'denied_by_user',
+          matchedTool: toolName ?? undefined,
+        })
+        return c.json({ error: 'denied_by_user', message: 'Request denied by user.' }, 403)
+      }
+      resolvedPolicyDecision = 'approved_by_user'
+    } catch {
+      await logMcpAuditEntry({
+        agentSlug,
+        remoteMcpId: mcp.id,
+        remoteMcpName: mcp.name,
+        method,
+        requestPath: mcpMethodInfo,
+        policyDecision: 'review_timeout',
+        matchedTool: toolName ?? undefined,
+      })
+      return c.json({ error: 'review_timeout', message: 'Request required user approval but timed out.' }, 408)
+    }
+  }
 
   // 3. Get access token, refreshing if expired
   let accessToken = mcp.accessToken
@@ -172,6 +272,8 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
           method: c.req.method,
           requestPath: rest,
           errorMessage: 'Token refresh failed',
+          policyDecision: resolvedPolicyDecision,
+          matchedTool: toolName ?? undefined,
         })
 
         return c.json({ error: 'MCP server requires re-authentication' }, 401)
@@ -192,7 +294,6 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   const targetUrl = `${baseUrl}${targetPath}${queryString}`
 
   // 5. Forward request
-  const method = c.req.method
   const forwardHeaders = new Headers()
   const skipHeaders = new Set([
     'host',
@@ -214,29 +315,6 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     forwardHeaders.set('Authorization', `Bearer ${accessToken}`)
   }
 
-  let bodyBuffer: ArrayBuffer | undefined
-  let mcpMethodInfo = rest || '/'
-  if (method !== 'GET' && method !== 'HEAD') {
-    bodyBuffer = await c.req.arrayBuffer()
-
-    // Parse JSON-RPC body to extract MCP method and tool name for audit logging
-    try {
-      const text = new TextDecoder().decode(bodyBuffer)
-      const jsonRpc = JSON.parse(text) as {
-        method?: string
-        params?: { name?: string }
-      }
-      if (jsonRpc.method) {
-        mcpMethodInfo = jsonRpc.method
-        if (jsonRpc.method === 'tools/call' && jsonRpc.params?.name) {
-          mcpMethodInfo = `tools/call: ${jsonRpc.params.name}`
-        }
-      }
-    } catch {
-      // Not JSON or not JSON-RPC — keep the HTTP path
-    }
-  }
-
   const init: RequestInit = { method, headers: forwardHeaders }
   if (bodyBuffer) {
     init.body = bodyBuffer
@@ -255,6 +333,8 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
       requestPath: mcpMethodInfo,
       statusCode: response.status,
       durationMs,
+      policyDecision: resolvedPolicyDecision,
+      matchedTool: toolName ?? undefined,
     })
 
     // If 401, mark MCP as auth_required
@@ -296,6 +376,8 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
       requestPath: mcpMethodInfo,
       errorMessage: `Proxy request failed: ${error}`,
       durationMs,
+      policyDecision: resolvedPolicyDecision,
+      matchedTool: toolName ?? undefined,
     })
     return c.json(
       { error: 'MCP proxy request failed', details: String(error) },

@@ -413,6 +413,106 @@ export class UserInputRequestScenario implements MockScenario {
 }
 
 /**
+ * Proxy review scenario - simulates the proxy holding an API request for user review.
+ * Uses the real ReviewManager so that Allow/Deny buttons work end-to-end.
+ */
+export class ProxyReviewScenario implements MockScenario {
+  constructor(
+    private toolkit: string,
+    private method: string,
+    private targetPath: string,
+    private matchedScopes: string[],
+    private scopeDescriptions: Record<string, string>
+  ) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    const agentSlug = client.getAgentId()
+    let delay = 50
+
+    // Start streaming an assistant message first
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_start' } },
+      })
+    }, delay)
+    delay += 50
+
+    // Stream some text
+    const text = `Making API call: ${this.method} ${this.targetPath}`
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
+      })
+    }, delay)
+    delay += 50
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } },
+      })
+    }, delay)
+    delay += 50
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+      })
+    }, delay)
+    delay += 50
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_stop' } },
+      })
+    }, delay)
+    delay += 100
+
+    // Now trigger the proxy review via ReviewManager
+    const capturedDelay = delay
+    setTimeout(async () => {
+      const { reviewManager } = await import('../proxy/review-manager')
+      // Fire-and-forget — the promise resolves when the user decides
+      reviewManager.requestReview({
+        agentSlug,
+        accountId: 'mock-account-id',
+        toolkit: this.toolkit,
+        method: this.method,
+        targetPath: this.targetPath,
+        matchedScopes: this.matchedScopes,
+        scopeDescriptions: this.scopeDescriptions,
+      }).then((decision) => {
+        // Write JSONL and complete the session after the user decides
+        client.writeJsonlEntry(sessionId, {
+          type: 'user',
+          message: { content: userMessage },
+          timestamp: new Date().toISOString(),
+        })
+        client.writeJsonlEntry(sessionId, {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: `API request ${decision === 'allow' ? 'approved' : 'denied'} by user.` }] },
+          timestamp: new Date().toISOString(),
+        })
+        client.emitStreamMessage(sessionId, {
+          type: 'result',
+          content: { type: 'result', subtype: 'success' },
+        })
+      }).catch(() => {
+        // Timeout or rejection — complete the session anyway
+        client.emitStreamMessage(sessionId, {
+          type: 'result',
+          content: { type: 'result', subtype: 'success' },
+        })
+      })
+    }, capturedDelay)
+  }
+}
+
+/**
  * Mock implementation of ContainerClient for E2E testing.
  * Simulates container behavior without requiring Docker/Podman.
  */
@@ -499,6 +599,14 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         },
       },
     ])],
+    // Proxy review scenario for E2E tests
+    ['proxy review', new ProxyReviewScenario(
+      'slack',
+      'POST',
+      'api/chat.postMessage',
+      ['chat:write'],
+      { 'chat:write': 'Send a message to a channel' }
+    )],
     // Tool rendering scenarios for E2E tests
     ['read file', new ToolUseScenario(
       'Read',
