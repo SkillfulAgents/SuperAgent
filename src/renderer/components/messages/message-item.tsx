@@ -67,6 +67,11 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
           isUser && 'items-end'
         )}
       >
+        {/* Sender name for shared agent sessions */}
+        {isUser && message.sender?.name && (
+          <span className="text-xs text-muted-foreground">{message.sender.name}</span>
+        )}
+
         {/* Message bubble - only show if there's text content */}
         {showMessageBubble && (
           <MessageContextMenu text={text || ''} onRemove={onRemoveMessage ? () => onRemoveMessage(message.id) : undefined}>
