@@ -218,7 +218,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
         targetPath: mcpMethodInfo,
         matchedScopes: policyResult.matchedScopes,
         scopeDescriptions: policyResult.scopeDescriptions,
-      })
+      }, c.req.raw.signal)
       if (decision === 'deny') {
         await logMcpAuditEntry({
           agentSlug,

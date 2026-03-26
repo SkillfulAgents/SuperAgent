@@ -24,7 +24,7 @@ interface PendingReview {
 export class ReviewManager {
   private pending: Map<string, PendingReview> = new Map()
 
-  requestReview(details: ReviewDetails): Promise<'allow' | 'deny'> {
+  requestReview(details: ReviewDetails, signal?: AbortSignal): Promise<'allow' | 'deny'> {
     const id = crypto.randomUUID()
 
     return new Promise<'allow' | 'deny'>((resolve, reject) => {
@@ -32,6 +32,25 @@ export class ReviewManager {
         this.pending.delete(id)
         reject(new Error('Review timeout'))
       }, REVIEW_TIMEOUT_MS)
+
+      const cleanup = () => {
+        clearTimeout(timer)
+        this.pending.delete(id)
+        broadcastReview(details.agentSlug, {
+          type: 'proxy_review_resolved',
+          reviewId: id,
+          decision: 'deny',
+        })
+      }
+
+      // If the request is aborted (e.g. task stopped), clean up the orphaned review
+      if (signal) {
+        signal.addEventListener('abort', () => {
+          if (!this.pending.has(id)) return // already resolved/timed out
+          cleanup()
+          reject(new Error('Request aborted'))
+        }, { once: true })
+      }
 
       this.pending.set(id, { id, details, resolve, reject, timer })
 

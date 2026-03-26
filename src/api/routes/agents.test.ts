@@ -242,10 +242,10 @@ vi.mock('@shared/lib/proxy/host-url', () => ({
   getAppPort: () => 3000,
 }))
 
-const mockGetPendingReviewsForAgent = vi.fn(() => [])
+const mockGetPendingReviewsForAgent = vi.fn((_slug: string) => [] as any[])
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {
-    getPendingReviewsForAgent: (...args: unknown[]) => mockGetPendingReviewsForAgent(...args),
+    getPendingReviewsForAgent: (slug: string) => mockGetPendingReviewsForAgent(slug),
     submitDecision: vi.fn(),
     resolveMatchingPending: vi.fn(),
   },

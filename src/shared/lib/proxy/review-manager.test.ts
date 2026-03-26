@@ -333,4 +333,78 @@ describe('ReviewManager', () => {
     const result = await promise
     expect(result).toBe('allow')
   })
+
+  it('abort signal cleans up orphaned review and rejects promise', async () => {
+    const controller = new AbortController()
+
+    const promise = manager.requestReview({
+      agentSlug: 'agent-1',
+      accountId: 'acc-1',
+      toolkit: 'gmail',
+      method: 'GET',
+      targetPath: '/path',
+      matchedScopes: ['gmail.readonly'],
+      scopeDescriptions: {},
+    }, controller.signal)
+
+    // Review is pending
+    expect(manager.getPendingReviewsForAgent('agent-1').length).toBe(1)
+
+    // Simulate request abort (e.g. task stopped)
+    controller.abort()
+
+    await expect(promise).rejects.toThrow('Request aborted')
+
+    // Review should be cleaned up
+    expect(manager.getPendingReviewsForAgent('agent-1').length).toBe(0)
+  })
+
+  it('abort signal broadcasts proxy_review_resolved so UI dismisses the prompt', async () => {
+    const controller = new AbortController()
+
+    const promise = manager.requestReview({
+      agentSlug: 'agent-1',
+      accountId: 'acc-1',
+      toolkit: 'gmail',
+      method: 'GET',
+      targetPath: '/path',
+      matchedScopes: [],
+      scopeDescriptions: {},
+    }, controller.signal)
+
+    mockBroadcastReview.mockClear()
+    controller.abort()
+    await promise.catch(() => {})
+
+    expect(mockBroadcastReview).toHaveBeenCalledOnce()
+    const [agentSlug, event] = mockBroadcastReview.mock.calls[0]
+    expect(agentSlug).toBe('agent-1')
+    expect(event.type).toBe('proxy_review_resolved')
+    expect(event.decision).toBe('deny')
+  })
+
+  it('abort after submitDecision is a no-op (review already resolved)', async () => {
+    const controller = new AbortController()
+
+    const promise = manager.requestReview({
+      agentSlug: 'agent-1',
+      accountId: 'acc-1',
+      toolkit: 'gmail',
+      method: 'GET',
+      targetPath: '/path',
+      matchedScopes: [],
+      scopeDescriptions: {},
+    }, controller.signal)
+
+    const pending = manager.getPendingReviewsForAgent('agent-1')
+    manager.submitDecision(pending[0].id, 'allow')
+    const result = await promise
+    expect(result).toBe('allow')
+
+    // Aborting after resolution should not broadcast a spurious event
+    mockBroadcastReview.mockClear()
+    controller.abort()
+    expect(manager.getPendingReviewsForAgent('agent-1').length).toBe(0)
+    expect(mockBroadcastReview).not.toHaveBeenCalled()
+  })
 })

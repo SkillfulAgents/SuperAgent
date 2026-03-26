@@ -49,8 +49,8 @@ vi.mock('@renderer/hooks/use-agents', () => ({
   useAgents: () => mockUseAgents(),
 }))
 
-const mockUseSessions = vi.fn((slug: string) => ({
-  data: slug === 'test-agent'
+const mockUseSessions = vi.fn((_slug: string): { data: any[] | undefined } => ({
+  data: _slug === 'test-agent'
     ? [
         {
           id: 'session-1',
