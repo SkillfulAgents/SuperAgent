@@ -653,7 +653,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
   }
 
   return (
-    <div className="relative flex-1 min-h-0">
+    <div className="relative flex-1 min-h-0 overflow-hidden">
       <div className="overflow-y-auto h-full" ref={scrollRef} onScroll={handleScroll} data-testid="message-list">
         <div className="p-4 space-y-4">
         {messages?.filter((item) => {
