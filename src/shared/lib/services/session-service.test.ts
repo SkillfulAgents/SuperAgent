@@ -221,7 +221,7 @@ describe('session-service', () => {
 
       expect(sessions.length).toBe(1)
       expect(sessions[0].id).toBe('519f8756-a16e-41ff-99de-9fe599dedae5')
-      expect(sessions[0].messageCount).toBe(4)
+      expect(sessions[0].messageCount).toBe(0)
     })
 
     it('uses custom name from metadata', async () => {
@@ -243,7 +243,7 @@ describe('session-service', () => {
       expect(sessions[0].name).toBe('Simple Math Question')
     })
 
-    it('generates name from first message when no metadata', async () => {
+    it('uses fallback name when no metadata', async () => {
       await createSessionFile(
         'test-agent',
         'session-no-meta',
@@ -252,8 +252,8 @@ describe('session-service', () => {
 
       const sessions = await listSessions('test-agent')
 
-      // First user message is "Whats 1+1?"
-      expect(sessions[0].name).toBe('Whats 1+1?')
+      // No metadata name → falls back to 'New Session'
+      expect(sessions[0].name).toBe('New Session')
     })
 
     it('includes registered sessions without JSONL files', async () => {

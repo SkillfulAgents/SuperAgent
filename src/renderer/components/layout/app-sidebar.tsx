@@ -395,8 +395,11 @@ export const AgentMenuItem = React.forwardRef<
   const allScheduledTasks = pendingTasks.length + cancelledTasks.length
   const dashboards = Array.isArray(artifacts) ? artifacts : []
 
-  // Use pre-aggregated counts to determine if the chevron should show
+  // Use pre-aggregated counts to determine if the chevron should show.
+  // Also show when isOpen (agent selected) since sessions may have been
+  // created after the agent list was fetched.
   const hasExpandableContent =
+    isOpen ||
     (agent.sessionCount ?? 0) > 0 ||
     (agent.scheduledTaskCount ?? 0) > 0 ||
     (agent.dashboardCount ?? 0) > 0
