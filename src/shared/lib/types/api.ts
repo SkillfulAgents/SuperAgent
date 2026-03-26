@@ -25,6 +25,16 @@ export interface ApiAgent {
   containerPort: number | null
   healthWarnings?: HealthCheckResult[]
   templateStatus?: ApiAgentTemplateStatus
+  // Summary fields (included in list response)
+  hasActiveSessions?: boolean
+  hasSessionsAwaitingInput?: boolean
+  hasUnreadNotifications?: boolean
+  sessionCount?: number
+  lastActivityAt?: Date | null
+  scheduledTaskCount?: number
+  nextScheduledTaskAt?: Date | null
+  dashboardCount?: number
+  dashboardNames?: string[]
 }
 
 /**

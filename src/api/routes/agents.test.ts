@@ -81,6 +81,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     persistMessage: vi.fn(),
     markAllSessionsInactiveForAgent: vi.fn(),
     isSessionActive: vi.fn(() => false),
+    isSessionAwaitingInput: vi.fn(() => false),
     isSubscribed: vi.fn(() => true),
     subscribeToSession: vi.fn(),
     markSessionActive: vi.fn(),
@@ -210,6 +211,7 @@ vi.mock('@shared/lib/services/secrets-service', () => ({
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   listScheduledTasks: vi.fn(),
   listPendingScheduledTasks: vi.fn(),
+  listCancelledScheduledTasks: vi.fn(),
 }))
 
 vi.mock('@shared/lib/composio/providers', () => ({
@@ -230,6 +232,10 @@ vi.mock('@shared/lib/services/skillset-service', () => ({
 
 vi.mock('@shared/lib/services/artifact-service', () => ({
   listArtifactsFromFilesystem: vi.fn(),
+}))
+
+vi.mock('@shared/lib/services/notification-service', () => ({
+  getSessionIdsWithUnreadNotifications: vi.fn(() => Promise.resolve(new Set())),
 }))
 
 vi.mock('@shared/lib/proxy/host-url', () => ({
@@ -299,8 +305,10 @@ import {
   hasOnboardingSkill,
   collectAgentRequiredEnvVars,
 } from '@shared/lib/services/agent-template-service'
-import { getAgent } from '@shared/lib/services/agent-service'
-import { getSessionMessagesWithCompact } from '@shared/lib/services/session-service'
+import { getAgent, listAgentsWithStatus } from '@shared/lib/services/agent-service'
+import { listSessions, getSessionMessagesWithCompact } from '@shared/lib/services/session-service'
+import { listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
+import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
 
 // ============================================================================
@@ -2055,5 +2063,252 @@ describe('typing indicator — POST /:id/sessions/:sessionId/typing', () => {
     expect(res.status).toBe(200)
 
     expect(messagePersister.broadcastSessionEvent).not.toHaveBeenCalled()
+  })
+})
+
+// ============================================================================
+// GET /api/agents - List with enriched summary
+// ============================================================================
+
+describe('GET /api/agents (enriched summary)', () => {
+  let app: ReturnType<typeof createApp>
+
+  const baseAgent = {
+    slug: 'agent-1',
+    name: 'Agent One',
+    description: 'Test agent',
+    createdAt: new Date('2026-01-01'),
+    status: 'running' as const,
+    containerPort: 8080,
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockIsAuthMode.mockReturnValue(false)
+    // Default: no sessions, no tasks, no artifacts
+    vi.mocked(listSessions).mockResolvedValue([])
+    vi.mocked(listPendingScheduledTasks).mockResolvedValue([])
+    vi.mocked(listArtifactsFromFilesystem).mockResolvedValue([])
+  })
+
+  it('returns enriched agents with summary fields', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listSessions).mockResolvedValue([
+      {
+        id: 'sess-1',
+        agentSlug: 'agent-1',
+        name: 'Session 1',
+        createdAt: new Date('2026-01-01T10:00:00Z'),
+        lastActivityAt: new Date('2026-01-01T12:00:00Z'),
+        messageCount: 5,
+      },
+    ])
+
+    const res = await getReq(app, '/api/agents')
+    expect(res.status).toBe(200)
+
+    const body = await res.json()
+    expect(body).toHaveLength(1)
+    expect(body[0].slug).toBe('agent-1')
+    expect(body[0].hasActiveSessions).toBe(false)
+    expect(body[0].hasSessionsAwaitingInput).toBe(false)
+    expect(body[0].lastActivityAt).toBe('2026-01-01T12:00:00.000Z')
+    expect(body[0].scheduledTaskCount).toBe(0)
+    expect(body[0].nextScheduledTaskAt).toBeNull()
+    expect(body[0].dashboardCount).toBe(0)
+    expect(body[0].dashboardNames).toEqual([])
+  })
+
+  it('detects active sessions via messagePersister', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listSessions).mockResolvedValue([
+      {
+        id: 'sess-active',
+        agentSlug: 'agent-1',
+        name: 'Active Session',
+        createdAt: new Date(),
+        lastActivityAt: new Date(),
+        messageCount: 1,
+      },
+    ])
+    vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+
+    const res = await getReq(app, '/api/agents')
+    const body = await res.json()
+
+    expect(body[0].hasActiveSessions).toBe(true)
+    expect(messagePersister.isSessionActive).toHaveBeenCalledWith('sess-active')
+  })
+
+  it('detects sessions awaiting input', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listSessions).mockResolvedValue([
+      {
+        id: 'sess-waiting',
+        agentSlug: 'agent-1',
+        name: 'Waiting Session',
+        createdAt: new Date(),
+        lastActivityAt: new Date(),
+        messageCount: 1,
+      },
+    ])
+    vi.mocked(messagePersister.isSessionAwaitingInput).mockReturnValue(true)
+
+    const res = await getReq(app, '/api/agents')
+    const body = await res.json()
+
+    expect(body[0].hasSessionsAwaitingInput).toBe(true)
+  })
+
+  it('picks the latest lastActivityAt across sessions', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listSessions).mockResolvedValue([
+      {
+        id: 'sess-old',
+        agentSlug: 'agent-1',
+        name: 'Old Session',
+        createdAt: new Date('2026-01-01T08:00:00Z'),
+        lastActivityAt: new Date('2026-01-01T09:00:00Z'),
+        messageCount: 3,
+      },
+      {
+        id: 'sess-new',
+        agentSlug: 'agent-1',
+        name: 'New Session',
+        createdAt: new Date('2026-01-01T10:00:00Z'),
+        lastActivityAt: new Date('2026-01-01T15:00:00Z'),
+        messageCount: 7,
+      },
+    ])
+
+    const res = await getReq(app, '/api/agents')
+    const body = await res.json()
+
+    expect(body[0].lastActivityAt).toBe('2026-01-01T15:00:00.000Z')
+  })
+
+  it('returns scheduled task count and nearest next execution', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listPendingScheduledTasks).mockResolvedValue([
+      {
+        id: 'task-1',
+        agentSlug: 'agent-1',
+        scheduleType: 'cron',
+        scheduleExpression: '0 9 * * *',
+        prompt: 'do stuff',
+        name: 'Morning task',
+        status: 'pending',
+        nextExecutionAt: new Date('2026-01-02T09:00:00Z'),
+        lastExecutedAt: null,
+        isRecurring: true,
+        executionCount: 0,
+        lastSessionId: null,
+        createdBySessionId: null,
+        timezone: null,
+        createdAt: new Date('2026-01-01'),
+        cancelledAt: null,
+      },
+      {
+        id: 'task-2',
+        agentSlug: 'agent-1',
+        scheduleType: 'cron',
+        scheduleExpression: '0 */2 * * *',
+        prompt: 'check stuff',
+        name: 'Frequent check',
+        status: 'pending',
+        nextExecutionAt: new Date('2026-01-01T14:00:00Z'),
+        lastExecutedAt: null,
+        isRecurring: true,
+        executionCount: 0,
+        lastSessionId: null,
+        createdBySessionId: null,
+        timezone: null,
+        createdAt: new Date('2026-01-01'),
+        cancelledAt: null,
+      },
+    ] as any)
+
+    const res = await getReq(app, '/api/agents')
+    const body = await res.json()
+
+    expect(body[0].scheduledTaskCount).toBe(2)
+    // Should pick the earlier of the two next execution times
+    expect(body[0].nextScheduledTaskAt).toBe('2026-01-01T14:00:00.000Z')
+  })
+
+  it('returns dashboard count and names from artifacts', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listArtifactsFromFilesystem).mockResolvedValue([
+      { slug: 'dash-1', name: 'Sales Dashboard', description: '', status: 'running', port: 5000 },
+      { slug: 'dash-2', name: 'Metrics', description: '', status: 'stopped', port: 5001 },
+    ] as any)
+
+    const res = await getReq(app, '/api/agents')
+    const body = await res.json()
+
+    expect(body[0].dashboardCount).toBe(2)
+    expect(body[0].dashboardNames).toEqual(['Sales Dashboard', 'Metrics'])
+  })
+
+  it('uses artifact slug as fallback name when name is empty', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listArtifactsFromFilesystem).mockResolvedValue([
+      { slug: 'unnamed-dash', name: '', description: '', status: 'running', port: 5000 },
+    ] as any)
+
+    const res = await getReq(app, '/api/agents')
+    const body = await res.json()
+
+    expect(body[0].dashboardNames).toEqual(['unnamed-dash'])
+  })
+
+  it('enriches agents in auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    // DB select().from() needs to return a chainable that ends with .where() resolving
+    mockDbSelectFrom.mockReturnValue({
+      where: vi.fn().mockResolvedValue([{ agentSlug: 'agent-1' }]),
+    })
+    const { getAgentWithStatus } = await import('@shared/lib/services/agent-service')
+    vi.mocked(getAgentWithStatus).mockResolvedValue(baseAgent)
+    vi.mocked(listSessions).mockResolvedValue([])
+
+    const res = await getReq(app, '/api/agents')
+    expect(res.status).toBe(200)
+
+    const body = await res.json()
+    expect(body).toHaveLength(1)
+    // Summary fields should be present even in auth mode
+    expect(body[0]).toHaveProperty('hasActiveSessions')
+    expect(body[0]).toHaveProperty('scheduledTaskCount')
+    expect(body[0]).toHaveProperty('dashboardCount')
+  })
+
+  it('returns lastActivityAt as null when agent has no sessions', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listSessions).mockResolvedValue([])
+
+    const res = await getReq(app, '/api/agents')
+    const body = await res.json()
+
+    expect(body[0].lastActivityAt).toBeNull()
+  })
+
+  it('enriches multiple agents in parallel', async () => {
+    const agent2 = { ...baseAgent, slug: 'agent-2', name: 'Agent Two' }
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent, agent2])
+    vi.mocked(listSessions).mockResolvedValue([])
+
+    const res = await getReq(app, '/api/agents')
+    const body = await res.json()
+
+    expect(body).toHaveLength(2)
+    // Both agents should have summary fields
+    expect(body[0]).toHaveProperty('dashboardCount', 0)
+    expect(body[1]).toHaveProperty('dashboardCount', 0)
+    // listSessions called once per agent
+    expect(listSessions).toHaveBeenCalledTimes(2)
+    expect(listSessions).toHaveBeenCalledWith('agent-1')
+    expect(listSessions).toHaveBeenCalledWith('agent-2')
   })
 })

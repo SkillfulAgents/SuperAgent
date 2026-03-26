@@ -90,6 +90,73 @@ import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import * as fs from 'fs'
 import { Readable } from 'stream'
 import * as path from 'path'
+import type { ApiAgent } from '@shared/lib/types/api'
+
+/**
+ * Enrich an array of ApiAgent objects with summary fields:
+ * active/awaiting sessions, last activity, scheduled tasks, dashboards.
+ * Uses Promise.all per-agent for parallelism.
+ */
+async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> {
+  return Promise.all(
+    agents.map(async (agent) => {
+      const [sessions, pendingTasks, artifacts, unreadSessionIds] = await Promise.all([
+        listSessions(agent.slug),
+        listPendingScheduledTasks(agent.slug),
+        listArtifactsFromFilesystem(agent.slug),
+        getSessionIdsWithUnreadNotifications(agent.slug),
+      ])
+
+      // Compute session summary
+      let hasActiveSessions = false
+      let hasSessionsAwaitingInput = false
+      let hasUnreadNotifications = false
+      let lastActivityAt: Date | null = null
+      for (const session of sessions) {
+        if (messagePersister.isSessionActive(session.id)) {
+          hasActiveSessions = true
+        }
+        if (messagePersister.isSessionAwaitingInput(session.id)) {
+          hasSessionsAwaitingInput = true
+        }
+        if (unreadSessionIds.has(session.id)) {
+          hasUnreadNotifications = true
+        }
+        if (session.lastActivityAt) {
+          const ts = new Date(session.lastActivityAt)
+          if (!lastActivityAt || ts > lastActivityAt) {
+            lastActivityAt = ts
+          }
+        }
+      }
+
+      // Compute scheduled task summary
+      const scheduledTaskCount = pendingTasks.length
+      let nextScheduledTaskAt: Date | null = null
+      for (const task of pendingTasks) {
+        if (task.nextExecutionAt) {
+          const ts = new Date(task.nextExecutionAt)
+          if (!nextScheduledTaskAt || ts < nextScheduledTaskAt) {
+            nextScheduledTaskAt = ts
+          }
+        }
+      }
+
+      return {
+        ...agent,
+        hasActiveSessions,
+        hasSessionsAwaitingInput,
+        hasUnreadNotifications,
+        sessionCount: sessions.length,
+        lastActivityAt,
+        scheduledTaskCount,
+        nextScheduledTaskAt,
+        dashboardCount: artifacts.length,
+        dashboardNames: artifacts.map((a) => a.name || a.slug),
+      }
+    })
+  )
+}
 
 /**
  * For interrupted Task tool calls (no result), discover the subagent ID
@@ -432,6 +499,7 @@ Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
 }
 
 // GET /api/agents - List agents with status (filtered by ACL in auth mode)
+// Response includes pre-aggregated summary: active sessions, scheduled tasks, dashboards.
 agents.get('/', async (c) => {
   try {
     // In auth mode, only return agents the user has explicit ACL entries for.
@@ -440,6 +508,7 @@ agents.get('/', async (c) => {
     // agent routes (via middleware), but agents must be explicitly shared with
     // admins for them to appear in the sidebar. This prevents admins from
     // seeing every agent in large deployments.
+    let agentList: ApiAgent[]
     if (isAuthMode()) {
       const userId = getCurrentUserId(c)
       const rows = await db
@@ -449,10 +518,12 @@ agents.get('/', async (c) => {
       const agents = await Promise.all(
         rows.map((r) => getAgentWithStatus(r.agentSlug))
       )
-      return c.json(agents.filter(Boolean))
+      agentList = agents.filter((a): a is ApiAgent => a !== null)
+    } else {
+      agentList = await listAgentsWithStatus()
     }
 
-    return c.json(await listAgentsWithStatus())
+    return c.json(await enrichAgentsWithSummary(agentList))
   } catch (error) {
     console.error('Failed to fetch agents:', error)
     return c.json({ error: 'Failed to fetch agents' }, 500)
