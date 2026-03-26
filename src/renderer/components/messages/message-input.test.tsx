@@ -57,11 +57,11 @@ describe('MessageInput', () => {
     expect(screen.getByPlaceholderText('Type a message...')).toBeInTheDocument()
   })
 
-  it('shows send button when not active', () => {
+  it('shows a disabled send button when idle and empty', () => {
     renderWithProviders(
       <MessageInput sessionId="s-1" agentSlug="agent-1" />
     )
-    expect(screen.getByTestId('send-button')).toBeInTheDocument()
+    expect(screen.getByTestId('send-button')).toBeDisabled()
   })
 
   it('shows stop button when session is active', () => {
@@ -139,12 +139,35 @@ describe('MessageInput', () => {
     })
   })
 
-  it('send button is disabled when input is empty', () => {
+  it('enables the send button after the user types', async () => {
+    const user = userEvent.setup()
     renderWithProviders(
       <MessageInput sessionId="s-1" agentSlug="agent-1" />
     )
-    const sendButton = screen.getByTestId('send-button')
-    expect(sendButton).toBeDisabled()
+
+    const input = screen.getByTestId('message-input')
+    await user.type(input, 'Hello')
+
+    expect(screen.getByTestId('send-button')).toBeEnabled()
+  })
+
+  it('submits message on send button click', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(
+      <MessageInput sessionId="s-1" agentSlug="agent-1" />
+    )
+
+    const input = screen.getByTestId('message-input')
+    await user.type(input, 'Hello by button')
+    await user.click(screen.getByTestId('send-button'))
+
+    await waitFor(() => {
+      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith({
+        sessionId: 's-1',
+        agentSlug: 'agent-1',
+        content: 'Hello by button',
+      })
+    })
   })
 
   it('calls interrupt on stop button click', async () => {
@@ -271,7 +294,7 @@ describe('MessageInput', () => {
     renderWithProviders(
       <MessageInput sessionId="s-1" agentSlug="agent-1" />
     )
-    expect(screen.getByTitle('Attach')).toBeInTheDocument()
+    expect(screen.getByTitle('Add files')).toBeInTheDocument()
   })
 
   // ---- Offline state ----
@@ -315,7 +338,7 @@ describe('MessageInput', () => {
       renderWithProviders(
         <MessageInput sessionId="s-1" agentSlug="agent-1" />
       )
-      expect(screen.getByTitle('Attach')).toBeDisabled()
+      expect(screen.getByTitle('Add files')).toBeDisabled()
     })
   })
 
