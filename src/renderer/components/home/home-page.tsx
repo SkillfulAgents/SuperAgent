@@ -1,5 +1,5 @@
 
-import { useState, useMemo } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { useAgents } from '@renderer/hooks/use-agents'
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
@@ -10,6 +10,7 @@ import { useSelection } from '@renderer/context/selection-context'
 import { AgentStatus, getAgentActivityStatus } from '@renderer/components/agents/agent-status'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { CreateAgentDialog } from '@renderer/components/agents/create-agent-dialog'
+import { ApprovalGalleryPage } from '@renderer/components/dev/approval-gallery-page'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Button } from '@renderer/components/ui/button'
 import { useSidebar } from '@renderer/components/ui/sidebar'
@@ -374,7 +375,11 @@ export function HomePage() {
   const { data: agents, isLoading: agentsLoading } = useAgents()
   const { data: userSettings } = useUserSettings()
   const { data: discoverableAgents } = useDiscoverableAgents()
-  const { data: usageData } = useUsageData(7)
+  const { data: usageData, refetch: fetchUsage } = useUsageData(7)
+  const [showApprovalsDevGallery, setShowApprovalsDevGallery] = useState(() =>
+    typeof window !== 'undefined' &&
+      new URLSearchParams(window.location.search).get('dev') === 'approvals'
+  )
   const orderedAgents = useMemo(
     () => applyAgentOrder(agents ?? [], userSettings?.agentOrder),
     [agents, userSettings?.agentOrder]
@@ -384,10 +389,29 @@ export function HomePage() {
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
 
+  // Fetch usage data once when agents are loaded
+  useEffect(() => {
+    if (agents?.length) {
+      fetchUsage()
+    }
+  }, [agents?.length, fetchUsage])
+
+  useEffect(() => {
+    const syncFromUrl = () => {
+      setShowApprovalsDevGallery(new URLSearchParams(window.location.search).get('dev') === 'approvals')
+    }
+
+    window.addEventListener('popstate', syncFromUrl)
+    return () => window.removeEventListener('popstate', syncFromUrl)
+  }, [])
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && sidebarState === 'collapsed' && !isFullScreen
 
   const hasAgents = orderedAgents.length > 0
   const hasTemplates = discoverableAgents && discoverableAgents.length > 0
+
+  if (showApprovalsDevGallery) {
+    return <ApprovalGalleryPage />
+  }
 
   return (
     <div className="h-full flex flex-col">
