@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that SuperAgent can execute browser commands to retrieve page title from https://example.com and respond with \"Example Domain\"",
+  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title (\"Example Domain\"), and returned the correct response.",
   "steps": [
-    "Navigated to http://localhost:47891 - Page loaded successfully, showing SuperAgent application with sidebar containing multiple agents",
-    "Clicked on \"QA-20260319-203516-de52\" agent in sidebar - Agent was selected and chat interface opened with \"Start a conversation\" prompt",
-    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message was successfully submitted and agent status changed to \"working\"",
-    "Waited up to 3 minutes for response - Agent completed the task in 17 seconds and returned response with browser tool activity logs",
-    "Verified response mentions \"Example Domain\" - Response displays: \"The page title is \"Example Domain\". The page contains a brief description stating that this domain is for use in documentation examples without needing permission, along with a \"Learn more\" link pointing to IANA.\" - Requirement met successfully"
+    "Navigated to http://localhost:47891 - Page loaded successfully with Super Agent interface showing three agents in the sidebar.",
+    "Found and clicked the \"QA-20260327-000409-6rax\" agent in the sidebar - Agent page opened with message input box ready for conversation.",
+    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" by typing and clicking send button - Message was accepted and agent began processing.",
+    "Waited up to 3 minutes for response - Agent completed all browser operations in 14 seconds and returned the response.",
+    "Verified response mentions \"Example Domain\" - Response clearly displays \"The page title is Example Domain.\" with successful tool call indicators (green checkmarks) for: Open Browser, Page Snapshot, Browser Command (get title), and Close Browser."
   ],
   "bugs": [],
-  "durationMs": 79338,
-  "sessionId": "64ef7af2-1af9-4fe8-9bbc-19f2f265c0e3",
+  "durationMs": 116174,
+  "sessionId": "88a6fa1e-3a21-46f4-95e8-964d319dd347",
   "cost": {
-    "inputTokens": 234,
-    "outputTokens": 2154,
-    "cacheCreationTokens": 29901,
-    "cacheReadTokens": 669574,
+    "inputTokens": 396,
+    "outputTokens": 4161,
+    "cacheCreationTokens": 53888,
+    "cacheReadTokens": 1369394,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.115338
+    "totalCostUsd": 0.2255
   }
 }
