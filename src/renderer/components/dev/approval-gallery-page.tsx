@@ -86,6 +86,16 @@ const sideBySideQuestions = [
     ],
     multiSelect: false,
   },
+  {
+    question: 'What support tier should we offer?',
+    header: 'Support',
+    options: [
+      { label: 'Email', description: 'Best for smaller teams with lower urgency.' },
+      { label: 'Slack', description: 'Faster shared-channel support for paid plans.' },
+      { label: 'Dedicated CSM', description: 'High-touch support for enterprise customers.' },
+    ],
+    multiSelect: false,
+  },
 ]
 
 function demoToolCall(toolCall: ApiToolCall) {

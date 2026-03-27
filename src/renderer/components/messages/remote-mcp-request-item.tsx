@@ -12,6 +12,7 @@ import { COMMON_MCP_SERVERS } from '@shared/lib/mcp/common-servers'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { DeclineButton } from './decline-button'
+import { RequestTitleChip } from './request-title-chip'
 import { cn } from '@shared/lib/utils/cn'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useInitiateMcpOAuth } from '@renderer/hooks/use-remote-mcps'
@@ -291,7 +292,7 @@ export function RemoteMcpRequestItem({
   // Completed state
   if (status === 'provided' || status === 'declined') {
     return (
-      <div className="border rounded-md bg-muted/30 text-sm">
+      <div className="border rounded-md bg-muted/30 shadow-md text-sm">
         <div className="flex items-center gap-2 px-3 py-2">
           <ServiceIcon
             slug={mcpSlug}
@@ -318,15 +319,15 @@ export function RemoteMcpRequestItem({
   // Read-only state for viewers
   if (readOnly) {
     return (
-      <div className="border rounded-md bg-purple-50 dark:bg-purple-950 border-purple-200 dark:border-purple-800 text-sm">
-        <div className="flex items-center gap-3 p-3">
-          <div className="h-8 w-8 rounded-full bg-purple-100 dark:bg-purple-900 flex items-center justify-center shrink-0">
-            <ServiceIcon slug={mcpSlug} fallback="mcp" className="h-4 w-4 text-purple-600 dark:text-purple-400" />
-          </div>
+      <div className="border rounded-md bg-muted/30 shadow-md text-sm">
+        <div className="flex items-start gap-3 p-3">
           <div className="flex-1 min-w-0">
-            <div className="font-medium text-purple-900 dark:text-purple-100">
+            <RequestTitleChip
+              className="bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200"
+              icon={<ServiceIcon slug={mcpSlug} fallback="mcp" className="text-current" />}
+            >
               MCP Server Requested: {name || url}
-            </div>
+            </RequestTitleChip>
             {reason && (
               <p className="text-sm text-purple-700 dark:text-purple-300 mt-1 whitespace-pre-line">{reason}</p>
             )}
@@ -339,17 +340,16 @@ export function RemoteMcpRequestItem({
 
   // Pending/submitting/registering/oauth_pending state
   return (
-    <div className="border rounded-md bg-purple-50 dark:bg-purple-950 border-purple-200 dark:border-purple-800 text-sm">
-      <div className="flex items-start gap-3 p-3">
-        <div className="h-8 w-8 rounded-full bg-purple-100 dark:bg-purple-900 flex items-center justify-center shrink-0">
-          <ServiceIcon slug={mcpSlug} fallback="mcp" className="h-4 w-4 text-purple-600 dark:text-purple-400" />
-        </div>
-
+    <div className="border rounded-md bg-muted/30 shadow-md text-sm">
+      <div className="p-3">
         <div className="flex-1 min-w-0 space-y-3">
           <div>
-            <div className="font-medium text-purple-900 dark:text-purple-100">
+            <RequestTitleChip
+              className="bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200"
+              icon={<ServiceIcon slug={mcpSlug} fallback="mcp" className="text-current" />}
+            >
               MCP Server Requested: {name || url}
-            </div>
+            </RequestTitleChip>
             <p className="text-xs text-purple-600 dark:text-purple-400 mt-0.5 truncate">{url}</p>
             {reason && (
               <p className="text-sm text-purple-700 dark:text-purple-300 mt-1 whitespace-pre-line">{reason}</p>

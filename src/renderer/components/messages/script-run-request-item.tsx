@@ -2,6 +2,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { useState } from 'react'
 import { Terminal, Check, Loader2, Clock, ShieldCheck } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
+import { RequestTitleChip } from './request-title-chip'
 import { cn } from '@shared/lib/utils/cn'
 import { DeclineButton } from './decline-button'
 
@@ -98,7 +99,7 @@ export function ScriptRunRequestItem({
   // Completed state
   if (status === 'executed' || status === 'denied') {
     return (
-      <div className="border rounded-md bg-muted/30 text-sm" data-testid="script-run-request-completed" data-status={status}>
+      <div className="border rounded-md bg-muted/30 shadow-md text-sm" data-testid="script-run-request-completed" data-status={status}>
         <div className="flex items-center gap-2 px-3 py-2">
           <Terminal
             className={cn(
@@ -123,15 +124,12 @@ export function ScriptRunRequestItem({
   // Read-only state for viewers
   if (readOnly) {
     return (
-      <div className="border rounded-md bg-orange-50 dark:bg-orange-950/50 border-orange-200 dark:border-orange-800 text-sm">
-        <div className="flex items-center gap-3 p-3">
-          <div className="h-8 w-8 rounded-full bg-orange-100 dark:bg-orange-900 flex items-center justify-center shrink-0">
-            <Terminal className="h-4 w-4 text-orange-600 dark:text-orange-400" />
-          </div>
+      <div className="border rounded-md bg-muted/30 shadow-md text-sm">
+        <div className="flex items-start gap-3 p-3">
           <div className="flex-1 min-w-0">
-            <div className="font-medium text-orange-900 dark:text-orange-100">
+            <RequestTitleChip className="bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200" icon={<Terminal />}>
               Script Execution Requested
-            </div>
+            </RequestTitleChip>
             <p className="text-sm text-orange-700 dark:text-orange-300 mt-0.5 whitespace-pre-line">{explanation}</p>
           </div>
           <span className="text-xs text-orange-600 dark:text-orange-400 shrink-0">Waiting for approval</span>
@@ -142,18 +140,14 @@ export function ScriptRunRequestItem({
 
   // Pending/submitting state
   return (
-    <div className="border rounded-md bg-orange-50 dark:bg-orange-950/50 border-orange-200 dark:border-orange-800 text-sm" data-testid="script-run-request">
-      <div className="flex items-start gap-3 p-3">
-        <div className="h-8 w-8 rounded-full bg-orange-100 dark:bg-orange-900 flex items-center justify-center shrink-0">
-          <Terminal className="h-4 w-4 text-orange-600 dark:text-orange-400" />
-        </div>
-
+    <div className="border rounded-md bg-muted/30 shadow-md text-sm" data-testid="script-run-request">
+      <div className="p-3">
         <div className="flex-1 min-w-0 space-y-3">
           <div>
             <div className="flex items-center gap-2">
-              <span className="font-medium text-orange-900 dark:text-orange-100">
+              <RequestTitleChip className="bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200" icon={<Terminal />}>
                 Script Execution Request
-              </span>
+              </RequestTitleChip>
               <span className="text-xs px-1.5 py-0.5 rounded bg-orange-200 dark:bg-orange-800 text-orange-700 dark:text-orange-300">
                 {SCRIPT_TYPE_LABELS[scriptType] || scriptType}
               </span>

@@ -15,6 +15,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Checkbox } from '@renderer/components/ui/checkbox'
 import { Input } from '@renderer/components/ui/input'
 import { DeclineButton } from './decline-button'
+import { RequestTitleChip } from './request-title-chip'
 import { cn } from '@shared/lib/utils/cn'
 import { ScopePolicyEditor } from '@renderer/components/settings/scope-policy-editor'
 import { PolicySummaryPill } from '@renderer/components/ui/policy-summary-pill'
@@ -270,7 +271,7 @@ export function ConnectedAccountRequestItem({
   // Completed state
   if (status === 'provided' || status === 'declined') {
     return (
-      <div className="border rounded-md bg-muted/30 text-sm">
+      <div className="border rounded-md bg-muted/30 shadow-md text-sm">
         <div className="flex items-center gap-2 px-3 py-2">
           <ServiceIcon
             slug={toolkit}
@@ -299,16 +300,16 @@ export function ConnectedAccountRequestItem({
   // Read-only state for viewers
   if (readOnly) {
     return (
-      <div className="border rounded-md bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800 text-sm">
-        <div className="flex items-center gap-3 p-3">
-          <div className="h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center shrink-0">
-            <ServiceIcon slug={toolkit} fallback="request" className="h-4 w-4 text-blue-600 dark:text-blue-400" />
-          </div>
+      <div className="border rounded-md bg-muted/30 shadow-md text-sm">
+        <div className="flex items-start gap-3 p-3">
           <div className="flex-1 min-w-0">
-            <div className="font-medium text-blue-900 dark:text-blue-100">
+            <RequestTitleChip
+              className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
+              icon={<ServiceIcon slug={toolkit} fallback="request" className="text-current" />}
+            >
               Access Requested:{' '}
               <span className="capitalize">{provider?.displayName || toolkit}</span>
-            </div>
+            </RequestTitleChip>
             {reason && (
               <p className="text-sm text-blue-700 dark:text-blue-300 mt-1 whitespace-pre-line">{reason}</p>
             )}
@@ -321,23 +322,20 @@ export function ConnectedAccountRequestItem({
 
   // Pending/submitting/connecting state
   return (
-    <div className="border rounded-md bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800 text-sm">
-      <div className="flex items-start gap-3 p-3">
-        {/* Icon */}
-        <div className="h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center shrink-0">
-          <ServiceIcon slug={toolkit} fallback="request" className="h-4 w-4 text-blue-600 dark:text-blue-400" />
-        </div>
-
-        {/* Content */}
+    <div className="border rounded-md bg-muted/30 shadow-md text-sm">
+      <div className="p-3">
         <div className="flex-1 min-w-0 space-y-3">
           {/* Header */}
           <div>
-            <div className="font-medium text-blue-900 dark:text-blue-100">
+            <RequestTitleChip
+              className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
+              icon={<ServiceIcon slug={toolkit} fallback="request" className="text-current" />}
+            >
               Access Requested:{' '}
               <span className="capitalize">
                 {provider?.displayName || toolkit}
               </span>
-            </div>
+            </RequestTitleChip>
             {reason && (
               <p className="text-sm text-blue-700 dark:text-blue-300 mt-1 whitespace-pre-line">{reason}</p>
             )}

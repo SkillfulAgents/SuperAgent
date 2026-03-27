@@ -1,10 +1,11 @@
 import { apiFetch } from '@renderer/lib/api'
 
-import { useState } from 'react'
-import { HelpCircle, Check, Loader2 } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { HelpCircle, Check, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
-import { Input } from '@renderer/components/ui/input'
+import { Textarea } from '@renderer/components/ui/textarea'
 import { DeclineButton } from './decline-button'
+import { RequestTitleChip } from './request-title-chip'
 import { cn } from '@shared/lib/utils/cn'
 
 interface Question {
@@ -41,9 +42,19 @@ export function QuestionRequestItem({
   const [otherTexts, setOtherTexts] = useState<Record<number, string>>({})
   // Track which questions have "Other" selected
   const [otherSelected, setOtherSelected] = useState<Record<number, boolean>>({})
+  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0)
+  const otherTextareaRef = useRef<HTMLTextAreaElement | null>(null)
 
   const [status, setStatus] = useState<RequestStatus>('pending')
   const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    const textarea = otherTextareaRef.current
+    if (!textarea) return
+
+    textarea.style.height = 'auto'
+    textarea.style.height = `${textarea.scrollHeight}px`
+  }, [currentQuestionIndex, otherSelected, otherTexts])
 
   const handleOptionChange = (questionIndex: number, label: string, multiSelect: boolean) => {
     if (multiSelect) {
@@ -111,6 +122,11 @@ export function QuestionRequestItem({
   const areAllQuestionsAnswered = (): boolean => {
     return questions.every((q, i) => isQuestionAnswered(i, q))
   }
+
+  const currentQuestion = questions[currentQuestionIndex]
+  const currentQuestionAnswered = currentQuestion
+    ? isQuestionAnswered(currentQuestionIndex, currentQuestion)
+    : false
 
   const getAnswerForQuestion = (questionIndex: number, question: Question): string => {
     // If "Other" is selected and has text, use that
@@ -199,7 +215,7 @@ export function QuestionRequestItem({
   // Completed state - show minimal info
   if (status === 'answered' || status === 'declined') {
     return (
-      <div className="border rounded-md bg-muted/30 text-sm" data-testid="question-request-completed" data-status={status}>
+      <div className="border rounded-lg bg-muted/30 shadow-md text-sm" data-testid="question-request-completed" data-status={status}>
         <div className="flex items-center gap-2 px-3 py-2">
           <HelpCircle
             className={cn(
@@ -226,15 +242,12 @@ export function QuestionRequestItem({
   // Read-only state for viewers
   if (readOnly) {
     return (
-      <div className="border rounded-md bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800 text-sm">
-        <div className="flex items-center gap-3 p-3">
-          <div className="h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center shrink-0">
-            <HelpCircle className="h-4 w-4 text-blue-600 dark:text-blue-400" />
-          </div>
+      <div className="border rounded-lg bg-muted/30 shadow-md text-sm">
+        <div className="flex items-start gap-3 p-3">
           <div className="flex-1 min-w-0">
-            <div className="font-medium text-blue-900 dark:text-blue-100">
-              {questions.length === 1 ? 'Question from Agent' : `${questions.length} Questions from Agent`}
-            </div>
+            <RequestTitleChip className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" icon={<HelpCircle />}>
+              {questions.length === 1 ? 'Question' : `${questions.length} Questions`}
+            </RequestTitleChip>
           </div>
           <span className="text-xs text-blue-600 dark:text-blue-400 shrink-0">Waiting for response</span>
         </div>
@@ -244,123 +257,169 @@ export function QuestionRequestItem({
 
   // Pending/submitting state - show question form
   return (
-    <div className="border rounded-md bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800 text-sm" data-testid="question-request">
-      <div className="flex items-start gap-3 p-3">
-        {/* Icon */}
-        <div className="h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center shrink-0">
-          <HelpCircle className="h-4 w-4 text-blue-600 dark:text-blue-400" />
-        </div>
-
-        {/* Content */}
+    <div className="border rounded-lg bg-muted/30 shadow-md text-sm" data-testid="question-request">
+      <div className="p-3">
         <div className="flex-1 min-w-0 space-y-4">
-          {/* Header */}
-          <div className="font-medium text-blue-900 dark:text-blue-100">
-            {questions.length === 1 ? 'Question from Agent' : 'Questions from Agent'}
+          <div className="flex items-start justify-between gap-3">
+            <RequestTitleChip className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" icon={<HelpCircle />}>
+              {questions.length === 1 ? 'Question' : 'Questions'}
+            </RequestTitleChip>
+
+            {questions.length > 1 && (
+              <div className="inline-flex items-center gap-0.5 px-0.5 py-0.5 text-foreground">
+                <button
+                  type="button"
+                  onClick={() => setCurrentQuestionIndex((i) => Math.max(0, i - 1))}
+                  disabled={currentQuestionIndex === 0 || status === 'submitting'}
+                  className={cn(
+                    'inline-flex h-5 w-5 items-center justify-center rounded transition-colors',
+                    currentQuestionIndex === 0 || status === 'submitting'
+                      ? 'cursor-not-allowed opacity-40'
+                      : 'hover:bg-muted'
+                  )}
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                </button>
+                <span className="min-w-10 text-center text-xs font-medium">
+                  {currentQuestionIndex + 1} of {questions.length}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setCurrentQuestionIndex((i) => Math.min(questions.length - 1, i + 1))}
+                  disabled={currentQuestionIndex === questions.length - 1 || status === 'submitting'}
+                  className={cn(
+                    'inline-flex h-5 w-5 items-center justify-center rounded transition-colors',
+                    currentQuestionIndex === questions.length - 1 || status === 'submitting'
+                      ? 'cursor-not-allowed opacity-40'
+                      : 'hover:bg-muted'
+                  )}
+                >
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )}
           </div>
 
-          {/* Questions */}
-          {questions.map((question, questionIndex) => (
-            <div key={questionIndex} className="space-y-2">
-              {/* Question header chip and text */}
-              <div className="flex items-start gap-2">
-                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 shrink-0">
-                  {question.header}
-                </span>
-                <span className="text-blue-900 dark:text-blue-100">{question.question}</span>
+          {currentQuestion && (
+            <div className="space-y-4">
+              <div className="px-2 py-1 text-sm font-medium leading-5 text-foreground">
+                {currentQuestion.question}
               </div>
 
-              {/* Options */}
-              <div className="space-y-1.5 ml-1">
-                {question.options.map((option, optionIndex) => {
-                  const isSelected = question.multiSelect
-                    ? ((selections[questionIndex] as string[]) || []).includes(option.label)
-                    : selections[questionIndex] === option.label
+              <div className="space-y-2.5">
+                {currentQuestion.options.map((option, optionIndex) => {
+                  const isSelected = currentQuestion.multiSelect
+                    ? ((selections[currentQuestionIndex] as string[]) || []).includes(option.label)
+                    : selections[currentQuestionIndex] === option.label
 
                   return (
                     <label
                       key={optionIndex}
                       className={cn(
-                        'flex items-start gap-2 p-2 rounded border cursor-pointer transition-colors',
+                        'flex items-center gap-2 p-2 rounded-lg border cursor-pointer transition-colors',
                         isSelected
                           ? 'bg-blue-100 dark:bg-blue-900 border-blue-300 dark:border-blue-600'
-                          : 'bg-white dark:bg-blue-950/30 border-blue-200 dark:border-blue-800 hover:bg-blue-50 dark:hover:bg-blue-900/50'
+                          : 'bg-white dark:bg-blue-950/30 hover:bg-blue-50 dark:hover:bg-blue-900/50'
                       )}
                     >
                       <input
-                        type={question.multiSelect ? 'checkbox' : 'radio'}
-                        name={`question-${questionIndex}`}
-                        checked={isSelected}
-                        onChange={() => handleOptionChange(questionIndex, option.label, question.multiSelect)}
-                        disabled={status === 'submitting'}
-                        className="mt-0.5"
+                      type={currentQuestion.multiSelect ? 'checkbox' : 'radio'}
+                      name={`question-${currentQuestionIndex}`}
+                      checked={isSelected}
+                      onChange={() => handleOptionChange(currentQuestionIndex, option.label, currentQuestion.multiSelect)}
+                      disabled={status === 'submitting'}
+                      className="mx-2 shrink-0"
                       />
                       <div className="flex-1 min-w-0">
-                        <div className="font-medium text-blue-900 dark:text-blue-100">{option.label}</div>
+                        <div className={cn('text-sm text-foreground', isSelected ? 'font-medium' : 'font-normal')}>
+                          {option.label}
+                        </div>
                         {option.description && (
-                          <div className="text-xs text-blue-700 dark:text-blue-300 whitespace-pre-line">{option.description}</div>
+                          <div className="text-xs leading-4 text-muted-foreground whitespace-pre-line">{option.description}</div>
                         )}
                       </div>
                     </label>
                   )
                 })}
 
-                {/* "Other" option */}
                 <label
                   className={cn(
-                    'flex items-start gap-2 p-2 rounded border cursor-pointer transition-colors',
-                    otherSelected[questionIndex]
+                    'flex items-center gap-2 p-2 rounded-lg border cursor-pointer transition-colors',
+                    otherSelected[currentQuestionIndex]
                       ? 'bg-blue-100 dark:bg-blue-900 border-blue-300 dark:border-blue-600'
-                      : 'bg-white dark:bg-blue-950/30 border-blue-200 dark:border-blue-800 hover:bg-blue-50 dark:hover:bg-blue-900/50'
+                      : 'bg-white dark:bg-blue-950/30 hover:bg-blue-50 dark:hover:bg-blue-900/50'
                   )}
                 >
                   <input
-                    type={question.multiSelect ? 'checkbox' : 'radio'}
-                    name={`question-${questionIndex}`}
-                    checked={otherSelected[questionIndex] || false}
-                    onChange={() => handleOtherToggle(questionIndex, question.multiSelect)}
+                    type={currentQuestion.multiSelect ? 'checkbox' : 'radio'}
+                    name={`question-${currentQuestionIndex}`}
+                    checked={otherSelected[currentQuestionIndex] || false}
+                    onChange={() => handleOtherToggle(currentQuestionIndex, currentQuestion.multiSelect)}
                     disabled={status === 'submitting'}
-                    className="mt-0.5"
+                    className="mx-2 shrink-0"
                   />
                   <div className="flex-1 min-w-0">
-                    <div className="font-medium text-blue-900 dark:text-blue-100">Other</div>
-                    <Input
-                      type="text"
-                      placeholder="Enter your answer..."
-                      value={otherTexts[questionIndex] || ''}
-                      onChange={(e) => handleOtherTextChange(questionIndex, e.target.value, question.multiSelect)}
-                      disabled={status === 'submitting'}
-                      className="mt-1 bg-white dark:bg-blue-950/30 border-blue-200 dark:border-blue-700 focus:border-blue-400 dark:focus:border-blue-500 text-sm"
-                      onClick={(e) => e.stopPropagation()}
-                    />
+                    {otherSelected[currentQuestionIndex] ? (
+                      <Textarea
+                        ref={otherTextareaRef}
+                        autoFocus
+                        rows={1}
+                        value={otherTexts[currentQuestionIndex] || ''}
+                        onChange={(e) => handleOtherTextChange(currentQuestionIndex, e.target.value, currentQuestion.multiSelect)}
+                        disabled={status === 'submitting'}
+                        className="min-h-0 resize-none overflow-hidden bg-white dark:bg-blue-950/30 border-input shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 text-sm"
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    ) : (
+                      <>
+                        <div className="text-sm font-normal text-foreground">Other</div>
+                        <div className="text-xs leading-4 text-muted-foreground">
+                          Enter a custom answer that is not listed above.
+                        </div>
+                      </>
+                    )}
                   </div>
                 </label>
               </div>
             </div>
-          ))}
+          )}
 
           {/* Action buttons */}
-          <div className="flex gap-2">
-            <Button
-              onClick={handleSubmit}
-              disabled={!areAllQuestionsAnswered() || status === 'submitting'}
-              size="sm"
-              className="bg-blue-600 hover:bg-blue-700 text-white"
-              data-testid="question-submit-btn"
-            >
-              {status === 'submitting' ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Check className="h-4 w-4" />
-              )}
-              <span className="ml-1">Submit</span>
-            </Button>
-
+          <div className="flex justify-end gap-2">
             <DeclineButton
               onDecline={handleDecline}
               disabled={status === 'submitting'}
               className="border-blue-200 dark:border-blue-700 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900"
               data-testid="question-decline-btn"
             />
+
+            {currentQuestionIndex < questions.length - 1 ? (
+              <Button
+                onClick={() => setCurrentQuestionIndex((i) => Math.min(questions.length - 1, i + 1))}
+                disabled={!currentQuestionAnswered || status === 'submitting'}
+                size="sm"
+                className="bg-blue-600 hover:bg-blue-700 text-white"
+                data-testid="question-next-btn"
+              >
+                <span>Next</span>
+                <ChevronRight className="ml-1 h-4 w-4" />
+              </Button>
+            ) : (
+              <Button
+                onClick={handleSubmit}
+                disabled={!areAllQuestionsAnswered() || status === 'submitting'}
+                size="sm"
+                className="bg-blue-600 hover:bg-blue-700 text-white"
+                data-testid="question-submit-btn"
+              >
+                {status === 'submitting' ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Check className="h-4 w-4" />
+                )}
+                <span className="ml-1">Submit</span>
+              </Button>
+            )}
           </div>
 
           {/* Error message */}

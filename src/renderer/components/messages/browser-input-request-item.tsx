@@ -2,6 +2,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { useState } from 'react'
 import { Globe, Check, Loader2, MessageSquare } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
+import { RequestTitleChip } from './request-title-chip'
 import { cn } from '@shared/lib/utils/cn'
 
 interface BrowserInputRequestItemProps {
@@ -70,7 +71,7 @@ export function BrowserInputRequestItem({
 
   if (status === 'completed' || status === 'declined') {
     return (
-      <div className="border rounded-md bg-muted/30 text-sm" data-testid="browser-input-request-completed" data-status={status}>
+      <div className="border rounded-md bg-muted/30 shadow-md text-sm" data-testid="browser-input-request-completed" data-status={status}>
         <div className="flex items-center gap-2 px-3 py-2">
           <Globe
             className={cn(
@@ -94,13 +95,12 @@ export function BrowserInputRequestItem({
 
   if (readOnly) {
     return (
-      <div className="border rounded-md bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800 text-sm">
-        <div className="flex items-center gap-3 p-3">
-          <div className="h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center shrink-0">
-            <Globe className="h-4 w-4 text-blue-600 dark:text-blue-400" />
-          </div>
+      <div className="border rounded-md bg-muted/30 shadow-md text-sm">
+        <div className="flex items-start gap-3 p-3">
           <div className="flex-1 min-w-0">
-            <div className="font-medium text-blue-900 dark:text-blue-100">Browser Input Needed</div>
+            <RequestTitleChip className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" icon={<Globe />}>
+              Browser Input Needed
+            </RequestTitleChip>
             <div className="text-xs text-blue-700 dark:text-blue-300 mt-0.5 whitespace-pre-line">{message}</div>
           </div>
           <span className="text-xs text-blue-600 dark:text-blue-400 shrink-0">Waiting for input</span>
@@ -110,14 +110,12 @@ export function BrowserInputRequestItem({
   }
 
   return (
-    <div className="border rounded-md bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800 text-sm" data-testid="browser-input-request">
-      <div className="flex items-start gap-3 p-3">
-        <div className="h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center shrink-0">
-          <Globe className="h-4 w-4 text-blue-600 dark:text-blue-400" />
-        </div>
-
+    <div className="border rounded-md bg-muted/30 shadow-md text-sm" data-testid="browser-input-request">
+      <div className="p-3">
         <div className="flex-1 min-w-0 space-y-3">
-          <div className="font-medium text-blue-900 dark:text-blue-100">Browser Input Needed</div>
+          <RequestTitleChip className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" icon={<Globe />}>
+            Browser Input Needed
+          </RequestTitleChip>
 
           <p className="text-blue-800 dark:text-blue-200 whitespace-pre-line">{message}</p>
 

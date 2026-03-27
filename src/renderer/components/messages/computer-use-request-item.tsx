@@ -10,6 +10,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@renderer/components/ui/dialog'
+import { RequestTitleChip } from './request-title-chip'
 import { cn } from '@shared/lib/utils/cn'
 import { DeclineButton } from './decline-button'
 
@@ -146,7 +147,7 @@ export function ComputerUseRequestItem({
   // Completed state
   if (status === 'executed' || status === 'denied') {
     return (
-      <div className="border rounded-md bg-muted/30 text-sm" data-testid="computer-use-request-completed" data-status={status}>
+      <div className="border rounded-md bg-muted/30 shadow-md text-sm" data-testid="computer-use-request-completed" data-status={status}>
         <div className="flex items-center gap-2 px-3 py-2">
           <Monitor
             className={cn(
@@ -171,15 +172,12 @@ export function ComputerUseRequestItem({
   // Read-only state for viewers
   if (readOnly) {
     return (
-      <div className="border rounded-md bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800 text-sm">
-        <div className="flex items-center gap-3 p-3">
-          <div className="h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center shrink-0">
-            <Monitor className="h-4 w-4 text-blue-600 dark:text-blue-400" />
-          </div>
+      <div className="border rounded-md bg-muted/30 shadow-md text-sm">
+        <div className="flex items-start gap-3 p-3">
           <div className="flex-1 min-w-0">
-            <div className="font-medium text-blue-900 dark:text-blue-100">
+            <RequestTitleChip className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" icon={<Monitor />}>
               Computer Use Request
-            </div>
+            </RequestTitleChip>
             <p className="text-sm text-blue-700 dark:text-blue-300 mt-0.5">
               {method}{appName ? ` — ${appName}` : ''}
             </p>
@@ -194,18 +192,14 @@ export function ComputerUseRequestItem({
 
   // Pending/submitting state
   return (
-    <div className="border rounded-md bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800 text-sm" data-testid="computer-use-request">
-      <div className="flex items-start gap-3 p-3">
-        <div className="h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center shrink-0">
-          <Monitor className="h-4 w-4 text-blue-600 dark:text-blue-400" />
-        </div>
-
+    <div className="border rounded-md bg-muted/30 shadow-md text-sm" data-testid="computer-use-request">
+      <div className="p-3">
         <div className="flex-1 min-w-0 space-y-3">
           <div>
             <div className="flex items-center gap-2">
-              <span className="font-medium text-blue-900 dark:text-blue-100">
+              <RequestTitleChip className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" icon={<Monitor />}>
                 Computer Use Request
-              </span>
+              </RequestTitleChip>
               <span className="text-xs px-1.5 py-0.5 rounded bg-blue-200 dark:bg-blue-800 text-blue-700 dark:text-blue-300">
                 {PERMISSION_LABELS[permissionLevel] || permissionLevel}
               </span>

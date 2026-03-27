@@ -5,6 +5,7 @@ import { Key, Eye, EyeOff, Check, Loader2, Globe } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { DeclineButton } from './decline-button'
+import { RequestTitleChip } from './request-title-chip'
 import { cn } from '@shared/lib/utils/cn'
 
 interface SecretRequestItemProps {
@@ -131,7 +132,7 @@ export function SecretRequestItem({
     const config = statusConfig[status as keyof typeof statusConfig]
 
     return (
-      <div className="border rounded-md bg-muted/30 text-sm" data-testid="secret-request-completed" data-status={status}>
+      <div className="border rounded-md bg-muted/30 shadow-md text-sm" data-testid="secret-request-completed" data-status={status}>
         <div className="flex items-center gap-2 px-3 py-2">
           <config.icon className={cn('h-4 w-4 shrink-0', config.color)} />
           <span className="font-mono text-sm">{secretName}</span>
@@ -146,18 +147,15 @@ export function SecretRequestItem({
   // Read-only state for viewers
   if (readOnly) {
     return (
-      <div className="border rounded-md bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800 text-sm">
-        <div className="flex items-center gap-3 p-3">
-          <div className="h-8 w-8 rounded-full bg-amber-100 dark:bg-amber-900 flex items-center justify-center shrink-0">
-            <Key className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-          </div>
+      <div className="border rounded-md bg-muted/30 shadow-md text-sm">
+        <div className="flex items-start gap-3 p-3">
           <div className="flex-1 min-w-0">
-            <div className="font-medium text-amber-900 dark:text-amber-100">
+            <RequestTitleChip className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200" icon={<Key />}>
               Secret Requested:{' '}
               <code className="bg-amber-100 dark:bg-amber-900 px-1.5 py-0.5 rounded text-amber-800 dark:text-amber-200">
                 {secretName}
               </code>
-            </div>
+            </RequestTitleChip>
             {reason && (
               <p className="text-sm text-amber-700 dark:text-amber-300 mt-1 whitespace-pre-line">{reason}</p>
             )}
@@ -170,23 +168,17 @@ export function SecretRequestItem({
 
   // Pending/submitting state - show input form
   return (
-    <div className="border rounded-md bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800 text-sm" data-testid="secret-request" data-secret-name={secretName}>
-      <div className="flex items-start gap-3 p-3">
-        {/* Icon */}
-        <div className="h-8 w-8 rounded-full bg-amber-100 dark:bg-amber-900 flex items-center justify-center shrink-0">
-          <Key className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-        </div>
-
-        {/* Content */}
+    <div className="border rounded-md bg-muted/30 shadow-md text-sm" data-testid="secret-request" data-secret-name={secretName}>
+      <div className="p-3">
         <div className="flex-1 min-w-0 space-y-3">
           {/* Header */}
           <div>
-            <div className="font-medium text-amber-900 dark:text-amber-100">
+            <RequestTitleChip className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200" icon={<Key />}>
               Secret Requested:{' '}
               <code className="bg-amber-100 dark:bg-amber-900 px-1.5 py-0.5 rounded text-amber-800 dark:text-amber-200">
                 {secretName}
               </code>
-            </div>
+            </RequestTitleChip>
             {reason && (
               <p className="text-sm text-amber-700 dark:text-amber-300 mt-1 whitespace-pre-line">{reason}</p>
             )}

@@ -3,6 +3,7 @@ import { useState, useRef, useCallback } from 'react'
 import { Upload, Check, Loader2, FileIcon } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { DeclineButton } from './decline-button'
+import { RequestTitleChip } from './request-title-chip'
 import { cn } from '@shared/lib/utils/cn'
 
 interface FileRequestItemProps {
@@ -148,7 +149,7 @@ export function FileRequestItem({
   // Completed state
   if (status === 'uploaded' || status === 'declined') {
     return (
-      <div className="border rounded-md bg-muted/30 text-sm">
+      <div className="border rounded-md bg-muted/30 shadow-md text-sm">
         <div className="flex items-center gap-2 px-3 py-2">
           <Upload
             className={cn(
@@ -173,13 +174,12 @@ export function FileRequestItem({
   // Read-only state for viewers
   if (readOnly) {
     return (
-      <div className="border rounded-md bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800 text-sm">
-        <div className="flex items-center gap-3 p-3">
-          <div className="h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center shrink-0">
-            <Upload className="h-4 w-4 text-blue-600 dark:text-blue-400" />
-          </div>
+      <div className="border rounded-md bg-muted/30 shadow-md text-sm">
+        <div className="flex items-start gap-3 p-3">
           <div className="flex-1 min-w-0">
-            <div className="font-medium text-blue-900 dark:text-blue-100">File Requested</div>
+            <RequestTitleChip className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" icon={<Upload />}>
+              File Requested
+            </RequestTitleChip>
             <p className="text-sm text-blue-700 dark:text-blue-300 mt-1 whitespace-pre-line">{description}</p>
           </div>
           <span className="text-xs text-blue-600 dark:text-blue-400 shrink-0">Waiting for response</span>
@@ -190,18 +190,14 @@ export function FileRequestItem({
 
   // Pending/submitting state
   return (
-    <div className="border rounded-md bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800 text-sm">
-      <div className="flex items-start gap-3 p-3">
-        {/* Icon */}
-        <div className="h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center shrink-0">
-          <Upload className="h-4 w-4 text-blue-600 dark:text-blue-400" />
-        </div>
-
-        {/* Content */}
+    <div className="border rounded-md bg-muted/30 shadow-md text-sm">
+      <div className="p-3">
         <div className="flex-1 min-w-0 space-y-3">
           {/* Header */}
           <div>
-            <div className="font-medium text-blue-900 dark:text-blue-100">File Requested</div>
+            <RequestTitleChip className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" icon={<Upload />}>
+              File Requested
+            </RequestTitleChip>
             <p className="text-sm text-blue-700 dark:text-blue-300 mt-1 whitespace-pre-line">{description}</p>
             {fileTypes && (
               <p className="text-xs text-blue-500 dark:text-blue-400 mt-0.5">
