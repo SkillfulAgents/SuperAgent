@@ -128,6 +128,17 @@ class DeepgramAdapter implements SttAdapter {
 
 // --- OpenAI Adapter ---
 
+/** Map OpenAI Realtime error objects to user-friendly messages. */
+function friendlyRealtimeError(err: { code?: string; message?: string } | undefined): Error {
+  const code = err?.code || ''
+  const msg = err?.message || 'OpenAI Realtime error'
+  if (code === 'insufficient_quota' || code === 'billing_hard_limit_reached' ||
+      code === 'rate_limit_exceeded' || /quota|billing|insufficient/i.test(msg)) {
+    return new Error('OpenAI API quota exceeded. Please check your OpenAI account balance and billing settings.')
+  }
+  return new Error(msg)
+}
+
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer)
   let binary = ''
@@ -217,7 +228,12 @@ class OpenaiAdapter implements SttAdapter {
               this.transcriptCb?.({ type: 'speech_ended', text: '' })
               break
             case 'error':
-              this.errorCb?.(new Error(data.error?.message || 'OpenAI Realtime error'))
+              this.errorCb?.(friendlyRealtimeError(data.error))
+              break
+            case 'response.done':
+              if (data.response?.status === 'failed') {
+                this.errorCb?.(friendlyRealtimeError(data.response?.status_details?.error))
+              }
               break
           }
         } catch {

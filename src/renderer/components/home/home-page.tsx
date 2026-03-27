@@ -148,6 +148,23 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
     )
   }, [sessions])
 
+  // Always show active/awaiting sessions; cap unread-only notifications at 3
+  const MAX_UNREAD_ROWS = 3
+  const { visibleSessions, collapsedUnreadCount } = useMemo(() => {
+    const active: typeof notableSessions = []
+    const unread: typeof notableSessions = []
+    for (const s of notableSessions) {
+      if (s.isActive || s.isAwaitingInput) {
+        active.push(s)
+      } else {
+        unread.push(s)
+      }
+    }
+    const shownUnread = unread.slice(0, MAX_UNREAD_ROWS)
+    const collapsed = unread.length - shownUnread.length
+    return { visibleSessions: [...active, ...shownUnread], collapsedUnreadCount: collapsed }
+  }, [notableSessions])
+
   return (
     <div className="flex flex-col">
       <AgentContextMenu agent={agent}>
@@ -213,7 +230,7 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
       </AgentContextMenu>
 
       {/* Session appendages — each tucks up behind the rounded corners of the one above */}
-      {notableSessions.map((session, i) => {
+      {visibleSessions.map((session, i) => {
         const isAwaiting = session.isAwaitingInput
         const isWorking = session.isActive && !session.isAwaitingInput
         const hasUnread = !session.isActive && !session.isAwaitingInput && session.hasUnreadNotifications
@@ -228,7 +245,7 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
           <div
             key={session.id}
             className="relative px-1"
-            style={{ marginTop: -6, zIndex: notableSessions.length - i }}
+            style={{ marginTop: -6, zIndex: visibleSessions.length + 1 - i }}
           >
             <button
               onClick={() => { selectAgent(agent.slug); selectSession(session.id) }}
@@ -252,6 +269,22 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
           </div>
         )
       })}
+
+      {/* Collapsed unread notification summary */}
+      {collapsedUnreadCount > 0 && (
+        <div
+          className="relative px-1"
+          style={{ marginTop: -6, zIndex: 0 }}
+        >
+          <button
+            onClick={() => selectAgent(agent.slug)}
+            className="w-full flex items-center gap-2 px-3 py-1.5 pt-3 text-left text-xs border rounded-b-lg transition-colors hover:brightness-95 bg-blue-50 border-blue-200 dark:bg-blue-950/30 dark:border-blue-800"
+          >
+            <span className="h-2 w-2 shrink-0 rounded-full bg-blue-500" />
+            <span className="font-medium">{collapsedUnreadCount} more notification{collapsedUnreadCount !== 1 ? 's' : ''}</span>
+          </button>
+        </div>
+      )}
     </div>
   )
 }

@@ -309,9 +309,6 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
                     <div className="font-medium truncate">{session.name}</div>
                     <div className="text-xs text-muted-foreground">
                       {formatInTaskTz(session.createdAt)}
-                      {session.messageCount > 0 && (
-                        <span className="ml-2">• {session.messageCount} messages</span>
-                      )}
                     </div>
                   </div>
                 </button>

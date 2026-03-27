@@ -217,7 +217,8 @@ export async function getSessionSummary(agentSlug: string): Promise<{
 }
 
 /**
- * List all sessions for an agent
+ * List all sessions for an agent using file stats and metadata.
+ * Does NOT read full JSONL file contents — safe for large session directories.
  */
 export async function listSessions(agentSlug: string): Promise<SessionInfo[]> {
   const sessionsDir = getAgentSessionsDir(agentSlug)
@@ -240,25 +241,25 @@ export async function listSessions(agentSlug: string): Promise<SessionInfo[]> {
       processedSessionIds.add(sessionId)
 
       try {
-        // Read JSONL file
-        const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
+        const stat = await fs.promises.stat(jsonlPath)
 
         // Skip empty JSONL files that aren't registered in metadata
         // These are typically created by Claude SDK for subagent directories
-        if (entries.length === 0 && !metadata[sessionId]) {
+        if (stat.size === 0 && !metadata[sessionId]) {
           continue
         }
 
-        const sessionInfo = parseSessionInfo(
-          sessionId,
+        sessions.push({
+          id: sessionId,
           agentSlug,
-          entries,
-          metadata[sessionId]
-        )
-        sessions.push(sessionInfo)
+          name: metadata[sessionId]?.name || 'New Session',
+          createdAt: stat.birthtime,
+          lastActivityAt: new Date(stat.mtimeMs),
+          messageCount: 0,
+        })
       } catch (error) {
-        console.warn(`Failed to parse session ${sessionId}:`, error)
-        // Skip malformed sessions
+        console.warn(`Failed to stat session ${sessionId}:`, error)
+        // Skip inaccessible sessions
       }
     }
   }
