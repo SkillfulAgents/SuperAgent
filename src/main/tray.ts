@@ -1,6 +1,6 @@
 import { Tray, Menu, nativeImage, BrowserWindow, app } from 'electron'
 import path from 'path'
-import { fetchAgentsWithStatus, ActivityStatus, AgentInfo } from './agent-status'
+import { fetchAgentsWithStatus, ActivityStatus } from './agent-status'
 
 let tray: Tray | null = null
 let updateInterval: NodeJS.Timeout | null = null
@@ -29,15 +29,11 @@ export function createTray(
   }
 
   // Initial menu build
-  updateTrayMenu().catch((error) => {
-    console.error('Failed to build tray menu:', error)
-  })
+  updateTrayMenu()
 
   // Set up polling (every 30 seconds - container status is cached server-side)
   updateInterval = setInterval(() => {
-    updateTrayMenu().catch((error) => {
-      console.error('Failed to update tray menu:', error)
-    })
+    updateTrayMenu()
   }, 30000)
 
   return tray
@@ -91,16 +87,12 @@ export function setTrayVisible(visible: boolean): void {
       tray.setContextMenu(initialMenu)
 
       // Update menu in background (don't await)
-      updateTrayMenu().catch((error) => {
-        console.error('Failed to build tray menu:', error)
-      })
+      updateTrayMenu()
 
       // Set up polling (every 30 seconds - container status is cached server-side)
       if (!updateInterval) {
         updateInterval = setInterval(() => {
-          updateTrayMenu().catch((error) => {
-            console.error('Failed to update tray menu:', error)
-          })
+          updateTrayMenu()
         }, 30000)
       }
     }
@@ -149,15 +141,11 @@ function createTrayIcon(): Electron.NativeImage {
 }
 
 /**
- * Create a status icon from file.
- * Returns undefined when the icon cannot be loaded so callers can omit
- * the `icon` property rather than passing an empty NativeImage (which
- * causes Electron's Menu.buildFromTemplate to throw).
+ * Create a status icon from file
  */
-function createStatusIcon(status: ActivityStatus): Electron.NativeImage | undefined {
+function createStatusIcon(status: ActivityStatus): Electron.NativeImage {
   const iconPath = path.join(getIconDir(), `status_${status}.png`)
-  const img = nativeImage.createFromPath(iconPath)
-  return img.isEmpty() ? undefined : img
+  return nativeImage.createFromPath(iconPath)
 }
 
 
@@ -216,36 +204,55 @@ async function updateTrayMenu(): Promise<void> {
     { type: 'separator' },
   ]
 
-  const agentMenuItem = (agent: AgentInfo, status: ActivityStatus): Electron.MenuItemConstructorOptions => {
-    const icon = createStatusIcon(status)
-    return {
-      label: agent.name,
-      ...(icon && { icon }),
-      click: () => navigateToAgent(agent.slug),
-    }
-  }
-
+  // Add awaiting input agents section
   if (awaitingInput.length > 0) {
     menuTemplate.push({ label: 'Awaiting Input', enabled: false })
-    awaitingInput.forEach(agent => menuTemplate.push(agentMenuItem(agent, 'working')))
+    awaitingInput.forEach(agent => {
+      menuTemplate.push({
+        label: agent.name,
+        icon: createStatusIcon('working'),
+        click: () => navigateToAgent(agent.slug),
+      })
+    })
     menuTemplate.push({ type: 'separator' })
   }
 
+  // Add working agents section
   if (working.length > 0) {
     menuTemplate.push({ label: 'Working', enabled: false })
-    working.forEach(agent => menuTemplate.push(agentMenuItem(agent, 'working')))
+    working.forEach(agent => {
+      menuTemplate.push({
+        label: agent.name,
+        icon: createStatusIcon('working'),
+        click: () => navigateToAgent(agent.slug),
+      })
+    })
     menuTemplate.push({ type: 'separator' })
   }
 
+  // Add idle agents section
   if (idle.length > 0) {
     menuTemplate.push({ label: 'Idle', enabled: false })
-    idle.forEach(agent => menuTemplate.push(agentMenuItem(agent, 'idle')))
+    idle.forEach(agent => {
+      menuTemplate.push({
+        label: agent.name,
+        icon: createStatusIcon('idle'),
+        click: () => navigateToAgent(agent.slug),
+      })
+    })
     menuTemplate.push({ type: 'separator' })
   }
 
+  // Add sleeping agents section
   if (sleeping.length > 0) {
     menuTemplate.push({ label: 'Sleeping', enabled: false })
-    sleeping.forEach(agent => menuTemplate.push(agentMenuItem(agent, 'sleeping')))
+    sleeping.forEach(agent => {
+      menuTemplate.push({
+        label: agent.name,
+        icon: createStatusIcon('sleeping'),
+        click: () => navigateToAgent(agent.slug),
+      })
+    })
     menuTemplate.push({ type: 'separator' })
   }
 

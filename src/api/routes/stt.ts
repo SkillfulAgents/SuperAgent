@@ -7,6 +7,7 @@ const stt = new Hono()
 
 stt.use('*', Authenticated())
 
+// GET /api/stt/configured - Check if voice input is configured (available to all authenticated users)
 stt.get('/configured', (c) => {
   const voiceSettings = getVoiceSettings()
   const provider = voiceSettings.sttProvider
@@ -18,12 +19,12 @@ stt.get('/configured', (c) => {
 stt.get('/token', async (c) => {
   try {
     const providerParam = c.req.query('provider')
-    const validProviders = new Set<string>(['deepgram', 'openai', 'datawizz'])
-    if (providerParam && !validProviders.has(providerParam)) {
+    if (providerParam && providerParam !== 'deepgram' && providerParam !== 'openai' && providerParam !== 'datawizz') {
       return c.json({ error: `Invalid STT provider: ${providerParam}` }, 400)
     }
 
     const voiceSettings = getVoiceSettings()
+    // providerParam is already validated above to be 'deepgram' | 'openai' | 'datawizz' | undefined
     const provider: SttProvider | undefined = (providerParam as SttProvider) || voiceSettings.sttProvider
 
     if (!provider) {
