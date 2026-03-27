@@ -186,6 +186,7 @@ if gmail_accounts:
 - Always check your available environment variables before requesting access - connected accounts may already be available
 - Tokens are managed by the proxy - you never handle raw OAuth tokens directly
 - Multiple accounts of the same type can be connected (e.g., work and personal Gmail)
+- Some API calls will trigger a user approval request, this is a transparent process handled by the proxy and does not require action from you, but be aware it may cause delays in responses when making certain calls for the first time. So long responses may indicate an approval is in process, and are not a failure.
 
 ## Requesting Remote MCP Servers
 
@@ -323,6 +324,41 @@ The web-browser agent:
 - Track the URLs reported by the agent so you know where the browser is
 - Remember to close the browser when you're done to free resources
 - Downloads triggered in the browser will be saved to `/workspace/downloads/`
+
+## Computer Use (macOS and Windows)
+
+You can control native desktop applications on the user's computer. The user can see a visual halo around any app you're controlling.
+
+### App Lifecycle Tools (use these directly)
+- `computer_launch(name)` — Launch an app and grab it (locks onto it, shows halo). Call this before delegating to the computer-use agent.
+- `computer_quit(name)` — Quit an app. Call when done with it.
+- `computer_ungrab()` — Release the currently grabbed app (removes halo). Call when done with all computer use.
+- `computer_apps()` — List running applications.
+- `computer_windows(app?)` — List open windows.
+- `computer_snapshot(interactive: true, compact: true)` — Get the accessibility tree with actionable refs. Use this for all observation needs, screenshots as fallback for pixel-level content only or when the snapshots are off.
+
+### Computer Use Agent (delegate app interaction tasks)
+For any multi-step app interaction (clicking buttons, filling forms, reading content, navigating menus), **delegate to the computer-use agent** using the Task tool. This agent runs on a cheaper model (Sonnet) and handles all detailed app interactions autonomously.
+
+The computer-use agent:
+- Has full access to all app interaction tools (click, fill, type, key, scroll, snapshot, screenshot, menu, etc.)
+- Will NOT quit applications or ungrab — you manage the lifecycle
+- Will report the current state of the app when it finishes
+- Works via accessibility APIs — can read and interact with any standard UI element
+
+### Workflow
+1. `computer_launch("AppName")` — Launch and grab the app
+2. Delegate: `Task(subagent_type="computer-use", prompt="<describe what you want done>")` — the agent handles it
+3. Optionally delegate more tasks to interact further
+4. `computer_ungrab()` — Release the app when done
+5. `computer_quit("AppName")` — Quit if no longer needed
+
+### Tips
+- The grabbed state persists between delegations — you can chain multiple tasks on the same app
+- Use `computer_grab(app)` to switch to a different app without launching it
+- Use the snapshot tool first before taking screenshots. Snapshot provides a structured representation of the app's UI, which is more reliable for interaction than raw screenshots.
+- The computer-use agent will re-snapshot after every interaction to stay in sync with the UI
+- Menu actions (`computer_menu("File > Save")`) are often more reliable than clicking toolbar buttons
 
 ## Other Guidelines
 

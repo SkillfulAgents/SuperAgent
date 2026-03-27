@@ -53,7 +53,9 @@ import {
   IsAdmin,
   IsAgent,
   OwnsAccount,
+  OwnsAccountByParam,
   UsersMcpServer,
+  OwnsMcpByParam,
   HasNotificationAccess,
   Or,
 } from './auth'
@@ -617,6 +619,137 @@ describe('Auth Middleware', () => {
 
       const res = await request(app, '/nonexistent')
       expect(res.status).toBe(403)
+    })
+  })
+
+  // =========================================================================
+  // OwnsAccountByParam()
+  // =========================================================================
+
+  describe('OwnsAccountByParam()', () => {
+    it('is no-op when auth mode disabled', async () => {
+      mockIsAuthMode.mockReturnValue(false)
+      const app = new Hono()
+      app.get('/:accountId', OwnsAccountByParam('accountId'), (c) => c.json({ ok: true }))
+      const res = await request(app, '/acc-1')
+      expect(res.status).toBe(200)
+      expect(mockSelect).not.toHaveBeenCalled()
+    })
+
+    it('reads account ID from named param (not :id)', async () => {
+      mockOwnershipQuery('user-1')
+      const app = new Hono()
+      setUser(app, { id: 'user-1', role: 'user' })
+      app.get('/policies/:accountId', OwnsAccountByParam('accountId'), (c) => c.json({ ok: true }))
+
+      const res = await request(app, '/policies/acc-1')
+      expect(res.status).toBe(200)
+    })
+
+    it('allows when user owns the account', async () => {
+      mockOwnershipQuery('user-1')
+      const app = new Hono()
+      setUser(app, { id: 'user-1', role: 'user' })
+      app.get('/:accountId', OwnsAccountByParam('accountId'), (c) => c.json({ ok: true }))
+
+      const res = await request(app, '/acc-1')
+      expect(res.status).toBe(200)
+    })
+
+    it('returns 403 when different user owns the account', async () => {
+      mockOwnershipQuery('user-2')
+      const app = new Hono()
+      setUser(app, { id: 'user-1', role: 'user' })
+      app.get('/:accountId', OwnsAccountByParam('accountId'), (c) => c.json({ ok: true }))
+
+      const res = await request(app, '/acc-1')
+      expect(res.status).toBe(403)
+    })
+
+    it('returns 403 when account does not exist', async () => {
+      mockOwnershipQuery(null)
+      const app = new Hono()
+      setUser(app, { id: 'user-1', role: 'user' })
+      app.get('/:accountId', OwnsAccountByParam('accountId'), (c) => c.json({ ok: true }))
+
+      const res = await request(app, '/nonexistent')
+      expect(res.status).toBe(403)
+    })
+
+    it('admin bypasses ownership check', async () => {
+      const app = new Hono()
+      setUser(app, { id: 'admin-1', role: 'admin' })
+      app.get('/:accountId', OwnsAccountByParam('accountId'), (c) => c.json({ ok: true }))
+
+      const res = await request(app, '/acc-1')
+      expect(res.status).toBe(200)
+      // DB should not be queried for admin
+      expect(mockSelect).not.toHaveBeenCalled()
+    })
+  })
+
+  // =========================================================================
+  // OwnsMcpByParam()
+  // =========================================================================
+
+  describe('OwnsMcpByParam()', () => {
+    it('is no-op when auth mode disabled', async () => {
+      mockIsAuthMode.mockReturnValue(false)
+      const app = new Hono()
+      app.get('/:mcpId', OwnsMcpByParam('mcpId'), (c) => c.json({ ok: true }))
+      const res = await request(app, '/mcp-1')
+      expect(res.status).toBe(200)
+      expect(mockSelect).not.toHaveBeenCalled()
+    })
+
+    it('reads MCP ID from named param (not :id)', async () => {
+      mockOwnershipQuery('user-1')
+      const app = new Hono()
+      setUser(app, { id: 'user-1', role: 'user' })
+      app.get('/policies/:mcpId', OwnsMcpByParam('mcpId'), (c) => c.json({ ok: true }))
+
+      const res = await request(app, '/policies/mcp-1')
+      expect(res.status).toBe(200)
+    })
+
+    it('allows when user owns the MCP server', async () => {
+      mockOwnershipQuery('user-1')
+      const app = new Hono()
+      setUser(app, { id: 'user-1', role: 'user' })
+      app.get('/:mcpId', OwnsMcpByParam('mcpId'), (c) => c.json({ ok: true }))
+
+      const res = await request(app, '/mcp-1')
+      expect(res.status).toBe(200)
+    })
+
+    it('returns 403 when different user owns the MCP server', async () => {
+      mockOwnershipQuery('user-2')
+      const app = new Hono()
+      setUser(app, { id: 'user-1', role: 'user' })
+      app.get('/:mcpId', OwnsMcpByParam('mcpId'), (c) => c.json({ ok: true }))
+
+      const res = await request(app, '/mcp-1')
+      expect(res.status).toBe(403)
+    })
+
+    it('returns 403 when MCP server does not exist', async () => {
+      mockOwnershipQuery(null)
+      const app = new Hono()
+      setUser(app, { id: 'user-1', role: 'user' })
+      app.get('/:mcpId', OwnsMcpByParam('mcpId'), (c) => c.json({ ok: true }))
+
+      const res = await request(app, '/nonexistent')
+      expect(res.status).toBe(403)
+    })
+
+    it('admin bypasses ownership check', async () => {
+      const app = new Hono()
+      setUser(app, { id: 'admin-1', role: 'admin' })
+      app.get('/:mcpId', OwnsMcpByParam('mcpId'), (c) => c.json({ ok: true }))
+
+      const res = await request(app, '/mcp-1')
+      expect(res.status).toBe(200)
+      expect(mockSelect).not.toHaveBeenCalled()
     })
   })
 

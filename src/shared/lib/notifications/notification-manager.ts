@@ -125,7 +125,7 @@ class NotificationManager {
   async triggerSessionWaitingInput(
     sessionId: string,
     agentSlug: string,
-    waitingFor: 'secret' | 'connected_account' | 'question' | 'file' | 'remote_mcp' | 'browser_input' | 'script_run',
+    waitingFor: 'secret' | 'connected_account' | 'question' | 'file' | 'remote_mcp' | 'browser_input' | 'script_run' | 'computer_use',
     agentName?: string
   ): Promise<void> {
     const displayName = agentName || await this.getAgentDisplayName(agentSlug)
@@ -151,6 +151,9 @@ class NotificationManager {
         break
       case 'script_run':
         waitingMessage = 'wants to run a script on your machine'
+        break
+      case 'computer_use':
+        waitingMessage = 'wants to control your computer'
         break
     }
 

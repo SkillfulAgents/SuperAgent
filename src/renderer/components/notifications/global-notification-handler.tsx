@@ -110,8 +110,15 @@ export function GlobalNotificationHandler() {
             } else {
               queryClient.invalidateQueries({ queryKey: ['sessions'] })
             }
+            // Agent list includes pre-aggregated session status (hasActiveSessions, etc.)
+            queryClient.invalidateQueries({ queryKey: ['agents'] })
             // Artifacts may have been created/modified during the session
             queryClient.invalidateQueries({ queryKey: ['artifacts'] })
+
+            // Proxy review created or resolved — refetch review list
+            if (eventAgentSlug && data.review) {
+              queryClient.invalidateQueries({ queryKey: ['proxy-reviews', eventAgentSlug] })
+            }
             break
           }
 
@@ -127,11 +134,12 @@ export function GlobalNotificationHandler() {
             break
 
           case 'scheduled_task_created': {
-            // Scheduled task created - update task list for that agent
+            // Scheduled task created - update task list and agent card summary
             const agentSlug = data.agentSlug as string | undefined
             if (agentSlug) {
               queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', agentSlug] })
             }
+            queryClient.invalidateQueries({ queryKey: ['agents'] })
             break
           }
 

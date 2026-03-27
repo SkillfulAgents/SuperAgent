@@ -17,8 +17,8 @@ import { AuthTab } from './auth-tab'
 import { AdminTab } from './admin-tab'
 import { VoiceTab } from './voice-tab'
 import { AnalyticsTab } from './analytics-tab'
-import { HostShellUseTab } from './host-shell-use-tab'
 import { PlatformTab } from './platform-tab'
+import { ComputerUseTab } from './computer-use-tab'
 import { useUser } from '@renderer/context/user-context'
 import { isElectron } from '@renderer/lib/env'
 
@@ -80,8 +80,8 @@ export function GlobalSettingsDialog({
         <BrowserTab />
       </SettingsDialogTab>
       {isElectron() && (
-        <SettingsDialogTab id="host-shell-use" label="Host Shell Use" icon={<Terminal className="h-4 w-4" />}>
-          <HostShellUseTab />
+        <SettingsDialogTab id="computer-use" label="Computer Use" icon={<Terminal className="h-4 w-4" />}>
+          <ComputerUseTab />
         </SettingsDialogTab>
       )}
       <SettingsDialogTab id="composio" label="Account Provider" icon={<ShieldEllipsis className="h-4 w-4" />}>

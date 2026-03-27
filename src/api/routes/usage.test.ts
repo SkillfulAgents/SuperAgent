@@ -96,6 +96,10 @@ interface MockModelBreakdown {
 interface MockDayUsage {
   date: string
   totalCost: number
+  inputTokens: number
+  outputTokens: number
+  cacheCreationTokens: number
+  cacheReadTokens: number
   modelBreakdowns: MockModelBreakdown[]
 }
 
@@ -104,16 +108,21 @@ function makeAgent(slug: string, name: string): MockAgent {
 }
 
 function makeDay(date: string, totalCost: number, models: MockModelBreakdown[] = []): MockDayUsage {
+  const breakdowns = models.map(m => ({
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 0,
+    ...m,
+  }))
   return {
     date,
     totalCost,
-    modelBreakdowns: models.map(m => ({
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheCreationTokens: 0,
-      cacheReadTokens: 0,
-      ...m,
-    })),
+    inputTokens: breakdowns.reduce((s, m) => s + m.inputTokens, 0),
+    outputTokens: breakdowns.reduce((s, m) => s + m.outputTokens, 0),
+    cacheCreationTokens: breakdowns.reduce((s, m) => s + m.cacheCreationTokens, 0),
+    cacheReadTokens: breakdowns.reduce((s, m) => s + m.cacheReadTokens, 0),
+    modelBreakdowns: breakdowns,
   }
 }
 
@@ -172,7 +181,7 @@ describe('usage route', () => {
       expect(dayEntry).toBeDefined()
       expect(dayEntry.totalCost).toBe(1.50)
       expect(dayEntry.byAgent).toEqual([
-        { agentSlug: 'agent-1', agentName: 'Agent One', cost: 1.50 },
+        { agentSlug: 'agent-1', agentName: 'Agent One', cost: 1.50, totalTokens: 0 },
       ])
       expect(dayEntry.byModel).toEqual([
         { model: 'claude-sonnet', cost: 1.50 },

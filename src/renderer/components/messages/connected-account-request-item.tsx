@@ -16,6 +16,8 @@ import { Checkbox } from '@renderer/components/ui/checkbox'
 import { Input } from '@renderer/components/ui/input'
 import { DeclineButton } from './decline-button'
 import { cn } from '@shared/lib/utils/cn'
+import { ScopePolicyEditor } from '@renderer/components/settings/scope-policy-editor'
+import { PolicySummaryPill } from '@renderer/components/ui/policy-summary-pill'
 import {
   useConnectedAccountsByToolkit,
   useInvalidateConnectedAccounts,
@@ -52,6 +54,8 @@ export function ConnectedAccountRequestItem({
   const [error, setError] = useState<string | null>(null)
   const [editingAccount, setEditingAccount] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
+  const [policyEditorAccountId, setPolicyEditorAccountId] = useState<string | null>(null)
+  const [policyEditorIsNewAccount, setPolicyEditorIsNewAccount] = useState(false)
   const { data, isLoading, refetch } = useConnectedAccountsByToolkit(toolkit)
   const invalidateConnectedAccounts = useInvalidateConnectedAccounts()
   const renameAccount = useRenameConnectedAccount()
@@ -77,6 +81,7 @@ export function ConnectedAccountRequestItem({
         // Only auto-select the new account if this component initiated the OAuth flow
         if (isOAuthInitiator.current) {
           isOAuthInitiator.current = false
+          let detectedNewAccountId = newAccountId
           if (newAccountId) {
             // We have the new account ID directly
             setSelectedAccountIds((prev) => new Set(prev).add(newAccountId))
@@ -87,7 +92,13 @@ export function ConnectedAccountRequestItem({
             )
             if (newAccount) {
               setSelectedAccountIds((prev) => new Set(prev).add(newAccount.id))
+              detectedNewAccountId = newAccount.id
             }
+          }
+          // Open policy editor for the newly connected account
+          if (detectedNewAccountId) {
+            setPolicyEditorIsNewAccount(true)
+            setPolicyEditorAccountId(detectedNewAccountId)
           }
         }
       } else {
@@ -376,6 +387,10 @@ export function ConnectedAccountRequestItem({
                     }}
                     onEditNameChange={setEditName}
                     isSavingRename={renameAccount.isPending}
+                    onOpenPolicies={() => {
+                      setPolicyEditorIsNewAccount(false)
+                      setPolicyEditorAccountId(account.id)
+                    }}
                   />
                 ))}
               </div>
@@ -437,6 +452,34 @@ export function ConnectedAccountRequestItem({
           </p>
         </div>
       </div>
+      {policyEditorAccountId && (
+        <ScopePolicyEditor
+          accountId={policyEditorAccountId}
+          toolkit={toolkit}
+          open={!!policyEditorAccountId}
+          onOpenChange={(open) => {
+            if (!open) {
+              setPolicyEditorAccountId(null)
+              setPolicyEditorIsNewAccount(false)
+            }
+          }}
+          header={policyEditorIsNewAccount ? (
+            <div className="flex flex-col items-center gap-2 py-2">
+              <div className="h-12 w-12 rounded-full bg-green-100 dark:bg-green-900/50 flex items-center justify-center">
+                <ServiceIcon slug={toolkit} fallback="oauth" className="h-6 w-6 text-green-600 dark:text-green-400" />
+              </div>
+              <div className="text-center">
+                <p className="text-base font-semibold capitalize">
+                  {provider?.displayName || toolkit} Successfully Connected!
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Configure what agents can do with this account.
+                </p>
+              </div>
+            </div>
+          ) : undefined}
+        />
+      )}
     </div>
   )
 }
@@ -453,6 +496,7 @@ interface AccountOptionProps {
   onSaveEdit: () => void
   onEditNameChange: (value: string) => void
   isSavingRename: boolean
+  onOpenPolicies: () => void
 }
 
 function AccountOption({
@@ -467,6 +511,7 @@ function AccountOption({
   onSaveEdit,
   onEditNameChange,
   isSavingRename,
+  onOpenPolicies,
 }: AccountOptionProps) {
   const connectedDate = new Date(account.createdAt)
   const connectedAgo = formatDistanceToNow(connectedDate, { addSuffix: true })
@@ -555,6 +600,14 @@ function AccountOption({
           >
             <Pencil className="h-3 w-3 text-blue-400" />
           </Button>
+          {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
+          <span onClick={(e) => e.stopPropagation()}>
+            <PolicySummaryPill
+              accountId={account.id}
+              toolkit={account.toolkitSlug}
+              onClick={onOpenPolicies}
+            />
+          </span>
         </div>
         <span className="text-xs text-blue-500 dark:text-blue-400">connected {connectedAgo}</span>
       </div>

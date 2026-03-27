@@ -1,6 +1,7 @@
 import type { ServerType } from '@hono/node-server'
 import { containerManager } from './container/container-manager'
 import { shutdownActiveRunner } from './container/client-factory'
+import { reviewManager } from './proxy/review-manager'
 import { taskScheduler } from './scheduler/task-scheduler'
 import { autoSleepMonitor } from './scheduler/auto-sleep-monitor'
 import { stopAllProviders } from '../../main/host-browser'
@@ -10,6 +11,7 @@ import { validateAuthModeStartup } from './auth/startup-validation'
 import { setupBrowserStreamProxy } from '../../main/browser-stream-proxy'
 import { setServerAnalyticsVersion } from './analytics/server-analytics'
 import { APP_VERSION } from './config/version'
+import { shutdownAC } from './computer-use/executor'
 
 /**
  * Initialize all background services.
@@ -72,6 +74,7 @@ export function setupServerHandlers(server: ServerType): void {
  * - vite.config.ts: Vite dev server close
  */
 export async function shutdownServices() {
+  reviewManager.rejectAll()
   await stopAllProviders()
   taskScheduler.stop()
   autoSleepMonitor.stop()
@@ -79,4 +82,5 @@ export async function shutdownServices() {
   containerManager.stopHealthMonitor()
   await containerManager.stopAll()
   await shutdownActiveRunner()
+  await shutdownAC()
 }

@@ -1,18 +1,19 @@
 import { useCallback } from 'react'
-import { Button } from '@renderer/components/ui/button'
+import { Button, buttonVariants } from '@renderer/components/ui/button'
 import { MiniWaveform } from '@renderer/components/ui/mini-waveform'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { Loader2, Mic, MicOff, Square, X } from 'lucide-react'
 import { useDialogs } from '@renderer/context/dialog-context'
 import { useUser } from '@renderer/context/user-context'
 import { useIsVoiceConfigured } from '@renderer/hooks/use-voice-input'
+import { cn } from '@shared/lib/utils'
 import type { useVoiceInput } from '@renderer/hooks/use-voice-input'
 
 type VoiceInputSize = 'default' | 'sm'
 
 const SIZE_CONFIG = {
-  default: { button: 'h-[34px] w-[34px]', pill: 'h-[34px]', waveform: { width: 56, height: 18 } },
-  sm: { button: 'h-8 w-8', pill: 'h-8', waveform: { width: 48, height: 16 } },
+  default: { button: 'h-[34px] w-[34px]', pill: 'h-[34px] w-[102px]', waveform: { width: 56, height: 18 } },
+  sm: { button: 'h-8 w-8', pill: 'h-8 w-[92px]', waveform: { width: 48, height: 16 } },
 } as const
 
 interface VoiceInputButtonProps {
@@ -83,32 +84,42 @@ export function VoiceInputButton({ voiceInput, message, disabled, size = 'defaul
     )
   }
 
-  return isRecording ? (
+  return (
     <button
       type="button"
       onClick={handleToggle}
-      className={`flex items-center gap-1.5 ${config.pill} px-2 rounded-full bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors`}
-      title="Stop recording"
-    >
-      <Square className="h-3 w-3 fill-current" />
-      <MiniWaveform analyserRef={voiceInput.analyserRef} {...config.waveform} />
-    </button>
-  ) : (
-    <Button
-      type="button"
-      size="icon"
-      variant="ghost"
-      className={config.button}
-      onClick={handleToggle}
-      disabled={disabled}
-      title={!hasVoiceConfigured ? 'Set up voice input' : 'Voice input'}
-    >
-      {isConnecting ? (
-        <Loader2 className="h-4 w-4 animate-spin" />
-      ) : (
-        <Mic className="h-4 w-4" />
+      disabled={disabled && !isRecording && !isConnecting}
+      className={cn(
+        buttonVariants({ variant: 'outline', size: 'icon' }),
+        'overflow-hidden px-0 transition-[width,padding,background-color,border-color,color,border-radius] duration-200 ease-out',
+        isRecording || isConnecting
+          ? `${config.pill} gap-2 justify-between rounded-md border-input bg-background px-2 text-foreground hover:bg-zinc-100`
+          : `gap-0 rounded-md ${config.button}`
       )}
-    </Button>
+      title={
+        isRecording || isConnecting
+          ? 'Stop recording'
+          : !hasVoiceConfigured
+            ? 'Set up voice input'
+            : 'Voice input'
+      }
+    >
+      <span
+        className={cn(
+          'overflow-hidden transition-[max-width,opacity] duration-200 ease-out',
+          isRecording || isConnecting ? 'max-w-[64px] opacity-100' : 'max-w-0 opacity-0'
+        )}
+      >
+        <MiniWaveform analyserRef={voiceInput.analyserRef} color="black" {...config.waveform} />
+      </span>
+      {isConnecting ? (
+        <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+      ) : isRecording ? (
+        <Square className="h-3 w-3 shrink-0 fill-current" />
+      ) : (
+        <Mic className="h-4 w-4 shrink-0" />
+      )}
+    </button>
   )
 }
 

@@ -18,6 +18,7 @@ export interface MockStreamState {
   pendingRemoteMcpRequests: Array<{ toolUseId: string; url: string; name?: string; reason?: string }>
   pendingBrowserInputRequests: Array<{ toolUseId: string; message: string; requirements: string[] }>
   pendingScriptRunRequests: Array<{ toolUseId: string; script: string; explanation: string; scriptType: 'applescript' | 'shell' | 'powershell' }>
+  pendingComputerUseRequests: Array<{ toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string }>
   error: string | null
   browserActive: boolean
   activeStartTime: number | null
@@ -39,6 +40,7 @@ export const DEFAULT_STREAM_STATE: MockStreamState = {
   pendingRemoteMcpRequests: [],
   pendingBrowserInputRequests: [],
   pendingScriptRunRequests: [],
+  pendingComputerUseRequests: [],
   error: null,
   browserActive: false,
   activeStartTime: null,

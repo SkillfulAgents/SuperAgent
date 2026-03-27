@@ -2,10 +2,9 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { Textarea } from '@renderer/components/ui/textarea'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Checkbox } from '@renderer/components/ui/checkbox'
-import { Send, Loader2, Sparkles, Search, RefreshCw, ChevronLeft, ChevronRight, Filter, Eye, Maximize2, Minimize2 } from 'lucide-react'
+import { ArrowUp, Loader2, Sparkles, Search, RefreshCw, ChevronLeft, ChevronRight, Filter, Eye } from 'lucide-react'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { useAgentSkills, useDiscoverableSkills, useRefreshAgentSkills } from '@renderer/hooks/use-agent-skills'
@@ -14,10 +13,10 @@ import { DiscoverableSkillCard } from './discoverable-skill-card'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { useUser } from '@renderer/context/user-context'
 import { apiFetch } from '@renderer/lib/api'
-import { AttachmentPreview } from '@renderer/components/messages/attachment-preview'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
+import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 
 interface AgentLandingProps {
@@ -30,7 +29,6 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)
   const [isExpanded, setIsExpanded] = useState(false)
-  const [manuallyCollapsed, setManuallyCollapsed] = useState(false)
   const [skillSearch, setSkillSearch] = useState('')
   const [skillPage, setSkillPage] = useState(0)
   const [selectedSkillsets, setSelectedSkillsets] = useState<Set<string> | null>(null)
@@ -85,10 +83,10 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
   // Auto-expand when message gets long (5+ lines)
   useEffect(() => {
     const lineCount = composer.message.split('\n').length
-    if (lineCount >= 5 && !isExpanded && !manuallyCollapsed) {
+    if (lineCount >= 5 && !isExpanded) {
       setIsExpanded(true)
     }
-  }, [composer.message, isExpanded, manuallyCollapsed])
+  }, [composer.message, isExpanded])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
@@ -177,65 +175,53 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
             />
             <form
               onSubmit={composer.handleSubmit}
-              className={`space-y-4 ${composer.isDragOver ? 'ring-2 ring-primary rounded-lg' : ''}`}
+              className={composer.isDragOver ? 'rounded-2xl ring-2 ring-primary ring-inset' : ''}
               {...composer.dragHandlers}
             >
-              <div className="relative">
-                <Textarea
-                  placeholder="Type your message..."
-                  value={composer.message}
-                  onChange={(e) => composer.setMessage(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  onPaste={composer.handlePaste}
-                  className={`pr-12 resize-none text-base transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh]' : 'min-h-[120px]'}`}
-                  disabled={isDisabled}
-                  autoFocus
-                  data-testid="landing-message-input"
-                />
-                <div className="absolute bottom-3 right-3 flex gap-1">
-                  <Button
-                    type="button"
-                    size="icon"
-                    variant="ghost"
-                    className="h-8 w-8"
-                    onClick={() => {
-                      setIsExpanded((v) => {
-                        if (v) setManuallyCollapsed(true)
-                        else setManuallyCollapsed(false)
-                        return !v
-                      })
-                    }}
-                    title={isExpanded ? 'Collapse input' : 'Expand input'}
-                  >
-                    {isExpanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-                  </Button>
+              <ChatComposerBox
+                attachments={composer.attachments}
+                onRemoveAttachment={composer.removeAttachment}
+                value={composer.message}
+                onChange={(e) => composer.setMessage(e.target.value)}
+                onKeyDown={handleKeyDown}
+                onPaste={composer.handlePaste}
+                placeholder="Type a message..."
+                disabled={isDisabled}
+                rows={2}
+                autoFocus
+                dataTestId="landing-message-input"
+                textareaClassName={`transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh]' : 'min-h-[60px]'}`}
+                leftActions={(
                   <AttachmentPicker
                     onFileSelect={composer.handleFileSelect}
                     onFolderSelect={composer.handleFolderSelect}
                     disabled={isDisabled}
-                    buttonClassName="h-8 w-8"
-                    popoverAlign="end"
                   />
-                  <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} size="sm" />
-                  <Button
-                    type="submit"
-                    size="icon"
-                    className="h-8 w-8"
-                    disabled={!composer.canSubmit}
-                    data-testid="landing-send-button"
-                    aria-label="Send message"
-                  >
-                    {isDisabled ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Send className="h-4 w-4" />
-                    )}
-                  </Button>
-                </div>
-              </div>
-              <AttachmentPreview attachments={composer.attachments} onRemove={composer.removeAttachment} />
-              <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="justify-center" />
-              <p className="text-xs text-muted-foreground text-center">
+                )}
+                rightActions={(
+                  <>
+                    <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} />
+                    <Button
+                      type="submit"
+                      size="icon"
+                      className="h-[34px] w-[34px]"
+                      disabled={!composer.canSubmit}
+                      data-testid="landing-send-button"
+                      aria-label="Send message"
+                    >
+                      {isDisabled ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <ArrowUp className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </>
+                )}
+                footer={(
+                  <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="mt-2 justify-center" />
+                )}
+              />
+              <p className="mt-2 text-center text-xs text-muted-foreground">
                 Press Cmd+Enter to send
               </p>
             </form>

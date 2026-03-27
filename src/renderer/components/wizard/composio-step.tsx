@@ -3,10 +3,12 @@ import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
+import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { ComposioApiKeyInput } from '@renderer/components/settings/composio-api-key-input'
 import { Check } from 'lucide-react'
 import { ConnectedAccountsSection } from '@renderer/components/connected-accounts-section'
 import { useUser } from '@renderer/context/user-context'
+import { PolicyDecisionToggle } from '@renderer/components/ui/policy-decision-toggle'
 
 export interface ComposioStepProps {
   onCanProceedChange: (canProceed: boolean) => void
@@ -44,6 +46,10 @@ export function ComposioStep({ onCanProceedChange, saveRef }: ComposioStepProps)
 
   // Keep save ref in sync for parent to call on Next
   saveRef.current = (hasUserIdInput && !isComposioConfigured) ? handleSaveUserId : null
+
+  const { data: userSettings } = useUserSettings()
+  const updateUserSettings = useUpdateUserSettings()
+  const currentPolicy = userSettings?.defaultApiPolicy ?? 'review'
 
   return (
     <div className="space-y-4">
@@ -92,9 +98,35 @@ export function ComposioStep({ onCanProceedChange, saveRef }: ComposioStepProps)
       )}
 
       {isComposioConfigured && (
-        <div className="pt-2 border-t">
-          <ConnectedAccountsSection />
-        </div>
+        <>
+          <div className="rounded-md border p-3 space-y-2">
+            <div>
+              <Label className="text-sm font-medium">Default API Request Policy</Label>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                When agents make API calls or use MCP tools, this policy determines what happens by default.
+                You can override this per-account or per-tool later in Settings.
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
+              <PolicyDecisionToggle
+                value={currentPolicy}
+                onChange={(value) => {
+                  if (value === 'default') return // Global default must be set
+                  updateUserSettings.mutate({ defaultApiPolicy: value })
+                }}
+                size="md"
+              />
+              <span className="text-xs text-muted-foreground">
+                {currentPolicy === 'allow' && 'Agents can make API calls without asking.'}
+                {currentPolicy === 'review' && 'You\'ll be prompted to approve each new type of request.'}
+                {currentPolicy === 'block' && 'All API calls are blocked until you add explicit allow rules.'}
+              </span>
+            </div>
+          </div>
+          <div className="pt-2 border-t">
+            <ConnectedAccountsSection />
+          </div>
+        </>
       )}
     </div>
   )

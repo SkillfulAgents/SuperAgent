@@ -54,6 +54,14 @@ interface ScriptRunRequest {
   scriptType: 'applescript' | 'shell' | 'powershell'
 }
 
+export interface ComputerUseRequest {
+  toolUseId: string
+  method: string
+  params: Record<string, unknown>
+  permissionLevel: string
+  appName?: string
+}
+
 export interface SubagentInfo {
   parentToolId: string | null
   agentId: string | null
@@ -81,8 +89,11 @@ interface StreamState {
   pendingRemoteMcpRequests: RemoteMcpRequest[]
   pendingBrowserInputRequests: BrowserInputRequest[]
   pendingScriptRunRequests: ScriptRunRequest[]
+  pendingComputerUseRequests: ComputerUseRequest[]
   error: string | null // Error message if session encountered an error
   browserActive: boolean // Whether browser is running for this session
+  computerUseApp: string | null // Name of the app currently grabbed for computer use
+  computerUseAppIcon: string | null // Base64 PNG icon of the grabbed app
   activeStartTime: number | null // Timestamp when session became active (for elapsed timer)
   isCompacting: boolean // True while context compaction is in progress
   contextUsage: SessionUsage | null // Latest context window usage data
@@ -161,8 +172,11 @@ function getOrCreateEventSource(
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
+          pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
           error: null,
           browserActive: current?.browserActive ?? false,
+          computerUseApp: current?.computerUseApp ?? null,
+          computerUseAppIcon: current?.computerUseAppIcon ?? null,
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
           contextUsage: current?.contextUsage ?? null,
@@ -201,8 +215,11 @@ function getOrCreateEventSource(
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
+          pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
           error: null, // Clear any previous error when starting new request
           browserActive: current?.browserActive ?? false,
+          computerUseApp: current?.computerUseApp ?? null,
+          computerUseAppIcon: current?.computerUseAppIcon ?? null,
           activeStartTime: Date.now(),
           isCompacting: false,
           contextUsage: current?.contextUsage ?? null,
@@ -233,8 +250,11 @@ function getOrCreateEventSource(
           pendingRemoteMcpRequests: [],
           pendingBrowserInputRequests: [],
           pendingScriptRunRequests: [],
+          pendingComputerUseRequests: [],
           error: null,
           browserActive: current?.browserActive ?? false,
+          computerUseApp: current?.computerUseApp ?? null,
+          computerUseAppIcon: current?.computerUseAppIcon ?? null,
           activeStartTime: null,
           isCompacting: false,
           contextUsage: current?.contextUsage ?? null,
@@ -264,8 +284,11 @@ function getOrCreateEventSource(
           pendingRemoteMcpRequests: [],
           pendingBrowserInputRequests: [],
           pendingScriptRunRequests: [],
+          pendingComputerUseRequests: [],
           error: data.error || 'An unknown error occurred',
           browserActive: current?.browserActive ?? false,
+          computerUseApp: current?.computerUseApp ?? null,
+          computerUseAppIcon: current?.computerUseAppIcon ?? null,
           activeStartTime: null,
           isCompacting: false,
           contextUsage: current?.contextUsage ?? null,
@@ -301,8 +324,11 @@ function getOrCreateEventSource(
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
+          pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
           error: null,
           browserActive: current?.browserActive ?? false,
+          computerUseApp: current?.computerUseApp ?? null,
+          computerUseAppIcon: current?.computerUseAppIcon ?? null,
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
           contextUsage: current?.contextUsage ?? null,
@@ -326,8 +352,11 @@ function getOrCreateEventSource(
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
+          pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
+          computerUseApp: current?.computerUseApp ?? null,
+          computerUseAppIcon: current?.computerUseAppIcon ?? null,
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
           contextUsage: current?.contextUsage ?? null,
@@ -355,8 +384,11 @@ function getOrCreateEventSource(
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
+          pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
+          computerUseApp: current?.computerUseApp ?? null,
+          computerUseAppIcon: current?.computerUseAppIcon ?? null,
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
           contextUsage: current?.contextUsage ?? null,
@@ -381,8 +413,11 @@ function getOrCreateEventSource(
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
+          pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
+          computerUseApp: current?.computerUseApp ?? null,
+          computerUseAppIcon: current?.computerUseAppIcon ?? null,
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
           contextUsage: current?.contextUsage ?? null,
@@ -406,8 +441,11 @@ function getOrCreateEventSource(
           pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
+          pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
           error: current?.error ?? null,
           browserActive: current?.browserActive ?? false,
+          computerUseApp: current?.computerUseApp ?? null,
+          computerUseAppIcon: current?.computerUseAppIcon ?? null,
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
           contextUsage: current?.contextUsage ?? null,
@@ -584,6 +622,23 @@ function getOrCreateEventSource(
           queryClient.invalidateQueries({ queryKey: ['sessions'] })
         }
       }
+      else if (data.type === 'computer_use_request') {
+        // Agent is requesting computer use on the host
+        if (current && !current.pendingComputerUseRequests.some(r => r.toolUseId === data.toolUseId)) {
+          const newRequest: ComputerUseRequest = {
+            toolUseId: data.toolUseId,
+            method: data.method,
+            params: data.params || {},
+            permissionLevel: data.permissionLevel,
+            appName: data.appName,
+          }
+          streamStates.set(sessionId, {
+            ...current,
+            pendingComputerUseRequests: [...current.pendingComputerUseRequests, newRequest],
+          })
+          queryClient.invalidateQueries({ queryKey: ['sessions'] })
+        }
+      }
       else if (data.type === 'compact_start') {
         // Context compaction started
         if (current) {
@@ -623,6 +678,16 @@ function getOrCreateEventSource(
           streamStates.set(sessionId, {
             ...current,
             browserActive: data.active ?? false,
+          })
+        }
+      }
+      else if (data.type === 'computer_use_grab_changed') {
+        // Computer use grab state changed (icon may arrive in a follow-up event)
+        if (current) {
+          streamStates.set(sessionId, {
+            ...current,
+            computerUseApp: data.app ?? null,
+            computerUseAppIcon: data.appIcon ?? (data.app ? current.computerUseAppIcon : null),
           })
         }
       }
@@ -918,6 +983,20 @@ export function removeScriptRunRequest(sessionId: string, toolUseId: string): vo
   }
 }
 
+// Helper function to remove a computer use request from a session
+export function removeComputerUseRequest(sessionId: string, toolUseId: string): void {
+  const current = streamStates.get(sessionId)
+  if (current) {
+    streamStates.set(sessionId, {
+      ...current,
+      pendingComputerUseRequests: current.pendingComputerUseRequests.filter(
+        (r) => r.toolUseId !== toolUseId
+      ),
+    })
+    streamListeners.get(sessionId)?.forEach((listener) => listener())
+  }
+}
+
 // Helper to clear isCompacting state (used when persisted messages already show the boundary)
 export function clearCompacting(sessionId: string): void {
   const current = streamStates.get(sessionId)
@@ -949,8 +1028,11 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     pendingRemoteMcpRequests: [],
     pendingBrowserInputRequests: [],
     pendingScriptRunRequests: [],
+    pendingComputerUseRequests: [],
     error: null,
     browserActive: false,
+    computerUseApp: null,
+    computerUseAppIcon: null,
     activeStartTime: null,
     isCompacting: false,
     contextUsage: null,
@@ -999,8 +1081,11 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
         pendingRemoteMcpRequests: [],
         pendingBrowserInputRequests: [],
         pendingScriptRunRequests: [],
+        pendingComputerUseRequests: [],
         error: null,
         browserActive: false,
+        computerUseApp: null,
+        computerUseAppIcon: null,
         activeStartTime: null,
         isCompacting: false,
         contextUsage: null,

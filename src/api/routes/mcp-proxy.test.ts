@@ -41,6 +41,20 @@ vi.mock('drizzle-orm', () => ({
   and: (...args: unknown[]) => args,
 }))
 
+// Mock policy enforcement
+const mockResolveMcpPolicy = vi.fn()
+const mockRequestReview = vi.fn()
+
+vi.mock('@shared/lib/proxy/policy-resolver', () => ({
+  resolveMcpPolicy: (...args: unknown[]) => mockResolveMcpPolicy(...args),
+}))
+
+vi.mock('@shared/lib/proxy/review-manager', () => ({
+  reviewManager: {
+    requestReview: (...args: unknown[]) => mockRequestReview(...args),
+  },
+}))
+
 // Mock fetch for forwarded requests
 const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
@@ -128,6 +142,13 @@ describe('mcp-proxy route', () => {
     mockInsertValues.mockResolvedValue(undefined)
     mockUpdateSet.mockReturnValue({ where: mockUpdateWhere })
     mockUpdateWhere.mockReturnValue({ catch: () => Promise.resolve() })
+    // Default: policy allows everything (non-breaking for existing tests)
+    mockResolveMcpPolicy.mockResolvedValue({
+      decision: 'allow',
+      matchedScopes: [],
+      scopeDescriptions: {},
+      resolvedFrom: 'global_default',
+    })
   })
 
   afterEach(() => {
@@ -1584,6 +1605,130 @@ describe('mcp-proxy route', () => {
       const [, init] = mockFetch.mock.calls[0]
       const headers = init.headers as Headers
       expect(headers.get('Authorization')).toBe('Bearer stale-but-exists')
+    })
+  })
+
+  // =========================================================================
+  // MCP policy enforcement tests
+  // =========================================================================
+  describe('MCP policy enforcement', () => {
+    it('tools/call with policy "allow" → forwarded', async () => {
+      setupSuccessPath()
+      mockResolveMcpPolicy.mockResolvedValue({
+        decision: 'allow',
+        matchedScopes: ['search'],
+        scopeDescriptions: {},
+        resolvedFrom: 'scope_policy',
+      })
+
+      const body = JSON.stringify({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'search' }, id: 1 })
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body,
+      })
+      expect(res.status).toBe(200)
+      expect(mockFetch).toHaveBeenCalledOnce()
+    })
+
+    it('tools/call with policy "block" → 403', async () => {
+      setupSuccessPath()
+      mockResolveMcpPolicy.mockResolvedValue({
+        decision: 'block',
+        matchedScopes: ['search'],
+        scopeDescriptions: {},
+        resolvedFrom: 'scope_policy',
+      })
+
+      const body = JSON.stringify({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'search' }, id: 1 })
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body,
+      })
+      expect(res.status).toBe(403)
+      const json = await res.json()
+      expect(json.error).toBe('blocked_by_policy')
+    })
+
+    it('tools/call with policy "review" → await decision', async () => {
+      setupSuccessPath()
+      mockResolveMcpPolicy.mockResolvedValue({
+        decision: 'review',
+        matchedScopes: ['search'],
+        scopeDescriptions: {},
+        resolvedFrom: 'scope_policy',
+      })
+      mockRequestReview.mockResolvedValue('allow')
+
+      const body = JSON.stringify({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'search' }, id: 1 })
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body,
+      })
+      expect(res.status).toBe(200)
+      expect(mockRequestReview).toHaveBeenCalledOnce()
+    })
+
+    it('non-tool-call method (tools/list) → uses MCP default policy', async () => {
+      setupSuccessPath()
+      mockResolveMcpPolicy.mockResolvedValue({
+        decision: 'allow',
+        matchedScopes: [],
+        scopeDescriptions: {},
+        resolvedFrom: 'account_default',
+      })
+
+      const body = JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: 1 })
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body,
+      })
+      expect(res.status).toBe(200)
+      // resolveMcpPolicy should have been called with null toolName
+      expect(mockResolveMcpPolicy).toHaveBeenCalledWith('mcp-1', null, expect.anything())
+    })
+
+    it('audit log includes policyDecision and matchedTool', async () => {
+      setupSuccessPath()
+      mockResolveMcpPolicy.mockResolvedValue({
+        decision: 'block',
+        matchedScopes: ['search'],
+        scopeDescriptions: {},
+        resolvedFrom: 'scope_policy',
+      })
+
+      const body = JSON.stringify({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'search' }, id: 1 })
+      await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body,
+      })
+
+      expect(mockInsertValues).toHaveBeenCalled()
+      const entry = mockInsertValues.mock.calls[0][0]
+      expect(entry.policyDecision).toBe('block')
+      expect(entry.matchedTool).toBe('search')
+    })
+
+    it('policy enforcement error defaults to review (not allow)', async () => {
+      setupSuccessPath()
+      mockResolveMcpPolicy.mockImplementation(() => { throw new Error('policy resolver exploded') })
+      // If fallback were 'allow', the request would be forwarded without review.
+      // Since fallback is 'review', reviewManager.requestReview is called.
+      mockRequestReview.mockResolvedValue('allow')
+
+      const body = JSON.stringify({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'search' }, id: 1 })
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body,
+      })
+      expect(res.status).toBe(200)
+      // The key assertion: reviewManager was called because fallback is 'review'
+      expect(mockRequestReview).toHaveBeenCalledOnce()
     })
   })
 })

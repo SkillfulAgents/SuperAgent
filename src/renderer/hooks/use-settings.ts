@@ -8,10 +8,10 @@ import type {
   AgentLimitsSettings,
   AuthSettings,
   VoiceSettings,
-  HostShellUseSettings,
   AnalyticsTarget,
   LlmProviderId,
 } from '@shared/lib/config/settings'
+import type { ComputerUseSettings } from '@shared/lib/computer-use/types'
 import type { RunnerAvailability } from '@shared/lib/container/client-factory'
 
 export type { GlobalSettingsResponse, ContainerSettings, AppPreferences, ModelSettings, AgentLimitsSettings, AuthSettings, VoiceSettings, AnalyticsTarget, LlmProviderId, RunnerAvailability }
@@ -52,7 +52,7 @@ export interface UpdateSettingsParams {
   customEnvVars?: Record<string, string>
   auth?: Partial<AuthSettings>
   voice?: Partial<VoiceSettings>
-  hostShellUse?: Partial<HostShellUseSettings>
+  computerUse?: Partial<ComputerUseSettings>
   shareAnalytics?: boolean
   analyticsTargets?: AnalyticsTarget[]
 }

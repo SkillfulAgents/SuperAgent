@@ -168,10 +168,8 @@ test.describe('User Input Requests', () => {
   })
 
   test('script run request: approve execution', async ({ page }) => {
-    // Enable host shell script execution in settings (required for the request to reach the UI)
-    await page.request.put('http://localhost:3000/api/settings', {
-      data: { hostShellUse: { allowScriptExecution: true } },
-    })
+    // No global toggle needed — permissions are now per-agent via ComputerUsePermissionManager
+    // With no cached permission, the request will be shown to the user for approval
 
     // "ask script" triggers UserInputRequestScenario with mcp__user-input__request_script_run
     await sessionPage.sendMessage('ask script')
@@ -195,10 +193,7 @@ test.describe('User Input Requests', () => {
   })
 
   test('script run request: deny execution', async ({ page }) => {
-    // Enable host shell script execution in settings (required for the request to reach the UI)
-    await page.request.put('http://localhost:3000/api/settings', {
-      data: { hostShellUse: { allowScriptExecution: true } },
-    })
+    // No global toggle needed — permissions are now per-agent via ComputerUsePermissionManager
 
     await sessionPage.sendMessage('ask script')
 

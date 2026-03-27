@@ -18,13 +18,14 @@ import {
   useInitiateMcpOAuth,
   useInvalidateRemoteMcps,
 } from '@renderer/hooks/use-remote-mcps'
-import { Plus, Trash2, Loader2, RefreshCw, Plug, Wrench, AlertCircle, CheckCircle, Search } from 'lucide-react'
+import { Plus, Trash2, Loader2, RefreshCw, Plug, Wrench, AlertCircle, CheckCircle, Search, Shield } from 'lucide-react'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { apiFetch } from '@renderer/lib/api'
 import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
 import { useQuery } from '@tanstack/react-query'
 import type { CommonMcpServer } from '@shared/lib/mcp/common-servers'
+import { ToolPolicyEditor } from './tool-policy-editor'
 
 export function RemoteMcpsTab() {
   const { data, isLoading } = useRemoteMcps()
@@ -35,6 +36,7 @@ export function RemoteMcpsTab() {
   const initiateOAuth = useInitiateMcpOAuth()
   const invalidateRemoteMcps = useInvalidateRemoteMcps()
   const { track } = useAnalyticsTracking()
+  const [policyEditorMcp, setPolicyEditorMcp] = useState<{ id: string; name: string; tools: Array<{ name: string; description?: string }> } | null>(null)
 
   const { data: commonData } = useQuery<{ servers: CommonMcpServer[] }>({
     queryKey: ['common-mcp-servers'],
@@ -368,6 +370,20 @@ export function RemoteMcpsTab() {
                 <Button
                   size="sm"
                   variant="ghost"
+                  onClick={() => {
+                    const tools = (server.tools || []).map((t: any) => ({
+                      name: t.name,
+                      description: t.description,
+                    }))
+                    setPolicyEditorMcp({ id: server.id, name: server.name, tools })
+                  }}
+                  title="Manage tool policies"
+                >
+                  <Shield className="h-3 w-3" />
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
                   onClick={() => handleDelete(server.id)}
                   disabled={pendingActionId !== null}
                 >
@@ -543,6 +559,19 @@ export function RemoteMcpsTab() {
           </div>
         )}
       </div>
+
+      {/* Tool policy editor modal */}
+      {policyEditorMcp && (
+        <ToolPolicyEditor
+          mcpId={policyEditorMcp.id}
+          mcpName={policyEditorMcp.name}
+          tools={policyEditorMcp.tools}
+          open={!!policyEditorMcp}
+          onOpenChange={(open) => {
+            if (!open) setPolicyEditorMcp(null)
+          }}
+        />
+      )}
     </div>
   )
 }

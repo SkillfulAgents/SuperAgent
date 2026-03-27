@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
-import { Paperclip, FileIcon, FolderOpen } from 'lucide-react'
+import { Plus, FileIcon, FolderOpen } from 'lucide-react'
 
 interface AttachmentPickerProps {
   onFileSelect: (e: React.ChangeEvent<HTMLInputElement>) => void
@@ -15,7 +15,7 @@ export function AttachmentPicker({
   onFileSelect,
   onFolderSelect,
   disabled,
-  buttonClassName = 'h-[34px] w-[34px]',
+  buttonClassName = 'h-[34px] px-3',
   popoverAlign = 'start',
 }: AttachmentPickerProps) {
   const [open, setOpen] = useState(false)
@@ -42,13 +42,13 @@ export function AttachmentPicker({
         <PopoverTrigger asChild>
           <Button
             type="button"
-            size="icon"
             variant="ghost"
             className={buttonClassName}
             disabled={disabled}
-            title="Attach"
+            title="Add files"
           >
-            <Paperclip className="h-4 w-4" />
+            <Plus className="mr-1 h-4 w-4" />
+            Add files
           </Button>
         </PopoverTrigger>
         <PopoverContent side="top" align={popoverAlign} className="w-40 p-1">

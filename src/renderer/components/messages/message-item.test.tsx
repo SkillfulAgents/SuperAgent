@@ -163,28 +163,19 @@ describe('MessageItem', () => {
   })
 
   describe('sender attribution', () => {
-    it('renders sender initials in avatar when sender is present', () => {
+    it('renders sender name when sender is present', () => {
       const msg = createUserMessage({
         content: { text: 'Hello' },
         sender: { id: 'user-1', name: 'Alice Baker', email: 'alice@example.com' },
       })
       render(<MessageItem message={msg} />)
-      expect(screen.getByText('AB')).toBeInTheDocument()
+      expect(screen.getByText('Alice Baker')).toBeInTheDocument()
     })
 
-    it('renders sender name in tooltip when sender is present', () => {
-      const msg = createUserMessage({
-        content: { text: 'Hello' },
-        sender: { id: 'user-1', name: 'Alice Baker', email: 'alice@example.com' },
-      })
-      render(<MessageItem message={msg} />)
-      expect(screen.getByTestId('tooltip-content')).toHaveTextContent('Alice Baker')
-    })
-
-    it('renders default user icon when sender is absent', () => {
+    it('does not render sender name when sender is absent', () => {
       const msg = createUserMessage({ content: { text: 'Hello' } })
       render(<MessageItem message={msg} />)
-      expect(screen.queryByTestId('tooltip-content')).not.toBeInTheDocument()
+      expect(screen.queryByText('Alice Baker')).not.toBeInTheDocument()
     })
 
     it('does not render sender on assistant messages', () => {

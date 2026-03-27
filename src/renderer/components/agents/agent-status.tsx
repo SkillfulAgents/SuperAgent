@@ -15,6 +15,7 @@ interface AgentStatusProps {
   status: ContainerStatus
   hasActiveSessions?: boolean
   hasSessionsAwaitingInput?: boolean
+  size?: 'sm' | 'default'
   className?: string
 }
 
@@ -29,28 +30,31 @@ export function getAgentActivityStatus(
   return 'idle'
 }
 
-export function AgentStatus({ status, hasActiveSessions = false, hasSessionsAwaitingInput = false, className }: AgentStatusProps) {
+export function AgentStatus({ status, hasActiveSessions = false, hasSessionsAwaitingInput = false, size = 'default', className }: AgentStatusProps) {
   const activityStatus = getAgentActivityStatus(status, hasActiveSessions, hasSessionsAwaitingInput)
+  const isSmall = size === 'sm'
+  const iconSize = isSmall ? 'h-2.5 w-2.5' : 'h-3 w-3'
+  const dotSize = isSmall ? 'h-1.5 w-1.5' : 'h-2 w-2'
 
   return (
-    <div className={cn('flex items-center gap-1.5', className)} data-testid="agent-status" data-status={activityStatus}>
+    <div className={cn('flex items-center', isSmall ? 'gap-1' : 'gap-1.5', className)} data-testid="agent-status" data-status={activityStatus}>
       {activityStatus === 'sleeping' ? (
-        <Moon className="h-3 w-3 text-muted-foreground" />
+        <Moon className={cn(iconSize, 'text-muted-foreground')} />
       ) : activityStatus === 'awaiting_input' ? (
-        <span className="relative flex h-2 w-2">
+        <span className={cn('relative flex', dotSize)}>
           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-orange-500 opacity-75"></span>
-          <span className="relative inline-flex rounded-full h-2 w-2 bg-orange-500"></span>
+          <span className={cn('relative inline-flex rounded-full bg-orange-500', dotSize)}></span>
         </span>
       ) : activityStatus === 'working' ? (
-        <span className="relative flex h-2 w-2">
+        <span className={cn('relative flex', dotSize)}>
           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-500 opacity-75"></span>
-          <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+          <span className={cn('relative inline-flex rounded-full bg-green-500', dotSize)}></span>
         </span>
       ) : (
-        <div className="h-2 w-2 rounded-full bg-blue-500" />
+        <div className={cn('rounded-full bg-blue-500', dotSize)} />
       )}
       <span
-        className={cn('text-xs', {
+        className={cn(isSmall ? 'text-[10px]' : 'text-xs', {
           'text-muted-foreground': activityStatus === 'sleeping',
           'text-blue-500': activityStatus === 'idle',
           'text-green-600': activityStatus === 'working',

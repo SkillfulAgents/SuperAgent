@@ -138,7 +138,7 @@ describe('AgentLanding', () => {
       <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     expect(screen.getByTestId('landing-message-input')).toBeInTheDocument()
-    expect(screen.getByPlaceholderText('Type your message...')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Type a message...')).toBeInTheDocument()
   })
 
   it('renders send button', () => {
@@ -243,35 +243,15 @@ describe('AgentLanding', () => {
     expect(screen.getByTestId('landing-message-input')).toBeDisabled()
   })
 
-  // --- Expand/Collapse ---
+  // --- Auto-expand ---
 
-  it('has expand button', () => {
-    renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
-    )
-    expect(screen.getByTitle('Expand input')).toBeInTheDocument()
-  })
-
-  it('toggles expand/collapse on button click', async () => {
-    const user = userEvent.setup()
+  it('auto-expands when the message is very long', () => {
+    mockComposer.message = 'one\ntwo\nthree\nfour\nfive'
     renderWithProviders(
       <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
     )
 
-    // Initially collapsed
-    const textarea = screen.getByTestId('landing-message-input')
-    expect(textarea.className).toContain('min-h-[120px]')
-
-    // Click expand
-    await user.click(screen.getByTitle('Expand input'))
-
-    expect(textarea.className).toContain('min-h-[50vh]')
-    expect(screen.getByTitle('Collapse input')).toBeInTheDocument()
-
-    // Click collapse
-    await user.click(screen.getByTitle('Collapse input'))
-
-    expect(textarea.className).toContain('min-h-[120px]')
+    expect(screen.getByTestId('landing-message-input').className).toContain('min-h-[50vh]')
   })
 
   // --- View-only mode ---
@@ -389,7 +369,7 @@ describe('AgentLanding', () => {
     renderWithProviders(
       <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
     )
-    expect(screen.getByTitle('Attach')).toBeInTheDocument()
+    expect(screen.getByTitle('Add files')).toBeInTheDocument()
   })
 
   it('disables attachment picker when disabled', () => {
@@ -397,6 +377,6 @@ describe('AgentLanding', () => {
     renderWithProviders(
       <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
     )
-    expect(screen.getByTitle('Attach')).toBeDisabled()
+    expect(screen.getByTitle('Add files')).toBeDisabled()
   })
 })

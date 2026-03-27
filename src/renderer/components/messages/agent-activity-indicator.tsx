@@ -2,9 +2,10 @@
 import { useMessages } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
+import { apiFetch } from '@renderer/lib/api'
 import { cn } from '@shared/lib/utils'
-import { AlertTriangle } from 'lucide-react'
-import { useMemo } from 'react'
+import { AlertTriangle, Monitor, X } from 'lucide-react'
+import { useCallback, useMemo, useState } from 'react'
 
 interface Todo {
   content: string
@@ -22,8 +23,23 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     isActive, error, activeStartTime, isCompacting, activeSubagents, completedSubagents,
     pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests,
     pendingFileRequests, pendingRemoteMcpRequests, pendingBrowserInputRequests,
-    apiRetry,
+    apiRetry, computerUseApp, computerUseAppIcon,
   } = useMessageStream(sessionId, agentSlug)
+
+  const [revoking, setRevoking] = useState(false)
+  const [revokeError, setRevokeError] = useState(false)
+  const handleRevokeComputerUse = useCallback(async () => {
+    setRevoking(true)
+    setRevokeError(false)
+    try {
+      const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/computer-use/revoke`, { method: 'POST' })
+      if (!res.ok) throw new Error()
+    } catch {
+      setRevokeError(true)
+    } finally {
+      setRevoking(false)
+    }
+  }, [agentSlug, sessionId])
 
   const isAwaitingInput = isActive && (
     pendingSecretRequests.length > 0 ||
@@ -79,15 +95,17 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
   // Show error if present
   if (error) {
     return (
-      <div className="mx-4 mb-2 rounded-lg border border-destructive/50 bg-destructive/10 p-3">
-        <div className="flex items-center gap-2">
-          <AlertTriangle className="h-4 w-4 text-destructive" />
-          <span className="text-sm font-medium text-destructive">Error</span>
+      <div className="mx-auto mb-2 w-full max-w-[740px] px-4">
+        <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-3">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-destructive" />
+            <span className="text-sm font-medium text-destructive">Error</span>
+          </div>
+          <p className="mt-1 text-sm text-destructive/90">{error}</p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Send another message to retry.
+          </p>
         </div>
-        <p className="mt-1 text-sm text-destructive/90">{error}</p>
-        <p className="mt-2 text-xs text-muted-foreground">
-          Send another message to retry.
-        </p>
       </div>
     )
   }
@@ -136,83 +154,106 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
         : (activeItem?.activeForm || 'Working...')
 
   return (
-    <div className="mx-4 mb-2 rounded-lg border bg-muted/50 p-3" data-testid="activity-indicator">
-      {/* Header with pulsing indicator */}
-      <div className="flex items-center gap-2">
-        <span className="relative flex h-3 w-3">
-          <span className={cn(
-            "animate-ping absolute inline-flex h-full w-full rounded-full opacity-75",
-            (isAwaitingInput || apiRetry) ? "bg-orange-500" : "bg-primary"
-          )}></span>
-          <span className={cn(
-            "relative inline-flex rounded-full h-3 w-3",
-            (isAwaitingInput || apiRetry) ? "bg-orange-500" : "bg-primary"
-          )}></span>
-        </span>
-        <span className="text-sm font-medium">{statusText}</span>
-        {elapsed && (
-          <span className="text-xs text-muted-foreground tabular-nums">{elapsed}</span>
+    <div className="mx-auto mb-2 w-full max-w-[740px] px-4">
+      <div className="rounded-lg border bg-muted/50 p-3" data-testid="activity-indicator">
+        {/* Header with pulsing indicator */}
+        <div className="flex items-center gap-2">
+          <span className="relative flex h-3 w-3">
+            <span className={cn(
+              "animate-ping absolute inline-flex h-full w-full rounded-full opacity-75",
+              (isAwaitingInput || apiRetry) ? "bg-orange-500" : "bg-primary"
+            )}></span>
+            <span className={cn(
+              "relative inline-flex rounded-full h-3 w-3",
+              (isAwaitingInput || apiRetry) ? "bg-orange-500" : "bg-primary"
+            )}></span>
+          </span>
+          <span className="text-sm font-medium">{statusText}</span>
+          {computerUseApp && (
+            <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300">
+              {computerUseAppIcon ? (
+                <img src={`data:image/png;base64,${computerUseAppIcon}`} alt="" className="h-4 w-4" />
+              ) : (
+                <Monitor className="h-3 w-3" />
+              )}
+              {computerUseApp}
+              <button
+                onClick={handleRevokeComputerUse}
+                disabled={revoking}
+                className={cn(
+                  "ml-0.5 rounded-full p-0.5 transition-colors cursor-pointer",
+                  revokeError ? "bg-red-200 dark:bg-red-800" : "hover:bg-blue-200 dark:hover:bg-blue-800"
+                )}
+                title={revokeError ? "Failed to revoke — click to retry" : "Release app and revoke permission"}
+              >
+                <X className={cn("h-3 w-3", revokeError && "text-red-600 dark:text-red-400")} />
+              </button>
+            </span>
+          )}
+          {elapsed && (
+            <span className="text-xs text-muted-foreground tabular-nums">{elapsed}</span>
+          )}
+        </div>
+
+        {/* Active subagents */}
+        {subagentItems.length > 0 && (
+          <ul className="mt-2 space-y-1 text-sm pl-5">
+            {subagentItems.map((item) => (
+              <li key={item.id} className="flex flex-col gap-0.5">
+                <div className="flex items-center gap-2">
+                  {item.status === 'running' ? (
+                    <span className="relative flex h-2 w-2 shrink-0">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+                    </span>
+                  ) : (
+                    <span className="text-xs text-green-500 shrink-0">✓</span>
+                  )}
+                  <span className={cn(
+                    'font-mono text-xs',
+                    item.status === 'completed' && 'text-muted-foreground'
+                  )}>
+                    {item.name}
+                  </span>
+                  {item.description && (
+                    <span className="text-xs text-muted-foreground truncate">
+                      {item.description}
+                    </span>
+                  )}
+                </div>
+                {item.progressSummary && item.status === 'running' && (
+                  <span className="text-xs text-muted-foreground ml-4 italic">
+                    {item.progressSummary}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {/* Todo list if available and at least one item is not completed */}
+        {todos && todos.length > 0 && todos.some((t) => t.status !== 'completed') && (
+          <ul className="mt-2 space-y-1 text-sm">
+            {todos.map((todo, index) => (
+              <li
+                key={index}
+                className={cn(
+                  'flex items-center gap-2',
+                  todo.status === 'completed' && 'text-muted-foreground line-through',
+                  todo.status === 'in_progress' && 'font-semibold'
+                )}
+              >
+                <span className="text-xs">
+                  {todo.status === 'completed' && '✓'}
+                  {todo.status === 'in_progress' && '→'}
+                  {todo.status === 'pending' && '○'}
+                </span>
+                {todo.content}
+              </li>
+            ))}
+          </ul>
         )}
       </div>
-
-      {/* Active subagents */}
-      {subagentItems.length > 0 && (
-        <ul className="mt-2 space-y-1 text-sm pl-5">
-          {subagentItems.map((item) => (
-            <li key={item.id} className="flex flex-col gap-0.5">
-              <div className="flex items-center gap-2">
-                {item.status === 'running' ? (
-                  <span className="relative flex h-2 w-2 shrink-0">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
-                  </span>
-                ) : (
-                  <span className="text-xs text-green-500 shrink-0">✓</span>
-                )}
-                <span className={cn(
-                  'font-mono text-xs',
-                  item.status === 'completed' && 'text-muted-foreground'
-                )}>
-                  {item.name}
-                </span>
-                {item.description && (
-                  <span className="text-xs text-muted-foreground truncate">
-                    {item.description}
-                  </span>
-                )}
-              </div>
-              {item.progressSummary && item.status === 'running' && (
-                <span className="text-xs text-muted-foreground ml-4 italic">
-                  {item.progressSummary}
-                </span>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {/* Todo list if available and at least one item is not completed */}
-      {todos && todos.length > 0 && todos.some((t) => t.status !== 'completed') && (
-        <ul className="mt-2 space-y-1 text-sm">
-          {todos.map((todo, index) => (
-            <li
-              key={index}
-              className={cn(
-                'flex items-center gap-2',
-                todo.status === 'completed' && 'text-muted-foreground line-through',
-                todo.status === 'in_progress' && 'font-semibold'
-              )}
-            >
-              <span className="text-xs">
-                {todo.status === 'completed' && '✓'}
-                {todo.status === 'in_progress' && '→'}
-                {todo.status === 'pending' && '○'}
-              </span>
-              {todo.content}
-            </li>
-          ))}
-        </ul>
-      )}
     </div>
   )
 }

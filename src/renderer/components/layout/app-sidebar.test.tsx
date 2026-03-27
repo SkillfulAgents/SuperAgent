@@ -15,45 +15,57 @@ vi.mock('@renderer/lib/env', () => ({
 }))
 
 // Mock hooks
+const mockUseAgents = vi.fn(() => ({
+  data: [
+    {
+      slug: 'test-agent',
+      name: 'Test Agent',
+      status: 'running',
+      containerPort: 3000,
+      createdAt: new Date(),
+      hasActiveSessions: false,
+      hasSessionsAwaitingInput: false,
+      sessionCount: 1,
+      scheduledTaskCount: 0,
+      dashboardCount: 0,
+    },
+    {
+      slug: 'other-agent',
+      name: 'Other Agent',
+      status: 'stopped',
+      containerPort: null,
+      createdAt: new Date(),
+      hasActiveSessions: false,
+      hasSessionsAwaitingInput: false,
+      sessionCount: 0,
+      scheduledTaskCount: 0,
+      dashboardCount: 0,
+    },
+  ],
+  isLoading: false,
+  error: null,
+}))
 vi.mock('@renderer/hooks/use-agents', () => ({
-  useAgents: vi.fn(() => ({
-    data: [
-      {
-        slug: 'test-agent',
-        name: 'Test Agent',
-        status: 'running',
-        containerPort: 3000,
-        createdAt: new Date(),
-      },
-      {
-        slug: 'other-agent',
-        name: 'Other Agent',
-        status: 'stopped',
-        containerPort: null,
-        createdAt: new Date(),
-      },
-    ],
-    isLoading: false,
-    error: null,
-  })),
+  useAgents: () => mockUseAgents(),
 }))
 
+const mockUseSessions = vi.fn((_slug: string): { data: any[] | undefined } => ({
+  data: _slug === 'test-agent'
+    ? [
+        {
+          id: 'session-1',
+          agentSlug: 'test-agent',
+          name: 'Session 1',
+          messageCount: 5,
+          lastActivityAt: new Date(),
+          createdAt: new Date(),
+          isActive: false,
+        },
+      ]
+    : [],
+}))
 vi.mock('@renderer/hooks/use-sessions', () => ({
-  useSessions: vi.fn((slug: string) => ({
-    data: slug === 'test-agent'
-      ? [
-          {
-            id: 'session-1',
-            agentSlug: 'test-agent',
-            name: 'Session 1',
-            messageCount: 5,
-            lastActivityAt: new Date(),
-            createdAt: new Date(),
-            isActive: false,
-          },
-        ]
-      : [],
-  })),
+  useSessions: (slug: string) => mockUseSessions(slug),
 }))
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
@@ -136,8 +148,8 @@ vi.mock('@renderer/components/agents/create-agent-dialog', () => ({
 }))
 
 vi.mock('@renderer/components/agents/agent-status', () => ({
-  AgentStatus: ({ status }: { status: string }) => (
-    <span data-testid={`agent-status-${status}`}>{status}</span>
+  AgentStatus: ({ status, hasSessionsAwaitingInput }: { status: string; hasSessionsAwaitingInput?: boolean }) => (
+    <span data-testid={`agent-status-${status}`} data-awaiting={hasSessionsAwaitingInput ? 'true' : 'false'}>{status}</span>
   ),
 }))
 
@@ -241,8 +253,23 @@ describe('AppSidebar', () => {
     vi.clearAllMocks()
     mockSelectionContext.selectedAgentSlug = null
     mockSelectionContext.selectedSessionId = null
-    // Reset scheduled tasks mock to return empty arrays
+    // Reset mocks that individual tests may override
     mockUseScheduledTasks.mockImplementation(() => ({ data: [] }))
+    mockUseSessions.mockImplementation((slug: string) => ({
+      data: slug === 'test-agent'
+        ? [
+            {
+              id: 'session-1',
+              agentSlug: 'test-agent',
+              name: 'Session 1',
+              messageCount: 5,
+              lastActivityAt: new Date(),
+              createdAt: new Date(),
+              isActive: false,
+            },
+          ]
+        : [],
+    }))
   })
 
   it('renders "Super Agent" title', () => {
@@ -291,11 +318,14 @@ describe('AppSidebar', () => {
   })
 
   it('renders session sub-items', () => {
+    // Agent must be selected for collapsible to open and lazy-load sessions
+    mockSelectionContext.selectedAgentSlug = 'test-agent'
     renderWithProviders(<AppSidebar />)
     expect(screen.getByText('Session 1')).toBeInTheDocument()
   })
 
   it('selects agent and session on session click', async () => {
+    mockSelectionContext.selectedAgentSlug = 'test-agent'
     const user = userEvent.setup()
     renderWithProviders(<AppSidebar />)
 
@@ -310,16 +340,128 @@ describe('AppSidebar', () => {
   })
 
   // ==========================================================================
+  // Awaiting Input Status Tests
+  // ==========================================================================
+
+  it('derives awaiting input status from sessions data when available', () => {
+    // Agent data says not awaiting (stale), but sessions data says awaiting (fresh)
+    mockUseAgents.mockReturnValue({
+      data: [
+        {
+          slug: 'test-agent',
+          name: 'Test Agent',
+          status: 'running',
+          containerPort: 3000,
+          createdAt: new Date(),
+          hasActiveSessions: true,
+          hasSessionsAwaitingInput: false, // stale agent-level data
+          sessionCount: 1,
+          scheduledTaskCount: 0,
+          dashboardCount: 0,
+        },
+      ],
+      isLoading: false,
+      error: null,
+    })
+    mockUseSessions.mockReturnValue({
+      data: [
+        {
+          id: 'session-1',
+          agentSlug: 'test-agent',
+          name: 'Session 1',
+          messageCount: 5,
+          lastActivityAt: new Date(),
+          createdAt: new Date(),
+          isActive: true,
+          isAwaitingInput: true, // fresh sessions data shows awaiting
+        },
+      ],
+    })
+    mockSelectionContext.selectedAgentSlug = 'test-agent'
+
+    renderWithProviders(<AppSidebar />)
+
+    const statusEl = screen.getByTestId('agent-status-running')
+    expect(statusEl).toHaveAttribute('data-awaiting', 'true')
+  })
+
+  it('falls back to agent data when sessions are not loaded', () => {
+    mockUseAgents.mockReturnValue({
+      data: [
+        {
+          slug: 'test-agent',
+          name: 'Test Agent',
+          status: 'running',
+          containerPort: 3000,
+          createdAt: new Date(),
+          hasActiveSessions: true,
+          hasSessionsAwaitingInput: true, // agent-level data says awaiting
+          sessionCount: 1,
+          scheduledTaskCount: 0,
+          dashboardCount: 0,
+        },
+      ],
+      isLoading: false,
+      error: null,
+    })
+    // Sessions not loaded (agent not expanded)
+    mockUseSessions.mockReturnValue({ data: undefined })
+
+    renderWithProviders(<AppSidebar />)
+
+    const statusEl = screen.getByTestId('agent-status-running')
+    expect(statusEl).toHaveAttribute('data-awaiting', 'true')
+  })
+
+  // ==========================================================================
   // Scheduled Tasks Display Tests
   // ==========================================================================
 
   describe('scheduled tasks display', () => {
+    // Helper: set agent as selected (opens collapsible) and set scheduledTaskCount
+    // so the chevron shows and lazy hooks fire
+    function selectAgentWithTaskCount(taskCount: number) {
+      mockSelectionContext.selectedAgentSlug = 'test-agent'
+      mockUseAgents.mockReturnValue({
+        data: [
+          {
+            slug: 'test-agent',
+            name: 'Test Agent',
+            status: 'running',
+            containerPort: 3000,
+            createdAt: new Date(),
+            hasActiveSessions: false,
+            hasSessionsAwaitingInput: false,
+            sessionCount: 1,
+            scheduledTaskCount: taskCount,
+            dashboardCount: 0,
+          },
+          {
+            slug: 'other-agent',
+            name: 'Other Agent',
+            status: 'stopped',
+            containerPort: null,
+            createdAt: new Date(),
+            hasActiveSessions: false,
+            hasSessionsAwaitingInput: false,
+            sessionCount: 0,
+            scheduledTaskCount: 0,
+            dashboardCount: 0,
+          },
+        ],
+        isLoading: false,
+        error: null,
+      })
+    }
+
     it('does not show scheduled section when no tasks exist', () => {
+      mockSelectionContext.selectedAgentSlug = 'test-agent'
       renderWithProviders(<AppSidebar />)
       expect(screen.queryByText(/Scheduled Jobs/)).not.toBeInTheDocument()
     })
 
     it('shows a single pending task flat (no group) when only 1 pending and 0 cancelled', () => {
+      selectAgentWithTaskCount(1)
       setScheduledTasksMock('test-agent', [
         createMockScheduledTask({ name: 'Daily Check' }),
       ])
@@ -330,6 +472,7 @@ describe('AppSidebar', () => {
     })
 
     it('shows "Scheduled Jobs (N)" group when there are 2+ pending tasks', () => {
+      selectAgentWithTaskCount(2)
       setScheduledTasksMock('test-agent', [
         createMockScheduledTask({ id: 'task-1', name: 'Task A' }),
         createMockScheduledTask({ id: 'task-2', name: 'Task B' }),
@@ -342,6 +485,7 @@ describe('AppSidebar', () => {
     })
 
     it('shows "Scheduled Jobs (N)" group when there are cancelled tasks, even with only 1 pending', () => {
+      selectAgentWithTaskCount(1)
       setScheduledTasksMock('test-agent',
         [createMockScheduledTask({ id: 'task-1', name: 'Active Job' })],
         [createMockScheduledTask({ id: 'task-2', name: 'Old Job', status: 'cancelled' })],
@@ -353,6 +497,7 @@ describe('AppSidebar', () => {
     })
 
     it('shows "Scheduled Jobs (1)" group with "Cancelled" when 0 pending and 1 cancelled', () => {
+      selectAgentWithTaskCount(0)
       setScheduledTasksMock('test-agent', [], [
         createMockScheduledTask({ id: 'task-1', name: 'Cancelled Cron', status: 'cancelled' }),
       ])
@@ -363,6 +508,7 @@ describe('AppSidebar', () => {
     })
 
     it('shows "Cancelled (N)" section inside the group with correct count', () => {
+      selectAgentWithTaskCount(1)
       setScheduledTasksMock('test-agent',
         [createMockScheduledTask({ id: 'task-1', name: 'Active' })],
         [
@@ -379,6 +525,7 @@ describe('AppSidebar', () => {
     })
 
     it('does not show "Cancelled" section when there are no cancelled tasks', () => {
+      selectAgentWithTaskCount(2)
       setScheduledTasksMock('test-agent', [
         createMockScheduledTask({ id: 'task-1', name: 'Task A' }),
         createMockScheduledTask({ id: 'task-2', name: 'Task B' }),
@@ -390,6 +537,7 @@ describe('AppSidebar', () => {
     })
 
     it('counts total (pending + cancelled) in "Scheduled Jobs" header', () => {
+      selectAgentWithTaskCount(2)
       setScheduledTasksMock('test-agent',
         [
           createMockScheduledTask({ id: 'task-1', name: 'P1' }),
@@ -403,6 +551,7 @@ describe('AppSidebar', () => {
     })
 
     it('selects scheduled task on click', async () => {
+      selectAgentWithTaskCount(1)
       const user = userEvent.setup()
       setScheduledTasksMock('test-agent', [
         createMockScheduledTask({ id: 'task-42', name: 'Clickable Task' }),
@@ -414,7 +563,8 @@ describe('AppSidebar', () => {
       expect(mockSelectionContext.selectScheduledTask).toHaveBeenCalledWith('task-42')
     })
 
-    it('calls useScheduledTasks with both pending and cancelled status', () => {
+    it('calls useScheduledTasks with both pending and cancelled status when expanded', () => {
+      mockSelectionContext.selectedAgentSlug = 'test-agent'
       renderWithProviders(<AppSidebar />)
       expect(mockUseScheduledTasks).toHaveBeenCalledWith('test-agent', 'pending')
       expect(mockUseScheduledTasks).toHaveBeenCalledWith('test-agent', 'cancelled')
