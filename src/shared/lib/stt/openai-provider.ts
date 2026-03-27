@@ -40,8 +40,14 @@ export class OpenaiSttProvider extends BaseSttProvider {
       }),
     })
     if (!res.ok) {
+      if (res.status === 401 || res.status === 403) {
+        throw new Error('Invalid OpenAI API key. Please check your key in Settings > Voice.')
+      }
+      if (res.status === 429) {
+        throw new Error('OpenAI API quota exceeded. Please check your OpenAI account balance and billing settings.')
+      }
       const text = await res.text()
-      throw new Error(`OpenAI client secret creation failed (${res.status}): ${text}`)
+      throw new Error(`OpenAI API error (${res.status}): ${text}`)
     }
     const data = await res.json()
     if (!data.value || typeof data.value !== 'string') {
