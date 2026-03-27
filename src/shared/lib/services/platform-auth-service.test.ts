@@ -29,7 +29,7 @@ describe('platform-auth-service', () => {
   })
 
   it('stores a token and exposes only redacted status', () => {
-    const status = savePlatformAuth('local', {
+    const status = savePlatformAuth({
       token: 'plat_superagent_token_1234567890abcdef',
       email: 'user@example.com',
       label: 'SuperAgent',
@@ -41,7 +41,7 @@ describe('platform-auth-service', () => {
       label: 'SuperAgent',
     })
     expect(status.tokenPreview).toBe('plat_s...cdef')
-    expect(getPlatformAccessToken('local')).toBe('plat_superagent_token_1234567890abcdef')
+    expect(getPlatformAccessToken()).toBe('plat_superagent_token_1234567890abcdef')
 
     const settingsPath = path.join(tempDir, 'settings.json')
     expect(fs.existsSync(settingsPath)).toBe(true)
@@ -51,11 +51,11 @@ describe('platform-auth-service', () => {
   })
 
   it('clears stored credentials', () => {
-    savePlatformAuth('local', { token: 'plat_superagent_token_1234567890abcdef' })
-    clearPlatformAuth('local')
+    savePlatformAuth({ token: 'plat_superagent_token_1234567890abcdef' })
+    clearPlatformAuth()
 
-    expect(getPlatformAccessToken('local')).toBeNull()
-    expect(getPlatformAuthStatus('local')).toEqual({
+    expect(getPlatformAccessToken()).toBeNull()
+    expect(getPlatformAuthStatus()).toEqual({
       connected: false,
       tokenPreview: null,
       email: null,

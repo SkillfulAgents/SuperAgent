@@ -73,6 +73,7 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.expectStep(0)
     await wizardPage.expectBackDisabled()
     await expect(page.getByText('Welcome to Superagent')).toBeVisible()
+    await expect(page.locator('[data-testid="wizard-platform-login"]')).toBeVisible()
 
     // Go to Step 1: LLM
     await wizardPage.clickNext()

@@ -1,22 +1,11 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { BaseLlmProvider, type ModelOption, type ModelPurpose } from './base-llm-provider'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import type { ApiKeyStatus } from '../config/settings'
 
-const DEFAULT_PROXY_BASE_URL = process.env.DATAWIZZ_PROXY_URL || 'https://platform-proxy-staging.datawizz.workers.dev'
-
-function normalizeProxyBaseUrl(value: string): string {
-  const trimmed = value.trim().replace(/\/+$/, '')
-  return trimmed.endsWith('/v1') ? trimmed.slice(0, -3) : trimmed
-}
-
-function getProxyBaseUrl(): string {
-  return normalizeProxyBaseUrl(process.env.DATAWIZZ_PROXY_URL || DEFAULT_PROXY_BASE_URL)
-}
-
 function getContainerProxyBaseUrl(): string {
-  const raw = getProxyBaseUrl()
-
+  const raw = getPlatformProxyBaseUrl()
   try {
     const url = new URL(raw)
     if (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '::1') {
@@ -31,6 +20,8 @@ function getContainerProxyBaseUrl(): string {
 export class DatawizzLlmProvider extends BaseLlmProvider {
   readonly id = 'datawizz' as const
   readonly name = 'Datawizz Platform'
+  // Not used — getApiKeyStatus/getEffectiveApiKey are both overridden to
+  // read the platform token instead of a settings-stored API key.
   protected readonly settingsKeyField = 'anthropicApiKey' as const
   protected readonly envVarName = 'DATAWIZZ_PLATFORM_TOKEN'
 
@@ -54,7 +45,7 @@ export class DatawizzLlmProvider extends BaseLlmProvider {
     if (!apiKey) throw new Error('Datawizz platform token not configured. Please log in to the platform.')
     return new Anthropic({
       apiKey: '',
-      baseURL: getProxyBaseUrl(),
+      baseURL: getPlatformProxyBaseUrl(),
       authToken: apiKey,
     })
   }
@@ -87,7 +78,7 @@ export class DatawizzLlmProvider extends BaseLlmProvider {
     try {
       const client = new Anthropic({
         apiKey: '',
-        baseURL: getProxyBaseUrl(),
+        baseURL: getPlatformProxyBaseUrl(),
         authToken: apiKey,
       })
       await client.messages.create({

@@ -1,7 +1,6 @@
 import { Hono } from 'hono'
 
 import { Authenticated } from '../middleware/auth'
-import { getCurrentUserId } from '@shared/lib/auth/config'
 import { buildPlatformLoginUrl, getPlatformBaseUrl } from '@shared/lib/platform-auth/config'
 import {
   getOrCreatePlatformClientInstanceId,
@@ -18,9 +17,8 @@ const platformAuth = new Hono()
 platformAuth.use('*', Authenticated())
 
 platformAuth.get('/', (c) => {
-  const userId = getCurrentUserId(c)
   return c.json({
-    ...getPlatformAuthStatus(userId),
+    ...getPlatformAuthStatus(),
     platformBaseUrl: getPlatformBaseUrl(),
   })
 })
@@ -39,7 +37,6 @@ platformAuth.post('/initiate', (c) => {
 })
 
 platformAuth.post('/complete', async (c) => {
-  const userId = getCurrentUserId(c)
   const body = await c.req.json<{
     token?: string
     email?: string | null
@@ -52,7 +49,7 @@ platformAuth.post('/complete', async (c) => {
     return c.json({ error: 'Missing token' }, 400)
   }
 
-  const status = savePlatformAuth(userId, {
+  const status = savePlatformAuth({
     token: body.token,
     email: body.email,
     label: body.label,
@@ -64,10 +61,9 @@ platformAuth.post('/complete', async (c) => {
 })
 
 platformAuth.delete('/', (c) => {
-  const userId = getCurrentUserId(c)
-  clearPlatformAuth(userId)
+  clearPlatformAuth()
   return c.json({
-    ...getPlatformAuthStatus(userId),
+    ...getPlatformAuthStatus(),
     platformBaseUrl: getPlatformBaseUrl(),
   })
 })

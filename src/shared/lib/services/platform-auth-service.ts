@@ -38,7 +38,7 @@ function writeRecord(record: PlatformAuthRecord | null): void {
   updateSettings(settings)
 }
 
-export function getPlatformAuthStatus(_userId?: string): PlatformAuthStatus {
+export function getPlatformAuthStatus(): PlatformAuthStatus {
   const record = readRecord()
   if (!record) {
     return {
@@ -65,7 +65,7 @@ export function getPlatformAuthStatus(_userId?: string): PlatformAuthStatus {
   }
 }
 
-export function savePlatformAuth(_userId: string, input: SavePlatformAuthInput): PlatformAuthStatus {
+export function savePlatformAuth(input: SavePlatformAuthInput): PlatformAuthStatus {
   const trimmedToken = input.token.trim()
   if (!trimmedToken) {
     throw new Error('Token is required')
@@ -88,10 +88,10 @@ export function savePlatformAuth(_userId: string, input: SavePlatformAuthInput):
   return getPlatformAuthStatus()
 }
 
-export function getPlatformAccessToken(_userId?: string): string | null {
+export function getPlatformAccessToken(): string | null {
   return readRecord()?.token ?? null
 }
 
-export function clearPlatformAuth(_userId?: string): void {
+export function clearPlatformAuth(): void {
   writeRecord(null)
 }

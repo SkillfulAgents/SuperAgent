@@ -1,7 +1,17 @@
-export const DEFAULT_PLATFORM_BASE_URL = process.env.SUPERAGENT_PLATFORM_BASE_URL || 'https://platform-web-git-staging-data-wizz.vercel.app'
-
+const DEFAULT_PLATFORM_BASE_URL = 'https://platform-web-git-staging-data-wizz.vercel.app'  // change to prod or local 
+const DEFAULT_PLATFORM_PROXY_URL = 'https://platform-proxy-staging.datawizz.workers.dev'  // change to prod or local 
+// TODO: remove this after testing 
 export function getPlatformBaseUrl(): string {
   return process.env.SUPERAGENT_PLATFORM_BASE_URL || DEFAULT_PLATFORM_BASE_URL
+}
+
+/**
+ * Resolve the platform proxy base URL (no trailing slash, no /v1 suffix).
+ * Used by the LLM provider, STT provider, and Composio client.
+ */
+export function getPlatformProxyBaseUrl(): string {
+  const raw = (process.env.DATAWIZZ_PROXY_URL || DEFAULT_PLATFORM_PROXY_URL).trim().replace(/\/+$/, '')
+  return raw.endsWith('/v1') ? raw.slice(0, -3) : raw
 }
 
 export function getPlatformCallbackUri(protocolScheme: string): string {

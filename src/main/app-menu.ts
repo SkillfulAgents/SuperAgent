@@ -1,6 +1,6 @@
 import { Menu, BrowserWindow, app, nativeImage } from 'electron'
 import path from 'path'
-import { fetchAgentsWithStatus, ActivityStatus } from './agent-status'
+import { fetchAgentsWithStatus, ActivityStatus, AgentInfo } from './agent-status'
 
 let mainWindowRef: BrowserWindow | null = null
 let apiPortRef: number = 0
@@ -19,11 +19,15 @@ function getIconDir(): string {
 }
 
 /**
- * Create a status icon from file
+ * Create a status icon from file.
+ * Returns undefined when the icon cannot be loaded so callers can omit
+ * the `icon` property rather than passing an empty NativeImage (which
+ * causes Electron's Menu.buildFromTemplate to throw).
  */
-function createStatusIcon(status: ActivityStatus): Electron.NativeImage {
+function createStatusIcon(status: ActivityStatus): Electron.NativeImage | undefined {
   const iconPath = path.join(getIconDir(), `status_${status}.png`)
-  return nativeImage.createFromPath(iconPath)
+  const img = nativeImage.createFromPath(iconPath)
+  return img.isEmpty() ? undefined : img
 }
 
 /**
@@ -55,51 +59,36 @@ async function buildAppMenu(): Promise<void> {
   // Build Agents submenu
   const agentsSubmenu: Electron.MenuItemConstructorOptions[] = []
 
+  const agentMenuItem = (agent: AgentInfo, status: ActivityStatus): Electron.MenuItemConstructorOptions => {
+    const icon = createStatusIcon(status)
+    return {
+      label: agent.name,
+      ...(icon && { icon }),
+      click: () => sendToRenderer('navigate-to-agent', agent.slug),
+    }
+  }
+
   if (awaitingInput.length > 0) {
     agentsSubmenu.push({ label: 'Awaiting Input', enabled: false })
-    awaitingInput.forEach(agent => {
-      agentsSubmenu.push({
-        label: agent.name,
-        icon: createStatusIcon('working'),
-        click: () => sendToRenderer('navigate-to-agent', agent.slug),
-      })
-    })
+    awaitingInput.forEach(agent => agentsSubmenu.push(agentMenuItem(agent, 'working')))
     agentsSubmenu.push({ type: 'separator' })
   }
 
   if (working.length > 0) {
     agentsSubmenu.push({ label: 'Working', enabled: false })
-    working.forEach(agent => {
-      agentsSubmenu.push({
-        label: agent.name,
-        icon: createStatusIcon('working'),
-        click: () => sendToRenderer('navigate-to-agent', agent.slug),
-      })
-    })
+    working.forEach(agent => agentsSubmenu.push(agentMenuItem(agent, 'working')))
     agentsSubmenu.push({ type: 'separator' })
   }
 
   if (idle.length > 0) {
     agentsSubmenu.push({ label: 'Idle', enabled: false })
-    idle.forEach(agent => {
-      agentsSubmenu.push({
-        label: agent.name,
-        icon: createStatusIcon('idle'),
-        click: () => sendToRenderer('navigate-to-agent', agent.slug),
-      })
-    })
+    idle.forEach(agent => agentsSubmenu.push(agentMenuItem(agent, 'idle')))
     agentsSubmenu.push({ type: 'separator' })
   }
 
   if (sleeping.length > 0) {
     agentsSubmenu.push({ label: 'Sleeping', enabled: false })
-    sleeping.forEach(agent => {
-      agentsSubmenu.push({
-        label: agent.name,
-        icon: createStatusIcon('sleeping'),
-        click: () => sendToRenderer('navigate-to-agent', agent.slug),
-      })
-    })
+    sleeping.forEach(agent => agentsSubmenu.push(agentMenuItem(agent, 'sleeping')))
   }
 
   if (agents.length === 0) {

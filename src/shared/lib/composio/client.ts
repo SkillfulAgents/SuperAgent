@@ -7,9 +7,9 @@ import {
   getComposioUserId,
 } from '@shared/lib/config/settings'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 
 const COMPOSIO_BASE_URL = 'https://backend.composio.dev/api/v3'
-const DEFAULT_PLATFORM_PROXY_BASE_URL = process.env.DATAWIZZ_PROXY_URL || 'https://platform-proxy-staging.datawizz.workers.dev'
 
 interface ComposioError {
   error: string | { message?: string; slug?: string; suggested_fix?: string }
@@ -27,18 +27,8 @@ class ComposioApiError extends Error {
   }
 }
 
-function normalizePlatformProxyBaseUrl(value: string): string {
-  const trimmed = value.trim().replace(/\/+$/, '')
-  if (trimmed.endsWith('/v1/composio')) return trimmed.slice(0, -12)
-  if (trimmed.endsWith('/v1')) return trimmed.slice(0, -3)
-  return trimmed
-}
-
 function getPlatformComposioBaseUrl(): string {
-  const proxyBaseUrl = normalizePlatformProxyBaseUrl(
-    process.env.DATAWIZZ_PROXY_URL || DEFAULT_PLATFORM_PROXY_BASE_URL
-  )
-  return `${proxyBaseUrl}/v1/composio`
+  return `${getPlatformProxyBaseUrl()}/v1/composio`
 }
 
 function getPlatformComposioToken(): string | null {

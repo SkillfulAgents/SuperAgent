@@ -4,12 +4,15 @@ import { Label } from '@renderer/components/ui/label'
 import { Button } from '@renderer/components/ui/button'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { useUser } from '@renderer/context/user-context'
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { ComposioApiKeyInput } from '@renderer/components/settings/composio-api-key-input'
 
 export function ComposioTab() {
   const { data: settings, isLoading } = useSettings()
   const updateSettings = useUpdateSettings()
   const { isAuthMode, user } = useUser()
+  const { data: platformAuth } = usePlatformAuthStatus()
+  const isPlatformConnected = platformAuth?.connected ?? false
 
   const [composioUserIdInput, setComposioUserIdInput] = useState('')
   const [isSavingUserId, setIsSavingUserId] = useState(false)
@@ -42,6 +45,30 @@ export function ComposioTab() {
     } finally {
       setIsSavingUserId(false)
     }
+  }
+
+  if (isPlatformConnected) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h3 className="text-sm font-medium">Composio Integration</h3>
+          <p className="text-xs text-muted-foreground mt-1">
+            Configure the Composio account provider for OAuth connections (Gmail, Slack, GitHub, etc.).
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span className="text-xs px-2 py-0.5 rounded-full bg-green-500/10 text-green-700 dark:text-green-400">
+            Connected via Platform
+          </span>
+        </div>
+
+        <p className="text-sm text-muted-foreground">
+          Composio is managed by your organization on the platform.
+          {platformAuth?.orgName && <> ({platformAuth.orgName})</>}
+        </p>
+      </div>
+    )
   }
 
   return (

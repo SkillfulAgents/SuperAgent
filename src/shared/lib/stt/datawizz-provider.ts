@@ -1,17 +1,13 @@
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { BaseSttProvider } from './stt-provider'
 import type { ApiKeyStatus } from '../config/settings'
-
-const DEFAULT_PROXY_BASE_URL = process.env.DATAWIZZ_PROXY_URL || 'https://platform-proxy-staging.datawizz.workers.dev'
-
-function getProxyBaseUrl(): string {
-  const raw = (process.env.DATAWIZZ_PROXY_URL || DEFAULT_PROXY_BASE_URL).trim().replace(/\/+$/, '')
-  return raw.endsWith('/v1') ? raw.slice(0, -3) : raw
-}
 
 export class DatawizzSttProvider extends BaseSttProvider {
   readonly id = 'datawizz' as const
   readonly name = 'Datawizz Platform'
+  // Not used — getApiKeyStatus/getEffectiveApiKey are both overridden to
+  // read the platform token instead of a settings-stored API key.
   protected readonly settingsKeyField = 'deepgramApiKey' as const
   protected readonly envVarName = 'DATAWIZZ_PLATFORM_TOKEN'
 
@@ -27,7 +23,7 @@ export class DatawizzSttProvider extends BaseSttProvider {
 
   async validateKey(platformToken: string): Promise<{ valid: boolean; error?: string }> {
     try {
-      const base = getProxyBaseUrl()
+      const base = getPlatformProxyBaseUrl()
       const res = await fetch(`${base}/v1/deepgram/projects`, {
         headers: { Authorization: `Bearer ${platformToken}` },
       })
@@ -45,7 +41,7 @@ export class DatawizzSttProvider extends BaseSttProvider {
   }
 
   async mintEphemeralToken(platformToken: string): Promise<string> {
-    const base = getProxyBaseUrl()
+    const base = getPlatformProxyBaseUrl()
     const res = await fetch(`${base}/v1/deepgram/auth/grant`, {
       method: 'POST',
       headers: {
