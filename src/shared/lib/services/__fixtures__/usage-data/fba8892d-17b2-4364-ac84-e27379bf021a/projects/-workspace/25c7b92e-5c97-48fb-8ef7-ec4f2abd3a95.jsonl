@@ -1,0 +1,2 @@
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-01-06T23:28:03.932Z","content":[{"type":"text","text":"Can you get all DNS records for datawizz.ai and explain them?"}],"sessionId":"25c7b92e-5c97-48fb-8ef7-ec4f2abd3a95"}
+{"type":"queue-operation","operation":"dequeue","timestamp":"2026-01-06T23:28:03.933Z","sessionId":"25c7b92e-5c97-48fb-8ef7-ec4f2abd3a95"}

@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { listAgents, getAgent } from '@shared/lib/services/agent-service'
 import { getAgentClaudeConfigDir } from '@shared/lib/utils/file-storage'
+import { loadDailyUsageData } from '@shared/lib/services/usage-service'
 import { subDays, format, addDays } from 'date-fns'
 import type { DailyUsageEntry, UsageResponse } from '@shared/lib/types/usage'
 import { Authenticated } from '../middleware/auth'
@@ -12,7 +13,7 @@ import { eq } from 'drizzle-orm'
 
 /**
  * Normalize non-standard model names to canonical Anthropic names so that
- * ccusage can look up pricing and the chart consolidates equivalent models.
+ * pricing can be looked up and the chart consolidates equivalent models.
  *
  * Handles:
  * - OpenRouter: "anthropic/claude-4.6-opus-20260205" → "claude-opus-4-6"
@@ -69,18 +70,6 @@ usage.get('/', async (c) => {
     agents = await listAgents()
   }
 
-  // Dynamic import — ccusage is ESM-only
-  // Suppress ccusage's consola logging
-  const prevLogLevel = process.env.LOG_LEVEL
-  process.env.LOG_LEVEL = '0'
-  const { loadDailyUsageData } = await import('ccusage/data-loader')
-  const { PricingFetcher } = await import('ccusage/pricing-fetcher')
-  process.env.LOG_LEVEL = prevLogLevel
-
-  // Create a pricing fetcher for recalculating costs of models ccusage couldn't price
-  // Use offline mode to avoid network calls to LiteLLM on every request
-  const pricingFetcher = new PricingFetcher(true)
-
   // Aggregate: date -> { totalCost, totalTokens, byAgent, byModel }
   const dateMap = new Map<string, {
     totalCost: number
@@ -89,21 +78,19 @@ usage.get('/', async (c) => {
     byModel: Map<string, number>
   }>()
 
-  const results = await Promise.allSettled(
-    agents.map(async (agent) => {
+  // Process agents sequentially to limit memory usage.
+  // Each agent's JSONL files are read with pLimit concurrency internally.
+  for (const agent of agents) {
+    let dailyData
+    try {
       const claudePath = getAgentClaudeConfigDir(agent.slug)
-      const dailyData = await loadDailyUsageData({
+      dailyData = await loadDailyUsageData({
         claudePath,
-        offline: true,
         since,
       })
-      return { agent, dailyData }
-    })
-  )
-
-  for (const result of results) {
-    if (result.status !== 'fulfilled') continue
-    const { agent, dailyData } = result.value
+    } catch {
+      continue
+    }
 
     for (const day of dailyData) {
       let entry = dateMap.get(day.date)
@@ -131,32 +118,8 @@ usage.get('/', async (c) => {
 
       for (const mb of day.modelBreakdowns) {
         const normalizedName = normalizeModelName(mb.modelName)
-        let cost = mb.cost
-
-        // If ccusage couldn't price this model (cost=0 but tokens exist),
-        // retry pricing with the normalized name
-        if (cost === 0 && normalizedName !== mb.modelName) {
-          const totalTokens = mb.inputTokens + mb.outputTokens + mb.cacheCreationTokens + mb.cacheReadTokens
-          if (totalTokens > 0) {
-            try {
-              cost = await pricingFetcher.calculateCostFromTokens({
-                input_tokens: mb.inputTokens,
-                output_tokens: mb.outputTokens,
-                cache_creation_input_tokens: mb.cacheCreationTokens,
-                cache_read_input_tokens: mb.cacheReadTokens,
-              }, normalizedName)
-              // Also add the recalculated cost to totals
-              entry.totalCost += cost
-              const agentEntry = entry.byAgent.get(agent.slug)
-              if (agentEntry) agentEntry.cost += cost
-            } catch {
-              // Pricing lookup failed, keep cost as 0
-            }
-          }
-        }
-
         const prev = entry.byModel.get(normalizedName) || 0
-        entry.byModel.set(normalizedName, prev + cost)
+        entry.byModel.set(normalizedName, prev + mb.cost)
       }
     }
   }
