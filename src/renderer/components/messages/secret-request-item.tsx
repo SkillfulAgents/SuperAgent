@@ -1,9 +1,10 @@
 import { apiFetch } from '@renderer/lib/api'
 
 import { useState } from 'react'
-import { Key, Eye, EyeOff, Check, Loader2, Globe } from 'lucide-react'
+import { Key, Eye, EyeOff, Loader2, Globe, ArrowUpRight } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { DeclineButton } from './decline-button'
 import { RequestTitleChip } from './request-title-chip'
 import { cn } from '@shared/lib/utils/cn'
@@ -150,14 +151,16 @@ export function SecretRequestItem({
       <div className="border rounded-md bg-muted/30 shadow-md text-sm">
         <div className="flex items-start gap-3 p-3">
           <div className="flex-1 min-w-0">
-            <RequestTitleChip className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200" icon={<Key />}>
-              Secret Requested:{' '}
-              <code className="bg-amber-100 dark:bg-amber-900 px-1.5 py-0.5 rounded text-amber-800 dark:text-amber-200">
+            <div className="flex flex-wrap items-center gap-2">
+              <RequestTitleChip className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200" icon={<Key />}>
+                Secret Request
+              </RequestTitleChip>
+              <code className="inline-flex h-7 items-center rounded-md bg-amber-100 px-2.5 text-xs font-medium text-amber-800 dark:bg-amber-900 dark:text-amber-200">
                 {secretName}
               </code>
-            </RequestTitleChip>
+            </div>
             {reason && (
-              <p className="text-sm text-amber-700 dark:text-amber-300 mt-1 whitespace-pre-line">{reason}</p>
+              <p className="mt-6 whitespace-pre-line text-sm leading-5 text-foreground">{reason}</p>
             )}
           </div>
           <span className="text-xs text-amber-600 dark:text-amber-400 shrink-0">Waiting for response</span>
@@ -170,49 +173,92 @@ export function SecretRequestItem({
   return (
     <div className="border rounded-md bg-muted/30 shadow-md text-sm" data-testid="secret-request" data-secret-name={secretName}>
       <div className="p-3">
-        <div className="flex-1 min-w-0 space-y-3">
+        <div className="flex min-w-0 flex-col gap-2">
           {/* Header */}
           <div>
-            <RequestTitleChip className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200" icon={<Key />}>
-              Secret Requested:{' '}
-              <code className="bg-amber-100 dark:bg-amber-900 px-1.5 py-0.5 rounded text-amber-800 dark:text-amber-200">
+            <div className="flex flex-wrap items-center gap-2">
+              <RequestTitleChip className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200" icon={<Key />}>
+                Secret Request
+              </RequestTitleChip>
+              <code className="inline-flex h-7 items-center rounded-md bg-amber-100 px-2.5 text-xs font-medium text-amber-800 dark:bg-amber-900 dark:text-amber-200">
                 {secretName}
               </code>
-            </RequestTitleChip>
+            </div>
             {reason && (
-              <p className="text-sm text-amber-700 dark:text-amber-300 mt-1 whitespace-pre-line">{reason}</p>
+              <p className="mt-6 whitespace-pre-line text-sm leading-5 text-foreground">{reason}</p>
             )}
           </div>
 
-          {/* Input row */}
-          <div className="flex gap-2">
-            <div className="relative flex-1">
-              <Input
-                type={showValue ? 'text' : 'password'}
-                placeholder="Enter secret value..."
-                value={value}
-                onChange={(e) => setValue(e.target.value)}
-                disabled={status === 'submitting'}
-                className="pr-10 bg-white dark:bg-amber-950/30 border-amber-200 dark:border-amber-700 focus:border-amber-400 dark:focus:border-amber-500"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && value.trim()) {
-                    handleProvide()
-                  }
-                }}
-              />
-              <button
-                type="button"
-                onClick={() => setShowValue(!showValue)}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                disabled={status === 'submitting'}
-              >
-                {showValue ? (
-                  <EyeOff className="h-4 w-4" />
-                ) : (
-                  <Eye className="h-4 w-4" />
-                )}
-              </button>
+          <div className="space-y-1">
+            {/* Input */}
+            <div className="flex items-start gap-2 pt-3 pb-2">
+              <div className="relative flex-1">
+                <Input
+                  type={showValue ? 'text' : 'password'}
+                  autoFocus
+                  placeholder="Paste secret"
+                  value={value}
+                  onChange={(e) => setValue(e.target.value)}
+                  disabled={status === 'submitting'}
+                  className="pr-10 bg-white border-border"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && value.trim()) {
+                      handleProvide()
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowValue(!showValue)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  disabled={status === 'submitting'}
+                >
+                  {showValue ? (
+                    <EyeOff className="h-4 w-4" />
+                  ) : (
+                    <Eye className="h-4 w-4" />
+                  )}
+                </button>
+              </div>
+
+              <TooltipProvider delayDuration={200}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      onClick={handleFetchForMe}
+                      disabled={status === 'submitting'}
+                      variant="outline"
+                      size="sm"
+                      className="h-9 shrink-0 border-border text-foreground hover:bg-muted"
+                    >
+                      <span>Fetch my secret</span>
+                      <ArrowUpRight className="ml-1 h-3.5 w-3.5" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">
+                    The agent will use your browser to go find the secret it needs.
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             </div>
+
+            <p className="text-xs text-muted-foreground">
+              This secret will be saved to your agent and available for future sessions.
+            </p>
+          </div>
+
+          {/* Error message */}
+          {error && <p className="text-sm text-red-600">{error}</p>}
+
+          {/* Action row */}
+          <div className="flex justify-end gap-2 pt-6">
+            <DeclineButton
+              onDecline={handleDecline}
+              disabled={status === 'submitting'}
+              className="border-border text-foreground hover:bg-muted"
+              data-testid="secret-decline-btn"
+            />
 
             <Button
               onClick={handleProvide}
@@ -221,40 +267,9 @@ export function SecretRequestItem({
               className="bg-amber-600 hover:bg-amber-700 text-white"
               data-testid="secret-provide-btn"
             >
-              {status === 'submitting' ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Check className="h-4 w-4" />
-              )}
-              <span className="ml-1">Provide</span>
+              {status === 'submitting' && <Loader2 className="h-4 w-4 animate-spin" />}
+              <span className={cn(status === 'submitting' ? 'ml-1' : '')}>Save secret</span>
             </Button>
-
-            <DeclineButton
-              onDecline={handleDecline}
-              disabled={status === 'submitting'}
-              className="border-amber-200 dark:border-amber-700 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900"
-              data-testid="secret-decline-btn"
-            />
-          </div>
-
-          {/* Error message */}
-          {error && (
-            <p className="text-sm text-red-600">{error}</p>
-          )}
-
-          {/* Info text */}
-          <div className="flex items-center justify-between">
-            <p className="text-xs text-amber-600 dark:text-amber-400">
-              This secret will be saved to your agent and available for future sessions.
-            </p>
-            <button
-              type="button"
-              onClick={handleFetchForMe}
-              disabled={status === 'submitting'}
-              className="text-xs text-blue-600 dark:text-blue-400 hover:underline disabled:opacity-50 shrink-0 ml-2"
-            >
-              Get it for me
-            </button>
           </div>
         </div>
       </div>
