@@ -28,7 +28,7 @@ import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, re
 import { VALID_LIMA_VM_MEMORY_OPTIONS } from '@shared/lib/container/types'
 import { detectAllProviders } from '../../main/host-browser'
 import { db } from '@shared/lib/db'
-import { proxyAuditLog, proxyTokens, agentConnectedAccounts, scheduledTasks, notifications, connectedAccounts } from '@shared/lib/db/schema'
+import { proxyAuditLog, proxyTokens, agentConnectedAccounts, scheduledTasks, notifications, connectedAccounts, userSettings } from '@shared/lib/db/schema'
 import fs from 'fs'
 
 const settings = new Hono()
@@ -493,11 +493,16 @@ settings.post('/factory-reset', async (c) => {
     db.delete(scheduledTasks).run()
     db.delete(notifications).run()
     db.delete(connectedAccounts).run()
+    db.delete(userSettings).run()
 
-    // Delete settings file
+    // Delete settings file (includes platform auth token)
     const settingsPath = path.join(getDataDir(), 'settings.json')
     await fs.promises.rm(settingsPath, { force: true })
     clearSettingsCache()
+
+    // Remove platform device identity so a fresh key is issued on next login
+    const platformDeviceDir = path.join(getDataDir(), 'platform-auth')
+    await fs.promises.rm(platformDeviceDir, { recursive: true, force: true })
 
     return c.json({ success: true })
   } catch (error) {
