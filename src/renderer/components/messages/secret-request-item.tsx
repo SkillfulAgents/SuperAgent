@@ -137,6 +137,17 @@ export function SecretRequestItem({
     }
   }
 
+  const handleOpenSecretsSettings = () => {
+    window.dispatchEvent(
+      new CustomEvent('open-agent-settings', {
+        detail: {
+          agentSlug,
+          initialTab: 'secrets',
+        },
+      })
+    )
+  }
+
   // Completed state - show minimal info
   if (status === 'provided' || status === 'declined' || status === 'fetch-requested') {
     const statusConfig = {
@@ -147,7 +158,7 @@ export function SecretRequestItem({
     const config = statusConfig[status as keyof typeof statusConfig]
 
     return (
-      <div className="border rounded-md bg-muted/30 shadow-md text-sm" data-testid="secret-request-completed" data-status={status}>
+      <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm" data-testid="secret-request-completed" data-status={status}>
         <div className="flex items-center gap-2 px-3 py-2">
           <config.icon className={cn('h-4 w-4 shrink-0', config.color)} />
           <span className="font-mono text-sm">{secretName}</span>
@@ -162,14 +173,14 @@ export function SecretRequestItem({
   // Read-only state for viewers
   if (readOnly) {
     return (
-      <div className="border rounded-md bg-muted/30 shadow-md text-sm">
-        <div className="flex items-start gap-3 px-4 pb-4 pt-0">
+      <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm">
+        <div className="flex items-start gap-3 px-4 pb-4 pt-4">
           <div className="flex-1 min-w-0">
-            <RequestTitleChip className="rounded-t-none bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200" icon={<Key />}>
+            <RequestTitleChip className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200" icon={<Key />}>
               Secret Request
             </RequestTitleChip>
             {reason && (
-              <p className="mt-9 whitespace-pre-line text-sm leading-5 text-foreground">
+              <p className="mt-8 whitespace-pre-line text-sm font-medium leading-5 text-foreground">
                 {formatSecretReason(secretName, reason)}
               </p>
             )}
@@ -185,33 +196,41 @@ export function SecretRequestItem({
 
   // Pending/submitting state - show input form
   return (
-    <div className="border rounded-md bg-muted/30 shadow-md text-sm" data-testid="secret-request" data-secret-name={secretName}>
-      <div className="px-4 pb-4 pt-0">
-        <div className="flex min-w-0 flex-col gap-2">
+    <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm" data-testid="secret-request" data-secret-name={secretName}>
+      <div className="px-4 pb-4 pt-4">
+        <div className="flex min-w-0 flex-col">
           {/* Header */}
           <div>
-            <RequestTitleChip className="rounded-t-none bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200" icon={<Key />}>
+            <RequestTitleChip className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200" icon={<Key />}>
               Secret Request
             </RequestTitleChip>
             {reason && (
-              <p className="mt-9 whitespace-pre-line text-sm leading-5 text-foreground">
+              <p className="mt-8 whitespace-pre-line text-sm font-medium leading-5 text-foreground">
                 {formatSecretReason(secretName, reason)}
               </p>
             )}
-            <p className="mt-1 text-xs text-muted-foreground">
-              Your secret will be saved securely so you won't need to enter it again.
+            <p className="mt-2 text-xs text-muted-foreground">
+              Your secret will be stored securely. Manage secrets in{' '}
+              <button
+                type="button"
+                onClick={handleOpenSecretsSettings}
+                className="underline underline-offset-2 hover:text-foreground"
+              >
+                agent settings
+              </button>
+              .
             </p>
           </div>
 
-          <div className="space-y-1">
+          <div className="pt-3">
             {/* Input */}
-            <div className="flex items-start gap-2 pt-3 pb-2">
+            <div className="flex items-start gap-2">
               <div className="flex-1">
                 <div className="relative">
                 <Input
                   type={showValue ? 'text' : 'password'}
                   autoFocus
-                  placeholder="Paste secret"
+                  placeholder={`Paste ${secretName}`}
                   value={value}
                   onChange={(e) => setValue(e.target.value)}
                   disabled={status === 'submitting'}
@@ -239,11 +258,8 @@ export function SecretRequestItem({
             </div>
           </div>
 
-          {/* Error message */}
-          {error && <p className="text-sm text-red-600">{error}</p>}
-
           {/* Action row */}
-          <div className="flex items-center justify-between gap-2 pt-6">
+          <div className="flex items-center justify-between gap-2 pt-8">
             <TooltipProvider delayDuration={200}>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -253,10 +269,10 @@ export function SecretRequestItem({
                     disabled={status === 'submitting'}
                     variant="outline"
                     size="sm"
-                    className="border-border text-foreground hover:bg-muted"
+                    className="border-border text-muted-foreground hover:bg-muted hover:text-foreground"
                   >
                     <span>Fetch my secret</span>
-                    <ArrowUpRight className="ml-1 h-3.5 w-3.5" />
+                    <ArrowUpRight className="ml-1 h-3.5 w-3.5 text-muted-foreground" />
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent side="top" className="max-w-[240px]">
@@ -285,6 +301,13 @@ export function SecretRequestItem({
               </Button>
             </div>
           </div>
+
+          {/* Error message */}
+          {error && (
+            <div className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-300">
+              Error: {error}
+            </div>
+          )}
         </div>
       </div>
     </div>

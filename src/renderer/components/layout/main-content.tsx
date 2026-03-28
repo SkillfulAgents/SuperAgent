@@ -42,6 +42,7 @@ export function MainContent() {
     selectSession,
   } = useSelection()
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsInitialTab, setSettingsInitialTab] = useState<string | undefined>(undefined)
   const [contextBarExpanded, setContextBarExpanded] = useState(false)
   // Pending user messages per session — survives navigation between sessions
   const pendingMessagesRef = useRef(new Map<string, { text: string; sentAt: number; sender?: { id: string; name: string; email: string } }>())
@@ -94,6 +95,22 @@ export function MainContent() {
     document.addEventListener('visibilitychange', handleVisibilityChange)
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
   }, [sessionId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const handleOpenAgentSettings = (event: Event) => {
+      const customEvent = event as CustomEvent<{ agentSlug?: string; initialTab?: string }>
+      const detail = customEvent.detail
+      if (!detail?.agentSlug || detail.agentSlug !== agentSlug) return
+
+      setSettingsInitialTab(detail.initialTab)
+      setSettingsOpen(true)
+    }
+
+    window.addEventListener('open-agent-settings', handleOpenAgentSettings as EventListener)
+    return () => {
+      window.removeEventListener('open-agent-settings', handleOpenAgentSettings as EventListener)
+    }
+  }, [agentSlug])
 
   // Add left padding for macOS traffic lights when sidebar is collapsed in Electron (not in full screen)
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && sidebarState === 'collapsed' && !isFullScreen
@@ -406,7 +423,11 @@ export function MainContent() {
         <AgentSettingsDialog
           agent={agent}
           open={settingsOpen}
-          onOpenChange={setSettingsOpen}
+          initialTab={settingsInitialTab}
+          onOpenChange={(open) => {
+            setSettingsOpen(open)
+            if (!open) setSettingsInitialTab(undefined)
+          }}
         />
       )}
     </div>
