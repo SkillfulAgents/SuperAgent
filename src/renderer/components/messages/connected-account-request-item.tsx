@@ -271,8 +271,8 @@ export function ConnectedAccountRequestItem({
   // Completed state
   if (status === 'provided' || status === 'declined') {
     return (
-      <div className="border rounded-md bg-muted/30 shadow-md text-sm">
-        <div className="flex items-center gap-2 px-3 py-2">
+      <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm">
+        <div className="flex items-center gap-2 p-4">
           <ServiceIcon
             slug={toolkit}
             fallback="request"
@@ -300,8 +300,8 @@ export function ConnectedAccountRequestItem({
   // Read-only state for viewers
   if (readOnly) {
     return (
-      <div className="border rounded-md bg-muted/30 shadow-md text-sm">
-        <div className="flex items-start gap-3 p-3">
+      <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm">
+        <div className="flex items-start gap-3 p-4">
           <div className="flex-1 min-w-0">
             <RequestTitleChip
               className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
@@ -322,8 +322,8 @@ export function ConnectedAccountRequestItem({
 
   // Pending/submitting/connecting state
   return (
-    <div className="border rounded-md bg-muted/30 shadow-md text-sm">
-      <div className="p-3">
+    <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm">
+      <div className="p-4">
         <div className="flex-1 min-w-0 space-y-3">
           {/* Header */}
           <div>

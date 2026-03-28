@@ -215,8 +215,8 @@ export function QuestionRequestItem({
   // Completed state - show minimal info
   if (status === 'answered' || status === 'declined') {
     return (
-      <div className="border rounded-lg bg-muted/30 shadow-md text-sm" data-testid="question-request-completed" data-status={status}>
-        <div className="flex items-center gap-2 px-3 py-2">
+      <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm" data-testid="question-request-completed" data-status={status}>
+        <div className="flex items-center gap-2 p-4">
           <HelpCircle
             className={cn(
               'h-4 w-4 shrink-0',
@@ -242,8 +242,8 @@ export function QuestionRequestItem({
   // Read-only state for viewers
   if (readOnly) {
     return (
-      <div className="border rounded-lg bg-muted/30 shadow-md text-sm">
-        <div className="flex items-start gap-3 p-3">
+      <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm">
+        <div className="flex items-start gap-3 p-4">
           <div className="flex-1 min-w-0">
             <RequestTitleChip className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" icon={<HelpCircle />}>
               {questions.length === 1 ? 'Question' : `${questions.length} Questions`}
@@ -257,8 +257,8 @@ export function QuestionRequestItem({
 
   // Pending/submitting state - show question form
   return (
-    <div className="border rounded-lg bg-muted/30 shadow-md text-sm" data-testid="question-request">
-      <div className="p-3">
+    <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm" data-testid="question-request">
+      <div className="p-4">
         <div className="flex-1 min-w-0 space-y-4">
           <div className="flex items-start justify-between gap-3">
             <RequestTitleChip className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" icon={<HelpCircle />}>

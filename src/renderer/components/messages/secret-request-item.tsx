@@ -159,7 +159,7 @@ export function SecretRequestItem({
 
     return (
       <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm" data-testid="secret-request-completed" data-status={status}>
-        <div className="flex items-center gap-2 px-3 py-2">
+        <div className="flex items-center gap-2 p-4">
           <config.icon className={cn('h-4 w-4 shrink-0', config.color)} />
           <span className="font-mono text-sm">{secretName}</span>
           <span className={cn('ml-auto text-xs', config.labelColor)}>

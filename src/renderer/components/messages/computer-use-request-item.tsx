@@ -147,8 +147,8 @@ export function ComputerUseRequestItem({
   // Completed state
   if (status === 'executed' || status === 'denied') {
     return (
-      <div className="border rounded-md bg-muted/30 shadow-md text-sm" data-testid="computer-use-request-completed" data-status={status}>
-        <div className="flex items-center gap-2 px-3 py-2">
+      <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm" data-testid="computer-use-request-completed" data-status={status}>
+        <div className="flex items-center gap-2 p-4">
           <Monitor
             className={cn(
               'h-4 w-4 shrink-0',
@@ -172,8 +172,8 @@ export function ComputerUseRequestItem({
   // Read-only state for viewers
   if (readOnly) {
     return (
-      <div className="border rounded-md bg-muted/30 shadow-md text-sm">
-        <div className="flex items-start gap-3 p-3">
+      <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm">
+        <div className="flex items-start gap-3 p-4">
           <div className="flex-1 min-w-0">
             <RequestTitleChip className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" icon={<Monitor />}>
               Computer Use Request
@@ -192,8 +192,8 @@ export function ComputerUseRequestItem({
 
   // Pending/submitting state
   return (
-    <div className="border rounded-md bg-muted/30 shadow-md text-sm" data-testid="computer-use-request">
-      <div className="p-3">
+    <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm" data-testid="computer-use-request">
+      <div className="p-4">
         <div className="flex-1 min-w-0 space-y-3">
           <div>
             <div className="flex items-center gap-2">

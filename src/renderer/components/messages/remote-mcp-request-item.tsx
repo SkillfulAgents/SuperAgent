@@ -292,8 +292,8 @@ export function RemoteMcpRequestItem({
   // Completed state
   if (status === 'provided' || status === 'declined') {
     return (
-      <div className="border rounded-md bg-muted/30 shadow-md text-sm">
-        <div className="flex items-center gap-2 px-3 py-2">
+      <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm">
+        <div className="flex items-center gap-2 p-4">
           <ServiceIcon
             slug={mcpSlug}
             fallback="mcp"
@@ -319,8 +319,8 @@ export function RemoteMcpRequestItem({
   // Read-only state for viewers
   if (readOnly) {
     return (
-      <div className="border rounded-md bg-muted/30 shadow-md text-sm">
-        <div className="flex items-start gap-3 p-3">
+      <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm">
+        <div className="flex items-start gap-3 p-4">
           <div className="flex-1 min-w-0">
             <RequestTitleChip
               className="bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200"
@@ -340,8 +340,8 @@ export function RemoteMcpRequestItem({
 
   // Pending/submitting/registering/oauth_pending state
   return (
-    <div className="border rounded-md bg-muted/30 shadow-md text-sm">
-      <div className="p-3">
+    <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm">
+      <div className="p-4">
         <div className="flex-1 min-w-0 space-y-3">
           <div>
             <RequestTitleChip
