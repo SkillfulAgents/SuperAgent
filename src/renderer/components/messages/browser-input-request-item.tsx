@@ -1,6 +1,6 @@
 import { apiFetch } from '@renderer/lib/api'
 import { useState } from 'react'
-import { Globe, Check, Loader2, MessageSquare } from 'lucide-react'
+import { Globe, Loader2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { RequestTitleChip } from './request-title-chip'
 import { cn } from '@shared/lib/utils/cn'
@@ -71,8 +71,8 @@ export function BrowserInputRequestItem({
 
   if (status === 'completed' || status === 'declined') {
     return (
-      <div className="border rounded-md bg-muted/30 shadow-md text-sm" data-testid="browser-input-request-completed" data-status={status}>
-        <div className="flex items-center gap-2 px-3 py-2">
+      <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm" data-testid="browser-input-request-completed" data-status={status}>
+        <div className="flex items-center gap-2 p-4">
           <Globe
             className={cn(
               'h-4 w-4 shrink-0',
@@ -95,13 +95,16 @@ export function BrowserInputRequestItem({
 
   if (readOnly) {
     return (
-      <div className="border rounded-md bg-muted/30 shadow-md text-sm">
-        <div className="flex items-start gap-3 p-3">
+      <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm">
+        <div className="flex items-start gap-3 p-4">
           <div className="flex-1 min-w-0">
             <RequestTitleChip className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" icon={<Globe />}>
-              Browser Input Needed
+              Browser Input Request
             </RequestTitleChip>
-            <div className="text-xs text-blue-700 dark:text-blue-300 mt-0.5 whitespace-pre-line">{message}</div>
+            <div className="pt-8 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{message}</div>
+            <p className="pt-2 text-xs text-muted-foreground">
+              Click &apos;Done&apos; when you have completed the suggested step(s).
+            </p>
           </div>
           <span className="text-xs text-blue-600 dark:text-blue-400 shrink-0">Waiting for input</span>
         </div>
@@ -110,59 +113,63 @@ export function BrowserInputRequestItem({
   }
 
   return (
-    <div className="border rounded-md bg-muted/30 shadow-md text-sm" data-testid="browser-input-request">
-      <div className="p-3">
-        <div className="flex-1 min-w-0 space-y-3">
+    <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm" data-testid="browser-input-request">
+      <div className="p-4">
+        <div className="flex-1 min-w-0">
           <RequestTitleChip className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" icon={<Globe />}>
-            Browser Input Needed
+            Browser Input Request
           </RequestTitleChip>
 
-          <p className="text-blue-800 dark:text-blue-200 whitespace-pre-line">{message}</p>
+          <p className="pt-8 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{message}</p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Click &apos;Done&apos; when you have completed the suggested step(s).
+          </p>
 
           {requirements.length > 0 && (
-            <div className="rounded-md bg-blue-100/50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-700 p-3 space-y-2">
-              <div className="text-xs font-medium text-blue-700 dark:text-blue-300 uppercase tracking-wide">Requirements</div>
-              <ul className="space-y-1.5">
-                {requirements.map((req, i) => (
-                  <li key={i} className="flex items-start gap-2 text-blue-800 dark:text-blue-200">
-                    <span className="text-blue-500 mt-0.5 shrink-0 text-xs">{i + 1}.</span>
-                    <span>{req}</span>
-                  </li>
-                ))}
-              </ul>
+            <div className="pt-4">
+              <div className="rounded-md border border-border bg-white p-3 dark:bg-background">
+                <ul className="space-y-1.5">
+                  {requirements.map((req, i) => (
+                    <li key={i} className="flex items-start gap-2 text-foreground">
+                      <span className="mt-0.5 shrink-0 text-xs text-muted-foreground">{i + 1}.</span>
+                      <span>{req}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             </div>
           )}
 
-          <div className="flex gap-2">
-            <Button
-              onClick={handleComplete}
-              disabled={status === 'submitting'}
-              size="sm"
-              className="bg-blue-600 hover:bg-blue-700 text-white"
-              data-testid="browser-input-complete-btn"
-            >
-              {submittingAction === 'completing' ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Check className="h-4 w-4" />
-              )}
-              <span className="ml-1">Complete</span>
-            </Button>
-
+          <div className="flex justify-end gap-2 pt-8">
             <Button
               onClick={handleChatWithAgent}
               disabled={status === 'submitting'}
               size="sm"
               variant="outline"
-              className="border-blue-200 dark:border-blue-700 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900"
+              className="h-8 min-w-24 border-border text-foreground hover:bg-muted"
               data-testid="browser-input-chat-btn"
             >
               {submittingAction === 'declining' ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
-                <MessageSquare className="h-4 w-4" />
+                <span>Dismiss</span>
               )}
-              <span className="ml-1">Chat with agent</span>
+              {submittingAction === 'declining' ? <span>Dismiss</span> : null}
+            </Button>
+
+            <Button
+              onClick={handleComplete}
+              disabled={status === 'submitting'}
+              size="sm"
+              className="h-8 min-w-24 bg-blue-600 text-white hover:bg-blue-700"
+              data-testid="browser-input-complete-btn"
+            >
+              {submittingAction === 'completing' ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <span>Done</span>
+              )}
+              {submittingAction === 'completing' ? <span>Done</span> : null}
             </Button>
           </div>
 
