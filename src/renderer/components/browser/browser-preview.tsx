@@ -461,28 +461,6 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
     [mapCoordinates, sendMessage, modifierFlags]
   )
 
-  const pressKeyViaHttp = useCallback(
-    (key: string, mods: number) => {
-      // Build Playwright-style combo: "Meta+Shift+ArrowLeft", "Control+a", etc.
-      const parts: string[] = []
-      if (mods & 2) parts.push('Control')
-      if (mods & 1) parts.push('Alt')
-      if (mods & 4) parts.push('Meta')
-      if (mods & 8) parts.push('Shift')
-      parts.push(key)
-      const combo = parts.join('+')
-
-      apiFetch(`/api/agents/${agentSlug}/browser/press`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId, key: combo }),
-      }).catch(() => {
-        // Ignore errors — fire-and-forget for responsiveness
-      })
-    },
-    [agentSlug, sessionId]
-  )
-
   const handlePaste = useCallback(
     (e: React.ClipboardEvent<HTMLCanvasElement>) => {
       e.preventDefault()
@@ -508,7 +486,19 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
         return
       }
 
+      // Cmd+X / Ctrl+X: copy selection to host clipboard, then cut in remote browser
+      if (e.key === 'x' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+        e.preventDefault()
+        sendMessage({ type: 'get_selection' })
+        sendMessage({ type: 'input_press', key: e.key, code: e.code, keyCode: e.keyCode, modifiers: modifierFlags(e) })
+        return
+      }
+
       e.preventDefault()
+
+      // Pure modifier keys alone: skip — they're communicated via the modifiers bitmask
+      if (MODIFIER_KEYS.has(e.key)) return
+
       const printable = e.key.length === 1
       const hasCommandModifier = e.metaKey || e.ctrlKey
 
@@ -520,34 +510,37 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
           key: e.key,
           code: e.code,
           text: e.key,
+          keyCode: e.keyCode,
           modifiers: modifierFlags(e),
         })
-      } else if (printable && hasCommandModifier) {
-        // Modifier+key combos (Cmd+A, Cmd+Z, etc.): route through Playwright's keyboard API
-        // Pass targetId so the press targets the user's viewed tab, not the agent's
-        pressKeyViaHttp(e.key, modifierFlags(e))
-      } else if (!MODIFIER_KEYS.has(e.key)) {
-        // Non-printable, non-modifier keys (Backspace, Arrow, Enter, Tab, Escape, etc.):
-        // Use Playwright's keyboard API (properly handles virtual key codes)
-        pressKeyViaHttp(e.key, modifierFlags(e))
+      } else {
+        // Modifier combos (Cmd+A, Ctrl+Z) and non-printable keys (Backspace, Delete, arrows):
+        // Send via input_press which includes Playwright's editing commands in the CDP event
+        // (e.g. 'selectAll' for Cmd+A). Goes through WebSocket so it targets the viewed tab.
+        sendMessage({
+          type: 'input_press',
+          key: e.key,
+          code: e.code,
+          keyCode: e.keyCode,
+          modifiers: modifierFlags(e),
+        })
       }
-      // Pure modifier keys (Shift, Ctrl, etc.) alone: ignore — they're included
-      // in the combo string when a non-modifier key is pressed with them.
     },
-    [sendMessage, modifierFlags, pressKeyViaHttp]
+    [sendMessage, modifierFlags]
   )
 
   const handleKeyUp = useCallback(
     (e: React.KeyboardEvent<HTMLCanvasElement>) => {
       e.preventDefault()
-      // Only send keyUp for printable characters via stream.
-      // Non-printable keys and modifier combos use input_press (which sends both down+up).
+      // Only send keyUp for printable characters without modifiers (stream path).
+      // Modifier combos and non-printable keys use input_press which sends its own keyUp.
       if (e.key.length === 1 && !e.metaKey && !e.ctrlKey) {
         sendMessage({
           type: 'input_keyboard',
           eventType: 'keyUp',
           key: e.key,
           code: e.code,
+          keyCode: e.keyCode,
           modifiers: modifierFlags(e),
         })
       }

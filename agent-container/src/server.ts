@@ -14,6 +14,35 @@ import { inputManager } from './input-manager';
 import { dashboardManager } from './dashboard-manager';
 import { tabManager } from './tab-manager';
 
+// Load Playwright's macEditingCommands for CDP keyboard shortcut support.
+// Chrome's CDP Input.dispatchKeyEvent needs a `commands` array to trigger editing
+// actions (selectAll, cut, undo, etc.) on all platforms.
+let macEditingCommands: Record<string, string | string[]> = {};
+try {
+  // playwright-core is a nested dep of agent-browser (installed globally in the container)
+  const mod = require('/usr/lib/node_modules/agent-browser/node_modules/playwright-core/lib/server/macEditingCommands');
+  macEditingCommands = mod.macEditingCommands || {};
+} catch {
+  console.warn('[Browser] Could not load macEditingCommands from playwright-core — keyboard shortcuts in browser preview may not work');
+}
+
+/** Look up CDP editing commands for a key combo, matching Playwright's crInput._commandsForCode() */
+function getEditingCommands(code: string, modifiers: number): string[] {
+  const parts: string[] = [];
+  if (modifiers & 8) parts.push('Shift');
+  if (modifiers & 2) parts.push('Control');
+  if (modifiers & 1) parts.push('Alt');
+  if (modifiers & 4) parts.push('Meta');
+  parts.push(code);
+  const shortcut = parts.join('+');
+  let cmds = macEditingCommands[shortcut];
+  if (!cmds) return [];
+  if (typeof cmds === 'string') cmds = [cmds];
+  return cmds
+    .filter((c: string) => !c.startsWith('insert'))
+    .map((c: string) => c.endsWith(':') ? c.slice(0, -1) : c);
+}
+
 // Global error handlers to prevent crashes from AbortError during interrupts
 // The SDK throws AbortError when queries are aborted, which can propagate uncaught
 process.on('uncaughtException', (error: Error) => {
@@ -1883,7 +1912,34 @@ function handleBrowserStreamConnection(ws: WebSocket) {
             key: data.key,
             code: data.code,
             text: data.text,
+            windowsVirtualKeyCode: data.keyCode || 0,
+            nativeVirtualKeyCode: data.keyCode || 0,
             modifiers: data.modifiers || 0,
+          }));
+        } else if (data.type === 'input_press') {
+          // Playwright-style key press: look up editing commands from Playwright's
+          // macEditingCommands map and include them in the CDP event. This is required
+          // for Chrome to trigger keyboard shortcuts (selectAll, cut, undo, etc.) via CDP.
+          const mods = data.modifiers || 0;
+          const isPrintable = data.key && data.key.length === 1;
+          const commands = getEditingCommands(data.code, mods);
+
+          cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Input.dispatchKeyEvent', {
+            type: isPrintable ? 'keyDown' : 'rawKeyDown',
+            key: data.key, code: data.code,
+            text: isPrintable ? data.key : '',
+            unmodifiedText: isPrintable ? data.key : '',
+            windowsVirtualKeyCode: data.keyCode || 0,
+            nativeVirtualKeyCode: data.keyCode || 0,
+            modifiers: mods,
+            commands,
+          }));
+
+          cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Input.dispatchKeyEvent', {
+            type: 'keyUp', key: data.key, code: data.code,
+            windowsVirtualKeyCode: data.keyCode || 0,
+            nativeVirtualKeyCode: data.keyCode || 0,
+            modifiers: mods,
           }));
         } else if (data.type === 'input_paste' && data.text) {
           cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Input.insertText', {
@@ -1899,7 +1955,7 @@ function handleBrowserStreamConnection(ws: WebSocket) {
           cdpScreencast.cdpWs.send(msgStr);
         }
       }
-    } catch { /* ignore */ }
+    } catch { /* ignore parse errors for non-JSON frames */ }
   });
 
   ws.on('close', () => {
