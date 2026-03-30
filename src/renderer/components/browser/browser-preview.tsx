@@ -297,6 +297,8 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
         } else if (data.type === 'tab_switched') {
           setAgentActiveTargetId(data.targetId)
           setViewingTargetId(data.targetId)
+        } else if (data.type === 'selection_result' && data.text) {
+          navigator.clipboard.writeText(data.text).catch(() => {})
         }
       } catch {
         // Ignore parse errors for binary frames
@@ -357,6 +359,18 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
     }
   }, [tabs, viewingTargetId, agentActiveTargetId])
 
+  // Prevent wheel events from bubbling to parent (must use native listener with passive: false)
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas || isViewOnly) return
+    const handler = (e: WheelEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+    }
+    canvas.addEventListener('wheel', handler, { passive: false })
+    return () => canvas.removeEventListener('wheel', handler)
+  }, [isViewOnly])
+
   // --- Canvas input handlers ---
   const mapCoordinates = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -401,10 +415,14 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
     return flags
   }, [])
 
+  const pressedButtonRef = useRef<string>('none')
+
   const handleMouseDown = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       const { x, y } = mapCoordinates(e)
-      sendMessage({ type: 'input_mouse', eventType: 'mousePressed', x, y, button: buttonName(e.button), clickCount: 1, modifiers: modifierFlags(e) })
+      const btn = buttonName(e.button)
+      pressedButtonRef.current = btn
+      sendMessage({ type: 'input_mouse', eventType: 'mousePressed', x, y, button: btn, clickCount: 1, modifiers: modifierFlags(e) })
     },
     [mapCoordinates, sendMessage, buttonName, modifierFlags]
   )
@@ -412,6 +430,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
   const handleMouseUp = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       const { x, y } = mapCoordinates(e)
+      pressedButtonRef.current = 'none'
       sendMessage({ type: 'input_mouse', eventType: 'mouseReleased', x, y, button: buttonName(e.button), modifiers: modifierFlags(e) })
     },
     [mapCoordinates, sendMessage, buttonName, modifierFlags]
@@ -420,7 +439,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
   const handleMouseMove = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       const { x, y } = mapCoordinates(e)
-      sendMessage({ type: 'input_mouse', eventType: 'mouseMoved', x, y, button: 'none', modifiers: modifierFlags(e) })
+      sendMessage({ type: 'input_mouse', eventType: 'mouseMoved', x, y, button: pressedButtonRef.current, modifiers: modifierFlags(e) })
     },
     [mapCoordinates, sendMessage, modifierFlags]
   )
@@ -482,11 +501,19 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
         return
       }
 
+      // Cmd+C / Ctrl+C: copy selected text from remote browser to host clipboard
+      if (e.key === 'c' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+        e.preventDefault()
+        sendMessage({ type: 'get_selection' })
+        return
+      }
+
       e.preventDefault()
       const printable = e.key.length === 1
+      const hasCommandModifier = e.metaKey || e.ctrlKey
 
-      if (printable) {
-        // Printable characters: send via WebSocket stream (low latency, works via CDP text field)
+      if (printable && !hasCommandModifier) {
+        // Printable characters without modifiers: send via WebSocket stream (low latency)
         sendMessage({
           type: 'input_keyboard',
           eventType: 'keyDown',
@@ -495,10 +522,13 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
           text: e.key,
           modifiers: modifierFlags(e),
         })
+      } else if (printable && hasCommandModifier) {
+        // Modifier+key combos (Cmd+A, Cmd+Z, etc.): route through Playwright's keyboard API
+        // Pass targetId so the press targets the user's viewed tab, not the agent's
+        pressKeyViaHttp(e.key, modifierFlags(e))
       } else if (!MODIFIER_KEYS.has(e.key)) {
         // Non-printable, non-modifier keys (Backspace, Arrow, Enter, Tab, Escape, etc.):
-        // Use HTTP press endpoint which goes through Playwright's keyboard API
-        // (properly sets windowsVirtualKeyCode in CDP, unlike the stream path)
+        // Use Playwright's keyboard API (properly handles virtual key codes)
         pressKeyViaHttp(e.key, modifierFlags(e))
       }
       // Pure modifier keys (Shift, Ctrl, etc.) alone: ignore — they're included
@@ -511,8 +541,8 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
     (e: React.KeyboardEvent<HTMLCanvasElement>) => {
       e.preventDefault()
       // Only send keyUp for printable characters via stream.
-      // Non-printable keys use press (which sends both down+up).
-      if (e.key.length === 1) {
+      // Non-printable keys and modifier combos use input_press (which sends both down+up).
+      if (e.key.length === 1 && !e.metaKey && !e.ctrlKey) {
         sendMessage({
           type: 'input_keyboard',
           eventType: 'keyUp',
@@ -671,6 +701,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
             onKeyDown={isViewOnly ? undefined : handleKeyDown}
             onKeyUp={isViewOnly ? undefined : handleKeyUp}
             onPaste={isViewOnly ? undefined : handlePaste}
+            onContextMenu={(e) => e.preventDefault()}
           />
           {!connected && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/50">

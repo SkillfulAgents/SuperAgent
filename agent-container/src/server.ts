@@ -1448,6 +1448,8 @@ let cdpScreencast: {
   cdpSessionId: string | null;
   /** Whether the viewer auto-follows the agent's active tab */
   autoFollow: boolean;
+  /** Pending CDP message IDs for get_selection requests */
+  pendingSelections: Set<number>;
 } | null = null;
 
 /** Derive the CDP HTTP endpoint from the current browser state */
@@ -1610,7 +1612,7 @@ function cdpMsg(state: NonNullable<typeof cdpScreencast>, method: string, params
 function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket, requiresSession = false) {
   const cdpWs = new WebSocket(wsUrl);
   const prevAutoFollow = cdpScreencast?.autoFollow ?? true;
-  cdpScreencast = { clientWs, cdpWs, currentTargetId: targetId, msgId: 0, lastDeviceWidth: 0, lastDeviceHeight: 0, cdpSessionId: null, autoFollow: prevAutoFollow };
+  cdpScreencast = { clientWs, cdpWs, currentTargetId: targetId, msgId: 0, lastDeviceWidth: 0, lastDeviceHeight: 0, cdpSessionId: null, autoFollow: prevAutoFollow, pendingSelections: new Set() };
   const state = cdpScreencast;
 
   cdpWs.on('open', () => {
@@ -1671,6 +1673,12 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
             type: 'page_loading',
             loading: msg.method === 'Page.frameStartedLoading',
           }));
+        }
+      } else if (msg.id && state.pendingSelections.has(msg.id)) {
+        state.pendingSelections.delete(msg.id);
+        const text = msg.result?.result?.value;
+        if (typeof text === 'string' && text && clientWs.readyState === WebSocket.OPEN) {
+          clientWs.send(JSON.stringify({ type: 'selection_result', text }));
         }
       }
     } catch { /* ignore */ }
@@ -1881,6 +1889,14 @@ function handleBrowserStreamConnection(ws: WebSocket) {
           cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Input.insertText', {
             text: data.text,
           }));
+        } else if (data.type === 'get_selection') {
+          const msgStr = cdpMsg(cdpScreencast, 'Runtime.evaluate', {
+            expression: 'window.getSelection().toString()',
+            returnByValue: true,
+          });
+          const msgId = JSON.parse(msgStr).id;
+          cdpScreencast.pendingSelections.add(msgId);
+          cdpScreencast.cdpWs.send(msgStr);
         }
       }
     } catch { /* ignore */ }
