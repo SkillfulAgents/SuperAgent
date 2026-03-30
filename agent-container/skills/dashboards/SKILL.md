@@ -127,6 +127,10 @@ fetch('/api/data')
 
 This applies to all fetches, image sources, link hrefs, etc.
 
+## Important Limitations
+
+- **Do NOT use the browser tool to view your own dashboards.** The browser runs outside the container and cannot access `localhost` URLs served inside it. Dashboard requests will fail. The user views dashboards through the Superagent UI — you do not need to verify them visually. Use `get_dashboard_logs` to debug issues instead.
+
 ## Best Practices
 
 - **Keep dependencies minimal** — fewer deps means faster installs and starts
