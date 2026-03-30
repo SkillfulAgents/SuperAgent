@@ -21,6 +21,7 @@ function mcpToolNames(
 import { inputManager } from './input-manager';
 import { setCurrentBrowserSessionId } from './tools/browser';
 import { sanitizeMcpName } from './sanitize-mcp-name';
+import { generateSessionSummary, writeSessionSummary, shouldGenerateSummary } from './session-summary';
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in src/renderer/components/messages/message-list.tsx
@@ -41,6 +42,12 @@ const WEB_BROWSER_AGENT_PROMPT = fs.readFileSync(
 // Load computer-use subagent prompt from file
 const COMPUTER_USE_AGENT_PROMPT = fs.readFileSync(
   path.join(__dirname, 'computer-use-agent-prompt.md'),
+  'utf-8'
+);
+
+// Load search-chats subagent prompt from file
+const SEARCH_CHATS_AGENT_PROMPT = fs.readFileSync(
+  path.join(__dirname, 'search-chats-agent-prompt.md'),
   'utf-8'
 );
 
@@ -305,6 +312,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private customEnvVars: Record<string, string> | undefined;
   private isReady: boolean = false;
   private isProcessing: boolean = false;
+  private turnCount: number = 0;
   public slashCommands: { name: string; description: string; argumentHint: string }[] = [];
 
   constructor(options: ClaudeCodeProcessOptions) {
@@ -441,6 +449,13 @@ export class ClaudeCodeProcess extends EventEmitter {
               maxTurns: 500,
             },
           } : {}),
+          'search-chats': {
+            description: 'Chat history search specialist. Delegate when you need to find information from previous conversations — searching for topics discussed, decisions made, past instructions, or reviewing what was done in earlier sessions. This agent searches through chat logs efficiently and returns relevant excerpts.',
+            model: 'haiku' as const,
+            tools: ['Bash', 'Grep', 'Read', 'Glob'],
+            prompt: SEARCH_CHATS_AGENT_PROMPT,
+            maxTurns: 20,
+          },
         },
         // Handle AskUserQuestion via canUseTool callback (per SDK docs)
         canUseTool: async (toolName: string, toolInput: Record<string, unknown>, options: { toolUseID: string; signal: AbortSignal }) => {
@@ -610,6 +625,16 @@ export class ClaudeCodeProcess extends EventEmitter {
             }
           }
           console.log(`[Session ${this.sessionId}] Query completed`);
+
+          // Fire-and-forget: generate session summary on turn 1, then every N turns
+          this.turnCount++;
+          if (shouldGenerateSummary(this.turnCount)) {
+            generateSessionSummary(this.sessionId)
+              .then(summary => {
+                if (summary) return writeSessionSummary(this.sessionId, summary);
+              })
+              .catch(err => console.error(`[Session ${this.sessionId}] Summary generation failed:`, err));
+          }
         }
 
         this.emit('message', message);

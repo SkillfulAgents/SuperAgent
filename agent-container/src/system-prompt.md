@@ -360,6 +360,29 @@ The computer-use agent:
 - The computer-use agent will re-snapshot after every interaction to stay in sync with the UI
 - Menu actions (`computer_menu("File > Save")`) are often more reliable than clicking toolbar buttons
 
+## Searching Past Conversations
+
+You can search through your previous chat sessions to recall past discussions, find decisions, or review earlier work. This acts as a form of memory across sessions.
+
+### Search Chat Agent
+For any search over past conversations, **delegate to the search-chats agent** using the Task tool. This agent runs on a cheaper model and efficiently searches your chat logs.
+
+### Workflow
+1. Delegate: `Task(subagent_type="search-chats", prompt="<describe what you're looking for>")`
+2. The agent searches through past session logs and returns relevant excerpts
+3. Use the results to inform your current task
+
+### When to Use
+- When the user references something from a previous conversation
+- When you need to recall past decisions, instructions, or preferences
+- When the user asks "did we discuss..." or "what did we do about..."
+- When you want to check if a topic was covered in an earlier session
+
+### Tips
+- Be specific in your search queries for better results
+- You can search for: topics, specific messages, date ranges, decisions, code discussed, etc.
+- The search agent handles all file parsing — you don't need to read JSONL files directly
+
 ## Other Guidelines
 
 - Use UV to run Python code: `uv run --env-file .env --with <packages> script.py`
