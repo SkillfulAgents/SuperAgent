@@ -40,7 +40,7 @@ export function LlmTab() {
   const updateSettings = useUpdateSettings()
 
   const isPlatformConnected = platformAuth?.connected ?? false
-  const activeProvider = settings?.llmProvider ?? 'anthropic'
+  const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
   const providerStatus = settings?.llmProviderStatus ?? []
   const activeProviderInfo = providerStatus.find(p => p.id === activeProvider)
   const modelOptions = activeProviderInfo?.availableModels ?? []
@@ -92,21 +92,15 @@ export function LlmTab() {
 
       {/* Credentials Section */}
       <div className="pt-4 border-t space-y-4">
-        <h3 className="text-sm font-medium">
-          {activeProvider === 'bedrock'
-            ? 'Credentials'
-            : activeProvider === 'platform'
-              ? 'Platform Connection'
-              : 'API Key'}
-        </h3>
+        <h3 className="text-sm font-medium">{activeProvider === 'bedrock' ? 'Credentials' : 'API Key'}</h3>
         {activeProvider === 'bedrock' ? (
           <BedrockCredentialsInput key="bedrock" disabled={isLoading} />
         ) : activeProvider === 'platform' ? (
-          <div className="space-y-3">
-            <p className="text-sm text-muted-foreground">
-              {platformAuth?.connected ? 'Platform connected.' : 'Platform not connected. Connect it from the `Platform` settings tab.'}
-            </p>
-          </div>
+          <p className="text-sm text-muted-foreground">
+            {isPlatformConnected
+              ? 'Platform connected.'
+              : 'Platform not connected. Connect it from the Platform settings tab.'}
+          </p>
         ) : (
           <ProviderApiKeyInput
             key={activeProvider}

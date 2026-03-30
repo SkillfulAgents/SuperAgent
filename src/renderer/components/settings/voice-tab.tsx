@@ -18,39 +18,30 @@ import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import type { ApiKeyStatus, SttProvider } from '@shared/lib/config/settings'
 
-interface SttProviderInfo {
-  value: SttProvider
-  label: string
-  model: string
-  docsUrl?: string
-  note: string
-  platformOnly?: boolean
-}
-
-const STT_PROVIDERS_BASE: SttProviderInfo[] = [
+const STT_PROVIDERS = [
   {
-    value: 'deepgram',
+    value: 'platform' as const,
+    label: 'Platform',
+    model: 'Nova 3',
+    docsUrl: undefined as string | undefined,
+    note: 'Uses Deepgram via your platform connection. No API key required.',
+    platformOnly: true,
+  },
+  {
+    value: 'deepgram' as const,
     label: 'Deepgram',
     model: 'Nova 3',
     docsUrl: 'https://developers.deepgram.com/docs/models-languages-overview',
     note: 'Lowest latency (~200ms). 47 languages supported.',
   },
   {
-    value: 'openai',
+    value: 'openai' as const,
     label: 'OpenAI',
     model: 'GPT-4o Mini Transcribe',
     docsUrl: 'https://platform.openai.com/docs/guides/speech-to-text#supported-languages',
     note: 'Most accurate & affordable. 57 languages supported.',
   },
 ]
-
-const PLATFORM_PROVIDER: SttProviderInfo = {
-  value: 'platform',
-  label: 'Platform',
-  model: 'Nova 3',
-  note: 'Uses Deepgram via your platform connection. No API key required.',
-  platformOnly: true,
-}
 
 type ApiKeyProvider = 'deepgram' | 'openai'
 
@@ -143,7 +134,7 @@ function SttApiKeyInput({ provider, disabled }: { provider: ApiKeyProvider; disa
   return (
     <div className="space-y-2">
       <Label htmlFor={`${provider}-api-key`}>
-        {STT_PROVIDERS_BASE.find(p => p.value === provider)?.label} API Key
+        {STT_PROVIDERS.find(p => p.value === provider)?.label} API Key
       </Label>
 
       {apiKeyStatus?.isConfigured && (
@@ -287,17 +278,15 @@ function VoiceTest() {
   )
 }
 
+const VALID_PROVIDERS = new Set(STT_PROVIDERS.map(p => p.value))
+
 export function VoiceTab() {
   const { data: settings, isLoading } = useSettings()
   const updateSettings = useUpdateSettings()
   const { data: platformAuth } = usePlatformAuthStatus()
   const isPlatformConnected = platformAuth?.connected ?? false
-
-  const sttProviders = [PLATFORM_PROVIDER, ...STT_PROVIDERS_BASE]
-
-  const validProviders = new Set(sttProviders.map(p => p.value))
   const rawProvider = settings?.voice?.sttProvider
-  const selectedProvider = rawProvider && validProviders.has(rawProvider) ? rawProvider : undefined
+  const selectedProvider = rawProvider && VALID_PROVIDERS.has(rawProvider) ? rawProvider : undefined
 
   const hasKeyConfigured = selectedProvider && (
     selectedProvider === 'platform'
@@ -324,14 +313,14 @@ export function VoiceTab() {
               <SelectValue placeholder="Select a provider" />
             </SelectTrigger>
             <SelectContent>
-              {sttProviders.map((provider) => (
+              {STT_PROVIDERS.map((provider) => (
                 <SelectItem
                   key={provider.value}
                   value={provider.value}
-                  disabled={provider.platformOnly && !isPlatformConnected}
+                  disabled={'platformOnly' in provider && provider.platformOnly && !isPlatformConnected}
                 >
                   {provider.label}
-                  {provider.platformOnly && !isPlatformConnected
+                  {'platformOnly' in provider && provider.platformOnly && !isPlatformConnected
                     ? <span className="text-muted-foreground ml-2">(requires platform login)</span>
                     : <span className="text-muted-foreground ml-2">({provider.model})</span>
                   }
@@ -343,7 +332,7 @@ export function VoiceTab() {
             Choose which service to use for voice-to-text transcription.
           </p>
           {selectedProvider && (() => {
-            const info = sttProviders.find(p => p.value === selectedProvider)
+            const info = STT_PROVIDERS.find(p => p.value === selectedProvider)
             if (!info) return null
             return (
               <p className="text-xs text-muted-foreground">
