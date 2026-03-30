@@ -7,6 +7,7 @@
 
 import * as fs from 'fs'
 import * as path from 'path'
+import pLimit from 'p-limit'
 import {
   getAgentsDir,
   getAgentSessionsDir,
@@ -202,14 +203,20 @@ export async function getSessionSummary(agentSlug: string): Promise<{
   const files = await fs.promises.readdir(sessionsDir)
   const jsonlFiles = files.filter((f) => f.endsWith('.jsonl'))
 
+  const limit = pLimit(10)
+  const stats = await Promise.all(
+    jsonlFiles.map((file) => limit(async () => {
+      const stat = await fs.promises.stat(path.join(sessionsDir, file))
+      return { sessionId: path.basename(file, '.jsonl'), mtimeMs: stat.mtimeMs }
+    }))
+  )
+
   let lastActivityAt: Date | null = null
   const sessionIds: string[] = []
-
-  for (const file of jsonlFiles) {
-    sessionIds.push(path.basename(file, '.jsonl'))
-    const stat = await fs.promises.stat(path.join(sessionsDir, file))
-    if (!lastActivityAt || stat.mtimeMs > lastActivityAt.getTime()) {
-      lastActivityAt = new Date(stat.mtimeMs)
+  for (const { sessionId, mtimeMs } of stats) {
+    sessionIds.push(sessionId)
+    if (!lastActivityAt || mtimeMs > lastActivityAt.getTime()) {
+      lastActivityAt = new Date(mtimeMs)
     }
   }
 
@@ -235,32 +242,40 @@ export async function listSessions(agentSlug: string): Promise<SessionInfo[]> {
     const files = await fs.promises.readdir(sessionsDir)
     const jsonlFiles = files.filter((f) => f.endsWith('.jsonl'))
 
-    for (const file of jsonlFiles) {
-      const sessionId = path.basename(file, '.jsonl')
-      const jsonlPath = path.join(sessionsDir, file)
+    const limit = pLimit(10)
+    const statResults = await Promise.all(
+      jsonlFiles.map((file) => limit(async () => {
+        const sessionId = path.basename(file, '.jsonl')
+        const jsonlPath = path.join(sessionsDir, file)
+        try {
+          const stat = await fs.promises.stat(jsonlPath)
+          return { sessionId, stat }
+        } catch (error) {
+          console.warn(`Failed to stat session ${sessionId}:`, error)
+          return null
+        }
+      }))
+    )
+
+    for (const result of statResults) {
+      if (!result) continue
+      const { sessionId, stat } = result
       processedSessionIds.add(sessionId)
 
-      try {
-        const stat = await fs.promises.stat(jsonlPath)
-
-        // Skip empty JSONL files that aren't registered in metadata
-        // These are typically created by Claude SDK for subagent directories
-        if (stat.size === 0 && !metadata[sessionId]) {
-          continue
-        }
-
-        sessions.push({
-          id: sessionId,
-          agentSlug,
-          name: metadata[sessionId]?.name || 'New Session',
-          createdAt: stat.birthtime,
-          lastActivityAt: new Date(stat.mtimeMs),
-          messageCount: 0,
-        })
-      } catch (error) {
-        console.warn(`Failed to stat session ${sessionId}:`, error)
-        // Skip inaccessible sessions
+      // Skip empty JSONL files that aren't registered in metadata
+      // These are typically created by Claude SDK for subagent directories
+      if (stat.size === 0 && !metadata[sessionId]) {
+        continue
       }
+
+      sessions.push({
+        id: sessionId,
+        agentSlug,
+        name: metadata[sessionId]?.name || 'New Session',
+        createdAt: stat.birthtime,
+        lastActivityAt: new Date(stat.mtimeMs),
+        messageCount: 0,
+      })
     }
   }
 

@@ -211,6 +211,7 @@ vi.mock('@shared/lib/services/secrets-service', () => ({
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   listScheduledTasks: vi.fn(),
   listPendingScheduledTasks: vi.fn(),
+  listPendingScheduledTasksByAgents: vi.fn(() => Promise.resolve(new Map())),
   listCancelledScheduledTasks: vi.fn(),
 }))
 
@@ -236,6 +237,7 @@ vi.mock('@shared/lib/services/artifact-service', () => ({
 
 vi.mock('@shared/lib/services/notification-service', () => ({
   getSessionIdsWithUnreadNotifications: vi.fn(() => Promise.resolve(new Set())),
+  getUnreadNotificationsByAgents: vi.fn(() => Promise.resolve(new Map())),
 }))
 
 vi.mock('@shared/lib/proxy/host-url', () => ({
@@ -316,7 +318,7 @@ import {
 } from '@shared/lib/services/agent-template-service'
 import { getAgent, listAgentsWithStatus } from '@shared/lib/services/agent-service'
 import { listSessions, getSessionMessagesWithCompact, getSessionSummary } from '@shared/lib/services/session-service'
-import { listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
+import { listPendingScheduledTasks, listPendingScheduledTasksByAgents } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
 
@@ -2215,7 +2217,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('returns scheduled task count and nearest next execution', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listPendingScheduledTasks).mockResolvedValue([
+    const tasks = [
       {
         id: 'task-1',
         agentSlug: 'agent-1',
@@ -2252,7 +2254,8 @@ describe('GET /api/agents (enriched summary)', () => {
         createdAt: new Date('2026-01-01'),
         cancelledAt: null,
       },
-    ] as any)
+    ]
+    vi.mocked(listPendingScheduledTasksByAgents).mockResolvedValue(new Map([['agent-1', tasks]]) as any)
 
     const res = await getReq(app, '/api/agents')
     const body = await res.json()

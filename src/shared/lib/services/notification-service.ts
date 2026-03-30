@@ -123,6 +123,30 @@ export async function getSessionIdsWithUnreadNotifications(agentSlug: string, us
 }
 
 /**
+ * Batch version: get unread notification session IDs for multiple agents in a single query.
+ * Returns a Map from agentSlug to Set of sessionIds with unread notifications.
+ */
+export async function getUnreadNotificationsByAgents(agentSlugs: string[]): Promise<Map<string, Set<string>>> {
+  if (agentSlugs.length === 0) return new Map()
+
+  const rows = await db
+    .select({ agentSlug: notifications.agentSlug, sessionId: notifications.sessionId })
+    .from(notifications)
+    .where(and(
+      inArray(notifications.agentSlug, agentSlugs),
+      eq(notifications.isRead, false)
+    ))
+
+  const result = new Map<string, Set<string>>()
+  for (const row of rows) {
+    let set = result.get(row.agentSlug)
+    if (!set) { set = new Set(); result.set(row.agentSlug, set) }
+    set.add(row.sessionId)
+  }
+  return result
+}
+
+/**
  * List unread notifications.
  * When userId is provided, only returns notifications for agents the user has access to.
  */

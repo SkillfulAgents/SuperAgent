@@ -1,5 +1,5 @@
 
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo } from 'react'
 import { useAgents } from '@renderer/hooks/use-agents'
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
@@ -139,7 +139,7 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
 
   // Only fetch sessions when there are notable ones to show
   const hasNotable = agent.hasActiveSessions || agent.hasSessionsAwaitingInput || agent.hasUnreadNotifications
-  const { data: sessions } = useSessions(hasNotable ? agent.slug : null)
+  const { data: sessions } = useSessions(hasNotable ? agent.slug : null, { staleTime: 30_000 })
 
   const notableSessions = useMemo(() => {
     if (!sessions) return []
@@ -371,7 +371,7 @@ export function HomePage() {
   const { data: agents, isLoading: agentsLoading } = useAgents()
   const { data: userSettings } = useUserSettings()
   const { data: discoverableAgents } = useDiscoverableAgents()
-  const { data: usageData, refetch: fetchUsage } = useUsageData(7)
+  const { data: usageData } = useUsageData(7)
   const orderedAgents = useMemo(
     () => applyAgentOrder(agents ?? [], userSettings?.agentOrder),
     [agents, userSettings?.agentOrder]
@@ -380,13 +380,6 @@ export function HomePage() {
   const [selectedTemplate, setSelectedTemplate] = useState<ApiDiscoverableAgent | null>(null)
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
-
-  // Fetch usage data once when agents are loaded
-  useEffect(() => {
-    if (agents?.length) {
-      fetchUsage()
-    }
-  }, [agents?.length, fetchUsage])
 
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && sidebarState === 'collapsed' && !isFullScreen
 

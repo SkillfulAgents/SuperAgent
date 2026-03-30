@@ -93,7 +93,7 @@ async function findJsonlFiles(dir: string): Promise<string[]> {
  * - Uses costUSD field when available
  */
 export async function loadDailyUsageData(options: LoadOptions): Promise<DailyUsageData[]> {
-  const { claudePath, since, concurrency = 5 } = options
+  const { claudePath, since, concurrency = 10 } = options
 
   const projectsDir = path.join(claudePath, 'projects')
   try {
