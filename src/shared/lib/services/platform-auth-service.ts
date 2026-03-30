@@ -92,6 +92,3 @@ export function getPlatformAccessToken(_userId?: string): string | null {
   return readRecord()?.token ?? null
 }
 
-export function clearPlatformAuth(_userId?: string): void {
-  writeRecord(null)
-}

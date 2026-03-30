@@ -13,7 +13,6 @@ import { TrayNavigationHandler } from './components/tray-navigation-handler'
 import { GlobalNotificationHandler } from './components/notifications/global-notification-handler'
 import { GettingStartedWizard } from './components/wizard/getting-started-wizard'
 import { ErrorBoundary } from './components/ui/error-boundary'
-import { PlatformLoginGate } from './components/platform/platform-login-gate'
 import { useUserSettings } from './hooks/use-user-settings'
 import { useTheme } from './hooks/use-theme'
 import { useUser } from './context/user-context'
@@ -41,24 +40,22 @@ function AppContent() {
   }, [userSettings, isAuthMode, isAdmin])
 
   return (
-    <PlatformLoginGate>
-      <DialogProvider onOpenWizard={() => setWizardOpen(true)}>
-        <TrayNavigationHandler>
-          <GlobalNotificationHandler />
-          <SidebarProvider className="h-screen">
-            <AppSidebar />
-            <SidebarInset className="min-w-0 h-full">
-              <MainContent />
-            </SidebarInset>
-          </SidebarProvider>
-        </TrayNavigationHandler>
+    <DialogProvider onOpenWizard={() => setWizardOpen(true)}>
+      <TrayNavigationHandler>
+        <GlobalNotificationHandler />
+        <SidebarProvider className="h-screen">
+          <AppSidebar />
+          <SidebarInset className="min-w-0 h-full">
+            <MainContent />
+          </SidebarInset>
+        </SidebarProvider>
+      </TrayNavigationHandler>
 
-        <GettingStartedWizard
-          open={wizardOpen}
-          onOpenChange={setWizardOpen}
-        />
-      </DialogProvider>
-    </PlatformLoginGate>
+      <GettingStartedWizard
+        open={wizardOpen}
+        onOpenChange={setWizardOpen}
+      />
+    </DialogProvider>
   )
 }
 

@@ -35,7 +35,7 @@ export function PlatformTab() {
     if (params.success) {
       window.localStorage.setItem(PLATFORM_AUTH_CHOICE_STORAGE_KEY, 'platform')
       setError(null)
-      setMessage('Connected. SuperAgent now defaults to Datawizz Platform.')
+      setMessage('Connected. Please restart your running agents for the new token to take effect.')
       void applyPlatformDefaults().catch((err) => {
         setError(err instanceof Error ? err.message : 'Failed to apply platform defaults.')
       })
@@ -129,7 +129,7 @@ export function PlatformTab() {
         <Alert variant="destructive">
           <AlertDescription>
             {error}
-            {error.includes('membership') ? ' Create or join an organization in Datawizz Platform, then try again.' : ''}
+            {error.includes('membership') ? ' Create or join an organization in Platform, then try again.' : ''}
           </AlertDescription>
         </Alert>
       )}

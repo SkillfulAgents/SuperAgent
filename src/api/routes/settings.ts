@@ -69,7 +69,7 @@ function buildSettingsResponse(
       anthropic: getLlmProvider('anthropic').getApiKeyStatus(),
       openrouter: getLlmProvider('openrouter').getApiKeyStatus(),
       bedrock: getLlmProvider('bedrock').getApiKeyStatus(),
-      datawizz: getLlmProvider('datawizz').getApiKeyStatus(),
+      platform: getLlmProvider('platform').getApiKeyStatus(),
       browserbase: getBrowserbaseApiKeyStatus(),
       composio: getComposioApiKeyStatus(),
       deepgram: getSttProvider('deepgram').getApiKeyStatus(),
@@ -501,7 +501,7 @@ settings.post('/factory-reset', async (c) => {
     clearSettingsCache()
 
     // Remove platform device identity so a fresh key is issued on next login
-    const platformDeviceDir = path.join(getDataDir(), 'platform-auth')
+    const platformDeviceDir = path.join(getDataDir(), '.platform-auth')
     await fs.promises.rm(platformDeviceDir, { recursive: true, force: true })
 
     return c.json({ success: true })

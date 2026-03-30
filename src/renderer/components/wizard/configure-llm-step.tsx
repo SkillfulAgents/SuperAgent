@@ -24,10 +24,10 @@ import { ChevronRight, Loader2, LogIn } from 'lucide-react'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 
 const PROVIDER_INSTRUCTIONS: Record<string, { steps: { text: string; link?: { href: string; label: string } }[] }> = {
-  datawizz: {
+  platform: {
     steps: [
-      { text: 'Choose Datawizz Platform as your provider' },
-      { text: 'Connect your Datawizz account from the Platform settings tab' },
+      { text: 'Choose Platform as your provider' },
+      { text: 'Connect your account from the Platform settings tab' },
       { text: 'SuperAgent will use your platform token and the hosted proxy automatically' },
     ],
   },
@@ -121,7 +121,7 @@ export function ConfigureLLMStep() {
       <div>
         <h2 className="text-xl font-bold">Configure LLM Provider</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Superagent needs either an API key or a Datawizz Platform connection to communicate with AI models.
+          Superagent needs either an API key or a Platform connection to communicate with AI models.
         </p>
       </div>
 
@@ -151,12 +151,12 @@ export function ConfigureLLMStep() {
           key="bedrock"
           showNotConfiguredAlert={false}
         />
-      ) : activeProvider === 'datawizz' ? (
+      ) : activeProvider === 'platform' ? (
         <div className="space-y-3">
           <p className="text-sm text-muted-foreground">
             {platformAuth?.connected
-              ? 'Platform connected. SuperAgent will use your Datawizz Platform subscription automatically.'
-              : 'Platform not connected yet. Connect now to use your Datawizz Platform subscription.'}
+              ? 'Platform connected. SuperAgent will use your Platform subscription automatically.'
+              : 'Platform not connected yet. Connect now to use your Platform subscription.'}
           </p>
           {!platformAuth?.connected ? (
             <>

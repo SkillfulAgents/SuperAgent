@@ -1,29 +1,16 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { BaseLlmProvider, type ModelOption, type ModelPurpose } from './base-llm-provider'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
-import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
+import { getPlatformProxyBaseUrl } from '@shared/lib/.platform-auth/config'
 import type { ApiKeyStatus } from '../config/settings'
 
-function getContainerProxyBaseUrl(): string {
-  const raw = getPlatformProxyBaseUrl()
-  try {
-    const url = new URL(raw)
-    if (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '::1') {
-      url.hostname = 'host.docker.internal'
-    }
-    return url.toString().replace(/\/+$/, '')
-  } catch {
-    return raw
-  }
-}
-
-export class DatawizzLlmProvider extends BaseLlmProvider {
-  readonly id = 'datawizz' as const
-  readonly name = 'Datawizz Platform'
+export class PlatformLlmProvider extends BaseLlmProvider {
+  readonly id = 'platform' as const
+  readonly name = 'Platform'
   // Not used — getApiKeyStatus/getEffectiveApiKey are both overridden to
   // read the platform token instead of a settings-stored API key.
   protected readonly settingsKeyField = 'anthropicApiKey' as const
-  protected readonly envVarName = 'DATAWIZZ_PLATFORM_TOKEN'
+  protected readonly envVarName = 'PLATFORM_TOKEN'
 
   override getApiKeyStatus(): ApiKeyStatus {
     const token = getPlatformAccessToken()
@@ -42,7 +29,7 @@ export class DatawizzLlmProvider extends BaseLlmProvider {
 
   createClient(): Anthropic {
     const apiKey = this.getEffectiveApiKey()
-    if (!apiKey) throw new Error('Datawizz platform token not configured. Please log in to the platform.')
+    if (!apiKey) throw new Error('Platform token not configured. Please log in to the platform.')
     return new Anthropic({
       apiKey: '',
       baseURL: getPlatformProxyBaseUrl(),
@@ -67,9 +54,11 @@ export class DatawizzLlmProvider extends BaseLlmProvider {
   }
 
   getContainerEnvVars(): Record<string, string | undefined> {
+    const proxyUrl = getPlatformProxyBaseUrl()
+    const containerUrl = proxyUrl.replace('://localhost', '://host.docker.internal')
     return {
       ANTHROPIC_API_KEY: '',
-      ANTHROPIC_BASE_URL: getContainerProxyBaseUrl(),
+      ANTHROPIC_BASE_URL: containerUrl,
       ANTHROPIC_AUTH_TOKEN: this.getEffectiveApiKey(),
     }
   }

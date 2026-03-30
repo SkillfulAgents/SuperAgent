@@ -1,15 +1,15 @@
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
-import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
+import { getPlatformProxyBaseUrl } from '@shared/lib/.platform-auth/config'
 import { BaseSttProvider } from './stt-provider'
 import type { ApiKeyStatus } from '../config/settings'
 
-export class DatawizzSttProvider extends BaseSttProvider {
-  readonly id = 'datawizz' as const
-  readonly name = 'Datawizz Platform'
+export class PlatformSttProvider extends BaseSttProvider {
+  readonly id = 'platform' as const
+  readonly name = 'Platform'
   // Not used — getApiKeyStatus/getEffectiveApiKey are both overridden to
   // read the platform token instead of a settings-stored API key.
   protected readonly settingsKeyField = 'deepgramApiKey' as const
-  protected readonly envVarName = 'DATAWIZZ_PLATFORM_TOKEN'
+  protected readonly envVarName = 'PLATFORM_TOKEN'
 
   override getApiKeyStatus(): ApiKeyStatus {
     const token = getPlatformAccessToken()

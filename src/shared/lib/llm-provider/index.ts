@@ -3,21 +3,21 @@ export type { LlmProviderId, ModelOption, ModelPurpose } from './base-llm-provid
 export { AnthropicLlmProvider } from './anthropic-provider'
 export { OpenRouterLlmProvider } from './openrouter-provider'
 export { BedrockLlmProvider } from './bedrock-provider'
-export { DatawizzLlmProvider } from './datawizz-provider'
+export { PlatformLlmProvider } from './platform-provider'
 
 import type { LlmProviderId } from './base-llm-provider'
 import { BaseLlmProvider } from './base-llm-provider'
 import { AnthropicLlmProvider } from './anthropic-provider'
 import { OpenRouterLlmProvider } from './openrouter-provider'
 import { BedrockLlmProvider } from './bedrock-provider'
-import { DatawizzLlmProvider } from './datawizz-provider'
+import { PlatformLlmProvider } from './platform-provider'
 import { getSettings } from '../config/settings'
 
 const providers: Record<LlmProviderId, BaseLlmProvider> = {
   anthropic: new AnthropicLlmProvider(),
   openrouter: new OpenRouterLlmProvider(),
   bedrock: new BedrockLlmProvider(),
-  datawizz: new DatawizzLlmProvider(),
+  platform: new PlatformLlmProvider(),
 }
 
 /** Get a specific provider by ID. */

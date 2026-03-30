@@ -1,8 +1,8 @@
 const DEFAULT_PLATFORM_BASE_URL = 'https://platform-web-git-staging-data-wizz.vercel.app'  // change to prod or local 
 const DEFAULT_PLATFORM_PROXY_URL = 'https://platform-proxy-staging.datawizz.workers.dev'  // change to prod or local 
-// TODO: remove this after testing 
+
 export function getPlatformBaseUrl(): string {
-  return process.env.SUPERAGENT_PLATFORM_BASE_URL || DEFAULT_PLATFORM_BASE_URL
+  return process.env.PLATFORM_BASE_URL || DEFAULT_PLATFORM_BASE_URL
 }
 
 /**
@@ -10,7 +10,7 @@ export function getPlatformBaseUrl(): string {
  * Used by the LLM provider, STT provider, and Composio client.
  */
 export function getPlatformProxyBaseUrl(): string {
-  const raw = (process.env.DATAWIZZ_PROXY_URL || DEFAULT_PLATFORM_PROXY_URL).trim().replace(/\/+$/, '')
+  const raw = (process.env.PLATFORM_PROXY_URL || DEFAULT_PLATFORM_PROXY_URL).trim().replace(/\/+$/, '')
   return raw.endsWith('/v1') ? raw.slice(0, -3) : raw
 }
 
@@ -26,7 +26,12 @@ export function buildPlatformLoginUrl(
   }
 ): string {
   const callbackUri = getPlatformCallbackUri(protocolScheme)
-  const url = new URL('/auth/superagent', getPlatformBaseUrl())
+  let url: URL
+  try {
+    url = new URL('/auth/superagent', getPlatformBaseUrl())
+  } catch {
+    throw new Error(`Invalid platform base URL: ${getPlatformBaseUrl()}`)
+  }
   url.searchParams.set('app_callback', callbackUri)
   if (options?.clientInstanceId) {
     url.searchParams.set('client_instance_id', options.clientInstanceId)

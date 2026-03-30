@@ -255,7 +255,7 @@ describe('settings route', () => {
   describe('platform auth persistence', () => {
     it('preserves platformAuth when updating unrelated settings', async () => {
       const res = await putSettings({
-        llmProvider: 'datawizz',
+        llmProvider: 'platform',
       })
 
       expect(res.status).toBe(200)
@@ -263,7 +263,7 @@ describe('settings route', () => {
 
       const saved = mockUpdateSettings.mock.calls[0][0]
       expect(saved.platformAuth).toEqual(defaultSettings().platformAuth)
-      expect(saved.llmProvider).toBe('datawizz')
+      expect(saved.llmProvider).toBe('platform')
     })
   })
 

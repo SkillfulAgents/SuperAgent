@@ -68,7 +68,7 @@ export function WelcomeStep() {
       <div className="rounded-lg border bg-muted/30 p-4 space-y-3">
         <div className="space-y-1">
           <h3 className="text-sm font-medium">
-            {isConnected ? 'Datawizz Platform Connected' : 'Login to Datawizz Platform'}
+            {isConnected ? 'Platform Connected' : 'Login to Platform'}
           </h3>
           <p className="text-sm text-muted-foreground">
             {isConnected
@@ -113,7 +113,7 @@ export function WelcomeStep() {
         <ul className="space-y-2 text-sm text-muted-foreground">
           <li className="flex items-start gap-2">
             <span className="font-mono text-primary mt-0.5">1.</span>
-            <span><strong>Platform Login</strong> (optional) - Sign in or re-login to Datawizz Platform</span>
+            <span><strong>Platform Login</strong> (optional) - Sign in or re-login to Platform</span>
           </li>
           <li className="flex items-start gap-2">
             <span className="font-mono text-primary mt-0.5">2.</span>

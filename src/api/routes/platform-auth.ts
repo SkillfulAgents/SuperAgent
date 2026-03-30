@@ -2,13 +2,12 @@ import { Hono } from 'hono'
 
 import { Authenticated } from '../middleware/auth'
 import { getCurrentUserId } from '@shared/lib/auth/config'
-import { buildPlatformLoginUrl, getPlatformBaseUrl } from '@shared/lib/platform-auth/config'
+import { buildPlatformLoginUrl, getPlatformBaseUrl } from '@shared/lib/.platform-auth/config'
 import {
   getOrCreatePlatformClientInstanceId,
   getPlatformDeviceName,
 } from '@shared/lib/services/platform-device-service'
 import {
-  clearPlatformAuth,
   getPlatformAuthStatus,
   savePlatformAuth,
 } from '@shared/lib/services/platform-auth-service'
@@ -61,15 +60,6 @@ platformAuth.post('/complete', async (c) => {
   })
 
   return c.json(status)
-})
-
-platformAuth.delete('/', (c) => {
-  const userId = getCurrentUserId(c)
-  clearPlatformAuth(userId)
-  return c.json({
-    ...getPlatformAuthStatus(userId),
-    platformBaseUrl: getPlatformBaseUrl(),
-  })
 })
 
 export default platformAuth

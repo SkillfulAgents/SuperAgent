@@ -53,26 +53,6 @@ export function useInitiatePlatformLogin() {
   })
 }
 
-export function useDisconnectPlatformAuth() {
-  const queryClient = useQueryClient()
-
-  return useMutation<PlatformAuthStatus, Error>({
-    mutationFn: async () => {
-      const res = await apiFetch('/api/platform-auth', {
-        method: 'DELETE',
-      })
-      if (!res.ok) {
-        const error = await res.json().catch(() => ({}))
-        throw new Error(error.error || 'Failed to disconnect platform auth')
-      }
-      return res.json()
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
-    },
-  })
-}
-
 export function usePlatformAuthCallbackListener(
   onCallback?: (params: PlatformAuthCallbackParams) => void
 ) {
@@ -100,9 +80,9 @@ export function useApplyPlatformDefaults() {
 
   return useCallback(async () => {
     await updateSettings.mutateAsync({
-      llmProvider: 'datawizz',
+      llmProvider: 'platform',
       voice: {
-        sttProvider: 'datawizz',
+        sttProvider: 'platform',
       },
     })
   }, [updateSettings])

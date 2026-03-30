@@ -44,9 +44,9 @@ const STT_PROVIDERS_BASE: SttProviderInfo[] = [
   },
 ]
 
-const DATAWIZZ_PROVIDER: SttProviderInfo = {
-  value: 'datawizz',
-  label: 'Datawizz Platform',
+const PLATFORM_PROVIDER: SttProviderInfo = {
+  value: 'platform',
+  label: 'Platform',
   model: 'Nova 3',
   note: 'Uses Deepgram via your platform connection. No API key required.',
   platformOnly: true,
@@ -293,16 +293,14 @@ export function VoiceTab() {
   const { data: platformAuth } = usePlatformAuthStatus()
   const isPlatformConnected = platformAuth?.connected ?? false
 
-  const sttProviders = isPlatformConnected
-    ? [DATAWIZZ_PROVIDER, ...STT_PROVIDERS_BASE]
-    : STT_PROVIDERS_BASE
+  const sttProviders = [PLATFORM_PROVIDER, ...STT_PROVIDERS_BASE]
 
   const validProviders = new Set(sttProviders.map(p => p.value))
   const rawProvider = settings?.voice?.sttProvider
   const selectedProvider = rawProvider && validProviders.has(rawProvider) ? rawProvider : undefined
 
   const hasKeyConfigured = selectedProvider && (
-    selectedProvider === 'datawizz'
+    selectedProvider === 'platform'
       ? isPlatformConnected
       : (selectedProvider === 'deepgram' && settings?.apiKeyStatus?.deepgram?.isConfigured) ||
         (selectedProvider === 'openai' && settings?.apiKeyStatus?.openai?.isConfigured)
@@ -317,6 +315,7 @@ export function VoiceTab() {
           <Select
             value={selectedProvider ?? ''}
             onValueChange={(value) => {
+              if (value === 'platform' && !isPlatformConnected) return
               updateSettings.mutate({ voice: { sttProvider: value as SttProvider } })
             }}
             disabled={isLoading}
@@ -326,9 +325,16 @@ export function VoiceTab() {
             </SelectTrigger>
             <SelectContent>
               {sttProviders.map((provider) => (
-                <SelectItem key={provider.value} value={provider.value}>
+                <SelectItem
+                  key={provider.value}
+                  value={provider.value}
+                  disabled={provider.platformOnly && !isPlatformConnected}
+                >
                   {provider.label}
-                  <span className="text-muted-foreground ml-2">({provider.model})</span>
+                  {provider.platformOnly && !isPlatformConnected
+                    ? <span className="text-muted-foreground ml-2">(requires platform login)</span>
+                    : <span className="text-muted-foreground ml-2">({provider.model})</span>
+                  }
                 </SelectItem>
               ))}
             </SelectContent>

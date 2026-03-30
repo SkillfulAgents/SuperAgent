@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { clearSettingsCache } from '@shared/lib/config/settings'
 
 import {
-  clearPlatformAuth,
   getPlatformAccessToken,
   getPlatformAuthStatus,
   savePlatformAuth,
@@ -50,24 +49,4 @@ describe('platform-auth-service', () => {
     expect(onDisk.platformAuth.token).toBe('plat_superagent_token_1234567890abcdef')
   })
 
-  it('clears stored credentials', () => {
-    savePlatformAuth('local', { token: 'plat_superagent_token_1234567890abcdef' })
-    clearPlatformAuth('local')
-
-    expect(getPlatformAccessToken('local')).toBeNull()
-    expect(getPlatformAuthStatus('local')).toEqual({
-      connected: false,
-      tokenPreview: null,
-      email: null,
-      label: null,
-      orgName: null,
-      role: null,
-      createdAt: null,
-      updatedAt: null,
-    })
-
-    const settingsPath = path.join(tempDir, 'settings.json')
-    const onDisk = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
-    expect(onDisk.platformAuth).toBeUndefined()
-  })
 })

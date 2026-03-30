@@ -6,7 +6,7 @@ import path from 'path'
 
 import { getDataDir } from '@shared/lib/config/data-dir'
 
-const PLATFORM_DEVICE_DIR = 'platform-auth'
+const PLATFORM_DEVICE_DIR = '.platform-auth'
 const CLIENT_INSTANCE_FILENAME = 'client-instance-id'
 
 function getPlatformDeviceDir() {
