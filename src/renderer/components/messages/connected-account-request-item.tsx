@@ -9,6 +9,7 @@ import {
   Plus,
   ExternalLink,
   Pencil,
+  Plug,
 } from 'lucide-react'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { Button } from '@renderer/components/ui/button'
@@ -301,17 +302,16 @@ export function ConnectedAccountRequestItem({
   if (readOnly) {
     return (
       <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm">
-        <div className="flex items-start gap-3 p-4">
+        <div className="flex items-start gap-3 px-4 pb-8 pt-4">
           <div className="flex-1 min-w-0">
             <RequestTitleChip
               className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
-              icon={<ServiceIcon slug={toolkit} fallback="request" className="text-current" />}
+              icon={<Plug className="h-4 w-4" />}
             >
-              Access Requested:{' '}
-              <span className="capitalize">{provider?.displayName || toolkit}</span>
+              Account Access Request
             </RequestTitleChip>
             {reason && (
-              <p className="text-sm text-blue-700 dark:text-blue-300 mt-1 whitespace-pre-line">{reason}</p>
+              <p className="mt-8 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{reason}</p>
             )}
           </div>
           <span className="text-xs text-blue-600 dark:text-blue-400 shrink-0">Waiting for response</span>
@@ -323,34 +323,48 @@ export function ConnectedAccountRequestItem({
   // Pending/submitting/connecting state
   return (
     <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm">
-      <div className="p-4">
+      <div className="px-4 pb-8 pt-4">
         <div className="flex-1 min-w-0 space-y-3">
           {/* Header */}
-          <div>
-            <RequestTitleChip
-              className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
-              icon={<ServiceIcon slug={toolkit} fallback="request" className="text-current" />}
-            >
-              Access Requested:{' '}
-              <span className="capitalize">
-                {provider?.displayName || toolkit}
-              </span>
-            </RequestTitleChip>
-            {reason && (
-              <p className="text-sm text-blue-700 dark:text-blue-300 mt-1 whitespace-pre-line">{reason}</p>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <RequestTitleChip
+                className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
+                icon={<Plug className="h-4 w-4" />}
+              >
+                Account Access Request
+              </RequestTitleChip>
+              {reason && (
+                <p className="mt-8 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{reason}</p>
+              )}
+              <p className="mt-2 text-xs text-muted-foreground">
+                Selected accounts will be linked to this agent for future use.
+              </p>
+            </div>
+            {accounts.length === 0 && (
+              <Button
+                onClick={() => handleDecline()}
+                disabled={status !== 'pending'}
+                size="sm"
+                variant="ghost"
+                className="h-8 w-8 shrink-0 p-0 text-foreground hover:bg-muted"
+                aria-label="Dismiss access request"
+              >
+                <X className="h-4 w-4" />
+              </Button>
             )}
           </div>
 
           {/* Account Selection */}
           {isLoading ? (
-            <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400">
+            <div className="flex items-center gap-2 pt-3 text-blue-600 dark:text-blue-400">
               <Loader2 className="h-4 w-4 animate-spin" />
               <span>Loading accounts...</span>
             </div>
           ) : accounts.length > 0 ? (
-            <div className="space-y-2">
-              <p className="text-xs text-blue-600 dark:text-blue-400 font-medium">
-                Select account(s) to provide:
+            <div className="space-y-2 pt-3">
+              <p className="text-xs font-medium text-foreground/80">
+                Select which account(s) to allow access to:
               </p>
               <div className="space-y-1">
                 {accounts.map((account) => (
@@ -394,60 +408,81 @@ export function ConnectedAccountRequestItem({
               </div>
             </div>
           ) : (
-            <p className="text-sm text-blue-600 dark:text-blue-400">
-              No connected accounts found for {provider?.displayName || toolkit}.
-            </p>
+            <div className="pt-3">
+              <div className="flex items-center justify-between gap-3 rounded-[12px] border border-border bg-white pl-[10px] pr-4 py-2 dark:bg-background">
+                <div className="flex items-center gap-2 text-sm text-foreground/80">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
+                    <ServiceIcon slug={toolkit} fallback="request" className="h-6 w-6" />
+                  </div>
+                  <p>No {(provider?.displayName || toolkit).replace(/\b\w/g, (char) => char.toUpperCase())} account connected yet.</p>
+                </div>
+                <Button
+                  onClick={handleConnectNew}
+                  disabled={status !== 'pending'}
+                  size="sm"
+                  className="min-w-24 bg-foreground text-background hover:bg-foreground/90"
+                >
+                  {status === 'connecting' ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : null}
+                  {status === 'connecting' ? (
+                    <span className="ml-1">Connect</span>
+                  ) : (
+                    'Connect'
+                  )}
+                </Button>
+              </div>
+            </div>
           )}
 
           {/* Connect New button */}
-          <Button
-            onClick={handleConnectNew}
-            disabled={status !== 'pending'}
-            variant="outline"
-            size="sm"
-            className="border-blue-200 dark:border-blue-700 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900"
-          >
-            {status === 'connecting' ? (
-              <Loader2 className="h-4 w-4 animate-spin mr-1" />
-            ) : (
-              <Plus className="h-4 w-4 mr-1" />
-            )}
-            Connect New Account
-            <ExternalLink className="h-3 w-3 ml-1" />
-          </Button>
+          {accounts.length > 0 && (
+            <Button
+              onClick={handleConnectNew}
+              disabled={status !== 'pending'}
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              {status === 'connecting' ? (
+                <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+              ) : (
+                <Plus className="mr-1 h-4 w-4" />
+              )}
+              Add New Account
+            </Button>
+          )}
 
           {/* Action buttons */}
-          <div className="flex gap-2">
-            <Button
-              onClick={handleProvide}
-              disabled={selectedAccountIds.size === 0 || status !== 'pending'}
-              size="sm"
-              className="bg-blue-600 hover:bg-blue-700 text-white"
+          {accounts.length > 0 && (
+            <div className="flex justify-end gap-2">
+              <DeclineButton
+                onDecline={handleDecline}
+                disabled={status !== 'pending'}
+                className="border-border text-foreground hover:bg-muted"
+              />
+
+              <Button
+                onClick={handleProvide}
+                disabled={selectedAccountIds.size === 0 || status !== 'pending'}
+                size="sm"
+              className="min-w-24 bg-blue-600 text-white hover:bg-blue-700"
             >
               {status === 'submitting' ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
-                <Check className="h-4 w-4" />
+                  <span>Allow Access{selectedAccountIds.size > 0 ? ` (${selectedAccountIds.size})` : ''}</span>
               )}
-              <span className="ml-1">
-                Grant Access{selectedAccountIds.size > 0 ? ` (${selectedAccountIds.size})` : ''}
-              </span>
+              {status === 'submitting' ? (
+                  <span className="ml-1">Allow Access{selectedAccountIds.size > 0 ? ` (${selectedAccountIds.size})` : ''}</span>
+              ) : null}
             </Button>
-
-            <DeclineButton
-              onDecline={handleDecline}
-              disabled={status !== 'pending'}
-              className="border-blue-200 dark:border-blue-700 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900"
-            />
-          </div>
+            </div>
+          )}
 
           {/* Error message */}
           {error && <p className="text-sm text-red-600">{error}</p>}
 
-          {/* Info text */}
-          <p className="text-xs text-blue-600 dark:text-blue-400">
-            Selected accounts will be linked to this agent for future use.
-          </p>
         </div>
       </div>
       {policyEditorAccountId && (
@@ -518,8 +553,8 @@ function AccountOption({
     return (
       <div
         className={cn(
-          'flex items-center gap-2 p-2 rounded border',
-          'bg-white dark:bg-blue-900/50 border-blue-200 dark:border-blue-700'
+          'flex items-center gap-2 rounded-[12px] border px-4 py-2',
+          'border-border bg-white dark:bg-background'
         )}
       >
         <Input
@@ -560,10 +595,10 @@ function AccountOption({
   return (
     <div
       className={cn(
-        'flex items-center gap-2 p-2 rounded border cursor-pointer transition-colors',
+        'group flex items-center gap-2 rounded-[12px] border px-4 py-2 cursor-pointer transition-colors',
         selected
-          ? 'bg-blue-100 dark:bg-blue-900 border-blue-300 dark:border-blue-600'
-          : 'bg-white dark:bg-blue-950/30 border-blue-100 dark:border-blue-800 hover:border-blue-200 dark:hover:border-blue-700',
+          ? 'border-border bg-muted'
+          : 'border-border bg-white hover:bg-muted/40 dark:bg-background',
         disabled && 'opacity-50 cursor-not-allowed'
       )}
       role="button"
@@ -579,46 +614,52 @@ function AccountOption({
       <Checkbox
         checked={selected}
         disabled={disabled}
+        className="mr-2"
         onCheckedChange={() => {
           if (!disabled) onToggle()
         }}
         onClick={(e) => e.stopPropagation()}
       />
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
+        <ServiceIcon slug={account.toolkitSlug} fallback="request" className="h-6 w-6" />
+      </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1">
           <span className="truncate text-sm">{account.displayName}</span>
           <Button
             size="sm"
             variant="ghost"
-            className="h-5 w-5 p-0 shrink-0"
+            className="invisible h-4 w-4 shrink-0 p-0 group-hover:visible"
             onClick={(e) => {
               e.stopPropagation()
               onStartEdit()
             }}
           >
-            <Pencil className="h-3 w-3 text-blue-400" />
+            <Pencil className="h-2.5 w-2.5 text-muted-foreground" />
           </Button>
-          {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
-          <span onClick={(e) => e.stopPropagation()}>
-            <PolicySummaryPill
-              accountId={account.id}
-              toolkit={account.toolkitSlug}
-              onClick={onOpenPolicies}
-            />
-          </span>
         </div>
-        <span className="text-xs text-blue-500 dark:text-blue-400">connected {connectedAgo}</span>
+        <span className="text-xs text-muted-foreground">connected {connectedAgo}</span>
       </div>
-      <span
-        className={cn(
-          'text-xs px-1.5 py-0.5 rounded shrink-0',
-          account.status === 'active'
-            ? 'bg-green-100 dark:bg-green-900/50 text-green-700 dark:text-green-400'
-            : 'bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-400'
-        )}
-      >
-        {account.status}
-      </span>
+      <div className="flex shrink-0 items-end gap-2">
+        {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
+        <span onClick={(e) => e.stopPropagation()}>
+          <PolicySummaryPill
+            accountId={account.id}
+            toolkit={account.toolkitSlug}
+            onClick={onOpenPolicies}
+          />
+        </span>
+        <span
+          className={cn(
+            'text-xs px-1.5 py-0.5 rounded shrink-0',
+            account.status === 'active'
+              ? 'bg-green-100 dark:bg-green-900/50 text-green-700 dark:text-green-400'
+              : 'bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-400'
+          )}
+        >
+          {account.status === 'active' ? 'connected' : account.status}
+        </span>
+      </div>
     </div>
   )
 }

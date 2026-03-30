@@ -329,14 +329,44 @@ export function ApprovalGalleryPage() {
               </ExampleCard>
 
               <ExampleCard
-                title="Connected account"
-                description="OAuth account linking. This uses the real account component."
+                title="Connected account: GitHub"
+                description="OAuth account linking example using GitHub."
                 fieldNames={['toolkit', 'reason']}
               >
                 <ConnectedAccountRequestItem
                   toolUseId="connected-account"
                   toolkit="github"
                   reason="Needed to read issues and post review comments."
+                  sessionId={DEMO_SESSION_ID}
+                  agentSlug={DEMO_AGENT_SLUG}
+                  onComplete={() => {}}
+                />
+              </ExampleCard>
+
+              <ExampleCard
+                title="Connected account: Gmail"
+                description="OAuth/API access request example using Gmail."
+                fieldNames={['toolkit', 'reason']}
+              >
+                <ConnectedAccountRequestItem
+                  toolUseId="connected-account-gmail"
+                  toolkit="gmail"
+                  reason="Needed to read your inbox and draft replies."
+                  sessionId={DEMO_SESSION_ID}
+                  agentSlug={DEMO_AGENT_SLUG}
+                  onComplete={() => {}}
+                />
+              </ExampleCard>
+
+              <ExampleCard
+                title="Connected account: no accounts"
+                description="Empty-state account access request example using a CRM with no connected accounts."
+                fieldNames={['toolkit', 'reason']}
+              >
+                <ConnectedAccountRequestItem
+                  toolUseId="connected-account-attio"
+                  toolkit="attio"
+                  reason="Needed to look up CRM records and update account notes."
                   sessionId={DEMO_SESSION_ID}
                   agentSlug={DEMO_AGENT_SLUG}
                   onComplete={() => {}}
