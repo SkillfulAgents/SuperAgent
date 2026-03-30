@@ -1,5 +1,6 @@
 import { cn } from '@shared/lib/utils/cn'
 import { Link2 } from 'lucide-react'
+import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 import { ToolCallItem } from './tool-call-item'
 import { SubAgentBlock } from './subagent-block'
 import { MessageContextMenu } from './message-context-menu'
@@ -7,6 +8,7 @@ import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { parseAttachedFiles, parseMountedFolders } from '@shared/lib/utils/attached-files'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
 import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
 
@@ -37,6 +39,9 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
   const toolCalls = message.toolCalls || []
 
   const isSlashCommand = isUser && hasText && text.startsWith('/')
+
+  // Detect assistant messages that failed due to an LLM provider error (from SDK metadata)
+  const isProviderErrorMessage = isAssistant && !!message.apiError && PROVIDER_ERROR_CODES.has(message.apiError)
 
   // Don't render assistant messages that have no text and no tool calls
   // (and aren't streaming). These are transient empty entries from partially-
@@ -96,8 +101,13 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
                 </div>
               )}
 
+              {/* LLM provider error display */}
+              {hasText && !isSlashCommand && isProviderErrorMessage && (
+                <ProviderErrorCard message={text} />
+              )}
+
               {/* Text content */}
-              {hasText && !isSlashCommand && (
+              {hasText && !isSlashCommand && !isProviderErrorMessage && (
                 <div className={cn(
                   'prose prose-sm max-w-none min-w-0 break-words font-medium dark:prose-invert'
                 )}>

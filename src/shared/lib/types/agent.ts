@@ -129,6 +129,9 @@ export interface JsonlMessageEntry {
     totalToolUseCount?: number
   }
   sourceToolAssistantUUID?: string
+  // SDK error code on assistant messages that failed due to an API error
+  // (e.g., 'authentication_failed', 'rate_limit', 'server_error')
+  error?: string
   // Compact summary fields (present on user messages that contain a compaction summary)
   isCompactSummary?: boolean
   isVisibleInTranscriptOnly?: boolean

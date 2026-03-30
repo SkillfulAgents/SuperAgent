@@ -1999,4 +1999,148 @@ describe('MessagePersister', () => {
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
     })
   })
+
+  // ============================================================================
+  // API error code tracking (apiErrorCode in session_error)
+  // ============================================================================
+
+  describe('API error code tracking', () => {
+    it('captures error code from assistant message and includes it in session_error', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      sseEvents.length = 0
+
+      // SDK sends assistant message with error field (e.g., auth failure)
+      mockClient._sendMessage({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Invalid API key' }] },
+        error: 'authentication_failed',
+      })
+
+      // SDK sends error result
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'error_during_execution',
+        error: 'Invalid API key',
+        errors: ['Invalid API key'],
+        is_error: true,
+        duration_ms: 100,
+        num_turns: 0,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      })
+
+      const errorEvents = sseEvents.filter(e => e.type === 'session_error')
+      expect(errorEvents).toHaveLength(1)
+      expect(errorEvents[0].apiErrorCode).toBe('authentication_failed')
+      expect(errorEvents[0].error).toBe('Invalid API key')
+    })
+
+    it('broadcasts session_error with null apiErrorCode when no assistant error preceded', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      sseEvents.length = 0
+
+      // Error result without a preceding assistant message error
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'error',
+        error: 'The agent process was terminated unexpectedly.',
+        is_error: true,
+        duration_ms: 0,
+        num_turns: 0,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      })
+
+      const errorEvents = sseEvents.filter(e => e.type === 'session_error')
+      expect(errorEvents).toHaveLength(1)
+      expect(errorEvents[0].apiErrorCode).toBeNull()
+    })
+
+    it('clears lastApiErrorCode on new user message', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      // First turn: assistant with error
+      mockClient._sendMessage({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Rate limited' }] },
+        error: 'rate_limit',
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'error_during_execution',
+        error: 'Rate limited',
+        errors: ['Rate limited'],
+        is_error: true,
+        duration_ms: 100,
+        num_turns: 0,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      })
+
+      // New user message clears the error code
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      sseEvents.length = 0
+
+      // Second turn: different error without assistant error field
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'error',
+        error: 'Process killed',
+        is_error: true,
+        duration_ms: 0,
+        num_turns: 0,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      })
+
+      const errorEvents = sseEvents.filter(e => e.type === 'session_error')
+      expect(errorEvents).toHaveLength(1)
+      expect(errorEvents[0].apiErrorCode).toBeNull()
+    })
+
+    it('broadcasts stream_api_error when text was already streaming', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      // Simulate SDK streaming text before the error
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'message_start' },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Some text' } },
+      })
+      sseEvents.length = 0
+
+      // Complete assistant message with error
+      mockClient._sendMessage({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Some text' }] },
+        error: 'rate_limit',
+      })
+
+      const apiErrorEvents = sseEvents.filter(e => e.type === 'stream_api_error')
+      expect(apiErrorEvents).toHaveLength(1)
+      expect(apiErrorEvents[0].apiErrorCode).toBe('rate_limit')
+      // Should NOT broadcast a stream_delta (to avoid duplicating text)
+      const deltas = sseEvents.filter(e => e.type === 'stream_delta')
+      expect(deltas).toHaveLength(0)
+    })
+
+    it('broadcasts stream_delta with apiErrorCode when no text was streaming', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      sseEvents.length = 0
+
+      // Complete assistant message with error (no prior streaming)
+      mockClient._sendMessage({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Invalid API key' }] },
+        error: 'authentication_failed',
+      })
+
+      const deltas = sseEvents.filter(e => e.type === 'stream_delta')
+      expect(deltas).toHaveLength(1)
+      expect(deltas[0].text).toBe('Invalid API key')
+      expect(deltas[0].apiErrorCode).toBe('authentication_failed')
+      // Should NOT broadcast stream_api_error
+      const apiErrorEvents = sseEvents.filter(e => e.type === 'stream_api_error')
+      expect(apiErrorEvents).toHaveLength(0)
+    })
+  })
 })

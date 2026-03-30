@@ -119,6 +119,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     isCompacting,
     activeSubagents,
     completedSubagents,
+    apiErrorCode,
     typingUser,
     peerUserMessage,
     pendingSecretRequests: sseSecretRequests,
@@ -742,6 +743,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
               content: { text: streamingMessage },
               toolCalls: [],
               createdAt: new Date(),
+              ...(apiErrorCode && { apiError: apiErrorCode }),
             }}
             isStreaming={isStreaming}
           />

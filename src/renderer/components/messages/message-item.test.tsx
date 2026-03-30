@@ -186,4 +186,36 @@ describe('MessageItem', () => {
       expect(screen.queryByTestId('tooltip-content')).not.toBeInTheDocument()
     })
   })
+
+  describe('LLM provider error messages', () => {
+    it('renders provider error card when apiError is a provider error code', () => {
+      const msg = createAssistantMessage({
+        content: { text: 'Invalid API key' },
+        apiError: 'authentication_failed',
+      })
+      render(<MessageItem message={msg} />)
+      expect(screen.getByText('LLM Provider Error')).toBeInTheDocument()
+      expect(screen.getByText('Invalid API key')).toBeInTheDocument()
+      expect(screen.getByText(/external LLM provider API/)).toBeInTheDocument()
+    })
+
+    it('renders normal markdown when apiError is absent', () => {
+      const msg = createAssistantMessage({
+        content: { text: 'Hello world' },
+      })
+      render(<MessageItem message={msg} />)
+      expect(screen.queryByText('LLM Provider Error')).not.toBeInTheDocument()
+      expect(screen.getByText('Hello world')).toBeInTheDocument()
+    })
+
+    it('renders normal markdown when apiError is not a provider error code', () => {
+      const msg = createAssistantMessage({
+        content: { text: 'Output too long' },
+        apiError: 'max_output_tokens',
+      })
+      render(<MessageItem message={msg} />)
+      expect(screen.queryByText('LLM Provider Error')).not.toBeInTheDocument()
+      expect(screen.getByText('Output too long')).toBeInTheDocument()
+    })
+  })
 })

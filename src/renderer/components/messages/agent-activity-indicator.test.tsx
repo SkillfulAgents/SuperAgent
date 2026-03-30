@@ -16,6 +16,7 @@ const mockStreamState = {
   pendingRemoteMcpRequests: [] as any[],
   pendingBrowserInputRequests: [] as any[],
   error: null as string | null,
+  apiErrorCode: null as string | null,
   browserActive: false,
   activeStartTime: null as number | null,
   isCompacting: false,
@@ -51,6 +52,7 @@ describe('AgentActivityIndicator', () => {
     Object.assign(mockStreamState, {
       isActive: false,
       error: null,
+      apiErrorCode: null,
       activeStartTime: null,
       activeSubagents: [],
       completedSubagents: null,
@@ -72,11 +74,21 @@ describe('AgentActivityIndicator', () => {
     expect(container.innerHTML).toBe('')
   })
 
-  it('shows error alert when error is present', () => {
+  it('shows LLM provider error alert when apiErrorCode indicates a provider error', () => {
     mockStreamState.error = 'API rate limit exceeded'
+    mockStreamState.apiErrorCode = 'rate_limit'
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByText('LLM Provider Error')).toBeInTheDocument()
+    expect(screen.getByText('API rate limit exceeded')).toBeInTheDocument()
+    expect(screen.getByText(/external LLM provider API/)).toBeInTheDocument()
+  })
+
+  it('shows generic error alert when no apiErrorCode', () => {
+    mockStreamState.error = 'The agent process was terminated unexpectedly.'
+    mockStreamState.apiErrorCode = null
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Error')).toBeInTheDocument()
-    expect(screen.getByText('API rate limit exceeded')).toBeInTheDocument()
+    expect(screen.getByText('The agent process was terminated unexpectedly.')).toBeInTheDocument()
     expect(screen.getByText('Send another message to retry.')).toBeInTheDocument()
   })
 

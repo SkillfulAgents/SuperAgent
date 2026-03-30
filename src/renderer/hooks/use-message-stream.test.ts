@@ -231,6 +231,96 @@ describe('useMessageStream', () => {
 
     expect(result.current.isActive).toBe(false)
     expect(result.current.error).toBe('Rate limit exceeded')
+    expect(result.current.apiErrorCode).toBeNull()
+  })
+
+  it('parses apiErrorCode from session_error event', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'session_error',
+        error: 'Invalid API key',
+        apiErrorCode: 'authentication_failed',
+      })
+    })
+
+    expect(result.current.error).toBe('Invalid API key')
+    expect(result.current.apiErrorCode).toBe('authentication_failed')
+  })
+
+  it('sets apiErrorCode from stream_api_error event', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'stream_delta', text: 'Rate limited' })
+    })
+    expect(result.current.apiErrorCode).toBeNull()
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'stream_api_error', apiErrorCode: 'rate_limit' })
+    })
+    expect(result.current.apiErrorCode).toBe('rate_limit')
+    expect(result.current.streamingMessage).toBe('Rate limited')
+  })
+
+  it('sets apiErrorCode from stream_delta event', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'stream_delta',
+        text: 'Invalid API key',
+        apiErrorCode: 'authentication_failed',
+      })
+    })
+    expect(result.current.apiErrorCode).toBe('authentication_failed')
+    expect(result.current.streamingMessage).toBe('Invalid API key')
+  })
+
+  it('preserves apiErrorCode through session_idle', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'stream_delta',
+        text: 'Error text',
+        apiErrorCode: 'authentication_failed',
+      })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_idle', isActive: false })
+    })
+    expect(result.current.apiErrorCode).toBe('authentication_failed')
   })
 
   it('handles secret_request event', async () => {
