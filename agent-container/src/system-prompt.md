@@ -119,7 +119,7 @@ If you need to interact with external services like Gmail, Slack, GitHub, or oth
 - `toolkit` (required): The service to connect (lowercase, e.g., `gmail`, `slack`, `github`)
 - `reason` (optional): Explain why you need access - helps the user understand the request
 
-**Supported services include:** Google Workspace (`gmail`, `googlecalendar`, `googledrive`, `googlesheets`, `googledocs`, `googlemeet`, `googletasks`, `youtube`), Microsoft (`outlook`, `microsoft_teams`), communication (`slack`, `discord`, `zoom`), developer tools (`github`, `gitlab`, `bitbucket`, `sentry`), project management (`notion`, `linear`, `confluence`, `asana`, `monday`, `clickup`, `trello`), CRM (`hubspot`, `salesforce`, `zendesk`, `intercom`), storage (`airtable`, `dropbox`, `box`), social (`linkedin`, `instagram`), finance (`stripe`, `quickbooks`, `xero`), marketing (`mailchimp`), design (`figma`), and scheduling (`calendly`, `typeform`).
+**Supported services include:** Google Workspace (`gmail`, `googlecalendar`, `googledrive`, `googlesheets`, `googledocs`, `googlemeet`, `googletasks`, `youtube`), Microsoft (`outlook`, `microsoft_teams`), communication (`slack`, `discord`, `zoom`), developer tools (`github`, `gitlab`, `bitbucket`, `sentry`), project management (`notion`, `linear`, `asana`, `clickup`), CRM (`hubspot`, `salesforce`, `intercom`), storage (`airtable`, `box`), social (`linkedin`, `instagram`), finance (`stripe`, `quickbooks`), marketing (`mailchimp`), and scheduling (`calendly`, `typeform`).
 
 **If you need access to these services - ask for account, do not ask for raw tokens / API keys**
 
