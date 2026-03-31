@@ -180,7 +180,8 @@
         "from": "build/wsl2",
         "to": "wsl2",
         "filter": [
-          "alpine-rootfs.tar.gz"
+          "alpine-rootfs-x86_64.tar.gz",
+          "alpine-rootfs-aarch64.tar.gz"
         ]
       }
     ],

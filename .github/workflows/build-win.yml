@@ -1,0 +1,40 @@
+name: Build Windows App
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-win:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Windows app
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run dist:win
+
+      - name: Upload Windows Installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Superagent-Windows-${{ github.ref_name }}
+          path: release/*.exe
+          retention-days: 30
+
+      - name: Upload Windows ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: Superagent-Windows-ZIP-${{ github.ref_name }}
+          path: release/*.zip
+          retention-days: 30
