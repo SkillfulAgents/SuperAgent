@@ -6,6 +6,9 @@ import { RenderPerfPage } from '../pages/render-perf.page'
 
 test.describe.configure({ mode: 'serial' })
 
+// Render tracking requires RENDER_TRACKING=true at build time (see test:e2e:perf script)
+test.skip(!process.env.RENDER_TRACKING, 'RENDER_TRACKING not enabled')
+
 test.describe('Render Performance', () => {
   let appPage: AppPage
   let agentPage: AgentPage
