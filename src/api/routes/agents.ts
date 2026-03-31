@@ -2172,6 +2172,23 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
       return c.json({ error: 'method is required for execution' }, 400)
     }
 
+    // In E2E mock mode, skip actual execution — just resolve the input directly
+    if (process.env.E2E_MOCK === 'true') {
+      const resolveResponse = await client.fetch(
+        `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ value: `[mock] ${method} executed successfully` }),
+        }
+      )
+      if (!resolveResponse.ok) {
+        return c.json({ error: 'Failed to resolve computer use request' }, 500)
+      }
+      messagePersister.clearPendingComputerUseRequest(sessionId, toolUseId)
+      return c.json({ success: true })
+    }
+
     // Check macOS permissions before executing
     const { executeComputerUseCommand, checkACPermissions } = await import('@shared/lib/computer-use/executor')
     const { resolveTargetApp } = await import('@shared/lib/computer-use/types')
