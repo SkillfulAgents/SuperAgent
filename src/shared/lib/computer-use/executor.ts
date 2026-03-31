@@ -20,7 +20,10 @@ let acInstance: AC | null = null
  */
 function resolveACBinaryPath(): string {
   const require = createRequire(import.meta.url)
-  const acPkgDir = path.dirname(require.resolve('@skillful-agents/agent-computer/package.json'))
+  // Resolve the main entry point, then walk up to the package root
+  const acEntry = require.resolve('@skillful-agents/agent-computer')
+  // Entry is at <pkg>/dist/src/index.js → walk up 3 levels
+  const acPkgDir = path.resolve(path.dirname(acEntry), '..', '..', '..')
   const ext = platform() === 'win32' ? '.exe' : ''
   const key = `${platform()}-${arch() === 'arm64' ? 'arm64' : 'x64'}`
   const binaryPath = path.join(acPkgDir, 'bin', `ac-core-${key}${ext}`)
