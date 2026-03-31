@@ -256,6 +256,24 @@ function formatResult(method: string, result: unknown): string {
 }
 
 /**
+ * Check macOS accessibility and screen recording permissions via the AC daemon.
+ * Returns which permissions are missing, or null if all are granted.
+ */
+export async function checkACPermissions(): Promise<{ accessibility: boolean; screen_recording: boolean } | null> {
+  try {
+    const ac = getAC()
+    const perms = await ac.permissions()
+    if (perms.accessibility && perms.screen_recording) {
+      return null // All granted
+    }
+    return perms
+  } catch {
+    // If we can't check (daemon not running yet), don't block — let it fail later
+    return null
+  }
+}
+
+/**
  * Look up which app owns a window reference by querying the AC daemon.
  * Returns the app name or undefined if the window can't be found.
  */

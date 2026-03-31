@@ -2172,6 +2172,17 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
       return c.json({ error: 'method is required for execution' }, 400)
     }
 
+    // Check macOS permissions before executing
+    const { executeComputerUseCommand, checkACPermissions } = await import('@shared/lib/computer-use/executor')
+    const { resolveTargetApp } = await import('@shared/lib/computer-use/types')
+    const missingPermissions = await checkACPermissions()
+    if (missingPermissions) {
+      return c.json({
+        success: false,
+        missingPermissions,
+      }, 428)
+    }
+
     // Record the permission grant
     const { computerUsePermissionManager } = await import('@shared/lib/computer-use/permission-manager')
     if (grantType && ['once', 'timed', 'always'].includes(grantType)) {
@@ -2179,8 +2190,6 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
     }
 
     // Execute the computer use command
-    const { executeComputerUseCommand } = await import('@shared/lib/computer-use/executor')
-    const { resolveTargetApp } = await import('@shared/lib/computer-use/types')
     let output: string
     try {
       output = await executeComputerUseCommand(method, params || {})
