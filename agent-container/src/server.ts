@@ -13,6 +13,7 @@ import * as dns from 'dns';
 import { inputManager } from './input-manager';
 import { dashboardManager } from './dashboard-manager';
 import { tabManager } from './tab-manager';
+import { backfillMissingSummaries, BACKFILL_STARTUP_DELAY_MS } from './session-summary';
 
 import { getEditingCommands } from './cdp-editing-commands';
 
@@ -1339,6 +1340,13 @@ const server = serve({
   fetch: app.fetch,
   port,
 });
+
+// Backfill session summaries for any sessions that don't have one yet
+setTimeout(() => {
+  backfillMissingSummaries().catch(err => {
+    console.error('[Server] Session summary backfill failed:', err);
+  });
+}, BACKFILL_STARTUP_DELAY_MS);
 
 // Create WebSocket server
 const wss = new WebSocketServer({ noServer: true });

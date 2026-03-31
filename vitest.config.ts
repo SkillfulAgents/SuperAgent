@@ -8,6 +8,7 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
     __AUTH_MODE__: JSON.stringify(process.env.AUTH_MODE === 'true'),
+    __RENDER_TRACKING__: 'false',
   },
   test: {
     globals: true,
