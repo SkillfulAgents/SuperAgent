@@ -200,8 +200,6 @@ export async function backfillMissingSummaries(): Promise<void> {
     return;
   }
 
-  const metadata = readMetadataFile();
-
   let jsonlFiles: string[];
   try {
     jsonlFiles = fs.readdirSync(SESSIONS_DIR).filter((f) => f.endsWith('.jsonl'));
@@ -213,6 +211,10 @@ export async function backfillMissingSummaries(): Promise<void> {
   let generated = 0;
   for (const file of jsonlFiles) {
     const sessionId = path.basename(file, '.jsonl');
+
+    // Re-read metadata each iteration to see writes from previous iterations
+    // and avoid clobbering concurrent webapp writes
+    const metadata = readMetadataFile();
 
     // Skip if already has a summary
     if (metadata[sessionId]?.summary) continue;

@@ -627,13 +627,17 @@ export class ClaudeCodeProcess extends EventEmitter {
           console.log(`[Session ${this.sessionId}] Query completed`);
 
           // Fire-and-forget: generate session summary on turn 1, then every N turns
-          this.turnCount++;
-          if (shouldGenerateSummary(this.turnCount)) {
-            generateSessionSummary(this.sessionId)
-              .then(summary => {
-                if (summary) return writeSessionSummary(this.sessionId, summary);
-              })
-              .catch(err => console.error(`[Session ${this.sessionId}] Summary generation failed:`, err));
+          // Skip error/resume results — no meaningful new content to summarize
+          const resultSubtype = (message as any).subtype;
+          if (resultSubtype !== 'error' && resultSubtype !== 'error_during_execution' && resultSubtype !== 'resume') {
+            this.turnCount++;
+            if (shouldGenerateSummary(this.turnCount)) {
+              generateSessionSummary(this.sessionId)
+                .then(summary => {
+                  if (summary) return writeSessionSummary(this.sessionId, summary);
+                })
+                .catch(err => console.error(`[Session ${this.sessionId}] Summary generation failed:`, err));
+            }
           }
         }
 
