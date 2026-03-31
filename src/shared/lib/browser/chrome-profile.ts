@@ -2,7 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 
-const PROFILE_FILES = ['Cookies', 'Cookies-journal', 'Login Data', 'Login Data-journal']
+const PROFILE_FILES = ['Cookies', 'Cookies-journal', 'Login Data', 'Login Data-journal', 'Web Data', 'Web Data-journal']
 const PROFILE_DIRS = ['Local Storage', 'Session Storage']
 
 /**
