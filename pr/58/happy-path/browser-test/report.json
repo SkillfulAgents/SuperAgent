@@ -1,0 +1,25 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Successfully navigated to localhost agent, sent a message requesting browser navigation to example.com, waited for response, and verified the response mentions \"Example Domain\"",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully showing Super Agent interface with list of agents in sidebar",
+    "Clicked on \"QA-20260331-223200-dn47\" agent in sidebar — Agent selected and chat interface opened with empty conversation",
+    "Clicked on message input textbox — Textbox focused and ready for input",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message text entered into textbox",
+    "Clicked \"Send message\" button — Message sent successfully, agent status changed to \"working\", new session \"Browser Navigation and Page Title Check\" created",
+    "Waited up to 3 minutes for response containing \"Example Domain\" — Response received within 26 seconds showing: \"The page title is Example Domain. It's the standard IANA example domain page with a single \"Learn more\" link.\" Agent executed browser commands (Open Browser, Page Snapshot, Browser Command \"get title\", Close Browser) and returned to idle status",
+    "Took final screenshot — Screenshot captured showing complete conversation with agent response clearly mentioning \"Example Domain\""
+  ],
+  "bugs": [],
+  "durationMs": 73052,
+  "sessionId": "37b9af8a-9a1a-4e0a-ab21-cd5348a1ea4a",
+  "cost": {
+    "inputTokens": 234,
+    "outputTokens": 1999,
+    "cacheCreationTokens": 29576,
+    "cacheReadTokens": 673343,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.114533
+  }
+}
