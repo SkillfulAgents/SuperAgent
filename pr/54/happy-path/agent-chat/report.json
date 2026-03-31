@@ -1,0 +1,25 @@
+{
+  "storyId": "agent-chat",
+  "passed": true,
+  "reason": "Successfully navigated to agent, verified idle status, sent message, received response containing \"4\"",
+  "steps": [
+    "Navigated to http://localhost:47891 - Page loaded with agents list visible",
+    "Found and clicked agent \"QA-20260331-000751-wx6i\" in sidebar - Agent detail page opened",
+    "Verified agent status is \"idle\" - Status displayed as \"idle\" in the header",
+    "Sent message \"Hello! What is 2+2?\" - Message successfully submitted, agent status changed to \"working\"",
+    "Waited for response - Response received within 2 seconds",
+    "Verified response mentions \"4\" - Response clearly displays \"4\" in the chat, with \"Worked for 2s\" indicator",
+    "Took screenshot - Full page screenshot captured showing complete conversation"
+  ],
+  "bugs": [],
+  "durationMs": 67467,
+  "sessionId": "93b0a5d3-e5b3-45bd-9c44-ff1c67d72689",
+  "cost": {
+    "inputTokens": 234,
+    "outputTokens": 2386,
+    "cacheCreationTokens": 71987,
+    "cacheReadTokens": 658366,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.167984
+  }
+}
