@@ -15,6 +15,7 @@ import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from './chat-composer-box'
+import { useRenderTracker } from '@renderer/lib/perf'
 
 interface MessageInputProps {
   sessionId: string
@@ -23,6 +24,7 @@ interface MessageInputProps {
 }
 
 export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInputProps) {
+  useRenderTracker('MessageInput')
   const { canUseAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
   const lastTypingNotification = useRef(0)

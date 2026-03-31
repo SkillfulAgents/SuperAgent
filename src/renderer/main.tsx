@@ -9,15 +9,24 @@ if (isElectron() && getPlatform() === 'darwin') {
   document.documentElement.classList.add('electron-vibrancy')
 }
 
-// Initialize API URL before rendering
-initApiBaseUrl()
-  .catch((error) => {
-    console.error('Failed to initialize:', error)
-  })
-  .finally(() => {
-    ReactDOM.createRoot(document.getElementById('root')!).render(
-      <React.StrictMode>
-        <App />
-      </React.StrictMode>
-    )
-  })
+async function init() {
+  // Load render tracking instrumentation before any components (must patch React first)
+  if (__RENDER_TRACKING__) {
+    await import('./lib/render-tracking')
+  }
+
+  // Initialize API URL before rendering
+  initApiBaseUrl()
+    .catch((error) => {
+      console.error('Failed to initialize:', error)
+    })
+    .finally(() => {
+      ReactDOM.createRoot(document.getElementById('root')!).render(
+        <React.StrictMode>
+          <App />
+        </React.StrictMode>
+      )
+    })
+}
+
+init()

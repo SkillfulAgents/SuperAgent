@@ -23,6 +23,7 @@ import {
 } from '@renderer/hooks/use-scheduled-tasks'
 import { useSelection } from '@renderer/context/selection-context'
 import { useUser } from '@renderer/context/user-context'
+import { useRenderTracker } from '@renderer/lib/perf'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -49,6 +50,7 @@ interface ScheduledTaskViewProps {
 }
 
 export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps) {
+  useRenderTracker('ScheduledTaskView')
   const { data: task, isLoading, error } = useScheduledTask(taskId)
   const { data: sessions = [] } = useScheduledTaskSessions(taskId)
   const cancelTask = useCancelScheduledTask()

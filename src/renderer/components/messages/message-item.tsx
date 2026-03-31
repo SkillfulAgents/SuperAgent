@@ -11,6 +11,7 @@ import remarkGfm from 'remark-gfm'
 import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
 import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
+import { useRenderTracker } from '@renderer/lib/perf'
 
 // Re-export for use by other components
 export type { ApiToolCall }
@@ -28,6 +29,7 @@ interface MessageItemProps {
 }
 
 export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall }: MessageItemProps) {
+  useRenderTracker('MessageItem')
   const isUser = message.type === 'user'
   const isAssistant = message.type === 'assistant'
 
@@ -244,4 +246,8 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
       </div>
     </div>
   )
+}
+
+if (__RENDER_TRACKING__) {
+  (MessageItem as any).whyDidYouRender = true
 }

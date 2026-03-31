@@ -6,6 +6,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { clearBrowserActive, useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useUser } from '@renderer/context/user-context'
 import { cn } from '@shared/lib/utils/cn'
+import { useRenderTracker } from '@renderer/lib/perf'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -40,6 +41,7 @@ interface BrowserPreviewProps {
 }
 
 export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }: BrowserPreviewProps) {
+  useRenderTracker('BrowserPreview')
   const { canUseAgent } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
   const [expanded, setExpanded] = useState(false)
@@ -773,6 +775,10 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
     </AlertDialog>
     </>
   )
+}
+
+if (__RENDER_TRACKING__) {
+  (BrowserPreview as any).whyDidYouRender = true
 }
 
 function base64ToBlob(base64: string, mimeType: string): Blob | null {

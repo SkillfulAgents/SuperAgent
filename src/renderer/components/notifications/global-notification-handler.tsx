@@ -18,6 +18,7 @@ import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { setMountWarning } from '@renderer/hooks/use-mount-warnings'
 import type { UserSettingsData } from '@shared/lib/services/user-settings-service'
+import { useRenderTracker } from '@renderer/lib/perf'
 
 function isNotificationTypeEnabled(
   settings: UserSettingsData | undefined,
@@ -34,6 +35,7 @@ function isNotificationTypeEnabled(
 }
 
 export function GlobalNotificationHandler() {
+  useRenderTracker('GlobalNotificationHandler')
   const queryClient = useQueryClient()
   const { selectedSessionId } = useSelection()
   const { data: unreadData } = useUnreadNotificationCount()

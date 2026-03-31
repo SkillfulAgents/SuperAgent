@@ -21,6 +21,7 @@ import { AreaChart, Area, ResponsiveContainer, Tooltip } from 'recharts'
 import type { ApiAgent } from '@shared/lib/types/api'
 import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
 import type { DailyUsageEntry } from '@shared/lib/types/usage'
+import { useRenderTracker } from '@renderer/lib/perf'
 
 export function formatRelativeTime(date: Date | string | null | undefined): string | null {
   if (!date) return null
@@ -128,6 +129,7 @@ function StatusTab({ status, hasActiveSessions, hasSessionsAwaitingInput }: {
 }
 
 function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyUsageEntry[] }) {
+  useRenderTracker('AgentCard')
   const { selectAgent, selectSession } = useSelection()
   const lastWorked = formatRelativeTime(agent.lastActivityAt)
   const nextRun = formatRelativeTime(agent.nextScheduledTaskAt)
@@ -368,6 +370,7 @@ function TemplateCard({ template, onClick }: { template: ApiDiscoverableAgent; o
 }
 
 export function HomePage() {
+  useRenderTracker('HomePage')
   const { data: agents, isLoading: agentsLoading } = useAgents()
   const { data: userSettings } = useUserSettings()
   const { data: discoverableAgents } = useDiscoverableAgents()

@@ -29,9 +29,11 @@ import { useMarkSessionNotificationsRead } from '@renderer/hooks/use-notificatio
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useUser } from '@renderer/context/user-context'
 import { useMountWarnings } from '@renderer/hooks/use-mount-warnings'
+import { useRenderTracker } from '@renderer/lib/perf'
 import { computeContextPercent } from '@shared/lib/utils/context-usage'
 
 export function MainContent() {
+  useRenderTracker('MainContent')
   const {
     selectedAgentSlug: agentSlug,
     selectedSessionId: sessionId,
@@ -409,4 +411,8 @@ export function MainContent() {
       )}
     </div>
   )
+}
+
+if (__RENDER_TRACKING__) {
+  (MainContent as any).whyDidYouRender = true
 }
