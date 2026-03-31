@@ -10,6 +10,7 @@ import { BrowserInputRequestItem } from '@renderer/components/messages/browser-i
 import { ScriptRunRequestItem } from '@renderer/components/messages/script-run-request-item'
 import { RemoteMcpRequestItem } from '@renderer/components/messages/remote-mcp-request-item'
 import { ComputerUseRequestItem } from '@renderer/components/messages/computer-use-request-item'
+import { ProxyReviewRequestItem } from '@renderer/components/messages/proxy-review-request-item'
 import type { ApiToolCall } from '@shared/lib/types/api'
 import { ExternalLink } from 'lucide-react'
 
@@ -475,6 +476,26 @@ export function ApprovalGalleryPage() {
 
           <TabsContent value="approvals" className="space-y-4">
             <div className="grid gap-4 xl:grid-cols-2">
+              <ExampleCard
+                title="API request review"
+                description="Proxy/API approval surface for third-party requests that need review."
+                fieldNames={['toolkit', 'method', 'targetPath', 'matchedScopes[]', 'scopeDescriptions']}
+              >
+                <ProxyReviewRequestItem
+                  reviewId="proxy-review-demo"
+                  accountId="acct_demo_notion"
+                  toolkit="notion"
+                  method="POST"
+                  targetPath="initialize"
+                  matchedScopes={['api']}
+                  scopeDescriptions={{
+                    api: 'Initialize the API session for this connected account.',
+                  }}
+                  agentSlug={DEMO_AGENT_SLUG}
+                  onComplete={() => {}}
+                />
+              </ExampleCard>
+
               <ExampleCard
                 title="Computer use approval"
                 description="The actual approval card we currently use for host and app control."
