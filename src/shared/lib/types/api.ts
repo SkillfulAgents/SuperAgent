@@ -126,7 +126,21 @@ export interface ApiMessage {
   toolCalls: ApiToolCall[]
   createdAt: Date
   sender?: ApiMessageSender
+  /** SDK error code when assistant message failed due to LLM provider error */
+  apiError?: string
 }
+
+/**
+ * SDK error codes that indicate an external LLM provider issue
+ * (as opposed to application-level errors like max_output_tokens).
+ */
+export const PROVIDER_ERROR_CODES = new Set([
+  'authentication_failed',
+  'billing_error',
+  'rate_limit',
+  'invalid_request',
+  'server_error',
+])
 
 /**
  * Compact boundary marker in API response

@@ -10,6 +10,7 @@ import { getCurrentUserId } from '@shared/lib/auth/config'
 import { db } from '@shared/lib/db'
 import { agentAcl } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
+import pLimit from 'p-limit'
 
 /**
  * Normalize non-standard model names to canonical Anthropic names so that
@@ -64,7 +65,8 @@ usage.get('/', async (c) => {
       .select({ agentSlug: agentAcl.agentSlug })
       .from(agentAcl)
       .where(eq(agentAcl.userId, userId))
-    const results = await Promise.all(rows.map((r) => getAgent(r.agentSlug)))
+    const agentLimit = pLimit(10)
+    const results = await Promise.all(rows.map((r) => agentLimit(() => getAgent(r.agentSlug))))
     agents = results.filter(Boolean) as Awaited<ReturnType<typeof listAgents>>
   } else {
     agents = await listAgents()
@@ -78,48 +80,56 @@ usage.get('/', async (c) => {
     byModel: Map<string, number>
   }>()
 
-  // Process agents sequentially to limit memory usage.
+  // Process agents in batches to balance throughput and memory usage.
   // Each agent's JSONL files are read with pLimit concurrency internally.
-  for (const agent of agents) {
-    let dailyData
-    try {
-      const claudePath = getAgentClaudeConfigDir(agent.slug)
-      dailyData = await loadDailyUsageData({
-        claudePath,
-        since,
+  const BATCH_SIZE = 3
+  for (let i = 0; i < agents.length; i += BATCH_SIZE) {
+    const batch = agents.slice(i, i + BATCH_SIZE)
+    const results = await Promise.all(
+      batch.map(async (agent) => {
+        try {
+          const claudePath = getAgentClaudeConfigDir(agent.slug)
+          const dailyData = await loadDailyUsageData({ claudePath, since })
+          return { agent, dailyData }
+        } catch {
+          return null
+        }
       })
-    } catch {
-      continue
-    }
+    )
 
-    for (const day of dailyData) {
-      let entry = dateMap.get(day.date)
-      if (!entry) {
-        entry = { totalCost: 0, totalTokens: 0, byAgent: new Map(), byModel: new Map() }
-        dateMap.set(day.date, entry)
-      }
+    for (const result of results) {
+      if (!result) continue
+      const { agent, dailyData } = result
 
-      const dayTokens = day.inputTokens + day.outputTokens + day.cacheCreationTokens + day.cacheReadTokens
-      entry.totalCost += day.totalCost
-      entry.totalTokens += dayTokens
+      for (const day of dailyData) {
+        let entry = dateMap.get(day.date)
+        if (!entry) {
+          entry = { totalCost: 0, totalTokens: 0, byAgent: new Map(), byModel: new Map() }
+          dateMap.set(day.date, entry)
+        }
 
-      const existing = entry.byAgent.get(agent.slug)
-      if (existing) {
-        existing.cost += day.totalCost
-        existing.totalTokens += dayTokens
-      } else {
-        entry.byAgent.set(agent.slug, {
-          agentSlug: agent.slug,
-          agentName: agent.frontmatter.name,
-          cost: day.totalCost,
-          totalTokens: dayTokens,
-        })
-      }
+        const dayTokens = day.inputTokens + day.outputTokens + day.cacheCreationTokens + day.cacheReadTokens
+        entry.totalCost += day.totalCost
+        entry.totalTokens += dayTokens
 
-      for (const mb of day.modelBreakdowns) {
-        const normalizedName = normalizeModelName(mb.modelName)
-        const prev = entry.byModel.get(normalizedName) || 0
-        entry.byModel.set(normalizedName, prev + mb.cost)
+        const existing = entry.byAgent.get(agent.slug)
+        if (existing) {
+          existing.cost += day.totalCost
+          existing.totalTokens += dayTokens
+        } else {
+          entry.byAgent.set(agent.slug, {
+            agentSlug: agent.slug,
+            agentName: agent.frontmatter.name,
+            cost: day.totalCost,
+            totalTokens: dayTokens,
+          })
+        }
+
+        for (const mb of day.modelBreakdowns) {
+          const normalizedName = normalizeModelName(mb.modelName)
+          const prev = entry.byModel.get(normalizedName) || 0
+          entry.byModel.set(normalizedName, prev + mb.cost)
+        }
       }
     }
   }

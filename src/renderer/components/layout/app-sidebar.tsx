@@ -71,6 +71,7 @@ import {
 import { restrictToVerticalAxis } from '@dnd-kit/modifiers'
 import { SortableAgentMenuItem } from './sortable-agent-item'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
+import { useRenderTracker } from '@renderer/lib/perf'
 
 // Session sub-item that tracks its streaming state
 function SessionSubItem({
@@ -80,6 +81,7 @@ function SessionSubItem({
   session: ApiSession
   agentSlug: string
 }) {
+  useRenderTracker('SessionSubItem')
   const { selectedSessionId, selectAgent, selectSession } = useSelection()
   const isSelected = session.id === selectedSessionId
   const { isStreaming } = useMessageStream(isSelected ? session.id : null, isSelected ? agentSlug : null)
@@ -373,6 +375,7 @@ export const AgentMenuItem = React.forwardRef<
   HTMLLIElement,
   { agent: ApiAgent } & React.HTMLAttributes<HTMLLIElement>
 >(({ agent, style, ...rest }, ref) => {
+  useRenderTracker('AgentMenuItem')
   const { selectedAgentSlug, selectAgent } = useSelection()
   const { agentMemberCount } = useUser()
   const queryClient = useQueryClient()
@@ -527,6 +530,11 @@ export const AgentMenuItem = React.forwardRef<
 })
 AgentMenuItem.displayName = 'AgentMenuItem'
 
+if (__RENDER_TRACKING__) {
+  (SessionSubItem as any).whyDidYouRender = true;
+  (AgentMenuItem as any).whyDidYouRender = true
+}
+
 function UserFooter() {
   const { isAuthMode, user, signOut } = useUser()
 
@@ -594,6 +602,7 @@ function ApiKeyWarning({ onOpenSettings }: { onOpenSettings: () => void }) {
 }
 
 export function AppSidebar() {
+  useRenderTracker('AppSidebar')
   const { settingsOpen, setSettingsOpen, settingsTab, createAgentOpen, setCreateAgentOpen, openWizard } = useDialogs()
   const { clearSelection } = useSelection()
   const [containerSetupOpen, setContainerSetupOpen] = useState(false)
@@ -810,4 +819,8 @@ export function AppSidebar() {
       <SidebarRail />
     </Sidebar>
   )
+}
+
+if (__RENDER_TRACKING__) {
+  (AppSidebar as any).whyDidYouRender = true
 }

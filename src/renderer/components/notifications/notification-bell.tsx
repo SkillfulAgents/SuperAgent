@@ -16,6 +16,7 @@ import {
 } from '@renderer/hooks/use-notifications'
 import { useSelection } from '@renderer/context/selection-context'
 import { cn } from '@shared/lib/utils'
+import { useRenderTracker } from '@renderer/lib/perf'
 
 function NotificationItem({
   notification,
@@ -24,6 +25,7 @@ function NotificationItem({
   notification: ApiNotification
   onNavigate: () => void
 }) {
+  useRenderTracker('NotificationItem')
   const markRead = useMarkNotificationRead()
   const { selectAgent, selectSession } = useSelection()
 
@@ -65,6 +67,7 @@ function NotificationItem({
 }
 
 export function NotificationBell() {
+  useRenderTracker('NotificationBell')
   const { data: notifications, isLoading } = useNotifications(20)
   const { data: countData } = useUnreadNotificationCount()
   const markAllRead = useMarkAllNotificationsRead()

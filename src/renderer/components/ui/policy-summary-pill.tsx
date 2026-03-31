@@ -54,13 +54,14 @@ export function PolicySummaryPill({ accountId, toolkit, onClick }: PolicySummary
   const assignedCount = counts.allow + counts.review + counts.block
   const defaultCount = totalScopes - assignedCount
 
-  const hasAnyPolicy = assignedCount > 0 || accountDefault
-
   const segments: Array<{ decision: PolicyDecision; count: number; icon: typeof CircleCheck; color: string; bgColor: string }> = [
     { decision: 'allow', count: counts.allow, icon: CircleCheck, color: 'text-green-600', bgColor: 'bg-green-100 dark:bg-green-900/50' },
     { decision: 'review', count: counts.review, icon: Hand, color: 'text-blue-600', bgColor: 'bg-blue-100 dark:bg-blue-900/50' },
     { decision: 'block', count: counts.block, icon: Ban, color: 'text-orange-600', bgColor: 'bg-orange-100 dark:bg-orange-900/50' },
   ]
+
+  const visibleSegments = segments.filter((s) => s.count > 0)
+  const hasAnyPolicy = visibleSegments.length > 0 || accountDefault
 
   const decisionLabel: Record<string, string> = {
     allow: 'Allow',
@@ -108,9 +109,8 @@ export function PolicySummaryPill({ accountId, toolkit, onClick }: PolicySummary
             )}
           >
             {hasAnyPolicy ? (
-              segments
-                .filter((s) => s.count > 0)
-                .map((seg) => (
+              visibleSegments.length > 0 ? (
+                visibleSegments.map((seg) => (
                   <div
                     key={seg.decision}
                     className={cn('flex items-center gap-1 px-1.5 py-0.5', seg.bgColor)}
@@ -119,6 +119,19 @@ export function PolicySummaryPill({ accountId, toolkit, onClick }: PolicySummary
                     <span className={cn('font-medium tabular-nums', seg.color)}>{seg.count}</span>
                   </div>
                 ))
+              ) : accountDefault ? (
+                (() => {
+                  const seg = segments.find((s) => s.decision === accountDefault.decision)!
+                  return (
+                    <div className={cn('flex items-center gap-1 px-1.5 py-0.5', seg.bgColor)}>
+                      <seg.icon className={cn('h-3 w-3', seg.color)} />
+                      <span className={cn('font-medium', seg.color)}>Default</span>
+                    </div>
+                  )
+                })()
+              ) : (
+                <span>No policies</span>
+              )
             ) : (
               <span>No policies</span>
             )}

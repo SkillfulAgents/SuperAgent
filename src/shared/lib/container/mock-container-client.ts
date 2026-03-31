@@ -104,6 +104,62 @@ export class SimpleTextResponseScenario implements MockScenario {
 }
 
 /**
+ * API error scenario - simulates an LLM provider error (e.g., auth failure, rate limit).
+ * Emits an assistant message with the SDK error code, then a result with error subtype.
+ */
+export class ApiErrorScenario implements MockScenario {
+  constructor(
+    private errorCode: string,
+    private errorMessage: string
+  ) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    // Write user message
+    setTimeout(() => {
+      client.writeJsonlEntry(sessionId, {
+        type: 'user',
+        message: { content: userMessage },
+        timestamp: new Date().toISOString(),
+      })
+    }, 50)
+
+    // Write assistant message with error field (SDK sets this on API failures)
+    setTimeout(() => {
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: this.errorMessage }] },
+        error: this.errorCode,
+        timestamp: new Date().toISOString(),
+      })
+
+      // Emit the assistant message through the stream (with error code)
+      client.emitStreamMessage(sessionId, {
+        type: 'assistant',
+        content: {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: this.errorMessage }] },
+          error: this.errorCode,
+        },
+      })
+    }, 100)
+
+    // Emit error result
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'result',
+        content: {
+          type: 'result',
+          subtype: 'error_during_execution',
+          error: this.errorMessage,
+          is_error: true,
+          errors: [this.errorMessage],
+        },
+      })
+    }, 200)
+  }
+}
+
+/**
  * Delayed text response scenario - adds an initial delay before responding.
  * Useful for E2E tests that need the agent to stay "working" for a while.
  */
@@ -652,6 +708,9 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         input: { url: 'http://localhost:9876/mcp', name: 'Test MCP', reason: 'Need access to test tools' },
       },
     ])],
+    // API error scenarios
+    ['auth error', new ApiErrorScenario('authentication_failed', 'Invalid API key')],
+    ['rate limit error', new ApiErrorScenario('rate_limit', 'Rate limit exceeded, please try again later')],
     // Schedule task scenario
     ['schedule task', new ToolUseScenario(
       'mcp__user-input__schedule_task',

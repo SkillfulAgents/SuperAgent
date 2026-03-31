@@ -359,6 +359,7 @@ The computer-use agent:
 - Use the snapshot tool first before taking screenshots. Snapshot provides a structured representation of the app's UI, which is more reliable for interaction than raw screenshots.
 - The computer-use agent will re-snapshot after every interaction to stay in sync with the UI
 - Menu actions (`computer_menu("File > Save")`) are often more reliable than clicking toolbar buttons
+- Always ungrab the app window when you're done to remove the halo and free resources - only keep it after responding if you are still mid task (like waiting for user input or in the middle of a multi-step interaction)
 
 ## Other Guidelines
 

@@ -1,7 +1,15 @@
 import { apiFetch } from '@renderer/lib/api'
 import { useState } from 'react'
-import { Monitor, Check, Loader2, Clock, ShieldCheck } from 'lucide-react'
+import { Monitor, Check, Loader2, Clock, ShieldCheck, ShieldAlert, ExternalLink } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '@renderer/components/ui/dialog'
 import { cn } from '@shared/lib/utils/cn'
 import { DeclineButton } from './decline-button'
 
@@ -48,6 +56,8 @@ export function ComputerUseRequestItem({
 }: ComputerUseRequestItemProps) {
   const [status, setStatus] = useState<RequestStatus>('pending')
   const [error, setError] = useState<string | null>(null)
+  const [missingPermissions, setMissingPermissions] = useState<{ accessibility: boolean; screen_recording: boolean } | null>(null)
+  const [pendingGrantType, setPendingGrantType] = useState<'once' | 'timed' | 'always' | null>(null)
 
   const handleApprove = async (grantType: 'once' | 'timed' | 'always') => {
     setStatus('submitting')
@@ -63,9 +73,17 @@ export function ComputerUseRequestItem({
         }
       )
 
+      const data = await response.json().catch(() => ({}))
+
+      if (data.missingPermissions) {
+        setMissingPermissions(data.missingPermissions)
+        setPendingGrantType(grantType)
+        setStatus('pending')
+        return
+      }
+
       if (!response.ok) {
-        const data = await response.json()
-        throw new Error(data.error || 'Failed to execute command')
+        throw new Error(data.error || `Request failed (${response.status})`)
       }
 
       setStatus('executed')
@@ -73,6 +91,24 @@ export function ComputerUseRequestItem({
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to execute command')
       setStatus('pending')
+    }
+  }
+
+  const isMac = navigator.platform?.startsWith('Mac') || navigator.userAgent?.includes('Mac')
+
+  const openSystemSettings = (pane: 'accessibility' | 'screen_recording') => {
+    if (isMac) {
+      const url = pane === 'accessibility'
+        ? 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'
+        : 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'
+      window.electronAPI?.openExternal(url)
+    }
+  }
+
+  const retryAfterPermissions = () => {
+    setMissingPermissions(null)
+    if (pendingGrantType) {
+      handleApprove(pendingGrantType)
     }
   }
 
@@ -239,6 +275,65 @@ export function ComputerUseRequestItem({
           </p>
         </div>
       </div>
+
+      <Dialog open={!!missingPermissions} onOpenChange={(open) => { if (!open) setMissingPermissions(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ShieldAlert className="h-5 w-5 text-amber-500" />
+              System Permissions Required
+            </DialogTitle>
+            <DialogDescription>
+              Computer Use needs system permissions to interact with your desktop.
+              {isMac ? ' Please enable the following in System Settings:' : ' Please check your system settings:'}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 py-2">
+            {missingPermissions && !missingPermissions.accessibility && (
+              <div className="flex items-center justify-between rounded-md border p-3">
+                <div>
+                  <p className="font-medium text-sm">Accessibility</p>
+                  <p className="text-xs text-muted-foreground">Required to interact with UI elements</p>
+                </div>
+                {isMac && (
+                  <Button size="sm" variant="outline" onClick={() => openSystemSettings('accessibility')}>
+                    <ExternalLink className="h-3.5 w-3.5 mr-1" />
+                    Open Settings
+                  </Button>
+                )}
+              </div>
+            )}
+            {missingPermissions && !missingPermissions.screen_recording && (
+              <div className="flex items-center justify-between rounded-md border p-3">
+                <div>
+                  <p className="font-medium text-sm">Screen Recording</p>
+                  <p className="text-xs text-muted-foreground">Required to capture screen content</p>
+                </div>
+                {isMac && (
+                  <Button size="sm" variant="outline" onClick={() => openSystemSettings('screen_recording')}>
+                    <ExternalLink className="h-3.5 w-3.5 mr-1" />
+                    Open Settings
+                  </Button>
+                )}
+              </div>
+            )}
+          </div>
+
+          <p className="text-xs text-muted-foreground">
+            After enabling permissions, you may need to restart the app for changes to take effect.
+          </p>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setMissingPermissions(null)}>
+              Cancel
+            </Button>
+            <Button onClick={retryAfterPermissions}>
+              Retry
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

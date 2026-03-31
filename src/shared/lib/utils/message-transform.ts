@@ -31,6 +31,8 @@ export interface TransformedMessage {
     name: string
     email: string
   }
+  /** SDK error code when assistant message failed due to LLM provider error */
+  apiError?: string
 }
 
 export interface TransformedCompactBoundary {
@@ -344,6 +346,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
       content: { text },
       toolCalls,
       createdAt: new Date(entry.timestamp),
+      ...(entry.error && { apiError: entry.error }),
     })
   }
 

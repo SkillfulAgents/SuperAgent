@@ -3,6 +3,8 @@ import { useMessages } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
 import { apiFetch } from '@renderer/lib/api'
+import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
+import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
 import { cn } from '@shared/lib/utils'
 import { AlertTriangle, Monitor, X } from 'lucide-react'
 import { useCallback, useMemo, useState } from 'react'
@@ -20,7 +22,7 @@ interface AgentActivityIndicatorProps {
 
 export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIndicatorProps) {
   const {
-    isActive, error, activeStartTime, isCompacting, activeSubagents, completedSubagents,
+    isActive, error, apiErrorCode, activeStartTime, isCompacting, activeSubagents, completedSubagents,
     pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests,
     pendingFileRequests, pendingRemoteMcpRequests, pendingBrowserInputRequests,
     apiRetry, computerUseApp, computerUseAppIcon,
@@ -94,18 +96,23 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
 
   // Show error if present
   if (error) {
+    const isProviderError = apiErrorCode != null && PROVIDER_ERROR_CODES.has(apiErrorCode)
     return (
       <div className="mx-auto mb-2 w-full max-w-[740px] px-4">
-        <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-3">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="h-4 w-4 text-destructive" />
-            <span className="text-sm font-medium text-destructive">Error</span>
+        {isProviderError ? (
+          <ProviderErrorCard message={error} data-testid="provider-error-card" />
+        ) : (
+          <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-3" data-testid="error-card">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-destructive" />
+              <span className="text-sm font-medium text-destructive">Error</span>
+            </div>
+            <p className="mt-1 text-sm text-destructive/90">{error}</p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Send another message to retry.
+            </p>
           </div>
-          <p className="mt-1 text-sm text-destructive/90">{error}</p>
-          <p className="mt-2 text-xs text-muted-foreground">
-            Send another message to retry.
-          </p>
-        </div>
+        )}
       </div>
     )
   }

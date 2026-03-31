@@ -1,47 +1,47 @@
-import { useEffect } from 'react'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import type { ApiAgent, ApiDiscoverableAgent, ApiAgentTemplateStatus } from '@shared/lib/types/api'
 
+// Module-level flag ensures the background refresh fires only once across all
+// component instances that call useDiscoverableAgents().
+let refreshPromise: Promise<void> | null = null
+
 /**
  * Fetch discoverable agents from skillsets.
- * First returns cached data (fast), then triggers a background refresh
- * and re-fetches to pick up any new agents from remote repos.
+ * The queryFn returns cached data first (fast). On the first call app-wide,
+ * a single background refresh is kicked off; when it resolves with new data
+ * the query cache is updated so every consumer re-renders.
  */
 export function useDiscoverableAgents() {
   const queryClient = useQueryClient()
 
-  const query = useQuery<ApiDiscoverableAgent[]>({
+  return useQuery<ApiDiscoverableAgent[]>({
     queryKey: ['discoverable-agents'],
     queryFn: async () => {
       const res = await apiFetch('/api/agents/discoverable-agents')
       if (!res.ok) throw new Error('Failed to fetch discoverable agents')
       const data = await res.json()
-      return data.agents
+      const agents = data.agents as ApiDiscoverableAgent[]
+
+      // Kick off a single background refresh the first time any component fetches
+      if (!refreshPromise) {
+        refreshPromise = apiFetch('/api/agents/discoverable-agents?refresh=true')
+          .then(async (refreshRes) => {
+            if (refreshRes.ok) {
+              const refreshData = await refreshRes.json()
+              const refreshed = refreshData.agents as ApiDiscoverableAgent[]
+              if (JSON.stringify(refreshed) !== JSON.stringify(agents)) {
+                queryClient.setQueryData(['discoverable-agents'], refreshed)
+              }
+            }
+          })
+          .catch(() => { /* ignore background refresh failures */ })
+      }
+
+      return agents
     },
   })
-
-  // After initial cached data loads, trigger a background refresh
-  useEffect(() => {
-    if (query.data) {
-      apiFetch('/api/agents/discoverable-agents?refresh=true')
-        .then(async (res) => {
-          if (res.ok) {
-            const data = await res.json()
-            const agents = data.agents as ApiDiscoverableAgent[]
-            // Only invalidate if the refresh found different results
-            if (JSON.stringify(agents) !== JSON.stringify(query.data)) {
-              queryClient.setQueryData(['discoverable-agents'], agents)
-            }
-          }
-        })
-        .catch(() => { /* ignore background refresh failures */ })
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query.dataUpdatedAt])
-
-  return query
 }
 
 export function useExportAgentTemplate() {

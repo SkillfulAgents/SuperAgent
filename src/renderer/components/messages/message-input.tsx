@@ -5,6 +5,7 @@ import { getApiBaseUrl } from '@renderer/lib/env'
 import { useSendMessage, useUploadFile, useUploadFolder, useInterruptSession } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { ArrowUp, Loader2, StopCircle, WifiOff } from 'lucide-react'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
@@ -14,6 +15,7 @@ import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from './chat-composer-box'
+import { useRenderTracker } from '@renderer/lib/perf'
 
 interface MessageInputProps {
   sessionId: string
@@ -22,6 +24,7 @@ interface MessageInputProps {
 }
 
 export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInputProps) {
+  useRenderTracker('MessageInput')
   const { canUseAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
   const lastTypingNotification = useRef(0)
@@ -157,7 +160,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
     }
   }
 
-  const isDisabled = sendMessage.isPending || isActive || composer.isUploading || isOffline
+  const isDisabled = sendMessage.isPending || composer.isUploading || isOffline
 
 
   if (isViewOnly) {
@@ -196,7 +199,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
           isOffline
             ? 'No internet connection...'
             : isActive
-              ? 'Agent is responding...'
+              ? 'Type your next message...'
               : 'Type a message...'
         }
         disabled={isDisabled}
@@ -209,44 +212,58 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
             disabled={isDisabled}
           />
         )}
-        rightActions={isActive ? (
-          <Button
-            type="button"
-            variant="destructive"
-            className="h-[34px] px-3"
-            onClick={handleInterrupt}
-            disabled={interruptSession.isPending}
-            data-testid="stop-button"
-          >
-            {interruptSession.isPending ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <>
-                <StopCircle className="mr-2 h-4 w-4" />
-                Stop
-              </>
-            )}
-          </Button>
-        ) : (
+        rightActions={(
           <>
+            {isActive && (
+              <Button
+                type="button"
+                variant="destructive"
+                className="h-[34px] px-3"
+                onClick={handleInterrupt}
+                disabled={interruptSession.isPending}
+                data-testid="stop-button"
+              >
+                {interruptSession.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <>
+                    <StopCircle className="mr-2 h-4 w-4" />
+                    Stop
+                  </>
+                )}
+              </Button>
+            )}
             <VoiceInputButton
               voiceInput={composer.voiceInput}
               message={composer.message}
               disabled={isDisabled}
             />
-            <Button
-              type="submit"
-              size="icon"
-              className="h-[34px] w-[34px]"
-              disabled={!composer.canSubmit || sendMessage.isPending}
-              data-testid="send-button"
-            >
-              {sendMessage.isPending || composer.isUploading ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <ArrowUp className="h-4 w-4" />
-              )}
-            </Button>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span>
+                    <Button
+                      type="submit"
+                      size="icon"
+                      className="h-[34px] w-[34px]"
+                      disabled={!composer.canSubmit || sendMessage.isPending}
+                      data-testid="send-button"
+                    >
+                      {sendMessage.isPending || composer.isUploading ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <ArrowUp className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                {isActive && (
+                  <TooltipContent>
+                    <p>Wait for the agent to finish</p>
+                  </TooltipContent>
+                )}
+              </Tooltip>
+            </TooltipProvider>
           </>
         )}
         footer={(

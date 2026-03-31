@@ -6,7 +6,7 @@ import type { ApiSession } from '@shared/lib/types/api'
 // Re-export for convenience
 export type { ApiSession }
 
-export function useSessions(agentSlug: string | null) {
+export function useSessions(agentSlug: string | null, options?: { staleTime?: number }) {
   return useQuery<ApiSession[]>({
     queryKey: ['sessions', agentSlug],
     queryFn: async () => {
@@ -15,6 +15,7 @@ export function useSessions(agentSlug: string | null) {
       return res.json()
     },
     enabled: !!agentSlug,
+    staleTime: options?.staleTime,
   })
 }
 

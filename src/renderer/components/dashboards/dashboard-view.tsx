@@ -7,6 +7,7 @@ import { useUser } from '@renderer/context/user-context'
 import { getApiBaseUrl, isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
 import { AddToDockDialog } from './add-to-dock-dialog'
 import { PendingAgentReviews } from './pending-agent-reviews'
+import { useRenderTracker } from '@renderer/lib/perf'
 
 interface DashboardViewProps {
   agentSlug: string
@@ -14,6 +15,7 @@ interface DashboardViewProps {
 }
 
 export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) {
+  useRenderTracker('DashboardView')
   const [dockDialogOpen, setDockDialogOpen] = useState(false)
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const { data: agent } = useAgent(agentSlug)

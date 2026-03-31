@@ -91,6 +91,8 @@ interface StreamState {
   pendingScriptRunRequests: ScriptRunRequest[]
   pendingComputerUseRequests: ComputerUseRequest[]
   error: string | null // Error message if session encountered an error
+  /** SDK error code from the LLM provider (e.g., 'authentication_failed', 'rate_limit', 'server_error') */
+  apiErrorCode: string | null
   browserActive: boolean // Whether browser is running for this session
   computerUseApp: string | null // Name of the app currently grabbed for computer use
   computerUseAppIcon: string | null // Base64 PNG icon of the grabbed app
@@ -174,6 +176,7 @@ function getOrCreateEventSource(
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
           error: null,
+          apiErrorCode: null,
           browserActive: current?.browserActive ?? false,
           computerUseApp: current?.computerUseApp ?? null,
           computerUseAppIcon: current?.computerUseAppIcon ?? null,
@@ -217,6 +220,7 @@ function getOrCreateEventSource(
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
           error: null, // Clear any previous error when starting new request
+          apiErrorCode: null,
           browserActive: current?.browserActive ?? false,
           computerUseApp: current?.computerUseApp ?? null,
           computerUseAppIcon: current?.computerUseAppIcon ?? null,
@@ -252,6 +256,9 @@ function getOrCreateEventSource(
           pendingScriptRunRequests: [],
           pendingComputerUseRequests: [],
           error: null,
+          // Preserve apiErrorCode — it was set from the assistant message's error field
+          // and is still valid context for the last turn. Cleared on next session_active.
+          apiErrorCode: current?.apiErrorCode ?? null,
           browserActive: current?.browserActive ?? false,
           computerUseApp: current?.computerUseApp ?? null,
           computerUseAppIcon: current?.computerUseAppIcon ?? null,
@@ -272,10 +279,12 @@ function getOrCreateEventSource(
       }
       else if (data.type === 'session_error') {
         // Session encountered an error
+        // Keep streamingMessage so error text (streamed via stream_delta) stays visible
+        // until the persisted JSONL data arrives (isStreamingMessagePersisted handles dedup).
         streamStates.set(sessionId, {
           isActive: false,
           isStreaming: false,
-          streamingMessage: null,
+          streamingMessage: current?.streamingMessage ?? null,
           streamingToolUse: null,
           pendingSecretRequests: [],
           pendingConnectedAccountRequests: [],
@@ -286,6 +295,7 @@ function getOrCreateEventSource(
           pendingScriptRunRequests: [],
           pendingComputerUseRequests: [],
           error: data.error || 'An unknown error occurred',
+          apiErrorCode: data.apiErrorCode || null,
           browserActive: current?.browserActive ?? false,
           computerUseApp: current?.computerUseApp ?? null,
           computerUseAppIcon: current?.computerUseAppIcon ?? null,
@@ -326,6 +336,7 @@ function getOrCreateEventSource(
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
           error: null,
+          apiErrorCode: null,
           browserActive: current?.browserActive ?? false,
           computerUseApp: current?.computerUseApp ?? null,
           computerUseAppIcon: current?.computerUseAppIcon ?? null,
@@ -354,6 +365,7 @@ function getOrCreateEventSource(
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
           error: current?.error ?? null,
+          apiErrorCode: data.apiErrorCode || current?.apiErrorCode || null,
           browserActive: current?.browserActive ?? false,
           computerUseApp: current?.computerUseApp ?? null,
           computerUseAppIcon: current?.computerUseAppIcon ?? null,
@@ -366,6 +378,16 @@ function getOrCreateEventSource(
           peerUserMessage: current?.peerUserMessage ?? null,
           apiRetry: current?.apiRetry ?? null,
         })
+      }
+      else if (data.type === 'stream_api_error') {
+        // SDK error code arrived for the currently-streaming message — update apiErrorCode
+        // so the streaming text immediately re-renders as a provider error card.
+        if (current) {
+          streamStates.set(sessionId, {
+            ...current,
+            apiErrorCode: data.apiErrorCode || null,
+          })
+        }
       }
       else if (data.type === 'tool_use_start' || data.type === 'tool_use_streaming') {
         streamStates.set(sessionId, {
@@ -386,6 +408,7 @@ function getOrCreateEventSource(
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
           error: current?.error ?? null,
+          apiErrorCode: current?.apiErrorCode ?? null,
           browserActive: current?.browserActive ?? false,
           computerUseApp: current?.computerUseApp ?? null,
           computerUseAppIcon: current?.computerUseAppIcon ?? null,
@@ -415,6 +438,7 @@ function getOrCreateEventSource(
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
           error: current?.error ?? null,
+          apiErrorCode: current?.apiErrorCode ?? null,
           browserActive: current?.browserActive ?? false,
           computerUseApp: current?.computerUseApp ?? null,
           computerUseAppIcon: current?.computerUseAppIcon ?? null,
@@ -443,6 +467,7 @@ function getOrCreateEventSource(
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
           error: current?.error ?? null,
+          apiErrorCode: current?.apiErrorCode ?? null,
           browserActive: current?.browserActive ?? false,
           computerUseApp: current?.computerUseApp ?? null,
           computerUseAppIcon: current?.computerUseAppIcon ?? null,
@@ -828,6 +853,7 @@ function getOrCreateEventSource(
             streamingMessage: null,
             streamingToolUse: null,
             error: null,
+            apiErrorCode: null,
             activeStartTime: null,
           })
           queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
@@ -1030,6 +1056,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     pendingScriptRunRequests: [],
     pendingComputerUseRequests: [],
     error: null,
+    apiErrorCode: null,
     browserActive: false,
     computerUseApp: null,
     computerUseAppIcon: null,
@@ -1083,6 +1110,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
         pendingScriptRunRequests: [],
         pendingComputerUseRequests: [],
         error: null,
+        apiErrorCode: null,
         browserActive: false,
         computerUseApp: null,
         computerUseAppIcon: null,

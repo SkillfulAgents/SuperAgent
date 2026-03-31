@@ -41,6 +41,7 @@ import {
 import {
   listScheduledTasks,
   listPendingScheduledTasks,
+  listPendingScheduledTasksByAgents,
   listCancelledScheduledTasks,
 } from '@shared/lib/services/scheduled-task-service'
 import { db } from '@shared/lib/db'
@@ -63,7 +64,7 @@ import {
   refreshAgentSkills,
 } from '@shared/lib/services/skillset-service'
 import { listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
-import { getSessionIdsWithUnreadNotifications } from '@shared/lib/services/notification-service'
+import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import {
@@ -91,23 +92,35 @@ import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import * as fs from 'fs'
 import { Readable } from 'stream'
+import pLimit from 'p-limit'
 import * as path from 'path'
 import type { ApiAgent } from '@shared/lib/types/api'
 
 /**
  * Enrich an array of ApiAgent objects with summary fields:
  * active/awaiting sessions, last activity, scheduled tasks, dashboards.
- * Uses Promise.all per-agent for parallelism.
+ * Batch DB queries upfront, then parallelize per-agent FS operations.
  */
 async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> {
+  const slugs = agents.map(a => a.slug)
+
+  // Batch DB queries: 2 queries instead of 2*N individual queries
+  const [unreadByAgent, tasksByAgent] = await Promise.all([
+    getUnreadNotificationsByAgents(slugs),
+    listPendingScheduledTasksByAgents(slugs),
+  ])
+
+  const limit = pLimit(5)
   return Promise.all(
-    agents.map(async (agent) => {
-      const [sessionSummary, pendingTasks, artifacts, unreadSessionIds] = await Promise.all([
+    agents.map((agent) => limit(async () => {
+      // Only FS operations remain per-agent (parallelized)
+      const [sessionSummary, artifacts] = await Promise.all([
         getSessionSummary(agent.slug),
-        listPendingScheduledTasks(agent.slug),
         listArtifactsFromFilesystem(agent.slug),
-        getSessionIdsWithUnreadNotifications(agent.slug),
       ])
+
+      const unreadSessionIds = unreadByAgent.get(agent.slug) ?? new Set<string>()
+      const pendingTasks = tasksByAgent.get(agent.slug) ?? []
 
       // Compute session flags from in-memory state (no I/O needed)
       let hasActiveSessions = false
@@ -152,7 +165,7 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
         dashboardNames: artifacts.map((a) => a.name || a.slug),
         dashboardSlugs: artifacts.map((a) => a.slug),
       }
-    })
+    }))
   )
 }
 
@@ -513,8 +526,9 @@ agents.get('/', async (c) => {
         .select({ agentSlug: agentAcl.agentSlug })
         .from(agentAcl)
         .where(eq(agentAcl.userId, userId))
+      const agentLimit = pLimit(10)
       const agents = await Promise.all(
-        rows.map((r) => getAgentWithStatus(r.agentSlug))
+        rows.map((r) => agentLimit(() => getAgentWithStatus(r.agentSlug)))
       )
       agentList = agents.filter((a): a is ApiAgent => a !== null)
     } else {
@@ -2158,6 +2172,34 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
       return c.json({ error: 'method is required for execution' }, 400)
     }
 
+    // In E2E mock mode, skip actual execution — just resolve the input directly
+    if (process.env.E2E_MOCK === 'true') {
+      const resolveResponse = await client.fetch(
+        `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ value: `[mock] ${method} executed successfully` }),
+        }
+      )
+      if (!resolveResponse.ok) {
+        return c.json({ error: 'Failed to resolve computer use request' }, 500)
+      }
+      messagePersister.clearPendingComputerUseRequest(sessionId, toolUseId)
+      return c.json({ success: true })
+    }
+
+    // Check macOS permissions before executing
+    const { executeComputerUseCommand, checkACPermissions } = await import('@shared/lib/computer-use/executor')
+    const { resolveTargetApp } = await import('@shared/lib/computer-use/types')
+    const missingPermissions = await checkACPermissions()
+    if (missingPermissions) {
+      return c.json({
+        success: false,
+        missingPermissions,
+      }, 428)
+    }
+
     // Record the permission grant
     const { computerUsePermissionManager } = await import('@shared/lib/computer-use/permission-manager')
     if (grantType && ['once', 'timed', 'always'].includes(grantType)) {
@@ -2165,8 +2207,6 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
     }
 
     // Execute the computer use command
-    const { executeComputerUseCommand } = await import('@shared/lib/computer-use/executor')
-    const { resolveTargetApp } = await import('@shared/lib/computer-use/types')
     let output: string
     try {
       output = await executeComputerUseCommand(method, params || {})

@@ -18,6 +18,7 @@ import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
+import { useRenderTracker } from '@renderer/lib/perf'
 
 interface AgentLandingProps {
   agent: ApiAgent
@@ -25,6 +26,7 @@ interface AgentLandingProps {
 }
 
 export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
+  useRenderTracker('AgentLanding')
   const { canUseAgent, canAdminAgent } = useUser()
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)

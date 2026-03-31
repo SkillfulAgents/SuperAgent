@@ -1488,4 +1488,29 @@ describe('parseCommandMessage', () => {
       })
     })
   })
+
+  // ============================================================================
+  // apiError field from JSONL entries
+  // ============================================================================
+
+  describe('apiError field', () => {
+    it('includes apiError when JSONL entry has error field', () => {
+      const entry: JsonlMessageEntry = {
+        ...createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'text', text: 'Invalid API key' },
+        ]),
+        error: 'authentication_failed',
+      }
+      const result = transformMessages([entry])
+      expect(asMessage(result[0]).apiError).toBe('authentication_failed')
+    })
+
+    it('omits apiError when JSONL entry has no error field', () => {
+      const entry = createAssistantMessage('uuid-1', 'msg-1', [
+        { type: 'text', text: 'Hello world' },
+      ])
+      const result = transformMessages([entry])
+      expect(asMessage(result[0]).apiError).toBeUndefined()
+    })
+  })
 })

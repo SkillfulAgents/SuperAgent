@@ -7,12 +7,32 @@
 
 import { AC, formatOutput } from '@skillful-agents/agent-computer'
 import * as fs from 'fs'
+import { createRequire } from 'module'
+import * as path from 'path'
+import { platform, arch } from 'os'
 
 let acInstance: AC | null = null
 
+/**
+ * Resolve the ac-core binary path, rewriting asar paths for packaged Electron apps.
+ * In packaged apps, node_modules live inside app.asar (a virtual FS). child_process.spawn
+ * can't execute from inside asar, but asarUnpack extracts binaries to app.asar.unpacked.
+ */
+function resolveACBinaryPath(): string {
+  const require = createRequire(import.meta.url)
+  // Resolve the main entry point, then walk up to the package root
+  const acEntry = require.resolve('@skillful-agents/agent-computer')
+  // Entry is at <pkg>/dist/src/index.js — dirname gives dist/src, walk up 2 levels
+  const acPkgDir = path.resolve(path.dirname(acEntry), '..', '..')
+  const ext = platform() === 'win32' ? '.exe' : ''
+  const key = `${platform()}-${arch() === 'arm64' ? 'arm64' : 'x64'}`
+  const binaryPath = path.join(acPkgDir, 'bin', `ac-core-${key}${ext}`)
+  return binaryPath.replace('app.asar', 'app.asar.unpacked')
+}
+
 function getAC(): AC {
   if (!acInstance) {
-    acInstance = new AC()
+    acInstance = new AC({ binaryPath: resolveACBinaryPath() })
   }
   return acInstance
 }
@@ -233,6 +253,24 @@ function formatResult(method: string, result: unknown): string {
 
   if (typeof result === 'string') return result
   return formatOutput(result, true)
+}
+
+/**
+ * Check macOS accessibility and screen recording permissions via the AC daemon.
+ * Returns which permissions are missing, or null if all are granted.
+ */
+export async function checkACPermissions(): Promise<{ accessibility: boolean; screen_recording: boolean } | null> {
+  try {
+    const ac = getAC()
+    const perms = await ac.permissions()
+    if (perms.accessibility && perms.screen_recording) {
+      return null // All granted
+    }
+    return perms
+  } catch {
+    // If we can't check (daemon not running yet), don't block — let it fail later
+    return null
+  }
 }
 
 /**

@@ -72,20 +72,44 @@ describe('MessageInput', () => {
     expect(screen.getByTestId('stop-button')).toBeInTheDocument()
   })
 
-  it('shows "Agent is responding..." placeholder when active', () => {
+  it('shows "Type your next message..." placeholder when active', () => {
     mockStreamState.isActive = true
     renderWithProviders(
       <MessageInput sessionId="s-1" agentSlug="agent-1" />
     )
-    expect(screen.getByPlaceholderText('Agent is responding...')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Type your next message...')).toBeInTheDocument()
   })
 
-  it('disables input when session is active', () => {
+  it('keeps textarea enabled when session is active (for typing ahead)', () => {
     mockStreamState.isActive = true
     renderWithProviders(
       <MessageInput sessionId="s-1" agentSlug="agent-1" />
     )
-    expect(screen.getByTestId('message-input')).toBeDisabled()
+    expect(screen.getByTestId('message-input')).not.toBeDisabled()
+  })
+
+  it('shows both send and stop buttons when active, with send disabled', () => {
+    mockStreamState.isActive = true
+    renderWithProviders(
+      <MessageInput sessionId="s-1" agentSlug="agent-1" />
+    )
+    expect(screen.getByTestId('stop-button')).toBeInTheDocument()
+    expect(screen.getByTestId('send-button')).toBeInTheDocument()
+    expect(screen.getByTestId('send-button')).toBeDisabled()
+  })
+
+  it('does not submit message while agent is active', async () => {
+    mockStreamState.isActive = true
+    const user = userEvent.setup()
+    renderWithProviders(
+      <MessageInput sessionId="s-1" agentSlug="agent-1" />
+    )
+
+    const input = screen.getByTestId('message-input')
+    await user.type(input, 'Follow up')
+    await user.keyboard('{Enter}')
+
+    expect(mockSendMessage.mutateAsync).not.toHaveBeenCalled()
   })
 
   it('submits message on Enter key', async () => {

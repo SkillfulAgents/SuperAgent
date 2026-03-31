@@ -12,6 +12,6 @@ export function useUsageData(days: number, global?: boolean) {
       if (!res.ok) throw new Error('Failed to fetch usage data')
       return res.json()
     },
-    enabled: false,
+    staleTime: 60_000,
   })
 }

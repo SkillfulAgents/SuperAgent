@@ -238,14 +238,93 @@ describe('check-for-updates', () => {
     })
   })
 
-  // ---- Channel restore ------------------------------------------------------
+  // ---- Channel management ----------------------------------------------------
 
-  it('restores autoUpdater.channel after stable check', async () => {
-    mockAutoUpdater.channel = 'custom-channel'
-    setupReleases({ currentVersion: '0.2.8-rc.1', latestRC: '0.2.9-rc.2', latestStable: '0.2.11' })
+  describe('channel management', () => {
+    it('sets channel to prerelease channel derived from version', async () => {
+      setupReleases({ currentVersion: '0.2.8-rc.1', latestRC: '0.2.12-rc.1', latestStable: '0.2.11' })
 
-    await handlers['check-for-updates']()
+      await handlers['check-for-updates']()
 
-    expect(mockAutoUpdater.channel).toBe('custom-channel')
+      // prerelease wins → channel should be set to "rc" (derived from version)
+      expect(mockAutoUpdater.channel).toBe('rc')
+    })
+
+    it('sets channel to latest when stable wins', async () => {
+      setupReleases({ currentVersion: '0.2.8-rc.1', latestRC: '0.2.9-rc.2', latestStable: '0.2.11' })
+
+      await handlers['check-for-updates']()
+
+      // stable wins → channel stays as "latest" from the stable check
+      expect(mockAutoUpdater.channel).toBe('latest')
+    })
+
+    it('derives channel from beta prerelease tag', async () => {
+      setupReleases({ currentVersion: '0.3.0-beta.1', latestRC: '0.3.0-beta.2', latestStable: '0.2.11' })
+
+      await handlers['check-for-updates']()
+
+      expect(mockAutoUpdater.channel).toBe('beta')
+    })
+
+    it('derives channel from alpha prerelease tag', async () => {
+      setupReleases({ currentVersion: '1.0.0-alpha.3', latestRC: '1.0.0-alpha.5', latestStable: '0.9.0' })
+
+      await handlers['check-for-updates']()
+
+      expect(mockAutoUpdater.channel).toBe('alpha')
+    })
+
+    it('channel is never null after RC user check', async () => {
+      setupReleases({ currentVersion: '0.3.0-rc.1', latestRC: '0.3.0-rc.6', latestStable: '0.2.12' })
+
+      await handlers['check-for-updates']()
+
+      expect(mockAutoUpdater.channel).not.toBeNull()
+      expect(mockAutoUpdater.channel).not.toBeUndefined()
+      expect(typeof mockAutoUpdater.channel).toBe('string')
+    })
+  })
+
+  // ---- Consecutive checks (regression for null channel bug) -----------------
+
+  describe('consecutive checks', () => {
+    it('RC user: second check works after first (no null channel)', async () => {
+      setupReleases({ currentVersion: '0.3.0-rc.1', latestRC: '0.3.0-rc.6', latestStable: '0.2.12' })
+
+      await handlers['check-for-updates']()
+      expect(getStatus()).toMatchObject({ state: 'available', version: '0.3.0-rc.6' })
+
+      // Reset call count but keep the same mock behavior
+      mockAutoUpdater.checkForUpdates.mockClear()
+
+      await handlers['check-for-updates']()
+      // Second check should also find the RC, not fall back to stable
+      expect(getStatus()).toMatchObject({ state: 'available', version: '0.3.0-rc.6' })
+    })
+
+    it('RC user: second check finds correct version even when stable wins', async () => {
+      setupReleases({ currentVersion: '0.2.8-rc.1', latestRC: '0.2.9-rc.2', latestStable: '0.2.11' })
+
+      await handlers['check-for-updates']()
+      expect(getStatus()).toMatchObject({ state: 'available', version: '0.2.11' })
+
+      mockAutoUpdater.checkForUpdates.mockClear()
+
+      await handlers['check-for-updates']()
+      expect(getStatus()).toMatchObject({ state: 'available', version: '0.2.11' })
+      // prerelease check + stable check (stable wins)
+      expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(2)
+    })
+
+    it('RC user: three consecutive checks all succeed', async () => {
+      setupReleases({ currentVersion: '0.3.0-rc.1', latestRC: '0.3.0-rc.6', latestStable: '0.2.12' })
+
+      for (let i = 0; i < 3; i++) {
+        mockAutoUpdater.checkForUpdates.mockClear()
+        await handlers['check-for-updates']()
+        expect(getStatus()).toMatchObject({ state: 'available', version: '0.3.0-rc.6' })
+      }
+    })
   })
 })

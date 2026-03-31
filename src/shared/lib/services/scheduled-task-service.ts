@@ -7,7 +7,7 @@
 
 import { db } from '@shared/lib/db'
 import { scheduledTasks, type ScheduledTask, type NewScheduledTask } from '@shared/lib/db/schema'
-import { eq, and, lte } from 'drizzle-orm'
+import { eq, and, lte, inArray } from 'drizzle-orm'
 import { getNextCronTime, parseAtSyntax } from './schedule-parser'
 import { trackServerEvent } from '../analytics/server-analytics'
 
@@ -122,6 +122,30 @@ export async function listPendingScheduledTasks(agentSlug: string): Promise<Sche
         eq(scheduledTasks.status, 'pending')
       )
     )
+}
+
+/**
+ * Batch version: list pending scheduled tasks for multiple agents in a single query.
+ * Returns a Map from agentSlug to array of pending ScheduledTask.
+ */
+export async function listPendingScheduledTasksByAgents(agentSlugs: string[]): Promise<Map<string, ScheduledTask[]>> {
+  if (agentSlugs.length === 0) return new Map()
+
+  const rows = await db
+    .select()
+    .from(scheduledTasks)
+    .where(and(
+      inArray(scheduledTasks.agentSlug, agentSlugs),
+      eq(scheduledTasks.status, 'pending')
+    ))
+
+  const result = new Map<string, ScheduledTask[]>()
+  for (const row of rows) {
+    let list = result.get(row.agentSlug)
+    if (!list) { list = []; result.set(row.agentSlug, list) }
+    list.push(row)
+  }
+  return result
 }
 
 /**

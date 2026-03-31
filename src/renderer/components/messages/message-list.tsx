@@ -28,6 +28,7 @@ import { ArrowDown, Loader2, WifiOff } from 'lucide-react'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
+import { useRenderTracker } from '@renderer/lib/perf'
 import { useEffect, useRef, useState, useCallback, useMemo, Fragment } from 'react'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import type { ApiMessage, ApiCompactBoundary } from '@shared/lib/types/api'
@@ -60,6 +61,7 @@ interface MessageListProps {
 }
 
 export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendingMessageAppeared }: MessageListProps) {
+  useRenderTracker('MessageList')
   const { data: messages, isLoading } = useMessages(sessionId, agentSlug)
   const deleteMessage = useDeleteMessage()
   const deleteToolCall = useDeleteToolCall()
@@ -119,6 +121,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     isCompacting,
     activeSubagents,
     completedSubagents,
+    apiErrorCode,
     typingUser,
     peerUserMessage,
     pendingSecretRequests: sseSecretRequests,
@@ -742,6 +745,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
               content: { text: streamingMessage },
               toolCalls: [],
               createdAt: new Date(),
+              ...(apiErrorCode && { apiError: apiErrorCode }),
             }}
             isStreaming={isStreaming}
           />
@@ -904,4 +908,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
       )}
     </div>
   )
+}
+
+if (__RENDER_TRACKING__) {
+  (MessageList as any).whyDidYouRender = true
 }

@@ -41,6 +41,7 @@ interface StreamingState {
   slashCommands: SlashCommandInfo[] // Available slash commands from SDK
   isAwaitingInput: boolean // True when session is waiting for user input (e.g., secret, file, question)
   pendingComputerUseRequests: Map<string, { toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string; agentSlug?: string }> // Pending computer use requests awaiting user approval (keyed by toolUseId)
+  lastApiErrorCode: string | null // SDK error code from last assistant message (e.g., 'authentication_failed', 'rate_limit')
 }
 
 // Lazy import to break circular dependency: container-manager -> message-persister
@@ -92,6 +93,7 @@ class MessagePersister {
       slashCommands: [],
       isAwaitingInput: false,
       pendingComputerUseRequests: new Map(),
+      lastApiErrorCode: null,
     })
 
     // Store container client for reconnection checks
@@ -315,12 +317,14 @@ class MessagePersister {
         slashCommands: [],
         isAwaitingInput: false,
         pendingComputerUseRequests: new Map(),
+        lastApiErrorCode: null,
       }
       this.streamingStates.set(sessionId, state)
     }
     state.isActive = true
     state.isInterrupted = false // Reset interrupted flag on new message
     state.isAwaitingInput = false // Reset awaiting input on new message
+    state.lastApiErrorCode = null // Clear previous API error on new message
     if (agentSlug) {
       state.agentSlug = agentSlug
     }
@@ -395,6 +399,22 @@ class MessagePersister {
     switch (content.type) {
       case 'assistant': {
         // Complete assistant message - JSONL is the source of truth
+        // Track SDK error code from assistant message (e.g., 'authentication_failed', 'rate_limit')
+        if (content.error) {
+          state.lastApiErrorCode = content.error
+          // Broadcast the error code immediately so the UI can style the already-streaming
+          // text as a provider error card without waiting for the JSONL refetch.
+          // If the SDK already streamed text, just send the code. Otherwise also send the text.
+          const hasStreamedText = state.currentText.length > 0
+          if (hasStreamedText) {
+            this.broadcastToSSE(sessionId, { type: 'stream_api_error', apiErrorCode: content.error })
+          } else {
+            const errorText = this.extractAssistantText(content)
+            if (errorText) {
+              this.broadcastToSSE(sessionId, { type: 'stream_delta', text: errorText, apiErrorCode: content.error })
+            }
+          }
+        }
         // Clear currentText since the message is now persisted
         state.currentText = ''
         // Broadcast refresh event so frontend can refetch
@@ -536,10 +556,13 @@ class MessagePersister {
         // Check if this is an error result
         if (content.subtype === 'error_during_execution' || content.subtype === 'error') {
           const errorMessage = content.error || content.message || 'An error occurred during execution'
-          console.error(`[MessagePersister] Session ${sessionId} error:`, errorMessage)
+          // Use SDK error code from the preceding assistant message (e.g., 'authentication_failed', 'rate_limit')
+          const apiErrorCode = state.lastApiErrorCode || null
+          console.error(`[MessagePersister] Session ${sessionId} error:`, errorMessage, apiErrorCode ? `(${apiErrorCode})` : '')
           this.broadcastToSSE(sessionId, {
             type: 'session_error',
             error: errorMessage,
+            apiErrorCode,
             isActive: false
           })
           // Also broadcast globally
@@ -548,6 +571,7 @@ class MessagePersister {
             sessionId,
             agentSlug: state.agentSlug,
             error: errorMessage,
+            apiErrorCode,
             isActive: false,
           })
           // If the error is fatal (e.g., OOM), request container stop
@@ -1813,6 +1837,20 @@ class MessagePersister {
     } catch (error) {
       console.error('Failed to handle tool results:', error)
     }
+  }
+
+  // Extract text content from an SDK assistant message (handles string and content block array formats)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private extractAssistantText(content: any): string {
+    const msgContent = content.message?.content
+    if (typeof msgContent === 'string') return msgContent
+    if (Array.isArray(msgContent)) {
+      return msgContent
+        .filter((b: { type: string }) => b.type === 'text')
+        .map((b: { text: string }) => b.text)
+        .join('')
+    }
+    return ''
   }
 }
 
