@@ -67,10 +67,16 @@ export function registerUpdateHandlers() {
       // prerelease channel (e.g. "rc"), so it misses newer stable releases.
       // Check both channels and offer whichever version is highest.
 
+      // Derive the prerelease channel from the current version (e.g. "rc" from "0.3.0-rc.1").
+      // We must set it explicitly because autoUpdater.channel can be null when never set,
+      // and assigning null back after changing it corrupts the internal state.
+      const preChannel = app.getVersion().match(/-([a-zA-Z]+)/)?.[1] ?? 'rc'
+
       // 1. Check prerelease channel
       let preVer: string | null = null
       try {
         autoUpdater.allowPrerelease = true
+        autoUpdater.channel = preChannel
         const result = await autoUpdater.checkForUpdates()
         preVer = result?.updateInfo?.version ?? null
       } catch {
@@ -79,7 +85,6 @@ export function registerUpdateHandlers() {
 
       // 2. Check stable channel
       let stableVer: string | null = null
-      const prevChannel = autoUpdater.channel
       try {
         suppressErrors = true
         autoUpdater.allowPrerelease = false
@@ -93,7 +98,6 @@ export function registerUpdateHandlers() {
         // stable check failed or timed out
       } finally {
         suppressErrors = false
-        autoUpdater.channel = prevChannel
       }
 
       // 3. Pick the higher version. The last checkForUpdates() call determines
@@ -101,6 +105,7 @@ export function registerUpdateHandlers() {
       //    the prerelease version wins (stable was the last call above).
       if (preVer && (!stableVer || semverGt(preVer, stableVer))) {
         autoUpdater.allowPrerelease = true
+        autoUpdater.channel = preChannel
         await autoUpdater.checkForUpdates()
       }
 
