@@ -29,9 +29,11 @@ vi.mock('os', () => ({
   default: {
     homedir: vi.fn(() => 'C:\\Users\\testuser'),
     tmpdir: vi.fn(() => 'C:\\Users\\testuser\\AppData\\Local\\Temp'),
+    arch: vi.fn(() => 'x64'),
   },
   homedir: vi.fn(() => 'C:\\Users\\testuser'),
   tmpdir: vi.fn(() => 'C:\\Users\\testuser\\AppData\\Local\\Temp'),
+  arch: vi.fn(() => 'x64'),
 }))
 
 vi.mock('./base-container-client', () => ({
