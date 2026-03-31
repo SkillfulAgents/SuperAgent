@@ -7,12 +7,29 @@
 
 import { AC, formatOutput } from '@skillful-agents/agent-computer'
 import * as fs from 'fs'
+import { createRequire } from 'module'
+import * as path from 'path'
+import { platform, arch } from 'os'
 
 let acInstance: AC | null = null
 
+/**
+ * Resolve the ac-core binary path, rewriting asar paths for packaged Electron apps.
+ * In packaged apps, node_modules live inside app.asar (a virtual FS). child_process.spawn
+ * can't execute from inside asar, but asarUnpack extracts binaries to app.asar.unpacked.
+ */
+function resolveACBinaryPath(): string {
+  const require = createRequire(import.meta.url)
+  const acPkgDir = path.dirname(require.resolve('@skillful-agents/agent-computer/package.json'))
+  const ext = platform() === 'win32' ? '.exe' : ''
+  const key = `${platform()}-${arch() === 'arm64' ? 'arm64' : 'x64'}`
+  const binaryPath = path.join(acPkgDir, 'bin', `ac-core-${key}${ext}`)
+  return binaryPath.replace('app.asar', 'app.asar.unpacked')
+}
+
 function getAC(): AC {
   if (!acInstance) {
-    acInstance = new AC()
+    acInstance = new AC({ binaryPath: resolveACBinaryPath() })
   }
   return acInstance
 }

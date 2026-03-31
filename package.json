@@ -150,6 +150,9 @@
     "files": [
       "dist/**/*"
     ],
+    "asarUnpack": [
+      "node_modules/@skillful-agents/agent-computer/bin/**"
+    ],
     "extraResources": [
       {
         "from": "src/shared/lib/db/migrations",
