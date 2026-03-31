@@ -341,18 +341,6 @@ export function ConnectedAccountRequestItem({
                 Selected accounts will be linked to this agent for future use.
               </p>
             </div>
-            {accounts.length === 0 && (
-              <Button
-                onClick={() => handleDecline()}
-                disabled={status !== 'pending'}
-                size="sm"
-                variant="ghost"
-                className="h-8 w-8 shrink-0 p-0 text-foreground hover:bg-muted"
-                aria-label="Dismiss access request"
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            )}
           </div>
 
           {/* Account Selection */}
@@ -416,21 +404,6 @@ export function ConnectedAccountRequestItem({
                   </div>
                   <p>No {(provider?.displayName || toolkit).replace(/\b\w/g, (char) => char.toUpperCase())} account connected yet.</p>
                 </div>
-                <Button
-                  onClick={handleConnectNew}
-                  disabled={status !== 'pending'}
-                  size="sm"
-                  className="min-w-24 bg-foreground text-background hover:bg-foreground/90"
-                >
-                  {status === 'connecting' ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : null}
-                  {status === 'connecting' ? (
-                    <span className="ml-1">Connect</span>
-                  ) : (
-                    'Connect'
-                  )}
-                </Button>
               </div>
             </div>
           )}
@@ -477,6 +450,33 @@ export function ConnectedAccountRequestItem({
                   <span className="ml-1">Allow Access{selectedAccountIds.size > 0 ? ` (${selectedAccountIds.size})` : ''}</span>
               ) : null}
             </Button>
+            </div>
+          )}
+
+          {accounts.length === 0 && (
+            <div className="flex justify-end gap-2">
+              <DeclineButton
+                onDecline={handleDecline}
+                disabled={status !== 'pending' && status !== 'connecting'}
+                className="border-border text-foreground hover:bg-muted"
+              />
+              <Button
+                onClick={handleConnectNew}
+                disabled={status !== 'pending'}
+                size="sm"
+                className="min-w-24 bg-foreground text-background hover:bg-foreground/90"
+              >
+                {status === 'connecting' ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Plus className="h-4 w-4" />
+                )}
+                {status === 'connecting' ? (
+                  <span className="ml-1">Connect</span>
+                ) : (
+                  'Connect'
+                )}
+              </Button>
             </div>
           )}
 

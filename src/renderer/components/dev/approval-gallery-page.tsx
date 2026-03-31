@@ -389,6 +389,87 @@ export function ApprovalGalleryPage() {
                   onComplete={() => {}}
                 />
               </ExampleCard>
+
+              <ExampleCard
+                title="Remote MCP: waiting for authorization"
+                description="Gallery-only example that forces the OAuth pending state."
+                fieldNames={['name', 'url', 'reason', 'authHint', 'debugInitialStatus', 'debugServers[]']}
+              >
+                <RemoteMcpRequestItem
+                  toolUseId="remote-mcp-registering"
+                  url="https://mcp.stripe.com/"
+                  name="Stripe"
+                  reason="Connect to Stripe's MCP server to access payments, customers, subscriptions, and invoices."
+                  authHint="oauth"
+                  debugInitialStatus="oauth_pending"
+                  debugSelectedMcpId="debug-granola"
+                  debugServers={[
+                    {
+                      id: 'debug-granola',
+                      name: 'Granola',
+                      url: 'https://mcp.granola.ai/mcp',
+                      authType: 'oauth',
+                      status: 'active',
+                      tools: Array.from({ length: 5 }, (_, index) => ({ name: `tool-${index + 1}` })),
+                    },
+                    {
+                      id: 'debug-notion',
+                      name: 'Notion',
+                      url: 'https://mcp.notion.com/mcp',
+                      authType: 'oauth',
+                      status: 'active',
+                      tools: Array.from({ length: 14 }, (_, index) => ({ name: `tool-${index + 1}` })),
+                    },
+                  ]}
+                  sessionId={DEMO_SESSION_ID}
+                  agentSlug={DEMO_AGENT_SLUG}
+                  onComplete={() => {}}
+                />
+              </ExampleCard>
+
+              <ExampleCard
+                title="Remote MCP: connected selector"
+                description="Connected-state MCP approval with the single-select dropdown and selected MCP details."
+                fieldNames={['name', 'url', 'reason', 'authHint', 'debugServers[]', 'debugSelectedMcpId']}
+              >
+                <RemoteMcpRequestItem
+                  toolUseId="remote-mcp-connected-selector"
+                  url="https://mcp.granola.ai/mcp"
+                  name="Granola"
+                  reason="Connect to Granola's MCP server to access notes, meetings, and related workspace context."
+                  authHint="oauth"
+                  debugSelectedMcpId="debug-granola"
+                  debugServers={[
+                    {
+                      id: 'debug-granola',
+                      name: 'Granola',
+                      url: 'https://mcp.granola.ai/mcp',
+                      authType: 'oauth',
+                      status: 'active',
+                      tools: Array.from({ length: 5 }, (_, index) => ({ name: `tool-${index + 1}` })),
+                    },
+                    {
+                      id: 'debug-notion',
+                      name: 'Notion',
+                      url: 'https://mcp.notion.com/mcp',
+                      authType: 'oauth',
+                      status: 'active',
+                      tools: Array.from({ length: 14 }, (_, index) => ({ name: `tool-${index + 1}` })),
+                    },
+                    {
+                      id: 'debug-stripe',
+                      name: 'Stripe',
+                      url: 'https://mcp.stripe.com/',
+                      authType: 'oauth',
+                      status: 'active',
+                      tools: Array.from({ length: 12 }, (_, index) => ({ name: `tool-${index + 1}` })),
+                    },
+                  ]}
+                  sessionId={DEMO_SESSION_ID}
+                  agentSlug={DEMO_AGENT_SLUG}
+                  onComplete={() => {}}
+                />
+              </ExampleCard>
             </div>
           </TabsContent>
 
