@@ -87,6 +87,13 @@ Use this to start browsing a website. The browser preserves cookies/sessions via
     url: z.string().describe('The URL to navigate to'),
   },
   async (args) => {
+    // Warn if the agent is trying to open a localhost URL — the browser runs outside
+    // the container and cannot reach servers running inside it (e.g. dashboards).
+    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(args.url)
+    const localhostWarning = isLocalhost
+      ? '\n\nWARNING: This is a localhost URL. The browser runs outside the container and cannot access servers running inside it. If you are trying to view a dashboard, stop — the user can already see dashboards through the Superagent UI. Use get_dashboard_logs to debug any issues instead.'
+      : ''
+
     const result = await browserFetch('open', { url: args.url })
     if (!result.success) return errorResult(result.error!)
     const data = result.data as Record<string, unknown> | undefined
@@ -96,7 +103,7 @@ Use this to start browsing a website. The browser preserves cookies/sessions via
         content: [
           {
             type: 'text' as const,
-            text: `Switched to existing tab ${data.tabIndex} which already has ${data.url} open. Use browser_snapshot to see the page content.`,
+            text: `Switched to existing tab ${data.tabIndex} which already has ${data.url} open. Use browser_snapshot to see the page content.${localhostWarning}`,
           },
         ],
       }
@@ -106,7 +113,7 @@ Use this to start browsing a website. The browser preserves cookies/sessions via
       content: [
         {
           type: 'text' as const,
-          text: `Browser opened and navigating to ${args.url}. The user can see the browser live. Use browser_snapshot to see the page content.`,
+          text: `Browser opened and navigating to ${args.url}. The user can see the browser live. Use browser_snapshot to see the page content.${localhostWarning}`,
         },
       ],
     }
