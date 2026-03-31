@@ -14,6 +14,8 @@ import { inputManager } from './input-manager';
 import { dashboardManager } from './dashboard-manager';
 import { tabManager } from './tab-manager';
 
+import { getEditingCommands } from './cdp-editing-commands';
+
 // Global error handlers to prevent crashes from AbortError during interrupts
 // The SDK throws AbortError when queries are aborted, which can propagate uncaught
 process.on('uncaughtException', (error: Error) => {
@@ -1448,6 +1450,8 @@ let cdpScreencast: {
   cdpSessionId: string | null;
   /** Whether the viewer auto-follows the agent's active tab */
   autoFollow: boolean;
+  /** Pending CDP message IDs for get_selection requests */
+  pendingSelections: Set<number>;
 } | null = null;
 
 /** Derive the CDP HTTP endpoint from the current browser state */
@@ -1610,7 +1614,7 @@ function cdpMsg(state: NonNullable<typeof cdpScreencast>, method: string, params
 function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket, requiresSession = false) {
   const cdpWs = new WebSocket(wsUrl);
   const prevAutoFollow = cdpScreencast?.autoFollow ?? true;
-  cdpScreencast = { clientWs, cdpWs, currentTargetId: targetId, msgId: 0, lastDeviceWidth: 0, lastDeviceHeight: 0, cdpSessionId: null, autoFollow: prevAutoFollow };
+  cdpScreencast = { clientWs, cdpWs, currentTargetId: targetId, msgId: 0, lastDeviceWidth: 0, lastDeviceHeight: 0, cdpSessionId: null, autoFollow: prevAutoFollow, pendingSelections: new Set() };
   const state = cdpScreencast;
 
   cdpWs.on('open', () => {
@@ -1671,6 +1675,12 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
             type: 'page_loading',
             loading: msg.method === 'Page.frameStartedLoading',
           }));
+        }
+      } else if (msg.id && state.pendingSelections.has(msg.id)) {
+        state.pendingSelections.delete(msg.id);
+        const text = msg.result?.result?.value;
+        if (typeof text === 'string' && text && clientWs.readyState === WebSocket.OPEN) {
+          clientWs.send(JSON.stringify({ type: 'selection_result', text }));
         }
       }
     } catch { /* ignore */ }
@@ -1875,15 +1885,51 @@ function handleBrowserStreamConnection(ws: WebSocket) {
             key: data.key,
             code: data.code,
             text: data.text,
+            windowsVirtualKeyCode: data.keyCode || 0,
+            nativeVirtualKeyCode: data.keyCode || 0,
             modifiers: data.modifiers || 0,
+          }));
+        } else if (data.type === 'input_press') {
+          // Playwright-style key press: look up editing commands from Playwright's
+          // macEditingCommands map and include them in the CDP event. This is required
+          // for Chrome to trigger keyboard shortcuts (selectAll, cut, undo, etc.) via CDP.
+          const mods = data.modifiers || 0;
+          const isPrintable = data.key && data.key.length === 1;
+          const commands = getEditingCommands(data.code, mods);
+
+          cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Input.dispatchKeyEvent', {
+            type: isPrintable ? 'keyDown' : 'rawKeyDown',
+            key: data.key, code: data.code,
+            text: isPrintable ? data.key : '',
+            unmodifiedText: isPrintable ? data.key : '',
+            windowsVirtualKeyCode: data.keyCode || 0,
+            nativeVirtualKeyCode: data.keyCode || 0,
+            modifiers: mods,
+            commands,
+          }));
+
+          cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Input.dispatchKeyEvent', {
+            type: 'keyUp', key: data.key, code: data.code,
+            windowsVirtualKeyCode: data.keyCode || 0,
+            nativeVirtualKeyCode: data.keyCode || 0,
+            modifiers: mods,
           }));
         } else if (data.type === 'input_paste' && data.text) {
           cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Input.insertText', {
             text: data.text,
           }));
+        } else if (data.type === 'get_selection') {
+          // Capture the message ID before cdpMsg increments it, to avoid re-parsing
+          const msgId = cdpScreencast.msgId + 1;
+          const msgStr = cdpMsg(cdpScreencast, 'Runtime.evaluate', {
+            expression: 'window.getSelection().toString()',
+            returnByValue: true,
+          });
+          cdpScreencast.pendingSelections.add(msgId);
+          cdpScreencast.cdpWs.send(msgStr);
         }
       }
-    } catch { /* ignore */ }
+    } catch { /* ignore parse errors for non-JSON frames */ }
   });
 
   ws.on('close', () => {

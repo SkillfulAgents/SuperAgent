@@ -297,6 +297,8 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
         } else if (data.type === 'tab_switched') {
           setAgentActiveTargetId(data.targetId)
           setViewingTargetId(data.targetId)
+        } else if (data.type === 'selection_result' && data.text) {
+          navigator.clipboard.writeText(data.text).catch(() => {})
         }
       } catch {
         // Ignore parse errors for binary frames
@@ -357,6 +359,18 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
     }
   }, [tabs, viewingTargetId, agentActiveTargetId])
 
+  // Prevent wheel events from bubbling to parent (must use native listener with passive: false)
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas || isViewOnly) return
+    const handler = (e: WheelEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+    }
+    canvas.addEventListener('wheel', handler, { passive: false })
+    return () => canvas.removeEventListener('wheel', handler)
+  }, [isViewOnly])
+
   // --- Canvas input handlers ---
   const mapCoordinates = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -401,10 +415,14 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
     return flags
   }, [])
 
+  const pressedButtonRef = useRef<string>('none')
+
   const handleMouseDown = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       const { x, y } = mapCoordinates(e)
-      sendMessage({ type: 'input_mouse', eventType: 'mousePressed', x, y, button: buttonName(e.button), clickCount: 1, modifiers: modifierFlags(e) })
+      const btn = buttonName(e.button)
+      pressedButtonRef.current = btn
+      sendMessage({ type: 'input_mouse', eventType: 'mousePressed', x, y, button: btn, clickCount: 1, modifiers: modifierFlags(e) })
     },
     [mapCoordinates, sendMessage, buttonName, modifierFlags]
   )
@@ -412,6 +430,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
   const handleMouseUp = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       const { x, y } = mapCoordinates(e)
+      pressedButtonRef.current = 'none'
       sendMessage({ type: 'input_mouse', eventType: 'mouseReleased', x, y, button: buttonName(e.button), modifiers: modifierFlags(e) })
     },
     [mapCoordinates, sendMessage, buttonName, modifierFlags]
@@ -420,7 +439,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
   const handleMouseMove = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       const { x, y } = mapCoordinates(e)
-      sendMessage({ type: 'input_mouse', eventType: 'mouseMoved', x, y, button: 'none', modifiers: modifierFlags(e) })
+      sendMessage({ type: 'input_mouse', eventType: 'mouseMoved', x, y, button: pressedButtonRef.current, modifiers: modifierFlags(e) })
     },
     [mapCoordinates, sendMessage, modifierFlags]
   )
@@ -442,28 +461,6 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
     [mapCoordinates, sendMessage, modifierFlags]
   )
 
-  const pressKeyViaHttp = useCallback(
-    (key: string, mods: number) => {
-      // Build Playwright-style combo: "Meta+Shift+ArrowLeft", "Control+a", etc.
-      const parts: string[] = []
-      if (mods & 2) parts.push('Control')
-      if (mods & 1) parts.push('Alt')
-      if (mods & 4) parts.push('Meta')
-      if (mods & 8) parts.push('Shift')
-      parts.push(key)
-      const combo = parts.join('+')
-
-      apiFetch(`/api/agents/${agentSlug}/browser/press`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId, key: combo }),
-      }).catch(() => {
-        // Ignore errors — fire-and-forget for responsiveness
-      })
-    },
-    [agentSlug, sessionId]
-  )
-
   const handlePaste = useCallback(
     (e: React.ClipboardEvent<HTMLCanvasElement>) => {
       e.preventDefault()
@@ -477,47 +474,77 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLCanvasElement>) => {
-      // Let paste shortcut through so the native paste event fires
+      // Cmd+V / Ctrl+V: read host clipboard and paste into remote browser
       if (e.key === 'v' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+        e.preventDefault()
+        navigator.clipboard.readText().then(text => {
+          if (text) sendMessage({ type: 'input_paste', text })
+        }).catch(() => {})
+        return
+      }
+
+      // Cmd+C / Ctrl+C: copy selected text from remote browser to host clipboard
+      if (e.key === 'c' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+        e.preventDefault()
+        sendMessage({ type: 'get_selection' })
+        return
+      }
+
+      // Cmd+X / Ctrl+X: copy selection to host clipboard, then cut in remote browser
+      if (e.key === 'x' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+        e.preventDefault()
+        sendMessage({ type: 'get_selection' })
+        sendMessage({ type: 'input_press', key: e.key, code: e.code, keyCode: e.keyCode, modifiers: modifierFlags(e) })
         return
       }
 
       e.preventDefault()
-      const printable = e.key.length === 1
 
-      if (printable) {
-        // Printable characters: send via WebSocket stream (low latency, works via CDP text field)
+      // Pure modifier keys alone: skip — they're communicated via the modifiers bitmask
+      if (MODIFIER_KEYS.has(e.key)) return
+
+      const printable = e.key.length === 1
+      const hasCommandModifier = e.metaKey || e.ctrlKey
+
+      if (printable && !hasCommandModifier) {
+        // Printable characters without modifiers: send via WebSocket stream (low latency)
         sendMessage({
           type: 'input_keyboard',
           eventType: 'keyDown',
           key: e.key,
           code: e.code,
           text: e.key,
+          keyCode: e.keyCode,
           modifiers: modifierFlags(e),
         })
-      } else if (!MODIFIER_KEYS.has(e.key)) {
-        // Non-printable, non-modifier keys (Backspace, Arrow, Enter, Tab, Escape, etc.):
-        // Use HTTP press endpoint which goes through Playwright's keyboard API
-        // (properly sets windowsVirtualKeyCode in CDP, unlike the stream path)
-        pressKeyViaHttp(e.key, modifierFlags(e))
+      } else {
+        // Modifier combos (Cmd+A, Ctrl+Z) and non-printable keys (Backspace, Delete, arrows):
+        // Send via input_press which includes Playwright's editing commands in the CDP event
+        // (e.g. 'selectAll' for Cmd+A). Goes through WebSocket so it targets the viewed tab.
+        sendMessage({
+          type: 'input_press',
+          key: e.key,
+          code: e.code,
+          keyCode: e.keyCode,
+          modifiers: modifierFlags(e),
+        })
       }
-      // Pure modifier keys (Shift, Ctrl, etc.) alone: ignore — they're included
-      // in the combo string when a non-modifier key is pressed with them.
     },
-    [sendMessage, modifierFlags, pressKeyViaHttp]
+    [sendMessage, modifierFlags]
   )
 
   const handleKeyUp = useCallback(
     (e: React.KeyboardEvent<HTMLCanvasElement>) => {
       e.preventDefault()
-      // Only send keyUp for printable characters via stream.
-      // Non-printable keys use press (which sends both down+up).
-      if (e.key.length === 1) {
+      // Only send keyUp for printable characters without modifiers (stream path).
+      // Modifier combos and non-printable keys use input_press which sends its own keyUp.
+      if (e.key.length === 1 && !e.metaKey && !e.ctrlKey) {
         sendMessage({
           type: 'input_keyboard',
           eventType: 'keyUp',
           key: e.key,
           code: e.code,
+          keyCode: e.keyCode,
           modifiers: modifierFlags(e),
         })
       }
@@ -671,6 +698,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
             onKeyDown={isViewOnly ? undefined : handleKeyDown}
             onKeyUp={isViewOnly ? undefined : handleKeyUp}
             onPaste={isViewOnly ? undefined : handlePaste}
+            onContextMenu={(e) => e.preventDefault()}
           />
           {!connected && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/50">
