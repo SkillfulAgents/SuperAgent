@@ -1,24 +1,25 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "Verified agent responds correctly to math question with expected answer containing \"4\"",
+  "reason": "Successfully navigated to localhost, found agent QA-20260331-163003-scfa, verified status as \"idle\", sent message \"Hello! What is 2+2?\", waited for response, and verified response contains \"4\".",
   "steps": [
-    "Navigated to http://localhost:47891 - Page loaded successfully with sidebar showing multiple agents",
-    "Clicked on \"QA-20260331-011722-fagf\" agent in sidebar - Agent page opened with landing chat interface",
-    "Verified agent status is \"idle\" - Status displayed as blue dot next to agent name in header",
-    "Typed and sent message \"Hello! What is 2+2?\" - Message successfully submitted to agent",
-    "Waited up to 3 minutes for response - Agent responded within 2 seconds with answer \"4\"",
-    "Verified response mentions \"4\" - Screenshot confirms agent response displays \"4\" as the answer to the math question"
+    "Navigated to http://localhost:47891 - Page loaded successfully with Super Agent title and sidebar visible containing multiple agents including QA-20260331-163003-scfa.",
+    "Found and clicked agent \"QA-20260331-163003-scfa\" in sidebar - Agent detail page opened, showing agent status as \"idle\" and a message composition area with the heading \"Start a conversation with QA-20260331-163003-scfa\".",
+    "Verified agent status is \"idle\" - Agent status displayed as \"idle\" in the UI, which meets the requirement (running or idle).",
+    "Sent message \"Hello! What is 2+2?\" by typing in message input and clicking Send button - Message was successfully submitted, agent status changed to \"working\", and a new session \"Math Basics Quick Question\" was created.",
+    "Waited up to 3 minutes for response - Agent responded within 2 seconds with the answer \"4\" as shown in the chat view with \"Worked for 2s\" indicator.",
+    "Verified response mentions \"4\" - The agent response clearly displays the number \"4\" as the answer to the math question.",
+    "Took screenshot capturing the successful response - Screenshot saved showing the full chat interface with user message \"Hello! What is 2+2?\" and agent response \"4\"."
   ],
   "bugs": [],
-  "durationMs": 74168,
-  "sessionId": "428b6ebf-564f-4cab-a18e-e44135aa1bfa",
+  "durationMs": 73863,
+  "sessionId": "aa4536e1-c2f5-4cec-ab54-9c4a3d9ba9c4",
   "cost": {
-    "inputTokens": 234,
-    "outputTokens": 2346,
-    "cacheCreationTokens": 75725,
-    "cacheReadTokens": 676698,
+    "inputTokens": 207,
+    "outputTokens": 2112,
+    "cacheCreationTokens": 70319,
+    "cacheReadTokens": 566364,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.17429
+    "totalCostUsd": 0.155302
   }
 }
