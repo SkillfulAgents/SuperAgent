@@ -195,10 +195,7 @@
       "icon": "build/icon.icon",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
-      "notarize": true,
-      "extendInfo": {
-        "AppleShowScrollBars": "WhenScrolling"
-      }
+      "notarize": true
     },
     "win": {
       "target": [

@@ -62,6 +62,12 @@ import { setupServerHandlers } from '@shared/lib/startup'
 // Set the app name (shows in macOS menu bar instead of "Electron" during dev)
 app.name = 'SuperAgent'
 
+// Force overlay scrollbars so macOS "always show scrollbars" setting doesn't
+// cause ugly permanent scrollbars in the app
+if (process.platform === 'darwin') {
+  const { systemPreferences } = require('electron')
+  systemPreferences.setUserDefault('AppleShowScrollBars', 'string', 'WhenScrolling')
+}
 
 // Use a more exotic default port to avoid conflicts
 const DEFAULT_API_PORT = 47891
