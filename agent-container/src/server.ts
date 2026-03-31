@@ -14,34 +14,7 @@ import { inputManager } from './input-manager';
 import { dashboardManager } from './dashboard-manager';
 import { tabManager } from './tab-manager';
 
-// Load Playwright's macEditingCommands for CDP keyboard shortcut support.
-// Chrome's CDP Input.dispatchKeyEvent needs a `commands` array to trigger editing
-// actions (selectAll, cut, undo, etc.) on all platforms.
-let macEditingCommands: Record<string, string | string[]> = {};
-try {
-  // playwright-core is a nested dep of agent-browser (installed globally in the container)
-  const mod = require('/usr/lib/node_modules/agent-browser/node_modules/playwright-core/lib/server/macEditingCommands');
-  macEditingCommands = mod.macEditingCommands || {};
-} catch {
-  console.warn('[Browser] Could not load macEditingCommands from playwright-core — keyboard shortcuts in browser preview may not work');
-}
-
-/** Look up CDP editing commands for a key combo, matching Playwright's crInput._commandsForCode() */
-function getEditingCommands(code: string, modifiers: number): string[] {
-  const parts: string[] = [];
-  if (modifiers & 8) parts.push('Shift');
-  if (modifiers & 2) parts.push('Control');
-  if (modifiers & 1) parts.push('Alt');
-  if (modifiers & 4) parts.push('Meta');
-  parts.push(code);
-  const shortcut = parts.join('+');
-  let cmds = macEditingCommands[shortcut];
-  if (!cmds) return [];
-  if (typeof cmds === 'string') cmds = [cmds];
-  return cmds
-    .filter((c: string) => !c.startsWith('insert'))
-    .map((c: string) => c.endsWith(':') ? c.slice(0, -1) : c);
-}
+import { getEditingCommands } from './cdp-editing-commands';
 
 // Global error handlers to prevent crashes from AbortError during interrupts
 // The SDK throws AbortError when queries are aborted, which can propagate uncaught
@@ -1946,11 +1919,12 @@ function handleBrowserStreamConnection(ws: WebSocket) {
             text: data.text,
           }));
         } else if (data.type === 'get_selection') {
+          // Capture the message ID before cdpMsg increments it, to avoid re-parsing
+          const msgId = cdpScreencast.msgId + 1;
           const msgStr = cdpMsg(cdpScreencast, 'Runtime.evaluate', {
             expression: 'window.getSelection().toString()',
             returnByValue: true,
           });
-          const msgId = JSON.parse(msgStr).id;
           cdpScreencast.pendingSelections.add(msgId);
           cdpScreencast.cdpWs.send(msgStr);
         }

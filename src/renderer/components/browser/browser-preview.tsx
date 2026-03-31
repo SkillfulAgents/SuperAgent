@@ -474,8 +474,12 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLCanvasElement>) => {
-      // Let paste shortcut through so the native paste event fires
+      // Cmd+V / Ctrl+V: read host clipboard and paste into remote browser
       if (e.key === 'v' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+        e.preventDefault()
+        navigator.clipboard.readText().then(text => {
+          if (text) sendMessage({ type: 'input_paste', text })
+        }).catch(() => {})
         return
       }
 
