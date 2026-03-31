@@ -95,7 +95,12 @@ Use this to start browsing a website. The browser preserves cookies/sessions via
       : ''
 
     const result = await browserFetch('open', { url: args.url })
-    if (!result.success) return errorResult(result.error!)
+    if (!result.success) {
+      return {
+        content: [{ type: 'text' as const, text: `Error: ${result.error}${localhostWarning}` }],
+        isError: true,
+      }
+    }
     const data = result.data as Record<string, unknown> | undefined
 
     if (data?.switchedToExisting) {
