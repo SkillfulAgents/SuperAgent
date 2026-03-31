@@ -1,21 +1,27 @@
-Perfect! All steps have been completed successfully. Let me provide the final report:
+Perfect! All steps completed successfully. Let me provide the final report:
 
 ---
 
 [TEST_PASS]
 
-[REASON] Successfully navigated to localhost, found agent QA-20260331-163003-scfa, verified status as "idle", sent message "Hello! What is 2+2?", waited for response, and verified response contains "4".
+[REASON] Agent "QA-20260331-170051-zkxg" successfully received message "Hello! What is 2+2?" and responded with "4" in 2 seconds
 
-[STEP] Navigated to http://localhost:47891 - Page loaded successfully with Super Agent title and sidebar visible containing multiple agents including QA-20260331-163003-scfa.
+[STEP] Step 1: Navigated to http://localhost:47891 - Application loaded successfully with sidebar showing 3 agents
 
-[STEP] Found and clicked agent "QA-20260331-163003-scfa" in sidebar - Agent detail page opened, showing agent status as "idle" and a message composition area with the heading "Start a conversation with QA-20260331-163003-scfa".
+[STEP] Step 2: Clicked on agent "QA-20260331-170051-zkxg" in sidebar - Agent page opened with landing message input
 
-[STEP] Verified agent status is "idle" - Agent status displayed as "idle" in the UI, which meets the requirement (running or idle).
+[STEP] Step 3: Verified agent status is "running" or "idle" - Status confirmed as "idle" (displayed with blue indicator)
 
-[STEP] Sent message "Hello! What is 2+2?" by typing in message input and clicking Send button - Message was successfully submitted, agent status changed to "working", and a new session "Math Basics Quick Question" was created.
+[STEP] Step 4: Sent message "Hello! What is 2+2?" - Message typed and sent button clicked successfully, chat view opened with session "Quick Math Question Session"
 
-[STEP] Waited up to 3 minutes for response - Agent responded within 2 seconds with the answer "4" as shown in the chat view with "Worked for 2s" indicator.
+[STEP] Step 5: Waited for response - Agent responded within 2 seconds (well under the 3-minute limit)
 
-[STEP] Verified response mentions "4" - The agent response clearly displays the number "4" as the answer to the math question.
+[STEP] Step 6: Verified response mentions "4" and took screenshot - Response displays "4" prominently with "Worked for 2s" indicator below, confirming correct answer
 
-[STEP] Took screenshot capturing the successful response - Screenshot saved showing the full chat interface with user message "Hello! What is 2+2?" and agent response "4".
+**Summary:**
+- ✅ All navigation successful
+- ✅ Agent status verified as "idle"
+- ✅ Message sent successfully
+- ✅ Response received in 2 seconds
+- ✅ Response correctly shows "4"
+- ✅ Screenshot captured showing complete conversation
