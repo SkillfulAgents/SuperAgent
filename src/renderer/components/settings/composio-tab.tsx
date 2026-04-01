@@ -47,29 +47,7 @@ export function ComposioTab() {
     }
   }
 
-  if (isPlatformConnected) {
-    return (
-      <div className="space-y-6">
-        <div>
-          <h3 className="text-sm font-medium">Composio Integration</h3>
-          <p className="text-xs text-muted-foreground mt-1">
-            Configure the Composio account provider for OAuth connections (Gmail, Slack, GitHub, etc.).
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <span className="text-xs px-2 py-0.5 rounded-full bg-green-500/10 text-green-700 dark:text-green-400">
-            Connected via Platform
-          </span>
-        </div>
-
-        <p className="text-sm text-muted-foreground">
-          Composio is managed by your organization on the platform.
-          {platformAuth?.orgName && <> ({platformAuth.orgName})</>}
-        </p>
-      </div>
-    )
-  }
+  const hasLocalComposioKey = settings?.apiKeyStatus?.composio?.isConfigured ?? false
 
   return (
     <div className="space-y-6">
@@ -79,6 +57,27 @@ export function ComposioTab() {
           Configure the Composio account provider for OAuth connections (Gmail, Slack, GitHub, etc.).
         </p>
       </div>
+
+      {isPlatformConnected && (
+        <div className={`rounded-md border px-3 py-2 ${
+          hasLocalComposioKey
+            ? 'border-blue-200 bg-blue-50 dark:border-blue-900 dark:bg-blue-950/30'
+            : 'border-green-200 bg-green-50 dark:border-green-900 dark:bg-green-950/30'
+        }`}>
+          {hasLocalComposioKey ? (
+            <p className="text-xs text-blue-700 dark:text-blue-400">
+              Using your local Composio API key. Your existing OAuth connections are preserved.
+              Remove the key below to switch to platform-managed Composio.
+            </p>
+          ) : (
+            <p className="text-xs text-green-700 dark:text-green-400">
+              Composio is managed by your organization on the platform.
+              {platformAuth?.orgName && <> ({platformAuth.orgName})</>}
+              {' '}Set your own API key below to use a personal Composio account instead.
+            </p>
+          )}
+        </div>
+      )}
 
       <ComposioApiKeyInput disabled={isLoading} />
 
