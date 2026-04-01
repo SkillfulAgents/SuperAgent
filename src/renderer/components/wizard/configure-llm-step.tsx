@@ -70,9 +70,10 @@ const SIMPLE_PROVIDER_KEY_CONFIG: Record<string, {
 
 interface ConfigureLLMStepProps {
   mode?: 'manual' | 'platform'
+  onPlatformConnected?: () => void
 }
 
-export function ConfigureLLMStep({ mode = 'manual' }: ConfigureLLMStepProps) {
+export function ConfigureLLMStep({ mode = 'manual', onPlatformConnected }: ConfigureLLMStepProps) {
   const [showInstructions, setShowInstructions] = useState(false)
   const { data: settings } = useSettings()
   const updateSettings = useUpdateSettings()
@@ -82,7 +83,14 @@ export function ConfigureLLMStep({ mode = 'manual' }: ConfigureLLMStepProps) {
     error: platformError,
     isConnected,
     platformAuth,
-  } = usePlatformConnect({ successMessage: null })
+  } = usePlatformConnect({
+    successMessage: null,
+    onSuccess: () => {
+      if (mode === 'platform') {
+        onPlatformConnected?.()
+      }
+    },
+  })
 
   const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
   const providerStatus = settings?.llmProviderStatus ?? []

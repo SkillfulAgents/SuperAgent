@@ -100,6 +100,13 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
     setCurrentStep(0)
   }
 
+  const handlePlatformConnected = () => {
+    setCurrentStep((s) => {
+      if (welcomePath !== 'platform') return s
+      return Math.min(s + 1, steps.length - 1)
+    })
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[600px] p-0 gap-0 [&>button]:hidden" data-testid="wizard-dialog" onPointerDownOutside={(e) => e.preventDefault()}>
@@ -149,7 +156,12 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
               onContinueToManualSetup={handleWelcomeManualSetup}
             />
           )}
-          {activeStep?.id === 'llm' && <ConfigureLLMStep mode={welcomePath === 'platform' ? 'platform' : 'manual'} />}
+          {activeStep?.id === 'llm' && (
+            <ConfigureLLMStep
+              mode={welcomePath === 'platform' ? 'platform' : 'manual'}
+              onPlatformConnected={handlePlatformConnected}
+            />
+          )}
           {activeStep?.id === 'browser' && <BrowserSetupStep />}
           {activeStep?.id === 'composio' && <ComposioStep onCanProceedChange={setComposioCanProceed} saveRef={composioSaveRef} />}
           {activeStep?.id === 'runtime' && <DockerSetupStep />}
