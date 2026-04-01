@@ -204,6 +204,19 @@ export class ChromeProvider implements HostBrowserProvider {
       instance.proxyServer?.close()
       if (!instance.process.killed) {
         instance.process.kill()
+        // Wait for process to actually exit before removing from map.
+        // Without this, the next launch() won't see the existing instance
+        // and will spawn a new Chrome while this one is still dying.
+        await new Promise<void>((resolve) => {
+          const timeout = setTimeout(() => {
+            try { instance.process.kill('SIGKILL') } catch { /* ignore */ }
+            resolve()
+          }, 5000)
+          instance.process.on('exit', () => {
+            clearTimeout(timeout)
+            resolve()
+          })
+        })
       }
     }
     this.instances.delete(instanceId)
