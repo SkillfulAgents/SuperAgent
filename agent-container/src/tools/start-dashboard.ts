@@ -18,6 +18,8 @@ The dashboard must exist at /workspace/artifacts/<slug>/ with a valid package.js
 
       if (info.status === 'running') {
         text += '\n\nThe dashboard is accessible to the user through the Superagent UI.'
+        text +=
+          '\n\nDo NOT use the browser tool to view this dashboard. The browser runs outside the container and cannot access localhost URLs served inside it. The user can already see it through the Superagent UI — use get_dashboard_logs to debug any issues.'
       } else if (info.status === 'crashed' || info.status === 'stopped') {
         // Include recent logs so the agent can debug without a separate tool call
         const logs = await dashboardManager.getDashboardLogs(args.slug)
