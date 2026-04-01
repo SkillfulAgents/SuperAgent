@@ -1465,7 +1465,7 @@ describe('useMessageStream', () => {
       MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: false })
     })
 
-    expect(fetchSpy).toHaveBeenCalledWith('/api/agents/agent-1/browser/status')
+    expect(fetchSpy).toHaveBeenCalledWith('/api/agents/agent-1/browser/status?sessionId=session-1')
   })
 
   it('session_active clears activeSubagents', async () => {

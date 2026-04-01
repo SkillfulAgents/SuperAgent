@@ -254,7 +254,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
     const baseUrl = getApiBaseUrl()
     const wsProtocol = baseUrl.startsWith('https') || window.location.protocol === 'https:' ? 'wss' : 'ws'
     const wsHost = baseUrl ? baseUrl.replace(/^https?:\/\//, '') : window.location.host
-    const wsUrl = `${wsProtocol}://${wsHost}/api/agents/${agentSlug}/browser/stream`
+    const wsUrl = `${wsProtocol}://${wsHost}/api/agents/${agentSlug}/browser/stream?sessionId=${sessionId}`
 
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
@@ -310,7 +310,7 @@ export function BrowserPreview({ agentSlug, sessionId, browserActive, isActive }
     ws.onclose = () => {
       setConnected(false)
       setPageLoading(false)
-      apiFetch(`/api/agents/${agentSlug}/browser/status`)
+      apiFetch(`/api/agents/${agentSlug}/browser/status?sessionId=${sessionId}`)
         .then((res) => res.json())
         .then((status: { active?: boolean; sessionId?: string }) => {
           if (!status.active || status.sessionId !== sessionId) {

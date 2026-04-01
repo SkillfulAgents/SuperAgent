@@ -190,12 +190,12 @@ function getOrCreateEventSource(
           apiRetry: current?.apiRetry ?? null,
         })
         // Fetch current browser status to sync state (handles missed events)
-        fetch(`${baseUrl}/api/agents/${agentSlug}/browser/status`)
+        fetch(`${baseUrl}/api/agents/${agentSlug}/browser/status?sessionId=${sessionId}`)
           .then((res) => res.json())
           .then((status: { active?: boolean; sessionId?: string }) => {
             const latest = streamStates.get(sessionId)
             // Only mark browser active if it belongs to THIS session
-            const activeForThisSession = (status.active ?? false) && status.sessionId === sessionId
+            const activeForThisSession = (status.active ?? false)
             if (latest && latest.browserActive !== activeForThisSession) {
               streamStates.set(sessionId, { ...latest, browserActive: activeForThisSession })
               streamListeners.get(sessionId)?.forEach((listener) => listener())

@@ -2,6 +2,7 @@
  * Tab Manager — centralized tab state, querying, detection, and message formatting.
  *
  * All tab-related logic lives here so server.ts and browser.ts can import shared helpers.
+ * Each browser session gets its own TabManager instance via the registry.
  */
 
 import * as net from 'net';
@@ -26,6 +27,8 @@ export interface NewTabResult {
 class TabManager {
   private lastKnownTabCount = 1;
   private maxTabs = DEFAULT_MAX_TABS;
+
+  constructor(private sessionId: string) {}
 
   // --- State ---
 
@@ -52,7 +55,7 @@ class TabManager {
     const socketDir = process.env.AGENT_BROWSER_SOCKET_DIR
       || (process.env.XDG_RUNTIME_DIR ? path.join(process.env.XDG_RUNTIME_DIR, 'agent-browser') : null)
       || path.join(process.env.HOME || '/home/claude', '.agent-browser');
-    const session = process.env.AGENT_BROWSER_SESSION || 'default';
+    const session = `session-${this.sessionId}`;
     const socketPath = path.join(socketDir, `${session}.sock`);
 
     return new Promise((resolve, reject) => {
@@ -162,4 +165,31 @@ class TabManager {
   }
 }
 
-export const tabManager = new TabManager();
+// --- Per-session TabManager registry ---
+
+const tabManagers: Map<string, TabManager> = new Map();
+let globalMaxTabs = DEFAULT_MAX_TABS;
+
+export function getTabManager(sessionId: string): TabManager {
+  let tm = tabManagers.get(sessionId);
+  if (!tm) {
+    tm = new TabManager(sessionId);
+    tm.setMaxTabs(globalMaxTabs);
+    tabManagers.set(sessionId, tm);
+  }
+  return tm;
+}
+
+export function removeTabManager(sessionId: string): void {
+  tabManagers.delete(sessionId);
+}
+
+/** Set maxTabs on all existing and future TabManager instances */
+export function setAllMaxTabs(n: number): void {
+  globalMaxTabs = n;
+  for (const tm of tabManagers.values()) {
+    tm.setMaxTabs(n);
+  }
+}
+
+export { TabManager };

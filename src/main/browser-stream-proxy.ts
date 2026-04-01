@@ -118,8 +118,9 @@ export function setupBrowserStreamProxy(server: ServerType): void {
           return
         }
 
-        // Connect to the container's browser stream WebSocket
-        const wsUrl = `ws://localhost:${info.port}/browser/stream`
+        // Connect to the container's browser stream WebSocket, forwarding sessionId
+        const streamSessionId = url.searchParams.get('sessionId')
+        const wsUrl = `ws://localhost:${info.port}/browser/stream${streamSessionId ? `?sessionId=${streamSessionId}` : ''}`
         console.log(`[BrowserProxy] Connecting upstream to: ${wsUrl}`)
         const upstream = new WebSocket(wsUrl)
 
