@@ -1,24 +1,24 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "Agent successfully received message and responded with correct answer to math question",
+  "reason": "Successfully tested agent chat functionality by sending a math question and verifying the correct response was received.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully with sidebar showing three agents",
-    "Clicked on \"QA-20260401-165847-1rvk\" agent in sidebar — Agent detail page opened with the correct agent",
-    "Verified agent status is \"idle\" — Status clearly shown as \"idle\" in the agent header bar",
-    "Sent message \"Hello! What is 2+2?\" — Message was typed into the input field and sent via the send button",
-    "Waited for response (up to 3 minutes) — Response received within 3 seconds",
-    "Verified response mentions \"4\" — Response clearly shows \"4\" in the chat, with \"Worked for 2s\" indicator below it"
+    "Step 1: Navigated to http://localhost:47891 - Page loaded successfully with Super Agent title visible and sidebar showing three agents including QA-20260401-172024-xh59 with \"idle\" status.",
+    "Step 2: Found and clicked the \"QA-20260401-172024-xh59\" agent in the sidebar - Agent detail page loaded successfully, showing heading \"Start a conversation with QA-20260401-172024-xh59\" and message input field ready for input.",
+    "Step 3: Verified agent status is \"running\" or \"idle\" - Agent status displayed as \"idle\" in the header, which meets the requirement.",
+    "Step 4: Sent message \"Hello! What is 2+2?\" - Message was typed into the input field and send button was clicked. Message appeared in the chat view on the right side with user attribution.",
+    "Step 5: Waited for response from agent - Agent status changed from \"idle\" to \"working\" and response was received in 2 seconds (well within the 3-minute timeout). Activity indicator showed \"Working...\" and then \"Worked for 2s\".",
+    "Step 6: Verified response mentions \"4\" - Agent responded with exactly \"4\" on the left side of the chat, with notation \"Worked for 2s\". The response correctly answers the math question 2+2=4."
   ],
   "bugs": [],
-  "durationMs": 49864,
-  "sessionId": "e43378fa-14dd-4f52-8cdc-950e29b32676",
+  "durationMs": 55303,
+  "sessionId": "e1c4c0a2-fdea-4c6c-8d7e-2ea4cd018baa",
   "cost": {
-    "inputTokens": 288,
-    "outputTokens": 2951,
-    "cacheCreationTokens": 81652,
-    "cacheReadTokens": 882837,
+    "inputTokens": 261,
+    "outputTokens": 2526,
+    "cacheCreationTokens": 82117,
+    "cacheReadTokens": 786133,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.205392
+    "totalCostUsd": 0.194151
   }
 }
