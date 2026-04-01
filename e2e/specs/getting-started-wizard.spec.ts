@@ -70,12 +70,12 @@ test.describe('Getting Started Wizard', () => {
     await appPage.waitForAppLoaded()
     await wizardPage.expectVisible()
 
-    // Step 0: Welcome
+    // Step 0: Welcome (no Back button rendered on this screen)
     await wizardPage.expectStep(0)
-    await wizardPage.expectBackDisabled()
     await expect(page.getByText('Welcome to Superagent')).toBeVisible()
     await expect(page.locator('[data-testid="wizard-platform-login"]')).toBeVisible()
     await expect(page.locator('[data-testid="wizard-manual-setup"]')).toBeVisible()
+    await expect(page.locator('[data-testid="wizard-back"]')).not.toBeVisible()
 
     // Choose the manual path and land on Step 0: LLM
     await wizardPage.chooseManualSetup()
