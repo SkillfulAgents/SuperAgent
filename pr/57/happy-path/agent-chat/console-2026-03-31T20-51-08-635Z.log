@@ -1,2 +1,0 @@
-[  186983ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:47891/api/agents/qa-20260331-205055-hcgn-vtrquk:0
-[  186989ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:47891/api/agents/qa-20260331-205055-hcgn-vtrquk/artifacts:0
