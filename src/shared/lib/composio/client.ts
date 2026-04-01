@@ -38,11 +38,16 @@ function getPlatformComposioToken(): string | null {
 /**
  * Make a request to the Composio API.
  */
+function shouldUseLocalComposioKey(): boolean {
+  return Boolean(getEffectiveComposioApiKey())
+}
+
 async function composioFetch<T>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<T> {
-  const platformToken = getPlatformComposioToken()
+  const localApiKey = getEffectiveComposioApiKey()
+  const platformToken = localApiKey ? null : getPlatformComposioToken()
   const headers = new Headers(options.headers)
   headers.set('Content-Type', 'application/json')
 
@@ -51,13 +56,11 @@ async function composioFetch<T>(
     url = `${getPlatformComposioBaseUrl()}${endpoint}`
     headers.set('Authorization', `Bearer ${platformToken}`)
     headers.delete('x-api-key')
-  } else {
-    const apiKey = getEffectiveComposioApiKey()
-    if (!apiKey) {
-      throw new ComposioApiError('Composio API key is not configured', 401)
-    }
+  } else if (localApiKey) {
     url = `${COMPOSIO_BASE_URL}${endpoint}`
-    headers.set('x-api-key', apiKey)
+    headers.set('x-api-key', localApiKey)
+  } else {
+    throw new ComposioApiError('Composio API key is not configured', 401)
   }
 
   const response = await fetch(url, {
@@ -235,9 +238,9 @@ export async function listConnections(
   toolkit?: string,
   userIdOverride?: string
 ): Promise<ComposioConnection[]> {
-  const platformToken = getPlatformComposioToken()
+  const useLocal = shouldUseLocalComposioKey()
   let endpoint = '/connected_accounts'
-  if (!platformToken) {
+  if (useLocal || !getPlatformComposioToken()) {
     const userId = userIdOverride || getComposioUserId()
     if (!userId) {
       throw new ComposioApiError('Composio User ID is not configured', 401)
@@ -271,9 +274,10 @@ export async function initiateConnection(
   callbackUrl: string,
   userIdOverride?: string
 ): Promise<InitiateConnectionResponse> {
-  const platformToken = getPlatformComposioToken()
-  const userId = platformToken ? null : (userIdOverride || getComposioUserId())
-  if (!platformToken && !userId) {
+  const useLocal = shouldUseLocalComposioKey()
+  const needsUserId = useLocal || !getPlatformComposioToken()
+  const userId = needsUserId ? (userIdOverride || getComposioUserId()) : null
+  if (needsUserId && !userId) {
     throw new ComposioApiError('Composio User ID is not configured', 401)
   }
 
