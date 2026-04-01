@@ -1,5 +1,22 @@
+declare global {
+  var __PLATFORM_BASE_URL__: string | undefined
+  var __PLATFORM_PROXY_URL__: string | undefined
+}
+
+function getConfiguredValue(runtimeValue: string | undefined, buildValue: string | undefined): string {
+  return runtimeValue?.trim() || buildValue?.trim() || ''
+}
+
+function getBuildPlatformBaseUrl(): string {
+  return getConfiguredValue(undefined, globalThis.__PLATFORM_BASE_URL__)
+}
+
+function getBuildPlatformProxyUrl(): string {
+  return getConfiguredValue(undefined, globalThis.__PLATFORM_PROXY_URL__)
+}
+
 export function getPlatformBaseUrl(): string {
-  return process.env.PLATFORM_BASE_URL ?? ''
+  return getConfiguredValue(process.env.PLATFORM_BASE_URL, getBuildPlatformBaseUrl())
 }
 
 /**
@@ -7,7 +24,10 @@ export function getPlatformBaseUrl(): string {
  * Used by the LLM provider, STT provider, and Composio client.
  */
 export function getPlatformProxyBaseUrl(): string {
-  const raw = (process.env.PLATFORM_PROXY_URL ?? '').trim().replace(/\/+$/, '')
+  const raw = getConfiguredValue(
+    process.env.PLATFORM_PROXY_URL,
+    getBuildPlatformProxyUrl(),
+  ).replace(/\/+$/, '')
   return raw.endsWith('/v1') ? raw.slice(0, -3) : raw
 }
 

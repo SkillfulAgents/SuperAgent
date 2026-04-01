@@ -10,6 +10,8 @@ export default defineConfig({
   main: {
     define: {
       __APP_VERSION__: JSON.stringify(pkg.version),
+      'globalThis.__PLATFORM_BASE_URL__': JSON.stringify(process.env.PLATFORM_BASE_URL || ''),
+      'globalThis.__PLATFORM_PROXY_URL__': JSON.stringify(process.env.PLATFORM_PROXY_URL || ''),
     },
     build: {
       outDir: 'dist/main',
@@ -26,6 +28,8 @@ export default defineConfig({
   preload: {
     define: {
       __APP_VERSION__: JSON.stringify(pkg.version),
+      'globalThis.__PLATFORM_BASE_URL__': JSON.stringify(process.env.PLATFORM_BASE_URL || ''),
+      'globalThis.__PLATFORM_PROXY_URL__': JSON.stringify(process.env.PLATFORM_PROXY_URL || ''),
     },
     build: {
       outDir: 'dist/preload',
@@ -38,6 +42,8 @@ export default defineConfig({
       __AUTH_MODE__: JSON.stringify(false),
       __AMPLITUDE_API_KEY__: JSON.stringify(process.env.AMPLITUDE_API_KEY || analyticsConfig.defaultAmplitudeKey),
       __RENDER_TRACKING__: JSON.stringify(process.env.RENDER_TRACKING === 'true'),
+      'globalThis.__PLATFORM_BASE_URL__': JSON.stringify(process.env.PLATFORM_BASE_URL || ''),
+      'globalThis.__PLATFORM_PROXY_URL__': JSON.stringify(process.env.PLATFORM_PROXY_URL || ''),
     },
     root: './src/renderer',
     build: {

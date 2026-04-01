@@ -36,6 +36,16 @@ export class WizardPage {
     await this.page.locator('[data-testid="wizard-next"]').click()
   }
 
+  /** Choose the manual setup path from the welcome screen */
+  async chooseManualSetup() {
+    await this.page.locator('[data-testid="wizard-manual-setup"]').click()
+  }
+
+  /** Choose the platform setup path from the welcome screen */
+  async choosePlatformSetup() {
+    await this.page.locator('[data-testid="wizard-platform-login"]').click()
+  }
+
   /** Click the Back button */
   async clickBack() {
     await this.page.locator('[data-testid="wizard-back"]').click()
