@@ -1,0 +1,25 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Agent successfully opened browser, navigated to example.com, and reported the page title as \"Example Domain\"",
+  "steps": [
+    "Navigated to http://localhost:47891 - Successfully loaded the Super Agent interface showing three agents in the sidebar",
+    "Clicked on \"QA-20260401-180633-lm1c\" agent in the sidebar - Successfully selected the agent and opened the chat interface with message input field",
+    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message successfully sent and agent session \"Browser Navigation and Page Title Check\" was created",
+    "Granted browser permission \"Allow Once\" for browser navigation - Permission granted, agent began opening browser to example.com",
+    "Granted browser permission \"Allow Once\" for page snapshot - Permission granted, agent took page snapshot to read content",
+    "Granted browser permission \"Allow Once\" for get_title command - Permission granted, agent executed command to retrieve page title",
+    "Received agent response - Agent successfully reported: \"The page title is Example Domain. It's the standard IANA example domain page with a single 'Learn more' link.\" - Response clearly mentions \"Example Domain\" as required"
+  ],
+  "bugs": [],
+  "durationMs": 152156,
+  "sessionId": "ab32ce13-e5f1-4031-ba01-20e267d7cfbd",
+  "cost": {
+    "inputTokens": 450,
+    "outputTokens": 4043,
+    "cacheCreationTokens": 68957,
+    "cacheReadTokens": 1742088,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.28107
+  }
+}
