@@ -64,7 +64,10 @@ app.name = 'SuperAgent'
 
 // Force overlay scrollbars so macOS "always show scrollbars" setting doesn't
 // cause ugly permanent scrollbars in the app
-app.commandLine.appendSwitch('enable-features', 'OverlayScrollbar')
+if (process.platform === 'darwin') {
+  const { systemPreferences } = require('electron')
+  systemPreferences.setUserDefault('AppleShowScrollBars', 'string', 'WhenScrolling')
+}
 
 // Use a more exotic default port to avoid conflicts
 const DEFAULT_API_PORT = 47891
@@ -703,6 +706,7 @@ async function startApp() {
 
   // Wait for app to be ready, then create window
   await app.whenReady()
+
   createWindow()
 
   // Create the application menu (macOS menu bar)

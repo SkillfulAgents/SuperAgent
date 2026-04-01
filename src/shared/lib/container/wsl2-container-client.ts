@@ -388,12 +388,14 @@ export async function stopWSL2Distro(timeoutMs = 15000): Promise<void> {
 }
 
 /**
- * Get the bundled Alpine minirootfs tarball path if available.
- * Falls back to null (will need to download at runtime — not implemented yet).
+ * Get the bundled Alpine minirootfs tarball path for the current architecture.
+ * We bundle both x86_64 and aarch64 rootfs files and select at runtime
+ * so a single installer works on both architectures.
  */
 function getBundledRootfsPath(): string | null {
   if (typeof process !== 'undefined' && process.resourcesPath) {
-    const bundled = path.join(process.resourcesPath, 'wsl2', 'alpine-rootfs.tar.gz')
+    const arch = os.arch() === 'arm64' ? 'aarch64' : 'x86_64'
+    const bundled = path.join(process.resourcesPath, 'wsl2', `alpine-rootfs-${arch}.tar.gz`)
     if (fs.existsSync(bundled)) {
       return bundled
     }

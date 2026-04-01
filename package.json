@@ -70,7 +70,7 @@
     "analytics": "^0.8.19",
     "archiver": "^7.0.1",
     "better-auth": "^1.4.19",
-    "better-sqlite3": "^12.6.2",
+    "better-sqlite3": "^12.8.0",
     "ccusage": "^15.2.0",
     "chrono-node": "^2.9.0",
     "class-variance-authority": "^0.7.1",
@@ -111,7 +111,7 @@
     "@types/better-sqlite3": "^7.6.11",
     "@types/eventsource": "^1.1.15",
     "@types/js-yaml": "^4.0.9",
-    "@types/node": "^20.0.0",
+    "@types/node": "^24.0.0",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
     "@types/uuid": "^10.0.0",
@@ -124,7 +124,7 @@
     "autoprefixer": "^10.4.0",
     "concurrently": "^9.1.2",
     "drizzle-kit": "^0.31.9",
-    "electron": "^33.2.1",
+    "electron": "^41.1.0",
     "electron-builder": "^26.4.0",
     "electron-vite": "^5.0.0",
     "eslint": "^8.0.0",
@@ -180,7 +180,8 @@
         "from": "build/wsl2",
         "to": "wsl2",
         "filter": [
-          "alpine-rootfs.tar.gz"
+          "alpine-rootfs-x86_64.tar.gz",
+          "alpine-rootfs-aarch64.tar.gz"
         ]
       }
     ],
