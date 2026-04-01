@@ -178,71 +178,85 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   }
 
   // 2.6 Policy enforcement
+  // Skip review for MCP protocol-level methods (handshake, discovery, pings).
+  // Only tool invocations (tools/call) need policy checks.
+  const MCP_PROTOCOL_METHODS = new Set([
+    'initialize',
+    'notifications/initialized',
+    'tools/list',
+    'ping',
+  ])
+  // GET/HEAD requests are SSE transport setup — always protocol-level.
+  const isProtocolMethod = method === 'GET' || method === 'HEAD' || MCP_PROTOCOL_METHODS.has(mcpMethodInfo)
+
   const userId = mcp.userId ?? 'local'
-  let policyResult
-  try {
-    policyResult = await resolveMcpPolicy(mcpId, toolName, userId)
-  } catch (policyError) {
-    console.error('[mcp-proxy] Policy enforcement failed, defaulting to review:', policyError)
-    policyResult = { decision: 'review' as const, matchedScopes: [] as string[], scopeDescriptions: {} as Record<string, string>, resolvedFrom: 'global_default' as const }
-  }
+  let resolvedPolicyDecision: string = 'allow'
 
-  if (policyResult.decision === 'block') {
-    await logMcpAuditEntry({
-      agentSlug,
-      remoteMcpId: mcp.id,
-      remoteMcpName: mcp.name,
-      method,
-      requestPath: mcpMethodInfo,
-      policyDecision: 'block',
-      matchedTool: toolName ?? undefined,
-    })
-    return c.json({
-      error: 'blocked_by_policy',
-      message: 'This request was blocked by your MCP access policy.',
-      tool: toolName,
-      settingsHint: 'You can adjust policies in Settings > MCP Servers > Policies',
-    }, 403)
-  }
-
-  // Track precise outcome for audit logging
-  let resolvedPolicyDecision: string = policyResult.decision
-
-  if (policyResult.decision === 'review') {
+  if (!isProtocolMethod) {
+    let policyResult
     try {
-      const decision = await reviewManager.requestReview({
-        agentSlug,
-        accountId: mcpId,
-        toolkit: mcp.name,
-        method,
-        targetPath: mcpMethodInfo,
-        matchedScopes: policyResult.matchedScopes,
-        scopeDescriptions: policyResult.scopeDescriptions,
-      }, c.req.raw.signal)
-      if (decision === 'deny') {
-        await logMcpAuditEntry({
-          agentSlug,
-          remoteMcpId: mcp.id,
-          remoteMcpName: mcp.name,
-          method,
-          requestPath: mcpMethodInfo,
-          policyDecision: 'denied_by_user',
-          matchedTool: toolName ?? undefined,
-        })
-        return c.json({ error: 'denied_by_user', message: 'Request denied by user.' }, 403)
-      }
-      resolvedPolicyDecision = 'approved_by_user'
-    } catch {
+      policyResult = await resolveMcpPolicy(mcpId, toolName, userId)
+    } catch (policyError) {
+      console.error('[mcp-proxy] Policy enforcement failed, defaulting to review:', policyError)
+      policyResult = { decision: 'review' as const, matchedScopes: [] as string[], scopeDescriptions: {} as Record<string, string>, resolvedFrom: 'global_default' as const }
+    }
+
+    if (policyResult.decision === 'block') {
       await logMcpAuditEntry({
         agentSlug,
         remoteMcpId: mcp.id,
         remoteMcpName: mcp.name,
         method,
         requestPath: mcpMethodInfo,
-        policyDecision: 'review_timeout',
+        policyDecision: 'block',
         matchedTool: toolName ?? undefined,
       })
-      return c.json({ error: 'review_timeout', message: 'Request required user approval but timed out.' }, 408)
+      return c.json({
+        error: 'blocked_by_policy',
+        message: 'This request was blocked by your MCP access policy.',
+        tool: toolName,
+        settingsHint: 'You can adjust policies in Settings > MCP Servers > Policies',
+      }, 403)
+    }
+
+    resolvedPolicyDecision = policyResult.decision
+
+    if (policyResult.decision === 'review') {
+      try {
+        const decision = await reviewManager.requestReview({
+          agentSlug,
+          accountId: mcpId,
+          toolkit: mcp.name,
+          method,
+          targetPath: mcpMethodInfo,
+          matchedScopes: policyResult.matchedScopes,
+          scopeDescriptions: policyResult.scopeDescriptions,
+        }, c.req.raw.signal)
+        if (decision === 'deny') {
+          await logMcpAuditEntry({
+            agentSlug,
+            remoteMcpId: mcp.id,
+            remoteMcpName: mcp.name,
+            method,
+            requestPath: mcpMethodInfo,
+            policyDecision: 'denied_by_user',
+            matchedTool: toolName ?? undefined,
+          })
+          return c.json({ error: 'denied_by_user', message: 'Request denied by user.' }, 403)
+        }
+        resolvedPolicyDecision = 'approved_by_user'
+      } catch {
+        await logMcpAuditEntry({
+          agentSlug,
+          remoteMcpId: mcp.id,
+          remoteMcpName: mcp.name,
+          method,
+          requestPath: mcpMethodInfo,
+          policyDecision: 'review_timeout',
+          matchedTool: toolName ?? undefined,
+        })
+        return c.json({ error: 'review_timeout', message: 'Request required user approval but timed out.' }, 408)
+      }
     }
   }
 
