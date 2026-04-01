@@ -5,6 +5,7 @@ import { getDataDir } from './data-dir'
 import { getDefaultAgentImage, AGENT_IMAGE_REGISTRY } from './version'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
 import type { ComputerUseSettings } from '@shared/lib/computer-use/types'
+import type { BrowserUseSettings } from '@shared/lib/browser-use/types'
 
 export interface ContainerSettings {
   containerRunner: string
@@ -165,6 +166,7 @@ export interface AppSettings {
   auth?: AuthSettings
   voice?: VoiceSettings
   computerUse?: ComputerUseSettings
+  browserUse?: BrowserUseSettings
   shareAnalytics?: boolean
   analyticsTargets?: AnalyticsTarget[]
 }
@@ -229,6 +231,7 @@ export interface GlobalSettingsResponse {
   auth?: AuthSettings
   tenantId: string
   computerUse?: ComputerUseSettings
+  browserUse?: BrowserUseSettings
   shareAnalytics: boolean
   analyticsTargets?: AnalyticsTarget[]
 }
@@ -339,6 +342,7 @@ export function loadSettings(): AppSettings {
         },
         voice: loaded.voice,
         computerUse: loaded.computerUse,
+        browserUse: loaded.browserUse,
         shareAnalytics: loaded.shareAnalytics ?? false,
         analyticsTargets: loaded.analyticsTargets,
       }

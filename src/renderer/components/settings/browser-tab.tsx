@@ -1,3 +1,4 @@
+import { BrowserUsePermissionsSection } from './browser-use-permissions-section'
 import { useState } from 'react'
 import { Label } from '@renderer/components/ui/label'
 import { Input } from '@renderer/components/ui/input'
@@ -229,6 +230,10 @@ export function BrowserTab() {
           />
         </>
       )}
+
+      <hr className="my-4" />
+
+      <BrowserUsePermissionsSection />
     </div>
   )
 }

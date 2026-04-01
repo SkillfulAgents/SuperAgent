@@ -7,18 +7,20 @@
  * - use_host_shell: shell commands / AppleScript (replaces old hostShellUse toggle)
  */
 
+// Re-export shared permission types for backward compatibility
+export type { PermissionGrantType } from '@shared/lib/permissions/types'
+export { TIMED_GRANT_DURATION_MS } from '@shared/lib/permissions/types'
+
 export type ComputerUsePermissionLevel =
   | 'list_apps_windows'
   | 'use_application'
   | 'use_host_shell'
 
-export type PermissionGrantType = 'once' | 'timed' | 'always'
-
 export interface PermissionGrant {
   level: ComputerUsePermissionLevel
   /** Only for 'use_application' — the specific app name */
   appName?: string
-  grantType: PermissionGrantType
+  grantType: 'once' | 'timed' | 'always'
   grantedAt: number
   /** Only for 'timed' grants (15 min) */
   expiresAt?: number
@@ -58,9 +60,6 @@ export function getRequiredPermissionLevel(method: string): ComputerUsePermissio
   if (READ_ONLY_METHODS.has(method)) return 'list_apps_windows'
   return 'use_application'
 }
-
-/** Duration of "timed" permission grants in milliseconds (15 minutes) */
-export const TIMED_GRANT_DURATION_MS = 15 * 60 * 1000
 
 /**
  * Resolve which app an AC method call targets, for permission checks.

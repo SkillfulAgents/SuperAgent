@@ -10,6 +10,7 @@ import {
   removeBrowserInputRequest,
   removeScriptRunRequest,
   removeComputerUseRequest,
+  removeBrowserUseRequest,
   clearCompacting,
 } from '@renderer/hooks/use-message-stream'
 import { MessageItem } from './message-item'
@@ -23,6 +24,7 @@ import { FileRequestItem } from './file-request-item'
 import { BrowserInputRequestItem } from './browser-input-request-item'
 import { ScriptRunRequestItem } from './script-run-request-item'
 import { ComputerUseRequestItem } from './computer-use-request-item'
+import { BrowserUseRequestItem } from './browser-use-request-item'
 import { PendingAgentReviews } from '@renderer/components/dashboards/pending-agent-reviews'
 import { ArrowDown, Loader2, WifiOff } from 'lucide-react'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
@@ -132,6 +134,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     pendingBrowserInputRequests: sseBrowserInputRequests,
     pendingScriptRunRequests: sseScriptRunRequests,
     pendingComputerUseRequests: sseComputerUseRequests,
+    pendingBrowserUseRequests: sseBrowserUseRequests,
   } = useMessageStream(sessionId, agentSlug)
   const isOnline = useIsOnline()
 
@@ -386,6 +389,19 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     return merged
   }, [sseComputerUseRequests])
 
+  const pendingBrowserUseRequests = useMemo(() => {
+    const seen = new Set<string>()
+    const merged: { toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; domain?: string }[] = []
+
+    for (const req of sseBrowserUseRequests) {
+      if (!seen.has(req.toolUseId) && !dismissedRequestIds.current.has(req.toolUseId)) {
+        seen.add(req.toolUseId)
+        merged.push(req)
+      }
+    }
+    return merged
+  }, [sseBrowserUseRequests])
+
   const scrollRef = useRef<HTMLDivElement>(null)
   const isScrolledToBottomRef = useRef(true)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
@@ -483,6 +499,15 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     (toolUseId: string) => {
       dismissedRequestIds.current.add(toolUseId)
       removeComputerUseRequest(sessionId, toolUseId)
+    },
+    [sessionId]
+  )
+
+  // Handler to remove a completed browser use request
+  const handleBrowserUseRequestComplete = useCallback(
+    (toolUseId: string) => {
+      dismissedRequestIds.current.add(toolUseId)
+      removeBrowserUseRequest(sessionId, toolUseId)
     },
     [sessionId]
   )
@@ -646,7 +671,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     if (scrollRef.current && isScrolledToBottomRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [messages, pendingUserMessage, streamingMessage, streamingToolUse, isCompacting, pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests, pendingFileRequests, pendingRemoteMcpRequests, pendingBrowserInputRequests, pendingScriptRunRequests, sseComputerUseRequests, activeSubagents])
+  }, [messages, pendingUserMessage, streamingMessage, streamingToolUse, isCompacting, pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests, pendingFileRequests, pendingRemoteMcpRequests, pendingBrowserInputRequests, pendingScriptRunRequests, sseComputerUseRequests, sseBrowserUseRequests, activeSubagents])
 
   if (isLoading && !pendingUserMessage) {
     return (
@@ -893,6 +918,20 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
             agentSlug={agentSlug}
             readOnly={isViewOnly}
             onComplete={() => handleComputerUseRequestComplete(request.toolUseId)}
+          />
+        ))}
+        {pendingBrowserUseRequests.map((request) => (
+          <BrowserUseRequestItem
+            key={request.toolUseId}
+            toolUseId={request.toolUseId}
+            method={request.method}
+            params={request.params}
+            permissionLevel={request.permissionLevel}
+            domain={request.domain}
+            sessionId={sessionId}
+            agentSlug={agentSlug}
+            readOnly={isViewOnly}
+            onComplete={() => handleBrowserUseRequestComplete(request.toolUseId)}
           />
         ))}
         </div>

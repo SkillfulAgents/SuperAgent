@@ -85,6 +85,7 @@ function buildSettingsResponse(
     voice: getVoiceSettings(),
     tenantId: getTenantId(),
     computerUse: appSettings.computerUse,
+    browserUse: appSettings.browserUse,
     shareAnalytics: !!appSettings.shareAnalytics,
     analyticsTargets: appSettings.analyticsTargets,
   }
@@ -178,6 +179,9 @@ settings.put('/', async (c) => {
       computerUse: body.computerUse !== undefined
         ? { ...currentSettings.computerUse, ...body.computerUse }
         : currentSettings.computerUse,
+      browserUse: body.browserUse !== undefined
+        ? { ...currentSettings.browserUse, ...body.browserUse }
+        : currentSettings.browserUse,
       analyticsTargets: body.analyticsTargets !== undefined ? body.analyticsTargets : currentSettings.analyticsTargets,
     }
 
