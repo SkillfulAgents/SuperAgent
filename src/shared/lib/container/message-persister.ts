@@ -41,6 +41,7 @@ interface StreamingState {
   slashCommands: SlashCommandInfo[] // Available slash commands from SDK
   isAwaitingInput: boolean // True when session is waiting for user input (e.g., secret, file, question)
   pendingComputerUseRequests: Map<string, { toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string; agentSlug?: string }> // Pending computer use requests awaiting user approval (keyed by toolUseId)
+  pendingBrowserUseRequests: Map<string, { toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; domain?: string; agentSlug?: string }> // Pending browser use requests awaiting user approval (keyed by toolUseId)
   lastApiErrorCode: string | null // SDK error code from last assistant message (e.g., 'authentication_failed', 'rate_limit')
 }
 
@@ -93,6 +94,7 @@ class MessagePersister {
       slashCommands: [],
       isAwaitingInput: false,
       pendingComputerUseRequests: new Map(),
+      pendingBrowserUseRequests: new Map(),
       lastApiErrorCode: null,
     })
 
@@ -150,6 +152,28 @@ class MessagePersister {
       // Don't clear isAwaitingInput here — other input types (secrets, questions, etc.)
       // may still be pending. The flag is cleared when the tool result arrives in the stream.
       if (state.pendingComputerUseRequests.size === 0) {
+        this.broadcastGlobal({
+          type: 'session_input_provided',
+          sessionId,
+          agentSlug: state.agentSlug,
+        })
+      }
+    }
+  }
+
+  // Get pending browser use requests for a session (for SSE replay on reconnect)
+  getPendingBrowserUseRequests(sessionId: string): Array<{ toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; domain?: string; agentSlug?: string }> {
+    const state = this.streamingStates.get(sessionId)
+    if (!state) return []
+    return Array.from(state.pendingBrowserUseRequests.values())
+  }
+
+  // Clear a pending browser use request (after approval/rejection)
+  clearPendingBrowserUseRequest(sessionId: string, toolUseId: string): void {
+    const state = this.streamingStates.get(sessionId)
+    if (state) {
+      state.pendingBrowserUseRequests.delete(toolUseId)
+      if (state.pendingBrowserUseRequests.size === 0) {
         this.broadcastGlobal({
           type: 'session_input_provided',
           sessionId,
@@ -317,6 +341,7 @@ class MessagePersister {
         slashCommands: [],
         isAwaitingInput: false,
         pendingComputerUseRequests: new Map(),
+        pendingBrowserUseRequests: new Map(),
         lastApiErrorCode: null,
       }
       this.streamingStates.set(sessionId, state)
@@ -767,6 +792,15 @@ class MessagePersister {
                 state.agentSlug
               )
             }
+            if (block.type === 'tool_use' && block.name.startsWith('mcp__browser__browser_')) {
+              this.handleBrowserUseRequestTool(
+                sessionId,
+                block.id,
+                block.name,
+                JSON.stringify(block.input || {}),
+                state.agentSlug
+              )
+            }
           }
         }
       }
@@ -962,6 +996,16 @@ class MessagePersister {
             )
           }
 
+          if (sub.currentToolUse.name.startsWith('mcp__browser__browser_')) {
+            this.handleBrowserUseRequestTool(
+              sessionId,
+              sub.currentToolUse.id,
+              sub.currentToolUse.name,
+              sub.currentToolInput,
+              state.agentSlug
+            )
+          }
+
           this.broadcastToSSE(sessionId, {
             type: 'subagent_tool_use_ready',
             parentToolId,
@@ -1131,10 +1175,20 @@ class MessagePersister {
             )
           }
 
+          if (state.currentToolUse.name.startsWith('mcp__browser__browser_')) {
+            this.handleBrowserUseRequestTool(
+              sessionId,
+              state.currentToolUse.id,
+              state.currentToolUse.name,
+              state.currentToolInput,
+              state.agentSlug
+            )
+          }
+
           // Mark session as awaiting input when a blocking user-input tool fires
           // Only tools with 'request_' prefix actually block waiting for user response
           // (schedule_task, deliver_file, search_* resolve immediately and don't block)
-          // Note: computer-use tools are handled by handleComputerUseRequestTool which
+          // Note: computer-use and browser-use tools are handled by their respective handlers which
           // only marks awaiting input when user approval is actually needed (not auto-executed)
           if (
             state.currentToolUse.name === 'AskUserQuestion' ||
@@ -1690,6 +1744,129 @@ class MessagePersister {
       }
     } catch (error) {
       console.error('[MessagePersister] Error handling computer use request:', error)
+    }
+  }
+
+  /**
+   * Handle browser use request tools — check permissions and either auto-approve or prompt user.
+   * Unlike computer use (where the host executes the command), browser use execution
+   * happens in the container. We just need to approve/reject the pending input.
+   */
+  private async handleBrowserUseRequestTool(
+    sessionId: string,
+    toolUseId: string,
+    toolName: string,
+    toolInput: string,
+    agentSlug?: string,
+  ): Promise<void> {
+    try {
+      const method = toolName.replace('mcp__browser__browser_', '')
+
+      let params: Record<string, unknown>
+      try {
+        params = toolInput.trim() ? JSON.parse(toolInput) : {}
+      } catch {
+        console.error('[MessagePersister] Failed to parse browser use request:', toolInput)
+        return
+      }
+
+      const { getRequiredBrowserPermissionLevel, extractDomainFromUrl, DOMAIN_SCOPED_LEVELS } = await import('@shared/lib/browser-use/types')
+      const permissionLevel = getRequiredBrowserPermissionLevel(method)
+
+      // Resolve domain for domain-scoped levels
+      let domain: string | undefined
+      if (DOMAIN_SCOPED_LEVELS.has(permissionLevel)) {
+        if (method === 'open' && params.url && typeof params.url === 'string') {
+          domain = extractDomainFromUrl(params.url)
+        } else {
+          domain = await this.getBrowserCurrentDomain(sessionId, extractDomainFromUrl)
+        }
+      }
+
+      // Check cached permissions
+      if (agentSlug) {
+        const { browserUsePermissionManager } = await import('@shared/lib/browser-use/permission-manager')
+        if (browserUsePermissionManager.checkPermission(agentSlug, permissionLevel, domain) === 'granted') {
+          this.autoApproveBrowserUseRequest(sessionId, agentSlug, toolUseId, permissionLevel, domain)
+          return
+        }
+      }
+
+      // Permission needed — track and broadcast to UI for user approval
+      const state = this.streamingStates.get(sessionId)
+      if (state && !state.pendingBrowserUseRequests.has(toolUseId)) {
+        state.pendingBrowserUseRequests.set(toolUseId, { toolUseId, method, params, permissionLevel, domain, agentSlug })
+      }
+      this.markSessionAwaitingInput(sessionId)
+
+      this.broadcastToSSE(sessionId, {
+        type: 'browser_use_request',
+        toolUseId, method, params, permissionLevel, domain, agentSlug,
+      })
+
+      if (agentSlug && !this.hasActiveViewers(sessionId)) {
+        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'browser_use').catch(() => {})
+      }
+    } catch (error) {
+      console.error('[MessagePersister] Error handling browser use request:', error)
+    }
+  }
+
+  /** Get the current page domain from the container's browser. */
+  private async getBrowserCurrentDomain(
+    sessionId: string,
+    extractDomainFromUrl: (url: string) => string | undefined,
+  ): Promise<string | undefined> {
+    try {
+      const client = this.containerClients.get(sessionId)
+      if (!client) return undefined
+
+      const statusResponse = await client.fetch('/browser/status')
+      if (!statusResponse.ok) return undefined
+      const browserStatus = await statusResponse.json() as { active?: boolean; sessionId?: string }
+      if (!browserStatus.active || !browserStatus.sessionId) return undefined
+
+      const urlResponse = await client.fetch('/browser/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: browserStatus.sessionId, command: 'get url' }),
+      })
+      if (!urlResponse.ok) return undefined
+
+      const urlData = await urlResponse.json() as { output?: string }
+      const currentUrl = urlData.output ? String(urlData.output).trim() : undefined
+      return currentUrl ? extractDomainFromUrl(currentUrl) : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /** Auto-approve a browser use request when permission is already cached. */
+  private async autoApproveBrowserUseRequest(
+    sessionId: string,
+    agentSlug: string,
+    toolUseId: string,
+    permissionLevel: string,
+    domain?: string,
+  ): Promise<void> {
+    try {
+      const client = this.containerClients.get(sessionId)
+      if (!client) return
+
+      const resolveResponse = await client.fetch(
+        `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ value: 'approved' }),
+        }
+      )
+      if (!resolveResponse.ok) return
+
+      const { browserUsePermissionManager } = await import('@shared/lib/browser-use/permission-manager')
+      browserUsePermissionManager.consumeOnceGrant(agentSlug, permissionLevel as Parameters<typeof browserUsePermissionManager.consumeOnceGrant>[1], domain)
+    } catch (error) {
+      console.error('[MessagePersister] Error auto-approving browser use request:', error)
     }
   }
 

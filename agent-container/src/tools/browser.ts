@@ -2,7 +2,8 @@
  * Browser Automation Tools
  *
  * These tools allow agents to control a headless browser via agent-browser.
- * Each tool calls the container's own HTTP browser endpoints internally.
+ * Each tool call blocks via InputManager until the host approves the permission,
+ * then calls the container's own HTTP browser endpoints internally.
  * The user can see the browser live and interact with it directly.
  */
 
@@ -10,6 +11,7 @@ import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { readFile } from 'fs/promises'
 import { z } from 'zod'
 import { tabManager } from '../tab-manager'
+import { inputManager } from '../input-manager'
 
 const CONTAINER_URL = `http://localhost:${process.env.PORT || '3000'}`
 
@@ -78,6 +80,56 @@ async function readScreenshotAsBase64(filePath: string): Promise<{ data: string;
   }
 }
 
+/**
+ * Get the current page domain from the browser.
+ * Returns undefined if the browser isn't running or URL can't be determined.
+ */
+async function getCurrentPageDomain(): Promise<string | undefined> {
+  try {
+    const result = await browserFetch('run', { command: 'get url' })
+    if (!result.success) return undefined
+    const data = result.data as Record<string, unknown>
+    const raw = data.output ? String(data.output).trim() : undefined
+    if (!raw) return undefined
+    return new URL(raw).hostname || undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Request permission from the host before executing a browser action.
+ * Blocks via InputManager until the host approves or denies.
+ * On approval, resolves with undefined. On denial, throws.
+ */
+async function browserUseRequest(
+  method: string,
+  params: Record<string, unknown>,
+  permissionLevel: 'browse_read' | 'browse_interact' | 'browse_navigate' | 'browse_manage',
+  domain?: string,
+): Promise<void> {
+  const toolUseId = inputManager.consumeCurrentToolUseId()
+
+  if (!toolUseId) {
+    console.error(`[browser_use:${method}] No toolUseId available`)
+    throw new Error('Unable to process browser use request - no tool use ID available.')
+  }
+
+  try {
+    await inputManager.createPendingWithType<string>(toolUseId, 'browser_use', {
+      method,
+      params,
+      permissionLevel,
+      domain,
+    })
+    // Host approved — proceed with execution
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+    console.log(`[browser_use:${method}] Request denied: ${errorMessage}`)
+    throw new Error(`Browser use request denied: ${errorMessage}`)
+  }
+}
+
 export const browserOpenTool = tool(
   'browser_open',
   `Open a headless browser and navigate to a URL. The user can see the browser live in their interface and interact with it directly.
@@ -87,6 +139,18 @@ Use this to start browsing a website. The browser preserves cookies/sessions via
     url: z.string().describe('The URL to navigate to'),
   },
   async (args) => {
+    // Extract domain from URL for permission check
+    let domain: string | undefined
+    try {
+      domain = new URL(args.url).hostname || undefined
+    } catch { /* invalid URL, permission manager will handle */ }
+
+    try {
+      await browserUseRequest('open', { url: args.url }, 'browse_navigate', domain)
+    } catch (error: unknown) {
+      return errorResult(error instanceof Error ? error.message : 'Permission denied')
+    }
+
     // Warn if the agent is trying to open a localhost URL — the browser runs outside
     // the container and cannot reach servers running inside it (e.g. dashboards).
     const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(args.url)
@@ -130,6 +194,12 @@ export const browserCloseTool = tool(
   `Close the browser and free resources. Call this when you're done browsing.`,
   {},
   async () => {
+    try {
+      await browserUseRequest('close', {}, 'browse_manage')
+    } catch (error: unknown) {
+      return errorResult(error instanceof Error ? error.message : 'Permission denied')
+    }
+
     const result = await browserFetch('close', {})
     if (!result.success) return errorResult(result.error!)
     return {
@@ -159,6 +229,13 @@ Use compact=true (default) to reduce output size.`,
       .describe('Compact output to reduce size (default: true)'),
   },
   async (args) => {
+    // Domain will be resolved by the host from the current page URL
+    try {
+      await browserUseRequest('snapshot', { interactive: args.interactive, compact: args.compact }, 'browse_read', await getCurrentPageDomain())
+    } catch (error: unknown) {
+      return errorResult(error instanceof Error ? error.message : 'Permission denied')
+    }
+
     const result = await browserFetch('snapshot', {
       interactive: args.interactive,
       compact: args.compact,
@@ -186,6 +263,12 @@ export const browserClickTool = tool(
     ref: z.string().describe('Element ref from snapshot (e.g., "@e1")'),
   },
   async (args) => {
+    try {
+      await browserUseRequest('click', { ref: args.ref }, 'browse_interact', await getCurrentPageDomain())
+    } catch (error: unknown) {
+      return errorResult(error instanceof Error ? error.message : 'Permission denied')
+    }
+
     const result = await browserFetch('click', { ref: args.ref })
     if (!result.success) return errorResult(result.error!)
     const data = result.data as Record<string, unknown> | undefined
@@ -212,6 +295,12 @@ export const browserFillTool = tool(
     value: z.string().describe('The text to fill into the input'),
   },
   async (args) => {
+    try {
+      await browserUseRequest('fill', { ref: args.ref, value: args.value }, 'browse_interact', await getCurrentPageDomain())
+    } catch (error: unknown) {
+      return errorResult(error instanceof Error ? error.message : 'Permission denied')
+    }
+
     const result = await browserFetch('fill', {
       ref: args.ref,
       value: args.value,
@@ -243,6 +332,12 @@ export const browserScrollTool = tool(
       .describe('Scroll amount in pixels (default: browser default)'),
   },
   async (args) => {
+    try {
+      await browserUseRequest('scroll', { direction: args.direction, amount: args.amount }, 'browse_interact', await getCurrentPageDomain())
+    } catch (error: unknown) {
+      return errorResult(error instanceof Error ? error.message : 'Permission denied')
+    }
+
     const result = await browserFetch('scroll', {
       direction: args.direction,
       amount: args.amount,
@@ -272,6 +367,12 @@ export const browserWaitTool = tool(
       ),
   },
   async (args) => {
+    try {
+      await browserUseRequest('wait', { for: args.for }, 'browse_read', await getCurrentPageDomain())
+    } catch (error: unknown) {
+      return errorResult(error instanceof Error ? error.message : 'Permission denied')
+    }
+
     const result = await browserFetch('wait', { for: args.for })
     if (!result.success) return errorResult(result.error!)
     return {
@@ -289,6 +390,12 @@ export const browserPressTool = tool(
     key: z.string().describe('Key to press (e.g., "Enter", "Tab", "Escape", "Control+a", "ArrowDown")'),
   },
   async (args) => {
+    try {
+      await browserUseRequest('press', { key: args.key }, 'browse_interact', await getCurrentPageDomain())
+    } catch (error: unknown) {
+      return errorResult(error instanceof Error ? error.message : 'Permission denied')
+    }
+
     const result = await browserFetch('press', { key: args.key })
     if (!result.success) return errorResult(result.error!)
     const data = result.data as Record<string, unknown> | undefined
@@ -318,6 +425,12 @@ export const browserScreenshotTool = tool(
       .describe('Capture full scrollable page (default: false, viewport only)'),
   },
   async (args) => {
+    try {
+      await browserUseRequest('screenshot', { full: args.full }, 'browse_read', await getCurrentPageDomain())
+    } catch (error: unknown) {
+      return errorResult(error instanceof Error ? error.message : 'Permission denied')
+    }
+
     const result = await browserFetch('screenshot', { full: args.full })
     if (!result.success) return errorResult(result.error!)
     const data = result.data as Record<string, unknown>
@@ -348,6 +461,12 @@ export const browserSelectTool = tool(
     value: z.string().describe('The option value to select'),
   },
   async (args) => {
+    try {
+      await browserUseRequest('select', { ref: args.ref, value: args.value }, 'browse_interact', await getCurrentPageDomain())
+    } catch (error: unknown) {
+      return errorResult(error instanceof Error ? error.message : 'Permission denied')
+    }
+
     const result = await browserFetch('select', { ref: args.ref, value: args.value })
     if (!result.success) return errorResult(result.error!)
     return {
@@ -365,6 +484,12 @@ export const browserHoverTool = tool(
     ref: z.string().describe('Element ref from snapshot (e.g., "@e1")'),
   },
   async (args) => {
+    try {
+      await browserUseRequest('hover', { ref: args.ref }, 'browse_interact', await getCurrentPageDomain())
+    } catch (error: unknown) {
+      return errorResult(error instanceof Error ? error.message : 'Permission denied')
+    }
+
     const result = await browserFetch('hover', { ref: args.ref })
     if (!result.success) return errorResult(result.error!)
     return {
@@ -409,6 +534,12 @@ Available commands:
     command: z.string().describe('The agent-browser command to run (without "agent-browser" prefix)'),
   },
   async (args) => {
+    try {
+      await browserUseRequest('run', { command: args.command }, 'browse_manage')
+    } catch (error: unknown) {
+      return errorResult(error instanceof Error ? error.message : 'Permission denied')
+    }
+
     const result = await browserFetch('run', { command: args.command })
     if (!result.success) return errorResult(result.error!)
     const data = result.data as Record<string, unknown>
@@ -432,6 +563,13 @@ export const browserGetStateTool = tool(
   `Get the current state of the browser in one call. Returns the current URL, a screenshot image, and an accessibility snapshot. Use this to quickly check what the browser is showing without needing multiple tool calls.`,
   {},
   async () => {
+    // browse_read permission — domain resolved by host from current page
+    try {
+      await browserUseRequest('get_state', {}, 'browse_read', await getCurrentPageDomain())
+    } catch (error: unknown) {
+      return errorResult(error instanceof Error ? error.message : 'Permission denied')
+    }
+
     const [urlResult, screenshotResult, snapshotResult] = await Promise.all([
       browserFetch('run', { command: 'get url' }),
       browserFetch('screenshot', { full: false }),

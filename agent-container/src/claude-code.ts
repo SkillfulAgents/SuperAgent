@@ -494,7 +494,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           // not additive). This is acceptable because they write the same ID,
           // but if two user-input tools fire concurrently the first ID could
           // be overwritten before consumeCurrentToolUseId is called.
-          if ((toolName.startsWith('mcp__user-input__') || toolName.startsWith('mcp__computer-use__')) && options.toolUseID) {
+          if ((toolName.startsWith('mcp__user-input__') || toolName.startsWith('mcp__computer-use__') || toolName.startsWith('mcp__browser__browser_')) && options.toolUseID) {
             inputManager.setCurrentToolUseId(options.toolUseID);
           }
 
@@ -516,6 +516,17 @@ export class ClaudeCodeProcess extends EventEmitter {
             },
             {
               matcher: 'mcp__computer-use__.*',
+              hooks: [
+                async (_input, toolUseId) => {
+                  if (toolUseId) {
+                    inputManager.setCurrentToolUseId(toolUseId);
+                  }
+                  return {};
+                },
+              ],
+            },
+            {
+              matcher: 'mcp__browser__browser_.*',
               hooks: [
                 async (_input, toolUseId) => {
                   if (toolUseId) {

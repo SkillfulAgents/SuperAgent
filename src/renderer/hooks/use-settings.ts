@@ -12,6 +12,7 @@ import type {
   LlmProviderId,
 } from '@shared/lib/config/settings'
 import type { ComputerUseSettings } from '@shared/lib/computer-use/types'
+import type { BrowserUseSettings } from '@shared/lib/browser-use/types'
 import type { RunnerAvailability } from '@shared/lib/container/client-factory'
 
 export type { GlobalSettingsResponse, ContainerSettings, AppPreferences, ModelSettings, AgentLimitsSettings, AuthSettings, VoiceSettings, AnalyticsTarget, LlmProviderId, RunnerAvailability }
@@ -53,6 +54,7 @@ export interface UpdateSettingsParams {
   auth?: Partial<AuthSettings>
   voice?: Partial<VoiceSettings>
   computerUse?: Partial<ComputerUseSettings>
+  browserUse?: Partial<BrowserUseSettings>
   shareAnalytics?: boolean
   analyticsTargets?: AnalyticsTarget[]
 }

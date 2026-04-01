@@ -62,6 +62,14 @@ export interface ComputerUseRequest {
   appName?: string
 }
 
+export interface BrowserUseRequest {
+  toolUseId: string
+  method: string
+  params: Record<string, unknown>
+  permissionLevel: string
+  domain?: string
+}
+
 export interface SubagentInfo {
   parentToolId: string | null
   agentId: string | null
@@ -90,6 +98,7 @@ interface StreamState {
   pendingBrowserInputRequests: BrowserInputRequest[]
   pendingScriptRunRequests: ScriptRunRequest[]
   pendingComputerUseRequests: ComputerUseRequest[]
+  pendingBrowserUseRequests: BrowserUseRequest[]
   error: string | null // Error message if session encountered an error
   /** SDK error code from the LLM provider (e.g., 'authentication_failed', 'rate_limit', 'server_error') */
   apiErrorCode: string | null
@@ -175,6 +184,7 @@ function getOrCreateEventSource(
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
+          pendingBrowserUseRequests: current?.pendingBrowserUseRequests ?? [],
           error: null,
           apiErrorCode: null,
           browserActive: current?.browserActive ?? false,
@@ -219,6 +229,7 @@ function getOrCreateEventSource(
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
+          pendingBrowserUseRequests: current?.pendingBrowserUseRequests ?? [],
           error: null, // Clear any previous error when starting new request
           apiErrorCode: null,
           browserActive: current?.browserActive ?? false,
@@ -255,6 +266,7 @@ function getOrCreateEventSource(
           pendingBrowserInputRequests: [],
           pendingScriptRunRequests: [],
           pendingComputerUseRequests: [],
+          pendingBrowserUseRequests: [],
           error: null,
           // Preserve apiErrorCode — it was set from the assistant message's error field
           // and is still valid context for the last turn. Cleared on next session_active.
@@ -294,6 +306,7 @@ function getOrCreateEventSource(
           pendingBrowserInputRequests: [],
           pendingScriptRunRequests: [],
           pendingComputerUseRequests: [],
+          pendingBrowserUseRequests: [],
           error: data.error || 'An unknown error occurred',
           apiErrorCode: data.apiErrorCode || null,
           browserActive: current?.browserActive ?? false,
@@ -335,6 +348,7 @@ function getOrCreateEventSource(
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
+          pendingBrowserUseRequests: current?.pendingBrowserUseRequests ?? [],
           error: null,
           apiErrorCode: null,
           browserActive: current?.browserActive ?? false,
@@ -364,6 +378,7 @@ function getOrCreateEventSource(
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
+          pendingBrowserUseRequests: current?.pendingBrowserUseRequests ?? [],
           error: current?.error ?? null,
           apiErrorCode: data.apiErrorCode || current?.apiErrorCode || null,
           browserActive: current?.browserActive ?? false,
@@ -407,6 +422,7 @@ function getOrCreateEventSource(
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
+          pendingBrowserUseRequests: current?.pendingBrowserUseRequests ?? [],
           error: current?.error ?? null,
           apiErrorCode: current?.apiErrorCode ?? null,
           browserActive: current?.browserActive ?? false,
@@ -437,6 +453,7 @@ function getOrCreateEventSource(
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
+          pendingBrowserUseRequests: current?.pendingBrowserUseRequests ?? [],
           error: current?.error ?? null,
           apiErrorCode: current?.apiErrorCode ?? null,
           browserActive: current?.browserActive ?? false,
@@ -466,6 +483,7 @@ function getOrCreateEventSource(
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
+          pendingBrowserUseRequests: current?.pendingBrowserUseRequests ?? [],
           error: current?.error ?? null,
           apiErrorCode: current?.apiErrorCode ?? null,
           browserActive: current?.browserActive ?? false,
@@ -660,6 +678,23 @@ function getOrCreateEventSource(
           streamStates.set(sessionId, {
             ...current,
             pendingComputerUseRequests: [...current.pendingComputerUseRequests, newRequest],
+          })
+          queryClient.invalidateQueries({ queryKey: ['sessions'] })
+        }
+      }
+      else if (data.type === 'browser_use_request') {
+        // Agent is requesting browser use permission
+        if (current && !current.pendingBrowserUseRequests.some(r => r.toolUseId === data.toolUseId)) {
+          const newRequest: BrowserUseRequest = {
+            toolUseId: data.toolUseId,
+            method: data.method,
+            params: data.params || {},
+            permissionLevel: data.permissionLevel,
+            domain: data.domain,
+          }
+          streamStates.set(sessionId, {
+            ...current,
+            pendingBrowserUseRequests: [...current.pendingBrowserUseRequests, newRequest],
           })
           queryClient.invalidateQueries({ queryKey: ['sessions'] })
         }
@@ -1023,6 +1058,20 @@ export function removeComputerUseRequest(sessionId: string, toolUseId: string): 
   }
 }
 
+// Helper function to remove a browser use request from a session
+export function removeBrowserUseRequest(sessionId: string, toolUseId: string): void {
+  const current = streamStates.get(sessionId)
+  if (current) {
+    streamStates.set(sessionId, {
+      ...current,
+      pendingBrowserUseRequests: current.pendingBrowserUseRequests.filter(
+        (r) => r.toolUseId !== toolUseId
+      ),
+    })
+    streamListeners.get(sessionId)?.forEach((listener) => listener())
+  }
+}
+
 // Helper to clear isCompacting state (used when persisted messages already show the boundary)
 export function clearCompacting(sessionId: string): void {
   const current = streamStates.get(sessionId)
@@ -1055,6 +1104,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     pendingBrowserInputRequests: [],
     pendingScriptRunRequests: [],
     pendingComputerUseRequests: [],
+    pendingBrowserUseRequests: [],
     error: null,
     apiErrorCode: null,
     browserActive: false,
@@ -1109,6 +1159,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
         pendingBrowserInputRequests: [],
         pendingScriptRunRequests: [],
         pendingComputerUseRequests: [],
+        pendingBrowserUseRequests: [],
         error: null,
         apiErrorCode: null,
         browserActive: false,

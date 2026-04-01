@@ -1454,6 +1454,15 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
         })
       }
 
+      // Replay any pending browser use requests (survives SSE reconnection)
+      const pendingBU = messagePersister.getPendingBrowserUseRequests(sessionId)
+      for (const req of pendingBU) {
+        await stream.writeSSE({
+          data: JSON.stringify({ type: 'browser_use_request', ...req }),
+          event: 'message',
+        })
+      }
+
       // Replay current computer use grab state (with icon if cached)
       const agentSlugForStream = c.req.param('id')
       const { computerUsePermissionManager: cuPermMgr } = await import('@shared/lib/computer-use/permission-manager')
@@ -2317,6 +2326,104 @@ agents.post('/:id/sessions/:sessionId/computer-use/revoke', AgentUser(), async (
   } catch (error) {
     console.error('Failed to revoke computer use:', error)
     return c.json({ error: 'Failed to revoke computer use' }, 500)
+  }
+})
+
+// POST /api/agents/:id/sessions/:sessionId/browser-use - Approve or deny a browser use request
+agents.post('/:id/sessions/:sessionId/browser-use', AgentUser(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const sessionId = c.req.param('sessionId')
+    const body = await c.req.json()
+    const { toolUseId, method, params, permissionLevel, domain, grantType, decline, declineReason } = body
+
+    if (!toolUseId) {
+      return c.json({ error: 'toolUseId is required' }, 400)
+    }
+
+    // Validate session belongs to this agent (skip for _auto internal calls)
+    if (sessionId !== '_auto') {
+      const session = await getSession(agentSlug, sessionId)
+      if (!session) {
+        return c.json({ error: 'Session not found' }, 404)
+      }
+    }
+
+    const client = containerManager.getClient(agentSlug)
+
+    if (decline) {
+      const reason = declineReason || 'User denied browser use request'
+
+      const rejectResponse = await client.fetch(
+        `/inputs/${encodeURIComponent(toolUseId)}/reject`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason }),
+        }
+      )
+
+      if (!rejectResponse.ok) {
+        let errorDetails = 'Unknown error'
+        try {
+          const error = await rejectResponse.json()
+          errorDetails = JSON.stringify(error)
+        } catch {
+          errorDetails = await rejectResponse.text()
+        }
+        console.error(`[browser-use] Failed to reject: ${errorDetails}`)
+        return c.json({ error: 'Failed to reject browser use request' }, 500)
+      }
+
+      messagePersister.clearPendingBrowserUseRequest(sessionId, toolUseId)
+      trackServerEvent('request_declined', { type: 'browser_use', method, withReason: !!declineReason })
+      return c.json({ success: true, declined: true })
+    }
+
+    // Approve path: grant permission, then resolve the pending input so the container tool proceeds
+    if (!method) {
+      return c.json({ error: 'method is required for execution' }, 400)
+    }
+
+    // Record the permission grant
+    const { browserUsePermissionManager } = await import('@shared/lib/browser-use/permission-manager')
+    if (grantType && ['once', 'timed', 'always'].includes(grantType)) {
+      browserUsePermissionManager.grantPermission(agentSlug, permissionLevel || 'browse_read', grantType, domain)
+    }
+
+    // Resolve the pending input — the container tool will then execute browserFetch
+    const resolveResponse = await client.fetch(
+      `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: 'approved' }),
+      }
+    )
+
+    if (!resolveResponse.ok) {
+      let errorDetails = 'Unknown error'
+      try {
+        const error = await resolveResponse.json()
+        errorDetails = JSON.stringify(error)
+      } catch {
+        errorDetails = await resolveResponse.text()
+      }
+      console.error(`[browser-use] Failed to resolve: ${errorDetails}`)
+      return c.json({ error: 'Failed to resolve browser use request' }, 500)
+    }
+
+    // Consume "once" grant after approval
+    if (grantType === 'once') {
+      browserUsePermissionManager.consumeOnceGrant(agentSlug, permissionLevel || 'browse_read', domain)
+    }
+
+    messagePersister.clearPendingBrowserUseRequest(sessionId, toolUseId)
+    trackServerEvent('browser_use_approved', { method, permissionLevel, grantType })
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('Failed to handle browser use request:', error)
+    return c.json({ error: 'Failed to handle browser use request' }, 500)
   }
 })
 
