@@ -12,14 +12,8 @@ import {
 import { ProviderApiKeyInput } from '@renderer/components/settings/provider-api-key-input'
 import { BedrockCredentialsInput } from '@renderer/components/settings/bedrock-credentials-input'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
-import {
-  PLATFORM_AUTH_CHOICE_STORAGE_KEY,
-  useApplyPlatformDefaults,
-  useInitiatePlatformLogin,
-  usePlatformAuthCallbackListener,
-  usePlatformAuthStatus,
-} from '@renderer/hooks/use-platform-auth'
-import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
+import { usePlatformConnect } from '@renderer/hooks/use-platform-auth'
+import { ManualAccessKeyInput } from '@renderer/components/settings/manual-access-key-input'
 import { ChevronRight, Loader2, LogIn } from 'lucide-react'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 
@@ -74,46 +68,69 @@ const SIMPLE_PROVIDER_KEY_CONFIG: Record<string, {
   },
 }
 
-export function ConfigureLLMStep() {
+interface ConfigureLLMStepProps {
+  mode?: 'manual' | 'platform'
+}
+
+export function ConfigureLLMStep({ mode = 'manual' }: ConfigureLLMStepProps) {
   const [showInstructions, setShowInstructions] = useState(false)
-  const [platformError, setPlatformError] = useState<string | null>(null)
-  const [isLaunchingPlatformLogin, setIsLaunchingPlatformLogin] = useState(false)
   const { data: settings } = useSettings()
-  const { data: platformAuth } = usePlatformAuthStatus()
-  const applyPlatformDefaults = useApplyPlatformDefaults()
-  const initiatePlatformLogin = useInitiatePlatformLogin()
   const updateSettings = useUpdateSettings()
+  const {
+    handleConnect,
+    isLaunching,
+    error: platformError,
+    isConnected,
+    platformAuth,
+  } = usePlatformConnect({ successMessage: null })
 
   const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
   const providerStatus = settings?.llmProviderStatus ?? []
   const instructions = PROVIDER_INSTRUCTIONS[activeProvider]
 
-  usePlatformAuthCallbackListener((params) => {
-    setIsLaunchingPlatformLogin(false)
-    if (params.success) {
-      window.localStorage.setItem(PLATFORM_AUTH_CHOICE_STORAGE_KEY, 'platform')
-      setPlatformError(null)
-      void applyPlatformDefaults().catch((err) => {
-        setPlatformError(err instanceof Error ? err.message : 'Failed to apply platform defaults.')
-      })
-      return
-    }
-    setPlatformError(params.error || 'Platform login failed.')
-  })
+  if (mode === 'platform') {
+    return (
+      <div className="space-y-4">
+        <div>
+          <h2 className="text-xl font-bold">Connect to Platform</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            Sign in to Platform to use your subscription and hosted proxy.
+          </p>
+        </div>
 
-  async function handlePlatformConnect() {
-    const popup = prepareOAuthPopup()
-    setPlatformError(null)
-    setIsLaunchingPlatformLogin(true)
+        <div className="rounded-lg border bg-muted/30 p-4 space-y-3">
+          <p className="text-sm text-muted-foreground">
+            {isConnected
+              ? `Connected to ${platformAuth?.email ?? 'Platform'}. SuperAgent will use your Platform subscription automatically.`
+              : 'Connect your account to continue with the Platform setup flow.'}
+          </p>
 
-    try {
-      const result = await initiatePlatformLogin.mutateAsync()
-      await popup.navigate(result.loginUrl)
-    } catch (err) {
-      popup.close()
-      setIsLaunchingPlatformLogin(false)
-      setPlatformError(err instanceof Error ? err.message : 'Failed to open platform login.')
-    }
+          <Button
+            type="button"
+            variant="default"
+            onClick={() => {
+              void handleConnect()
+            }}
+            disabled={isLaunching}
+          >
+            {isLaunching ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <LogIn className="mr-2 h-4 w-4" />
+            )}
+            Connect
+          </Button>
+
+          {platformError ? (
+            <Alert variant="destructive">
+              <AlertDescription>{platformError}</AlertDescription>
+            </Alert>
+          ) : null}
+        </div>
+
+        <ManualAccessKeyInput />
+      </div>
+    )
   }
 
   return (
@@ -154,21 +171,21 @@ export function ConfigureLLMStep() {
       ) : activeProvider === 'platform' ? (
         <div className="space-y-3">
           <p className="text-sm text-muted-foreground">
-            {platformAuth?.connected
-              ? 'Platform connected. SuperAgent will use your Platform subscription automatically.'
+            {isConnected
+              ? `Connected to ${platformAuth?.email ?? 'Platform'}. SuperAgent will use your Platform subscription automatically.`
               : 'Platform not connected yet. Connect now to use your Platform subscription.'}
           </p>
-          {!platformAuth?.connected ? (
+          {!isConnected ? (
             <>
               <Button
                 type="button"
                 variant="outline"
                 onClick={() => {
-                  void handlePlatformConnect()
+                  void handleConnect()
                 }}
-                disabled={isLaunchingPlatformLogin || initiatePlatformLogin.isPending}
+                disabled={isLaunching}
               >
-                {isLaunchingPlatformLogin || initiatePlatformLogin.isPending ? (
+                {isLaunching ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 ) : (
                   <LogIn className="mr-2 h-4 w-4" />

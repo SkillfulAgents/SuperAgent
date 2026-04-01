@@ -8,7 +8,6 @@ import { clearSettingsCache } from '@shared/lib/config/settings'
 
 import {
   getPlatformAccessToken,
-  getPlatformAuthStatus,
   savePlatformAuth,
 } from './platform-auth-service'
 

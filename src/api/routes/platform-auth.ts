@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 
 import { Authenticated } from '../middleware/auth'
 import { getCurrentUserId } from '@shared/lib/auth/config'
-import { buildPlatformLoginUrl, getPlatformBaseUrl } from '@shared/lib/.platform-auth/config'
+import { buildPlatformLoginUrl, getPlatformBaseUrl } from '@shared/lib/platform-auth/config'
 import {
   getOrCreatePlatformClientInstanceId,
   getPlatformDeviceName,
@@ -10,6 +10,7 @@ import {
 import {
   getPlatformAuthStatus,
   savePlatformAuth,
+  revokePlatformToken,
 } from '@shared/lib/services/platform-auth-service'
 
 const platformAuth = new Hono()
@@ -28,6 +29,7 @@ platformAuth.post('/initiate', (c) => {
   const protocol = process.env.SUPERAGENT_PROTOCOL || 'superagent'
   const clientInstanceId = getOrCreatePlatformClientInstanceId()
   const deviceName = getPlatformDeviceName()
+
   return c.json({
     loginUrl: buildPlatformLoginUrl(protocol, {
       clientInstanceId,
@@ -60,6 +62,12 @@ platformAuth.post('/complete', async (c) => {
   })
 
   return c.json(status)
+})
+
+platformAuth.post('/revoke', async (c) => {
+  const body = await c.req.json<{ clearLocal?: boolean }>().catch(() => ({} as { clearLocal?: boolean }))
+  const success = await revokePlatformToken({ clearLocal: body.clearLocal })
+  return c.json({ success })
 })
 
 export default platformAuth

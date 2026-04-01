@@ -1,17 +1,11 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { ExternalLink, Loader2, LogIn, RefreshCw } from 'lucide-react'
 
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Button } from '@renderer/components/ui/button'
 import { Label } from '@renderer/components/ui/label'
-import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
-import {
-  PLATFORM_AUTH_CHOICE_STORAGE_KEY,
-  useApplyPlatformDefaults,
-  useInitiatePlatformLogin,
-  usePlatformAuthCallbackListener,
-  usePlatformAuthStatus,
-} from '@renderer/hooks/use-platform-auth'
+import { usePlatformConnect } from '@renderer/hooks/use-platform-auth'
+import { ManualAccessKeyInput } from '@renderer/components/settings/manual-access-key-input'
 
 function formatTimestamp(value: string | null): string {
   if (!value) return '—'
@@ -23,49 +17,22 @@ function formatTimestamp(value: string | null): string {
 }
 
 export function PlatformTab() {
-  const { data, isLoading } = usePlatformAuthStatus()
-  const applyPlatformDefaults = useApplyPlatformDefaults()
-  const initiateLogin = useInitiatePlatformLogin()
-  const [message, setMessage] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [isLaunching, setIsLaunching] = useState(false)
-
-  usePlatformAuthCallbackListener((params) => {
-    setIsLaunching(false)
-    if (params.success) {
-      window.localStorage.setItem(PLATFORM_AUTH_CHOICE_STORAGE_KEY, 'platform')
-      setError(null)
-      setMessage('Connected. Please restart your running agents for the new token to take effect.')
-      void applyPlatformDefaults().catch((err) => {
-        setError(err instanceof Error ? err.message : 'Failed to apply platform defaults.')
-      })
-      return
-    }
-    setMessage(null)
-    setError(params.error || 'Platform login failed.')
+  const {
+    handleConnect,
+    isLaunching,
+    error,
+    message,
+    isConnected,
+    platformAuth: data,
+    isLoadingPlatformAuth: isLoading,
+  } = usePlatformConnect({
+    successMessage: 'Connected. Please restart your running agents for the new token to take effect.',
   })
 
-  const isConnected = !!data?.connected
-
   const connectLabel = useMemo(() => {
-    if (isLaunching || initiateLogin.isPending) return 'Opening browser…'
+    if (isLaunching) return 'Opening browser…'
     return isConnected ? 'Reconnect' : 'Connect'
-  }, [initiateLogin.isPending, isConnected, isLaunching])
-
-  async function handleConnect() {
-    const popup = prepareOAuthPopup()
-    setMessage(null)
-    setError(null)
-    setIsLaunching(true)
-    try {
-      const result = await initiateLogin.mutateAsync()
-      await popup.navigate(result.loginUrl)
-    } catch (err) {
-      popup.close()
-      setIsLaunching(false)
-      setError(err instanceof Error ? err.message : 'Failed to open platform login.')
-    }
-  }
+  }, [isConnected, isLaunching])
 
   async function handleOpenPlatform() {
     if (!data?.platformBaseUrl) return
@@ -136,8 +103,8 @@ export function PlatformTab() {
 
       {/* Actions */}
       <div className="flex flex-wrap gap-2 pt-2">
-        <Button size="sm" onClick={handleConnect} disabled={isLaunching || initiateLogin.isPending}>
-          {isLaunching || initiateLogin.isPending ? (
+        <Button size="sm" onClick={handleConnect} disabled={isLaunching}>
+          {isLaunching ? (
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
           ) : isConnected ? (
             <RefreshCw className="mr-2 h-4 w-4" />
@@ -151,8 +118,9 @@ export function PlatformTab() {
           <ExternalLink className="mr-2 h-4 w-4" />
           Open Platform
         </Button>
-
       </div>
+
+      <ManualAccessKeyInput className="pt-1" />
     </div>
   )
 }

@@ -7,7 +7,7 @@ import {
   getComposioUserId,
 } from '@shared/lib/config/settings'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
-import { getPlatformProxyBaseUrl } from '@shared/lib/.platform-auth/config'
+import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 
 const COMPOSIO_BASE_URL = 'https://backend.composio.dev/api/v3'
 

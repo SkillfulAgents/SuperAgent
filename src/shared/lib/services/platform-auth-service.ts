@@ -92,3 +92,37 @@ export function getPlatformAccessToken(_userId?: string): string | null {
   return readRecord()?.token ?? null
 }
 
+function clearPlatformAuth(): void {
+  writeRecord(null)
+}
+
+export async function revokePlatformTokenRemotely(): Promise<boolean> {
+  const token = readRecord()?.token
+  if (!token) return false
+
+  const { getPlatformProxyBaseUrl } = await import('@shared/lib/platform-auth/config')
+  const proxyBase = getPlatformProxyBaseUrl()
+  if (!proxyBase) return false
+
+  try {
+    const res = await fetch(`${proxyBase}/v1/revoke`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+export async function revokePlatformToken(options?: { clearLocal?: boolean }): Promise<boolean> {
+  const success = await revokePlatformTokenRemotely()
+  if (options?.clearLocal !== false) {
+    clearPlatformAuth()
+  }
+  return success
+}
+

@@ -1,5 +1,5 @@
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
-import { getPlatformProxyBaseUrl } from '@shared/lib/.platform-auth/config'
+import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { BaseSttProvider } from './stt-provider'
 import type { ApiKeyStatus } from '../config/settings'
 

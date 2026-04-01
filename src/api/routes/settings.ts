@@ -479,6 +479,14 @@ settings.post('/validate-stt-key', async (c) => {
 // POST /api/settings/factory-reset - Reset all data
 settings.post('/factory-reset', async (c) => {
   try {
+    // Revoke platform token remotely before clearing local state
+    try {
+      const { revokePlatformToken } = await import('@shared/lib/services/platform-auth-service')
+      await revokePlatformToken({ clearLocal: false })
+    } catch {
+      // Best-effort: continue with reset even if remote revoke fails
+    }
+
     // Stop all running containers
     await containerManager.stopAll()
 

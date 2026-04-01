@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { BaseLlmProvider, type ModelOption, type ModelPurpose } from './base-llm-provider'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
-import { getPlatformProxyBaseUrl } from '@shared/lib/.platform-auth/config'
+import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import type { ApiKeyStatus } from '../config/settings'
 
 export class PlatformLlmProvider extends BaseLlmProvider {

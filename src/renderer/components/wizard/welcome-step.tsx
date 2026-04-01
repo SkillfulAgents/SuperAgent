@@ -1,59 +1,36 @@
-import { useState } from 'react'
-import { Loader2, LogIn, RefreshCw } from 'lucide-react'
+import { ChevronRight, Loader2 } from 'lucide-react'
 
-import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Button } from '@renderer/components/ui/button'
-import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
-import {
-  PLATFORM_AUTH_CHOICE_STORAGE_KEY,
-  useApplyPlatformDefaults,
-  useInitiatePlatformLogin,
-  usePlatformAuthCallbackListener,
-  usePlatformAuthStatus,
-} from '@renderer/hooks/use-platform-auth'
+import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 
-export function WelcomeStep() {
-  const { data: platformAuth } = usePlatformAuthStatus()
-  const applyPlatformDefaults = useApplyPlatformDefaults()
-  const initiatePlatformLogin = useInitiatePlatformLogin()
-  const [platformError, setPlatformError] = useState<string | null>(null)
-  const [platformMessage, setPlatformMessage] = useState<string | null>(null)
-  const [isLaunchingPlatformLogin, setIsLaunchingPlatformLogin] = useState(false)
+interface WelcomeStepProps {
+  onChoosePlatform?: () => void
+  onContinueToManualSetup?: () => void
+}
 
-  usePlatformAuthCallbackListener((params) => {
-    setIsLaunchingPlatformLogin(false)
-    if (params.success) {
-      window.localStorage.setItem(PLATFORM_AUTH_CHOICE_STORAGE_KEY, 'platform')
-      setPlatformError(null)
-      setPlatformMessage(platformAuth?.connected
-        ? 'Platform reconnected successfully.'
-        : 'Platform connected successfully.')
-      void applyPlatformDefaults().catch((err) => {
-        setPlatformError(err instanceof Error ? err.message : 'Failed to apply platform defaults.')
-      })
-      return
-    }
-    setPlatformMessage(null)
-    setPlatformError(params.error || 'Platform login failed.')
-  })
+export function WelcomeStep({ onChoosePlatform, onContinueToManualSetup }: WelcomeStepProps) {
+  const { data: settings } = useSettings()
+  const updateSettings = useUpdateSettings()
 
-  async function handlePlatformConnect() {
-    const popup = prepareOAuthPopup()
-    setPlatformError(null)
-    setPlatformMessage(null)
-    setIsLaunchingPlatformLogin(true)
-
+  async function handleManualSetup() {
     try {
-      const result = await initiatePlatformLogin.mutateAsync()
-      await popup.navigate(result.loginUrl)
-    } catch (err) {
-      popup.close()
-      setIsLaunchingPlatformLogin(false)
-      setPlatformError(err instanceof Error ? err.message : 'Failed to open platform login.')
+      if (settings?.llmProvider === 'platform') {
+        await updateSettings.mutateAsync({ llmProvider: 'anthropic' })
+      }
+      onContinueToManualSetup?.()
+    } catch {
+      // Keep the original wizard flow simple: if switching providers fails,
+      // stay on this step and let the existing settings UI handle recovery.
     }
   }
 
-  const isConnected = !!platformAuth?.connected
+  async function handlePlatformPath() {
+    try {
+      onChoosePlatform?.()
+    } catch {
+      // Keep the welcome page lightweight. Subsequent steps handle recovery.
+    }
+  }
 
   return (
     <div className="space-y-5">
@@ -65,82 +42,63 @@ export function WelcomeStep() {
         </p>
       </div>
 
-      <div className="rounded-lg border bg-muted/30 p-4 space-y-3">
-        <div className="space-y-1">
-          <h3 className="text-sm font-medium">
-            {isConnected ? 'Platform Connected' : 'Login to Platform'}
-          </h3>
-          <p className="text-sm text-muted-foreground">
-            {isConnected
-              ? `Signed in as ${platformAuth?.email ?? 'your account'}. Re-login here if you want to refresh or switch accounts.`
-              : 'Launch platform login right from the wizard, or skip it and continue with your own provider key.'}
-          </p>
+      <div className="grid gap-4">
+        <div className="rounded-lg border bg-muted/30 p-4 space-y-3">
+          <div className="flex items-center justify-between gap-4">
+            <div className="space-y-1">
+              <h3 className="text-sm font-medium">Connect to Platform</h3>
+              <p className="text-sm text-muted-foreground">
+                Use your Platform subscription and hosted proxy.
+              </p>
+            </div>
+
+            <Button
+              type="button"
+              variant="default"
+              onClick={() => {
+                void handlePlatformPath()
+              }}
+              data-testid="wizard-platform-login"
+              className="shrink-0"
+            >
+              Next
+              <ChevronRight className="ml-2 h-4 w-4" />
+            </Button>
+          </div>
         </div>
 
-        <Button
-          type="button"
-          variant={isConnected ? 'outline' : 'default'}
-          onClick={() => {
-            void handlePlatformConnect()
-          }}
-          disabled={isLaunchingPlatformLogin || initiatePlatformLogin.isPending}
-          data-testid="wizard-platform-login"
-        >
-          {isLaunchingPlatformLogin || initiatePlatformLogin.isPending ? (
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          ) : isConnected ? (
-            <RefreshCw className="mr-2 h-4 w-4" />
-          ) : (
-            <LogIn className="mr-2 h-4 w-4" />
-          )}
-          {isConnected ? 'Re-login to Platform' : 'Login to Subscribe'}
-        </Button>
+        <div className="rounded-lg border bg-muted/30 p-4">
+          <div className="flex items-center justify-between gap-4">
+            <div className="space-y-1">
+              <h3 className="text-sm font-medium">Bring your own keys</h3>
+              <p className="text-sm text-muted-foreground">
+                Bring your own keys for providers like Anthropic, Deepgram, and Composio.
+              </p>
+            </div>
 
-        {platformMessage ? (
-          <Alert>
-            <AlertDescription>{platformMessage}</AlertDescription>
-          </Alert>
-        ) : null}
-        {platformError ? (
-          <Alert variant="destructive">
-            <AlertDescription>{platformError}</AlertDescription>
-          </Alert>
-        ) : null}
+            <Button
+              type="button"
+              variant="default"
+              onClick={() => {
+                void handleManualSetup()
+              }}
+              data-testid="wizard-manual-setup"
+              className="shrink-0"
+              disabled={updateSettings.isPending}
+            >
+              {updateSettings.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <>
+                  Next
+                  <ChevronRight className="ml-2 h-4 w-4" />
+                </>
+              )}
+              {updateSettings.isPending ? 'Next' : null}
+            </Button>
+          </div>
+        </div>
       </div>
-
-      <div className="space-y-3 pt-1">
-        <p className="text-sm font-medium">This wizard will help you set up:</p>
-        <ul className="space-y-2 text-sm text-muted-foreground">
-          <li className="flex items-start gap-2">
-            <span className="font-mono text-primary mt-0.5">1.</span>
-            <span><strong>Platform Login</strong> (optional) - Sign in or re-login to Platform</span>
-          </li>
-          <li className="flex items-start gap-2">
-            <span className="font-mono text-primary mt-0.5">2.</span>
-            <span><strong>LLM Provider</strong> - Configure your AI model API key</span>
-          </li>
-          <li className="flex items-start gap-2">
-            <span className="font-mono text-primary mt-0.5">3.</span>
-            <span><strong>Browser</strong> (optional) - Choose how agents browse the web</span>
-          </li>
-          <li className="flex items-start gap-2">
-            <span className="font-mono text-primary mt-0.5">4.</span>
-            <span><strong>Composio</strong> (optional) - Connect OAuth accounts like Gmail, Slack, GitHub</span>
-          </li>
-          <li className="flex items-start gap-2">
-            <span className="font-mono text-primary mt-0.5">5.</span>
-            <span><strong>Container Runtime</strong> - Ensure containers can run on your machine</span>
-          </li>
-          <li className="flex items-start gap-2">
-            <span className="font-mono text-primary mt-0.5">6.</span>
-            <span><strong>First Agent</strong> (optional) - Create your first AI agent</span>
-          </li>
-        </ul>
-      </div>
-
-      <p className="text-sm text-muted-foreground pt-1">
-        You can always change these settings later. Click <strong>Next</strong> to keep configuring the rest of your setup.
-      </p>
     </div>
   )
 }
