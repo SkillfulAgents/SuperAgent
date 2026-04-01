@@ -1671,14 +1671,8 @@ describe('mcp-proxy route', () => {
       expect(mockRequestReview).toHaveBeenCalledOnce()
     })
 
-    it('non-tool-call method (tools/list) → uses MCP default policy', async () => {
+    it('protocol methods (tools/list, initialize, etc.) skip policy enforcement', async () => {
       setupSuccessPath()
-      mockResolveMcpPolicy.mockResolvedValue({
-        decision: 'allow',
-        matchedScopes: [],
-        scopeDescriptions: {},
-        resolvedFrom: 'account_default',
-      })
 
       const body = JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: 1 })
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
@@ -1687,8 +1681,8 @@ describe('mcp-proxy route', () => {
         body,
       })
       expect(res.status).toBe(200)
-      // resolveMcpPolicy should have been called with null toolName
-      expect(mockResolveMcpPolicy).toHaveBeenCalledWith('mcp-1', null, expect.anything())
+      // Protocol methods should NOT trigger policy resolution
+      expect(mockResolveMcpPolicy).not.toHaveBeenCalled()
     })
 
     it('audit log includes policyDecision and matchedTool', async () => {
