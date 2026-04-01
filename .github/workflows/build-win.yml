@@ -23,6 +23,8 @@ jobs:
       - name: Build Windows app
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PLATFORM_BASE_URL: ${{ secrets.PLATFORM_BASE_URL }}
+          PLATFORM_PROXY_URL: ${{ secrets.PLATFORM_PROXY_URL }}
         run: npm run dist:win
 
       - name: Upload Windows Installer

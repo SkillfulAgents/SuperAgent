@@ -19,12 +19,11 @@ stt.get('/configured', (c) => {
 stt.get('/token', async (c) => {
   try {
     const providerParam = c.req.query('provider')
-    if (providerParam && providerParam !== 'deepgram' && providerParam !== 'openai') {
+    if (providerParam && providerParam !== 'deepgram' && providerParam !== 'openai' && providerParam !== 'platform') {
       return c.json({ error: `Invalid STT provider: ${providerParam}` }, 400)
     }
 
     const voiceSettings = getVoiceSettings()
-    // providerParam is already validated above to be 'deepgram' | 'openai' | undefined
     const provider: SttProvider | undefined = (providerParam as SttProvider) || voiceSettings.sttProvider
 
     if (!provider) {

@@ -28,18 +28,29 @@ export class AppPage {
     const wizard = this.page.locator('[data-testid="wizard-dialog"]')
     if (await wizard.isVisible({ timeout: 1000 }).catch(() => false)) {
       const stepContent = this.page.locator('[data-testid="wizard-step-content"]')
-      // Click Next through required steps (Welcome→LLM→Runtime)
-      for (let i = 0; i < 3; i++) {
-        await this.page.locator('[data-testid="wizard-next"]').click()
-        await expect(stepContent).toHaveAttribute('data-step', String(i + 1))
-      }
-      // Skip Browser step
+      // The welcome screen now branches into Platform or manual setup.
+      // Use the manual path so generic app tests can dismiss the wizard
+      // without relying on platform auth state.
+      await this.page.locator('[data-testid="wizard-manual-setup"]').click()
+      await expect(stepContent).toHaveAttribute('data-step', '0')
+
+      // LLM -> Browser
+      await this.page.locator('[data-testid="wizard-next"]').click()
+      await expect(stepContent).toHaveAttribute('data-step', '1')
+
+      // Browser -> Composio
+      await this.page.locator('[data-testid="wizard-skip"]').click()
+      await expect(stepContent).toHaveAttribute('data-step', '2')
+
+      // Composio -> Runtime
+      await this.page.locator('[data-testid="wizard-skip"]').click()
+      await expect(stepContent).toHaveAttribute('data-step', '3')
+
+      // Runtime -> Agent
       await this.page.locator('[data-testid="wizard-skip"]').click()
       await expect(stepContent).toHaveAttribute('data-step', '4')
-      // Skip Composio step
-      await this.page.locator('[data-testid="wizard-skip"]').click()
-      await expect(stepContent).toHaveAttribute('data-step', '5')
-      // Finish on last step
+
+      // Finish on the Agent step
       await this.page.locator('[data-testid="wizard-finish"]').click()
       await expect(wizard).not.toBeVisible()
     }

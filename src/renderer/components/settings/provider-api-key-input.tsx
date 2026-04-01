@@ -53,7 +53,8 @@ export function ProviderApiKeyInput({
   const [isRemoving, setIsRemoving] = useState(false)
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false)
 
-  const apiKeyStatus: ApiKeyStatus | undefined = settings?.apiKeyStatus?.[providerId]
+  const statusMap = settings?.apiKeyStatus as Record<string, ApiKeyStatus> | undefined
+  const apiKeyStatus: ApiKeyStatus | undefined = statusMap?.[providerId]
 
   const handleValidateAndSave = async () => {
     if (!apiKeyInput.trim()) return

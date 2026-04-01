@@ -1,0 +1,60 @@
+declare global {
+  var __PLATFORM_BASE_URL__: string | undefined
+  var __PLATFORM_PROXY_URL__: string | undefined
+}
+
+function getConfiguredValue(runtimeValue: string | undefined, buildValue: string | undefined): string {
+  return runtimeValue?.trim() || buildValue?.trim() || ''
+}
+
+function getBuildPlatformBaseUrl(): string {
+  return getConfiguredValue(undefined, globalThis.__PLATFORM_BASE_URL__)
+}
+
+function getBuildPlatformProxyUrl(): string {
+  return getConfiguredValue(undefined, globalThis.__PLATFORM_PROXY_URL__)
+}
+
+export function getPlatformBaseUrl(): string {
+  return getConfiguredValue(process.env.PLATFORM_BASE_URL, getBuildPlatformBaseUrl())
+}
+
+/**
+ * Resolve the platform proxy base URL (no trailing slash, no /v1 suffix).
+ * Used by the LLM provider, STT provider, and Composio client.
+ */
+export function getPlatformProxyBaseUrl(): string {
+  const raw = getConfiguredValue(
+    process.env.PLATFORM_PROXY_URL,
+    getBuildPlatformProxyUrl(),
+  ).replace(/\/+$/, '')
+  return raw.endsWith('/v1') ? raw.slice(0, -3) : raw
+}
+
+export function getPlatformCallbackUri(protocolScheme: string): string {
+  return `${protocolScheme}://platform-auth-callback`
+}
+
+export function buildPlatformLoginUrl(
+  protocolScheme: string,
+  options?: {
+    clientInstanceId?: string
+    deviceName?: string
+  }
+): string {
+  const callbackUri = getPlatformCallbackUri(protocolScheme)
+  let url: URL
+  try {
+    url = new URL('/auth/superagent', getPlatformBaseUrl())
+  } catch {
+    throw new Error(`Invalid platform base URL: ${getPlatformBaseUrl()}`)
+  }
+  url.searchParams.set('app_callback', callbackUri)
+  if (options?.clientInstanceId) {
+    url.searchParams.set('client_instance_id', options.clientInstanceId)
+  }
+  if (options?.deviceName) {
+    url.searchParams.set('device_name', options.deviceName)
+  }
+  return url.toString()
+}

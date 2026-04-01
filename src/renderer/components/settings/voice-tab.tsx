@@ -15,9 +15,18 @@ import { apiFetch } from '@renderer/lib/api'
 import { AlertTriangle, Eye, EyeOff, Check, Loader2, ExternalLink } from 'lucide-react'
 import { useVoiceInput } from '@renderer/hooks/use-voice-input'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import type { ApiKeyStatus, SttProvider } from '@shared/lib/config/settings'
 
 const STT_PROVIDERS = [
+  {
+    value: 'platform' as const,
+    label: 'Platform',
+    model: 'Nova 3',
+    docsUrl: undefined as string | undefined,
+    note: 'Uses Deepgram via your platform connection. No API key required.',
+    platformOnly: true,
+  },
   {
     value: 'deepgram' as const,
     label: 'Deepgram',
@@ -34,7 +43,9 @@ const STT_PROVIDERS = [
   },
 ]
 
-const PROVIDER_CONFIG: Record<SttProvider, {
+type ApiKeyProvider = 'deepgram' | 'openai'
+
+const PROVIDER_CONFIG: Record<ApiKeyProvider, {
   envVar: string
   placeholder: string
   apiKeyField: 'deepgramApiKey' | 'openaiApiKey'
@@ -60,7 +71,11 @@ const PROVIDER_CONFIG: Record<SttProvider, {
   },
 }
 
-function SttApiKeyInput({ provider, disabled }: { provider: SttProvider; disabled: boolean }) {
+function isApiKeyProvider(provider: SttProvider): provider is ApiKeyProvider {
+  return provider === 'deepgram' || provider === 'openai'
+}
+
+function SttApiKeyInput({ provider, disabled }: { provider: ApiKeyProvider; disabled: boolean }) {
   const { data: settings } = useSettings()
   const updateSettings = useUpdateSettings()
   const config = PROVIDER_CONFIG[provider]
@@ -268,12 +283,16 @@ const VALID_PROVIDERS = new Set(STT_PROVIDERS.map(p => p.value))
 export function VoiceTab() {
   const { data: settings, isLoading } = useSettings()
   const updateSettings = useUpdateSettings()
+  const { data: platformAuth } = usePlatformAuthStatus()
+  const isPlatformConnected = platformAuth?.connected ?? false
   const rawProvider = settings?.voice?.sttProvider
   const selectedProvider = rawProvider && VALID_PROVIDERS.has(rawProvider) ? rawProvider : undefined
 
   const hasKeyConfigured = selectedProvider && (
-    (selectedProvider === 'deepgram' && settings?.apiKeyStatus?.deepgram?.isConfigured) ||
-    (selectedProvider === 'openai' && settings?.apiKeyStatus?.openai?.isConfigured)
+    selectedProvider === 'platform'
+      ? isPlatformConnected
+      : (selectedProvider === 'deepgram' && settings?.apiKeyStatus?.deepgram?.isConfigured) ||
+        (selectedProvider === 'openai' && settings?.apiKeyStatus?.openai?.isConfigured)
   )
 
   return (
@@ -285,6 +304,7 @@ export function VoiceTab() {
           <Select
             value={selectedProvider ?? ''}
             onValueChange={(value) => {
+              if (value === 'platform' && !isPlatformConnected) return
               updateSettings.mutate({ voice: { sttProvider: value as SttProvider } })
             }}
             disabled={isLoading}
@@ -294,9 +314,16 @@ export function VoiceTab() {
             </SelectTrigger>
             <SelectContent>
               {STT_PROVIDERS.map((provider) => (
-                <SelectItem key={provider.value} value={provider.value}>
+                <SelectItem
+                  key={provider.value}
+                  value={provider.value}
+                  disabled={'platformOnly' in provider && provider.platformOnly && !isPlatformConnected}
+                >
                   {provider.label}
-                  <span className="text-muted-foreground ml-2">({provider.model})</span>
+                  {'platformOnly' in provider && provider.platformOnly && !isPlatformConnected
+                    ? <span className="text-muted-foreground ml-2">(requires platform login)</span>
+                    : <span className="text-muted-foreground ml-2">({provider.model})</span>
+                  }
                 </SelectItem>
               ))}
             </SelectContent>
@@ -309,23 +336,28 @@ export function VoiceTab() {
             if (!info) return null
             return (
               <p className="text-xs text-muted-foreground">
-                {info.note}{' '}
-                <a
-                  href={info.docsUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-primary hover:underline inline-flex items-center gap-0.5"
-                >
-                  View details
-                  <ExternalLink className="h-3 w-3" />
-                </a>
+                {info.note}
+                {info.docsUrl && (
+                  <>
+                    {' '}
+                    <a
+                      href={info.docsUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary hover:underline inline-flex items-center gap-0.5"
+                    >
+                      View details
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  </>
+                )}
               </p>
             )
           })()}
         </div>
       </div>
 
-      {selectedProvider && (
+      {selectedProvider && isApiKeyProvider(selectedProvider) && (
         <div className="pt-4 border-t space-y-4">
           <h3 className="text-sm font-medium">API Key</h3>
           <SttApiKeyInput key={selectedProvider} provider={selectedProvider} disabled={isLoading} />

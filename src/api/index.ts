@@ -18,6 +18,7 @@ import policies from './routes/policies'
 import runtimeStatusRouter from './routes/runtime-status'
 import sttRouter from './routes/stt'
 import adminUsersRouter from './routes/admin-users'
+import platformAuth from './routes/platform-auth'
 import { initializeServices } from '@shared/lib/startup'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { sql } from 'drizzle-orm'
@@ -148,6 +149,7 @@ app.route('/api/user-settings', userSettingsRouter)
 app.route('/api/policies', policies)
 app.route('/api/runtime-status', runtimeStatusRouter)
 app.route('/api/admin/users', adminUsersRouter)
+app.route('/api/platform-auth', platformAuth)
 app.route('/api/stt', sttRouter)
 
 // Global error handler

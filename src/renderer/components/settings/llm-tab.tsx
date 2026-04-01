@@ -9,6 +9,7 @@ import { Label } from '@renderer/components/ui/label'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { AlertTriangle } from 'lucide-react'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { ProviderApiKeyInput } from './provider-api-key-input'
 import { BedrockCredentialsInput } from './bedrock-credentials-input'
 import type { LlmProviderId } from '@shared/lib/config/settings'
@@ -35,8 +36,10 @@ const SIMPLE_PROVIDER_KEY_CONFIG: Record<string, {
 
 export function LlmTab() {
   const { data: settings, isLoading } = useSettings()
+  const { data: platformAuth } = usePlatformAuthStatus()
   const updateSettings = useUpdateSettings()
 
+  const isPlatformConnected = platformAuth?.connected ?? false
   const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
   const providerStatus = settings?.llmProviderStatus ?? []
   const activeProviderInfo = providerStatus.find(p => p.id === activeProvider)
@@ -52,6 +55,7 @@ export function LlmTab() {
           <Select
             value={activeProvider}
             onValueChange={(value) => {
+              if (value === 'platform' && !isPlatformConnected) return
               updateSettings.mutate({ llmProvider: value as LlmProviderId })
             }}
             disabled={isLoading}
@@ -61,8 +65,15 @@ export function LlmTab() {
             </SelectTrigger>
             <SelectContent>
               {providerStatus.map((provider) => (
-                <SelectItem key={provider.id} value={provider.id}>
+                <SelectItem
+                  key={provider.id}
+                  value={provider.id}
+                  disabled={provider.id === 'platform' && !isPlatformConnected}
+                >
                   {provider.name}
+                  {provider.id === 'platform' && !isPlatformConnected && (
+                    <span className="text-muted-foreground ml-2">(requires platform login)</span>
+                  )}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -84,6 +95,12 @@ export function LlmTab() {
         <h3 className="text-sm font-medium">{activeProvider === 'bedrock' ? 'Credentials' : 'API Key'}</h3>
         {activeProvider === 'bedrock' ? (
           <BedrockCredentialsInput key="bedrock" disabled={isLoading} />
+        ) : activeProvider === 'platform' ? (
+          <p className="text-sm text-muted-foreground">
+            {isPlatformConnected
+              ? 'Platform connected.'
+              : 'Platform not connected. Connect it from the Platform settings tab.'}
+          </p>
         ) : (
           <ProviderApiKeyInput
             key={activeProvider}

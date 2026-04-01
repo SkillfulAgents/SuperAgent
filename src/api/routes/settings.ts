@@ -28,7 +28,7 @@ import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, re
 import { VALID_LIMA_VM_MEMORY_OPTIONS } from '@shared/lib/container/types'
 import { detectAllProviders } from '../../main/host-browser'
 import { db } from '@shared/lib/db'
-import { proxyAuditLog, proxyTokens, agentConnectedAccounts, scheduledTasks, notifications, connectedAccounts } from '@shared/lib/db/schema'
+import { proxyAuditLog, proxyTokens, agentConnectedAccounts, scheduledTasks, notifications, connectedAccounts, userSettings } from '@shared/lib/db/schema'
 import fs from 'fs'
 
 const settings = new Hono()
@@ -69,6 +69,7 @@ function buildSettingsResponse(
       anthropic: getLlmProvider('anthropic').getApiKeyStatus(),
       openrouter: getLlmProvider('openrouter').getApiKeyStatus(),
       bedrock: getLlmProvider('bedrock').getApiKeyStatus(),
+      platform: getLlmProvider('platform').getApiKeyStatus(),
       browserbase: getBrowserbaseApiKeyStatus(),
       composio: getComposioApiKeyStatus(),
       deepgram: getSttProvider('deepgram').getApiKeyStatus(),
@@ -172,6 +173,7 @@ settings.put('/', async (c) => {
         : currentSettings.agentLimits,
       customEnvVars: body.customEnvVars !== undefined ? body.customEnvVars : currentSettings.customEnvVars,
       skillsets: currentSettings.skillsets,
+      platformAuth: currentSettings.platformAuth,
       auth: body.auth !== undefined ? { ...currentSettings.auth, ...body.auth } : currentSettings.auth,
       voice: body.voice !== undefined ? { ...currentSettings.voice, ...body.voice } : currentSettings.voice,
       shareAnalytics: body.shareAnalytics !== undefined ? body.shareAnalytics : currentSettings.shareAnalytics,
@@ -477,6 +479,14 @@ settings.post('/validate-stt-key', async (c) => {
 // POST /api/settings/factory-reset - Reset all data
 settings.post('/factory-reset', async (c) => {
   try {
+    // Revoke platform token remotely before clearing local state
+    try {
+      const { revokePlatformToken } = await import('@shared/lib/services/platform-auth-service')
+      await revokePlatformToken({ clearLocal: false })
+    } catch {
+      // Best-effort: continue with reset even if remote revoke fails
+    }
+
     // Stop all running containers
     await containerManager.stopAll()
 
@@ -491,11 +501,16 @@ settings.post('/factory-reset', async (c) => {
     db.delete(scheduledTasks).run()
     db.delete(notifications).run()
     db.delete(connectedAccounts).run()
+    db.delete(userSettings).run()
 
-    // Delete settings file
+    // Delete settings file (includes platform auth token)
     const settingsPath = path.join(getDataDir(), 'settings.json')
     await fs.promises.rm(settingsPath, { force: true })
     clearSettingsCache()
+
+    // Remove platform device identity so a fresh key is issued on next login
+    const platformDeviceDir = path.join(getDataDir(), '.platform-auth')
+    await fs.promises.rm(platformDeviceDir, { recursive: true, force: true })
 
     return c.json({ success: true })
   } catch (error) {

@@ -13,6 +13,8 @@ export default defineConfig({
     __AUTH_MODE__: JSON.stringify(process.env.AUTH_MODE === 'true'),
     __AMPLITUDE_API_KEY__: JSON.stringify(process.env.AMPLITUDE_API_KEY || analyticsConfig.defaultAmplitudeKey),
     __RENDER_TRACKING__: JSON.stringify(process.env.RENDER_TRACKING === 'true'),
+    'globalThis.__PLATFORM_BASE_URL__': JSON.stringify(process.env.PLATFORM_BASE_URL || ''),
+    'globalThis.__PLATFORM_PROXY_URL__': JSON.stringify(process.env.PLATFORM_PROXY_URL || ''),
   },
   plugins: [
     react(),

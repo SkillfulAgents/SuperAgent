@@ -35,7 +35,7 @@ export interface ApiKeySettings {
   openaiApiKey?: string
 }
 
-export type SttProvider = 'deepgram' | 'openai'
+export type SttProvider = 'deepgram' | 'openai' | 'platform'
 
 export interface VoiceSettings {
   sttProvider?: SttProvider
@@ -151,7 +151,19 @@ export interface AnalyticsTarget {
   enabled: boolean
 }
 
-export type LlmProviderId = 'anthropic' | 'openrouter' | 'bedrock'
+export type { LlmProviderId } from '../llm-provider/base-llm-provider'
+import type { LlmProviderId } from '../llm-provider/base-llm-provider'
+
+export interface PlatformAuthSettings {
+  token: string
+  tokenPreview: string
+  email: string | null
+  label: string | null
+  orgName: string | null
+  role: string | null
+  createdAt: string
+  updatedAt: string
+}
 
 export interface AppSettings {
   container: ContainerSettings
@@ -167,6 +179,7 @@ export interface AppSettings {
   computerUse?: ComputerUseSettings
   shareAnalytics?: boolean
   analyticsTargets?: AnalyticsTarget[]
+  platformAuth?: PlatformAuthSettings
 }
 
 // API key source types
@@ -213,6 +226,7 @@ export interface GlobalSettingsResponse {
     anthropic: ApiKeyStatus
     openrouter: ApiKeyStatus
     bedrock: ApiKeyStatus
+    platform: ApiKeyStatus
     composio: ApiKeyStatus
     browserbase: ApiKeyStatus
     deepgram: ApiKeyStatus
@@ -341,6 +355,7 @@ export function loadSettings(): AppSettings {
         computerUse: loaded.computerUse,
         shareAnalytics: loaded.shareAnalytics ?? false,
         analyticsTargets: loaded.analyticsTargets,
+        platformAuth: loaded.platformAuth,
       }
     }
   } catch (error) {

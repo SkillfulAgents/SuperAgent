@@ -107,6 +107,7 @@ export function useFactoryReset() {
       return res.json()
     },
     onSuccess: () => {
+      window.localStorage.removeItem('superagent-auth-choice')
       queryClient.invalidateQueries()
     },
   })

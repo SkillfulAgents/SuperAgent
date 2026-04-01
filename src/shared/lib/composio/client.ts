@@ -6,6 +6,8 @@ import {
   getEffectiveComposioApiKey,
   getComposioUserId,
 } from '@shared/lib/config/settings'
+import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 
 const COMPOSIO_BASE_URL = 'https://backend.composio.dev/api/v3'
 
@@ -25,6 +27,14 @@ class ComposioApiError extends Error {
   }
 }
 
+function getPlatformComposioBaseUrl(): string {
+  return `${getPlatformProxyBaseUrl()}/v1/composio`
+}
+
+function getPlatformComposioToken(): string | null {
+  return getPlatformAccessToken()
+}
+
 /**
  * Make a request to the Composio API.
  */
@@ -32,19 +42,27 @@ async function composioFetch<T>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<T> {
-  const apiKey = getEffectiveComposioApiKey()
-  if (!apiKey) {
-    throw new ComposioApiError('Composio API key is not configured', 401)
+  const platformToken = getPlatformComposioToken()
+  const headers = new Headers(options.headers)
+  headers.set('Content-Type', 'application/json')
+
+  let url: string
+  if (platformToken) {
+    url = `${getPlatformComposioBaseUrl()}${endpoint}`
+    headers.set('Authorization', `Bearer ${platformToken}`)
+    headers.delete('x-api-key')
+  } else {
+    const apiKey = getEffectiveComposioApiKey()
+    if (!apiKey) {
+      throw new ComposioApiError('Composio API key is not configured', 401)
+    }
+    url = `${COMPOSIO_BASE_URL}${endpoint}`
+    headers.set('x-api-key', apiKey)
   }
 
-  const url = `${COMPOSIO_BASE_URL}${endpoint}`
   const response = await fetch(url, {
     ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      ...options.headers,
-    },
+    headers,
   })
 
   if (!response.ok) {
@@ -217,14 +235,19 @@ export async function listConnections(
   toolkit?: string,
   userIdOverride?: string
 ): Promise<ComposioConnection[]> {
-  const userId = userIdOverride || getComposioUserId()
-  if (!userId) {
-    throw new ComposioApiError('Composio User ID is not configured', 401)
+  const platformToken = getPlatformComposioToken()
+  let endpoint = '/connected_accounts'
+  if (!platformToken) {
+    const userId = userIdOverride || getComposioUserId()
+    if (!userId) {
+      throw new ComposioApiError('Composio User ID is not configured', 401)
+    }
+    endpoint += `?user_id=${encodeURIComponent(userId)}`
   }
 
-  let endpoint = `/connected_accounts?user_id=${encodeURIComponent(userId)}`
   if (toolkit) {
-    endpoint += `&toolkit_slug=${encodeURIComponent(toolkit)}`
+    endpoint += endpoint.includes('?') ? '&' : '?'
+    endpoint += `toolkit_slug=${encodeURIComponent(toolkit)}`
   }
 
   const response = await composioFetch<ListConnectedAccountsResponse>(endpoint)
@@ -248,8 +271,9 @@ export async function initiateConnection(
   callbackUrl: string,
   userIdOverride?: string
 ): Promise<InitiateConnectionResponse> {
-  const userId = userIdOverride || getComposioUserId()
-  if (!userId) {
+  const platformToken = getPlatformComposioToken()
+  const userId = platformToken ? null : (userIdOverride || getComposioUserId())
+  if (!platformToken && !userId) {
     throw new ComposioApiError('Composio User ID is not configured', 401)
   }
 
@@ -268,7 +292,7 @@ export async function initiateConnection(
               status: 'INITIALIZING',
             },
           },
-          user_id: userId,
+          ...(userId ? { user_id: userId } : {}),
           callback_url: callbackUrl,
         },
       }),

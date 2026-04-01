@@ -78,6 +78,7 @@ let apiServer: ReturnType<typeof serve> | null = null
 let notificationEventSource: EventSource | null = null
 let apiReady = false
 const pendingDashboardLinks: { agentSlug: string; dashboardSlug: string }[] = []
+const pendingProtocolUrls: string[] = []
 
 function openDashboardWindow(agentSlug: string, dashboardSlug: string) {
   const key = `${agentSlug}/${dashboardSlug}`
@@ -110,14 +111,49 @@ function openDashboardWindow(agentSlug: string, dashboardSlug: string) {
 const PROTOCOL_SCHEME = app.isPackaged ? 'superagent' : 'superagent-dev'
 process.env.SUPERAGENT_PROTOCOL = PROTOCOL_SCHEME
 
-if (process.defaultApp) {
-  if (process.argv.length >= 2) {
-    app.setAsDefaultProtocolClient(PROTOCOL_SCHEME, process.execPath, [
-      path.resolve(process.argv[1]),
-    ])
-  }
+if (!app.isPackaged && process.argv.length >= 2) {
+  app.setAsDefaultProtocolClient(PROTOCOL_SCHEME, process.execPath, [
+    path.resolve(process.argv[1]),
+  ])
 } else {
   app.setAsDefaultProtocolClient(PROTOCOL_SCHEME)
+}
+
+function canHandleDeepLinkNow(url: string) {
+  if (url.startsWith(`${PROTOCOL_SCHEME}://dashboard/`)) {
+    return apiReady
+  }
+
+  if (url.startsWith(`${PROTOCOL_SCHEME}://oauth-callback`)) {
+    return !!mainWindow
+  }
+
+  if (
+    url.startsWith(`${PROTOCOL_SCHEME}://mcp-oauth-callback`) ||
+    url.startsWith(`${PROTOCOL_SCHEME}://platform-auth-callback`)
+  ) {
+    return !!mainWindow && apiReady
+  }
+
+  return !!mainWindow
+}
+
+function processPendingProtocolUrls() {
+  if (pendingProtocolUrls.length === 0) {
+    return
+  }
+
+  const remaining: string[] = []
+  for (const url of pendingProtocolUrls) {
+    if (canHandleDeepLinkNow(url)) {
+      handleDeepLinkUrl(url, true)
+    } else {
+      remaining.push(url)
+    }
+  }
+
+  pendingProtocolUrls.length = 0
+  pendingProtocolUrls.push(...remaining)
 }
 
 function createWindow() {
@@ -214,6 +250,8 @@ function createWindow() {
   mainWindow.on('leave-full-screen', () => {
     mainWindow?.webContents.send('fullscreen-change', false)
   })
+
+  processPendingProtocolUrls()
 }
 
 // IPC handler for getting full screen state
@@ -408,7 +446,12 @@ app.on('open-url', (event, url) => {
   handleDeepLinkUrl(url)
 })
 
-function handleDeepLinkUrl(url: string) {
+function handleDeepLinkUrl(url: string, fromQueue = false) {
+  if (!fromQueue && !canHandleDeepLinkNow(url)) {
+    pendingProtocolUrls.push(url)
+    return
+  }
+
   // Dashboard deep links — open in a standalone window (doesn't need mainWindow)
   if (url.startsWith(`${PROTOCOL_SCHEME}://dashboard/`)) {
     try {
@@ -478,6 +521,83 @@ function handleDeepLinkUrl(url: string) {
         success: false,
         error: 'Invalid callback URL',
       })
+    }
+  }
+
+  if (url.startsWith(`${PROTOCOL_SCHEME}://platform-auth-callback`)) {
+    try {
+      const callbackUrl = new URL(url)
+      const error = callbackUrl.searchParams.get('error')
+      if (error) {
+        mainWindow.webContents.send('platform-auth-callback', {
+          success: false,
+          error,
+        })
+        mainWindow.focus()
+        return
+      }
+
+      const token = callbackUrl.searchParams.get('token')
+      if (!token) {
+        mainWindow.webContents.send('platform-auth-callback', {
+          success: false,
+          error: 'Missing platform token in callback URL',
+        })
+        mainWindow.focus()
+        return
+      }
+
+      const email = callbackUrl.searchParams.get('email')
+      const label = callbackUrl.searchParams.get('label') || 'SuperAgent'
+      const orgName = callbackUrl.searchParams.get('org_name')
+      const role = callbackUrl.searchParams.get('role')
+      const apiUrl = `http://localhost:${actualApiPort}/api/platform-auth/complete`
+
+      fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          token,
+          email,
+          label,
+          orgName,
+          role,
+        }),
+      })
+        .then(async (res) => {
+          if (!res.ok) {
+            const payload = await res.json().catch(() => ({ error: 'Failed to save platform token' }))
+            mainWindow?.webContents.send('platform-auth-callback', {
+              success: false,
+              error: payload.error || 'Failed to save platform token',
+            })
+            return
+          }
+
+          mainWindow?.webContents.send('platform-auth-callback', {
+            success: true,
+            email,
+          })
+        })
+        .catch((err) => {
+          console.error('Failed to complete platform auth callback:', err)
+          mainWindow?.webContents.send('platform-auth-callback', {
+            success: false,
+            error: err.message || 'Failed to complete platform auth callback',
+          })
+        })
+
+      mainWindow.focus()
+      return
+    } catch (error) {
+      console.error('Failed to parse platform auth callback URL:', error)
+      mainWindow.webContents.send('platform-auth-callback', {
+        success: false,
+        error: 'Invalid platform callback URL',
+      })
+      return
     }
   }
 }
@@ -578,6 +698,7 @@ async function startApp() {
       openDashboardWindow(link.agentSlug, link.dashboardSlug)
     }
     pendingDashboardLinks.length = 0
+    processPendingProtocolUrls()
   })
 
   // Set up server-level handlers (WebSocket proxies, etc.)

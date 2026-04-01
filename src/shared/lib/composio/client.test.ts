@@ -9,6 +9,10 @@ vi.mock('@shared/lib/config/settings', () => ({
   getComposioUserId: () => mockGetComposioUserId(),
 }))
 
+vi.mock('@shared/lib/services/platform-auth-service', () => ({
+  getPlatformAccessToken: () => null,
+}))
+
 // Mock global fetch
 const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)

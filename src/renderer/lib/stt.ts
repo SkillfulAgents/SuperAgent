@@ -282,6 +282,7 @@ class OpenaiAdapter implements SttAdapter {
 export function createSttAdapter(provider: SttProvider): SttAdapter {
   switch (provider) {
     case 'deepgram':
+    case 'platform':
       return new DeepgramAdapter()
     case 'openai':
       return new OpenaiAdapter()

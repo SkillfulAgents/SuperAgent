@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { Alert, AlertDescription } from '@renderer/components/ui/alert'
+import { Button } from '@renderer/components/ui/button'
 import { Label } from '@renderer/components/ui/label'
 import {
   Select,
@@ -10,10 +12,19 @@ import {
 import { ProviderApiKeyInput } from '@renderer/components/settings/provider-api-key-input'
 import { BedrockCredentialsInput } from '@renderer/components/settings/bedrock-credentials-input'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
-import { ChevronRight } from 'lucide-react'
+import { usePlatformConnect } from '@renderer/hooks/use-platform-auth'
+import { ManualAccessKeyInput } from '@renderer/components/settings/manual-access-key-input'
+import { ChevronRight, Loader2, LogIn } from 'lucide-react'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 
 const PROVIDER_INSTRUCTIONS: Record<string, { steps: { text: string; link?: { href: string; label: string } }[] }> = {
+  platform: {
+    steps: [
+      { text: 'Choose Platform as your provider' },
+      { text: 'Connect your account from the Platform settings tab' },
+      { text: 'SuperAgent will use your platform token and the hosted proxy automatically' },
+    ],
+  },
   anthropic: {
     steps: [
       { text: 'Sign up for an account at', link: { href: 'https://console.anthropic.com/login', label: 'console.anthropic.com' } },
@@ -57,21 +68,85 @@ const SIMPLE_PROVIDER_KEY_CONFIG: Record<string, {
   },
 }
 
-export function ConfigureLLMStep() {
+interface ConfigureLLMStepProps {
+  mode?: 'manual' | 'platform'
+  onPlatformConnected?: () => void
+}
+
+export function ConfigureLLMStep({ mode = 'manual', onPlatformConnected }: ConfigureLLMStepProps) {
   const [showInstructions, setShowInstructions] = useState(false)
   const { data: settings } = useSettings()
   const updateSettings = useUpdateSettings()
+  const {
+    handleConnect,
+    isLaunching,
+    error: platformError,
+    isConnected,
+    platformAuth,
+  } = usePlatformConnect({
+    successMessage: null,
+    onSuccess: () => {
+      if (mode === 'platform') {
+        onPlatformConnected?.()
+      }
+    },
+  })
 
   const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
   const providerStatus = settings?.llmProviderStatus ?? []
   const instructions = PROVIDER_INSTRUCTIONS[activeProvider]
+
+  if (mode === 'platform') {
+    return (
+      <div className="space-y-4">
+        <div>
+          <h2 className="text-xl font-bold">Connect to Platform</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            Sign in to Platform to use your subscription and hosted proxy.
+          </p>
+        </div>
+
+        <div className="rounded-lg border bg-muted/30 p-4 space-y-3">
+          <p className="text-sm text-muted-foreground">
+            {isConnected
+              ? `Connected to ${platformAuth?.email ?? 'Platform'}. SuperAgent will use your Platform subscription automatically.`
+              : 'Connect your account to continue with the Platform setup flow.'}
+          </p>
+
+          <Button
+            type="button"
+            variant="default"
+            onClick={() => {
+              void handleConnect()
+            }}
+            disabled={isLaunching}
+          >
+            {isLaunching ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <LogIn className="mr-2 h-4 w-4" />
+            )}
+            Connect
+          </Button>
+
+          {platformError ? (
+            <Alert variant="destructive">
+              <AlertDescription>{platformError}</AlertDescription>
+            </Alert>
+          ) : null}
+        </div>
+
+        <ManualAccessKeyInput />
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-4">
       <div>
         <h2 className="text-xl font-bold">Configure LLM Provider</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Superagent needs an API key to communicate with AI models.
+          Superagent needs either an API key or a Platform connection to communicate with AI models.
         </p>
       </div>
 
@@ -101,6 +176,38 @@ export function ConfigureLLMStep() {
           key="bedrock"
           showNotConfiguredAlert={false}
         />
+      ) : activeProvider === 'platform' ? (
+        <div className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            {isConnected
+              ? `Connected to ${platformAuth?.email ?? 'Platform'}. SuperAgent will use your Platform subscription automatically.`
+              : 'Platform not connected yet. Connect now to use your Platform subscription.'}
+          </p>
+          {!isConnected ? (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  void handleConnect()
+                }}
+                disabled={isLaunching}
+              >
+                {isLaunching ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <LogIn className="mr-2 h-4 w-4" />
+                )}
+                Connect Platform
+              </Button>
+              {platformError ? (
+                <Alert variant="destructive">
+                  <AlertDescription>{platformError}</AlertDescription>
+                </Alert>
+              ) : null}
+            </>
+          ) : null}
+        </div>
       ) : (
         <ProviderApiKeyInput
           key={activeProvider}

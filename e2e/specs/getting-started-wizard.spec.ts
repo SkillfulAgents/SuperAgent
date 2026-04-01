@@ -35,13 +35,14 @@ test.describe('Getting Started Wizard', () => {
     // Wizard should auto-open
     await wizardPage.expectVisible()
     await wizardPage.expectStep(0)
+    await wizardPage.chooseManualSetup()
+    await wizardPage.expectStep(0)
 
     // Dismiss it for cleanup
-    await wizardPage.clickNext()  // -> LLM
     await wizardPage.clickNext()  // -> Browser
     await wizardPage.clickSkip()  // -> Composio
     await wizardPage.clickSkip()  // -> Runtime
-    await wizardPage.clickNext()  // -> Agent
+    await wizardPage.clickSkip()  // -> Agent
     await wizardPage.clickFinish()
     await wizardPage.expectNotVisible()
   })
@@ -69,43 +70,47 @@ test.describe('Getting Started Wizard', () => {
     await appPage.waitForAppLoaded()
     await wizardPage.expectVisible()
 
-    // Step 0: Welcome
+    // Step 0: Welcome (no Back button rendered on this screen)
     await wizardPage.expectStep(0)
-    await wizardPage.expectBackDisabled()
     await expect(page.getByText('Welcome to Superagent')).toBeVisible()
+    await expect(page.locator('[data-testid="wizard-platform-login"]')).toBeVisible()
+    await expect(page.locator('[data-testid="wizard-manual-setup"]')).toBeVisible()
+    await expect(page.locator('[data-testid="wizard-back"]')).not.toBeVisible()
 
-    // Go to Step 1: LLM
-    await wizardPage.clickNext()
-    await wizardPage.expectStep(1)
-    await wizardPage.expectBackEnabled()
-    await expect(page.getByText('Configure LLM Provider')).toBeVisible()
-
-    // Go back to Step 0
-    await wizardPage.clickBack()
+    // Choose the manual path and land on Step 0: LLM
+    await wizardPage.chooseManualSetup()
     await wizardPage.expectStep(0)
+    await expect(page.getByText('Configure LLM Provider')).toBeVisible()
+    await wizardPage.expectBackEnabled()
 
-    // Go forward again to Step 1
+    // Go to Step 1: Browser
     await wizardPage.clickNext()
     await wizardPage.expectStep(1)
-
-    // Go to Step 2: Browser (optional)
-    await wizardPage.clickNext()
-    await wizardPage.expectStep(2)
     await expect(page.getByText('Set Up Browser')).toBeVisible()
 
-    // Go to Step 3: Composio (optional)
+    // Go back to Step 0: LLM
+    await wizardPage.clickBack()
+    await wizardPage.expectStep(0)
+    await expect(page.getByText('Configure LLM Provider')).toBeVisible()
+
+    // Go forward again to Step 1: Browser
+    await wizardPage.clickNext()
+    await wizardPage.expectStep(1)
+    await expect(page.getByText('Set Up Browser')).toBeVisible()
+
+    // Go to Step 2: Composio (optional)
     await wizardPage.clickSkip()
-    await wizardPage.expectStep(3)
+    await wizardPage.expectStep(2)
     await expect(page.getByText('Set Up Composio')).toBeVisible()
 
-    // Go to Step 4: Runtime
+    // Go to Step 3: Runtime
     await wizardPage.clickSkip()
-    await wizardPage.expectStep(4)
+    await wizardPage.expectStep(3)
     await expect(page.getByText('Set Up Container Runtime')).toBeVisible()
 
-    // Go to Step 5: Create Agent (optional)
-    await wizardPage.clickNext()
-    await wizardPage.expectStep(5)
+    // Go to Step 4: Create Agent (optional)
+    await wizardPage.clickSkip()
+    await wizardPage.expectStep(4)
     await expect(page.getByRole('heading', { name: 'Create Your First Agent' })).toBeVisible()
 
     // Finish
@@ -122,22 +127,22 @@ test.describe('Getting Started Wizard', () => {
     await appPage.waitForAppLoaded()
     await wizardPage.expectVisible()
 
-    // Navigate to Browser step (step 2)
-    await wizardPage.clickNext() // -> LLM
+    // Choose manual setup, then navigate to Browser (step 1)
+    await wizardPage.chooseManualSetup()
     await wizardPage.clickNext() // -> Browser
-    await wizardPage.expectStep(2)
+    await wizardPage.expectStep(1)
 
     // Skip should advance to Composio
     await wizardPage.clickSkip()
-    await wizardPage.expectStep(3)
+    await wizardPage.expectStep(2)
 
     // Skip should advance to Runtime
     await wizardPage.clickSkip()
-    await wizardPage.expectStep(4)
+    await wizardPage.expectStep(3)
 
     // Skip should advance to Agent
     await wizardPage.clickSkip()
-    await wizardPage.expectStep(5)
+    await wizardPage.expectStep(4)
 
     // Skip on last step should finish
     await wizardPage.clickSkip()
@@ -152,13 +157,13 @@ test.describe('Getting Started Wizard', () => {
     await appPage.goto()
     await appPage.waitForAppLoaded()
     await wizardPage.expectVisible()
+    await wizardPage.chooseManualSetup()
 
     // Navigate through and finish
-    await wizardPage.clickNext()  // -> LLM
     await wizardPage.clickNext()  // -> Browser
     await wizardPage.clickSkip()  // -> Composio
     await wizardPage.clickSkip()  // -> Runtime
-    await wizardPage.clickNext()  // -> Agent
+    await wizardPage.clickSkip()  // -> Agent
     await wizardPage.clickFinish()
     await wizardPage.expectNotVisible()
 
@@ -180,14 +185,14 @@ test.describe('Getting Started Wizard', () => {
     await appPage.goto()
     await appPage.waitForAppLoaded()
     await wizardPage.expectVisible()
+    await wizardPage.chooseManualSetup()
 
     // Navigate to Create Agent step
-    await wizardPage.clickNext()  // -> LLM
     await wizardPage.clickNext()  // -> Browser
     await wizardPage.clickSkip()  // -> Composio
     await wizardPage.clickSkip()  // -> Runtime
-    await wizardPage.clickNext()  // -> Agent
-    await wizardPage.expectStep(5)
+    await wizardPage.clickSkip()  // -> Agent
+    await wizardPage.expectStep(4)
 
     // Create an agent
     const agentName = `Wizard Agent ${Date.now()}`
@@ -221,13 +226,14 @@ test.describe('Getting Started Wizard', () => {
     // Open wizard via settings
     await wizardPage.openViaSettings()
     await wizardPage.expectStep(0)
+    await wizardPage.chooseManualSetup()
+    await wizardPage.expectStep(0)
 
     // Dismiss it
-    await wizardPage.clickNext()  // -> LLM
     await wizardPage.clickNext()  // -> Browser
     await wizardPage.clickSkip()  // -> Composio
     await wizardPage.clickSkip()  // -> Runtime
-    await wizardPage.clickNext()  // -> Agent
+    await wizardPage.clickSkip()  // -> Agent
     await wizardPage.clickFinish()
     await wizardPage.expectNotVisible()
   })

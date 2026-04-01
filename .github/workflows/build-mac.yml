@@ -35,6 +35,8 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PLATFORM_BASE_URL: ${{ secrets.PLATFORM_BASE_URL }}
+          PLATFORM_PROXY_URL: ${{ secrets.PLATFORM_PROXY_URL }}
         run: npm run dist:mac
 
       - name: Upload DMG artifact
