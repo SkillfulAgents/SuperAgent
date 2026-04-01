@@ -1,24 +1,25 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the result in chat",
+  "reason": "Agent successfully opened browser at example.com and reported page title as \"Example Domain\"",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully showing \"Super Agent\" with sidebar containing multiple agents",
-    "Found and clicked on \"QA-20260401-164738-ntui\" agent in the sidebar — Agent chat interface opened with conversation starter \"Start a conversation with QA-20260401-164738-ntui\"",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message appeared in the text input field",
-    "Clicked Send button — Message was submitted and agent began processing (status changed to \"working\")",
-    "Waited up to 3 minutes for response — Agent completed task in 13 seconds and returned response",
-    "Verified response mentions \"Example Domain\" — Response text clearly states \"The page title is Example Domain.\" with all tool calls (Open Browser, Page Snapshot, Browser Command, Close Browser) showing success indicators"
+    "Navigated to http://localhost:47891 — Page loaded successfully with Super Agent interface showing agents in sidebar",
+    "Clicked on \"QA-20260401-165848-z538\" agent in sidebar — Agent selected and chat interface opened with message input field",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message visible in textbox, Send button became active",
+    "Clicked Send message button — Message sent successfully, agent status changed to \"working\", and a session \"Browser Page Title Lookup\" was created",
+    "Waited 10 seconds for agent response — Agent completed the task and displayed results showing browser operations and the page title",
+    "Verified response content — Response clearly shows \"The page title is Example Domain.\" which matches the expected verification requirement",
+    "Took final screenshot — Screenshot captured showing complete agent response with browser tool calls (Open Browser, Page Snapshot, Browser Command $ get title, and Close Browser) and the confirmed page title result"
   ],
   "bugs": [],
-  "durationMs": 89386,
-  "sessionId": "71b826b7-fc9e-4e5c-994c-d6e5f2cf958e",
+  "durationMs": 49567,
+  "sessionId": "5cea635f-6c0f-49b6-854e-b1b8f6c1002b",
   "cost": {
-    "inputTokens": 311,
-    "outputTokens": 3187,
-    "cacheCreationTokens": 44920,
-    "cacheReadTokens": 1012617,
+    "inputTokens": 207,
+    "outputTokens": 2436,
+    "cacheCreationTokens": 69576,
+    "cacheReadTokens": 560486,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.173658
+    "totalCostUsd": 0.155406
   }
 }
