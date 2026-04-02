@@ -1,5 +1,6 @@
 import { cn } from '@shared/lib/utils/cn'
-import { Link2 } from 'lucide-react'
+import { useState, useCallback, type ReactNode } from 'react'
+import { Check, Copy, Link2 } from 'lucide-react'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 import { ToolCallItem } from './tool-call-item'
 import { SubAgentBlock } from './subagent-block'
@@ -15,6 +16,46 @@ import { useRenderTracker } from '@renderer/lib/perf'
 
 // Re-export for use by other components
 export type { ApiToolCall }
+
+function CodeBlock({ children }: { children: ReactNode }) {
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = useCallback(() => {
+    const text = extractText(children)
+    void navigator.clipboard.writeText(text)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }, [children])
+
+  return (
+    <pre className={cn(
+      'relative group rounded-md p-3 text-[13px] leading-relaxed border code-scrollbar',
+      'bg-black/[0.03] dark:bg-white/[0.06] border-border/60 text-foreground'
+    )}>
+      <button
+        onClick={handleCopy}
+        className={cn(
+          'absolute top-2 right-2 p-1 rounded',
+          'opacity-0 group-hover:opacity-100 transition-opacity',
+          'hover:bg-black/[0.1] dark:hover:bg-white/[0.15]',
+          'text-muted-foreground'
+        )}
+      >
+        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+      </button>
+      {children}
+    </pre>
+  )
+}
+
+function extractText(node: ReactNode): string {
+  if (typeof node === 'string') return node
+  if (typeof node === 'number') return String(node)
+  if (!node) return ''
+  if (Array.isArray(node)) return node.map(extractText).join('')
+  if (typeof node === 'object' && 'props' in node) return extractText(node.props.children)
+  return ''
+}
 
 interface MessageItemProps {
   message: ApiMessage
@@ -117,14 +158,7 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
                     remarkPlugins={[remarkGfm]}
                     components={{
                       // Style code blocks
-                      pre: ({ children }) => (
-                        <pre className={cn(
-                          'rounded-md p-3 overflow-x-auto text-[13px] leading-relaxed border',
-                          'bg-black/[0.03] dark:bg-white/[0.06] border-border/60 text-foreground'
-                        )}>
-                          {children}
-                        </pre>
-                      ),
+                      pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
                       code: ({ children, className }) => {
                         const isInline = !className
                         return isInline ? (

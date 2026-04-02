@@ -94,6 +94,22 @@
   }
 }
 
+/* Force visible scrollbar on code blocks so users know content is scrollable */
+.code-scrollbar {
+  overflow-x: auto !important;
+}
+.code-scrollbar::-webkit-scrollbar {
+  -webkit-appearance: none;
+  height: 8px;
+}
+.code-scrollbar::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background-color: rgba(0, 0, 0, .3);
+}
+.dark .code-scrollbar::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, .3);
+}
+
 /* Fix Radix ScrollArea viewport using display: table which causes content to expand */
 [data-radix-scroll-area-viewport] {
   display: block !important;
