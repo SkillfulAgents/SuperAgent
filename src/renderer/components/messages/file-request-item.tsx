@@ -180,7 +180,7 @@ export function FileRequestItem({
             <RequestTitleChip className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" icon={<FileIcon />}>
               File Request
             </RequestTitleChip>
-            <p className="mt-8 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{description}</p>
+            <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{description}</p>
             {fileTypes && (
               <p className="mt-2 text-xs text-muted-foreground">
                 Accepted file types: {fileTypes}
@@ -203,7 +203,7 @@ export function FileRequestItem({
             <RequestTitleChip className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" icon={<FileIcon />}>
               File Request
             </RequestTitleChip>
-            <p className="mt-8 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{description}</p>
+            <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{description}</p>
             {fileTypes && (
               <p className="mt-2 text-xs text-muted-foreground">
                 Accepted file types: {fileTypes}
@@ -286,6 +286,7 @@ export function FileRequestItem({
             <DeclineButton
               onDecline={handleDecline}
               disabled={status === 'submitting'}
+              showIcon={false}
               className="border-border text-foreground hover:bg-muted"
             />
 
@@ -306,7 +307,7 @@ export function FileRequestItem({
 
           {/* Error message */}
           {error && (
-            <div className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-300">
+            <div className="mt-4 rounded-md bg-red-50 px-3 py-2 text-[11px] text-red-700 dark:bg-red-950/30 dark:text-red-300">
               Error: {error}
             </div>
           )}

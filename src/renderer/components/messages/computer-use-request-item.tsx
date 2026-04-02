@@ -182,7 +182,7 @@ export function ComputerUseRequestItem({
             <RequestTitleChip className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" icon={<Monitor />}>
               Computer Use Request
             </RequestTitleChip>
-            <p className="mt-8 whitespace-pre-line text-sm font-medium leading-5 text-foreground">
+            <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">
               {appName
                 ? `Allow the agent to use ${appName}?`
                 : `Allow the agent to ${PERMISSION_LABELS[permissionLevel]?.toLowerCase() || permissionLevel.replace(/_/g, ' ')}?`}
@@ -218,7 +218,7 @@ export function ComputerUseRequestItem({
             <RequestTitleChip className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" icon={<Monitor />}>
               Computer Use Request
             </RequestTitleChip>
-            <p className="mt-8 whitespace-pre-line text-sm font-medium leading-5 text-foreground">
+            <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">
               {appName
                 ? `Allow the agent to use ${appName}?`
                 : `Allow the agent to ${PERMISSION_LABELS[permissionLevel]?.toLowerCase() || permissionLevel.replace(/_/g, ' ')}?`}
@@ -245,6 +245,8 @@ export function ComputerUseRequestItem({
             <DeclineButton
               onDecline={handleDeny}
               disabled={status === 'submitting'}
+              label="Deny"
+              showIcon={false}
               className="border-border text-foreground hover:bg-muted"
               data-testid="computer-use-deny-btn"
             />
@@ -306,7 +308,7 @@ export function ComputerUseRequestItem({
           </div>
 
           {error && (
-            <div className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-300">
+            <div className="mt-4 rounded-md bg-red-50 px-3 py-2 text-[11px] text-red-700 dark:bg-red-950/30 dark:text-red-300">
               Error: {error}
             </div>
           )}

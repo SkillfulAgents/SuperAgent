@@ -176,11 +176,11 @@ export function SecretRequestItem({
       <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm">
         <div className="flex items-start gap-3 px-4 pb-4 pt-4">
           <div className="flex-1 min-w-0">
-            <RequestTitleChip className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200" icon={<Key />}>
+            <RequestTitleChip className="bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200" icon={<Key />}>
               Secret Request
             </RequestTitleChip>
             {reason && (
-              <p className="mt-8 whitespace-pre-line text-sm font-medium leading-5 text-foreground">
+              <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">
                 {formatSecretReason(secretName, reason)}
               </p>
             )}
@@ -188,7 +188,7 @@ export function SecretRequestItem({
               {secretName}
             </code>
           </div>
-          <span className="text-xs text-amber-600 dark:text-amber-400 shrink-0">Waiting for response</span>
+          <span className="text-xs text-orange-600 dark:text-orange-400 shrink-0">Waiting for response</span>
         </div>
       </div>
     )
@@ -201,11 +201,11 @@ export function SecretRequestItem({
         <div className="flex min-w-0 flex-col">
           {/* Header */}
           <div>
-            <RequestTitleChip className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200" icon={<Key />}>
+            <RequestTitleChip className="bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200" icon={<Key />}>
               Secret Request
             </RequestTitleChip>
             {reason && (
-              <p className="mt-8 whitespace-pre-line text-sm font-medium leading-5 text-foreground">
+              <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">
                 {formatSecretReason(secretName, reason)}
               </p>
             )}
@@ -271,7 +271,7 @@ export function SecretRequestItem({
                     size="sm"
                     className="border-border text-muted-foreground hover:bg-muted hover:text-foreground"
                   >
-                    <span>Fetch my secret</span>
+                    <span>Fetch secret for me</span>
                     <ArrowUpRight className="ml-1 h-3.5 w-3.5 text-muted-foreground" />
                   </Button>
                 </TooltipTrigger>
@@ -285,6 +285,7 @@ export function SecretRequestItem({
               <DeclineButton
                 onDecline={handleDecline}
                 disabled={status === 'submitting'}
+                showIcon={false}
                 className="border-border text-foreground hover:bg-muted"
                 data-testid="secret-decline-btn"
               />
@@ -293,7 +294,7 @@ export function SecretRequestItem({
                 onClick={handleProvide}
                 disabled={!value.trim() || status === 'submitting'}
                 size="sm"
-                className="min-w-24 bg-amber-600 hover:bg-amber-700 text-white"
+                className="min-w-24 bg-orange-600 hover:bg-orange-700 text-white"
                 data-testid="secret-provide-btn"
               >
                 {status === 'submitting' && <Loader2 className="h-4 w-4 animate-spin" />}
@@ -304,7 +305,7 @@ export function SecretRequestItem({
 
           {/* Error message */}
           {error && (
-            <div className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-300">
+            <div className="mt-4 rounded-md bg-red-50 px-3 py-2 text-[11px] text-red-700 dark:bg-red-950/30 dark:text-red-300">
               Error: {error}
             </div>
           )}

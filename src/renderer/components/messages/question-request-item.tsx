@@ -107,6 +107,15 @@ export function QuestionRequestItem({
     }
   }
 
+  const ensureOtherSelected = (questionIndex: number, multiSelect: boolean) => {
+    if (otherSelected[questionIndex]) return
+
+    setOtherSelected({ ...otherSelected, [questionIndex]: true })
+    if (!multiSelect) {
+      setSelections({ ...selections, [questionIndex]: '__other__' })
+    }
+  }
+
   const isQuestionAnswered = (questionIndex: number, question: Question): boolean => {
     if (otherSelected[questionIndex] && otherTexts[questionIndex]?.trim()) {
       return true
@@ -301,7 +310,7 @@ export function QuestionRequestItem({
           </div>
 
           {currentQuestion && (
-            <div className="space-y-4">
+            <div className="mt-6 space-y-4">
               <div className="px-2 py-1 text-sm font-medium leading-5 text-foreground">
                 {currentQuestion.question}
               </div>
@@ -359,25 +368,21 @@ export function QuestionRequestItem({
                     className="mx-2 shrink-0"
                   />
                   <div className="flex-1 min-w-0">
-                    {otherSelected[currentQuestionIndex] ? (
-                      <Textarea
-                        ref={otherTextareaRef}
-                        autoFocus
-                        rows={1}
-                        value={otherTexts[currentQuestionIndex] || ''}
-                        onChange={(e) => handleOtherTextChange(currentQuestionIndex, e.target.value, currentQuestion.multiSelect)}
-                        disabled={status === 'submitting'}
-                        className="min-h-0 resize-none overflow-hidden bg-white dark:bg-blue-950/30 border-input shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 text-sm"
-                        onClick={(e) => e.stopPropagation()}
-                      />
-                    ) : (
-                      <>
-                        <div className="text-sm font-normal text-foreground">Other</div>
-                        <div className="text-xs leading-4 text-muted-foreground">
-                          Enter a custom answer that is not listed above.
-                        </div>
-                      </>
-                    )}
+                    <Textarea
+                      ref={otherTextareaRef}
+                      autoFocus={otherSelected[currentQuestionIndex]}
+                      rows={1}
+                      placeholder="Type something else"
+                      value={otherTexts[currentQuestionIndex] || ''}
+                      onChange={(e) => handleOtherTextChange(currentQuestionIndex, e.target.value, currentQuestion.multiSelect)}
+                      onFocus={() => ensureOtherSelected(currentQuestionIndex, currentQuestion.multiSelect)}
+                      disabled={status === 'submitting'}
+                      className="min-h-0 resize-none overflow-hidden bg-white dark:bg-blue-950/30 border-input shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 text-sm"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        ensureOtherSelected(currentQuestionIndex, currentQuestion.multiSelect)
+                      }}
+                    />
                   </div>
                 </label>
               </div>
@@ -389,7 +394,9 @@ export function QuestionRequestItem({
             <DeclineButton
               onDecline={handleDecline}
               disabled={status === 'submitting'}
-              className="border-blue-200 dark:border-blue-700 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900"
+              className="border-border text-foreground hover:bg-muted"
+              label="Skip"
+              showIcon={false}
               data-testid="question-decline-btn"
             />
 
@@ -423,7 +430,11 @@ export function QuestionRequestItem({
           </div>
 
           {/* Error message */}
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          {error && (
+            <div className="mt-4 rounded-md bg-red-50 px-3 py-2 text-[11px] text-red-700 dark:bg-red-950/30 dark:text-red-300">
+              Error: {error}
+            </div>
+          )}
         </div>
       </div>
     </div>

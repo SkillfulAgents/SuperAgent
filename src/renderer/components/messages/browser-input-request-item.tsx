@@ -101,7 +101,7 @@ export function BrowserInputRequestItem({
             <RequestTitleChip className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" icon={<Globe />}>
               Browser Input Request
             </RequestTitleChip>
-            <div className="pt-8 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{message}</div>
+            <div className="pt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{message}</div>
             <p className="pt-2 text-xs text-muted-foreground">
               Click &apos;Done&apos; when you have completed the suggested step(s).
             </p>
@@ -120,7 +120,7 @@ export function BrowserInputRequestItem({
             Browser Input Request
           </RequestTitleChip>
 
-          <p className="pt-8 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{message}</p>
+          <p className="pt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{message}</p>
           <p className="mt-2 text-xs text-muted-foreground">
             Click &apos;Done&apos; when you have completed the suggested step(s).
           </p>
@@ -173,7 +173,11 @@ export function BrowserInputRequestItem({
             </Button>
           </div>
 
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          {error && (
+            <div className="mt-4 rounded-md bg-red-50 px-3 py-2 text-[11px] text-red-700 dark:bg-red-950/30 dark:text-red-300">
+              Error: {error}
+            </div>
+          )}
         </div>
       </div>
     </div>

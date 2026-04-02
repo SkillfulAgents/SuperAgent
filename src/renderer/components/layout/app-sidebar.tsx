@@ -603,7 +603,7 @@ function ApiKeyWarning({ onOpenSettings }: { onOpenSettings: () => void }) {
 
 export function AppSidebar() {
   useRenderTracker('AppSidebar')
-  const { settingsOpen, setSettingsOpen, settingsTab, createAgentOpen, setCreateAgentOpen, openWizard } = useDialogs()
+  const { settingsOpen, setSettingsOpen, settingsTab, openSettings, createAgentOpen, setCreateAgentOpen, openWizard } = useDialogs()
   const { clearSelection } = useSelection()
   const [containerSetupOpen, setContainerSetupOpen] = useState(false)
   const { data: agents, isLoading, error } = useAgents()
@@ -662,6 +662,18 @@ export function AppSidebar() {
       setContainerSetupOpen(true)
     }
   }, [isRuntimeUnavailable, userSettings?.setupCompleted])
+
+  useEffect(() => {
+    const handleOpenGlobalSettings = (event: Event) => {
+      const customEvent = event as CustomEvent<{ initialTab?: string }>
+      openSettings(customEvent.detail?.initialTab)
+    }
+
+    window.addEventListener('open-global-settings', handleOpenGlobalSettings as EventListener)
+    return () => {
+      window.removeEventListener('open-global-settings', handleOpenGlobalSettings as EventListener)
+    }
+  }, [openSettings])
 
   // Add left padding for macOS traffic lights in Electron (not in full screen)
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && !isFullScreen

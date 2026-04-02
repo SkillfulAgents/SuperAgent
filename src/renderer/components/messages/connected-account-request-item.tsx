@@ -9,12 +9,13 @@ import {
   Plus,
   ExternalLink,
   Pencil,
+  MoreVertical,
   Plug,
 } from 'lucide-react'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { Button } from '@renderer/components/ui/button'
-import { Checkbox } from '@renderer/components/ui/checkbox'
 import { Input } from '@renderer/components/ui/input'
+import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { DeclineButton } from './decline-button'
 import { RequestTitleChip } from './request-title-chip'
 import { cn } from '@shared/lib/utils/cn'
@@ -28,7 +29,6 @@ import {
 } from '@renderer/hooks/use-connected-accounts'
 import { getProvider } from '@shared/lib/composio/providers'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
-import { formatDistanceToNow } from 'date-fns'
 
 interface ConnectedAccountRequestItemProps {
   toolUseId: string
@@ -41,6 +41,29 @@ interface ConnectedAccountRequestItemProps {
 }
 
 type RequestStatus = 'pending' | 'submitting' | 'provided' | 'declined' | 'connecting'
+
+function formatShortRelativeTime(date: Date) {
+  const diffMs = Math.max(0, Date.now() - date.getTime())
+  const minutes = Math.floor(diffMs / (1000 * 60))
+
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return `${minutes}m ago`
+
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+
+  const days = Math.floor(hours / 24)
+  if (days < 7) return `${days}d ago`
+
+  const weeks = Math.floor(days / 7)
+  if (weeks < 5) return `${weeks}w ago`
+
+  const months = Math.floor(days / 30)
+  if (months < 12) return `${months}mo ago`
+
+  const years = Math.floor(days / 365)
+  return `${years}y ago`
+}
 
 export function ConnectedAccountRequestItem({
   toolUseId,
@@ -302,7 +325,7 @@ export function ConnectedAccountRequestItem({
   if (readOnly) {
     return (
       <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm">
-        <div className="flex items-start gap-3 px-4 pb-8 pt-4">
+        <div className="flex items-start gap-3 px-4 pb-4 pt-4">
           <div className="flex-1 min-w-0">
             <RequestTitleChip
               className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
@@ -311,7 +334,7 @@ export function ConnectedAccountRequestItem({
               Account Access Request
             </RequestTitleChip>
             {reason && (
-              <p className="mt-8 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{reason}</p>
+              <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{reason}</p>
             )}
           </div>
           <span className="text-xs text-blue-600 dark:text-blue-400 shrink-0">Waiting for response</span>
@@ -323,7 +346,7 @@ export function ConnectedAccountRequestItem({
   // Pending/submitting/connecting state
   return (
     <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm">
-      <div className="px-4 pb-8 pt-4">
+      <div className="px-4 pb-4 pt-4">
         <div className="flex-1 min-w-0 space-y-3">
           {/* Header */}
           <div className="flex items-start justify-between gap-3">
@@ -335,7 +358,7 @@ export function ConnectedAccountRequestItem({
                 Account Access Request
               </RequestTitleChip>
               {reason && (
-                <p className="mt-8 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{reason}</p>
+                <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{reason}</p>
               )}
               <p className="mt-2 text-xs text-muted-foreground">
                 Selected accounts will be linked to this agent for future use.
@@ -350,10 +373,7 @@ export function ConnectedAccountRequestItem({
               <span>Loading accounts...</span>
             </div>
           ) : accounts.length > 0 ? (
-            <div className="space-y-2 pt-3">
-              <p className="text-xs font-medium text-foreground/80">
-                Select which account(s) to allow access to:
-              </p>
+            <div className="space-y-1 pt-3">
               <div className="space-y-1">
                 {accounts.map((account) => (
                   <AccountOption
@@ -402,28 +422,33 @@ export function ConnectedAccountRequestItem({
                   <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
                     <ServiceIcon slug={toolkit} fallback="request" className="h-6 w-6" />
                   </div>
-                  <p>No {(provider?.displayName || toolkit).replace(/\b\w/g, (char) => char.toUpperCase())} account connected yet.</p>
+                  <p>{(provider?.displayName || toolkit).replace(/\b\w/g, (char) => char.toUpperCase())}</p>
                 </div>
+                <span className="shrink-0 rounded bg-muted/80 px-1.5 py-0.5 text-xs font-medium text-foreground/80">
+                  not connected
+                </span>
               </div>
             </div>
           )}
 
           {/* Connect New button */}
           {accounts.length > 0 && (
-            <Button
-              onClick={handleConnectNew}
-              disabled={status !== 'pending'}
-              variant="ghost"
-              size="sm"
-              className="text-muted-foreground hover:bg-muted hover:text-foreground"
-            >
-              {status === 'connecting' ? (
-                <Loader2 className="mr-1 h-4 w-4 animate-spin" />
-              ) : (
-                <Plus className="mr-1 h-4 w-4" />
-              )}
-              Add New Account
-            </Button>
+            <div className="!mt-1 ml-2">
+              <Button
+                onClick={handleConnectNew}
+                disabled={status !== 'pending'}
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground hover:bg-muted hover:text-foreground"
+              >
+                {status === 'connecting' ? (
+                  <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                ) : (
+                  <Plus className="mr-1 h-4 w-4" />
+                )}
+                Add New Account
+              </Button>
+            </div>
           )}
 
           {/* Action buttons */}
@@ -432,6 +457,8 @@ export function ConnectedAccountRequestItem({
               <DeclineButton
                 onDecline={handleDecline}
                 disabled={status !== 'pending'}
+                label="Deny"
+                showIcon={false}
                 className="border-border text-foreground hover:bg-muted"
               />
 
@@ -454,34 +481,42 @@ export function ConnectedAccountRequestItem({
           )}
 
           {accounts.length === 0 && (
-            <div className="flex justify-end gap-2">
-              <DeclineButton
-                onDecline={handleDecline}
-                disabled={status !== 'pending' && status !== 'connecting'}
-                className="border-border text-foreground hover:bg-muted"
-              />
-              <Button
-                onClick={handleConnectNew}
-                disabled={status !== 'pending'}
-                size="sm"
-                className="min-w-24 bg-foreground text-background hover:bg-foreground/90"
-              >
-                {status === 'connecting' ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Plus className="h-4 w-4" />
-                )}
-                {status === 'connecting' ? (
-                  <span className="ml-1">Connect</span>
-                ) : (
-                  'Connect'
-                )}
-              </Button>
+            <div className="mt-6">
+              <div className="flex justify-end gap-2">
+                <DeclineButton
+                  onDecline={handleDecline}
+                  disabled={status !== 'pending' && status !== 'connecting'}
+                  label="Deny"
+                  showIcon={false}
+                  className="border-border text-foreground hover:bg-muted"
+                />
+                <Button
+                  onClick={handleConnectNew}
+                  disabled={status !== 'pending'}
+                  size="sm"
+                  className="min-w-24 bg-foreground text-background hover:bg-foreground/90"
+                >
+                  {status === 'connecting' ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Plus className="h-4 w-4" />
+                  )}
+                  {status === 'connecting' ? (
+                    <span className="ml-1">Connect</span>
+                  ) : (
+                    'Connect'
+                  )}
+                </Button>
+              </div>
             </div>
           )}
 
           {/* Error message */}
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          {error && (
+            <div className="mt-4 rounded-md bg-red-50 px-3 py-2 text-[11px] text-red-700 dark:bg-red-950/30 dark:text-red-300">
+              Error: {error}
+            </div>
+          )}
 
         </div>
       </div>
@@ -547,7 +582,8 @@ function AccountOption({
   onOpenPolicies,
 }: AccountOptionProps) {
   const connectedDate = new Date(account.createdAt)
-  const connectedAgo = formatDistanceToNow(connectedDate, { addSuffix: true })
+  const connectedAgo = formatShortRelativeTime(connectedDate)
+  const [menuOpen, setMenuOpen] = useState(false)
 
   if (isEditing) {
     return (
@@ -557,10 +593,13 @@ function AccountOption({
           'border-border bg-white dark:bg-background'
         )}
       >
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
+          <ServiceIcon slug={account.toolkitSlug} fallback="request" className="h-5 w-5" />
+        </div>
         <Input
           value={editName}
           onChange={(e) => onEditNameChange(e.target.value)}
-          className="h-7 text-sm flex-1"
+          className="h-7 max-w-[296px] flex-1 text-sm"
           autoFocus
           onKeyDown={(e) => {
             if (e.key === 'Enter') onSaveEdit()
@@ -569,24 +608,28 @@ function AccountOption({
         />
         <Button
           size="sm"
-          variant="ghost"
-          className="h-6 w-6 p-0"
+          variant="default"
+          className="h-6 shrink-0 bg-foreground px-2 text-xs text-background hover:bg-foreground/90"
           onClick={onSaveEdit}
           disabled={isSavingRename}
         >
           {isSavingRename ? (
             <Loader2 className="h-3 w-3 animate-spin" />
           ) : (
-            <Check className="h-3 w-3 text-green-600" />
+            <>
+              <Check className="h-3 w-3" />
+              <span>Update</span>
+            </>
           )}
         </Button>
         <Button
           size="sm"
-          variant="ghost"
-          className="h-6 w-6 p-0"
+          variant="outline"
+          className="h-6 shrink-0 px-2 text-xs"
           onClick={onCancelEdit}
         >
           <X className="h-3 w-3" />
+          <span>Cancel</span>
         </Button>
       </div>
     )
@@ -595,9 +638,9 @@ function AccountOption({
   return (
     <div
       className={cn(
-        'group flex items-center gap-2 rounded-[12px] border px-4 py-2 cursor-pointer transition-colors',
+        'group flex items-center gap-2 rounded-[12px] border pl-4 pr-4 py-2 cursor-pointer transition-colors',
         selected
-          ? 'border-border bg-muted'
+          ? 'border-blue-300 bg-blue-50 dark:border-blue-700 dark:bg-blue-950/40'
           : 'border-border bg-white hover:bg-muted/40 dark:bg-background',
         disabled && 'opacity-50 cursor-not-allowed'
       )}
@@ -611,54 +654,58 @@ function AccountOption({
         }
       }}
     >
-      <Checkbox
-        checked={selected}
-        disabled={disabled}
-        className="mr-2"
-        onCheckedChange={() => {
-          if (!disabled) onToggle()
-        }}
-        onClick={(e) => e.stopPropagation()}
-      />
       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
-        <ServiceIcon slug={account.toolkitSlug} fallback="request" className="h-6 w-6" />
+        <ServiceIcon slug={account.toolkitSlug} fallback="request" className="h-5 w-5" />
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1">
-          <span className="truncate text-sm">{account.displayName}</span>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="invisible h-4 w-4 shrink-0 p-0 group-hover:visible"
-            onClick={(e) => {
-              e.stopPropagation()
-              onStartEdit()
-            }}
-          >
-            <Pencil className="h-2.5 w-2.5 text-muted-foreground" />
-          </Button>
+          <span className="truncate text-sm font-normal text-foreground">{account.displayName}</span>
         </div>
-        <span className="text-xs text-muted-foreground">connected {connectedAgo}</span>
+        <p className="truncate text-xs text-muted-foreground">connected {connectedAgo}</p>
       </div>
-      <div className="flex shrink-0 items-end gap-2">
+      <div className="flex shrink-0 items-center gap-2 self-center">
         {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
         <span onClick={(e) => e.stopPropagation()}>
           <PolicySummaryPill
             accountId={account.id}
             toolkit={account.toolkitSlug}
+            compact
             onClick={onOpenPolicies}
           />
         </span>
-        <span
-          className={cn(
-            'text-xs px-1.5 py-0.5 rounded shrink-0',
-            account.status === 'active'
-              ? 'bg-green-100 dark:bg-green-900/50 text-green-700 dark:text-green-400'
-              : 'bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-400'
-          )}
-        >
-          {account.status === 'active' ? 'connected' : account.status}
-        </span>
+        <Popover open={menuOpen} onOpenChange={setMenuOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-5 w-5 shrink-0 p-0 text-muted-foreground/70 hover:bg-transparent hover:text-muted-foreground"
+              onClick={(e) => {
+                e.stopPropagation()
+              }}
+            >
+              <MoreVertical className="h-3.5 w-3.5" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent
+            align="end"
+            className="w-32 p-1"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Button
+              size="sm"
+              variant="ghost"
+              className="w-full justify-start gap-2 text-foreground hover:bg-muted"
+              onClick={(e) => {
+                e.stopPropagation()
+                setMenuOpen(false)
+                onStartEdit()
+              }}
+            >
+              <Pencil className="h-3.5 w-3.5" />
+              Rename
+            </Button>
+          </PopoverContent>
+        </Popover>
       </div>
     </div>
   )

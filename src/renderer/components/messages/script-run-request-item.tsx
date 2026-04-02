@@ -154,7 +154,7 @@ export function ScriptRunRequestItem({
             <RequestTitleChip className="bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200" icon={<Terminal />}>
               Script Execution Request
             </RequestTitleChip>
-            <p className="mt-8 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{explanation}</p>
+            <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{explanation}</p>
             <p className="mt-2 text-xs text-muted-foreground">
               Review carefully before allowing. This script will run on your actual computer with your user permissions.
             </p>
@@ -177,13 +177,15 @@ export function ScriptRunRequestItem({
             <DeclineButton
               onDecline={handleDeny}
               disabled={status === 'submitting'}
+              label="Deny"
+              showIcon={false}
               className="border-border text-foreground hover:bg-muted"
               data-testid="script-deny-btn"
             />
 
             <div className="flex items-stretch">
               <Button
-                onClick={() => handleApprove('timed')}
+                onClick={() => handleApprove('once')}
                 disabled={status === 'submitting'}
                 size="sm"
                 className="min-w-28 rounded-r-none border-r-0 bg-orange-600 text-white hover:bg-orange-700"
@@ -192,9 +194,9 @@ export function ScriptRunRequestItem({
                 {status === 'submitting' ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
-                  <span>Allow 15 min</span>
+                  <span>Allow Once</span>
                 )}
-                {status === 'submitting' ? <span>Allow 15 min</span> : null}
+                {status === 'submitting' ? <span>Allow Once</span> : null}
               </Button>
               <Popover open={allowMenuOpen} onOpenChange={setAllowMenuOpen}>
                 <PopoverTrigger asChild>
@@ -211,14 +213,14 @@ export function ScriptRunRequestItem({
                   <Button
                     onClick={() => {
                       setAllowMenuOpen(false)
-                      handleApprove('once')
+                      handleApprove('timed')
                     }}
                     variant="ghost"
                     size="sm"
                     className="w-full justify-start text-foreground hover:bg-muted"
                     data-testid="script-run-once-btn"
                   >
-                    Allow Once
+                    Allow 15 min
                   </Button>
                   <Button
                     onClick={() => {
@@ -238,7 +240,7 @@ export function ScriptRunRequestItem({
           </div>
 
           {error && (
-            <div className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-300">
+            <div className="mt-4 rounded-md bg-red-50 px-3 py-2 text-[11px] text-red-700 dark:bg-red-950/30 dark:text-red-300">
               Error: {error}
             </div>
           )}

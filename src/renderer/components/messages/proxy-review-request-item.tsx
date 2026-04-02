@@ -174,7 +174,7 @@ export function ProxyReviewRequestItem({
     return (
       <div className="rounded-[12px] border bg-muted/30 text-sm shadow-md">
         <div className="p-4">
-          <RequestTitleChip className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200" icon={<GitPullRequestDraft />}>
+          <RequestTitleChip className="bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200" icon={<GitPullRequestDraft />}>
             API Request Review
           </RequestTitleChip>
           <div className="mt-5 flex flex-wrap items-center gap-2">
@@ -197,7 +197,7 @@ export function ProxyReviewRequestItem({
     >
       <div className="p-4">
         <div className="flex-1 min-w-0">
-          <RequestTitleChip className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200" icon={<GitPullRequestDraft />}>
+          <RequestTitleChip className="bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200" icon={<GitPullRequestDraft />}>
             API Request Review
           </RequestTitleChip>
 
@@ -239,28 +239,162 @@ export function ProxyReviewRequestItem({
                 <PopoverContent
                   align="end"
                   className="w-auto min-w-0 max-w-[480px] px-1 pt-1 pb-4"
+                  onOpenAutoFocus={(e) => {
+                    e.preventDefault()
+                    requestAnimationFrame(() => {
+                      denyReasonInputRef.current?.focus()
+                    })
+                  }}
                   onCloseAutoFocus={() => setDenyReason('')}
                 >
-                  <div className="flex flex-col items-start gap-1">
-                    <div className="w-full py-2">
-                      <div className="flex flex-col items-start gap-1">
+                  <div className="flex flex-col items-start gap-0">
+                    {matchedScopes.length > 0 && (
+                      <div className="w-full py-2">
+                        <div className="flex flex-col items-start gap-1">
+                          {matchedScopes.map((scope) => (
+                            <Button
+                              key={scope}
+                              data-testid={`proxy-review-always-deny-${scope}`}
+                              onClick={() => {
+                                setDenyMenuOpen(false)
+                                handleAlways('deny', scope)
+                              }}
+                              disabled={status === 'submitting'}
+                              variant="ghost"
+                              size="sm"
+                              className="h-auto w-full justify-start py-2 text-foreground hover:bg-muted"
+                            >
+                              <span className="flex flex-col items-start text-left">
+                                <span>
+                                  Always deny{' '}
+                                  <span className="ml-1 inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground/70">
+                                    {scope}
+                                  </span>
+                                </span>
+                                {scopeDescriptions[scope] && (
+                                  <span className="block w-full truncate text-[11px] font-normal text-muted-foreground/80 [&_a]:font-normal [&_a]:text-inherit [&_a]:underline">
+                                    <ReactMarkdown
+                                      components={{
+                                        p: ({ children }) => <>{children}</>,
+                                        a: ({ href, children }) => (
+                                          <a href={href} target="_blank" rel="noopener noreferrer">
+                                            {children}
+                                          </a>
+                                        ),
+                                      }}
+                                    >
+                                      {scopeDescriptions[scope]}
+                                    </ReactMarkdown>
+                                  </span>
+                                )}
+                              </span>
+                            </Button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    <div className="w-full pt-0">
+                      {matchedScopes.length > 0 && <div className="mx-3 border-t border-border" />}
+                      <div className="w-full px-3 pt-3 pb-0 text-foreground">
+                        <span className="flex flex-col items-start text-left">
+                          <span className="text-xs font-medium text-foreground">Deny with reason</span>
+                          <span className="text-[11px] font-normal text-muted-foreground/80">
+                            Add a note explaining why this action should be denied
+                          </span>
+                        </span>
+                      </div>
+                      <div className="mx-3 mt-2 flex min-h-10 gap-2 rounded-md border border-border bg-background pl-3 pr-0 pb-1">
+                        <textarea
+                          ref={denyReasonInputRef}
+                          placeholder="Reason for denying..."
+                          value={denyReason}
+                          rows={1}
+                          onChange={(e) => {
+                            setDenyReason(e.target.value)
+                            e.currentTarget.style.height = 'auto'
+                            e.currentTarget.style.height = `${e.currentTarget.scrollHeight}px`
+                          }}
+                          className="flex-1 self-center resize-none overflow-hidden bg-transparent px-0 pr-1 py-2 text-xs placeholder:text-xs placeholder:text-muted-foreground/80 focus:outline-none focus:ring-0"
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && !e.shiftKey && denyReason.trim()) {
+                              e.preventDefault()
+                              setDenyMenuOpen(false)
+                              handleDecision('deny', denyReason.trim())
+                            }
+                          }}
+                        />
+                        <Button
+                          type="button"
+                          size="icon"
+                          disabled={!denyReason.trim() || status === 'submitting'}
+                          onClick={() => {
+                            setDenyMenuOpen(false)
+                            handleDecision('deny', denyReason.trim())
+                          }}
+                          className="mr-1 h-8 w-8 shrink-0 self-end rounded-md border border-border bg-foreground text-background hover:bg-foreground/90"
+                        >
+                          <ArrowUp className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </PopoverContent>
+              </Popover>
+            </div>
+
+            <div className="flex items-stretch">
+              <Popover open={allowMenuOpen} onOpenChange={setAllowMenuOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    disabled={status === 'submitting'}
+                    size="sm"
+                    className="min-w-24 pr-0 bg-orange-600 text-white hover:bg-orange-700"
+                    data-testid="proxy-review-always-allow-btn"
+                  >
+                    <span>Allow</span>
+                    <ChevronDown className={cn('ml-2 h-3.5 w-3.5 transition-transform', allowMenuOpen && 'rotate-180')} />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-auto min-w-0 max-w-[480px] p-1">
+                  <div className="flex flex-col items-start gap-0">
+                    <Button
+                      data-testid="proxy-review-allow-once-menu-btn"
+                      onClick={() => {
+                        setAllowMenuOpen(false)
+                        handleDecision('allow')
+                      }}
+                      disabled={status === 'submitting'}
+                      variant="ghost"
+                      size="sm"
+                      className="h-auto min-w-0 w-full justify-start py-2 text-foreground hover:bg-muted"
+                    >
+                      <span className="flex min-w-0 w-full flex-col items-start text-left">
+                        <span className="block w-full truncate">Allow Once</span>
+                        <span className="block w-full truncate text-[11px] font-normal text-muted-foreground/80">
+                          Only allow this action this one time
+                        </span>
+                      </span>
+                    </Button>
+                    {matchedScopes.length > 0 && (
+                      <div className="w-full py-2">
+                        <div className="mx-3 border-t border-border" />
                         {matchedScopes.map((scope) => (
                           <Button
                             key={scope}
-                            data-testid={`proxy-review-always-deny-${scope}`}
+                            data-testid={`proxy-review-always-allow-${scope}`}
                             onClick={() => {
-                              setDenyMenuOpen(false)
-                              handleAlways('deny', scope)
+                              setAllowMenuOpen(false)
+                              handleAlways('allow', scope)
                             }}
                             disabled={status === 'submitting'}
                             variant="ghost"
                             size="sm"
-                            className="h-auto w-full justify-start py-2 text-foreground hover:bg-muted"
+                            className="h-auto min-w-0 w-full justify-start py-2 text-foreground hover:bg-muted"
                           >
-                            <span className="flex flex-col items-start text-left">
-                              <span>
-                                Always deny{' '}
-                                <span className="ml-1 inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground/70">
+                            <span className="flex min-w-0 w-full flex-col items-start text-left">
+                              <span className="flex w-full min-w-0 items-center gap-1 overflow-hidden">
+                                <span className="shrink-0">Always allow</span>
+                                <span className="inline-flex min-w-0 max-w-full items-center truncate rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground/70">
                                   {scope}
                                 </span>
                               </span>
@@ -283,131 +417,9 @@ export function ProxyReviewRequestItem({
                             </span>
                           </Button>
                         ))}
+                        <div className="mx-3 border-b border-border" />
                       </div>
-                    </div>
-                    <div className="w-full pt-2">
-                      <div className="mx-3 border-t border-border" />
-                      <div className="w-full px-3 py-2 text-foreground">
-                        <span className="flex flex-col items-start text-left">
-                          <span className="text-xs font-medium text-foreground">Deny with reason</span>
-                          <span className="text-[11px] font-normal text-muted-foreground/80">
-                            Add a note explaining why this action should be denied
-                          </span>
-                        </span>
-                      </div>
-                      <div className="mx-3 flex gap-2 rounded-md border border-border bg-background pl-2 pr-0">
-                        <textarea
-                          ref={denyReasonInputRef}
-                          placeholder="Reason for denying..."
-                          value={denyReason}
-                          rows={1}
-                          onChange={(e) => {
-                            setDenyReason(e.target.value)
-                            e.currentTarget.style.height = 'auto'
-                            e.currentTarget.style.height = `${e.currentTarget.scrollHeight}px`
-                          }}
-                          className="flex-1 self-center resize-none overflow-hidden bg-transparent px-0 py-0 text-[11px] placeholder:text-[11px] placeholder:text-muted-foreground/80 focus:outline-none focus:ring-0"
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' && !e.shiftKey && denyReason.trim()) {
-                              e.preventDefault()
-                              setDenyMenuOpen(false)
-                              handleDecision('deny', denyReason.trim())
-                            }
-                          }}
-                        />
-                        <Button
-                          type="button"
-                          size="icon"
-                          disabled={!denyReason.trim() || status === 'submitting'}
-                          onClick={() => {
-                            setDenyMenuOpen(false)
-                            handleDecision('deny', denyReason.trim())
-                          }}
-                          className="h-6 w-6 shrink-0 self-end rounded-md border border-border bg-foreground text-background hover:bg-foreground/90"
-                        >
-                          <ArrowUp className="h-3 w-3" />
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-                </PopoverContent>
-              </Popover>
-            </div>
-
-            <div className="flex items-stretch">
-              <Popover open={allowMenuOpen} onOpenChange={setAllowMenuOpen}>
-                <PopoverTrigger asChild>
-                  <Button
-                    disabled={status === 'submitting'}
-                    size="sm"
-                    className="min-w-24 pr-0 bg-amber-600 text-white hover:bg-amber-700"
-                    data-testid="proxy-review-always-allow-btn"
-                  >
-                    <span>Allow</span>
-                    <ChevronDown className={cn('ml-2 h-3.5 w-3.5 transition-transform', allowMenuOpen && 'rotate-180')} />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent align="end" className="w-auto min-w-0 max-w-[480px] p-1">
-                  <div className="flex flex-col items-start gap-1">
-                  <Button
-                    data-testid="proxy-review-allow-once-menu-btn"
-                    onClick={() => {
-                      setAllowMenuOpen(false)
-                      handleDecision('allow')
-                    }}
-                    disabled={status === 'submitting'}
-                    variant="ghost"
-                    size="sm"
-                    className="h-auto min-w-0 w-full justify-start py-2 text-foreground hover:bg-muted"
-                  >
-                    <span className="flex min-w-0 w-full flex-col items-start text-left">
-                      <span className="block w-full truncate">Allow Once</span>
-                      <span className="block w-full truncate text-[11px] font-normal text-muted-foreground/80">
-                        Only allow this action this one time
-                      </span>
-                    </span>
-                  </Button>
-                  <div className="relative w-full py-2 before:absolute before:left-3 before:right-3 before:top-0 before:border-t before:border-border after:absolute after:bottom-0 after:left-3 after:right-3 after:border-b after:border-border">
-                    {matchedScopes.map((scope) => (
-                      <Button
-                        key={scope}
-                        data-testid={`proxy-review-always-allow-${scope}`}
-                        onClick={() => {
-                          setAllowMenuOpen(false)
-                          handleAlways('allow', scope)
-                        }}
-                        disabled={status === 'submitting'}
-                        variant="ghost"
-                        size="sm"
-                        className="h-auto min-w-0 w-full justify-start py-2 text-foreground hover:bg-muted"
-                      >
-                        <span className="flex min-w-0 w-full flex-col items-start text-left">
-                          <span className="flex w-full min-w-0 items-center gap-1 overflow-hidden">
-                            <span className="shrink-0">Always allow</span>
-                            <span className="inline-flex min-w-0 max-w-full items-center truncate rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground/70">
-                              {scope}
-                            </span>
-                          </span>
-                          {scopeDescriptions[scope] && (
-                            <span className="block w-full truncate text-[11px] font-normal text-muted-foreground/80 [&_a]:font-normal [&_a]:text-inherit [&_a]:underline">
-                              <ReactMarkdown
-                                components={{
-                                  p: ({ children }) => <>{children}</>,
-                                  a: ({ href, children }) => (
-                                    <a href={href} target="_blank" rel="noopener noreferrer">
-                                      {children}
-                                    </a>
-                                  ),
-                                }}
-                              >
-                                {scopeDescriptions[scope]}
-                              </ReactMarkdown>
-                            </span>
-                          )}
-                        </span>
-                      </Button>
-                    ))}
-                  </div>
+                    )}
                   <Button
                     data-testid="proxy-review-always-allow-all"
                     onClick={() => {
@@ -438,7 +450,7 @@ export function ProxyReviewRequestItem({
           </div>
 
           {error && (
-            <div className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-300">
+            <div className="mt-4 rounded-md bg-red-50 px-3 py-2 text-[11px] text-red-700 dark:bg-red-950/30 dark:text-red-300">
               Error: {error}
             </div>
           )}
