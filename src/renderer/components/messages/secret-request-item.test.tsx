@@ -25,15 +25,14 @@ describe('SecretRequestItem', () => {
 
   it('renders pending state with secret name and reason', () => {
     render(<SecretRequestItem {...defaultProps} />)
-    expect(screen.getByText('OPENAI_API_KEY')).toBeInTheDocument()
-    expect(screen.getByText('Needed for embeddings')).toBeInTheDocument()
-    expect(screen.getByText('Provide')).toBeInTheDocument()
-    expect(screen.getByText('Decline')).toBeInTheDocument()
+    expect(screen.getByText('Provide OPENAI_API_KEY needed for embeddings')).toBeInTheDocument()
+    expect(screen.getByTestId('secret-provide-btn')).toBeInTheDocument()
+    expect(screen.getByTestId('secret-decline-btn')).toBeInTheDocument()
   })
 
   it('has password input by default', () => {
     render(<SecretRequestItem {...defaultProps} />)
-    const input = screen.getByPlaceholderText('Enter secret value...')
+    const input = screen.getByPlaceholderText('Paste OPENAI_API_KEY')
     expect(input).toHaveAttribute('type', 'password')
   })
 
@@ -41,12 +40,11 @@ describe('SecretRequestItem', () => {
     const user = userEvent.setup()
     render(<SecretRequestItem {...defaultProps} />)
 
-    const input = screen.getByPlaceholderText('Enter secret value...')
+    const input = screen.getByPlaceholderText('Paste OPENAI_API_KEY')
     expect(input).toHaveAttribute('type', 'password')
 
-    // Click the toggle button (eye icon)
-    const toggleButtons = screen.getAllByRole('button')
-    const eyeButton = toggleButtons.find(b => !b.textContent?.includes('Provide') && !b.textContent?.includes('Decline'))!
+    // Click the toggle button (eye icon) — it's the plain <button> inside the relative wrapper
+    const eyeButton = input.parentElement!.querySelector('button')!
     await user.click(eyeButton)
     expect(input).toHaveAttribute('type', 'text')
   })
@@ -57,9 +55,9 @@ describe('SecretRequestItem', () => {
 
     render(<SecretRequestItem {...defaultProps} />)
 
-    const input = screen.getByPlaceholderText('Enter secret value...')
+    const input = screen.getByPlaceholderText('Paste OPENAI_API_KEY')
     await user.type(input, 'sk-test-123')
-    await user.click(screen.getByText('Provide'))
+    await user.click(screen.getByTestId('secret-provide-btn'))
 
     await waitFor(() => {
       expect(mockApiFetch).toHaveBeenCalledWith(
@@ -109,20 +107,20 @@ describe('SecretRequestItem', () => {
 
     render(<SecretRequestItem {...defaultProps} />)
 
-    const input = screen.getByPlaceholderText('Enter secret value...')
+    const input = screen.getByPlaceholderText('Paste OPENAI_API_KEY')
     await user.type(input, 'sk-test')
-    await user.click(screen.getByText('Provide'))
+    await user.click(screen.getByTestId('secret-provide-btn'))
 
     await waitFor(() => {
-      expect(screen.getByText('Server error')).toBeInTheDocument()
+      expect(screen.getByText(/Error:.*Server error/)).toBeInTheDocument()
     })
     // Should still be in pending state (form still visible)
-    expect(screen.getByText('Provide')).toBeInTheDocument()
+    expect(screen.getByTestId('secret-provide-btn')).toBeInTheDocument()
   })
 
   it('provide button is disabled when input is empty', () => {
     render(<SecretRequestItem {...defaultProps} />)
-    const provideButton = screen.getByText('Provide').closest('button')!
+    const provideButton = screen.getByTestId('secret-provide-btn')
     expect(provideButton).toBeDisabled()
   })
 
@@ -132,7 +130,7 @@ describe('SecretRequestItem', () => {
 
     render(<SecretRequestItem {...defaultProps} />)
 
-    const input = screen.getByPlaceholderText('Enter secret value...')
+    const input = screen.getByPlaceholderText('Paste OPENAI_API_KEY')
     await user.type(input, 'sk-test{Enter}')
 
     await waitFor(() => {

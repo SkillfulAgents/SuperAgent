@@ -25,19 +25,20 @@ describe('FileRequestItem', () => {
 
   it('renders pending state with description and file type hint', () => {
     render(<FileRequestItem {...defaultProps} />)
-    expect(screen.getByText('File Requested')).toBeInTheDocument()
+    expect(screen.getByText('File Request')).toBeInTheDocument()
     expect(screen.getByText('Please upload a CSV file with user data')).toBeInTheDocument()
-    expect(screen.getByText('Suggested types: .csv,.xlsx')).toBeInTheDocument()
+    expect(screen.getByText(/Accepted file types:.*\.csv,\.xlsx/)).toBeInTheDocument()
   })
 
   it('renders drop zone with browse prompt', () => {
     render(<FileRequestItem {...defaultProps} />)
-    expect(screen.getByText('Drop a file here or click to browse')).toBeInTheDocument()
+    expect(screen.getByText(/Click to browse/)).toBeInTheDocument()
+    expect(screen.getByText(/drag & drop file here/)).toBeInTheDocument()
   })
 
   it('upload button is disabled when no file is selected', () => {
     render(<FileRequestItem {...defaultProps} />)
-    const uploadButton = screen.getByText('Upload').closest('button')!
+    const uploadButton = screen.getByText('Upload file').closest('button')!
     expect(uploadButton).toBeDisabled()
   })
 
@@ -79,7 +80,7 @@ describe('FileRequestItem', () => {
     await waitFor(() => {
       expect(screen.getByText('data.csv')).toBeInTheDocument()
     })
-    await user.click(screen.getByText('Upload'))
+    await user.click(screen.getByText('Upload file'))
 
     await waitFor(() => {
       expect(screen.getByText('File uploaded')).toBeInTheDocument()
@@ -121,10 +122,10 @@ describe('FileRequestItem', () => {
     await waitFor(() => {
       expect(screen.getByText('data.csv')).toBeInTheDocument()
     })
-    await user.click(screen.getByText('Upload'))
+    await user.click(screen.getByText('Upload file'))
 
     await waitFor(() => {
-      expect(screen.getByText('Failed to upload file')).toBeInTheDocument()
+      expect(screen.getByText(/Error:.*Failed to upload file/)).toBeInTheDocument()
     })
   })
 })

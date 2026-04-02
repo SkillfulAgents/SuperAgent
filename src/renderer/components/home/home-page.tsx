@@ -383,7 +383,6 @@ export function HomePage() {
   const [selectedTemplate, setSelectedTemplate] = useState<ApiDiscoverableAgent | null>(null)
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
-
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && sidebarState === 'collapsed' && !isFullScreen
 
   const hasAgents = orderedAgents.length > 0

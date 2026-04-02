@@ -35,7 +35,7 @@ test.describe('Policy Settings', () => {
     // Should see the policy pill for our account (no policies yet)
     const pill = page.locator(`[data-testid="policy-pill-${accountId}"]`)
     await expect(pill).toBeVisible({ timeout: 5000 })
-    await expect(pill).toContainText('No policies')
+    await expect(pill).toContainText('Protected')
   })
 
   test('settings: can open scope policy editor and set a policy', async ({ page }) => {
@@ -74,8 +74,8 @@ test.describe('Policy Settings', () => {
     // Dialog should close
     await expect(page.getByText('Scope Policies')).not.toBeVisible({ timeout: 5000 })
 
-    // The pill should now show "1" for the allow count (no longer "No policies")
-    await expect(pill).not.toContainText('No policies', { timeout: 5000 })
+    // The pill should now show "1" for the allow count (no longer "Protected")
+    await expect(pill).not.toContainText('Protected', { timeout: 5000 })
   })
 
   test('settings: saved policy persists after reopening editor', async ({ page }) => {
@@ -168,10 +168,10 @@ test.describe('Policy Settings', () => {
     await expect(chatWriteRow.locator('[data-testid="policy-toggle-review"]')).toHaveAttribute('data-active', 'false')
     await expect(chatWriteRow.locator('[data-testid="policy-toggle-block"]')).toHaveAttribute('data-active', 'false')
 
-    // Save and verify pill goes back to "No policies"
+    // Save and verify pill goes back to "Protected"
     await page.locator('[data-testid="scope-policy-save"]').click()
     await expect(page.getByText('Scope Policies')).not.toBeVisible({ timeout: 5000 })
-    await expect(pill).toContainText('No policies', { timeout: 5000 })
+    await expect(pill).toContainText('Protected', { timeout: 5000 })
   })
 
   test('settings: global default policy toggle works', async ({ page }) => {

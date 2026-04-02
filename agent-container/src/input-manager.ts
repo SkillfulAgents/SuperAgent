@@ -10,7 +10,7 @@
  */
 
 // Value types supported by the input manager
-type InputValue = string | Record<string, string>
+type InputValue = string | string[] | Record<string, string>
 
 interface PendingInput<T extends InputValue = string> {
   resolve: (value: T) => void
@@ -149,7 +149,7 @@ class InputManager {
    * If no pending request exists yet (e.g. parallel tool calls race condition),
    * the value is buffered so createPending can resolve immediately when called.
    * @param toolUseId - The tool_use_id to resolve
-   * @param value - The value provided by the user (string or Record<string, string>)
+   * @param value - The value provided by the user (string, string[] or Record<string, string>)
    * @returns true (always succeeds — either resolves immediately or buffers)
    */
   resolve(toolUseId: string, value: InputValue): boolean {

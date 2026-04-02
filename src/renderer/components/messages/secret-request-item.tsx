@@ -1,10 +1,13 @@
 import { apiFetch } from '@renderer/lib/api'
 
 import { useState } from 'react'
-import { Key, Eye, EyeOff, Check, Loader2, Globe } from 'lucide-react'
+import { Key, Eye, EyeOff, Globe, ArrowUpRight } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { DeclineButton } from './decline-button'
+import { RequestItemShell } from './request-item-shell'
+import { RequestItemActions } from './request-item-actions'
 import { cn } from '@shared/lib/utils/cn'
 
 interface SecretRequestItemProps {
@@ -18,6 +21,20 @@ interface SecretRequestItemProps {
 }
 
 type RequestStatus = 'pending' | 'submitting' | 'provided' | 'declined' | 'fetch-requested'
+
+function formatSecretReason(secretName: string, reason: string): string {
+  const trimmedReason = reason.trim()
+  if (!trimmedReason) {
+    return `Provide ${secretName}`
+  }
+
+  const normalizedReason =
+    trimmedReason[0] === trimmedReason[0]?.toUpperCase()
+      ? trimmedReason[0].toLowerCase() + trimmedReason.slice(1)
+      : trimmedReason
+
+  return `Provide ${secretName} ${normalizedReason}`
+}
 
 export function SecretRequestItem({
   toolUseId,
@@ -57,8 +74,8 @@ export function SecretRequestItem({
 
       setStatus('provided')
       onComplete()
-    } catch (err: any) {
-      setError(err.message || 'Failed to provide secret')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to provide secret')
       setStatus('pending')
     }
   }
@@ -86,8 +103,8 @@ export function SecretRequestItem({
 
       setStatus('declined')
       onComplete()
-    } catch (err: any) {
-      setError(err.message || 'Failed to decline request')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to decline request')
       setStatus('pending')
     }
   }
@@ -115,157 +132,159 @@ export function SecretRequestItem({
 
       setStatus('fetch-requested')
       onComplete()
-    } catch (err: any) {
-      setError(err.message || 'Failed to send request')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to send request')
       setStatus('pending')
     }
   }
 
-  // Completed state - show minimal info
-  if (status === 'provided' || status === 'declined' || status === 'fetch-requested') {
-    const statusConfig = {
-      provided: { icon: Key, color: 'text-green-500', labelColor: 'text-green-600', label: 'Provided' },
-      declined: { icon: Key, color: 'text-red-500', labelColor: 'text-red-600', label: 'Declined' },
-      'fetch-requested': { icon: Globe, color: 'text-blue-500', labelColor: 'text-blue-600', label: 'Agent fetching...' },
-    } as const
-    const config = statusConfig[status as keyof typeof statusConfig]
-
-    return (
-      <div className="border rounded-md bg-muted/30 text-sm" data-testid="secret-request-completed" data-status={status}>
-        <div className="flex items-center gap-2 px-3 py-2">
-          <config.icon className={cn('h-4 w-4 shrink-0', config.color)} />
-          <span className="font-mono text-sm">{secretName}</span>
-          <span className={cn('ml-auto text-xs', config.labelColor)}>
-            {config.label}
-          </span>
-        </div>
-      </div>
-    )
-  }
-
-  // Read-only state for viewers
-  if (readOnly) {
-    return (
-      <div className="border rounded-md bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800 text-sm">
-        <div className="flex items-center gap-3 p-3">
-          <div className="h-8 w-8 rounded-full bg-amber-100 dark:bg-amber-900 flex items-center justify-center shrink-0">
-            <Key className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="font-medium text-amber-900 dark:text-amber-100">
-              Secret Requested:{' '}
-              <code className="bg-amber-100 dark:bg-amber-900 px-1.5 py-0.5 rounded text-amber-800 dark:text-amber-200">
-                {secretName}
-              </code>
-            </div>
-            {reason && (
-              <p className="text-sm text-amber-700 dark:text-amber-300 mt-1 whitespace-pre-line">{reason}</p>
-            )}
-          </div>
-          <span className="text-xs text-amber-600 dark:text-amber-400 shrink-0">Waiting for response</span>
-        </div>
-      </div>
-    )
-  }
-
-  // Pending/submitting state - show input form
-  return (
-    <div className="border rounded-md bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800 text-sm" data-testid="secret-request" data-secret-name={secretName}>
-      <div className="flex items-start gap-3 p-3">
-        {/* Icon */}
-        <div className="h-8 w-8 rounded-full bg-amber-100 dark:bg-amber-900 flex items-center justify-center shrink-0">
-          <Key className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-        </div>
-
-        {/* Content */}
-        <div className="flex-1 min-w-0 space-y-3">
-          {/* Header */}
-          <div>
-            <div className="font-medium text-amber-900 dark:text-amber-100">
-              Secret Requested:{' '}
-              <code className="bg-amber-100 dark:bg-amber-900 px-1.5 py-0.5 rounded text-amber-800 dark:text-amber-200">
-                {secretName}
-              </code>
-            </div>
-            {reason && (
-              <p className="text-sm text-amber-700 dark:text-amber-300 mt-1 whitespace-pre-line">{reason}</p>
-            )}
-          </div>
-
-          {/* Input row */}
-          <div className="flex gap-2">
-            <div className="relative flex-1">
-              <Input
-                type={showValue ? 'text' : 'password'}
-                placeholder="Enter secret value..."
-                value={value}
-                onChange={(e) => setValue(e.target.value)}
-                disabled={status === 'submitting'}
-                className="pr-10 bg-white dark:bg-amber-950/30 border-amber-200 dark:border-amber-700 focus:border-amber-400 dark:focus:border-amber-500"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && value.trim()) {
-                    handleProvide()
-                  }
-                }}
-              />
-              <button
-                type="button"
-                onClick={() => setShowValue(!showValue)}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                disabled={status === 'submitting'}
-              >
-                {showValue ? (
-                  <EyeOff className="h-4 w-4" />
-                ) : (
-                  <Eye className="h-4 w-4" />
-                )}
-              </button>
-            </div>
-
-            <Button
-              onClick={handleProvide}
-              disabled={!value.trim() || status === 'submitting'}
-              size="sm"
-              className="bg-amber-600 hover:bg-amber-700 text-white"
-              data-testid="secret-provide-btn"
-            >
-              {status === 'submitting' ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Check className="h-4 w-4" />
+  // Build completed config for the 3 outcome states
+  const isCompleted = status === 'provided' || status === 'declined' || status === 'fetch-requested'
+  const completedConfig = isCompleted
+    ? (() => {
+        if (status === 'fetch-requested') {
+          return {
+            icon: <Globe className={cn('h-4 w-4 shrink-0', 'text-blue-500')} />,
+            label: <span className="font-mono text-sm">{secretName}</span>,
+            statusLabel: 'Agent fetching...',
+            isSuccess: true,
+          }
+        }
+        return {
+          icon: (
+            <Key
+              className={cn(
+                'h-4 w-4 shrink-0',
+                status === 'provided' ? 'text-green-500' : 'text-red-500'
               )}
-              <span className="ml-1">Provide</span>
-            </Button>
-
-            <DeclineButton
-              onDecline={handleDecline}
-              disabled={status === 'submitting'}
-              className="border-amber-200 dark:border-amber-700 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900"
-              data-testid="secret-decline-btn"
             />
-          </div>
+          ),
+          label: <span className="font-mono text-sm">{secretName}</span>,
+          statusLabel: status === 'provided' ? 'Provided' : 'Declined',
+          isSuccess: status === 'provided',
+        }
+      })()
+    : null
 
-          {/* Error message */}
-          {error && (
-            <p className="text-sm text-red-600">{error}</p>
-          )}
+  // Build read-only config
+  const readOnlyConfig = readOnly
+    ? {
+        description: reason ? (
+          <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">
+            {formatSecretReason(secretName, reason)}
+          </p>
+        ) : undefined,
+        extraContent: (
+          <code className="mt-6 inline-flex h-7 items-center rounded-md bg-muted px-2.5 font-mono text-xs font-medium text-foreground/80">
+            {secretName}
+          </code>
+        ),
+      }
+    : false as const
 
-          {/* Info text */}
-          <div className="flex items-center justify-between">
-            <p className="text-xs text-amber-600 dark:text-amber-400">
-              This secret will be saved to your agent and available for future sessions.
-            </p>
+  return (
+    <RequestItemShell
+      title="Secret Request"
+      icon={<Key />}
+      theme="orange"
+      completed={completedConfig}
+      readOnly={readOnlyConfig}
+      waitingText="Waiting for response"
+      error={error}
+      data-testid={isCompleted ? 'secret-request-completed' : 'secret-request'}
+      data-status={isCompleted ? status : undefined}
+      data-secret-name={!isCompleted && !readOnly ? secretName : undefined}
+    >
+      {/* Description */}
+      {reason && (
+        <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">
+          {formatSecretReason(secretName, reason)}
+        </p>
+      )}
+      <p className="mt-2 text-xs text-muted-foreground">
+        Your secret will be stored securely and available for future sessions.
+      </p>
+
+      {/* Input */}
+      <div className="pt-3">
+        <div className="flex items-start gap-2">
+          <div className="flex-1">
+            <div className="relative">
+            <Input
+              type={showValue ? 'text' : 'password'}
+              autoFocus
+              placeholder={`Paste ${secretName}`}
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              disabled={status === 'submitting'}
+              className="pr-10 bg-white border-border"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && value.trim()) {
+                  handleProvide()
+                }
+              }}
+            />
             <button
               type="button"
-              onClick={handleFetchForMe}
+              onClick={() => setShowValue(!showValue)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
               disabled={status === 'submitting'}
-              className="text-xs text-blue-600 dark:text-blue-400 hover:underline disabled:opacity-50 shrink-0 ml-2"
             >
-              Get it for me
+              {showValue ? (
+                <EyeOff className="h-4 w-4" />
+              ) : (
+                <Eye className="h-4 w-4" />
+              )}
             </button>
+            </div>
           </div>
         </div>
       </div>
-    </div>
+
+      {/* Action row */}
+      <RequestItemActions className="items-center justify-between">
+        <TooltipProvider delayDuration={200}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                onClick={handleFetchForMe}
+                disabled={status === 'submitting'}
+                variant="outline"
+                size="sm"
+                className="border-border text-muted-foreground hover:bg-muted hover:text-foreground"
+              >
+                <span>Fetch secret for me</span>
+                <ArrowUpRight className="ml-1 h-3.5 w-3.5 text-muted-foreground" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="max-w-[240px]">
+              Not sure where to find your secret? Your agent can use your browser to go fetch it for you.
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+
+        <div className="flex justify-end gap-2">
+          <DeclineButton
+            onDecline={handleDecline}
+            disabled={status === 'submitting'}
+            showIcon={false}
+            className="border-border text-foreground hover:bg-muted"
+            data-testid="secret-decline-btn"
+          />
+
+          <Button
+            onClick={handleProvide}
+            loading={status === 'submitting'}
+            disabled={!value.trim()}
+            size="sm"
+            className="min-w-24 bg-orange-600 hover:bg-orange-700 text-white"
+            data-testid="secret-provide-btn"
+          >
+            Save
+          </Button>
+        </div>
+      </RequestItemActions>
+    </RequestItemShell>
   )
 }
