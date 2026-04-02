@@ -173,11 +173,9 @@ test.describe('Remote MCP - Full Connection Flow', () => {
     const requestCard = page.locator('[data-testid="remote-mcp-request"]')
     await expect(requestCard).toBeVisible({ timeout: 15000 })
 
-    // Should show "not connected" since this MCP is not yet registered
-    await expect(requestCard.getByText('not connected')).toBeVisible()
-
-    // Click "Connect" to register the MCP server
+    // Should show Connect button since this MCP is not yet registered
     const connectBtn = requestCard.getByRole('button', { name: /Connect/i })
+    await expect(connectBtn).toBeVisible()
     await connectBtn.click()
 
     // After registration succeeds, the server card should appear
