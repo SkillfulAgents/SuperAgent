@@ -4,6 +4,7 @@ import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ConnectedAccountRequestItem } from './connected-account-request-item'
 import { renderWithProviders } from '@renderer/test/test-utils'
+import { useConnectedAccountsByToolkit } from '@renderer/hooks/use-connected-accounts'
 
 const mockApiFetch = vi.fn()
 vi.mock('@renderer/lib/api', () => ({
@@ -18,7 +19,7 @@ vi.mock('@renderer/hooks/use-connected-accounts', () => ({
           id: 'acc-1',
           displayName: 'My GitHub Account',
           status: 'active',
-          createdAt: new Date('2025-01-01'),
+          createdAt: new Date('2025-01-01').toISOString(),
           composioConnectionId: 'conn-1',
           toolkitSlug: 'github',
         },
@@ -61,6 +62,23 @@ const defaultProps = {
 describe('ConnectedAccountRequestItem', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // Restore default mock implementation (clearAllMocks doesn't reset mockReturnValue)
+    vi.mocked(useConnectedAccountsByToolkit).mockImplementation(() => ({
+      data: {
+        accounts: [
+          {
+            id: 'acc-1',
+            displayName: 'My GitHub Account',
+            status: 'active',
+            createdAt: new Date('2025-01-01').toISOString(),
+            composioConnectionId: 'conn-1',
+            toolkitSlug: 'github',
+          },
+        ],
+      },
+      isLoading: false,
+      refetch: vi.fn(),
+    }) as any)
     // Remove electronAPI to test web mode
     delete (window as any).electronAPI
   })
@@ -72,23 +90,29 @@ describe('ConnectedAccountRequestItem', () => {
     expect(screen.getByText('Need to access your repos')).toBeInTheDocument()
   })
 
-  it('renders account list', () => {
+  it('renders account list with checkbox', () => {
     renderWithProviders(<ConnectedAccountRequestItem {...defaultProps} />)
     expect(screen.getByText('My GitHub Account')).toBeInTheDocument()
-    expect(screen.getByText('active')).toBeInTheDocument()
+    // Account option uses a checkbox for selection
+    const checkbox = screen.getByRole('checkbox')
+    expect(checkbox).toBeInTheDocument()
   })
 
-  it('provides account when selected and submitted', async () => {
+  it('auto-selects when there is only one account', () => {
+    renderWithProviders(<ConnectedAccountRequestItem {...defaultProps} />)
+    // With a single account, the component auto-selects it
+    const checkbox = screen.getByRole('checkbox') as HTMLInputElement
+    expect(checkbox.checked).toBe(true)
+  })
+
+  it('provides account when submitted (auto-selected single account)', async () => {
     const user = userEvent.setup()
     mockApiFetch.mockResolvedValueOnce({ ok: true, json: () => ({}) })
 
     renderWithProviders(<ConnectedAccountRequestItem {...defaultProps} />)
 
-    // Click to select the account
-    await user.click(screen.getByText('My GitHub Account'))
-
-    // Click Grant Access
-    await user.click(screen.getByText(/Grant Access/))
+    // Single account is auto-selected, so "Allow Access (1)" button should be enabled
+    await user.click(screen.getByText(/Allow Access/))
 
     await waitFor(() => {
       expect(mockApiFetch).toHaveBeenCalledWith(
@@ -112,7 +136,7 @@ describe('ConnectedAccountRequestItem', () => {
 
     renderWithProviders(<ConnectedAccountRequestItem {...defaultProps} />)
 
-    await user.click(screen.getByText('Decline'))
+    await user.click(screen.getByText('Deny'))
 
     await waitFor(() => {
       expect(mockApiFetch).toHaveBeenCalledWith(
@@ -128,15 +152,41 @@ describe('ConnectedAccountRequestItem', () => {
     })
   })
 
-  it('grant access button is disabled when no account is selected', () => {
+  it('allow access button is disabled when no account is selected', () => {
+    // Mock two accounts so auto-select does not trigger (only triggers for exactly 1)
+    vi.mocked(useConnectedAccountsByToolkit).mockReturnValue({
+      data: {
+        accounts: [
+          {
+            id: 'acc-1',
+            displayName: 'My GitHub Account',
+            status: 'active',
+            createdAt: new Date('2025-01-01').toISOString(),
+            composioConnectionId: 'conn-1',
+            toolkitSlug: 'github',
+          },
+          {
+            id: 'acc-2',
+            displayName: 'Work GitHub Account',
+            status: 'active',
+            createdAt: new Date('2025-02-01').toISOString(),
+            composioConnectionId: 'conn-2',
+            toolkitSlug: 'github',
+          },
+        ],
+      },
+      isLoading: false,
+      refetch: vi.fn(),
+    } as any)
+
     renderWithProviders(<ConnectedAccountRequestItem {...defaultProps} />)
-    const grantButton = screen.getByText(/Grant Access/).closest('button')!
-    expect(grantButton).toBeDisabled()
+    const allowButton = screen.getByText(/Allow Access/).closest('button')!
+    expect(allowButton).toBeDisabled()
   })
 
-  it('shows connect new account button', () => {
+  it('shows add new account button', () => {
     renderWithProviders(<ConnectedAccountRequestItem {...defaultProps} />)
-    expect(screen.getByText('Connect New Account')).toBeInTheDocument()
+    expect(screen.getByText('Add New Account')).toBeInTheDocument()
   })
 
   it('shows error on API failure', async () => {
@@ -148,11 +198,16 @@ describe('ConnectedAccountRequestItem', () => {
 
     renderWithProviders(<ConnectedAccountRequestItem {...defaultProps} />)
 
-    await user.click(screen.getByText('My GitHub Account'))
-    await user.click(screen.getByText(/Grant Access/))
+    // Wait for auto-select to fire (useEffect), then the button becomes enabled
+    const allowButton = await screen.findByRole('button', { name: /Allow Access/ })
+    await waitFor(() => {
+      expect(allowButton).not.toBeDisabled()
+    })
+
+    await user.click(allowButton)
 
     await waitFor(() => {
-      expect(screen.getByText('Connection failed')).toBeInTheDocument()
+      expect(screen.getByText(/Connection failed/)).toBeInTheDocument()
     })
   })
 })

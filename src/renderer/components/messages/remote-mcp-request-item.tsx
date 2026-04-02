@@ -3,38 +3,24 @@ import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
 
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import {
-  Blocks,
-  Check,
-  ChevronDown,
   Loader2,
-  MoreVertical,
-  Pencil,
   Plus,
   Plug,
-  X,
 } from 'lucide-react'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { COMMON_MCP_SERVERS } from '@shared/lib/mcp/common-servers'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
-import { ToolPolicySummaryPill } from '@renderer/components/ui/tool-policy-summary-pill'
 import { ToolPolicyEditor } from '@renderer/components/settings/tool-policy-editor'
 import { DeclineButton } from './decline-button'
-import { RequestTitleChip } from './request-title-chip'
+import { RequestItemShell } from './request-item-shell'
+import { RequestItemActions } from './request-item-actions'
 import { cn } from '@shared/lib/utils/cn'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useInitiateMcpOAuth } from '@renderer/hooks/use-remote-mcps'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
-
-interface RemoteMcpServer {
-  id: string
-  name: string
-  url: string
-  authType: string
-  status: string
-  tools: Array<{ name: string; description?: string }>
-}
+import { type RemoteMcpServer, getMcpServiceKey, McpSourceIcon, McpServerCard } from './mcp-server-card'
+import { McpServicePicker } from './mcp-service-picker'
 
 interface RemoteMcpRequestItemProps {
   toolUseId: string
@@ -45,43 +31,10 @@ interface RemoteMcpRequestItemProps {
   sessionId: string
   agentSlug: string
   readOnly?: boolean
-  debugInitialStatus?: RequestStatus
-  debugHideExistingServers?: boolean
-  debugServers?: RemoteMcpServer[]
-  debugSelectedMcpId?: string
   onComplete: () => void
 }
 
 type RequestStatus = 'pending' | 'submitting' | 'provided' | 'declined' | 'registering' | 'oauth_pending'
-
-function getMcpServiceKey(serverUrl: string) {
-  const commonServer = COMMON_MCP_SERVERS.find((server) => server.url === serverUrl)
-  if (commonServer?.slug) return commonServer.slug
-
-  try {
-    return new URL(serverUrl).hostname
-  } catch {
-    return serverUrl
-  }
-}
-
-function McpSourceIcon({ slug }: { slug: string }) {
-  const [failed, setFailed] = useState(false)
-
-  if (!slug || failed) {
-    return <Blocks className="h-5 w-5 text-muted-foreground/70" />
-  }
-
-  return (
-    <img
-      src={`${import.meta.env.BASE_URL}service-icons/${slug}.svg`}
-      alt=""
-      aria-hidden="true"
-      className="h-6 w-6 object-contain"
-      onError={() => setFailed(true)}
-    />
-  )
-}
 
 export function RemoteMcpRequestItem({
   toolUseId,
@@ -92,17 +45,13 @@ export function RemoteMcpRequestItem({
   sessionId,
   agentSlug,
   readOnly,
-  debugInitialStatus,
-  debugHideExistingServers,
-  debugServers,
-  debugSelectedMcpId,
   onComplete,
 }: RemoteMcpRequestItemProps) {
   const queryClient = useQueryClient()
   const initiateOAuth = useInitiateMcpOAuth()
   const { track } = useAnalyticsTracking()
   const mcpSlug = COMMON_MCP_SERVERS.find((cs) => cs.url === url)?.slug || ''
-  const [status, setStatus] = useState<RequestStatus>(debugInitialStatus || 'pending')
+  const [status, setStatus] = useState<RequestStatus>('pending')
   const [error, setError] = useState<string | null>(null)
   const [selectedMcpIds, setSelectedMcpIds] = useState<Set<string>>(new Set())
   const [newName, setNewName] = useState(name || '')
@@ -127,11 +76,7 @@ export function RemoteMcpRequestItem({
     },
   })
 
-  const servers = useMemo(() => {
-    if (debugServers) return debugServers
-    const fetchedServers = Array.isArray(data?.servers) ? data.servers : []
-    return debugHideExistingServers ? [] : fetchedServers
-  }, [data, debugHideExistingServers, debugServers])
+  const servers = useMemo(() => Array.isArray(data?.servers) ? data.servers : [], [data])
   const matchingServer = useMemo(
     () => servers.find((server) => server.url === targetUrl) || null,
     [servers, targetUrl]
@@ -159,12 +104,6 @@ export function RemoteMcpRequestItem({
     [selectedServiceKey, servers]
   )
   const connectCardSlug = COMMON_MCP_SERVERS.find((server) => server.url === targetUrl)?.slug || mcpSlug
-  const selectedServiceDisplayName = useMemo(() => {
-    const commonServer = COMMON_MCP_SERVERS.find((server) => server.slug === selectedServiceKey)
-    if (commonServer?.displayName) return commonServer.displayName
-    if (selectedServer?.name) return selectedServer.name
-    return newName.trim() || name || 'MCP server'
-  }, [name, newName, selectedServer, selectedServiceKey])
   const selectedMcpIdsForProvide = useMemo(() => {
     if (selectedMcpIds.size > 0) return Array.from(selectedMcpIds)
     if (displayedServiceServers.length <= 1 && activeMcpId) return [activeMcpId]
@@ -204,18 +143,6 @@ export function RemoteMcpRequestItem({
 
     return Array.from(grouped.values())
   }, [servers])
-
-  useEffect(() => {
-    if (debugInitialStatus) {
-      setStatus(debugInitialStatus)
-    }
-  }, [debugInitialStatus])
-
-  useEffect(() => {
-    if (debugSelectedMcpId) {
-      setSelectedMcpIds(new Set([debugSelectedMcpId]))
-    }
-  }, [debugSelectedMcpId])
 
   // Auto-select matching server on first load only
   const hasAutoSelected = useRef(false)
@@ -293,9 +220,9 @@ export function RemoteMcpRequestItem({
         setError('OAuth initiation did not return a redirect URL')
         setStatus('pending')
       }
-    } catch (oauthErr: any) {
+    } catch (oauthErr: unknown) {
       popup.close()
-      setError(oauthErr.message || 'Failed to initiate OAuth')
+      setError(oauthErr instanceof Error ? oauthErr.message : 'Failed to initiate OAuth')
       setStatus('pending')
     }
   }
@@ -368,23 +295,70 @@ export function RemoteMcpRequestItem({
   }
 
   const handleConnectAnother = async () => {
-    if (selectedServer) {
-      setNewName(selectedServer.name)
-      setNewUrl(selectedServer.url)
+    const nameToUse = selectedServer ? selectedServer.name : newName
+    const urlToUse = selectedServer ? selectedServer.url : newUrl
+
+    setNewName(nameToUse)
+    setNewUrl(urlToUse)
+
+    // Call registration inline with the resolved values to avoid stale state
+    setStatus('registering')
+    setError(null)
+    const resolvedTargetUrl = urlToUse.trim() || url
+    track('mcp_added', { url: resolvedTargetUrl, authType: authHint || (bearerToken ? 'bearer' : 'none'), location: 'session' })
+
+    const popup = prepareOAuthPopup()
+
+    if (authHint === 'oauth') {
+      await startOAuthFlow(popup)
+      return
     }
-    await handleRegisterNew()
+
+    try {
+      const response = await apiFetch('/api/remote-mcps', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: nameToUse.trim() || url,
+          url: resolvedTargetUrl,
+          authType: bearerToken ? 'bearer' : 'none',
+          accessToken: bearerToken || undefined,
+        }),
+      })
+
+      const responseData = await response.json()
+
+      if (!response.ok) {
+        if (responseData.needsOAuth) {
+          await startOAuthFlow(popup)
+          return
+        }
+        if (responseData.needsAuth) {
+          popup.close()
+          setShowTokenInput(true)
+          setError(responseData.error || 'This MCP server requires authentication.')
+          setStatus('pending')
+          return
+        }
+        popup.close()
+        throw new Error(responseData.error || 'Failed to register MCP server')
+      }
+
+      popup.close()
+      const { server } = responseData
+      queryClient.invalidateQueries({ queryKey: ['remote-mcps'] })
+      await refetch()
+      setSelectedMcpIds(new Set([server.id]))
+      await apiFetch(`/api/remote-mcps/${server.id}/discover-tools`, { method: 'POST' })
+      await refetch()
+      setStatus('pending')
+    } catch (err: unknown) {
+      popup.close()
+      setError(err instanceof Error ? err.message : 'Failed to register MCP server')
+      setStatus('pending')
+    }
   }
 
-  const handleOpenRemoteMcpSettings = () => {
-    setIsMcpPickerOpen(false)
-    window.dispatchEvent(
-      new CustomEvent('open-global-settings', {
-        detail: {
-          initialTab: 'remote-mcps',
-        },
-      })
-    )
-  }
 
   const handleProvide = async () => {
     const providedMcpIds = selectedMcpIdsForProvide
@@ -414,8 +388,8 @@ export function RemoteMcpRequestItem({
       setStatus('provided')
       queryClient.invalidateQueries({ queryKey: ['agent-remote-mcps', agentSlug] })
       onComplete()
-    } catch (err: any) {
-      setError(err.message || 'Failed to provide MCP access')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to provide MCP access')
       setStatus('pending')
     }
   }
@@ -445,8 +419,8 @@ export function RemoteMcpRequestItem({
 
       setStatus('declined')
       onComplete()
-    } catch (err: any) {
-      setError(err.message || 'Failed to decline request')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to decline request')
       setStatus('pending')
     }
   }
@@ -485,52 +459,12 @@ export function RemoteMcpRequestItem({
       await refetch()
       setEditingMcpId(null)
       setEditMcpName('')
-    } catch (err: any) {
-      setError(err.message || 'Failed to rename MCP')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to rename MCP')
     } finally {
       setIsSavingRename(false)
     }
   }
-
-  const renderRenameMenu = (server: RemoteMcpServer, align: 'start' | 'end' = 'end') => (
-    <Popover
-      open={menuOpenMcpId === server.id}
-      onOpenChange={(open) => setMenuOpenMcpId(open ? server.id : null)}
-    >
-      <PopoverTrigger asChild>
-        <Button
-          size="sm"
-          variant="ghost"
-          className="h-5 w-5 shrink-0 p-0 text-muted-foreground/70 hover:bg-transparent hover:text-muted-foreground"
-          onClick={(e) => {
-            e.stopPropagation()
-          }}
-        >
-          <MoreVertical className="h-3.5 w-3.5" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent
-        align={align}
-        className="w-32 p-1"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <Button
-          size="sm"
-          variant="ghost"
-          className="w-full justify-start gap-2 text-foreground hover:bg-muted"
-          onClick={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            setMenuOpenMcpId(null)
-            handleStartRename(server)
-          }}
-        >
-          <Pencil className="h-3.5 w-3.5" />
-          Rename
-        </Button>
-      </PopoverContent>
-    </Popover>
-  )
 
   const openPolicyEditor = (server: RemoteMcpServer) => {
     const tools = (server.tools || []).map((tool) => ({
@@ -540,272 +474,25 @@ export function RemoteMcpRequestItem({
     setPolicyEditorMcp({ id: server.id, name: server.name, tools })
   }
 
-  const renderSelectedServerCard = (server: RemoteMcpServer) => {
-    const selectedServerSlug = COMMON_MCP_SERVERS.find((commonServer) => commonServer.url === server.url)?.slug || ''
-    const isEditing = editingMcpId === server.id
+  const mcpServerCardProps = (server: RemoteMcpServer) => ({
+    server,
+    isEditing: editingMcpId === server.id,
+    editName: editMcpName,
+    onEditNameChange: setEditMcpName,
+    onSaveEdit: handleSaveRename,
+    onCancelEdit: handleCancelRename,
+    isSavingRename,
+    menuOpen: menuOpenMcpId === server.id,
+    onMenuOpenChange: (open: boolean) => setMenuOpenMcpId(open ? server.id : null),
+    onStartRename: () => handleStartRename(server),
+    onOpenPolicies: () => openPolicyEditor(server),
+  })
 
-    if (isEditing) {
-      return (
-        <div className="rounded-[12px] border border-border bg-white px-4 py-3 dark:bg-background">
-          <div className="flex items-center gap-2">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
-              <McpSourceIcon slug={selectedServerSlug} />
-            </div>
-            <Input
-              value={editMcpName}
-              onChange={(e) => setEditMcpName(e.target.value)}
-              className="h-7 max-w-[296px] flex-1 text-sm"
-              autoFocus
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleSaveRename()
-                if (e.key === 'Escape') handleCancelRename()
-              }}
-            />
-            <Button
-              size="sm"
-              variant="default"
-              className="h-6 shrink-0 bg-foreground px-2 text-xs text-background hover:bg-foreground/90"
-              onClick={handleSaveRename}
-              disabled={isSavingRename}
-            >
-              {isSavingRename ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : (
-                <>
-                  <Check className="h-3 w-3" />
-                  <span>Update</span>
-                </>
-              )}
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-6 shrink-0 px-2 text-xs"
-              onClick={handleCancelRename}
-            >
-              <X className="h-3 w-3" />
-              <span>Cancel</span>
-            </Button>
-          </div>
-        </div>
-      )
-    }
-
-    return (
-      <div className="group rounded-[12px] border border-border bg-white px-4 py-3 dark:bg-background">
-        <div className="flex items-center gap-2">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
-            <McpSourceIcon slug={selectedServerSlug} />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1">
-              <p className="truncate text-sm font-normal text-foreground">
-                {server.name}
-              </p>
-            </div>
-            <p className="truncate text-xs text-muted-foreground">
-              {server.url}
-            </p>
-          </div>
-          <div className="ml-3 flex shrink-0 items-center gap-2">
-            <span onClick={(e) => e.stopPropagation()}>
-              <ToolPolicySummaryPill
-                mcpId={server.id}
-                onClick={() => openPolicyEditor(server)}
-              />
-            </span>
-            {renderRenameMenu(server)}
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  const renderServiceServerList = (serviceServers: RemoteMcpServer[]) => (
-    <div className="space-y-2">
-      <div className="space-y-1">
-        {serviceServers.map((server) => {
-          const serverSlug = COMMON_MCP_SERVERS.find((commonServer) => commonServer.url === server.url)?.slug || ''
-          const isSelected = selectedMcpIds.has(server.id)
-          const isEditing = editingMcpId === server.id
-
-          if (isEditing) {
-            return (
-              <div
-                key={server.id}
-                className="flex items-center gap-2 rounded-[12px] border border-border bg-white px-4 py-3 dark:bg-background"
-              >
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
-                  <McpSourceIcon slug={serverSlug} />
-                </div>
-                <Input
-                  value={editMcpName}
-                  onChange={(e) => setEditMcpName(e.target.value)}
-                  className="h-7 max-w-[296px] flex-1 text-sm"
-                  autoFocus
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleSaveRename()
-                    if (e.key === 'Escape') handleCancelRename()
-                  }}
-                />
-                <Button
-                  size="sm"
-                  variant="default"
-                  className="h-6 shrink-0 bg-foreground px-2 text-xs text-background hover:bg-foreground/90"
-                  onClick={handleSaveRename}
-                  disabled={isSavingRename}
-                >
-                  {isSavingRename ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <>
-                      <Check className="h-3 w-3" />
-                      <span>Update</span>
-                    </>
-                  )}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-6 shrink-0 px-2 text-xs"
-                  onClick={handleCancelRename}
-                >
-                  <X className="h-3 w-3" />
-                  <span>Cancel</span>
-                </Button>
-              </div>
-            )
-          }
-
-          return (
-            <button
-              key={server.id}
-              type="button"
-              onClick={() =>
-                setSelectedMcpIds((prev) => {
-                  const next = new Set(prev)
-                  if (next.has(server.id)) {
-                    next.delete(server.id)
-                  } else {
-                    next.add(server.id)
-                  }
-                  return next
-                })
-              }
-              disabled={status !== 'pending'}
-              className={cn(
-                'group flex w-full items-center gap-3 rounded-[12px] border px-4 py-3 text-left transition-colors',
-                isSelected
-                  ? 'border-blue-300 bg-blue-50 dark:border-blue-700 dark:bg-blue-950/40'
-                  : 'border-border bg-white hover:bg-muted/40 dark:bg-background',
-                status !== 'pending' && 'cursor-not-allowed opacity-70'
-              )}
-            >
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
-                <McpSourceIcon slug={serverSlug} />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1">
-                  <p className="truncate text-sm font-normal text-foreground">
-                    {server.name}
-                  </p>
-                </div>
-                <p className="truncate text-xs text-muted-foreground">
-                  {server.url}
-                </p>
-              </div>
-              <div className="ml-3 flex shrink-0 items-center gap-2">
-                <span onClick={(e) => e.stopPropagation()}>
-                  <ToolPolicySummaryPill
-                    mcpId={server.id}
-                    onClick={() => openPolicyEditor(server)}
-                  />
-                </span>
-                {renderRenameMenu(server)}
-              </div>
-            </button>
-          )
-        })}
-      </div>
-    </div>
-  )
-
-  const renderMcpPicker = () => {
-    if (servers.length === 0) return null
-
-    return (
-      <Popover open={isMcpPickerOpen} onOpenChange={setIsMcpPickerOpen}>
-        <div className="inline-flex items-center gap-1 self-start px-1 py-1 text-xs text-muted-foreground">
-          <span>Not the right MCP?</span>
-          <PopoverTrigger asChild>
-            <button
-              type="button"
-              disabled={status !== 'pending'}
-              className="inline-flex items-center gap-1 transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <span>Select a different one</span>
-              <ChevronDown className="h-3.5 w-3.5" />
-            </button>
-          </PopoverTrigger>
-        </div>
-        <PopoverContent align="start" side="top" className="w-[320px] max-w-[min(320px,calc(100vw-2rem))] p-1">
-          <div className="max-h-64 space-y-1 overflow-y-auto pr-1">
-            {pickerServiceOptions.map((option) => {
-              const isSelectedService = option.serviceKey === selectedServiceKey
-
-              return (
-                <button
-                  key={option.serviceKey}
-                  type="button"
-                  onClick={() => {
-                    setSelectedMcpIds(new Set([option.servers[0].id]))
-                    setIsMcpPickerOpen(false)
-                  }}
-                  className={cn(
-                    'flex w-full items-center justify-between rounded-[10px] px-3 py-2 text-left transition-colors',
-                    isSelectedService
-                      ? 'bg-muted text-foreground'
-                      : 'text-foreground hover:bg-muted/60'
-                  )}
-                >
-                  <div className="flex min-w-0 items-center gap-2">
-                    <div className="flex h-4 w-4 shrink-0 items-center justify-center">
-                      <McpSourceIcon slug={option.slug} />
-                    </div>
-                    <span className="truncate text-sm">{option.displayName}</span>
-                    <span className="shrink-0 text-[11px] text-muted-foreground">
-                      {option.servers.length} {option.servers.length === 1 ? 'account' : 'accounts'}
-                    </span>
-                  </div>
-                  <div className="ml-3 flex shrink-0 items-center gap-2">
-                    {isSelectedService ? (
-                      <Check className="h-3.5 w-3.5 shrink-0 text-blue-600" />
-                    ) : null}
-                  </div>
-                </button>
-              )
-            })}
-          </div>
-          <div className="mt-1 border-t border-border pt-1">
-            <button
-              type="button"
-              onClick={handleOpenRemoteMcpSettings}
-              className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-foreground transition-colors hover:bg-muted/60"
-            >
-              <Plus className="h-4 w-4 shrink-0" />
-              <span className="truncate text-sm">Add Custom MCP</span>
-            </button>
-          </div>
-        </PopoverContent>
-      </Popover>
-    )
-  }
-
-  // Completed state
-  if (status === 'provided' || status === 'declined') {
-    return (
-      <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm">
-        <div className="flex items-center gap-2 p-4">
+  // Build completed config
+  const isCompleted = status === 'provided' || status === 'declined'
+  const completedConfig = isCompleted
+    ? {
+        icon: (
           <ServiceIcon
             slug={mcpSlug}
             fallback="mcp"
@@ -814,224 +501,216 @@ export function RemoteMcpRequestItem({
               status === 'provided' ? 'text-green-500' : 'text-red-500'
             )}
           />
-          <span className="font-medium">MCP Server: {name || url}</span>
-          <span
-            className={cn(
-              'ml-auto text-xs',
-              status === 'provided' ? 'text-green-600' : 'text-red-600'
-            )}
-          >
-            {status === 'provided' ? 'Access Granted' : 'Declined'}
-          </span>
-        </div>
-      </div>
-    )
-  }
+        ),
+        label: <span className="font-medium">MCP Server: {name || url}</span>,
+        statusLabel: status === 'provided' ? 'Access Granted' : 'Declined',
+        isSuccess: status === 'provided',
+      }
+    : null
 
-  // Read-only state for viewers
-  if (readOnly) {
-    return (
-      <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm">
-        <div className="flex items-start gap-3 p-4">
-          <div className="flex-1 min-w-0">
-            <RequestTitleChip
-              className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
-              icon={<Plug className="h-4 w-4" />}
-            >
-              MCP Access Request
-            </RequestTitleChip>
-            {reason && (
-              <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{reason}</p>
-            )}
-          </div>
-          <span className="text-xs text-blue-600 dark:text-blue-400 shrink-0">Waiting for response</span>
-        </div>
-      </div>
-    )
-  }
+  // Build read-only config
+  const readOnlyConfig = readOnly
+    ? {
+        description: reason ? (
+          <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{reason}</p>
+        ) : undefined,
+      }
+    : false as const
 
-  // Pending/submitting/registering/oauth_pending state
   return (
-    <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm">
-      <div className="p-4">
-        <div className="flex-1 min-w-0">
-          <div>
-            <RequestTitleChip
-              className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
-              icon={<Plug className="h-4 w-4" />}
-            >
-              MCP Access Request
-            </RequestTitleChip>
-            {reason && (
-              <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{reason}</p>
-            )}
-            <p className="mt-1 text-xs text-muted-foreground">
-              The MCP server will be connected to this agent.
-            </p>
-          </div>
+    <RequestItemShell
+      title="MCP Access Request"
+      icon={<Plug className="h-4 w-4" />}
+      theme="blue"
+      completed={completedConfig}
+      readOnly={readOnlyConfig}
+      waitingText="Waiting for response"
+      error={error}
+      data-testid={isCompleted ? 'remote-mcp-request-completed' : 'remote-mcp-request'}
+      data-status={isCompleted ? status : undefined}
+    >
+      {reason && (
+        <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{reason}</p>
+      )}
+      <p className="mt-1 text-xs text-muted-foreground">
+        The MCP server will be connected to this agent.
+      </p>
 
-          <div className="mt-5">
-            {status === 'oauth_pending' ? (
-              <div className="flex items-center gap-3 rounded-[12px] border border-border bg-white px-4 py-3 dark:bg-background">
-                <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
-                <div>
-                  <p className="text-sm font-normal text-foreground">
-                    Waiting for authorization...
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    Complete the OAuth flow in your browser to connect this MCP server.
-                  </p>
-                </div>
-              </div>
-            ) : isLoading ? (
-              <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                <span>Loading MCP servers...</span>
-              </div>
-            ) : displayedServiceServers.length > 1 ? (
-              <div className="space-y-2">
-                {renderServiceServerList(displayedServiceServers)}
-                <div className="!mt-1 ml-2">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={handleConnectAnother}
-                    disabled={status !== 'pending'}
-                    className="text-muted-foreground hover:bg-muted hover:text-foreground"
-                  >
-                    {status === 'registering' ? (
-                      <Loader2 className="mr-1 h-4 w-4 animate-spin" />
-                    ) : (
-                      <Plus className="mr-1 h-4 w-4" />
-                    )}
-                    Add New Account
-                  </Button>
-                </div>
-              </div>
-            ) : selectedServer ? (
-              <div className="space-y-2">
-                {renderSelectedServerCard(selectedServer)}
-                <div className="!mt-1 ml-2">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={handleConnectAnother}
-                    disabled={status !== 'pending'}
-                    className="text-muted-foreground hover:bg-muted hover:text-foreground"
-                  >
-                    {status === 'registering' ? (
-                      <Loader2 className="mr-1 h-4 w-4 animate-spin" />
-                    ) : (
-                      <Plus className="mr-1 h-4 w-4" />
-                    )}
-                    Add New Account
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                <div className="flex items-center gap-3 rounded-[12px] border border-border bg-white px-4 py-3 dark:bg-background">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
-                    <McpSourceIcon slug={connectCardSlug} />
-                  </div>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-normal text-foreground">
-                    {newName.trim() || name || 'MCP Server'}
-                  </p>
-                  <p className="truncate text-xs text-muted-foreground">
-                    {targetUrl}
-                  </p>
-                </div>
-                <span className="shrink-0 rounded bg-muted/80 px-1.5 py-0.5 text-xs font-medium text-foreground/80">
-                  not connected
-                </span>
-                </div>
-                {showTokenInput && (
-                  <Input
-                    type="password"
-                    value={bearerToken}
-                    onChange={(e) => setBearerToken(e.target.value)}
-                    placeholder="Bearer token"
-                    className="h-8 text-sm"
+      <div className="mt-5">
+        {status === 'oauth_pending' ? (
+          <div className="flex items-center gap-3 rounded-[12px] border border-border bg-white px-4 py-3 dark:bg-background">
+            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+            <div>
+              <p className="text-sm font-normal text-foreground">
+                Waiting for authorization...
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Complete the OAuth flow in your browser to connect this MCP server.
+              </p>
+            </div>
+          </div>
+        ) : isLoading ? (
+          <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <span>Loading MCP servers...</span>
+          </div>
+        ) : displayedServiceServers.length > 1 ? (
+          <div className="space-y-2">
+            <div className="space-y-2">
+              <div className="space-y-1">
+                {displayedServiceServers.map((server) => (
+                  <McpServerCard
+                    key={server.id}
+                    {...mcpServerCardProps(server)}
+                    selected={selectedMcpIds.has(server.id)}
+                    onToggle={() =>
+                      setSelectedMcpIds((prev) => {
+                        const next = new Set(prev)
+                        if (next.has(server.id)) {
+                          next.delete(server.id)
+                        } else {
+                          next.add(server.id)
+                        }
+                        return next
+                      })
+                    }
                     disabled={status !== 'pending'}
                   />
-                )}
+                ))}
               </div>
+            </div>
+            <div className="!mt-1 ml-2">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={handleConnectAnother}
+                loading={status === 'registering'}
+                disabled={status !== 'pending'}
+                className="text-muted-foreground hover:bg-muted hover:text-foreground"
+              >
+                <Plus className="mr-1 h-4 w-4" />
+                Add New Account
+              </Button>
+            </div>
+          </div>
+        ) : selectedServer ? (
+          <div className="space-y-2">
+            <McpServerCard
+              {...mcpServerCardProps(selectedServer)}
+            />
+            <div className="!mt-1 ml-2">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={handleConnectAnother}
+                loading={status === 'registering'}
+                disabled={status !== 'pending'}
+                className="text-muted-foreground hover:bg-muted hover:text-foreground"
+              >
+                <Plus className="mr-1 h-4 w-4" />
+                Add New Account
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <div className="flex items-center gap-3 rounded-[12px] border border-border bg-white px-4 py-3 dark:bg-background">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
+                <McpSourceIcon slug={connectCardSlug} />
+              </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-normal text-foreground">
+                {newName.trim() || name || 'MCP Server'}
+              </p>
+              <p className="truncate text-xs text-muted-foreground">
+                {targetUrl}
+              </p>
+            </div>
+            <span className="shrink-0 rounded bg-muted/80 px-1.5 py-0.5 text-xs font-medium text-foreground/80">
+              not connected
+            </span>
+            </div>
+            {showTokenInput && (
+              <Input
+                type="password"
+                value={bearerToken}
+                onChange={(e) => setBearerToken(e.target.value)}
+                placeholder="Bearer token"
+                className="h-8 text-sm"
+                disabled={status !== 'pending'}
+              />
             )}
           </div>
-
-          {/* Action buttons */}
-          {!selectedServer && !matchingServer && status !== 'oauth_pending' ? (
-            <div className="mt-6 space-y-2">
-              <div className="flex justify-end gap-2">
-                <DeclineButton
-                  onDecline={handleDecline}
-                  disabled={status !== 'pending' && status !== 'registering'}
-                  label="Deny"
-                  showIcon={false}
-                  className="border-border text-foreground hover:bg-muted"
-                />
-                <Button
-                  onClick={handleRegisterNew}
-                  disabled={status !== 'pending'}
-                  size="sm"
-                  className="min-w-24 bg-foreground text-background hover:bg-foreground/90"
-                >
-                  {status === 'registering' ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Plus className="h-4 w-4" />
-                  )}
-                  {status === 'registering' ? <span className="ml-1">Connect</span> : 'Connect'}
-                </Button>
-              </div>
-            </div>
-          ) : null}
-
-          {selectedServer ? (
-            <div className="mt-6">
-              <div className="flex items-end justify-between gap-3">
-                <div className="min-w-0 self-end">
-                  {status !== 'oauth_pending' ? renderMcpPicker() : null}
-                </div>
-                <div className="flex justify-end gap-2">
-                  <DeclineButton
-                    onDecline={handleDecline}
-                    disabled={status !== 'pending' && status !== 'oauth_pending'}
-                    label="Deny"
-                    showIcon={false}
-                    className="border-border text-foreground hover:bg-muted"
-                  />
-
-                  <Button
-                    onClick={handleProvide}
-                    disabled={selectedMcpIdsForProvide.length === 0 || status !== 'pending'}
-                    size="sm"
-                    className="bg-blue-600 hover:bg-blue-700 text-white"
-                  >
-                    {status === 'submitting' ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                    {status === 'submitting' ? (
-                      <span className="ml-1">
-                        Allow Access{selectedMcpIdsForProvide.length > 1 ? ` (${selectedMcpIdsForProvide.length})` : ''}
-                      </span>
-                    ) : (
-                      `Allow Access${selectedMcpIdsForProvide.length > 1 ? ` (${selectedMcpIdsForProvide.length})` : ''}`
-                    )}
-                  </Button>
-                </div>
-              </div>
-            </div>
-          ) : null}
-
-          {error && (
-            <div className="mt-4 rounded-md bg-red-50 px-3 py-2 text-[11px] text-red-700 dark:bg-red-950/30 dark:text-red-300">
-              Error: {error}
-            </div>
-          )}
-        </div>
+        )}
       </div>
+
+      {/* Action buttons */}
+      {!selectedServer && !matchingServer && status !== 'oauth_pending' ? (
+        <div className="mt-6 space-y-2">
+          <RequestItemActions>
+            <DeclineButton
+              onDecline={handleDecline}
+              disabled={status !== 'pending' && status !== 'registering'}
+              label="Deny"
+              showIcon={false}
+              className="border-border text-foreground hover:bg-muted"
+            />
+            <Button
+              onClick={handleRegisterNew}
+              loading={status === 'registering'}
+              disabled={status !== 'pending'}
+              size="sm"
+              className="min-w-24 bg-foreground text-background hover:bg-foreground/90"
+            >
+              <Plus className="h-4 w-4" />
+              Connect
+            </Button>
+          </RequestItemActions>
+        </div>
+      ) : null}
+
+      {selectedServer ? (
+        <div className="mt-6">
+          <div className="flex items-end justify-between gap-3">
+            <div className="min-w-0 self-end">
+              {status !== 'oauth_pending' ? (
+                <McpServicePicker
+                  open={isMcpPickerOpen}
+                  onOpenChange={setIsMcpPickerOpen}
+                  options={pickerServiceOptions}
+                  selectedServiceKey={selectedServiceKey}
+                  onSelect={(_serviceKey, serverId) => {
+                    setSelectedMcpIds(new Set([serverId]))
+                  }}
+                  disabled={status !== 'pending'}
+                />
+              ) : null}
+            </div>
+            <RequestItemActions>
+              <DeclineButton
+                onDecline={handleDecline}
+                disabled={status !== 'pending' && status !== 'oauth_pending'}
+                label="Deny"
+                showIcon={false}
+                className="border-border text-foreground hover:bg-muted"
+              />
+
+              <Button
+                onClick={handleProvide}
+                loading={status === 'submitting'}
+                disabled={selectedMcpIdsForProvide.length === 0 || status !== 'pending'}
+                size="sm"
+                className="bg-blue-600 hover:bg-blue-700 text-white"
+              >
+                Allow Access{selectedMcpIdsForProvide.length > 1 ? ` (${selectedMcpIdsForProvide.length})` : ''}
+              </Button>
+            </RequestItemActions>
+          </div>
+        </div>
+      ) : null}
+
       {policyEditorMcp && (
         <ToolPolicyEditor
           mcpId={policyEditorMcp.id}
@@ -1043,6 +722,6 @@ export function RemoteMcpRequestItem({
           }}
         />
       )}
-    </div>
+    </RequestItemShell>
   )
 }

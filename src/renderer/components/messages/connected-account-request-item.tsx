@@ -1,5 +1,6 @@
 import { apiFetch } from '@renderer/lib/api'
 import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
+import { formatDistanceToNow } from 'date-fns'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
@@ -7,7 +8,6 @@ import {
   X,
   Loader2,
   Plus,
-  ExternalLink,
   Pencil,
   MoreVertical,
   Plug,
@@ -17,7 +17,8 @@ import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { DeclineButton } from './decline-button'
-import { RequestTitleChip } from './request-title-chip'
+import { RequestItemShell } from './request-item-shell'
+import { RequestItemActions } from './request-item-actions'
 import { cn } from '@shared/lib/utils/cn'
 import { ScopePolicyEditor } from '@renderer/components/settings/scope-policy-editor'
 import { PolicySummaryPill } from '@renderer/components/ui/policy-summary-pill'
@@ -41,29 +42,6 @@ interface ConnectedAccountRequestItemProps {
 }
 
 type RequestStatus = 'pending' | 'submitting' | 'provided' | 'declined' | 'connecting'
-
-function formatShortRelativeTime(date: Date) {
-  const diffMs = Math.max(0, Date.now() - date.getTime())
-  const minutes = Math.floor(diffMs / (1000 * 60))
-
-  if (minutes < 1) return 'just now'
-  if (minutes < 60) return `${minutes}m ago`
-
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-
-  const days = Math.floor(hours / 24)
-  if (days < 7) return `${days}d ago`
-
-  const weeks = Math.floor(days / 7)
-  if (weeks < 5) return `${weeks}w ago`
-
-  const months = Math.floor(days / 30)
-  if (months < 12) return `${months}mo ago`
-
-  const years = Math.floor(days / 365)
-  return `${years}y ago`
-}
 
 export function ConnectedAccountRequestItem({
   toolUseId,
@@ -92,6 +70,16 @@ export function ConnectedAccountRequestItem({
   const { track } = useAnalyticsTracking()
   const provider = getProvider(toolkit)
   const accounts = data?.accounts ?? []
+
+  // Auto-select when there's exactly one account
+  const hasAutoSelected = useRef(false)
+  useEffect(() => {
+    if (hasAutoSelected.current) return
+    if (accounts.length === 1 && selectedAccountIds.size === 0) {
+      setSelectedAccountIds(new Set([accounts[0].id]))
+      hasAutoSelected.current = true
+    }
+  }, [accounts, selectedAccountIds.size])
 
   // Listen for OAuth callback messages (both IPC in Electron and postMessage in web)
   useEffect(() => {
@@ -135,6 +123,9 @@ export function ConnectedAccountRequestItem({
     // Electron: use IPC callback with structured params
     if (window.electronAPI) {
       window.electronAPI.onOAuthCallback(async (params) => {
+        // Only handle callbacks for this toolkit
+        if (params.toolkit && params.toolkit !== toolkit) return
+
         if (params.error || params.status === 'failed') {
           handleOAuthComplete(false, params.error || undefined)
           return
@@ -158,8 +149,8 @@ export function ConnectedAccountRequestItem({
               const data = await res.json()
               handleOAuthComplete(false, data.error)
             }
-          } catch (error: any) {
-            handleOAuthComplete(false, error.message)
+          } catch (error: unknown) {
+            handleOAuthComplete(false, error instanceof Error ? error.message : 'OAuth completion failed')
           }
         } else {
           handleOAuthComplete(false, 'Missing OAuth callback parameters')
@@ -179,7 +170,7 @@ export function ConnectedAccountRequestItem({
 
     window.addEventListener('message', handleMessage)
     return () => window.removeEventListener('message', handleMessage)
-  }, [invalidateConnectedAccounts, refetch])
+  }, [invalidateConnectedAccounts, refetch, toolkit])
 
   const toggleAccount = useCallback((accountId: string) => {
     setSelectedAccountIds((prev) => {
@@ -254,8 +245,8 @@ export function ConnectedAccountRequestItem({
 
       setStatus('provided')
       onComplete()
-    } catch (err: any) {
-      setError(err.message || 'Failed to provide access')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to provide access')
       setStatus('pending')
     }
   }
@@ -286,17 +277,17 @@ export function ConnectedAccountRequestItem({
 
       setStatus('declined')
       onComplete()
-    } catch (err: any) {
-      setError(err.message || 'Failed to decline request')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to decline request')
       setStatus('pending')
     }
   }
 
-  // Completed state
-  if (status === 'provided' || status === 'declined') {
-    return (
-      <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm">
-        <div className="flex items-center gap-2 p-4">
+  // Build completed config
+  const isCompleted = status === 'provided' || status === 'declined'
+  const completedConfig = isCompleted
+    ? {
+        icon: (
           <ServiceIcon
             slug={toolkit}
             fallback="request"
@@ -305,221 +296,172 @@ export function ConnectedAccountRequestItem({
               status === 'provided' ? 'text-green-500' : 'text-red-500'
             )}
           />
+        ),
+        label: (
           <span className="font-medium capitalize">
             {provider?.displayName || toolkit}
           </span>
-          <span
-            className={cn(
-              'ml-auto text-xs',
-              status === 'provided' ? 'text-green-600' : 'text-red-600'
-            )}
-          >
-            {status === 'provided' ? 'Access Granted' : 'Declined'}
-          </span>
-        </div>
-      </div>
-    )
-  }
+        ),
+        statusLabel: status === 'provided' ? 'Access Granted' : 'Declined',
+        isSuccess: status === 'provided',
+      }
+    : null
 
-  // Read-only state for viewers
-  if (readOnly) {
-    return (
-      <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm">
-        <div className="flex items-start gap-3 px-4 pb-4 pt-4">
-          <div className="flex-1 min-w-0">
-            <RequestTitleChip
-              className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
-              icon={<Plug className="h-4 w-4" />}
-            >
-              Account Access Request
-            </RequestTitleChip>
-            {reason && (
-              <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{reason}</p>
-            )}
-          </div>
-          <span className="text-xs text-blue-600 dark:text-blue-400 shrink-0">Waiting for response</span>
-        </div>
-      </div>
-    )
-  }
+  // Build read-only config
+  const readOnlyConfig = readOnly
+    ? {
+        description: reason ? (
+          <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{reason}</p>
+        ) : undefined,
+      }
+    : (false as const)
 
-  // Pending/submitting/connecting state
   return (
-    <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm">
-      <div className="px-4 pb-4 pt-4">
-        <div className="flex-1 min-w-0 space-y-3">
-          {/* Header */}
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0 flex-1">
-              <RequestTitleChip
-                className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
-                icon={<Plug className="h-4 w-4" />}
-              >
-                Account Access Request
-              </RequestTitleChip>
-              {reason && (
-                <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{reason}</p>
-              )}
-              <p className="mt-2 text-xs text-muted-foreground">
-                Selected accounts will be linked to this agent for future use.
-              </p>
-            </div>
-          </div>
+    <RequestItemShell
+      title="Account Access Request"
+      icon={<Plug className="h-4 w-4" />}
+      theme="blue"
+      completed={completedConfig}
+      readOnly={readOnlyConfig}
+      waitingText="Waiting for response"
+      error={error}
+      data-testid={isCompleted ? 'connected-account-request-completed' : 'connected-account-request'}
+      data-status={isCompleted ? status : undefined}
+    >
+      {/* Description */}
+      {reason && (
+        <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{reason}</p>
+      )}
+      <p className="mt-2 text-xs text-muted-foreground">
+        Selected accounts will be linked to this agent for future use.
+      </p>
 
-          {/* Account Selection */}
-          {isLoading ? (
-            <div className="flex items-center gap-2 pt-3 text-blue-600 dark:text-blue-400">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              <span>Loading accounts...</span>
-            </div>
-          ) : accounts.length > 0 ? (
-            <div className="space-y-1 pt-3">
-              <div className="space-y-1">
-                {accounts.map((account) => (
-                  <AccountOption
-                    key={account.id}
-                    account={account}
-                    selected={selectedAccountIds.has(account.id)}
-                    onToggle={() => toggleAccount(account.id)}
-                    disabled={status !== 'pending'}
-                    isEditing={editingAccount === account.id}
-                    editName={editName}
-                    onStartEdit={() => {
-                      setEditingAccount(account.id)
-                      setEditName(account.displayName)
-                    }}
-                    onCancelEdit={() => {
-                      setEditingAccount(null)
-                      setEditName('')
-                    }}
-                    onSaveEdit={async () => {
-                      if (!editName.trim()) return
-                      try {
-                        await renameAccount.mutateAsync({
-                          accountId: account.id,
-                          displayName: editName.trim(),
-                        })
-                        setEditingAccount(null)
-                        setEditName('')
-                      } catch (err) {
-                        console.error('Failed to rename account:', err)
-                      }
-                    }}
-                    onEditNameChange={setEditName}
-                    isSavingRename={renameAccount.isPending}
-                    onOpenPolicies={() => {
-                      setPolicyEditorIsNewAccount(false)
-                      setPolicyEditorAccountId(account.id)
-                    }}
-                  />
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div className="pt-3">
-              <div className="flex items-center justify-between gap-3 rounded-[12px] border border-border bg-white pl-[10px] pr-4 py-2 dark:bg-background">
-                <div className="flex items-center gap-2 text-sm text-foreground/80">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
-                    <ServiceIcon slug={toolkit} fallback="request" className="h-6 w-6" />
-                  </div>
-                  <p>{(provider?.displayName || toolkit).replace(/\b\w/g, (char) => char.toUpperCase())}</p>
-                </div>
-                <span className="shrink-0 rounded bg-muted/80 px-1.5 py-0.5 text-xs font-medium text-foreground/80">
-                  not connected
-                </span>
-              </div>
-            </div>
-          )}
-
-          {/* Connect New button */}
-          {accounts.length > 0 && (
-            <div className="!mt-1 ml-2">
-              <Button
-                onClick={handleConnectNew}
-                disabled={status !== 'pending'}
-                variant="ghost"
-                size="sm"
-                className="text-muted-foreground hover:bg-muted hover:text-foreground"
-              >
-                {status === 'connecting' ? (
-                  <Loader2 className="mr-1 h-4 w-4 animate-spin" />
-                ) : (
-                  <Plus className="mr-1 h-4 w-4" />
-                )}
-                Add New Account
-              </Button>
-            </div>
-          )}
-
-          {/* Action buttons */}
-          {accounts.length > 0 && (
-            <div className="flex justify-end gap-2">
-              <DeclineButton
-                onDecline={handleDecline}
-                disabled={status !== 'pending'}
-                label="Deny"
-                showIcon={false}
-                className="border-border text-foreground hover:bg-muted"
-              />
-
-              <Button
-                onClick={handleProvide}
-                disabled={selectedAccountIds.size === 0 || status !== 'pending'}
-                size="sm"
-              className="min-w-24 bg-blue-600 text-white hover:bg-blue-700"
-            >
-              {status === 'submitting' ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                  <span>Allow Access{selectedAccountIds.size > 0 ? ` (${selectedAccountIds.size})` : ''}</span>
-              )}
-              {status === 'submitting' ? (
-                  <span className="ml-1">Allow Access{selectedAccountIds.size > 0 ? ` (${selectedAccountIds.size})` : ''}</span>
-              ) : null}
-            </Button>
-            </div>
-          )}
-
-          {accounts.length === 0 && (
-            <div className="mt-6">
-              <div className="flex justify-end gap-2">
-                <DeclineButton
-                  onDecline={handleDecline}
-                  disabled={status !== 'pending' && status !== 'connecting'}
-                  label="Deny"
-                  showIcon={false}
-                  className="border-border text-foreground hover:bg-muted"
-                />
-                <Button
-                  onClick={handleConnectNew}
-                  disabled={status !== 'pending'}
-                  size="sm"
-                  className="min-w-24 bg-foreground text-background hover:bg-foreground/90"
-                >
-                  {status === 'connecting' ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Plus className="h-4 w-4" />
-                  )}
-                  {status === 'connecting' ? (
-                    <span className="ml-1">Connect</span>
-                  ) : (
-                    'Connect'
-                  )}
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {/* Error message */}
-          {error && (
-            <div className="mt-4 rounded-md bg-red-50 px-3 py-2 text-[11px] text-red-700 dark:bg-red-950/30 dark:text-red-300">
-              Error: {error}
-            </div>
-          )}
-
+      {/* Account Selection */}
+      {isLoading ? (
+        <div className="flex items-center gap-2 pt-3 text-blue-600 dark:text-blue-400">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          <span>Loading accounts...</span>
         </div>
-      </div>
+      ) : accounts.length > 0 ? (
+        <div className="space-y-1 pt-3">
+          <div className="space-y-1">
+            {accounts.map((account) => (
+              <AccountOption
+                key={account.id}
+                account={account}
+                selected={selectedAccountIds.has(account.id)}
+                onToggle={() => toggleAccount(account.id)}
+                disabled={status !== 'pending'}
+                isEditing={editingAccount === account.id}
+                editName={editName}
+                onStartEdit={() => {
+                  setEditingAccount(account.id)
+                  setEditName(account.displayName)
+                }}
+                onCancelEdit={() => {
+                  setEditingAccount(null)
+                  setEditName('')
+                }}
+                onSaveEdit={async () => {
+                  if (!editName.trim()) return
+                  try {
+                    await renameAccount.mutateAsync({
+                      accountId: account.id,
+                      displayName: editName.trim(),
+                    })
+                    setEditingAccount(null)
+                    setEditName('')
+                  } catch (err) {
+                    console.error('Failed to rename account:', err)
+                  }
+                }}
+                onEditNameChange={setEditName}
+                isSavingRename={renameAccount.isPending}
+                onOpenPolicies={() => {
+                  setPolicyEditorIsNewAccount(false)
+                  setPolicyEditorAccountId(account.id)
+                }}
+              />
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="pt-3">
+          <div className="flex items-center justify-between gap-3 rounded-[12px] border border-border bg-white pl-[10px] pr-3 py-2 dark:bg-background">
+            <div className="flex items-center gap-2 text-sm text-foreground/80">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
+                <ServiceIcon slug={toolkit} fallback="request" className="h-6 w-6" />
+              </div>
+              <p>{(provider?.displayName || toolkit).replace(/\b\w/g, (char) => char.toUpperCase())}</p>
+            </div>
+            <Button
+              onClick={handleConnectNew}
+              loading={status === 'connecting'}
+              disabled={status !== 'pending'}
+              size="sm"
+              className="min-w-24 bg-foreground text-background hover:bg-foreground/90"
+            >
+              <Plus className="h-4 w-4" />
+              Connect
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Connect New button */}
+      {accounts.length > 0 && (
+        <div className="mt-1 ml-2">
+          <Button
+            onClick={handleConnectNew}
+            loading={status === 'connecting'}
+            disabled={status !== 'pending'}
+            variant="ghost"
+            size="sm"
+            className="text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <Plus className="mr-1 h-4 w-4" />
+            Add New Account
+          </Button>
+        </div>
+      )}
+
+      {/* Action buttons when accounts exist */}
+      {accounts.length > 0 && (
+        <RequestItemActions className="pt-0">
+          <DeclineButton
+            onDecline={handleDecline}
+            disabled={status !== 'pending'}
+            label="Deny"
+            showIcon={false}
+            className="border-border text-foreground hover:bg-muted"
+          />
+
+          <Button
+            onClick={handleProvide}
+            loading={status === 'submitting'}
+            disabled={selectedAccountIds.size === 0 || status !== 'pending'}
+            size="sm"
+            className="min-w-24 bg-blue-600 text-white hover:bg-blue-700"
+          >
+            Allow Access{selectedAccountIds.size > 0 ? ` (${selectedAccountIds.size})` : ''}
+          </Button>
+        </RequestItemActions>
+      )}
+
+      {/* Action buttons when no accounts */}
+      {accounts.length === 0 && (
+        <RequestItemActions className="mt-6 pt-0">
+          <DeclineButton
+            onDecline={handleDecline}
+            disabled={status !== 'pending' && status !== 'connecting'}
+            label="Deny"
+            showIcon={false}
+            className="border-border text-foreground hover:bg-muted"
+          />
+        </RequestItemActions>
+      )}
+
+      {/* Policy editor dialog */}
       {policyEditorAccountId && (
         <ScopePolicyEditor
           accountId={policyEditorAccountId}
@@ -548,7 +490,7 @@ export function ConnectedAccountRequestItem({
           ) : undefined}
         />
       )}
-    </div>
+    </RequestItemShell>
   )
 }
 
@@ -582,7 +524,7 @@ function AccountOption({
   onOpenPolicies,
 }: AccountOptionProps) {
   const connectedDate = new Date(account.createdAt)
-  const connectedAgo = formatShortRelativeTime(connectedDate)
+  const connectedAgo = formatDistanceToNow(connectedDate, { addSuffix: true })
   const [menuOpen, setMenuOpen] = useState(false)
 
   if (isEditing) {
@@ -611,16 +553,10 @@ function AccountOption({
           variant="default"
           className="h-6 shrink-0 bg-foreground px-2 text-xs text-background hover:bg-foreground/90"
           onClick={onSaveEdit}
-          disabled={isSavingRename}
+          loading={isSavingRename}
         >
-          {isSavingRename ? (
-            <Loader2 className="h-3 w-3 animate-spin" />
-          ) : (
-            <>
-              <Check className="h-3 w-3" />
-              <span>Update</span>
-            </>
-          )}
+          <Check className="h-3 w-3" />
+          <span>Update</span>
         </Button>
         <Button
           size="sm"
@@ -638,7 +574,7 @@ function AccountOption({
   return (
     <div
       className={cn(
-        'group flex items-center gap-2 rounded-[12px] border pl-4 pr-4 py-2 cursor-pointer transition-colors',
+        'group flex items-center gap-2 rounded-[12px] border pl-3 pr-4 py-2 cursor-pointer transition-colors',
         selected
           ? 'border-blue-300 bg-blue-50 dark:border-blue-700 dark:bg-blue-950/40'
           : 'border-border bg-white hover:bg-muted/40 dark:bg-background',
@@ -654,6 +590,14 @@ function AccountOption({
         }
       }}
     >
+      <input
+        type="checkbox"
+        checked={selected}
+        disabled={disabled}
+        onChange={() => !disabled && onToggle()}
+        onClick={(e) => e.stopPropagation()}
+        className="mx-1 shrink-0"
+      />
       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
         <ServiceIcon slug={account.toolkitSlug} fallback="request" className="h-5 w-5" />
       </div>

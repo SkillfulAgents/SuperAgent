@@ -17,20 +17,6 @@ import { useUserSettings } from './hooks/use-user-settings'
 import { useTheme } from './hooks/use-theme'
 import { useUser } from './context/user-context'
 import { useAnalyticsTracking } from './context/analytics-context'
-import { useSelection } from './context/selection-context'
-
-const APPROVALS_GALLERY_QUERY_PARAM = 'approvals'
-
-function isEditableTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false
-  const tagName = target.tagName.toLowerCase()
-  return (
-    target.isContentEditable ||
-    tagName === 'input' ||
-    tagName === 'textarea' ||
-    tagName === 'select'
-  )
-}
 
 function AppContent() {
   useTheme()
@@ -38,7 +24,6 @@ function AppContent() {
   const { data: userSettings } = useUserSettings()
   const { isAuthMode, isAdmin } = useUser()
   const { identify } = useAnalyticsTracking()
-  const { clearSelection } = useSelection()
   const hasAutoOpened = useRef(false)
 
   // Identify user on app open
@@ -53,32 +38,6 @@ function AppContent() {
       setWizardOpen(true)
     }
   }, [userSettings, isAuthMode, isAdmin])
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (isEditableTarget(event.target)) return
-
-      if (event.key.toLowerCase() === 'a' && event.shiftKey && (event.metaKey || event.ctrlKey)) {
-        event.preventDefault()
-
-        const url = new URL(window.location.href)
-        const isOpen = url.searchParams.get('dev') === APPROVALS_GALLERY_QUERY_PARAM
-
-        if (isOpen) {
-          url.searchParams.delete('dev')
-        } else {
-          url.searchParams.set('dev', APPROVALS_GALLERY_QUERY_PARAM)
-          clearSelection()
-        }
-
-        window.history.replaceState({}, '', url.toString())
-        window.dispatchEvent(new PopStateEvent('popstate'))
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [clearSelection])
 
   return (
     <DialogProvider onOpenWizard={() => setWizardOpen(true)}>

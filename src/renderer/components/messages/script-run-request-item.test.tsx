@@ -49,7 +49,7 @@ describe('ScriptRunRequestItem', () => {
 
     render(<ScriptRunRequestItem {...defaultProps} />)
 
-    await user.click(screen.getByTestId('script-run-btn'))
+    await user.click(screen.getByTestId('script-run-once-btn'))
 
     await waitFor(() => {
       expect(mockApiFetch).toHaveBeenCalledWith(
@@ -73,7 +73,7 @@ describe('ScriptRunRequestItem', () => {
 
     render(<ScriptRunRequestItem {...defaultProps} />)
 
-    await user.click(screen.getByTestId('script-run-btn'))
+    await user.click(screen.getByTestId('script-run-once-btn'))
 
     await waitFor(() => {
       expect(defaultProps.onComplete).toHaveBeenCalled()
@@ -86,7 +86,7 @@ describe('ScriptRunRequestItem', () => {
 
     render(<ScriptRunRequestItem {...defaultProps} />)
 
-    await user.click(screen.getByTestId('script-run-btn'))
+    await user.click(screen.getByTestId('script-run-once-btn'))
 
     await waitFor(() => {
       expect(screen.getByText('Executed')).toBeInTheDocument()
@@ -99,6 +99,8 @@ describe('ScriptRunRequestItem', () => {
 
     render(<ScriptRunRequestItem {...defaultProps} />)
 
+    // Open the popover first, then click "Allow 15 min"
+    await user.click(screen.getByTestId('script-run-timed-btn-chevron'))
     await user.click(screen.getByTestId('script-run-timed-btn'))
 
     await waitFor(() => {
@@ -117,6 +119,8 @@ describe('ScriptRunRequestItem', () => {
 
     render(<ScriptRunRequestItem {...defaultProps} />)
 
+    // Open the popover first, then click "Always Allow"
+    await user.click(screen.getByTestId('script-run-timed-btn-chevron'))
     await user.click(screen.getByTestId('script-run-always-btn'))
 
     await waitFor(() => {
@@ -185,14 +189,14 @@ describe('ScriptRunRequestItem', () => {
 
     render(<ScriptRunRequestItem {...defaultProps} />)
 
-    await user.click(screen.getByTestId('script-run-btn'))
+    await user.click(screen.getByTestId('script-run-once-btn'))
 
     await waitFor(() => {
-      expect(screen.getByText('Server error')).toBeInTheDocument()
+      expect(screen.getByText(/Server error/)).toBeInTheDocument()
     })
 
     // Should still show the Allow Once button (back to pending)
-    expect(screen.getByTestId('script-run-btn')).toBeInTheDocument()
+    expect(screen.getByTestId('script-run-once-btn')).toBeInTheDocument()
   })
 
   it('shows error on API failure for Deny and returns to pending', async () => {
@@ -204,7 +208,7 @@ describe('ScriptRunRequestItem', () => {
     await user.click(screen.getByTestId('script-deny-btn'))
 
     await waitFor(() => {
-      expect(screen.getByText('Deny failed')).toBeInTheDocument()
+      expect(screen.getByText(/Deny failed/)).toBeInTheDocument()
     })
 
     // Should still show both buttons (back to pending)
@@ -215,13 +219,13 @@ describe('ScriptRunRequestItem', () => {
     render(<ScriptRunRequestItem {...defaultProps} readOnly />)
 
     expect(screen.getByText('Waiting for approval')).toBeInTheDocument()
-    expect(screen.queryByTestId('script-run-btn')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('script-run-once-btn')).not.toBeInTheDocument()
     expect(screen.queryByTestId('script-deny-btn')).not.toBeInTheDocument()
   })
 
   it('shows security warning text', () => {
     render(<ScriptRunRequestItem {...defaultProps} />)
 
-    expect(screen.getByText(/host machine with your user permissions/)).toBeInTheDocument()
+    expect(screen.getByText(/actual computer with your user permissions/)).toBeInTheDocument()
   })
 })

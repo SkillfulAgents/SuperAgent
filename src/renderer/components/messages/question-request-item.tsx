@@ -1,11 +1,12 @@
 import { apiFetch } from '@renderer/lib/api'
 
 import { useEffect, useRef, useState } from 'react'
-import { HelpCircle, Check, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react'
+import { HelpCircle, Check, ChevronLeft, ChevronRight } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Textarea } from '@renderer/components/ui/textarea'
 import { DeclineButton } from './decline-button'
-import { RequestTitleChip } from './request-title-chip'
+import { RequestItemShell } from './request-item-shell'
+import { RequestItemActions } from './request-item-actions'
 import { cn } from '@shared/lib/utils/cn'
 
 interface Question {
@@ -63,46 +64,46 @@ export function QuestionRequestItem({
       const newSelection = current.includes(label)
         ? current.filter((l) => l !== label)
         : [...current, label]
-      setSelections({ ...selections, [questionIndex]: newSelection })
+      setSelections((prev) => ({ ...prev, [questionIndex]: newSelection }))
       // Clear "Other" selection if selecting a regular option
       if (label !== '__other__') {
-        setOtherSelected({ ...otherSelected, [questionIndex]: false })
+        setOtherSelected((prev) => ({ ...prev, [questionIndex]: false }))
       }
     } else {
       // Single select: set the option
-      setSelections({ ...selections, [questionIndex]: label })
+      setSelections((prev) => ({ ...prev, [questionIndex]: label }))
       // Clear "Other" selection if selecting a regular option
       if (label !== '__other__') {
-        setOtherSelected({ ...otherSelected, [questionIndex]: false })
+        setOtherSelected((prev) => ({ ...prev, [questionIndex]: false }))
       }
     }
   }
 
   const handleOtherToggle = (questionIndex: number, multiSelect: boolean) => {
     const isCurrentlySelected = otherSelected[questionIndex]
-    setOtherSelected({ ...otherSelected, [questionIndex]: !isCurrentlySelected })
+    setOtherSelected((prev) => ({ ...prev, [questionIndex]: !isCurrentlySelected }))
 
     if (!isCurrentlySelected) {
       // Selecting "Other"
       if (!multiSelect) {
         // For single select, clear other selections
-        setSelections({ ...selections, [questionIndex]: '__other__' })
+        setSelections((prev) => ({ ...prev, [questionIndex]: '__other__' }))
       }
     } else {
       // Deselecting "Other"
       if (!multiSelect) {
-        setSelections({ ...selections, [questionIndex]: '' })
+        setSelections((prev) => ({ ...prev, [questionIndex]: '' }))
       }
     }
   }
 
   const handleOtherTextChange = (questionIndex: number, text: string, multiSelect: boolean) => {
-    setOtherTexts({ ...otherTexts, [questionIndex]: text })
+    setOtherTexts((prev) => ({ ...prev, [questionIndex]: text }))
     // Auto-select "Other" when user types something
     if (text && !otherSelected[questionIndex]) {
-      setOtherSelected({ ...otherSelected, [questionIndex]: true })
+      setOtherSelected((prev) => ({ ...prev, [questionIndex]: true }))
       if (!multiSelect) {
-        setSelections({ ...selections, [questionIndex]: '__other__' })
+        setSelections((prev) => ({ ...prev, [questionIndex]: '__other__' }))
       }
     }
   }
@@ -110,9 +111,9 @@ export function QuestionRequestItem({
   const ensureOtherSelected = (questionIndex: number, multiSelect: boolean) => {
     if (otherSelected[questionIndex]) return
 
-    setOtherSelected({ ...otherSelected, [questionIndex]: true })
+    setOtherSelected((prev) => ({ ...prev, [questionIndex]: true }))
     if (!multiSelect) {
-      setSelections({ ...selections, [questionIndex]: '__other__' })
+      setSelections((prev) => ({ ...prev, [questionIndex]: '__other__' }))
     }
   }
 
@@ -221,222 +222,203 @@ export function QuestionRequestItem({
     }
   }
 
-  // Completed state - show minimal info
-  if (status === 'answered' || status === 'declined') {
-    return (
-      <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm" data-testid="question-request-completed" data-status={status}>
-        <div className="flex items-center gap-2 p-4">
+  const titleText = questions.length === 1 ? 'Question' : 'Questions'
+  const titleTextWithCount = questions.length === 1 ? 'Question' : `${questions.length} Questions`
+
+  // Build completed config
+  const completedConfig = (status === 'answered' || status === 'declined')
+    ? {
+        icon: (
           <HelpCircle
             className={cn(
               'h-4 w-4 shrink-0',
               status === 'answered' ? 'text-green-500' : 'text-red-500'
             )}
           />
-          <span className="text-sm">
-            {questions.length === 1 ? 'Question' : `${questions.length} Questions`}
-          </span>
-          <span
-            className={cn(
-              'ml-auto text-xs',
-              status === 'answered' ? 'text-green-600' : 'text-red-600'
-            )}
-          >
-            {status === 'answered' ? 'Answered' : 'Declined'}
-          </span>
-        </div>
-      </div>
-    )
-  }
+        ),
+        label: titleTextWithCount,
+        statusLabel: status === 'answered' ? 'Answered' : 'Declined',
+        isSuccess: status === 'answered',
+      }
+    : null
 
-  // Read-only state for viewers
-  if (readOnly) {
-    return (
-      <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm">
-        <div className="flex items-start gap-3 p-4">
-          <div className="flex-1 min-w-0">
-            <RequestTitleChip className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" icon={<HelpCircle />}>
-              {questions.length === 1 ? 'Question' : `${questions.length} Questions`}
-            </RequestTitleChip>
+  // Build read-only config
+  const readOnlyConfig = readOnly
+    ? {
+        description: (
+          <div className="mt-4 space-y-2">
+            {questions.map((q, i) => (
+              <p key={i} className="whitespace-pre-line text-sm font-medium leading-5 text-foreground">{q.question}</p>
+            ))}
           </div>
-          <span className="text-xs text-blue-600 dark:text-blue-400 shrink-0">Waiting for response</span>
-        </div>
-      </div>
-    )
-  }
+        ),
+      }
+    : false as const
 
-  // Pending/submitting state - show question form
+  // Pagination controls for headerRight
+  const paginationControls = questions.length > 1 ? (
+    <div className="inline-flex items-center gap-0.5 px-0.5 py-0.5 text-foreground">
+      <button
+        type="button"
+        onClick={() => setCurrentQuestionIndex((i) => Math.max(0, i - 1))}
+        disabled={currentQuestionIndex === 0 || status === 'submitting'}
+        className={cn(
+          'inline-flex h-5 w-5 items-center justify-center rounded transition-colors',
+          currentQuestionIndex === 0 || status === 'submitting'
+            ? 'cursor-not-allowed opacity-40'
+            : 'hover:bg-muted'
+        )}
+      >
+        <ChevronLeft className="h-3.5 w-3.5" />
+      </button>
+      <span className="min-w-10 text-center text-xs font-medium">
+        {currentQuestionIndex + 1} of {questions.length}
+      </span>
+      <button
+        type="button"
+        onClick={() => setCurrentQuestionIndex((i) => Math.min(questions.length - 1, i + 1))}
+        disabled={currentQuestionIndex === questions.length - 1 || status === 'submitting'}
+        className={cn(
+          'inline-flex h-5 w-5 items-center justify-center rounded transition-colors',
+          currentQuestionIndex === questions.length - 1 || status === 'submitting'
+            ? 'cursor-not-allowed opacity-40'
+            : 'hover:bg-muted'
+        )}
+      >
+        <ChevronRight className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  ) : undefined
+
   return (
-    <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm" data-testid="question-request">
-      <div className="p-4">
-        <div className="flex-1 min-w-0 space-y-4">
-          <div className="flex items-start justify-between gap-3">
-            <RequestTitleChip className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" icon={<HelpCircle />}>
-              {questions.length === 1 ? 'Question' : 'Questions'}
-            </RequestTitleChip>
-
-            {questions.length > 1 && (
-              <div className="inline-flex items-center gap-0.5 px-0.5 py-0.5 text-foreground">
-                <button
-                  type="button"
-                  onClick={() => setCurrentQuestionIndex((i) => Math.max(0, i - 1))}
-                  disabled={currentQuestionIndex === 0 || status === 'submitting'}
-                  className={cn(
-                    'inline-flex h-5 w-5 items-center justify-center rounded transition-colors',
-                    currentQuestionIndex === 0 || status === 'submitting'
-                      ? 'cursor-not-allowed opacity-40'
-                      : 'hover:bg-muted'
-                  )}
-                >
-                  <ChevronLeft className="h-3.5 w-3.5" />
-                </button>
-                <span className="min-w-10 text-center text-xs font-medium">
-                  {currentQuestionIndex + 1} of {questions.length}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setCurrentQuestionIndex((i) => Math.min(questions.length - 1, i + 1))}
-                  disabled={currentQuestionIndex === questions.length - 1 || status === 'submitting'}
-                  className={cn(
-                    'inline-flex h-5 w-5 items-center justify-center rounded transition-colors',
-                    currentQuestionIndex === questions.length - 1 || status === 'submitting'
-                      ? 'cursor-not-allowed opacity-40'
-                      : 'hover:bg-muted'
-                  )}
-                >
-                  <ChevronRight className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            )}
+    <RequestItemShell
+      title={titleText}
+      icon={<HelpCircle />}
+      theme="blue"
+      completed={completedConfig}
+      readOnly={readOnlyConfig}
+      waitingText="Waiting for response"
+      headerRight={paginationControls}
+      error={error}
+      data-testid={completedConfig ? 'question-request-completed' : 'question-request'}
+      data-status={completedConfig ? status : undefined}
+    >
+      {currentQuestion && (
+        <div className="mt-6 space-y-4">
+          <div className="px-2 py-1 text-sm font-medium leading-5 text-foreground">
+            {currentQuestion.question}
           </div>
 
-          {currentQuestion && (
-            <div className="mt-6 space-y-4">
-              <div className="px-2 py-1 text-sm font-medium leading-5 text-foreground">
-                {currentQuestion.question}
-              </div>
+          <div className="space-y-2.5">
+            {currentQuestion.options.map((option, optionIndex) => {
+              const isSelected = currentQuestion.multiSelect
+                ? ((selections[currentQuestionIndex] as string[]) || []).includes(option.label)
+                : selections[currentQuestionIndex] === option.label
 
-              <div className="space-y-2.5">
-                {currentQuestion.options.map((option, optionIndex) => {
-                  const isSelected = currentQuestion.multiSelect
-                    ? ((selections[currentQuestionIndex] as string[]) || []).includes(option.label)
-                    : selections[currentQuestionIndex] === option.label
-
-                  return (
-                    <label
-                      key={optionIndex}
-                      className={cn(
-                        'flex items-center gap-2 p-2 rounded-lg border cursor-pointer transition-colors',
-                        isSelected
-                          ? 'bg-blue-100 dark:bg-blue-900 border-blue-300 dark:border-blue-600'
-                          : 'bg-white dark:bg-blue-950/30 hover:bg-blue-50 dark:hover:bg-blue-900/50'
-                      )}
-                    >
-                      <input
-                      type={currentQuestion.multiSelect ? 'checkbox' : 'radio'}
-                      name={`question-${currentQuestionIndex}`}
-                      checked={isSelected}
-                      onChange={() => handleOptionChange(currentQuestionIndex, option.label, currentQuestion.multiSelect)}
-                      disabled={status === 'submitting'}
-                      className="mx-2 shrink-0"
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className={cn('text-sm text-foreground', isSelected ? 'font-medium' : 'font-normal')}>
-                          {option.label}
-                        </div>
-                        {option.description && (
-                          <div className="text-xs leading-4 text-muted-foreground whitespace-pre-line">{option.description}</div>
-                        )}
-                      </div>
-                    </label>
-                  )
-                })}
-
+              return (
                 <label
+                  key={optionIndex}
                   className={cn(
                     'flex items-center gap-2 p-2 rounded-lg border cursor-pointer transition-colors',
-                    otherSelected[currentQuestionIndex]
+                    isSelected
                       ? 'bg-blue-100 dark:bg-blue-900 border-blue-300 dark:border-blue-600'
                       : 'bg-white dark:bg-blue-950/30 hover:bg-blue-50 dark:hover:bg-blue-900/50'
                   )}
                 >
                   <input
-                    type={currentQuestion.multiSelect ? 'checkbox' : 'radio'}
-                    name={`question-${currentQuestionIndex}`}
-                    checked={otherSelected[currentQuestionIndex] || false}
-                    onChange={() => handleOtherToggle(currentQuestionIndex, currentQuestion.multiSelect)}
-                    disabled={status === 'submitting'}
-                    className="mx-2 shrink-0"
+                  type={currentQuestion.multiSelect ? 'checkbox' : 'radio'}
+                  name={`question-${currentQuestionIndex}`}
+                  checked={isSelected}
+                  onChange={() => handleOptionChange(currentQuestionIndex, option.label, currentQuestion.multiSelect)}
+                  disabled={status === 'submitting'}
+                  className="mx-2 shrink-0"
                   />
                   <div className="flex-1 min-w-0">
-                    <Textarea
-                      ref={otherTextareaRef}
-                      autoFocus={otherSelected[currentQuestionIndex]}
-                      rows={1}
-                      placeholder="Type something else"
-                      value={otherTexts[currentQuestionIndex] || ''}
-                      onChange={(e) => handleOtherTextChange(currentQuestionIndex, e.target.value, currentQuestion.multiSelect)}
-                      onFocus={() => ensureOtherSelected(currentQuestionIndex, currentQuestion.multiSelect)}
-                      disabled={status === 'submitting'}
-                      className="min-h-0 resize-none overflow-hidden bg-white dark:bg-blue-950/30 border-input shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 text-sm"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        ensureOtherSelected(currentQuestionIndex, currentQuestion.multiSelect)
-                      }}
-                    />
+                    <div className={cn('text-sm text-foreground', isSelected ? 'font-medium' : 'font-normal')}>
+                      {option.label}
+                    </div>
+                    {option.description && (
+                      <div className="text-xs leading-4 text-muted-foreground whitespace-pre-line">{option.description}</div>
+                    )}
                   </div>
                 </label>
+              )
+            })}
+
+            <label
+              className={cn(
+                'flex items-center gap-2 p-2 rounded-lg border cursor-pointer transition-colors',
+                otherSelected[currentQuestionIndex]
+                  ? 'bg-blue-100 dark:bg-blue-900 border-blue-300 dark:border-blue-600'
+                  : 'bg-white dark:bg-blue-950/30 hover:bg-blue-50 dark:hover:bg-blue-900/50'
+              )}
+            >
+              <input
+                type={currentQuestion.multiSelect ? 'checkbox' : 'radio'}
+                name={`question-${currentQuestionIndex}`}
+                checked={otherSelected[currentQuestionIndex] || false}
+                onChange={() => handleOtherToggle(currentQuestionIndex, currentQuestion.multiSelect)}
+                disabled={status === 'submitting'}
+                className="mx-2 shrink-0"
+              />
+              <div className="flex-1 min-w-0">
+                <Textarea
+                  ref={otherTextareaRef}
+                  autoFocus={otherSelected[currentQuestionIndex]}
+                  rows={1}
+                  placeholder="Type something else"
+                  value={otherTexts[currentQuestionIndex] || ''}
+                  onChange={(e) => handleOtherTextChange(currentQuestionIndex, e.target.value, currentQuestion.multiSelect)}
+                  onFocus={() => ensureOtherSelected(currentQuestionIndex, currentQuestion.multiSelect)}
+                  disabled={status === 'submitting'}
+                  className="min-h-0 resize-none overflow-hidden bg-white dark:bg-blue-950/30 border-input shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 text-sm"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    ensureOtherSelected(currentQuestionIndex, currentQuestion.multiSelect)
+                  }}
+                />
               </div>
-            </div>
-          )}
-
-          {/* Action buttons */}
-          <div className="flex justify-end gap-2">
-            <DeclineButton
-              onDecline={handleDecline}
-              disabled={status === 'submitting'}
-              className="border-border text-foreground hover:bg-muted"
-              label="Skip"
-              showIcon={false}
-              data-testid="question-decline-btn"
-            />
-
-            {currentQuestionIndex < questions.length - 1 ? (
-              <Button
-                onClick={() => setCurrentQuestionIndex((i) => Math.min(questions.length - 1, i + 1))}
-                disabled={!currentQuestionAnswered || status === 'submitting'}
-                size="sm"
-                className="bg-blue-600 hover:bg-blue-700 text-white"
-                data-testid="question-next-btn"
-              >
-                <span>Next</span>
-                <ChevronRight className="ml-1 h-4 w-4" />
-              </Button>
-            ) : (
-              <Button
-                onClick={handleSubmit}
-                disabled={!areAllQuestionsAnswered() || status === 'submitting'}
-                size="sm"
-                className="bg-blue-600 hover:bg-blue-700 text-white"
-                data-testid="question-submit-btn"
-              >
-                {status === 'submitting' ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Check className="h-4 w-4" />
-                )}
-                <span className="ml-1">Submit</span>
-              </Button>
-            )}
+            </label>
           </div>
-
-          {/* Error message */}
-          {error && (
-            <div className="mt-4 rounded-md bg-red-50 px-3 py-2 text-[11px] text-red-700 dark:bg-red-950/30 dark:text-red-300">
-              Error: {error}
-            </div>
-          )}
         </div>
-      </div>
-    </div>
+      )}
+
+      {/* Action buttons */}
+      <RequestItemActions>
+        <DeclineButton
+          onDecline={handleDecline}
+          disabled={status === 'submitting'}
+          className="border-border text-foreground hover:bg-muted"
+          label="Skip"
+          showIcon={false}
+          data-testid="question-decline-btn"
+        />
+
+        {currentQuestionIndex < questions.length - 1 ? (
+          <Button
+            onClick={() => setCurrentQuestionIndex((i) => Math.min(questions.length - 1, i + 1))}
+            disabled={!currentQuestionAnswered || status === 'submitting'}
+            size="sm"
+            className="bg-blue-600 hover:bg-blue-700 text-white"
+            data-testid="question-next-btn"
+          >
+            <span>Next</span>
+            <ChevronRight className="ml-1 h-4 w-4" />
+          </Button>
+        ) : (
+          <Button
+            onClick={handleSubmit}
+            loading={status === 'submitting'}
+            disabled={!areAllQuestionsAnswered()}
+            size="sm"
+            className="bg-blue-600 hover:bg-blue-700 text-white"
+            data-testid="question-submit-btn"
+          >
+            <Check className="h-4 w-4" />
+            <span>Submit</span>
+          </Button>
+        )}
+      </RequestItemActions>
+    </RequestItemShell>
   )
 }

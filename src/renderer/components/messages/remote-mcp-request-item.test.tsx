@@ -10,6 +10,24 @@ vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }))
 
+vi.mock('@renderer/lib/oauth-popup', () => ({
+  prepareOAuthPopup: () => ({
+    navigate: vi.fn(),
+    close: vi.fn(),
+  }),
+}))
+
+vi.mock('@renderer/hooks/use-remote-mcps', () => ({
+  useInitiateMcpOAuth: () => ({
+    mutateAsync: vi.fn(),
+    isPending: false,
+  }),
+}))
+
+vi.mock('./pending-request-stack', () => ({
+  usePagination: () => null,
+}))
+
 const defaultProps = {
   toolUseId: 'tu-1',
   url: 'https://mcp.example.com/sse',
@@ -20,44 +38,53 @@ const defaultProps = {
   onComplete: vi.fn(),
 }
 
+function mockServerListResponse(servers: Array<Record<string, unknown>> = []) {
+  mockApiFetch.mockImplementation((path: string) => {
+    if (path === '/api/remote-mcps') {
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ servers }),
+      })
+    }
+    // Tool policies endpoint used by ToolPolicySummaryPill
+    if (path.startsWith('/api/policies/tool/')) {
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ policies: [] }),
+      })
+    }
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+  })
+}
+
+const defaultServer = {
+  id: 'mcp-1',
+  name: 'Example MCP',
+  url: 'https://mcp.example.com/sse',
+  authType: 'none',
+  status: 'active',
+  tools: [{ name: 'get_weather', description: 'Get weather data' }],
+}
+
 describe('RemoteMcpRequestItem', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    // Mock the initial server list fetch
-    mockApiFetch.mockImplementation((path: string) => {
-      if (path === '/api/remote-mcps') {
-        return Promise.resolve({
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              servers: [
-                {
-                  id: 'mcp-1',
-                  name: 'Example MCP',
-                  url: 'https://mcp.example.com/sse',
-                  authType: 'none',
-                  status: 'active',
-                  tools: [{ name: 'get_weather', description: 'Get weather data' }],
-                },
-              ],
-            }),
-        })
-      }
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
-    })
+    mockServerListResponse([defaultServer])
   })
 
-  it('renders pending state with server name and URL', async () => {
+  it('renders pending state with server name and reason', async () => {
     renderWithProviders(<RemoteMcpRequestItem {...defaultProps} />)
-    expect(screen.getByText(/Example MCP/)).toBeInTheDocument()
-    expect(screen.getByText('https://mcp.example.com/sse')).toBeInTheDocument()
+    expect(screen.getByText('MCP Access Request')).toBeInTheDocument()
     expect(screen.getByText('Need weather data tools')).toBeInTheDocument()
   })
 
-  it('loads and displays matching server', async () => {
+  it('loads and displays matching server card', async () => {
     renderWithProviders(<RemoteMcpRequestItem {...defaultProps} />)
     await waitFor(() => {
-      expect(screen.getByText('1 tools')).toBeInTheDocument()
+      expect(screen.getByText('Example MCP')).toBeInTheDocument()
+    })
+    await waitFor(() => {
+      expect(screen.getByText('https://mcp.example.com/sse')).toBeInTheDocument()
     })
   })
 
@@ -66,13 +93,14 @@ describe('RemoteMcpRequestItem', () => {
 
     renderWithProviders(<RemoteMcpRequestItem {...defaultProps} />)
 
-    // Wait for server to load and be auto-selected
+    // Wait for the server card to load (the McpServerCard renders the server name and URL)
     await waitFor(() => {
-      expect(screen.getByText('1 tools')).toBeInTheDocument()
+      expect(screen.getByText('Example MCP')).toBeInTheDocument()
     })
 
-    // Click Grant Access
-    await user.click(screen.getByText('Grant Access'))
+    // Click Allow Access
+    const allowButton = await screen.findByRole('button', { name: /Allow Access/i })
+    await user.click(allowButton)
 
     await waitFor(() => {
       expect(mockApiFetch).toHaveBeenCalledWith(
@@ -95,7 +123,14 @@ describe('RemoteMcpRequestItem', () => {
 
     renderWithProviders(<RemoteMcpRequestItem {...defaultProps} />)
 
-    await user.click(screen.getByText('Decline'))
+    // Wait for the server card to load so the Deny button appears
+    await waitFor(() => {
+      expect(screen.getByText('Example MCP')).toBeInTheDocument()
+    })
+
+    // The DeclineButton renders the label "Deny"
+    const denyButton = await screen.findByRole('button', { name: /Deny/i })
+    await user.click(denyButton)
 
     await waitFor(() => {
       expect(mockApiFetch).toHaveBeenCalledWith(
@@ -111,16 +146,8 @@ describe('RemoteMcpRequestItem', () => {
     })
   })
 
-  it('shows register section when no matching server exists', async () => {
-    mockApiFetch.mockImplementation((path: string) => {
-      if (path === '/api/remote-mcps') {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ servers: [] }),
-        })
-      }
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
-    })
+  it('shows connect card when no matching server exists', async () => {
+    mockServerListResponse([])
 
     renderWithProviders(
       <RemoteMcpRequestItem
@@ -129,9 +156,77 @@ describe('RemoteMcpRequestItem', () => {
       />
     )
 
+    // When no servers match, the component shows a "not connected" badge and a Connect button
     await waitFor(() => {
-      expect(screen.getByText('Register this MCP server:')).toBeInTheDocument()
+      expect(screen.getByText('not connected')).toBeInTheDocument()
     })
-    expect(screen.getByText('Register')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Connect/i })).toBeInTheDocument()
+  })
+
+  it('shows error with prefix when provide fails', async () => {
+    const user = userEvent.setup()
+
+    renderWithProviders(<RemoteMcpRequestItem {...defaultProps} />)
+
+    // Wait for the server card to load
+    await waitFor(() => {
+      expect(screen.getByText('Example MCP')).toBeInTheDocument()
+    })
+
+    // Mock the provide endpoint to fail
+    mockApiFetch.mockImplementation((path: string) => {
+      if (path === '/api/remote-mcps') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ servers: [defaultServer] }),
+        })
+      }
+      if (path.startsWith('/api/policies/tool/')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ policies: [] }),
+        })
+      }
+      if (path.includes('provide-remote-mcp')) {
+        return Promise.resolve({
+          ok: false,
+          json: () => Promise.resolve({ error: 'Server unavailable' }),
+        })
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+    })
+
+    const allowButton = await screen.findByRole('button', { name: /Allow Access/i })
+    await user.click(allowButton)
+
+    // RequestError prefixes "Error: " before the message
+    await waitFor(() => {
+      expect(screen.getByText(/Error:.*Server unavailable/)).toBeInTheDocument()
+    })
+  })
+
+  it('renders completed state with data-testid after granting access', async () => {
+    const user = userEvent.setup()
+
+    renderWithProviders(<RemoteMcpRequestItem {...defaultProps} />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Example MCP')).toBeInTheDocument()
+    })
+
+    const allowButton = await screen.findByRole('button', { name: /Allow Access/i })
+    await user.click(allowButton)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('remote-mcp-request-completed')).toBeInTheDocument()
+    })
+  })
+
+  it('has remote-mcp-request testid in pending state', async () => {
+    renderWithProviders(<RemoteMcpRequestItem {...defaultProps} />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('remote-mcp-request')).toBeInTheDocument()
+    })
   })
 })

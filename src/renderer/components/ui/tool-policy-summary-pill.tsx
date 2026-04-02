@@ -34,11 +34,11 @@ export function ToolPolicySummaryPill({ mcpId, onClick }: ToolPolicySummaryPillP
       className={cn(
         'inline-flex items-center gap-1.5 overflow-hidden border border-transparent bg-transparent px-1.5 py-px text-[11px] transition-colors hover:opacity-80',
         'rounded-[6px]',
-        hasAnyPolicy ? 'text-emerald-600 dark:text-emerald-400' : 'text-emerald-600 dark:text-emerald-400'
+        'text-emerald-600 dark:text-emerald-400'
       )}
     >
       <Shield className="h-3.5 w-3.5 text-current" />
-      <span>{hasAnyPolicy ? 'Permissions • User custom' : 'Permissions • Gamut default'}</span>
+      <span>{hasAnyPolicy ? 'Permissions • Custom' : 'Permissions • Default'}</span>
       <ChevronDown className="h-3.5 w-3.5 text-current" />
     </button>
   )

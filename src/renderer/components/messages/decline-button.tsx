@@ -85,9 +85,9 @@ export function DeclineButton({
                 }}
                 className="flex-1 self-center resize-none overflow-hidden bg-transparent px-0 py-2 text-xs placeholder:text-xs placeholder:text-muted-foreground/80 focus:outline-none focus:ring-0"
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey && reason.trim()) {
+                  if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault()
-                    onDecline(reason.trim())
+                    onDecline(reason.trim() || undefined)
                     setOpen(false)
                   }
                 }}
@@ -95,7 +95,7 @@ export function DeclineButton({
               <Button
                 type="button"
                 size="icon"
-                disabled={!reason.trim() || disabled}
+                disabled={disabled}
                 onClick={() => {
                   onDecline(reason.trim() || undefined)
                   setOpen(false)

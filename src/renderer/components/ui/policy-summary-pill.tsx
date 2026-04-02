@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
 import { CircleCheck, Hand, Ban, Shield, ChevronDown } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { SCOPE_MAPS } from '@shared/lib/proxy/scope-maps'
 
 type PolicyDecision = 'allow' | 'review' | 'block'
@@ -65,72 +66,99 @@ export function PolicySummaryPill({ accountId, toolkit, onClick, compact = false
   }
 
   return (
-    <button
-      type="button"
-      data-testid={`policy-pill-${accountId}`}
-      onClick={onClick}
-      className={cn(
-        'inline-flex items-center border text-xs transition-colors overflow-hidden bg-white dark:bg-background',
-        'hover:opacity-80',
-        compact ? 'rounded-[6px]' : 'rounded-full',
-        compact ? 'text-[11px]' : 'text-xs',
-        compact && 'gap-1.5 px-1.5',
-        compact && hasAnyPolicy && 'border-transparent bg-transparent text-emerald-600 dark:text-emerald-400',
-        compact && !hasAnyPolicy && 'border-transparent bg-transparent text-emerald-600 dark:text-emerald-400',
-        !hasAnyPolicy && (compact ? 'py-px gap-1.5' : 'px-2 py-0.5 gap-1 text-muted-foreground')
-      )}
-    >
-      {compact ? (
-        hasAnyPolicy ? (
-          <>
-            <Shield className="h-3.5 w-3.5 text-current" />
-            <span>Protected • User custom</span>
-            <ChevronDown className="h-3.5 w-3.5 text-current" />
-          </>
-        ) : (
-          <>
-            <Shield className="h-3.5 w-3.5 text-current" />
-            <span>Protected • Gamut default</span>
-            <ChevronDown className="h-3.5 w-3.5 text-current" />
-          </>
-        )
-      ) : (
-        hasAnyPolicy ? (
-          visibleSegments.length > 0 ? (
-            visibleSegments.map((seg) => (
-              <div
-                key={seg.decision}
-                className={cn(
-                  'flex items-center gap-1',
-                  compact ? 'px-1 py-px' : 'px-1.5 py-0.5',
-                  compact ? 'bg-transparent' : seg.bgColor
-                )}
-              >
-                <seg.icon className={cn(compact ? 'h-2.5 w-2.5' : 'h-3 w-3', seg.color)} />
-                <span className={cn(compact ? 'font-normal tabular-nums' : 'font-medium tabular-nums', seg.color)}>{seg.count}</span>
-              </div>
-            ))
-          ) : accountDefault ? (
-            (() => {
-              const seg = segments.find((s) => s.decision === accountDefault.decision)!
-              return (
-                <div className={cn(
-                  'flex items-center gap-1',
-                  compact ? 'px-1 py-px' : 'px-1.5 py-0.5',
-                  compact ? 'bg-transparent' : seg.bgColor
-                )}>
-                  <seg.icon className={cn(compact ? 'h-2.5 w-2.5' : 'h-3 w-3', seg.color)} />
-                  <span className={cn(compact ? 'font-normal' : 'font-medium', seg.color)}>All</span>
-                </div>
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            data-testid={`policy-pill-${accountId}`}
+            onClick={onClick}
+            className={cn(
+              'inline-flex items-center border text-xs transition-colors overflow-hidden bg-white dark:bg-background',
+              'hover:opacity-80',
+              compact ? 'rounded-[6px]' : 'rounded-full',
+              compact ? 'text-[11px]' : 'text-xs',
+              compact && 'gap-1.5 px-1.5',
+              compact && 'border-transparent bg-transparent text-emerald-600 dark:text-emerald-400',
+              !hasAnyPolicy && (compact ? 'py-px gap-1.5' : 'px-2 py-0.5 gap-1 text-muted-foreground')
+            )}
+          >
+            {compact ? (
+              hasAnyPolicy ? (
+                <>
+                  <Shield className="h-3.5 w-3.5 text-current" />
+                  <span>Protected • Custom</span>
+                  <ChevronDown className="h-3.5 w-3.5 text-current" />
+                </>
+              ) : (
+                <>
+                  <Shield className="h-3.5 w-3.5 text-current" />
+                  <span>Protected</span>
+                  <ChevronDown className="h-3.5 w-3.5 text-current" />
+                </>
               )
-            })()
-          ) : (
-            <span>Protected • Gamut default</span>
-          )
-        ) : (
-          <span>Protected • Gamut default</span>
-        )
-      )}
-    </button>
+            ) : (
+              hasAnyPolicy ? (
+                visibleSegments.length > 0 ? (
+                  visibleSegments.map((seg) => (
+                    <div
+                      key={seg.decision}
+                      className={cn(
+                        'flex items-center gap-1 px-1.5 py-0.5',
+                        seg.bgColor
+                      )}
+                    >
+                      <seg.icon className={cn('h-3 w-3', seg.color)} />
+                      <span className={cn('font-medium tabular-nums', seg.color)}>{seg.count}</span>
+                    </div>
+                  ))
+                ) : accountDefault ? (
+                  (() => {
+                    const seg = segments.find((s) => s.decision === accountDefault.decision)!
+                    return (
+                      <div className={cn(
+                        'flex items-center gap-1 px-1.5 py-0.5',
+                        seg.bgColor
+                      )}>
+                        <seg.icon className={cn('h-3 w-3', seg.color)} />
+                        <span className={cn('font-medium', seg.color)}>All</span>
+                      </div>
+                    )
+                  })()
+                ) : (
+                  <span>Protected</span>
+                )
+              ) : (
+                <span>Protected</span>
+              )
+            )}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>
+          <div className="space-y-1.5 text-xs">
+            <div className="font-medium border-b border-border/50 pb-1">Scope Policies</div>
+            {segments.map((seg) =>
+              seg.count > 0 ? (
+                <div key={seg.decision} className="flex items-center gap-1.5">
+                  <seg.icon className={cn('h-3 w-3', seg.color)} />
+                  <span>{decisionLabel[seg.decision]}: {seg.count} scope{seg.count !== 1 ? 's' : ''}</span>
+                </div>
+              ) : null
+            )}
+            {defaultCount > 0 && (
+              <div className="flex items-center gap-1.5 text-muted-foreground">
+                <span className="h-3 w-3 flex items-center justify-center">-</span>
+                <span>Default: {defaultCount} scope{defaultCount !== 1 ? 's' : ''}</span>
+              </div>
+            )}
+            {accountDefault && (
+              <div className="border-t border-border/50 pt-1 text-muted-foreground">
+                Account default: <span className="capitalize">{accountDefault.decision}</span>
+              </div>
+            )}
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   )
 }
