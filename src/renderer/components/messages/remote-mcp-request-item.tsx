@@ -628,9 +628,16 @@ export function RemoteMcpRequestItem({
                 {targetUrl}
               </p>
             </div>
-            <span className="shrink-0 rounded bg-muted/80 px-1.5 py-0.5 text-xs font-medium text-foreground/80">
-              not connected
-            </span>
+            <Button
+              size="sm"
+              onClick={handleRegisterNew}
+              loading={status === 'registering'}
+              disabled={status !== 'pending'}
+              className="shrink-0 bg-foreground text-background hover:bg-foreground/90"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Connect
+            </Button>
             </div>
             {showTokenInput && (
               <Input
@@ -657,16 +664,6 @@ export function RemoteMcpRequestItem({
               showIcon={false}
               className="border-border text-foreground hover:bg-muted"
             />
-            <Button
-              onClick={handleRegisterNew}
-              loading={status === 'registering'}
-              disabled={status !== 'pending'}
-              size="sm"
-              className="min-w-24 bg-foreground text-background hover:bg-foreground/90"
-            >
-              <Plus className="h-4 w-4" />
-              Connect
-            </Button>
           </RequestItemActions>
         </div>
       ) : null}

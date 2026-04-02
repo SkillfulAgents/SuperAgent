@@ -221,20 +221,34 @@ export function McpServerCard({
   // Selectable variant (used in lists with multiple servers)
   if (onToggle) {
     return (
-      <button
-        type="button"
-        onClick={onToggle}
-        disabled={disabled}
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => !disabled && onToggle()}
+        onKeyDown={(e) => {
+          if ((e.key === 'Enter' || e.key === ' ') && !disabled) {
+            e.preventDefault()
+            onToggle()
+          }
+        }}
         className={cn(
-          'group flex w-full items-center gap-3 rounded-[12px] border px-4 py-3 text-left transition-colors',
+          'group flex w-full cursor-pointer items-center gap-2 rounded-[12px] border pl-3 pr-4 py-3 text-left transition-colors',
           selected
             ? 'border-blue-300 bg-blue-50 dark:border-blue-700 dark:bg-blue-950/40'
             : 'border-border bg-white hover:bg-muted/40 dark:bg-background',
           disabled && 'cursor-not-allowed opacity-70'
         )}
       >
+        <input
+          type="checkbox"
+          checked={selected ?? false}
+          disabled={disabled}
+          onChange={() => !disabled && onToggle()}
+          onClick={(e) => e.stopPropagation()}
+          className="mx-1 shrink-0"
+        />
         {displayContent}
-      </button>
+      </div>
     )
   }
 

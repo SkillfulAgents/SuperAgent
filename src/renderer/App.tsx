@@ -20,6 +20,7 @@ import { useAnalyticsTracking } from './context/analytics-context'
 
 function AppContent() {
   useTheme()
+
   const [wizardOpen, setWizardOpen] = useState(false)
   const { data: userSettings } = useUserSettings()
   const { isAuthMode, isAdmin } = useUser()
