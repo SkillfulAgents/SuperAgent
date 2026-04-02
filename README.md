@@ -14,8 +14,8 @@ SuperAgent is a super app for building and running personal agents. You can crea
 - **Containerized Agents** - SuperAgents spins up a containerized sandbox per agent - keeping your computer secure. 
 - **Connected Accounts** - easily connect 100s of accounts your agent can use.
 - **Secure Integrations** - API calls are proxied outside your agent and the agent never sees Auth Tokens, keeping your account secure and giving you an audit trail of agent actions.
-- **Recurring and Scheduled Tasks** - agents can schedule recurring tasks and future work so they can serve you autonomously in the backhround.
-- **Beowser Access** - agents can spin up and use a web browser to accomplish tasks where no API / MCP is available.
+- **Recurring and Scheduled Tasks** - agents can schedule recurring tasks and future work so they can serve you autonomously in the background.
+- **Browser Access** - agents can spin up and use a web browser to accomplish tasks where no API / MCP is available.
 - **Agent Dashboards & Artifacts** - agents can create dashboard for you to more easily access information.
 - **Create Shared Skillsets** - as agents create skills for your work - creaate skillsets to share them with your team!
 
