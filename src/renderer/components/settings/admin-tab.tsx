@@ -13,11 +13,13 @@ import {
   AlertDialogTrigger,
 } from '@renderer/components/ui/alert-dialog'
 import { useFactoryReset } from '@renderer/hooks/use-settings'
-import { RotateCcw } from 'lucide-react'
+import { RotateCcw, Bug } from 'lucide-react'
+import { DebugTab } from './debug-tab'
 
 export function AdminTab() {
   const factoryReset = useFactoryReset()
   const [isResetting, setIsResetting] = useState(false)
+  const [showDebug, setShowDebug] = useState(false)
 
   const handleFactoryReset = async () => {
     setIsResetting(true)
@@ -70,6 +72,22 @@ export function AdminTab() {
             </AlertDialogContent>
           </AlertDialog>
         </div>
+      </div>
+
+      {/* Debug */}
+      <div className="space-y-2">
+        <button
+          onClick={() => setShowDebug(!showDebug)}
+          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <Bug className="h-3.5 w-3.5" />
+          <span>{showDebug ? 'Hide' : 'Show'} Debug Tools</span>
+        </button>
+        {showDebug && (
+          <div className="pt-2">
+            <DebugTab />
+          </div>
+        )}
       </div>
     </div>
   )

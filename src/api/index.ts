@@ -18,6 +18,7 @@ import policies from './routes/policies'
 import runtimeStatusRouter from './routes/runtime-status'
 import sttRouter from './routes/stt'
 import adminUsersRouter from './routes/admin-users'
+import debugRouter from './routes/debug'
 import platformAuth from './routes/platform-auth'
 import { initializeServices } from '@shared/lib/startup'
 import { isAuthMode } from '@shared/lib/auth/mode'
@@ -151,6 +152,7 @@ app.route('/api/runtime-status', runtimeStatusRouter)
 app.route('/api/admin/users', adminUsersRouter)
 app.route('/api/platform-auth', platformAuth)
 app.route('/api/stt', sttRouter)
+app.route('/api/debug', debugRouter)
 
 // Global error handler
 app.onError((err, c) => {
