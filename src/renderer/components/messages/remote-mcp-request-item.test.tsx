@@ -156,11 +156,10 @@ describe('RemoteMcpRequestItem', () => {
       />
     )
 
-    // When no servers match, the component shows a "not connected" badge and a Connect button
+    // When no servers match, the component shows an inline Connect button
     await waitFor(() => {
-      expect(screen.getByText('not connected')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /Connect/i })).toBeInTheDocument()
     })
-    expect(screen.getByRole('button', { name: /Connect/i })).toBeInTheDocument()
   })
 
   it('shows error with prefix when provide fails', async () => {

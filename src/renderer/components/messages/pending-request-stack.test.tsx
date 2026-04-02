@@ -243,8 +243,8 @@ describe('PendingRequestStack', () => {
     expect(strips.length).toBe(0)
   })
 
-  it('triggers dismiss animation when a child is removed', () => {
-    const { container, rerender } = render(
+  it('applies reveal animation when a child is removed', async () => {
+    const { rerender } = render(
       <PendingRequestStack>
         {[
           <Card key="a" id="a" label="Card A" />,
@@ -253,41 +253,29 @@ describe('PendingRequestStack', () => {
       </PendingRequestStack>
     )
 
-    // Remove card A
+    // Flush effects so prevKeysRef is populated
+    await act(async () => {})
+
+    // Remove card A — card B becomes visible with reveal animation
     rerender(
       <PendingRequestStack>
         {[<Card key="b" id="b" label="Card B" />]}
       </PendingRequestStack>
     )
 
-    // The dismiss overlay should be present (pointer-events-none)
-    const dismissOverlay = container.querySelector('.pointer-events-none')
-    expect(dismissOverlay).toBeInTheDocument()
+    await act(async () => {})
 
-    // After the animation duration, the overlay should be removed
+    // The visible card should have the reveal animation applied
+    const cardBWrapper = screen.getByTestId('card-b').parentElement!
+    expect(cardBWrapper.style.animation).toContain('stack-reveal')
+
+    // After the reveal duration, animation should be cleared
     act(() => {
-      vi.advanceTimersByTime(1000)
+      vi.advanceTimersByTime(350)
     })
-
-    const dismissOverlayAfter = container.querySelector('.pointer-events-none')
-    expect(dismissOverlayAfter).not.toBeInTheDocument()
   })
 
-  it('does not render dismiss animation on initial mount', () => {
-    const { container } = render(
-      <PendingRequestStack>
-        {[
-          <Card key="a" id="a" label="Card A" />,
-          <Card key="b" id="b" label="Card B" />,
-        ]}
-      </PendingRequestStack>
-    )
-
-    const dismissOverlay = container.querySelector('.pointer-events-none')
-    expect(dismissOverlay).not.toBeInTheDocument()
-  })
-
-  it('still renders during dismiss animation even when count is 0', () => {
+  it('returns null when all children are removed', async () => {
     const { container, rerender } = render(
       <PendingRequestStack>
         {[<Card key="a" id="a" label="Card A" />]}
@@ -299,15 +287,7 @@ describe('PendingRequestStack', () => {
       <PendingRequestStack>{[]}</PendingRequestStack>
     )
 
-    // Should still render (dismiss animation in progress)
-    const dismissOverlay = container.querySelector('.pointer-events-none')
-    expect(dismissOverlay).toBeInTheDocument()
-
-    // After animation completes, should return null
-    act(() => {
-      vi.advanceTimersByTime(1000)
-    })
-
+    // Should return null immediately (no dismiss overlay in this version)
     expect(container.innerHTML).toBe('')
   })
 
