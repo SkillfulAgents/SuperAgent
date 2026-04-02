@@ -2679,16 +2679,20 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
     const slug = c.req.param('id')
     const body = await c.req.json<{
       toolUseId: string
-      remoteMcpId: string
+      remoteMcpId?: string
+      remoteMcpIds?: string[]
       decline?: boolean
       declineReason?: string
     }>()
+    const requestedMcpIds = Array.from(
+      new Set((body.remoteMcpIds && body.remoteMcpIds.length > 0 ? body.remoteMcpIds : body.remoteMcpId ? [body.remoteMcpId] : []).filter(Boolean))
+    )
 
     if (!body.toolUseId) {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
-    if (!body.decline && !body.remoteMcpId) {
-      return c.json({ error: 'remoteMcpId is required when not declining' }, 400)
+    if (!body.decline && requestedMcpIds.length === 0) {
+      return c.json({ error: 'remoteMcpId or remoteMcpIds is required when not declining' }, 400)
     }
 
     const client = containerManager.getClient(slug)
@@ -2717,18 +2721,22 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
       .where(
         and(
           eq(agentRemoteMcps.agentSlug, slug),
-          eq(agentRemoteMcps.remoteMcpId, body.remoteMcpId)
+          inArray(agentRemoteMcps.remoteMcpId, requestedMcpIds)
         )
       )
-      .limit(1)
+    const existingMappedIds = new Set(existingMapping.map((mapping) => mapping.remoteMcpId))
 
-    if (existingMapping.length === 0) {
-      await db.insert(agentRemoteMcps).values({
+    const newMappings = requestedMcpIds
+      .filter((mcpId) => !existingMappedIds.has(mcpId))
+      .map((mcpId) => ({
         id: crypto.randomUUID(),
         agentSlug: slug,
-        remoteMcpId: body.remoteMcpId,
+        remoteMcpId: mcpId,
         createdAt: new Date(),
-      })
+      }))
+
+    if (newMappings.length > 0) {
+      await db.insert(agentRemoteMcps).values(newMappings)
     }
 
     // Fetch updated remote MCPs for this agent
@@ -2771,7 +2779,7 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
     const resolveResponse = await client.fetch(`/inputs/${encodeURIComponent(body.toolUseId)}/resolve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ value: body.remoteMcpId }),
+      body: JSON.stringify({ value: requestedMcpIds }),
     })
     if (!resolveResponse.ok) {
       console.error('Failed to resolve remote MCP request:', await resolveResponse.text())

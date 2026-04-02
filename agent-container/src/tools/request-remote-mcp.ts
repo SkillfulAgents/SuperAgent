@@ -61,12 +61,13 @@ Use this when you need to interact with an MCP server that hasn't been configure
 
     try {
       // This blocks until the user provides or declines access.
-      // The resolve value is the remoteMcpId (UUID).
-      const remoteMcpId = await inputManager.createPendingWithType<string>(
+      // The resolve value is one or more remoteMcpIds (UUIDs).
+      const resolvedRemoteMcpIds = await inputManager.createPendingWithType<string | string[]>(
         toolUseId,
         'remote_mcp',
         { url: args.url, name: args.name, reason: args.reason, authHint: args.authHint }
       )
+      const remoteMcpIds = Array.isArray(resolvedRemoteMcpIds) ? resolvedRemoteMcpIds : [resolvedRemoteMcpIds]
 
       // If we get here, the user approved - read updated REMOTE_MCPS
       const remoteMcpsRaw = process.env.REMOTE_MCPS
@@ -79,22 +80,24 @@ Use this when you need to interact with an MCP server that hasn't been configure
             proxyUrl: string
             tools: Array<{ name: string }>
           }>
-          // Find the approved MCP by ID (from the resolve value)
-          const matchingMcp = mcps.find((m) => m.id === remoteMcpId)
-          if (matchingMcp) {
-            const sanitizedName = sanitizeMcpName(matchingMcp.name)
-            const fullToolNames = matchingMcp.tools.map((t) => `mcp__${sanitizedName}__${t.name}`).join(', ')
-            mcpInfo = `\n\nMCP Server registered as: ${sanitizedName}\nUse these tools: ${fullToolNames}`
+          const matchingMcps = mcps.filter((m) => remoteMcpIds.includes(m.id))
+          if (matchingMcps.length > 0) {
+            const mcpBlocks = matchingMcps.map((matchingMcp) => {
+              const sanitizedName = sanitizeMcpName(matchingMcp.name)
+              const fullToolNames = matchingMcp.tools.map((t) => `mcp__${sanitizedName}__${t.name}`).join(', ')
+              return `MCP Server registered as: ${sanitizedName}\nUse these tools: ${fullToolNames}`
+            })
+            mcpInfo = `\n\n${mcpBlocks.join('\n\n')}`
 
             // Trigger interrupt + restart so the new query picks up the MCP from env var.
             const proc = getCurrentProcess()
             if (proc) {
-              proc.addRemoteMcpServer(matchingMcp.name)
+              matchingMcps.forEach((matchingMcp) => proc.addRemoteMcpServer(matchingMcp.name))
             } else {
               console.error('[request_remote_mcp] No active ClaudeCodeProcess found')
             }
           } else {
-            console.error(`[request_remote_mcp] MCP id ${remoteMcpId} not found in REMOTE_MCPS env var`)
+            console.error(`[request_remote_mcp] MCP ids ${remoteMcpIds.join(', ')} not found in REMOTE_MCPS env var`)
           }
         } catch (e) {
           console.error('[request_remote_mcp] Failed to parse REMOTE_MCPS env var:', e)

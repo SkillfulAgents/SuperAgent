@@ -19,12 +19,14 @@ interface AgentSettingsDialogProps {
   agent: ApiAgent
   open: boolean
   onOpenChange: (open: boolean) => void
+  initialTab?: string
 }
 
 export function AgentSettingsDialog({
   agent,
   open,
   onOpenChange,
+  initialTab,
 }: AgentSettingsDialogProps) {
   const [name, setName] = React.useState(agent.name)
   const [instructions, setInstructions] = React.useState(agent.instructions || '')
@@ -80,6 +82,7 @@ export function AgentSettingsDialog({
       onOpenChange={onOpenChange}
       title="Settings"
       description={`Configure settings for ${agent.name}`}
+      initialTab={initialTab}
       overlay={permissionOverlay}
       inert={isAuthMode && rolesReady && !isOwner}
       data-testid="agent-settings-dialog"

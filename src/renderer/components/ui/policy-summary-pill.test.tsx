@@ -30,13 +30,13 @@ describe('PolicySummaryPill', () => {
     vi.clearAllMocks()
   })
 
-  it('shows "No policies" when no policies exist', async () => {
+  it('shows "Protected" when no policies exist', async () => {
     mockPoliciesResponse([])
     renderWithProviders(
       <PolicySummaryPill accountId="acc-1" toolkit="testprovider" />
     )
     await waitFor(() => {
-      expect(screen.getByText('No policies')).toBeInTheDocument()
+      expect(screen.getByText('Protected')).toBeInTheDocument()
     })
   })
 
@@ -57,7 +57,7 @@ describe('PolicySummaryPill', () => {
     })
   })
 
-  it('shows "Default" pill when only account default is set (no specific scope policies)', async () => {
+  it('shows "All" pill when only account default is set (no specific scope policies)', async () => {
     mockPoliciesResponse([
       { scope: '*', decision: 'allow' },
     ])
@@ -65,10 +65,10 @@ describe('PolicySummaryPill', () => {
       <PolicySummaryPill accountId="acc-3" toolkit="testprovider" />
     )
     await waitFor(() => {
-      expect(screen.getByText('Default')).toBeInTheDocument()
+      expect(screen.getByText('All')).toBeInTheDocument()
     })
-    // Should NOT show "No policies"
-    expect(screen.queryByText('No policies')).not.toBeInTheDocument()
+    // Should NOT show "Protected" (account default is a policy)
+    expect(screen.queryByText('Protected')).not.toBeInTheDocument()
   })
 
   it('shows scope counts alongside account default', async () => {
@@ -83,18 +83,18 @@ describe('PolicySummaryPill', () => {
     await waitFor(() => {
       expect(screen.getAllByText('1')).toHaveLength(2)
     })
-    // Should NOT show "Default" label since specific scopes are visible
-    expect(screen.queryByText('Default')).not.toBeInTheDocument()
-    expect(screen.queryByText('No policies')).not.toBeInTheDocument()
+    // Should NOT show "All" label since specific scopes are visible
+    expect(screen.queryByText('All')).not.toBeInTheDocument()
+    expect(screen.queryByText('Protected')).not.toBeInTheDocument()
   })
 
-  it('shows "No policies" when toolkit is not in scope maps and no policies exist', async () => {
+  it('shows "Protected" when toolkit is not in scope maps and no policies exist', async () => {
     mockPoliciesResponse([])
     renderWithProviders(
       <PolicySummaryPill accountId="acc-5" toolkit="unknown-provider" />
     )
     await waitFor(() => {
-      expect(screen.getByText('No policies')).toBeInTheDocument()
+      expect(screen.getByText('Protected')).toBeInTheDocument()
     })
   })
 
@@ -105,7 +105,7 @@ describe('PolicySummaryPill', () => {
       <PolicySummaryPill accountId="acc-6" toolkit="testprovider" onClick={onClick} />
     )
     await waitFor(() => {
-      expect(screen.getByText('No policies')).toBeInTheDocument()
+      expect(screen.getByText('Protected')).toBeInTheDocument()
     })
     screen.getByRole('button').click()
     expect(onClick).toHaveBeenCalledOnce()

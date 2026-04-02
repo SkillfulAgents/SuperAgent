@@ -1,5 +1,6 @@
 import { apiFetch } from '@renderer/lib/api'
 import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
+import { formatDistanceToNow } from 'date-fns'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
@@ -7,14 +8,17 @@ import {
   X,
   Loader2,
   Plus,
-  ExternalLink,
   Pencil,
+  MoreVertical,
+  Plug,
 } from 'lucide-react'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { Button } from '@renderer/components/ui/button'
-import { Checkbox } from '@renderer/components/ui/checkbox'
 import { Input } from '@renderer/components/ui/input'
+import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { DeclineButton } from './decline-button'
+import { RequestItemShell } from './request-item-shell'
+import { RequestItemActions } from './request-item-actions'
 import { cn } from '@shared/lib/utils/cn'
 import { ScopePolicyEditor } from '@renderer/components/settings/scope-policy-editor'
 import { PolicySummaryPill } from '@renderer/components/ui/policy-summary-pill'
@@ -26,7 +30,6 @@ import {
 } from '@renderer/hooks/use-connected-accounts'
 import { getProvider } from '@shared/lib/composio/providers'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
-import { formatDistanceToNow } from 'date-fns'
 
 interface ConnectedAccountRequestItemProps {
   toolUseId: string
@@ -67,6 +70,16 @@ export function ConnectedAccountRequestItem({
   const { track } = useAnalyticsTracking()
   const provider = getProvider(toolkit)
   const accounts = data?.accounts ?? []
+
+  // Auto-select when there's exactly one account
+  const hasAutoSelected = useRef(false)
+  useEffect(() => {
+    if (hasAutoSelected.current) return
+    if (accounts.length === 1 && selectedAccountIds.size === 0) {
+      setSelectedAccountIds(new Set([accounts[0].id]))
+      hasAutoSelected.current = true
+    }
+  }, [accounts, selectedAccountIds.size])
 
   // Listen for OAuth callback messages (both IPC in Electron and postMessage in web)
   useEffect(() => {
@@ -110,6 +123,9 @@ export function ConnectedAccountRequestItem({
     // Electron: use IPC callback with structured params
     if (window.electronAPI) {
       window.electronAPI.onOAuthCallback(async (params) => {
+        // Only handle callbacks for this toolkit
+        if (params.toolkit && params.toolkit !== toolkit) return
+
         if (params.error || params.status === 'failed') {
           handleOAuthComplete(false, params.error || undefined)
           return
@@ -133,8 +149,8 @@ export function ConnectedAccountRequestItem({
               const data = await res.json()
               handleOAuthComplete(false, data.error)
             }
-          } catch (error: any) {
-            handleOAuthComplete(false, error.message)
+          } catch (error: unknown) {
+            handleOAuthComplete(false, error instanceof Error ? error.message : 'OAuth completion failed')
           }
         } else {
           handleOAuthComplete(false, 'Missing OAuth callback parameters')
@@ -154,7 +170,7 @@ export function ConnectedAccountRequestItem({
 
     window.addEventListener('message', handleMessage)
     return () => window.removeEventListener('message', handleMessage)
-  }, [invalidateConnectedAccounts, refetch])
+  }, [invalidateConnectedAccounts, refetch, toolkit])
 
   const toggleAccount = useCallback((accountId: string) => {
     setSelectedAccountIds((prev) => {
@@ -195,9 +211,9 @@ export function ConnectedAccountRequestItem({
       const { redirectUrl } = await response.json()
       await popup.navigate(redirectUrl)
       setStatus('pending')
-    } catch (err: any) {
+    } catch (err: unknown) {
       popup.close()
-      setError(err.message || 'Failed to connect account')
+      setError(err instanceof Error ? err.message : 'Failed to connect account')
       setStatus('pending')
     }
   }
@@ -229,8 +245,8 @@ export function ConnectedAccountRequestItem({
 
       setStatus('provided')
       onComplete()
-    } catch (err: any) {
-      setError(err.message || 'Failed to provide access')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to provide access')
       setStatus('pending')
     }
   }
@@ -261,17 +277,17 @@ export function ConnectedAccountRequestItem({
 
       setStatus('declined')
       onComplete()
-    } catch (err: any) {
-      setError(err.message || 'Failed to decline request')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to decline request')
       setStatus('pending')
     }
   }
 
-  // Completed state
-  if (status === 'provided' || status === 'declined') {
-    return (
-      <div className="border rounded-md bg-muted/30 text-sm">
-        <div className="flex items-center gap-2 px-3 py-2">
+  // Build completed config
+  const isCompleted = status === 'provided' || status === 'declined'
+  const completedConfig = isCompleted
+    ? {
+        icon: (
           <ServiceIcon
             slug={toolkit}
             fallback="request"
@@ -280,178 +296,172 @@ export function ConnectedAccountRequestItem({
               status === 'provided' ? 'text-green-500' : 'text-red-500'
             )}
           />
+        ),
+        label: (
           <span className="font-medium capitalize">
             {provider?.displayName || toolkit}
           </span>
-          <span
-            className={cn(
-              'ml-auto text-xs',
-              status === 'provided' ? 'text-green-600' : 'text-red-600'
-            )}
-          >
-            {status === 'provided' ? 'Access Granted' : 'Declined'}
-          </span>
-        </div>
-      </div>
-    )
-  }
+        ),
+        statusLabel: status === 'provided' ? 'Access Granted' : 'Declined',
+        isSuccess: status === 'provided',
+      }
+    : null
 
-  // Read-only state for viewers
-  if (readOnly) {
-    return (
-      <div className="border rounded-md bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800 text-sm">
-        <div className="flex items-center gap-3 p-3">
-          <div className="h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center shrink-0">
-            <ServiceIcon slug={toolkit} fallback="request" className="h-4 w-4 text-blue-600 dark:text-blue-400" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="font-medium text-blue-900 dark:text-blue-100">
-              Access Requested:{' '}
-              <span className="capitalize">{provider?.displayName || toolkit}</span>
-            </div>
-            {reason && (
-              <p className="text-sm text-blue-700 dark:text-blue-300 mt-1 whitespace-pre-line">{reason}</p>
-            )}
-          </div>
-          <span className="text-xs text-blue-600 dark:text-blue-400 shrink-0">Waiting for response</span>
-        </div>
-      </div>
-    )
-  }
+  // Build read-only config
+  const readOnlyConfig = readOnly
+    ? {
+        description: reason ? (
+          <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{reason}</p>
+        ) : undefined,
+      }
+    : (false as const)
 
-  // Pending/submitting/connecting state
   return (
-    <div className="border rounded-md bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800 text-sm">
-      <div className="flex items-start gap-3 p-3">
-        {/* Icon */}
-        <div className="h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center shrink-0">
-          <ServiceIcon slug={toolkit} fallback="request" className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+    <RequestItemShell
+      title="Account Access Request"
+      icon={<Plug className="h-4 w-4" />}
+      theme="blue"
+      completed={completedConfig}
+      readOnly={readOnlyConfig}
+      waitingText="Waiting for response"
+      error={error}
+      data-testid={isCompleted ? 'connected-account-request-completed' : 'connected-account-request'}
+      data-status={isCompleted ? status : undefined}
+    >
+      {/* Description */}
+      {reason && (
+        <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{reason}</p>
+      )}
+      <p className="mt-2 text-xs text-muted-foreground">
+        Selected accounts will be linked to this agent for future use.
+      </p>
+
+      {/* Account Selection */}
+      {isLoading ? (
+        <div className="flex items-center gap-2 pt-3 text-blue-600 dark:text-blue-400">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          <span>Loading accounts...</span>
         </div>
-
-        {/* Content */}
-        <div className="flex-1 min-w-0 space-y-3">
-          {/* Header */}
-          <div>
-            <div className="font-medium text-blue-900 dark:text-blue-100">
-              Access Requested:{' '}
-              <span className="capitalize">
-                {provider?.displayName || toolkit}
-              </span>
-            </div>
-            {reason && (
-              <p className="text-sm text-blue-700 dark:text-blue-300 mt-1 whitespace-pre-line">{reason}</p>
-            )}
+      ) : accounts.length > 0 ? (
+        <div className="space-y-1 pt-3">
+          <div className="space-y-1">
+            {accounts.map((account) => (
+              <AccountOption
+                key={account.id}
+                account={account}
+                selected={selectedAccountIds.has(account.id)}
+                onToggle={() => toggleAccount(account.id)}
+                disabled={status !== 'pending'}
+                isEditing={editingAccount === account.id}
+                editName={editName}
+                onStartEdit={() => {
+                  setEditingAccount(account.id)
+                  setEditName(account.displayName)
+                }}
+                onCancelEdit={() => {
+                  setEditingAccount(null)
+                  setEditName('')
+                }}
+                onSaveEdit={async () => {
+                  if (!editName.trim()) return
+                  try {
+                    await renameAccount.mutateAsync({
+                      accountId: account.id,
+                      displayName: editName.trim(),
+                    })
+                    setEditingAccount(null)
+                    setEditName('')
+                  } catch (err) {
+                    console.error('Failed to rename account:', err)
+                  }
+                }}
+                onEditNameChange={setEditName}
+                isSavingRename={renameAccount.isPending}
+                onOpenPolicies={() => {
+                  setPolicyEditorIsNewAccount(false)
+                  setPolicyEditorAccountId(account.id)
+                }}
+              />
+            ))}
           </div>
-
-          {/* Account Selection */}
-          {isLoading ? (
-            <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              <span>Loading accounts...</span>
-            </div>
-          ) : accounts.length > 0 ? (
-            <div className="space-y-2">
-              <p className="text-xs text-blue-600 dark:text-blue-400 font-medium">
-                Select account(s) to provide:
-              </p>
-              <div className="space-y-1">
-                {accounts.map((account) => (
-                  <AccountOption
-                    key={account.id}
-                    account={account}
-                    selected={selectedAccountIds.has(account.id)}
-                    onToggle={() => toggleAccount(account.id)}
-                    disabled={status !== 'pending'}
-                    isEditing={editingAccount === account.id}
-                    editName={editName}
-                    onStartEdit={() => {
-                      setEditingAccount(account.id)
-                      setEditName(account.displayName)
-                    }}
-                    onCancelEdit={() => {
-                      setEditingAccount(null)
-                      setEditName('')
-                    }}
-                    onSaveEdit={async () => {
-                      if (!editName.trim()) return
-                      try {
-                        await renameAccount.mutateAsync({
-                          accountId: account.id,
-                          displayName: editName.trim(),
-                        })
-                        setEditingAccount(null)
-                        setEditName('')
-                      } catch (err) {
-                        console.error('Failed to rename account:', err)
-                      }
-                    }}
-                    onEditNameChange={setEditName}
-                    isSavingRename={renameAccount.isPending}
-                    onOpenPolicies={() => {
-                      setPolicyEditorIsNewAccount(false)
-                      setPolicyEditorAccountId(account.id)
-                    }}
-                  />
-                ))}
+        </div>
+      ) : (
+        <div className="pt-3">
+          <div className="flex items-center justify-between gap-3 rounded-[12px] border border-border bg-white pl-[10px] pr-3 py-2 dark:bg-background">
+            <div className="flex items-center gap-2 text-sm text-foreground/80">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
+                <ServiceIcon slug={toolkit} fallback="request" className="h-6 w-6" />
               </div>
+              <p>{(provider?.displayName || toolkit).replace(/\b\w/g, (char) => char.toUpperCase())}</p>
             </div>
-          ) : (
-            <p className="text-sm text-blue-600 dark:text-blue-400">
-              No connected accounts found for {provider?.displayName || toolkit}.
-            </p>
-          )}
+            <Button
+              onClick={handleConnectNew}
+              loading={status === 'connecting'}
+              disabled={status !== 'pending'}
+              size="sm"
+              className="min-w-24 bg-foreground text-background hover:bg-foreground/90"
+            >
+              <Plus className="h-4 w-4" />
+              Connect
+            </Button>
+          </div>
+        </div>
+      )}
 
-          {/* Connect New button */}
+      {/* Connect New button */}
+      {accounts.length > 0 && (
+        <div className="mt-1 ml-2">
           <Button
             onClick={handleConnectNew}
+            loading={status === 'connecting'}
             disabled={status !== 'pending'}
-            variant="outline"
+            variant="ghost"
             size="sm"
-            className="border-blue-200 dark:border-blue-700 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900"
+            className="text-muted-foreground hover:bg-muted hover:text-foreground"
           >
-            {status === 'connecting' ? (
-              <Loader2 className="h-4 w-4 animate-spin mr-1" />
-            ) : (
-              <Plus className="h-4 w-4 mr-1" />
-            )}
-            Connect New Account
-            <ExternalLink className="h-3 w-3 ml-1" />
+            <Plus className="mr-1 h-4 w-4" />
+            Add New Account
           </Button>
-
-          {/* Action buttons */}
-          <div className="flex gap-2">
-            <Button
-              onClick={handleProvide}
-              disabled={selectedAccountIds.size === 0 || status !== 'pending'}
-              size="sm"
-              className="bg-blue-600 hover:bg-blue-700 text-white"
-            >
-              {status === 'submitting' ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Check className="h-4 w-4" />
-              )}
-              <span className="ml-1">
-                Grant Access{selectedAccountIds.size > 0 ? ` (${selectedAccountIds.size})` : ''}
-              </span>
-            </Button>
-
-            <DeclineButton
-              onDecline={handleDecline}
-              disabled={status !== 'pending'}
-              className="border-blue-200 dark:border-blue-700 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900"
-            />
-          </div>
-
-          {/* Error message */}
-          {error && <p className="text-sm text-red-600">{error}</p>}
-
-          {/* Info text */}
-          <p className="text-xs text-blue-600 dark:text-blue-400">
-            Selected accounts will be linked to this agent for future use.
-          </p>
         </div>
-      </div>
+      )}
+
+      {/* Action buttons when accounts exist */}
+      {accounts.length > 0 && (
+        <RequestItemActions className="pt-0">
+          <DeclineButton
+            onDecline={handleDecline}
+            disabled={status !== 'pending'}
+            label="Deny"
+            showIcon={false}
+            className="border-border text-foreground hover:bg-muted"
+          />
+
+          <Button
+            onClick={handleProvide}
+            loading={status === 'submitting'}
+            disabled={selectedAccountIds.size === 0 || status !== 'pending'}
+            size="sm"
+            className="min-w-24 bg-blue-600 text-white hover:bg-blue-700"
+          >
+            Allow Access{selectedAccountIds.size > 0 ? ` (${selectedAccountIds.size})` : ''}
+          </Button>
+        </RequestItemActions>
+      )}
+
+      {/* Action buttons when no accounts */}
+      {accounts.length === 0 && (
+        <RequestItemActions className="mt-6 pt-0">
+          <DeclineButton
+            onDecline={handleDecline}
+            disabled={status !== 'pending' && status !== 'connecting'}
+            label="Deny"
+            showIcon={false}
+            className="border-border text-foreground hover:bg-muted"
+          />
+        </RequestItemActions>
+      )}
+
+      {/* Policy editor dialog */}
       {policyEditorAccountId && (
         <ScopePolicyEditor
           accountId={policyEditorAccountId}
@@ -480,7 +490,7 @@ export function ConnectedAccountRequestItem({
           ) : undefined}
         />
       )}
-    </div>
+    </RequestItemShell>
   )
 }
 
@@ -515,19 +525,23 @@ function AccountOption({
 }: AccountOptionProps) {
   const connectedDate = new Date(account.createdAt)
   const connectedAgo = formatDistanceToNow(connectedDate, { addSuffix: true })
+  const [menuOpen, setMenuOpen] = useState(false)
 
   if (isEditing) {
     return (
       <div
         className={cn(
-          'flex items-center gap-2 p-2 rounded border',
-          'bg-white dark:bg-blue-900/50 border-blue-200 dark:border-blue-700'
+          'flex items-center gap-2 rounded-[12px] border px-4 py-2',
+          'border-border bg-white dark:bg-background'
         )}
       >
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
+          <ServiceIcon slug={account.toolkitSlug} fallback="request" className="h-5 w-5" />
+        </div>
         <Input
           value={editName}
           onChange={(e) => onEditNameChange(e.target.value)}
-          className="h-7 text-sm flex-1"
+          className="h-7 max-w-[296px] flex-1 text-sm"
           autoFocus
           onKeyDown={(e) => {
             if (e.key === 'Enter') onSaveEdit()
@@ -536,24 +550,22 @@ function AccountOption({
         />
         <Button
           size="sm"
-          variant="ghost"
-          className="h-6 w-6 p-0"
+          variant="default"
+          className="h-6 shrink-0 bg-foreground px-2 text-xs text-background hover:bg-foreground/90"
           onClick={onSaveEdit}
-          disabled={isSavingRename}
+          loading={isSavingRename}
         >
-          {isSavingRename ? (
-            <Loader2 className="h-3 w-3 animate-spin" />
-          ) : (
-            <Check className="h-3 w-3 text-green-600" />
-          )}
+          <Check className="h-3 w-3" />
+          <span>Update</span>
         </Button>
         <Button
           size="sm"
-          variant="ghost"
-          className="h-6 w-6 p-0"
+          variant="outline"
+          className="h-6 shrink-0 px-2 text-xs"
           onClick={onCancelEdit}
         >
           <X className="h-3 w-3" />
+          <span>Cancel</span>
         </Button>
       </div>
     )
@@ -562,10 +574,10 @@ function AccountOption({
   return (
     <div
       className={cn(
-        'flex items-center gap-2 p-2 rounded border cursor-pointer transition-colors',
+        'group flex items-center gap-2 rounded-[12px] border pl-3 pr-4 py-2 cursor-pointer transition-colors',
         selected
-          ? 'bg-blue-100 dark:bg-blue-900 border-blue-300 dark:border-blue-600'
-          : 'bg-white dark:bg-blue-950/30 border-blue-100 dark:border-blue-800 hover:border-blue-200 dark:hover:border-blue-700',
+          ? 'border-blue-300 bg-blue-50 dark:border-blue-700 dark:bg-blue-950/40'
+          : 'border-border bg-white hover:bg-muted/40 dark:bg-background',
         disabled && 'opacity-50 cursor-not-allowed'
       )}
       role="button"
@@ -578,49 +590,67 @@ function AccountOption({
         }
       }}
     >
-      <Checkbox
+      <input
+        type="checkbox"
         checked={selected}
         disabled={disabled}
-        onCheckedChange={() => {
-          if (!disabled) onToggle()
-        }}
+        onChange={() => !disabled && onToggle()}
         onClick={(e) => e.stopPropagation()}
+        className="mx-1 shrink-0"
       />
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
+        <ServiceIcon slug={account.toolkitSlug} fallback="request" className="h-5 w-5" />
+      </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1">
-          <span className="truncate text-sm">{account.displayName}</span>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-5 w-5 p-0 shrink-0"
-            onClick={(e) => {
-              e.stopPropagation()
-              onStartEdit()
-            }}
-          >
-            <Pencil className="h-3 w-3 text-blue-400" />
-          </Button>
-          {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
-          <span onClick={(e) => e.stopPropagation()}>
-            <PolicySummaryPill
-              accountId={account.id}
-              toolkit={account.toolkitSlug}
-              onClick={onOpenPolicies}
-            />
-          </span>
+          <span className="truncate text-sm font-normal text-foreground">{account.displayName}</span>
         </div>
-        <span className="text-xs text-blue-500 dark:text-blue-400">connected {connectedAgo}</span>
+        <p className="truncate text-xs text-muted-foreground">connected {connectedAgo}</p>
       </div>
-      <span
-        className={cn(
-          'text-xs px-1.5 py-0.5 rounded shrink-0',
-          account.status === 'active'
-            ? 'bg-green-100 dark:bg-green-900/50 text-green-700 dark:text-green-400'
-            : 'bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-400'
-        )}
-      >
-        {account.status}
-      </span>
+      <div className="flex shrink-0 items-center gap-2 self-center">
+        {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
+        <span onClick={(e) => e.stopPropagation()}>
+          <PolicySummaryPill
+            accountId={account.id}
+            toolkit={account.toolkitSlug}
+            compact
+            onClick={onOpenPolicies}
+          />
+        </span>
+        <Popover open={menuOpen} onOpenChange={setMenuOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-5 w-5 shrink-0 p-0 text-muted-foreground/70 hover:bg-transparent hover:text-muted-foreground"
+              onClick={(e) => {
+                e.stopPropagation()
+              }}
+            >
+              <MoreVertical className="h-3.5 w-3.5" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent
+            align="end"
+            className="w-32 p-1"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Button
+              size="sm"
+              variant="ghost"
+              className="w-full justify-start gap-2 text-foreground hover:bg-muted"
+              onClick={(e) => {
+                e.stopPropagation()
+                setMenuOpen(false)
+                onStartEdit()
+              }}
+            >
+              <Pencil className="h-3.5 w-3.5" />
+              Rename
+            </Button>
+          </PopoverContent>
+        </Popover>
+      </div>
     </div>
   )
 }

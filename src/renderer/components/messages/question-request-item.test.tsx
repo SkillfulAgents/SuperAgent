@@ -66,7 +66,8 @@ describe('QuestionRequestItem', () => {
     expect(screen.getByText('Which database?')).toBeInTheDocument()
     expect(screen.getByText('PostgreSQL')).toBeInTheDocument()
     expect(screen.getByText('MongoDB')).toBeInTheDocument()
-    expect(screen.getByText('Other')).toBeInTheDocument()
+    // "Other" is now a textarea with placeholder instead of a visible label
+    expect(screen.getByPlaceholderText('Type something else')).toBeInTheDocument()
   })
 
   it('renders option descriptions', () => {
@@ -77,18 +78,18 @@ describe('QuestionRequestItem', () => {
     expect(screen.getByText('Document database')).toBeInTheDocument()
   })
 
-  it('renders header chip', () => {
+  it('renders title chip with "Question"', () => {
     render(
       <QuestionRequestItem {...defaultProps} questions={singleQuestion} />
     )
-    expect(screen.getByText('DB')).toBeInTheDocument()
+    expect(screen.getByText('Question')).toBeInTheDocument()
   })
 
   it('submit button is disabled when nothing is selected', () => {
     render(
       <QuestionRequestItem {...defaultProps} questions={singleQuestion} />
     )
-    const submitButton = screen.getByText('Submit').closest('button')!
+    const submitButton = screen.getByTestId('question-submit-btn')
     expect(submitButton).toBeDisabled()
   })
 
@@ -104,7 +105,7 @@ describe('QuestionRequestItem', () => {
     await user.click(screen.getByText('PostgreSQL'))
 
     // Submit
-    await user.click(screen.getByText('Submit'))
+    await user.click(screen.getByTestId('question-submit-btn'))
 
     await waitFor(() => {
       expect(mockApiFetch).toHaveBeenCalledWith(
@@ -134,7 +135,7 @@ describe('QuestionRequestItem', () => {
     await user.click(screen.getByText('Auth'))
     await user.click(screen.getByText('API'))
 
-    await user.click(screen.getByText('Submit'))
+    await user.click(screen.getByTestId('question-submit-btn'))
 
     await waitFor(() => {
       expect(mockApiFetch).toHaveBeenCalledWith(
@@ -146,16 +147,16 @@ describe('QuestionRequestItem', () => {
     })
   })
 
-  it('"Other" text input is always visible', () => {
+  it('"Other" textarea is always visible', () => {
     render(
       <QuestionRequestItem {...defaultProps} questions={singleQuestion} />
     )
 
-    const input = screen.getByPlaceholderText('Enter your answer...')
-    expect(input).toBeInTheDocument()
+    const textarea = screen.getByPlaceholderText('Type something else')
+    expect(textarea).toBeInTheDocument()
   })
 
-  it('typing in "Other" text input auto-selects the Other option', async () => {
+  it('typing in "Other" textarea auto-selects the Other option', async () => {
     const user = userEvent.setup()
     mockApiFetch.mockResolvedValueOnce({ ok: true, json: () => ({}) })
 
@@ -163,9 +164,9 @@ describe('QuestionRequestItem', () => {
       <QuestionRequestItem {...defaultProps} questions={singleQuestion} />
     )
 
-    const input = screen.getByPlaceholderText('Enter your answer...')
-    await user.type(input, 'SQLite')
-    await user.click(screen.getByText('Submit'))
+    const textarea = screen.getByPlaceholderText('Type something else')
+    await user.type(textarea, 'SQLite')
+    await user.click(screen.getByTestId('question-submit-btn'))
 
     await waitFor(() => {
       expect(mockApiFetch).toHaveBeenCalledWith(
@@ -177,7 +178,7 @@ describe('QuestionRequestItem', () => {
     })
   })
 
-  it('"Other" text input value is submitted', async () => {
+  it('"Other" textarea value is submitted', async () => {
     const user = userEvent.setup()
     mockApiFetch.mockResolvedValueOnce({ ok: true, json: () => ({}) })
 
@@ -185,10 +186,11 @@ describe('QuestionRequestItem', () => {
       <QuestionRequestItem {...defaultProps} questions={singleQuestion} />
     )
 
-    await user.click(screen.getByText('Other'))
-    const input = screen.getByPlaceholderText('Enter your answer...')
-    await user.type(input, 'SQLite')
-    await user.click(screen.getByText('Submit'))
+    // Focus the textarea to auto-select "Other"
+    const textarea = screen.getByPlaceholderText('Type something else')
+    await user.click(textarea)
+    await user.type(textarea, 'SQLite')
+    await user.click(screen.getByTestId('question-submit-btn'))
 
     await waitFor(() => {
       expect(mockApiFetch).toHaveBeenCalledWith(
@@ -209,7 +211,15 @@ describe('QuestionRequestItem', () => {
     // Only answer first question
     await user.click(screen.getByText('PostgreSQL'))
 
-    const submitButton = screen.getByText('Submit').closest('button')!
+    // With multi-question, first page shows "Next" button, not "Submit"
+    const nextButton = screen.getByTestId('question-next-btn')
+    expect(nextButton).not.toBeDisabled()
+
+    // Go to next question
+    await user.click(nextButton)
+
+    // Now on second question, Submit should be disabled since it's unanswered
+    const submitButton = screen.getByTestId('question-submit-btn')
     expect(submitButton).toBeDisabled()
 
     // Answer second question
@@ -225,7 +235,7 @@ describe('QuestionRequestItem', () => {
       <QuestionRequestItem {...defaultProps} questions={singleQuestion} />
     )
 
-    await user.click(screen.getByText('Decline'))
+    await user.click(screen.getByTestId('question-decline-btn'))
 
     await waitFor(() => {
       expect(mockApiFetch).toHaveBeenCalledWith(
@@ -253,24 +263,25 @@ describe('QuestionRequestItem', () => {
     )
 
     await user.click(screen.getByText('PostgreSQL'))
-    await user.click(screen.getByText('Submit'))
+    await user.click(screen.getByTestId('question-submit-btn'))
 
     await waitFor(() => {
-      expect(screen.getByText('Server error')).toBeInTheDocument()
+      // RequestError prefixes "Error: " before the message
+      expect(screen.getByText(/Server error/)).toBeInTheDocument()
     })
   })
 
-  it('shows "Questions" (plural) header for multiple questions', () => {
+  it('shows "Questions" (plural) title for multiple questions', () => {
     render(
       <QuestionRequestItem {...defaultProps} questions={twoQuestions} />
     )
-    expect(screen.getByText('Questions from Agent')).toBeInTheDocument()
+    expect(screen.getByText('Questions')).toBeInTheDocument()
   })
 
-  it('shows "Question" (singular) header for single question', () => {
+  it('shows "Question" (singular) title for single question', () => {
     render(
       <QuestionRequestItem {...defaultProps} questions={singleQuestion} />
     )
-    expect(screen.getByText('Question from Agent')).toBeInTheDocument()
+    expect(screen.getByText('Question')).toBeInTheDocument()
   })
 })

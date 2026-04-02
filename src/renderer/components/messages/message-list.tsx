@@ -23,9 +23,11 @@ import { FileRequestItem } from './file-request-item'
 import { BrowserInputRequestItem } from './browser-input-request-item'
 import { ScriptRunRequestItem } from './script-run-request-item'
 import { ComputerUseRequestItem } from './computer-use-request-item'
-import { PendingAgentReviews } from '@renderer/components/dashboards/pending-agent-reviews'
+import { ProxyReviewRequestItem } from './proxy-review-request-item'
+import { PendingRequestStack } from './pending-request-stack'
 import { ArrowDown, Loader2, WifiOff } from 'lucide-react'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
+import { usePendingProxyReviews } from '@renderer/hooks/use-proxy-reviews'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { useRenderTracker } from '@renderer/lib/perf'
@@ -67,6 +69,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
   const deleteToolCall = useDeleteToolCall()
   const { canUseAgent, user } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
+
+  // Proxy reviews come from a separate API (not the message stream)
+  const { data: proxyReviewsData, refetch: refetchProxyReviews } = usePendingProxyReviews(agentSlug)
+  const pendingProxyReviews = proxyReviewsData?.reviews ?? []
 
   const handleRemoveMessage = useCallback(
     (messageId: string) => {
@@ -385,6 +391,58 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     }
     return merged
   }, [sseComputerUseRequests])
+
+  // Track arrival order across all request types so the stack is chronological.
+  // Each toolUseId gets a monotonically increasing sequence number the first
+  // time it appears; the mapping persists across renders via a ref.
+  const arrivalOrder = useRef(new Map<string, number>())
+  const arrivalSeq = useRef(0)
+
+  const allPendingIds = useMemo(() => {
+    const ids: string[] = []
+    for (const arr of [
+      pendingSecretRequests,
+      pendingConnectedAccountRequests,
+      pendingRemoteMcpRequests,
+      pendingQuestionRequests,
+      pendingFileRequests,
+      pendingBrowserInputRequests,
+      pendingScriptRunRequests,
+      pendingComputerUseRequests,
+    ]) {
+      for (const req of arr) {
+        ids.push(req.toolUseId)
+      }
+    }
+    for (const review of pendingProxyReviews) {
+      ids.push(review.id)
+    }
+    return ids
+  }, [
+    pendingSecretRequests, pendingConnectedAccountRequests, pendingRemoteMcpRequests,
+    pendingQuestionRequests, pendingFileRequests, pendingBrowserInputRequests,
+    pendingScriptRunRequests, pendingComputerUseRequests, pendingProxyReviews,
+  ])
+
+  // Assign sequence numbers to new requests; clean up departed ones
+  useMemo(() => {
+    const currentIds = new Set(allPendingIds)
+    for (const id of allPendingIds) {
+      if (!arrivalOrder.current.has(id)) {
+        arrivalOrder.current.set(id, arrivalSeq.current++)
+      }
+    }
+    // Prune entries for requests that are no longer pending
+    for (const id of arrivalOrder.current.keys()) {
+      if (!currentIds.has(id)) {
+        arrivalOrder.current.delete(id)
+      }
+    }
+  }, [allPendingIds])
+
+  const getArrivalOrder = useCallback((toolUseId: string) => {
+    return arrivalOrder.current.get(toolUseId) ?? Infinity
+  }, [])
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const isScrolledToBottomRef = useRef(true)
@@ -793,108 +851,126 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
           <CompactBoundaryItem isCompacting />
         )}
 
-        {/* Pending interactive requests — read-only for viewers */}
-        {pendingSecretRequests.map((request) => (
-          <SecretRequestItem
-            key={request.toolUseId}
-            toolUseId={request.toolUseId}
-            secretName={request.secretName}
-            reason={request.reason}
-            sessionId={sessionId}
-            agentSlug={agentSlug}
-            readOnly={isViewOnly}
-            onComplete={() => handleSecretRequestComplete(request.toolUseId)}
-          />
-        ))}
-        {pendingConnectedAccountRequests.map((request) => (
-          <ConnectedAccountRequestItem
-            key={request.toolUseId}
-            toolUseId={request.toolUseId}
-            toolkit={request.toolkit}
-            reason={request.reason}
-            sessionId={sessionId}
-            agentSlug={agentSlug}
-            readOnly={isViewOnly}
-            onComplete={() => handleConnectedAccountRequestComplete(request.toolUseId)}
-          />
-        ))}
-        {pendingRemoteMcpRequests.map((request) => (
-          <RemoteMcpRequestItem
-            key={request.toolUseId}
-            toolUseId={request.toolUseId}
-            url={request.url}
-            name={request.name}
-            reason={request.reason}
-            authHint={request.authHint}
-            sessionId={sessionId}
-            agentSlug={agentSlug}
-            readOnly={isViewOnly}
-            onComplete={() => handleRemoteMcpRequestComplete(request.toolUseId)}
-          />
-        ))}
-        {pendingQuestionRequests.map((request) => (
-          <QuestionRequestItem
-            key={request.toolUseId}
-            toolUseId={request.toolUseId}
-            questions={request.questions}
-            sessionId={sessionId}
-            agentSlug={agentSlug}
-            readOnly={isViewOnly}
-            onComplete={() => handleQuestionRequestComplete(request.toolUseId)}
-          />
-        ))}
-        {pendingFileRequests.map((request) => (
-          <FileRequestItem
-            key={request.toolUseId}
-            toolUseId={request.toolUseId}
-            description={request.description}
-            fileTypes={request.fileTypes}
-            sessionId={sessionId}
-            agentSlug={agentSlug}
-            readOnly={isViewOnly}
-            onComplete={() => handleFileRequestComplete(request.toolUseId)}
-          />
-        ))}
-        {pendingBrowserInputRequests.map((request) => (
-          <BrowserInputRequestItem
-            key={request.toolUseId}
-            toolUseId={request.toolUseId}
-            message={request.message}
-            requirements={request.requirements}
-            sessionId={sessionId}
-            agentSlug={agentSlug}
-            readOnly={isViewOnly}
-            onComplete={() => handleBrowserInputRequestComplete(request.toolUseId)}
-          />
-        ))}
-        {pendingScriptRunRequests.map((request) => (
-          <ScriptRunRequestItem
-            key={request.toolUseId}
-            toolUseId={request.toolUseId}
-            script={request.script}
-            explanation={request.explanation}
-            scriptType={request.scriptType}
-            sessionId={sessionId}
-            agentSlug={agentSlug}
-            readOnly={isViewOnly}
-            onComplete={() => handleScriptRunRequestComplete(request.toolUseId)}
-          />
-        ))}
-        <PendingAgentReviews agentSlug={agentSlug} readOnly={isViewOnly} />
-        {pendingComputerUseRequests.map((request) => (
-          <ComputerUseRequestItem
-            key={request.toolUseId}
-            toolUseId={request.toolUseId}
-            method={request.method}
-            params={request.params}
-            permissionLevel={request.permissionLevel}
-            appName={request.appName}
-            sessionId={sessionId}
-            agentSlug={agentSlug}
-            readOnly={isViewOnly}
-            onComplete={() => handleComputerUseRequestComplete(request.toolUseId)}
-          />
-        ))}
+        {/* Pending interactive requests — paginated stack, sorted by arrival order, read-only for viewers */}
+        <PendingRequestStack>
+          {[
+            ...pendingSecretRequests.map((request) => (
+              <SecretRequestItem
+                key={request.toolUseId}
+                toolUseId={request.toolUseId}
+                secretName={request.secretName}
+                reason={request.reason}
+                sessionId={sessionId}
+                agentSlug={agentSlug}
+                readOnly={isViewOnly}
+                onComplete={() => handleSecretRequestComplete(request.toolUseId)}
+              />
+            )),
+            ...pendingConnectedAccountRequests.map((request) => (
+              <ConnectedAccountRequestItem
+                key={request.toolUseId}
+                toolUseId={request.toolUseId}
+                toolkit={request.toolkit}
+                reason={request.reason}
+                sessionId={sessionId}
+                agentSlug={agentSlug}
+                readOnly={isViewOnly}
+                onComplete={() => handleConnectedAccountRequestComplete(request.toolUseId)}
+              />
+            )),
+            ...pendingRemoteMcpRequests.map((request) => (
+              <RemoteMcpRequestItem
+                key={request.toolUseId}
+                toolUseId={request.toolUseId}
+                url={request.url}
+                name={request.name}
+                reason={request.reason}
+                authHint={request.authHint}
+                sessionId={sessionId}
+                agentSlug={agentSlug}
+                readOnly={isViewOnly}
+                onComplete={() => handleRemoteMcpRequestComplete(request.toolUseId)}
+              />
+            )),
+            ...pendingQuestionRequests.map((request) => (
+              <QuestionRequestItem
+                key={request.toolUseId}
+                toolUseId={request.toolUseId}
+                questions={request.questions}
+                sessionId={sessionId}
+                agentSlug={agentSlug}
+                readOnly={isViewOnly}
+                onComplete={() => handleQuestionRequestComplete(request.toolUseId)}
+              />
+            )),
+            ...pendingFileRequests.map((request) => (
+              <FileRequestItem
+                key={request.toolUseId}
+                toolUseId={request.toolUseId}
+                description={request.description}
+                fileTypes={request.fileTypes}
+                sessionId={sessionId}
+                agentSlug={agentSlug}
+                readOnly={isViewOnly}
+                onComplete={() => handleFileRequestComplete(request.toolUseId)}
+              />
+            )),
+            ...pendingBrowserInputRequests.map((request) => (
+              <BrowserInputRequestItem
+                key={request.toolUseId}
+                toolUseId={request.toolUseId}
+                message={request.message}
+                requirements={request.requirements}
+                sessionId={sessionId}
+                agentSlug={agentSlug}
+                readOnly={isViewOnly}
+                onComplete={() => handleBrowserInputRequestComplete(request.toolUseId)}
+              />
+            )),
+            ...pendingScriptRunRequests.map((request) => (
+              <ScriptRunRequestItem
+                key={request.toolUseId}
+                toolUseId={request.toolUseId}
+                script={request.script}
+                explanation={request.explanation}
+                scriptType={request.scriptType}
+                sessionId={sessionId}
+                agentSlug={agentSlug}
+                readOnly={isViewOnly}
+                onComplete={() => handleScriptRunRequestComplete(request.toolUseId)}
+              />
+            )),
+            ...pendingComputerUseRequests.map((request) => (
+              <ComputerUseRequestItem
+                key={request.toolUseId}
+                toolUseId={request.toolUseId}
+                method={request.method}
+                params={request.params}
+                permissionLevel={request.permissionLevel}
+                appName={request.appName}
+                sessionId={sessionId}
+                agentSlug={agentSlug}
+                readOnly={isViewOnly}
+                onComplete={() => handleComputerUseRequestComplete(request.toolUseId)}
+              />
+            )),
+            ...pendingProxyReviews.map((review) => (
+              <ProxyReviewRequestItem
+                key={review.id}
+                reviewId={review.id}
+                accountId={review.accountId}
+                toolkit={review.toolkit}
+                method={review.method}
+                targetPath={review.targetPath}
+                matchedScopes={review.matchedScopes}
+                scopeDescriptions={review.scopeDescriptions}
+                agentSlug={agentSlug}
+                readOnly={isViewOnly}
+                onComplete={() => refetchProxyReviews()}
+              />
+            )),
+          ].sort((a, b) => getArrivalOrder(a.key as string) - getArrivalOrder(b.key as string))}
+        </PendingRequestStack>
         </div>
       </div>
       {showScrollToBottom && (

@@ -1,6 +1,6 @@
 import { apiFetch } from '@renderer/lib/api'
 import { useState } from 'react'
-import { Monitor, Check, Loader2, Clock, ShieldCheck, ShieldAlert, ExternalLink } from 'lucide-react'
+import { Monitor, ShieldAlert, ExternalLink, ChevronDown } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import {
   Dialog,
@@ -10,8 +10,11 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@renderer/components/ui/dialog'
+import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { cn } from '@shared/lib/utils/cn'
 import { DeclineButton } from './decline-button'
+import { RequestItemShell } from './request-item-shell'
+import { RequestItemActions } from './request-item-actions'
 
 interface ComputerUseRequestItemProps {
   toolUseId: string
@@ -58,6 +61,8 @@ export function ComputerUseRequestItem({
   const [error, setError] = useState<string | null>(null)
   const [missingPermissions, setMissingPermissions] = useState<{ accessibility: boolean; screen_recording: boolean } | null>(null)
   const [pendingGrantType, setPendingGrantType] = useState<'once' | 'timed' | 'always' | null>(null)
+  const [allowMenuOpen, setAllowMenuOpen] = useState(false)
+  const paramStr = formatParams(params)
 
   const handleApprove = async (grantType: 'once' | 'timed' | 'always') => {
     setStatus('submitting')
@@ -143,138 +148,140 @@ export function ComputerUseRequestItem({
     }
   }
 
-  // Completed state
-  if (status === 'executed' || status === 'denied') {
-    return (
-      <div className="border rounded-md bg-muted/30 text-sm" data-testid="computer-use-request-completed" data-status={status}>
-        <div className="flex items-center gap-2 px-3 py-2">
-          <Monitor
-            className={cn(
-              'h-4 w-4 shrink-0',
-              status === 'executed' ? 'text-green-500' : 'text-red-500'
-            )}
-          />
-          <span className="text-sm">{method}{appName ? ` (${appName})` : ''}</span>
-          <span
-            className={cn(
-              'ml-auto text-xs',
-              status === 'executed' ? 'text-green-600' : 'text-red-600'
-            )}
-          >
-            {status === 'executed' ? 'Executed' : 'Denied'}
-          </span>
-        </div>
+  const isCompleted = status === 'executed' || status === 'denied'
+
+  const descriptionText = appName
+    ? `Allow the agent to use ${appName}?`
+    : `Allow the agent to ${PERMISSION_LABELS[permissionLevel]?.toLowerCase() || permissionLevel.replace(/_/g, ' ')}?`
+
+  const codeBlock = (
+    <div className="pt-4">
+      <div className="overflow-hidden rounded-md border border-border bg-white dark:bg-background">
+        <pre className="overflow-x-auto whitespace-pre-wrap break-all p-2 text-xs font-mono text-foreground/75">
+          <code>
+            <span className="mr-2 inline-flex h-6 items-center rounded-md bg-muted px-2 text-[11px] font-medium text-foreground/80 not-italic">
+              {PERMISSION_LABELS[permissionLevel] || permissionLevel}
+            </span>
+            {method}{paramStr ? `(${paramStr})` : '()'}
+          </code>
+        </pre>
       </div>
-    )
-  }
+    </div>
+  )
 
-  // Read-only state for viewers
-  if (readOnly) {
-    return (
-      <div className="border rounded-md bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800 text-sm">
-        <div className="flex items-center gap-3 p-3">
-          <div className="h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center shrink-0">
-            <Monitor className="h-4 w-4 text-blue-600 dark:text-blue-400" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="font-medium text-blue-900 dark:text-blue-100">
-              Computer Use Request
-            </div>
-            <p className="text-sm text-blue-700 dark:text-blue-300 mt-0.5">
-              {method}{appName ? ` — ${appName}` : ''}
-            </p>
-          </div>
-          <span className="text-xs text-blue-600 dark:text-blue-400 shrink-0">Waiting for approval</span>
-        </div>
-      </div>
-    )
-  }
-
-  const paramStr = formatParams(params)
-
-  // Pending/submitting state
   return (
-    <div className="border rounded-md bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800 text-sm" data-testid="computer-use-request">
-      <div className="flex items-start gap-3 p-3">
-        <div className="h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center shrink-0">
-          <Monitor className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+    <RequestItemShell
+      title="Computer Use Request"
+      icon={<Monitor />}
+      theme="blue"
+      waitingText="Waiting for approval"
+      error={error}
+      data-testid={isCompleted ? 'computer-use-request-completed' : 'computer-use-request'}
+      data-status={isCompleted ? status : undefined}
+      completed={
+        isCompleted
+          ? {
+              icon: (
+                <Monitor
+                  className={cn(
+                    'h-4 w-4 shrink-0',
+                    status === 'executed' ? 'text-green-500' : 'text-red-500'
+                  )}
+                />
+              ),
+              label: <>{method}{appName ? ` (${appName})` : ''}</>,
+              statusLabel: status === 'executed' ? 'Executed' : 'Denied',
+              isSuccess: status === 'executed',
+            }
+          : null
+      }
+      readOnly={
+        readOnly
+          ? {
+              description: (
+                <>
+                  <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">
+                    {descriptionText}
+                  </p>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Review carefully before allowing. This will control your actual computer with your user permissions.
+                  </p>
+                </>
+              ),
+              extraContent: codeBlock,
+            }
+          : false
+      }
+    >
+      <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">
+        {descriptionText}
+      </p>
+      <p className="mt-2 text-xs text-muted-foreground">
+        Review carefully before allowing. This will control your actual computer with your user permissions.
+      </p>
+
+      {codeBlock}
+
+      <RequestItemActions>
+        <DeclineButton
+          onDecline={handleDeny}
+          disabled={status === 'submitting'}
+          label="Deny"
+          showIcon={false}
+          className="border-border text-foreground hover:bg-muted"
+          data-testid="computer-use-deny-btn"
+        />
+
+        <div className="flex items-stretch">
+          <Button
+            onClick={() => handleApprove('timed')}
+            loading={status === 'submitting'}
+            size="sm"
+            className="min-w-28 rounded-r-none border-r-0 bg-blue-600 text-white hover:bg-blue-700"
+            data-testid="computer-use-allow-timed-btn"
+          >
+            Allow 15 min
+          </Button>
+          <Popover open={allowMenuOpen} onOpenChange={setAllowMenuOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                disabled={status === 'submitting'}
+                size="sm"
+                className="rounded-l-none border-l border-l-blue-500 bg-blue-600 px-1.5 text-white hover:bg-blue-700"
+                data-testid="computer-use-allow-timed-btn-chevron"
+              >
+                <ChevronDown className="h-3.5 w-3.5" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-44 p-1">
+              <Button
+                onClick={() => {
+                  setAllowMenuOpen(false)
+                  handleApprove('once')
+                }}
+                variant="ghost"
+                size="sm"
+                className="w-full justify-start text-foreground hover:bg-muted"
+                data-testid="computer-use-allow-once-btn"
+              >
+                Allow Once
+              </Button>
+              <Button
+                onClick={() => {
+                  setAllowMenuOpen(false)
+                  handleApprove('always')
+                }}
+                variant="ghost"
+                size="sm"
+                className="w-full justify-start text-foreground hover:bg-muted"
+                data-testid="computer-use-allow-always-btn"
+              >
+                Always Allow
+              </Button>
+            </PopoverContent>
+          </Popover>
         </div>
-
-        <div className="flex-1 min-w-0 space-y-3">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="font-medium text-blue-900 dark:text-blue-100">
-                Computer Use Request
-              </span>
-              <span className="text-xs px-1.5 py-0.5 rounded bg-blue-200 dark:bg-blue-800 text-blue-700 dark:text-blue-300">
-                {PERMISSION_LABELS[permissionLevel] || permissionLevel}
-              </span>
-              {appName && (
-                <span className="text-xs px-1.5 py-0.5 rounded bg-blue-200 dark:bg-blue-800 text-blue-700 dark:text-blue-300">
-                  {appName}
-                </span>
-              )}
-            </div>
-            <p className="text-sm text-blue-800 dark:text-blue-200 mt-1 font-mono">
-              {method}{paramStr ? `(${paramStr})` : '()'}
-            </p>
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            <Button
-              onClick={() => handleApprove('once')}
-              disabled={status === 'submitting'}
-              size="sm"
-              variant="outline"
-              className="border-blue-300 dark:border-blue-700 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900"
-              data-testid="computer-use-allow-once-btn"
-            >
-              {status === 'submitting' ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Check className="h-4 w-4" />
-              )}
-              <span className="ml-1">Allow Once</span>
-            </Button>
-
-            <Button
-              onClick={() => handleApprove('timed')}
-              disabled={status === 'submitting'}
-              size="sm"
-              className="bg-blue-600 hover:bg-blue-700 text-white"
-              data-testid="computer-use-allow-timed-btn"
-            >
-              <Clock className="h-4 w-4" />
-              <span className="ml-1">Allow 15 min</span>
-            </Button>
-
-            <Button
-              onClick={() => handleApprove('always')}
-              disabled={status === 'submitting'}
-              size="sm"
-              variant="outline"
-              className="border-blue-300 dark:border-blue-700 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900"
-              data-testid="computer-use-allow-always-btn"
-            >
-              <ShieldCheck className="h-4 w-4" />
-              <span className="ml-1">Always Allow</span>
-            </Button>
-
-            <DeclineButton
-              onDecline={handleDeny}
-              disabled={status === 'submitting'}
-              className="border-blue-200 dark:border-blue-700 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900"
-              data-testid="computer-use-deny-btn"
-            />
-          </div>
-
-          {error && <p className="text-sm text-red-600">{error}</p>}
-
-          <p className="text-xs text-blue-600 dark:text-blue-400">
-            This will control your computer. Review carefully before approving.
-          </p>
-        </div>
-      </div>
+      </RequestItemActions>
 
       <Dialog open={!!missingPermissions} onOpenChange={(open) => { if (!open) setMissingPermissions(null) }}>
         <DialogContent>
@@ -334,6 +341,6 @@ export function ComputerUseRequestItem({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </RequestItemShell>
   )
 }

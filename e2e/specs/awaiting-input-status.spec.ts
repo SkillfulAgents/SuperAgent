@@ -70,23 +70,23 @@ test.describe('Awaiting Input Status', () => {
     // "ask parallel" triggers secret + question simultaneously
     await sessionPage.sendMessage('ask parallel')
 
-    // Wait for both requests to appear
+    // Wait for both requests to appear in the stack
     await sessionPage.waitForSecretRequest('DATABASE_URL')
     await sessionPage.waitForQuestionRequest()
 
     // Status should be awaiting_input
     await agentPage.waitForStatus('awaiting_input', 15000)
 
-    // Answer the question first (one input remains)
-    await sessionPage.answerQuestion('AWS')
-    await expect(sessionPage.getQuestionRequests()).toHaveCount(0, { timeout: 10000 })
-
-    // Secret request should still be visible — still awaiting input
-    await expect(sessionPage.getSecretRequests().first()).toBeVisible()
-
-    // Now provide the secret
+    // Secret is visible first in the stack — provide it (one input remains)
     await sessionPage.provideSecret('postgres://localhost:5432/db', 'DATABASE_URL')
     await expect(sessionPage.getSecretRequests()).toHaveCount(0, { timeout: 10000 })
+
+    // Question should now be visible — still awaiting input
+    await expect(sessionPage.getQuestionRequests().first()).toBeVisible()
+
+    // Now answer the question
+    await sessionPage.answerQuestion('AWS')
+    await expect(sessionPage.getQuestionRequests()).toHaveCount(0, { timeout: 10000 })
 
     // Session should complete
     await sessionPage.waitForInputEnabled(15000)

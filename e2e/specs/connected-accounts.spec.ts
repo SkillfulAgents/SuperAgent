@@ -28,29 +28,29 @@ test.describe('Connected Accounts - Agent Request Flow', () => {
     await sessionPage.sendMessage('ask account for GitHub access')
 
     // Wait for the connected account request UI to appear
-    const requestCard = page.locator('.border-blue-200, .border-blue-800').filter({ hasText: 'Access Requested' })
+    const requestCard = page.locator('[data-testid="connected-account-request"]')
     await expect(requestCard).toBeVisible({ timeout: 15000 })
 
-    // Should show the service name in the header
-    await expect(requestCard.locator('.font-medium').first()).toContainText('GitHub')
+    // Should show the service name
+    await expect(requestCard).toContainText('GitHub')
 
     // Should show the reason
     await expect(requestCard).toContainText('Need access to your GitHub repositories')
   })
 
-  test('connected account request shows Connect New Account button', async ({ page }) => {
+  test('connected account request shows Connect button when no accounts exist', async ({ page }) => {
     const agentName = `Account Connect ${Date.now()}`
     await agentPage.createAgent(agentName)
 
     await sessionPage.sendMessage('ask account for GitHub access')
 
     // Wait for the request UI
-    const requestCard = page.locator('.border-blue-200, .border-blue-800').filter({ hasText: 'Access Requested' })
+    const requestCard = page.locator('[data-testid="connected-account-request"]')
     await expect(requestCard).toBeVisible({ timeout: 15000 })
 
-    // Should show Connect New Account button
+    // With no accounts, should show inline Connect button
     await expect(
-      requestCard.getByRole('button', { name: /Connect New Account/i })
+      requestCard.getByRole('button', { name: /Connect/i })
     ).toBeVisible()
   })
 
@@ -61,11 +61,12 @@ test.describe('Connected Accounts - Agent Request Flow', () => {
     await sessionPage.sendMessage('ask account for GitHub access')
 
     // Wait for the request UI
-    const requestCard = page.locator('.border-blue-200, .border-blue-800').filter({ hasText: 'Access Requested' })
+    const requestCard = page.locator('[data-testid="connected-account-request"]')
     await expect(requestCard).toBeVisible({ timeout: 15000 })
 
     // Should show "No connected accounts found" since we have none in E2E
-    await expect(requestCard).toContainText('No connected accounts found')
+    // With no accounts, should show inline Connect button
+    await expect(requestCard.getByRole('button', { name: /Connect/i })).toBeVisible()
   })
 
   test('declining connected account request completes the session', async ({ page }) => {
@@ -75,11 +76,11 @@ test.describe('Connected Accounts - Agent Request Flow', () => {
     await sessionPage.sendMessage('ask account for GitHub access')
 
     // Wait for the request UI
-    const requestCard = page.locator('.border-blue-200, .border-blue-800').filter({ hasText: 'Access Requested' })
+    const requestCard = page.locator('[data-testid="connected-account-request"]')
     await expect(requestCard).toBeVisible({ timeout: 15000 })
 
     // Click the decline button
-    const declineBtn = requestCard.getByRole('button', { name: /Decline/i })
+    const declineBtn = requestCard.getByRole('button', { name: /Deny/i })
     await expect(declineBtn).toBeVisible()
     await declineBtn.click()
 
@@ -97,7 +98,7 @@ test.describe('Connected Accounts - Agent Request Flow', () => {
     await sessionPage.sendMessage('ask account for GitHub access')
 
     // Wait for the request UI
-    const requestCard = page.locator('.border-blue-200, .border-blue-800').filter({ hasText: 'Access Requested' })
+    const requestCard = page.locator('[data-testid="connected-account-request"]')
     await expect(requestCard).toBeVisible({ timeout: 15000 })
 
     // Agent should show awaiting_input status
@@ -151,7 +152,7 @@ test.describe('Remote MCP - Full Connection Flow', () => {
     await sessionPage.sendMessage('request mcp server access')
 
     // Wait for the MCP request UI (purple-themed card)
-    const requestCard = page.locator('.border-purple-200, .border-purple-800').filter({ hasText: 'MCP Server Requested' })
+    const requestCard = page.locator('[data-testid="remote-mcp-request"]')
     await expect(requestCard).toBeVisible({ timeout: 15000 })
 
     // Should show server name and URL
@@ -169,30 +170,22 @@ test.describe('Remote MCP - Full Connection Flow', () => {
     await sessionPage.sendMessage('request mcp server access')
 
     // Wait for the MCP request card
-    const requestCard = page.locator('.border-purple-200, .border-purple-800').filter({ hasText: 'MCP Server Requested' })
+    const requestCard = page.locator('[data-testid="remote-mcp-request"]')
     await expect(requestCard).toBeVisible({ timeout: 15000 })
 
-    // Should show "Register this MCP server" section since it's not registered yet
-    await expect(requestCard.getByText('Register this MCP server')).toBeVisible()
+    // Should show "not connected" since this MCP is not yet registered
+    await expect(requestCard.getByText('not connected')).toBeVisible()
 
-    // The name input should be pre-filled with "Test MCP"
-    const nameInput = requestCard.locator('input[placeholder="Display name"]')
-    await expect(nameInput).toHaveValue('Test MCP')
+    // Click "Connect" to register the MCP server
+    const connectBtn = requestCard.getByRole('button', { name: /Connect/i })
+    await connectBtn.click()
 
-    // Click "Register" — this will actually POST to /api/remote-mcps
-    // which connects to our mock MCP server, discovers tools, and saves
-    const registerBtn = requestCard.getByRole('button', { name: /Register/i })
-    await registerBtn.click()
+    // After registration succeeds, the server card should appear
+    // Wait for the server name to show up
+    await expect(requestCard.getByText('Test MCP')).toBeVisible({ timeout: 10000 })
 
-    // After registration succeeds, the server should appear in the selection list
-    // and be auto-selected. Wait for it to show up.
-    await expect(requestCard.getByText('2 tools')).toBeVisible({ timeout: 10000 })
-
-    // The server should show as "active"
-    await expect(requestCard.getByText('active')).toBeVisible()
-
-    // Grant Access button should now be enabled (server auto-selected)
-    const grantBtn = requestCard.getByRole('button', { name: /Grant Access/i })
+    // Allow Access button should now be enabled (server auto-selected)
+    const grantBtn = requestCard.getByRole('button', { name: /Allow Access/i })
     await expect(grantBtn).toBeEnabled()
     await grantBtn.click()
 
@@ -210,11 +203,11 @@ test.describe('Remote MCP - Full Connection Flow', () => {
     await sessionPage.sendMessage('request mcp server access')
 
     // Wait for the MCP request card
-    const requestCard = page.locator('.border-purple-200, .border-purple-800').filter({ hasText: 'MCP Server Requested' })
+    const requestCard = page.locator('[data-testid="remote-mcp-request"]')
     await expect(requestCard).toBeVisible({ timeout: 15000 })
 
     // Click decline
-    const declineBtn = requestCard.getByRole('button', { name: /Decline/i })
+    const declineBtn = requestCard.getByRole('button', { name: /Deny/i })
     await expect(declineBtn).toBeVisible()
     await declineBtn.click()
 
@@ -232,18 +225,14 @@ test.describe('Remote MCP - Full Connection Flow', () => {
     await sessionPage.sendMessage('request mcp server access')
 
     // Wait for the MCP request card
-    const requestCard = page.locator('.border-purple-200, .border-purple-800').filter({ hasText: 'MCP Server Requested' })
+    const requestCard = page.locator('[data-testid="remote-mcp-request"]')
     await expect(requestCard).toBeVisible({ timeout: 15000 })
 
-    // The previously registered server should appear in the list
-    await expect(requestCard.getByText('Select an MCP server to provide')).toBeVisible()
+    // The previously registered server should appear as a server card
+    await expect(requestCard.getByText('Test MCP')).toBeVisible({ timeout: 10000 })
 
-    // It should be auto-selected since URL matches
-    await expect(requestCard.getByText('active')).toBeVisible()
-    await expect(requestCard.getByText('2 tools')).toBeVisible()
-
-    // Grant Access should be enabled
-    const grantBtn = requestCard.getByRole('button', { name: /Grant Access/i })
+    // Allow Access should be enabled (server auto-selected)
+    const grantBtn = requestCard.getByRole('button', { name: /Allow Access/i })
     await expect(grantBtn).toBeEnabled()
     await grantBtn.click()
 

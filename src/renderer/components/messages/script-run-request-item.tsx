@@ -1,9 +1,12 @@
 import { apiFetch } from '@renderer/lib/api'
 import { useState } from 'react'
-import { Terminal, Check, Loader2, Clock, ShieldCheck } from 'lucide-react'
+import { Terminal, ChevronDown } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
+import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { cn } from '@shared/lib/utils/cn'
 import { DeclineButton } from './decline-button'
+import { RequestItemShell } from './request-item-shell'
+import { RequestItemActions } from './request-item-actions'
 
 interface ScriptRunRequestItemProps {
   toolUseId: string
@@ -36,6 +39,7 @@ export function ScriptRunRequestItem({
 }: ScriptRunRequestItemProps) {
   const [status, setStatus] = useState<RequestStatus>('pending')
   const [error, setError] = useState<string | null>(null)
+  const [allowMenuOpen, setAllowMenuOpen] = useState(false)
 
   const handleApprove = async (grantType: 'once' | 'timed' | 'always') => {
     setStatus('submitting')
@@ -95,133 +99,129 @@ export function ScriptRunRequestItem({
     }
   }
 
-  // Completed state
-  if (status === 'executed' || status === 'denied') {
-    return (
-      <div className="border rounded-md bg-muted/30 text-sm" data-testid="script-run-request-completed" data-status={status}>
-        <div className="flex items-center gap-2 px-3 py-2">
-          <Terminal
-            className={cn(
-              'h-4 w-4 shrink-0',
-              status === 'executed' ? 'text-green-500' : 'text-red-500'
-            )}
-          />
-          <span className="text-sm">Script ({SCRIPT_TYPE_LABELS[scriptType] || scriptType})</span>
-          <span
-            className={cn(
-              'ml-auto text-xs',
-              status === 'executed' ? 'text-green-600' : 'text-red-600'
-            )}
-          >
-            {status === 'executed' ? 'Executed' : 'Denied'}
-          </span>
-        </div>
-      </div>
-    )
-  }
+  const isCompleted = status === 'executed' || status === 'denied'
 
-  // Read-only state for viewers
-  if (readOnly) {
-    return (
-      <div className="border rounded-md bg-orange-50 dark:bg-orange-950/50 border-orange-200 dark:border-orange-800 text-sm">
-        <div className="flex items-center gap-3 p-3">
-          <div className="h-8 w-8 rounded-full bg-orange-100 dark:bg-orange-900 flex items-center justify-center shrink-0">
-            <Terminal className="h-4 w-4 text-orange-600 dark:text-orange-400" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="font-medium text-orange-900 dark:text-orange-100">
-              Script Execution Requested
-            </div>
-            <p className="text-sm text-orange-700 dark:text-orange-300 mt-0.5 whitespace-pre-line">{explanation}</p>
-          </div>
-          <span className="text-xs text-orange-600 dark:text-orange-400 shrink-0">Waiting for approval</span>
-        </div>
-      </div>
-    )
-  }
-
-  // Pending/submitting state
   return (
-    <div className="border rounded-md bg-orange-50 dark:bg-orange-950/50 border-orange-200 dark:border-orange-800 text-sm" data-testid="script-run-request">
-      <div className="flex items-start gap-3 p-3">
-        <div className="h-8 w-8 rounded-full bg-orange-100 dark:bg-orange-900 flex items-center justify-center shrink-0">
-          <Terminal className="h-4 w-4 text-orange-600 dark:text-orange-400" />
-        </div>
+    <RequestItemShell
+      title="Script Execution Request"
+      icon={<Terminal />}
+      theme="orange"
+      waitingText="Waiting for approval"
+      error={error}
+      data-testid={isCompleted ? 'script-run-request-completed' : 'script-run-request'}
+      data-status={isCompleted ? status : undefined}
+      completed={
+        isCompleted
+          ? {
+              icon: (
+                <Terminal
+                  className={cn(
+                    'h-4 w-4 shrink-0',
+                    status === 'executed' ? 'text-green-500' : 'text-red-500'
+                  )}
+                />
+              ),
+              label: `Script (${SCRIPT_TYPE_LABELS[scriptType] || scriptType})`,
+              statusLabel: status === 'executed' ? 'Executed' : 'Denied',
+              isSuccess: status === 'executed',
+            }
+          : null
+      }
+      readOnly={
+        readOnly
+          ? {
+              extraContent: (
+                <div className="mt-8 flex flex-wrap items-center gap-2">
+                  <span className="inline-flex h-7 items-center rounded-md bg-muted px-2.5 text-xs font-medium text-foreground/80">
+                    {SCRIPT_TYPE_LABELS[scriptType] || scriptType}
+                  </span>
+                </div>
+              ),
+              description: (
+                <p className="mt-4 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{explanation}</p>
+              ),
+            }
+          : false
+      }
+    >
+      <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{explanation}</p>
+      <p className="mt-2 text-xs text-muted-foreground">
+        Review carefully before allowing. This script will run on your actual computer with your user permissions.
+      </p>
 
-        <div className="flex-1 min-w-0 space-y-3">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="font-medium text-orange-900 dark:text-orange-100">
-                Script Execution Request
-              </span>
-              <span className="text-xs px-1.5 py-0.5 rounded bg-orange-200 dark:bg-orange-800 text-orange-700 dark:text-orange-300">
+      <div className="pt-4">
+        <div className="overflow-hidden rounded-md border border-border bg-white dark:bg-background">
+          <pre className="overflow-x-auto whitespace-pre-wrap break-all p-2 text-xs font-mono text-foreground/75">
+            <code>
+              <span className="mr-2 inline-flex h-6 items-center rounded-md bg-muted px-2 text-[11px] font-medium text-foreground/80 not-italic">
                 {SCRIPT_TYPE_LABELS[scriptType] || scriptType}
               </span>
-            </div>
-            <p className="text-sm text-orange-800 dark:text-orange-200 mt-1 whitespace-pre-line">{explanation}</p>
-          </div>
-
-          <div className="rounded-md bg-orange-100/50 dark:bg-orange-900/30 border border-orange-200 dark:border-orange-700 overflow-hidden">
-            <pre className="p-3 text-xs font-mono text-orange-900 dark:text-orange-100 overflow-x-auto whitespace-pre-wrap break-all">
-              <code>{script}</code>
-            </pre>
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            <Button
-              onClick={() => handleApprove('once')}
-              disabled={status === 'submitting'}
-              size="sm"
-              variant="outline"
-              className="border-orange-200 dark:border-orange-700 text-orange-700 dark:text-orange-300 hover:bg-orange-100 dark:hover:bg-orange-900"
-              data-testid="script-run-btn"
-            >
-              {status === 'submitting' ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Check className="h-4 w-4" />
-              )}
-              <span className="ml-1">Allow Once</span>
-            </Button>
-
-            <Button
-              onClick={() => handleApprove('timed')}
-              disabled={status === 'submitting'}
-              size="sm"
-              className="bg-orange-600 hover:bg-orange-700 text-white"
-              data-testid="script-run-timed-btn"
-            >
-              <Clock className="h-4 w-4" />
-              <span className="ml-1">Allow 15 min</span>
-            </Button>
-
-            <Button
-              onClick={() => handleApprove('always')}
-              disabled={status === 'submitting'}
-              size="sm"
-              variant="outline"
-              className="border-orange-200 dark:border-orange-700 text-orange-700 dark:text-orange-300 hover:bg-orange-100 dark:hover:bg-orange-900"
-              data-testid="script-run-always-btn"
-            >
-              <ShieldCheck className="h-4 w-4" />
-              <span className="ml-1">Always Allow</span>
-            </Button>
-
-            <DeclineButton
-              onDecline={handleDeny}
-              disabled={status === 'submitting'}
-              className="border-orange-200 dark:border-orange-700 text-orange-700 dark:text-orange-300 hover:bg-orange-100 dark:hover:bg-orange-900"
-              data-testid="script-deny-btn"
-            />
-          </div>
-
-          {error && <p className="text-sm text-red-600">{error}</p>}
-
-          <p className="text-xs text-orange-600 dark:text-orange-400">
-            This script will run on your host machine with your user permissions. Review it carefully before approving.
-          </p>
+              {script}
+            </code>
+          </pre>
         </div>
       </div>
-    </div>
+
+      <RequestItemActions>
+        <DeclineButton
+          onDecline={handleDeny}
+          disabled={status === 'submitting'}
+          label="Deny"
+          showIcon={false}
+          className="border-border text-foreground hover:bg-muted"
+          data-testid="script-deny-btn"
+        />
+
+        <div className="flex items-stretch">
+          <Button
+            onClick={() => handleApprove('once')}
+            loading={status === 'submitting'}
+            size="sm"
+            className="min-w-28 rounded-r-none border-r-0 bg-orange-600 text-white hover:bg-orange-700"
+            data-testid="script-run-once-btn"
+          >
+            Allow Once
+          </Button>
+          <Popover open={allowMenuOpen} onOpenChange={setAllowMenuOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                disabled={status === 'submitting'}
+                size="sm"
+                className="rounded-l-none border-l border-l-orange-500 bg-orange-600 px-1.5 text-white hover:bg-orange-700"
+                data-testid="script-run-timed-btn-chevron"
+              >
+                <ChevronDown className="h-3.5 w-3.5" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-44 p-1">
+              <Button
+                onClick={() => {
+                  setAllowMenuOpen(false)
+                  handleApprove('timed')
+                }}
+                variant="ghost"
+                size="sm"
+                className="w-full justify-start text-foreground hover:bg-muted"
+                data-testid="script-run-timed-btn"
+              >
+                Allow 15 min
+              </Button>
+              <Button
+                onClick={() => {
+                  setAllowMenuOpen(false)
+                  handleApprove('always')
+                }}
+                variant="ghost"
+                size="sm"
+                className="w-full justify-start text-foreground hover:bg-muted"
+                data-testid="script-run-always-btn"
+              >
+                Always Allow
+              </Button>
+            </PopoverContent>
+          </Popover>
+        </div>
+      </RequestItemActions>
+    </RequestItemShell>
   )
 }

@@ -279,17 +279,14 @@ app.post('/inputs/:toolUseId/resolve', async (c) => {
   const toolUseId = c.req.param('toolUseId');
 
   try {
-    const body = await c.req.json<{ value: string | Record<string, string> }>();
+    const body = await c.req.json<{ value: string | string[] | Record<string, string> }>();
 
     if (body.value === undefined || body.value === null) {
       return c.json({ error: 'value is required' }, 400);
     }
 
-    if (inputManager.resolve(toolUseId, body.value)) {
-      return c.json({ success: true });
-    }
-
-    return c.json({ error: 'No pending request found for this toolUseId' }, 404);
+    inputManager.resolve(toolUseId, body.value);
+    return c.json({ success: true });
   } catch (error: any) {
     console.error('Error resolving input:', error);
     return c.json({ error: error.message || 'Failed to resolve input' }, 500);

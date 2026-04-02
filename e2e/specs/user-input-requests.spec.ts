@@ -35,7 +35,7 @@ test.describe('User Input Requests', () => {
     // Verify the secret name and reason are shown
     const request = sessionPage.getSecretRequests().first()
     await expect(request).toContainText('OPENAI_API_KEY')
-    await expect(request).toContainText('Needed for API access')
+    await expect(request).toContainText('needed for API access')
 
     // Fill in and provide the secret
     await sessionPage.provideSecret('sk-test-12345', 'OPENAI_API_KEY')
@@ -105,19 +105,19 @@ test.describe('User Input Requests', () => {
     // "ask parallel" triggers UserInputRequestScenario with both a secret and a question
     await sessionPage.sendMessage('ask parallel')
 
-    // Both requests should appear
+    // Both requests should appear (in a paginated stack — only one visible at a time)
     await sessionPage.waitForSecretRequest('DATABASE_URL')
     await sessionPage.waitForQuestionRequest()
 
-    // Verify both are visible at the same time
+    // Verify both are in the DOM
     const secretRequests = sessionPage.getSecretRequests()
     const questionRequests = sessionPage.getQuestionRequests()
     await expect(secretRequests).toHaveCount(1)
     await expect(questionRequests).toHaveCount(1)
 
-    // Verify content
+    // Verify content (toContainText works on hidden elements in the stack)
     await expect(secretRequests.first()).toContainText('DATABASE_URL')
-    await expect(secretRequests.first()).toContainText('Connection string for the database')
+    await expect(secretRequests.first()).toContainText('connection string for the database')
     await expect(questionRequests.first()).toContainText('Which cloud provider do you prefer?')
     await expect(questionRequests.first()).toContainText('AWS')
     await expect(questionRequests.first()).toContainText('GCP')
@@ -126,20 +126,20 @@ test.describe('User Input Requests', () => {
   test('parallel requests: answer both independently', async ({ page }) => {
     await sessionPage.sendMessage('ask parallel')
 
-    // Wait for both to appear
+    // Wait for both to appear in the stack
     await sessionPage.waitForSecretRequest('DATABASE_URL')
     await sessionPage.waitForQuestionRequest()
 
-    // Answer the question first
-    await sessionPage.answerQuestion('AWS')
-    await expect(sessionPage.getQuestionRequests()).toHaveCount(0, { timeout: 10000 })
-
-    // Secret request should still be visible and interactive
-    await expect(sessionPage.getSecretRequests().first()).toBeVisible()
-
-    // Now provide the secret
+    // Secret is visible first in the stack — provide it
     await sessionPage.provideSecret('postgres://localhost:5432/db', 'DATABASE_URL')
     await expect(sessionPage.getSecretRequests()).toHaveCount(0, { timeout: 10000 })
+
+    // Question should now be visible (only remaining card in stack)
+    await expect(sessionPage.getQuestionRequests().first()).toBeVisible()
+
+    // Answer the question
+    await sessionPage.answerQuestion('AWS')
+    await expect(sessionPage.getQuestionRequests()).toHaveCount(0, { timeout: 10000 })
 
     // Session should complete after both inputs are resolved
     await sessionPage.waitForInputEnabled(15000)
@@ -148,15 +148,15 @@ test.describe('User Input Requests', () => {
   test('parallel requests: decline secret, answer question', async ({ page }) => {
     await sessionPage.sendMessage('ask parallel')
 
-    // Wait for both to appear
+    // Wait for both to appear in the stack
     await sessionPage.waitForSecretRequest('DATABASE_URL')
     await sessionPage.waitForQuestionRequest()
 
-    // Decline the secret
+    // Secret is visible first in the stack — decline it
     await sessionPage.declineSecret('DATABASE_URL')
     await expect(sessionPage.getSecretRequests()).toHaveCount(0, { timeout: 10000 })
 
-    // Question should still be visible
+    // Question should now be visible (only remaining card in stack)
     await expect(sessionPage.getQuestionRequests().first()).toBeVisible()
 
     // Answer the question

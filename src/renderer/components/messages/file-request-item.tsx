@@ -1,8 +1,10 @@
 import { apiFetch } from '@renderer/lib/api'
 import { useState, useRef, useCallback } from 'react'
-import { Upload, Check, Loader2, FileIcon } from 'lucide-react'
+import { CloudUpload, FileIcon, X } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { DeclineButton } from './decline-button'
+import { RequestItemShell } from './request-item-shell'
+import { RequestItemActions } from './request-item-actions'
 import { cn } from '@shared/lib/utils/cn'
 
 interface FileRequestItemProps {
@@ -145,145 +147,142 @@ export function FileRequestItem({
     }
   }
 
-  // Completed state
-  if (status === 'uploaded' || status === 'declined') {
-    return (
-      <div className="border rounded-md bg-muted/30 text-sm">
-        <div className="flex items-center gap-2 px-3 py-2">
-          <Upload
-            className={cn(
-              'h-4 w-4 shrink-0',
-              status === 'uploaded' ? 'text-green-500' : 'text-red-500'
-            )}
-          />
-          <span className="text-sm truncate">{description}</span>
-          <span
-            className={cn(
-              'ml-auto text-xs',
-              status === 'uploaded' ? 'text-green-600' : 'text-red-600'
-            )}
-          >
-            {status === 'uploaded' ? 'File uploaded' : 'Declined'}
-          </span>
-        </div>
-      </div>
-    )
-  }
+  const isCompleted = status === 'uploaded' || status === 'declined'
 
-  // Read-only state for viewers
-  if (readOnly) {
-    return (
-      <div className="border rounded-md bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800 text-sm">
-        <div className="flex items-center gap-3 p-3">
-          <div className="h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center shrink-0">
-            <Upload className="h-4 w-4 text-blue-600 dark:text-blue-400" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="font-medium text-blue-900 dark:text-blue-100">File Requested</div>
-            <p className="text-sm text-blue-700 dark:text-blue-300 mt-1 whitespace-pre-line">{description}</p>
-          </div>
-          <span className="text-xs text-blue-600 dark:text-blue-400 shrink-0">Waiting for response</span>
-        </div>
-      </div>
-    )
-  }
+  const descriptionContent = (
+    <>
+      <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{description}</p>
+      {fileTypes && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Accepted file types: {fileTypes}
+        </p>
+      )}
+    </>
+  )
 
-  // Pending/submitting state
   return (
-    <div className="border rounded-md bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800 text-sm">
-      <div className="flex items-start gap-3 p-3">
-        {/* Icon */}
-        <div className="h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center shrink-0">
-          <Upload className="h-4 w-4 text-blue-600 dark:text-blue-400" />
-        </div>
+    <RequestItemShell
+      title="File Request"
+      icon={<FileIcon />}
+      theme="blue"
+      waitingText="Waiting for response"
+      completed={
+        isCompleted
+          ? {
+              icon: (
+                <FileIcon
+                  className={cn(
+                    'h-4 w-4 shrink-0',
+                    status === 'uploaded' ? 'text-green-500' : 'text-red-500'
+                  )}
+                />
+              ),
+              label: <span className="text-sm truncate">{description}</span>,
+              statusLabel: status === 'uploaded' ? 'File uploaded' : 'Declined',
+              isSuccess: status === 'uploaded',
+            }
+          : null
+      }
+      readOnly={
+        readOnly
+          ? { description: descriptionContent }
+          : false
+      }
+      error={error}
+      data-testid={isCompleted ? 'file-request-completed' : 'file-request'}
+      data-status={isCompleted ? status : undefined}
+    >
+      {descriptionContent}
 
-        {/* Content */}
-        <div className="flex-1 min-w-0 space-y-3">
-          {/* Header */}
-          <div>
-            <div className="font-medium text-blue-900 dark:text-blue-100">File Requested</div>
-            <p className="text-sm text-blue-700 dark:text-blue-300 mt-1 whitespace-pre-line">{description}</p>
-            {fileTypes && (
-              <p className="text-xs text-blue-500 dark:text-blue-400 mt-0.5">
-                Suggested types: {fileTypes}
-              </p>
-            )}
-          </div>
-
-          {/* Drop zone / file picker */}
-          <div
-            className={cn(
-              'border-2 border-dashed rounded-md p-4 text-center cursor-pointer transition-colors',
-              isDragOver
-                ? 'border-blue-400 dark:border-blue-500 bg-blue-100 dark:bg-blue-900'
-                : selectedFile
-                  ? 'border-green-300 dark:border-green-700 bg-green-50 dark:bg-green-950/50'
-                  : 'border-blue-200 dark:border-blue-700 bg-white dark:bg-blue-950/30 hover:border-blue-300 dark:hover:border-blue-600'
-            )}
-            role="button"
-            tabIndex={0}
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            onClick={() => fileInputRef.current?.click()}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault()
-                fileInputRef.current?.click()
-              }
-            }}
-          >
-            <input
-              ref={fileInputRef}
-              type="file"
-              className="hidden"
-              onChange={handleInputChange}
-              accept={fileTypes || undefined}
-            />
-            {selectedFile ? (
+      <div className="pt-3">
+        {/* Drop zone / file picker */}
+        <div
+          className={cn(
+            'group relative border rounded-md p-4 text-center cursor-pointer transition-colors',
+            isDragOver
+              ? 'border-blue-400 dark:border-blue-500 bg-blue-100 dark:bg-blue-900'
+              : selectedFile
+                ? 'border-blue-300 dark:border-blue-700 bg-blue-50 dark:bg-blue-950/50'
+                : 'border-border bg-white dark:bg-blue-950/30 hover:border-border'
+          )}
+          role="button"
+          tabIndex={0}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          onClick={() => fileInputRef.current?.click()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              fileInputRef.current?.click()
+            }
+          }}
+        >
+          <input
+            ref={fileInputRef}
+            type="file"
+            className="hidden"
+            onChange={handleInputChange}
+            accept={fileTypes || undefined}
+          />
+          {selectedFile ? (
+            <>
               <div className="flex items-center justify-center gap-2">
-                <FileIcon className="h-4 w-4 text-green-600 dark:text-green-400" />
-                <span className="text-sm text-green-700 dark:text-green-300 font-medium">
+                <FileIcon className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                <span className="text-sm font-medium text-blue-700 dark:text-blue-300">
                   {selectedFile.name}
                 </span>
-                <span className="text-xs text-green-500 dark:text-green-400">
+                <span className="text-xs text-blue-500 dark:text-blue-400">
                   ({(selectedFile.size / 1024).toFixed(1)} KB)
                 </span>
+                <button
+                  type="button"
+                  className="hidden h-6 w-6 items-center justify-center rounded-full border border-border bg-white text-foreground transition-colors group-hover:inline-flex hover:bg-muted focus-visible:bg-muted dark:bg-background"
+                  onClick={(e) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    setSelectedFile(null)
+                    setError(null)
+                  }}
+                  aria-label="Remove selected file"
+                  title="Remove selected file"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
               </div>
-            ) : (
-              <div className="text-sm text-blue-500 dark:text-blue-400">
-                Drop a file here or click to browse
+            </>
+          ) : (
+            <div className="flex flex-col items-center gap-2 whitespace-pre-line text-sm text-foreground/80 dark:text-foreground/80">
+              <CloudUpload className="h-5 w-5" />
+              <div>
+                Click to browse, or
+                {'\n'}
+                drag & drop file here
               </div>
-            )}
-          </div>
-
-          {/* Action buttons */}
-          <div className="flex gap-2">
-            <Button
-              onClick={handleUpload}
-              disabled={!selectedFile || status === 'submitting'}
-              size="sm"
-              className="bg-blue-600 hover:bg-blue-700 text-white"
-            >
-              {status === 'submitting' ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Check className="h-4 w-4" />
-              )}
-              <span className="ml-1">Upload</span>
-            </Button>
-
-            <DeclineButton
-              onDecline={handleDecline}
-              disabled={status === 'submitting'}
-              className="border-blue-200 dark:border-blue-700 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900"
-            />
-          </div>
-
-          {/* Error message */}
-          {error && <p className="text-sm text-red-600">{error}</p>}
+            </div>
+          )}
         </div>
       </div>
-    </div>
+
+      {/* Action buttons */}
+      <RequestItemActions>
+        <DeclineButton
+          onDecline={handleDecline}
+          disabled={status === 'submitting'}
+          showIcon={false}
+          className="border-border text-foreground hover:bg-muted"
+        />
+
+        <Button
+          onClick={handleUpload}
+          loading={status === 'submitting'}
+          disabled={!selectedFile || status === 'submitting'}
+          size="sm"
+          className="min-w-28 bg-blue-600 text-white hover:bg-blue-700"
+        >
+          Upload file
+        </Button>
+      </RequestItemActions>
+    </RequestItemShell>
   )
 }

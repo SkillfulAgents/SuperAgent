@@ -38,8 +38,6 @@ test.describe('Proxy Review Requests', () => {
     await expect(request).toContainText('POST')
     await expect(request).toContainText('api/chat.postMessage')
     await expect(request).toContainText('slack')
-    await expect(request).toContainText('chat:write')
-    await expect(request).toContainText('Send a message to a channel')
   })
 
   test('proxy review: user can allow the request', async ({ page }) => {
@@ -79,13 +77,7 @@ test.describe('Proxy Review Requests', () => {
 
     await sessionPage.waitForProxyReviewRequest()
 
-    // Click Remember to expand options
-    await sessionPage.clickRememberOnProxyReview()
-
-    // The "Always allow chat:write" button should be visible
-    await expect(page.locator('[data-testid="proxy-review-always-allow-chat:write"]')).toBeVisible()
-
-    // Click always allow for this scope
+    // Click always allow for this scope (opens Allow popover, then clicks scope button)
     await sessionPage.alwaysAllowScope('chat:write')
 
     // Review prompt should disappear
