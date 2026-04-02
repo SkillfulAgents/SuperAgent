@@ -6,7 +6,7 @@ import {
   DialogTitle,
 } from '@renderer/components/ui/dialog'
 import { Button } from '@renderer/components/ui/button'
-import { useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
+import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import {
   Check,
   ChevronRight,
@@ -46,6 +46,9 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
   const [welcomePath, setWelcomePath] = useState<'platform' | 'manual' | null>(null)
   const [composioCanProceed, setComposioCanProceed] = useState(false)
   const composioSaveRef = useRef<(() => Promise<void>) | null>(null)
+  // Track whether we're restoring progress to avoid a redundant persist on resume
+  const isRestoringRef = useRef(false)
+  const { data: userSettings } = useUserSettings()
   const updateUserSettings = useUpdateUserSettings()
 
   const steps = useMemo(() => {
@@ -56,16 +59,57 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
 
   const activeStep = welcomePath ? steps[currentStep] : null
 
-  // Reset step when dialog opens
+  // Resume at last known step on open, or reset to beginning.
+  // Depends on both `open` and `userSettings` so that if settings load after
+  // the dialog is already open, we still resume correctly.
+  const hasRestoredRef = useRef(false)
   useEffect(() => {
-    if (open) {
+    if (!open) {
+      hasRestoredRef.current = false
+      return
+    }
+    // Wait for settings to load before deciding where to start
+    if (!userSettings) return
+    // Only restore once per open
+    if (hasRestoredRef.current) return
+    hasRestoredRef.current = true
+
+    const progress = userSettings.onboardingProgress
+    if (progress) {
+      const targetSteps = progress.path === 'platform' ? PLATFORM_STEPS : MANUAL_STEPS
+      const idx = targetSteps.findIndex(s => s.id === progress.stepId)
+      if (idx >= 0) {
+        isRestoringRef.current = true
+        setWelcomePath(progress.path)
+        setCurrentStep(idx)
+      } else {
+        // stepId not found (e.g., removed across versions) — start fresh
+        setCurrentStep(0)
+        setWelcomePath(null)
+      }
+    } else {
       setCurrentStep(0)
       setWelcomePath(null)
     }
-  }, [open])
+  }, [open, userSettings])
+
+  // Persist progress on every step change
+  useEffect(() => {
+    // Skip the persist that fires right after restoring saved progress
+    if (isRestoringRef.current) {
+      isRestoringRef.current = false
+      return
+    }
+    if (welcomePath && steps[currentStep]) {
+      updateUserSettings.mutate({
+        onboardingProgress: { path: welcomePath, stepId: steps[currentStep].id },
+      })
+    }
+  }, [currentStep, welcomePath]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleFinish = async () => {
-    await updateUserSettings.mutateAsync({ setupCompleted: true })
+    // Use null (not undefined) so it survives JSON serialization and actually clears the field
+    await updateUserSettings.mutateAsync({ setupCompleted: true, onboardingProgress: null })
     onOpenChange(false)
   }
 

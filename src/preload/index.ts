@@ -69,6 +69,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('open-external', url)
   },
 
+  // Launch an elevated PowerShell window with a whitelisted command (Windows only)
+  launchPowershellAdmin: (command: string): Promise<void> => {
+    return ipcRenderer.invoke('launch-powershell-admin', command)
+  },
+
   // Navigation from tray menu
   onNavigateToAgent: (callback: (agentSlug: string) => void) => {
     ipcRenderer.on('navigate-to-agent', (_event, agentSlug) => callback(agentSlug))
@@ -196,6 +201,7 @@ declare global {
       removeFullScreenChange: () => void
       getFullScreenState: () => Promise<boolean>
       openExternal: (url: string) => Promise<void>
+      launchPowershellAdmin: (command: string) => Promise<void>
       onNavigateToAgent: (callback: (agentSlug: string) => void) => void
       removeNavigateToAgent: () => void
       onOpenSettings: (callback: () => void) => void

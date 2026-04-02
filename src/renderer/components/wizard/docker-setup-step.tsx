@@ -4,6 +4,8 @@ import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@renderer/components/ui/collapsible'
 import { useSettings, useStartRunner, useRefreshAvailability } from '@renderer/hooks/use-settings'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
+import { getPlatform } from '@renderer/lib/env'
+import { Wsl2InstallGuide } from './wsl2-install-guide'
 import {
   Loader2,
   Check,
@@ -67,9 +69,16 @@ export function DockerSetupStep() {
     }))
   }, [settings?.runnerAvailability, isBuiltinStarting])
 
-  // Split into primary (available/starting) and others
-  const primaryRuntime = runtimeStatuses.find((r) => r.effectivelyAvailable)
+  // Split into primary (available/starting) and others — prefer built-in runtimes
+  const primaryRuntime =
+    runtimeStatuses.find((r) => r.effectivelyAvailable && (r.runner === 'lima' || r.runner === 'wsl2'))
+    || runtimeStatuses.find((r) => r.effectivelyAvailable)
   const otherRuntimes = runtimeStatuses.filter((r) => r !== primaryRuntime)
+
+  // On Windows, check if WSL2 needs to be installed
+  const isWindows = getPlatform() === 'win32'
+  const wsl2Runtime = runtimeStatuses.find((r) => r.runner === 'wsl2')
+  const showWsl2Guide = isWindows && wsl2Runtime && !wsl2Runtime.installed
 
   const hasAvailableRunner = primaryRuntime != null
 
@@ -206,6 +215,16 @@ export function DockerSetupStep() {
             {runtimeStatus?.runtimeReadiness?.message || 'Starting container runtime...'}
           </AlertDescription>
         </Alert>
+      )}
+
+      {/* WSL2 install guide for Windows users who don't have WSL2 yet */}
+      {showWsl2Guide && (
+        <div className="p-3 rounded-lg border bg-card">
+          <Wsl2InstallGuide
+            onRefresh={() => refreshAvailability.mutate()}
+            isRefreshing={refreshAvailability.isPending}
+          />
+        </div>
       )}
 
       <div className="space-y-3">

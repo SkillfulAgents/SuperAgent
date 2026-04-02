@@ -9,6 +9,8 @@ import {
 } from '@renderer/components/ui/dialog'
 import { Button } from '@renderer/components/ui/button'
 import { useSettings, useStartRunner, useRefreshAvailability } from '@renderer/hooks/use-settings'
+import { getPlatform } from '@renderer/lib/env'
+import { Wsl2InstallGuide } from '@renderer/components/wizard/wsl2-install-guide'
 import { Play, Loader2, ExternalLink, Check, RefreshCw } from 'lucide-react'
 
 interface ContainerSetupDialogProps {
@@ -62,6 +64,11 @@ export function ContainerSetupDialog({ open, onOpenChange }: ContainerSetupDialo
     }))
   }, [settings?.runnerAvailability])
 
+  // On Windows, check if WSL2 needs to be installed
+  const isWindows = getPlatform() === 'win32'
+  const wsl2Runtime = runtimeStatuses.find((r) => r.runner === 'wsl2')
+  const showWsl2Guide = isWindows && wsl2Runtime && !wsl2Runtime.installed
+
   const handleStartRunner = async (runner: string) => {
     try {
       await startRunner.mutateAsync(runner)
@@ -96,6 +103,15 @@ export function ContainerSetupDialog({ open, onOpenChange }: ContainerSetupDialo
               securely, without affecting your system.
             </p>
           </div>
+
+          {showWsl2Guide && (
+            <div className="border-t pt-4">
+              <Wsl2InstallGuide
+                onRefresh={() => refreshAvailability.mutate()}
+                isRefreshing={refreshAvailability.isPending}
+              />
+            </div>
+          )}
 
           <div className="border-t pt-4">
             <div className="flex items-center justify-between mb-3">

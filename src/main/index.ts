@@ -269,6 +269,22 @@ ipcMain.handle('open-external', async (_event, url: string) => {
   await shell.openExternal(url)
 })
 
+// IPC handler for launching an elevated PowerShell window (Windows only)
+ipcMain.handle('launch-powershell-admin', async (_event, command: string) => {
+  if (process.platform !== 'win32') {
+    throw new Error('PowerShell admin launch is only supported on Windows')
+  }
+  const allowedCommands = ['wsl --install']
+  if (!allowedCommands.includes(command)) {
+    throw new Error('Command not allowed')
+  }
+  const { spawn } = await import('child_process')
+  spawn('powershell', [
+    '-Command',
+    `Start-Process powershell -Verb RunAs -ArgumentList '-NoExit', '-Command "${command}"'`,
+  ], { detached: true, stdio: 'ignore' }).unref()
+})
+
 // IPC handler for tray visibility
 ipcMain.handle('set-tray-visible', (_event, visible: boolean) => {
   setTrayVisible(visible)
