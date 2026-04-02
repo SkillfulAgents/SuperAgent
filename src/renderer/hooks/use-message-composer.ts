@@ -138,16 +138,18 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
       setIsUploading(false)
     }
 
+    // Clear input immediately so the message doesn't linger while the network request is in flight
+    setMessage('')
+    clearAttachments()
+
     try {
       await onSubmit(content)
     } catch (error) {
       console.error('Failed to submit:', error)
+      // Restore message so the user doesn't lose their text
+      setMessage(content)
       return
     }
-
-    // Clear state after successful submit
-    setMessage('')
-    clearAttachments()
   }
 
   const canSubmit = (!!message.trim() || attachments.length > 0 || voiceInput.isRecording) && !isUploading && !submitDisabled
