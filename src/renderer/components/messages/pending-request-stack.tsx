@@ -18,17 +18,15 @@ interface PendingRequestStackProps {
   children: ReactElement[]
 }
 
-const DISMISS_DURATION = 1000
+const REVEAL_DURATION = 350
 
 export function PendingRequestStack({ children }: PendingRequestStackProps) {
   const [currentIndex, setCurrentIndex] = useState(0)
   const count = children.length
 
-  // Track previous children to detect removals and animate dismissals
+  // Track previous children to detect removals and trigger reveal animation
   const prevKeysRef = useRef<string[]>([])
-  const prevChildrenRef = useRef<ReactElement[]>(children)
-  const [dismissing, setDismissing] = useState<ReactElement | null>(null)
-  const [dismissTopOffset, setDismissTopOffset] = useState(0)
+  const [revealing, setRevealing] = useState(false)
 
   // High-water mark: container only grows while stack is non-empty, resets when empty.
   const containerRef = useRef<HTMLDivElement>(null)
@@ -42,9 +40,9 @@ export function PendingRequestStack({ children }: PendingRequestStackProps) {
   }
   prevCount.current = count
 
-  // Update high-water mark after every render (only while there are children and not dismissing)
+  // Update high-water mark after every render (only while there are children and not revealing)
   useEffect(() => {
-    if (containerRef.current && count > 0 && !dismissing) {
+    if (containerRef.current && count > 0 && !revealing) {
       const h = containerRef.current.offsetHeight
       if (h > highWaterHeight.current) {
         highWaterHeight.current = h
@@ -53,12 +51,12 @@ export function PendingRequestStack({ children }: PendingRequestStackProps) {
     }
   })
 
-  // Detect child removal → trigger dismiss animation
-  const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Detect child removal → trigger reveal animation
+  const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     return () => {
-      if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
+      if (revealTimerRef.current) clearTimeout(revealTimerRef.current)
     }
   }, [])
 
@@ -67,34 +65,16 @@ export function PendingRequestStack({ children }: PendingRequestStackProps) {
     const prevKeys = prevKeysRef.current
 
     if (prevKeys.length > 0 && prevKeys.length > currentKeys.length) {
-      const currentKeySet = new Set(currentKeys)
-      const removedKey = prevKeys.find((k) => !currentKeySet.has(k))
-
-      if (removedKey) {
-        const removedChild = prevChildrenRef.current.find((c) => String(c.key) === removedKey)
-        if (removedChild) {
-          // Compute the stack strip height from before the removal
-          const oldCount = prevKeys.length
-          const oldIdx = Math.min(currentIndex, oldCount - 1)
-          const oldStackDepth = oldCount > 1 ? Math.min(oldCount - oldIdx - 1, 3) : 0
-          setDismissTopOffset(oldStackDepth * 10)
-          setDismissing(removedChild)
-          if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
-          dismissTimerRef.current = setTimeout(() => {
-            setDismissing(null)
-            setDismissTopOffset(0)
-            dismissTimerRef.current = null
-          }, DISMISS_DURATION)
-        }
-      }
+      setRevealing(true)
+      if (revealTimerRef.current) clearTimeout(revealTimerRef.current)
+      revealTimerRef.current = setTimeout(() => {
+        setRevealing(false)
+        revealTimerRef.current = null
+      }, REVEAL_DURATION)
     }
 
     prevKeysRef.current = currentKeys
-  }, [children, currentIndex])
-
-  useEffect(() => {
-    prevChildrenRef.current = children
-  })
+  }, [children])
 
   // Clamp index when items are removed
   useEffect(() => {
@@ -111,11 +91,10 @@ export function PendingRequestStack({ children }: PendingRequestStackProps) {
     setCurrentIndex((i) => Math.max(0, i - 1))
   }, [])
 
-  if (count === 0 && !dismissing) return null
+  if (count === 0) return null
 
-  const idx = count > 0 ? Math.min(currentIndex, count - 1) : 0
+  const idx = Math.min(currentIndex, count - 1)
   const stackDepth = count > 1 ? Math.min(count - idx - 1, 3) : 0
-
 
   return (
     <PaginationContext.Provider value={{ currentIndex: idx, count, goNext, goPrev }}>
@@ -124,23 +103,6 @@ export function PendingRequestStack({ children }: PendingRequestStackProps) {
         className="relative"
         style={minHeight > 0 ? { minHeight } : undefined}
       >
-        {/* Dismiss animation overlay — offset to match the card's original position */}
-        {dismissing && (
-          <div
-            className="absolute inset-x-0 pointer-events-none"
-            style={{ zIndex: 10, top: dismissTopOffset }}
-          >
-            <div
-              className="bg-background"
-              style={{
-                animation: `stack-dismiss ${DISMISS_DURATION}ms ease-out forwards`,
-              }}
-            >
-              {dismissing}
-            </div>
-          </div>
-        )}
-
         {/* Stacked placeholder cards peeking out above */}
         {Array.from({ length: stackDepth }, (_, i) => {
           const depth = stackDepth - i
@@ -166,6 +128,9 @@ export function PendingRequestStack({ children }: PendingRequestStackProps) {
               style={{
                 gridArea: '1 / 1',
                 visibility: i === idx ? 'visible' : 'hidden',
+                ...(i === idx && revealing
+                  ? { animation: `stack-reveal ${REVEAL_DURATION}ms cubic-bezier(0.16, 1, 0.3, 1) forwards` }
+                  : {}),
               }}
             >
               {child}
@@ -174,17 +139,14 @@ export function PendingRequestStack({ children }: PendingRequestStackProps) {
         </div>
 
         <style>{`
-          @keyframes stack-dismiss {
+          @keyframes stack-reveal {
             0% {
-              opacity: 1;
-              transform: translateY(0);
-            }
-            40% {
-              opacity: 1;
+              opacity: 0;
+              transform: translateY(8px) scale(0.98);
             }
             100% {
-              opacity: 0;
-              transform: translateY(-40px);
+              opacity: 1;
+              transform: translateY(0) scale(1);
             }
           }
         `}</style>

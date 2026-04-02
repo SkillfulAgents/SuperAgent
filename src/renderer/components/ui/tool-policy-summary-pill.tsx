@@ -38,7 +38,7 @@ export function ToolPolicySummaryPill({ mcpId, onClick }: ToolPolicySummaryPillP
       )}
     >
       <Shield className="h-3.5 w-3.5 text-current" />
-      <span>{hasAnyPolicy ? 'Permissions • Custom' : 'Permissions • Default'}</span>
+      <span>{hasAnyPolicy ? 'Protected • Custom' : 'Protected'}</span>
       <ChevronDown className="h-3.5 w-3.5 text-current" />
     </button>
   )
