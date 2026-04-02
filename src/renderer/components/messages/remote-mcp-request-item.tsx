@@ -287,9 +287,9 @@ export function RemoteMcpRequestItem({
       await refetch()
 
       setStatus('pending')
-    } catch (err: any) {
+    } catch (err: unknown) {
       popup.close()
-      setError(err.message || 'Failed to register MCP server')
+      setError(err instanceof Error ? err.message : 'Failed to register MCP server')
       setStatus('pending')
     }
   }

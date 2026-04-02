@@ -200,7 +200,7 @@ export class SessionPage {
       ? this.page.locator(`[data-testid="secret-request"][data-secret-name="${secretName}"]`)
       : this.page.locator('[data-testid="secret-request"]').first()
 
-    await container.locator('input[placeholder="Enter secret value..."]').fill(value)
+    await container.locator('input[placeholder^="Paste "]').fill(value)
     await container.locator('[data-testid="secret-provide-btn"]').click()
   }
 
@@ -219,7 +219,8 @@ export class SessionPage {
    * Wait for a question request to appear in the UI
    */
   async waitForQuestionRequest(timeout = 15000) {
-    await expect(this.page.locator('[data-testid="question-request"]').first()).toBeVisible({ timeout })
+    // Question may be hidden inside PendingRequestStack (visibility:hidden) — check DOM presence
+    await expect(this.page.locator('[data-testid="question-request"]').first()).toBeAttached({ timeout })
   }
 
   /**
@@ -280,7 +281,7 @@ export class SessionPage {
 
   async approveScriptRun() {
     const container = this.page.locator('[data-testid="script-run-request"]').first()
-    await container.locator('[data-testid="script-run-btn"]').click()
+    await container.locator('[data-testid="script-run-once-btn"]').click()
   }
 
   async denyScriptRun() {
@@ -300,7 +301,9 @@ export class SessionPage {
 
   async allowProxyReview() {
     const container = this.page.locator('[data-testid="proxy-review-request"]').first()
-    await container.locator('[data-testid="proxy-review-allow-btn"]').click()
+    // The Allow button is now a popover — click it to open, then click "Allow Once"
+    await container.locator('[data-testid="proxy-review-always-allow-btn"]').click()
+    await this.page.locator('[data-testid="proxy-review-allow-once-menu-btn"]').click()
   }
 
   async denyProxyReview() {
@@ -314,14 +317,11 @@ export class SessionPage {
     ).toBeVisible({ timeout })
   }
 
-  async clickRememberOnProxyReview() {
-    const container = this.page.locator('[data-testid="proxy-review-request"]').first()
-    await container.locator('[data-testid="proxy-review-remember-btn"]').click()
-  }
-
   async alwaysAllowScope(scope: string) {
     const container = this.page.locator('[data-testid="proxy-review-request"]').first()
-    await container.locator(`[data-testid="proxy-review-always-allow-${scope}"]`).click()
+    // Open the Allow popover, then click the "Always allow <scope>" button
+    await container.locator('[data-testid="proxy-review-always-allow-btn"]').click()
+    await this.page.locator(`[data-testid="proxy-review-always-allow-${scope}"]`).click()
   }
 
   async alwaysDenyScope(scope: string) {
@@ -346,7 +346,10 @@ export class SessionPage {
 
   async approveComputerUseOnce() {
     const container = this.page.locator('[data-testid="computer-use-request"]').first()
-    await container.locator('[data-testid="computer-use-allow-once-btn"]').click()
+    // "Allow Once" is inside a popover opened by the chevron next to "Allow 15 min"
+    await container.locator('[data-testid="computer-use-allow-timed-btn-chevron"]').click()
+    // The popover is portaled to document.body, so locate the button on the page
+    await this.page.locator('[data-testid="computer-use-allow-once-btn"]').click()
   }
 
   async approveComputerUseTimed() {

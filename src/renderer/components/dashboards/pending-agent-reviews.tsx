@@ -1,17 +1,5 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { apiFetch } from '@renderer/lib/api'
 import { ProxyReviewRequestItem } from '@renderer/components/messages/proxy-review-request-item'
-
-interface PendingReview {
-  id: string
-  agentSlug: string
-  accountId: string
-  toolkit: string
-  method: string
-  targetPath: string
-  matchedScopes: string[]
-  scopeDescriptions: Record<string, string>
-}
+import { usePendingProxyReviews } from '@renderer/hooks/use-proxy-reviews'
 
 interface PendingAgentReviewsProps {
   agentSlug: string
@@ -30,19 +18,7 @@ interface PendingAgentReviewsProps {
  * an event). It is NOT the primary delivery mechanism.
  */
 export function PendingAgentReviews({ agentSlug, readOnly, onReviewResolved }: PendingAgentReviewsProps) {
-  const queryClient = useQueryClient()
-
-  const { data, refetch } = useQuery<{ reviews: PendingReview[] }>({
-    queryKey: ['proxy-reviews', agentSlug],
-    queryFn: async () => {
-      const res = await apiFetch(`/api/agents/${agentSlug}/proxy-reviews`)
-      if (!res.ok) return { reviews: [] }
-      return res.json()
-    },
-    // Safety-net poll in case SSE reconnects and misses an event.
-    // Real-time path is GlobalNotificationHandler → setQueryData.
-    refetchInterval: 30000,
-  })
+  const { data, refetch } = usePendingProxyReviews(agentSlug)
 
   const reviews = data?.reviews ?? []
 

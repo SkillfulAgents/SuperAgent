@@ -23,10 +23,11 @@ import { FileRequestItem } from './file-request-item'
 import { BrowserInputRequestItem } from './browser-input-request-item'
 import { ScriptRunRequestItem } from './script-run-request-item'
 import { ComputerUseRequestItem } from './computer-use-request-item'
-import { PendingAgentReviews } from '@renderer/components/dashboards/pending-agent-reviews'
+import { ProxyReviewRequestItem } from './proxy-review-request-item'
 import { PendingRequestStack } from './pending-request-stack'
 import { ArrowDown, Loader2, WifiOff } from 'lucide-react'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
+import { usePendingProxyReviews } from '@renderer/hooks/use-proxy-reviews'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { useRenderTracker } from '@renderer/lib/perf'
@@ -68,6 +69,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
   const deleteToolCall = useDeleteToolCall()
   const { canUseAgent, user } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
+
+  // Proxy reviews come from a separate API (not the message stream)
+  const { data: proxyReviewsData, refetch: refetchProxyReviews } = usePendingProxyReviews(agentSlug)
+  const pendingProxyReviews = proxyReviewsData?.reviews ?? []
 
   const handleRemoveMessage = useCallback(
     (messageId: string) => {
@@ -409,11 +414,14 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
         ids.push(req.toolUseId)
       }
     }
+    for (const review of pendingProxyReviews) {
+      ids.push(review.id)
+    }
     return ids
   }, [
     pendingSecretRequests, pendingConnectedAccountRequests, pendingRemoteMcpRequests,
     pendingQuestionRequests, pendingFileRequests, pendingBrowserInputRequests,
-    pendingScriptRunRequests, pendingComputerUseRequests,
+    pendingScriptRunRequests, pendingComputerUseRequests, pendingProxyReviews,
   ])
 
   // Assign sequence numbers to new requests; clean up departed ones
@@ -946,9 +954,23 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
                 onComplete={() => handleComputerUseRequestComplete(request.toolUseId)}
               />
             )),
+            ...pendingProxyReviews.map((review) => (
+              <ProxyReviewRequestItem
+                key={review.id}
+                reviewId={review.id}
+                accountId={review.accountId}
+                toolkit={review.toolkit}
+                method={review.method}
+                targetPath={review.targetPath}
+                matchedScopes={review.matchedScopes}
+                scopeDescriptions={review.scopeDescriptions}
+                agentSlug={agentSlug}
+                readOnly={isViewOnly}
+                onComplete={() => refetchProxyReviews()}
+              />
+            )),
           ].sort((a, b) => getArrivalOrder(a.key as string) - getArrivalOrder(b.key as string))}
         </PendingRequestStack>
-        <PendingAgentReviews agentSlug={agentSlug} readOnly={isViewOnly} />
         </div>
       </div>
       {showScrollToBottom && (

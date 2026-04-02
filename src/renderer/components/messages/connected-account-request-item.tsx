@@ -211,9 +211,9 @@ export function ConnectedAccountRequestItem({
       const { redirectUrl } = await response.json()
       await popup.navigate(redirectUrl)
       setStatus('pending')
-    } catch (err: any) {
+    } catch (err: unknown) {
       popup.close()
-      setError(err.message || 'Failed to connect account')
+      setError(err instanceof Error ? err.message : 'Failed to connect account')
       setStatus('pending')
     }
   }
