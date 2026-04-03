@@ -10,6 +10,7 @@ export interface PendingReview {
   targetPath: string
   matchedScopes: string[]
   scopeDescriptions: Record<string, string>
+  displayText?: string
 }
 
 export function usePendingProxyReviews(agentSlug: string) {

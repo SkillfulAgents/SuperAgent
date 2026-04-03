@@ -173,7 +173,7 @@ export function ComputerUseRequestItem({
     <RequestItemShell
       title="Computer Use Request"
       icon={<Monitor />}
-      theme="blue"
+      theme="orange"
       waitingText="Waiting for approval"
       error={error}
       data-testid={isCompleted ? 'computer-use-request-completed' : 'computer-use-request'}
@@ -237,7 +237,7 @@ export function ComputerUseRequestItem({
             onClick={() => handleApprove('timed')}
             loading={status === 'submitting'}
             size="sm"
-            className="min-w-28 rounded-r-none border-r-0 bg-blue-600 text-white hover:bg-blue-700"
+            className="min-w-28 rounded-r-none border-r-0 bg-orange-600 text-white hover:bg-orange-700"
             data-testid="computer-use-allow-timed-btn"
           >
             Allow 15 min
@@ -247,7 +247,7 @@ export function ComputerUseRequestItem({
               <Button
                 disabled={status === 'submitting'}
                 size="sm"
-                className="rounded-l-none border-l border-l-blue-500 bg-blue-600 px-1.5 text-white hover:bg-blue-700"
+                className="rounded-l-none border-l border-l-orange-500 bg-orange-600 px-1.5 text-white hover:bg-orange-700"
                 data-testid="computer-use-allow-timed-btn-chevron"
               >
                 <ChevronDown className="h-3.5 w-3.5" />

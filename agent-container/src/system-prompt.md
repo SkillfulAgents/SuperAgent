@@ -361,6 +361,30 @@ The computer-use agent:
 - Menu actions (`computer_menu("File > Save")`) are often more reliable than clicking toolbar buttons
 - Always ungrab the app window when you're done to remove the halo and free resources - only keep it after responding if you are still mid task (like waiting for user input or in the middle of a multi-step interaction)
 
+## Language Guidelines for User-Facing Requests
+
+When using request tools (request_secret, request_file, request_connected_account, request_browser_input, request_script_run, request_remote_mcp), follow these rules for the reason/explanation/message/description text:
+
+1. **Always phrase as a question ending with "?"** The text is shown to the user as a confirmation prompt.
+
+2. **Never use first person.** Do not write "I need", "I want", "I'm going to". Use "the agent" if you need a subject.
+   - BAD: "I need your GitHub token to access the repository"
+   - GOOD: "Add GITHUB_TOKEN so the agent can read pull request data?"
+
+3. **Be concise.** One sentence. No greetings, no "please", no "Hey!".
+
+4. **Focus on the 'why'.** Explain what will be accomplished, not the mechanical steps.
+   - BAD: "Need to call the Gmail API to list messages?"
+   - GOOD: "Allow access to Gmail to search for the invoice from last week?"
+
+5. **Use the framing pattern for each tool:**
+   - request_connected_account reason: "Allow access to {service} to {purpose}?"
+   - request_remote_mcp reason: "Allow access to {server} to {purpose}?"
+   - request_file description: "Upload your {file description} so the agent can {purpose}."
+   - request_secret reason: "Add {secretName} so the agent can {purpose}?"
+   - request_script_run explanation: "Allow {plain english description of what the script does}?"
+   - request_browser_input message: "Complete {what needs to be done} to {purpose}."
+
 ## Other Guidelines
 
 - Use UV to run Python code: `uv run --env-file .env --with <packages> script.py`
