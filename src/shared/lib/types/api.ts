@@ -252,6 +252,7 @@ export interface ApiSkillsetConfig {
   skillCount: number
   agentCount: number
   addedAt: string
+  provider?: 'github' | 'platform'
 }
 
 // ============================================================================

@@ -8,8 +8,10 @@ import {
   useAddSkillset,
   useRemoveSkillset,
   useRefreshSkillset,
+  useSyncPlatformSkillsets,
 } from '@renderer/hooks/use-skillsets'
-import { AlertTriangle, Loader2, Trash2, RefreshCw, Library } from 'lucide-react'
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
+import { AlertTriangle, Loader2, Trash2, RefreshCw, Library, Cloud } from 'lucide-react'
 
 export function SkillsetsTab() {
   const { data: skillsets, isLoading } = useSkillsets()
@@ -17,6 +19,8 @@ export function SkillsetsTab() {
   const addSkillset = useAddSkillset()
   const removeSkillset = useRemoveSkillset()
   const refreshSkillset = useRefreshSkillset()
+  const syncPlatform = useSyncPlatformSkillsets()
+  const { data: platformAuth } = usePlatformAuthStatus()
 
   const [urlInput, setUrlInput] = useState('')
   const [validationResult, setValidationResult] = useState<{
@@ -103,6 +107,42 @@ export function SkillsetsTab() {
         </p>
       </div>
 
+      {/* Sync Platform Skillsets */}
+      {platformAuth?.connected && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/50">
+            <div className="flex items-center gap-2">
+              <Cloud className="h-4 w-4 text-muted-foreground" />
+              <span className="text-sm text-muted-foreground">
+                Sync skillsets from your platform organization
+              </span>
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => syncPlatform.mutate()}
+              disabled={syncPlatform.isPending}
+            >
+              {syncPlatform.isPending ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                  Syncing...
+                </>
+              ) : (
+                'Sync Platform'
+              )}
+            </Button>
+          </div>
+          {syncPlatform.error && (
+            <Alert variant="destructive">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertDescription>{syncPlatform.error.message}</AlertDescription>
+            </Alert>
+          )}
+        </div>
+      )}
+
       {/* Skillset List */}
       <div className="space-y-3">
         {isLoading ? (
@@ -130,15 +170,22 @@ export function SkillsetsTab() {
                   <span className="text-xs text-muted-foreground">
                     {ss.skillCount} {ss.skillCount === 1 ? 'skill' : 'skills'}
                   </span>
+                  {ss.provider === 'platform' && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
+                      Platform
+                    </span>
+                  )}
                 </div>
                 {ss.description && (
                   <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">
                     {ss.description}
                   </p>
                 )}
-                <p className="text-xs text-muted-foreground mt-1 font-mono truncate">
-                  {ss.url}
-                </p>
+                {ss.provider !== 'platform' && (
+                  <p className="text-xs text-muted-foreground mt-1 font-mono truncate">
+                    {ss.url}
+                  </p>
+                )}
               </div>
               <div className="flex gap-1 shrink-0">
                 <Button

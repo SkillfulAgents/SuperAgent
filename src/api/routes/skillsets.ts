@@ -10,8 +10,11 @@ import {
   refreshSkillset,
   getSkillsetIndex,
   removeSkillsetCache,
+  ensureSkillsetCached,
 } from '@shared/lib/services/skillset-service'
-import type { SkillsetConfig } from '@shared/lib/types/skillset'
+import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
+import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import type { SkillsetConfig, SkillProvider } from '@shared/lib/types/skillset'
 import type { ApiSkillsetConfig } from '@shared/lib/types/api'
 
 const skillsets = new Hono()
@@ -27,6 +30,7 @@ function configToApiResponse(config: SkillsetConfig, skillCount: number, agentCo
     skillCount,
     agentCount,
     addedAt: config.addedAt,
+    provider: config.provider,
   }
 }
 
@@ -38,7 +42,9 @@ skillsets.get('/', async (c) => {
     const result: ApiSkillsetConfig[] = []
 
     for (const config of configs) {
-      const index = await getSkillsetIndex(config.id)
+      const index = await getSkillsetIndex(config.id, {
+        platformRepoId: config.platformRepoId,
+      })
       result.push(configToApiResponse(config, index?.skills.length ?? 0, index?.agents?.length ?? 0))
     }
 
@@ -52,12 +58,12 @@ skillsets.get('/', async (c) => {
 // POST /api/skillsets/validate - Validate a skillset URL
 skillsets.post('/validate', IsAdmin(), async (c) => {
   try {
-    const { url } = await c.req.json()
+    const { url, provider } = await c.req.json() as { url?: string; provider?: SkillProvider }
     if (!url || typeof url !== 'string') {
       return c.json({ valid: false, error: 'URL is required' }, 400)
     }
 
-    const index = await validateSkillsetUrl(url.trim())
+    const index = await validateSkillsetUrl(url.trim(), provider)
     return c.json({ valid: true, index })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to validate skillset URL'
@@ -68,7 +74,7 @@ skillsets.post('/validate', IsAdmin(), async (c) => {
 // POST /api/skillsets - Add a skillset (validates first)
 skillsets.post('/', IsAdmin(), async (c) => {
   try {
-    const { url } = await c.req.json()
+    const { url, provider } = await c.req.json() as { url?: string; provider?: SkillProvider }
     if (!url || typeof url !== 'string') {
       return c.json({ error: 'URL is required' }, 400)
     }
@@ -84,7 +90,7 @@ skillsets.post('/', IsAdmin(), async (c) => {
     }
 
     // Validate and fetch index
-    const index = await validateSkillsetUrl(trimmedUrl)
+    const index = await validateSkillsetUrl(trimmedUrl, provider)
 
     // Save to settings
     const config: SkillsetConfig = {
@@ -93,6 +99,7 @@ skillsets.post('/', IsAdmin(), async (c) => {
       name: index.skillset_name,
       description: index.description || '',
       addedAt: new Date().toISOString(),
+      provider,
     }
 
     const newSettings = {
@@ -144,7 +151,7 @@ skillsets.post('/:id/refresh', IsAdmin(), async (c) => {
       return c.json({ error: 'Skillset not found' }, 404)
     }
 
-    const index = await refreshSkillset(id, config.url)
+    const index = await refreshSkillset(id, config.url, config.provider, config.platformRepoId, config.name)
     return c.json({ skills: index.skills })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to refresh skillset'
@@ -156,15 +163,22 @@ skillsets.post('/:id/refresh', IsAdmin(), async (c) => {
 skillsets.get('/:id/skills', async (c) => {
   try {
     const id = c.req.param('id')
-    const index = await getSkillsetIndex(id)
+    const settings = getSettings()
+    const config = (settings.skillsets || []).find((s) => s.id === id)
+    console.log('[GET /:id/skills] id=%s configFound=%s provider=%s platformRepoId=%s', id, !!config, config?.provider, config?.platformRepoId)
+    const index = await getSkillsetIndex(id, {
+      platformRepoId: config?.platformRepoId,
+    })
 
     if (!index) {
+      console.log('[GET /:id/skills] index is null — returning 404')
       return c.json({ error: 'Skillset not found or not cached' }, 404)
     }
 
+    console.log('[GET /:id/skills] returning %d skills', index.skills?.length ?? 0)
     return c.json({ skills: index.skills })
   } catch (error) {
-    console.error('Failed to get skillset skills:', error)
+    console.error('[GET /:id/skills] FAILED:', error)
     return c.json({ error: 'Failed to get skillset skills' }, 500)
   }
 })
@@ -173,7 +187,11 @@ skillsets.get('/:id/skills', async (c) => {
 skillsets.get('/:id/agents', async (c) => {
   try {
     const id = c.req.param('id')
-    const index = await getSkillsetIndex(id)
+    const settings = getSettings()
+    const config = (settings.skillsets || []).find((s) => s.id === id)
+    const index = await getSkillsetIndex(id, {
+      platformRepoId: config?.platformRepoId,
+    })
 
     if (!index) {
       return c.json({ error: 'Skillset not found or not cached' }, 404)
@@ -183,6 +201,92 @@ skillsets.get('/:id/agents', async (c) => {
   } catch (error) {
     console.error('Failed to get skillset agents:', error)
     return c.json({ error: 'Failed to get skillset agents' }, 500)
+  }
+})
+
+// POST /api/skillsets/sync-platform - Auto-register platform skillsets after connecting
+skillsets.post('/sync-platform', IsAdmin(), async (c) => {
+  console.log('[sync-platform] START')
+  try {
+    const proxyBase = getPlatformProxyBaseUrl()
+    const token = getPlatformAccessToken()
+    console.log('[sync-platform] proxyBase=%s tokenPresent=%s', proxyBase, !!token)
+    if (!proxyBase || !token) {
+      return c.json({ error: 'Platform not connected' }, 400)
+    }
+
+    const fetchUrl = `${proxyBase}/v1/skills/skillsets`
+    console.log('[sync-platform] fetching skillsets from %s', fetchUrl)
+    const res = await fetch(fetchUrl, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    console.log('[sync-platform] response status=%d ok=%s', res.status, res.ok)
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      console.error('[sync-platform] error body: %s', body)
+      return c.json({ error: `Failed to fetch platform skillsets: ${res.status}` }, 502)
+    }
+
+    const data = await res.json() as {
+      skillsets: Array<{ name: string; path: string; repoId: string; description: string; skill_count: number; agent_count: number }>
+    }
+    console.log('[sync-platform] received %d skillsets: %s', data.skillsets?.length ?? 0, JSON.stringify(data.skillsets?.map(s => ({ name: s.name, path: s.path, repoId: s.repoId }))))
+
+    if (!data.skillsets?.length) {
+      console.log('[sync-platform] no skillsets from platform, done')
+      return c.json({ synced: 0, skillsets: [] })
+    }
+
+    const settings = getSettings()
+    const existing = settings.skillsets || []
+    const added: SkillsetConfig[] = []
+
+    for (const remote of data.skillsets) {
+      const skillsetId = `platform--${remote.repoId}--${remote.name}`
+      console.log('[sync-platform] processing remote: name=%s repoId=%s → skillsetId=%s', remote.name, remote.repoId, skillsetId)
+
+      if (existing.some((s) => s.id === skillsetId)) {
+        console.log('[sync-platform] already registered, skip')
+        continue
+      }
+
+      const config: SkillsetConfig = {
+        id: skillsetId,
+        url: `${proxyBase}/v1/skills/repo`,
+        name: remote.name,
+        description: remote.description || '',
+        addedAt: new Date().toISOString(),
+        provider: 'platform',
+        platformRepoId: remote.repoId,
+      }
+      existing.push(config)
+      added.push(config)
+      console.log('[sync-platform] added new config: %s', JSON.stringify(config))
+    }
+
+    if (added.length > 0) {
+      updateSettings({ ...settings, skillsets: existing })
+      console.log('[sync-platform] saved %d new configs to settings', added.length)
+    }
+
+    const allPlatform = existing.filter((s) => s.provider === 'platform' && s.platformRepoId)
+    console.log('[sync-platform] will ensure clone for %d platform skillsets', allPlatform.length)
+    const cloned = new Set<string>()
+    for (const config of allPlatform) {
+      if (!cloned.has(config.platformRepoId!)) {
+        cloned.add(config.platformRepoId!)
+        console.log('[sync-platform] cloning: id=%s platformRepoId=%s url=%s', config.id, config.platformRepoId, config.url)
+        await ensureSkillsetCached(config.id, config.url, 'platform', config.platformRepoId, config.name)
+        console.log('[sync-platform] clone done for %s', config.platformRepoId)
+      }
+    }
+
+    console.log('[sync-platform] DONE — synced=%d', added.length)
+    return c.json({ synced: added.length, skillsets: added.map((a) => a.name) })
+  } catch (error) {
+    console.error('[sync-platform] FAILED:', error)
+    const message = error instanceof Error ? error.message : 'Failed to sync platform skillsets'
+    return c.json({ error: message }, 500)
   }
 })
 

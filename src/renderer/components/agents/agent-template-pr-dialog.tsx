@@ -86,18 +86,24 @@ export function AgentTemplatePRDialog({
             <div className="py-6 space-y-3">
               <Alert>
                 <AlertDescription>
-                  Pull request created successfully.
+                  {prUrl.startsWith('platform:')
+                    ? prUrl === 'platform:merged'
+                      ? 'Changes submitted and merged successfully.'
+                      : 'Changes submitted for review.'
+                    : 'Pull request created successfully.'}
                 </AlertDescription>
               </Alert>
-              <a
-                href={prUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-2 text-sm text-primary hover:underline"
-              >
-                <ExternalLink className="h-4 w-4" />
-                {prUrl}
-              </a>
+              {!prUrl.startsWith('platform:') && (
+                <a
+                  href={prUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-sm text-primary hover:underline"
+                >
+                  <ExternalLink className="h-4 w-4" />
+                  {prUrl}
+                </a>
+              )}
             </div>
           ) : (
             <div className="py-4 space-y-4">

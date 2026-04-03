@@ -134,11 +134,17 @@ export function useSavePlatformAccessKey() {
       window.localStorage.setItem(PLATFORM_AUTH_CHOICE_STORAGE_KEY, 'platform')
       queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
       await applyPlatformDefaults().catch(() => {})
+
+      // Auto-sync platform skillsets
+      void apiFetch('/api/skillsets/sync-platform', { method: 'POST' })
+        .then(() => queryClient.invalidateQueries({ queryKey: ['skillsets'] }))
+        .catch(() => {})
     },
   })
 }
 
 export function usePlatformConnect(options?: PlatformConnectOptions) {
+  const queryClient = useQueryClient()
   const platformAuthQuery = usePlatformAuthStatus()
   const platformAuth = platformAuthQuery.data
   const applyPlatformDefaults = useApplyPlatformDefaults()
@@ -170,6 +176,12 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
       void applyPlatformDefaults().catch((err) => {
         setError(err instanceof Error ? err.message : 'Failed to apply platform defaults.')
       })
+
+      // Auto-sync platform skillsets after successful connection
+      void apiFetch('/api/skillsets/sync-platform', { method: 'POST' })
+        .then(() => queryClient.invalidateQueries({ queryKey: ['skillsets'] }))
+        .catch(() => {})
+
       onSuccessRef.current?.(params)
       return
     }

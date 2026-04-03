@@ -2898,6 +2898,9 @@ agents.post('/:id/skills/install', AgentAdmin(), async (c) => {
       skillPath,
       skillName || skillPath,
       skillVersion || '0.0.0',
+      config.provider,
+      config.platformRepoId,
+      config.name,
     )
 
     // If env vars were provided, save them as agent secrets
