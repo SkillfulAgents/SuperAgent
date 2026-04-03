@@ -9,7 +9,9 @@ import {
   useRemoveSkillset,
   useRefreshSkillset,
 } from '@renderer/hooks/use-skillsets'
-import { AlertTriangle, Loader2, Trash2, RefreshCw, Library } from 'lucide-react'
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
+import { usePlatformSkillsets } from '@renderer/hooks/use-platform-skills'
+import { AlertTriangle, Loader2, Trash2, RefreshCw, Library, Cloud } from 'lucide-react'
 
 export function SkillsetsTab() {
   const { data: skillsets, isLoading } = useSkillsets()
@@ -17,6 +19,10 @@ export function SkillsetsTab() {
   const addSkillset = useAddSkillset()
   const removeSkillset = useRemoveSkillset()
   const refreshSkillset = useRefreshSkillset()
+
+  const { data: authStatus } = usePlatformAuthStatus()
+  const isPlatformConnected = authStatus?.connected
+  const { data: platformSkillsets, isLoading: platformLoading } = usePlatformSkillsets()
 
   const [urlInput, setUrlInput] = useState('')
   const [validationResult, setValidationResult] = useState<{
@@ -103,21 +109,13 @@ export function SkillsetsTab() {
         </p>
       </div>
 
-      {/* Skillset List */}
+      {/* Git Skillset List */}
       <div className="space-y-3">
         {isLoading ? (
           <div className="flex items-center justify-center py-4">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
           </div>
-        ) : !skillsets || skillsets.length === 0 ? (
-          <div className="text-center py-6">
-            <Library className="h-8 w-8 mx-auto text-muted-foreground mb-3" />
-            <p className="text-sm text-muted-foreground">No skillsets configured yet.</p>
-            <p className="text-xs text-muted-foreground mt-1">
-              Add a skillset repository URL above to get started.
-            </p>
-          </div>
-        ) : (
+        ) : skillsets && skillsets.length > 0 ? (
           skillsets.map((ss) => (
             <div
               key={ss.id}
@@ -164,6 +162,53 @@ export function SkillsetsTab() {
               </div>
             </div>
           ))
+        ) : null}
+
+        {/* Platform Skillsets */}
+        {isPlatformConnected && (
+          platformLoading ? (
+            <div className="flex items-center justify-center py-4">
+              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : platformSkillsets && platformSkillsets.length > 0 ? (
+            platformSkillsets.map((ss) => (
+              <div
+                key={`platform:${ss.name}`}
+                className="flex items-start gap-3 p-3 rounded-lg border bg-card"
+              >
+                <Cloud className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-medium truncate">{ss.name}</p>
+                    <span className="text-xs text-muted-foreground">
+                      {ss.skill_count} {ss.skill_count === 1 ? 'skill' : 'skills'}
+                      {ss.agent_count > 0 && `, ${ss.agent_count} ${ss.agent_count === 1 ? 'agent' : 'agents'}`}
+                    </span>
+                  </div>
+                  {ss.description && (
+                    <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">
+                      {ss.description}
+                    </p>
+                  )}
+                  <p className="text-xs text-muted-foreground mt-1">
+                    From {authStatus?.orgName ?? 'platform org'}
+                  </p>
+                </div>
+              </div>
+            ))
+          ) : null
+        )}
+
+        {/* Empty state — only when both lists are empty */}
+        {!isLoading && (!skillsets || skillsets.length === 0) &&
+          (!isPlatformConnected || !platformSkillsets || platformSkillsets.length === 0) && (
+          <div className="text-center py-6">
+            <Library className="h-8 w-8 mx-auto text-muted-foreground mb-3" />
+            <p className="text-sm text-muted-foreground">No skillsets configured yet.</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Add a skillset repository URL above to get started.
+            </p>
+          </div>
         )}
       </div>
     </div>

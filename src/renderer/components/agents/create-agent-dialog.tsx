@@ -23,6 +23,8 @@ import {
   useInstallAgentFromSkillset,
   type ImportProgress,
 } from '@renderer/hooks/use-agent-templates'
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
+import { usePlatformDiscoverableSkills, useInstallPlatformAgent } from '@renderer/hooks/use-platform-skills'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery } from '@tanstack/react-query'
@@ -108,8 +110,14 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
   // From Skillset tab state
   const { data: discoverableAgents } = useDiscoverableAgents()
   const installFromSkillset = useInstallAgentFromSkillset()
+  const { data: authStatus } = usePlatformAuthStatus()
+  const isPlatformConnected = authStatus?.connected
+  const { data: platformSkillsetDetails } = usePlatformDiscoverableSkills()
+  const installPlatformAgent = useInstallPlatformAgent()
   const [selectedTemplate, setSelectedTemplate] = useState<{
+    source: 'git' | 'platform'
     skillsetId: string
+    skillsetName: string
     name: string
     path: string
     version: string
@@ -120,13 +128,25 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
   useEffect(() => {
     if (open && initialTemplate) {
       setActiveTab('skillset')
-      setSelectedTemplate(initialTemplate)
+      setSelectedTemplate({
+        source: 'git',
+        skillsetId: initialTemplate.skillsetId,
+        skillsetName: '',
+        name: initialTemplate.name,
+        path: initialTemplate.path,
+        version: initialTemplate.version,
+      })
       setSkillsetAgentName(initialTemplate.name)
     }
   }, [open, initialTemplate])
 
   const hasSkillsets = skillsetSkills && skillsetSkills.length > 0
-  const hasDiscoverableAgents = discoverableAgents && discoverableAgents.length > 0
+  const platformAgentCount = isPlatformConnected && platformSkillsetDetails
+    ? platformSkillsetDetails.reduce((n, ss) => n + (ss.agents?.length ?? 0), 0)
+    : 0
+  const gitAgentCount = discoverableAgents?.length ?? 0
+  const totalAgentTemplates = gitAgentCount + platformAgentCount
+  const hasDiscoverableAgents = totalAgentTemplates > 0
 
   const toggleSkill = (key: string) => {
     setSelectedSkills((prev) => {
@@ -317,6 +337,23 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
     if (!selectedTemplate || !skillsetAgentName.trim()) return
 
     try {
+      if (selectedTemplate.source === 'platform') {
+        const agentDirName = selectedTemplate.path
+          .replace(/^agents\//, '')
+          .replace(/\/CLAUDE\.md$/, '')
+          .replace(/\/$/, '')
+
+        const result = await installPlatformAgent.mutateAsync({
+          skillsetName: selectedTemplate.skillsetName,
+          agentName: agentDirName,
+          displayName: skillsetAgentName.trim(),
+        })
+
+        handleOpenChange(false)
+        selectAgent(result.agentSlug)
+        return
+      }
+
       const newAgent = await installFromSkillset.mutateAsync({
         skillsetId: selectedTemplate.skillsetId,
         agentPath: selectedTemplate.path,
@@ -351,6 +388,8 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
       console.error('Failed to install agent from skillset:', error)
     }
   }
+
+  const isSkillsetInstalling = installFromSkillset.isPending || installPlatformAgent.isPending
 
   const isPending = createAgent.isPending || isInstalling
 
@@ -396,7 +435,7 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
             <TabsTrigger value="import" className="flex-1">Import File</TabsTrigger>
             {hasDiscoverableAgents && (
               <TabsTrigger value="skillset" className="flex-1">
-                From Skillset ({discoverableAgents!.length})
+                From Skillset ({totalAgentTemplates})
               </TabsTrigger>
             )}
           </TabsList>
@@ -643,7 +682,11 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
                     <div className="p-3 rounded-lg bg-muted/50">
                       <div className="flex items-center gap-2">
                         <p className="text-sm font-medium">{selectedTemplate.name}</p>
-                        <span className="text-xs text-muted-foreground">v{selectedTemplate.version}</span>
+                        {selectedTemplate.source === 'git' ? (
+                          <span className="text-xs text-muted-foreground">v{selectedTemplate.version}</span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">Platform</span>
+                        )}
                       </div>
                     </div>
 
@@ -654,8 +697,10 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
                       autoFocus
                     />
 
-                    {installFromSkillset.error && (
-                      <p className="text-sm text-destructive">{installFromSkillset.error.message}</p>
+                    {(installFromSkillset.error || installPlatformAgent.error) && (
+                      <p className="text-sm text-destructive">
+                        {(installFromSkillset.error || installPlatformAgent.error)?.message}
+                      </p>
                     )}
                   </div>
 
@@ -667,8 +712,8 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
                     >
                       Back
                     </Button>
-                    <Button type="submit" disabled={!skillsetAgentName.trim() || installFromSkillset.isPending}>
-                      {installFromSkillset.isPending ? (
+                    <Button type="submit" disabled={!skillsetAgentName.trim() || isSkillsetInstalling}>
+                      {isSkillsetInstalling ? (
                         <>
                           <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                           Installing...
@@ -685,11 +730,56 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
                   <div className="py-4">
                     <div className="space-y-2 max-h-[400px] overflow-y-auto">
                       {(() => {
-                        const grouped = new Map<string, typeof discoverableAgents>()
-                        for (const agent of discoverableAgents!) {
-                          const existing = grouped.get(agent.skillsetName) || []
-                          existing.push(agent)
-                          grouped.set(agent.skillsetName, existing)
+                        type UnifiedAgent = {
+                          source: 'git' | 'platform'
+                          key: string
+                          skillsetId: string
+                          skillsetName: string
+                          name: string
+                          description: string
+                          path: string
+                          version: string
+                        }
+
+                        const all: UnifiedAgent[] = []
+
+                        if (discoverableAgents) {
+                          for (const a of discoverableAgents) {
+                            all.push({
+                              source: 'git',
+                              key: `git:${a.skillsetId}::${a.path}`,
+                              skillsetId: a.skillsetId,
+                              skillsetName: a.skillsetName,
+                              name: a.name,
+                              description: a.description,
+                              path: a.path,
+                              version: a.version,
+                            })
+                          }
+                        }
+
+                        if (isPlatformConnected && platformSkillsetDetails) {
+                          for (const ss of platformSkillsetDetails) {
+                            for (const a of ss.agents ?? []) {
+                              all.push({
+                                source: 'platform',
+                                key: `platform:${ss.skillset_name}::${a.name}`,
+                                skillsetId: `platform:${ss.skillset_name}`,
+                                skillsetName: ss.skillset_name,
+                                name: a.name,
+                                description: a.description,
+                                path: a.path,
+                                version: '0.0.0',
+                              })
+                            }
+                          }
+                        }
+
+                        const grouped = new Map<string, UnifiedAgent[]>()
+                        for (const a of all) {
+                          const existing = grouped.get(a.skillsetName) || []
+                          existing.push(a)
+                          grouped.set(a.skillsetName, existing)
                         }
 
                         return Array.from(grouped.entries()).map(([skillsetName, agents]) => (
@@ -700,17 +790,28 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
                             <div className="space-y-2">
                               {agents.map((agent) => (
                                 <button
-                                  key={`${agent.skillsetId}::${agent.path}`}
+                                  key={agent.key}
                                   type="button"
                                   className="w-full text-left p-3 rounded-lg bg-muted/50 hover:bg-muted transition-colors"
                                   onClick={() => {
-                                    setSelectedTemplate(agent)
+                                    setSelectedTemplate({
+                                      source: agent.source,
+                                      skillsetId: agent.skillsetId,
+                                      skillsetName: agent.skillsetName,
+                                      name: agent.name,
+                                      path: agent.path,
+                                      version: agent.version,
+                                    })
                                     setSkillsetAgentName(agent.name)
                                   }}
                                 >
                                   <div className="flex items-center gap-2">
                                     <p className="text-sm font-medium">{agent.name}</p>
-                                    <span className="text-xs text-muted-foreground">v{agent.version}</span>
+                                    {agent.source === 'git' ? (
+                                      <span className="text-xs text-muted-foreground">v{agent.version}</span>
+                                    ) : (
+                                      <span className="text-xs px-1.5 py-0.5 rounded bg-primary/10 text-primary">Platform</span>
+                                    )}
                                   </div>
                                   <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">
                                     {agent.description}

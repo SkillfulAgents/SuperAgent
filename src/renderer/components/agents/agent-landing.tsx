@@ -10,6 +10,7 @@ import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice
 import { useAgentSkills, useDiscoverableSkills, useRefreshAgentSkills } from '@renderer/hooks/use-agent-skills'
 import { AgentSkillCard } from './agent-skill-card'
 import { DiscoverableSkillCard } from './discoverable-skill-card'
+import { DiscoverablePlatformSkillCard } from './discoverable-platform-skill-card'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { useUser } from '@renderer/context/user-context'
 import { apiFetch } from '@renderer/lib/api'
@@ -19,6 +20,14 @@ import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 import { useRenderTracker } from '@renderer/lib/perf'
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
+import { usePlatformDiscoverableSkills } from '@renderer/hooks/use-platform-skills'
+import type { ApiDiscoverableSkill } from '@shared/lib/types/api'
+import type { PlatformSkillsetIndexSkill } from '@shared/lib/services/platform-skills-service'
+
+type UnifiedSkill =
+  | { source: 'git'; key: string; name: string; description: string; skillsetId: string; skillsetName: string; gitSkill: ApiDiscoverableSkill }
+  | { source: 'platform'; key: string; name: string; description: string; skillsetId: string; skillsetName: string; platformSkill: PlatformSkillsetIndexSkill; platformSkillsetName: string }
 
 interface AgentLandingProps {
   agent: ApiAgent
@@ -42,6 +51,11 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
   const { data: discoverableSkillsData } = useDiscoverableSkills(agent.slug)
   const discoverableSkills = useMemo(() => Array.isArray(discoverableSkillsData) ? discoverableSkillsData : [], [discoverableSkillsData])
   const refreshSkills = useRefreshAgentSkills()
+
+  const { data: authStatus } = usePlatformAuthStatus()
+  const isPlatformConnected = authStatus?.connected
+  const { data: platformSkillsetDetails } = usePlatformDiscoverableSkills()
+
   const { data: runtimeStatus, isPending: isRuntimePending } = useRuntimeStatus()
   const readiness = runtimeStatus?.runtimeReadiness
   const isRuntimeReady = isRuntimePending || readiness?.status === 'READY'
@@ -97,14 +111,47 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
     }
   }
 
-  // Unique skillsets from discoverable skills
+  // Merge git + platform skills into a unified list
+  const unifiedSkills: UnifiedSkill[] = useMemo(() => {
+    const result: UnifiedSkill[] = []
+    for (const s of discoverableSkills) {
+      result.push({
+        source: 'git',
+        key: `git:${s.skillsetId}/${s.path}`,
+        name: s.name,
+        description: s.description,
+        skillsetId: s.skillsetId,
+        skillsetName: s.skillsetName,
+        gitSkill: s,
+      })
+    }
+    if (isPlatformConnected && platformSkillsetDetails) {
+      for (const ss of platformSkillsetDetails) {
+        for (const skill of ss.skills) {
+          result.push({
+            source: 'platform',
+            key: `platform:${ss.skillset_name}/${skill.name}`,
+            name: skill.name,
+            description: skill.description,
+            skillsetId: `platform:${ss.skillset_name}`,
+            skillsetName: ss.skillset_name,
+            platformSkill: skill,
+            platformSkillsetName: ss.skillset_name,
+          })
+        }
+      }
+    }
+    return result
+  }, [discoverableSkills, isPlatformConnected, platformSkillsetDetails])
+
+  // Unique skillsets from unified skills
   const skillsetList = useMemo(() => {
     const seen = new Map<string, string>()
-    for (const s of discoverableSkills) {
+    for (const s of unifiedSkills) {
       if (!seen.has(s.skillsetId)) seen.set(s.skillsetId, s.skillsetName)
     }
     return Array.from(seen, ([id, name]) => ({ id, name }))
-  }, [discoverableSkills])
+  }, [unifiedSkills])
 
   // Effective selected skillsets: null means all selected
   const activeSkillsets = useMemo(
@@ -113,13 +160,13 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
   )
 
   const filteredSkills = useMemo(() => {
-    return discoverableSkills.filter((s) => {
+    return unifiedSkills.filter((s) => {
       if (!activeSkillsets.has(s.skillsetId)) return false
       if (!skillSearch.trim()) return true
       const q = skillSearch.toLowerCase()
       return s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q)
     })
-  }, [discoverableSkills, skillSearch, activeSkillsets])
+  }, [unifiedSkills, skillSearch, activeSkillsets])
 
   const totalPages = Math.ceil(filteredSkills.length / SKILLS_PER_PAGE)
   const pagedSkills = filteredSkills.slice(
@@ -259,7 +306,7 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
         )}
 
         {/* Discover Skills Section — only shown to owners who can install skills */}
-        {isOwner && !isExpanded && discoverableSkills.length > 0 && (
+        {isOwner && !isExpanded && unifiedSkills.length > 0 && (
           <div className="pt-6 border-t">
             <div className="flex items-center gap-2 mb-3">
               <Search className="h-4 w-4 text-muted-foreground shrink-0" />
@@ -321,13 +368,22 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
               </div>
             </div>
             <div className="grid gap-2">
-              {pagedSkills.map((skill) => (
-                <DiscoverableSkillCard
-                  key={`${skill.skillsetId}/${skill.path}`}
-                  skill={skill}
-                  agentSlug={agent.slug}
-                />
-              ))}
+              {pagedSkills.map((skill) =>
+                skill.source === 'git' ? (
+                  <DiscoverableSkillCard
+                    key={skill.key}
+                    skill={skill.gitSkill}
+                    agentSlug={agent.slug}
+                  />
+                ) : (
+                  <DiscoverablePlatformSkillCard
+                    key={skill.key}
+                    skill={skill.platformSkill}
+                    skillsetName={skill.platformSkillsetName}
+                    agentSlug={agent.slug}
+                  />
+                ),
+              )}
               {filteredSkills.length === 0 && skillSearch.trim() && (
                 <p className="text-xs text-muted-foreground text-center py-3">
                   No skills matching &ldquo;{skillSearch}&rdquo;
