@@ -8,7 +8,7 @@ import { AgentLanding } from '@renderer/components/agents/agent-landing'
 import { HomePage } from '@renderer/components/home/home-page'
 import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/scheduled-task-view'
 import { WebhookTriggerView } from '@renderer/components/webhook-triggers/webhook-trigger-view'
-import { BrowserPreview } from '@renderer/components/browser/browser-preview'
+import { BrowserDrawerPanel } from '@renderer/components/browser/browser-drawer-panel'
 import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
 import { Button } from '@renderer/components/ui/button'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
@@ -419,22 +419,26 @@ export function MainContent() {
           <WebhookTriggerView triggerId={webhookTriggerId} agentSlug={agentSlug} />
         ) : sessionId ? (
           /* Show messages when a session is selected */
-          <div className="relative flex-1 grid grid-rows-[1fr_auto] min-h-0">
-            <MessageList
-              sessionId={sessionId}
-              agentSlug={agentSlug}
-              pendingUserMessage={pendingUserMessage}
-              onPendingMessageAppeared={handlePendingMessageAppeared}
-            />
-            <div className="bg-background">
-              <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
-              <MessageInput
+          <div className="relative flex-1 flex min-h-0">
+            {/* Chat column */}
+            <div className="flex-1 min-w-0 grid grid-rows-[1fr_auto] min-h-0">
+              <MessageList
                 sessionId={sessionId}
                 agentSlug={agentSlug}
-                onMessageSent={handleMessageSent}
+                pendingUserMessage={pendingUserMessage}
+                onPendingMessageAppeared={handlePendingMessageAppeared}
               />
+              <div className="bg-background">
+                <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
+                <MessageInput
+                  sessionId={sessionId}
+                  agentSlug={agentSlug}
+                  onMessageSent={handleMessageSent}
+                />
+              </div>
             </div>
-            <BrowserPreview agentSlug={agentSlug} sessionId={sessionId} browserActive={browserActive} isActive={isActive} />
+            {/* Browser drawer panel */}
+            <BrowserDrawerPanel agentSlug={agentSlug} sessionId={sessionId} browserActive={browserActive} isActive={isActive} />
           </div>
         ) : (
           /* Show landing page with large input when no session is selected */

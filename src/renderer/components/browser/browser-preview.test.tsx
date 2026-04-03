@@ -10,12 +10,20 @@ vi.mock('@renderer/lib/env', () => ({
 }))
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
-  useMessageStream: () => ({ pendingBrowserInputRequests: [] }),
+  useMessageStream: () => ({ pendingBrowserInputRequests: [], streamingToolUse: null }),
   clearBrowserActive: vi.fn(),
 }))
 
 vi.mock('@renderer/context/user-context', () => ({
   useUser: () => ({ canUseAgent: () => true }),
+}))
+
+vi.mock('@renderer/hooks/use-messages', () => ({
+  useMessages: () => ({ data: [] }),
+}))
+
+vi.mock('@renderer/components/messages/tool-renderers', () => ({
+  getToolRenderer: () => undefined,
 }))
 
 // Mock lucide-react icons to simple spans
@@ -28,6 +36,7 @@ vi.mock('lucide-react', () => ({
   MousePointerClick: (props: any) => <span data-testid="icon-mouse" {...props} />,
   Eye: (props: any) => <span data-testid="icon-eye" {...props} />,
   EyeOff: (props: any) => <span data-testid="icon-eye-off" {...props} />,
+  Check: (props: any) => <span data-testid="icon-check" {...props} />,
 }))
 
 // Mock alert dialog to avoid Radix DOM issues
@@ -40,6 +49,17 @@ vi.mock('@renderer/components/ui/alert-dialog', () => ({
   AlertDialogTitle: ({ children }: any) => <div>{children}</div>,
   AlertDialogAction: (props: any) => <button {...props} />,
   AlertDialogCancel: (props: any) => <button {...props} />,
+}))
+
+// Mock Button component
+vi.mock('@renderer/components/ui/button', () => ({
+  Button: ({ children, ...props }: any) => <button {...props}>{children}</button>,
+}))
+
+// Mock ScrollArea
+vi.mock('@renderer/components/ui/scroll-area', () => ({
+  ScrollArea: ({ children, className }: any) => <div className={className}>{children}</div>,
+  ScrollBar: () => null,
 }))
 
 // Track WebSocket instances
@@ -79,9 +99,18 @@ beforeEach(() => {
     drawImage: vi.fn(),
     clearRect: vi.fn(),
   })) as any
+  // Mock localStorage
+  const store: Record<string, string> = {}
+  vi.stubGlobal('localStorage', {
+    getItem: (key: string) => store[key] ?? null,
+    setItem: (key: string, value: string) => { store[key] = value },
+    removeItem: (key: string) => { delete store[key] },
+  })
+  // Mock requestAnimationFrame
+  vi.stubGlobal('requestAnimationFrame', (cb: () => void) => setTimeout(cb, 0))
 })
 
-import { BrowserPreview } from './browser-preview'
+import { BrowserDrawerPanel } from './browser-drawer-panel'
 
 const defaultProps = {
   agentSlug: 'test-agent',
@@ -98,10 +127,26 @@ function simulateWsMessage(ws: MockWebSocket, data: Record<string, unknown>) {
   ws.onmessage?.({ data: JSON.stringify(data) })
 }
 
-describe('BrowserPreview multi-tab', () => {
+describe('BrowserDrawerPanel', () => {
+  it('renders the drawer when browserActive is true', async () => {
+    render(<BrowserDrawerPanel {...defaultProps} />)
+    expect(screen.getByTestId('browser-drawer-panel')).toBeInTheDocument()
+  })
+
+  it('does not render when browserActive is false', () => {
+    render(<BrowserDrawerPanel {...defaultProps} browserActive={false} />)
+    expect(screen.queryByTestId('browser-drawer-panel')).not.toBeInTheDocument()
+  })
+
+  it('shows "Browser" text in header', async () => {
+    render(<BrowserDrawerPanel {...defaultProps} />)
+    await act(async () => { await new Promise(r => setTimeout(r, 10)) })
+    // Use exact match to avoid colliding with "Close Browser" in dialog
+    expect(screen.getByText('Browser (connecting...)')).toBeInTheDocument()
+  })
+
   it('shows tab bar when tab_list message is received', async () => {
-    render(<BrowserPreview {...defaultProps} />)
-    // Wait for WS to connect
+    render(<BrowserDrawerPanel {...defaultProps} />)
     await act(async () => { await new Promise(r => setTimeout(r, 10)) })
 
     const ws = getLatestWs()
@@ -121,7 +166,7 @@ describe('BrowserPreview multi-tab', () => {
   })
 
   it('auto-follow updates viewingTargetId from tab_list activeTargetId', async () => {
-    render(<BrowserPreview {...defaultProps} />)
+    render(<BrowserDrawerPanel {...defaultProps} />)
     await act(async () => { await new Promise(r => setTimeout(r, 10)) })
 
     const ws = getLatestWs()
@@ -136,17 +181,15 @@ describe('BrowserPreview multi-tab', () => {
       })
     })
 
-    // The viewing tab should be t2 (the active one) — it gets bg-background class
     const bButton = screen.getByText('B').closest('button')!
     expect(bButton.className).toContain('bg-background')
   })
 
   it('tab_switched message updates viewingTargetId', async () => {
-    render(<BrowserPreview {...defaultProps} />)
+    render(<BrowserDrawerPanel {...defaultProps} />)
     await act(async () => { await new Promise(r => setTimeout(r, 10)) })
 
     const ws = getLatestWs()
-    // First, send tab_list to populate tabs
     act(() => {
       simulateWsMessage(ws, {
         type: 'tab_list',
@@ -158,7 +201,6 @@ describe('BrowserPreview multi-tab', () => {
       })
     })
 
-    // Then switch to t2
     act(() => {
       simulateWsMessage(ws, { type: 'tab_switched', targetId: 't2' })
     })
@@ -169,7 +211,7 @@ describe('BrowserPreview multi-tab', () => {
 
   it('tab click sends switch_tab WS message and disables auto-follow', async () => {
     const user = userEvent.setup()
-    render(<BrowserPreview {...defaultProps} />)
+    render(<BrowserDrawerPanel {...defaultProps} />)
     await act(async () => { await new Promise(r => setTimeout(r, 10)) })
 
     const ws = getLatestWs()
@@ -190,13 +232,12 @@ describe('BrowserPreview multi-tab', () => {
       JSON.stringify({ type: 'switch_tab', targetId: 't2' })
     )
 
-    // Auto-follow should be disabled — look for the EyeOff icon title
     expect(screen.getByTitle('Not following agent (click to follow)')).toBeInTheDocument()
   })
 
   it('toggle auto-follow sends follow_agent WS message', async () => {
     const user = userEvent.setup()
-    render(<BrowserPreview {...defaultProps} />)
+    render(<BrowserDrawerPanel {...defaultProps} />)
     await act(async () => { await new Promise(r => setTimeout(r, 10)) })
 
     const ws = getLatestWs()
@@ -210,7 +251,6 @@ describe('BrowserPreview multi-tab', () => {
       })
     })
 
-    // Initially autoFollow is true, click to disable
     await user.click(screen.getByTitle('Auto-following agent (click to pin)'))
 
     expect(ws.send).toHaveBeenCalledWith(
@@ -219,12 +259,11 @@ describe('BrowserPreview multi-tab', () => {
   })
 
   it('falls back to agent active tab when viewed tab is closed', async () => {
-    render(<BrowserPreview {...defaultProps} />)
+    render(<BrowserDrawerPanel {...defaultProps} />)
     await act(async () => { await new Promise(r => setTimeout(r, 10)) })
 
     const ws = getLatestWs()
 
-    // Set up 2 tabs, manually switch to t2
     act(() => {
       simulateWsMessage(ws, {
         type: 'tab_list',
@@ -236,12 +275,10 @@ describe('BrowserPreview multi-tab', () => {
       })
     })
 
-    // Switch to t2 via tab_switched
     act(() => {
       simulateWsMessage(ws, { type: 'tab_switched', targetId: 't2' })
     })
 
-    // Now t2 is closed — new tab_list without t2
     act(() => {
       simulateWsMessage(ws, {
         type: 'tab_list',
@@ -252,18 +289,16 @@ describe('BrowserPreview multi-tab', () => {
       })
     })
 
-    // Should fall back to t1 (agent's active tab) and re-enable auto-follow
     const aButton = screen.getByText('A').closest('button')!
     expect(aButton.className).toContain('bg-background')
     expect(screen.getByTitle('Auto-following agent (click to pin)')).toBeInTheDocument()
   })
 
   it('shows loading spinner when page_loading is true', async () => {
-    render(<BrowserPreview {...defaultProps} />)
+    render(<BrowserDrawerPanel {...defaultProps} />)
     await act(async () => { await new Promise(r => setTimeout(r, 10)) })
 
     const ws = getLatestWs()
-    // Send tabs first so tab bar is visible
     act(() => {
       simulateWsMessage(ws, {
         type: 'tab_list',
@@ -274,21 +309,26 @@ describe('BrowserPreview multi-tab', () => {
       })
     })
 
-    // No spinner before page_loading
     expect(screen.queryByTestId('icon-loader')).not.toBeInTheDocument()
 
-    // Send page_loading = true
     act(() => {
       simulateWsMessage(ws, { type: 'page_loading', loading: true })
     })
 
     expect(screen.getByTestId('icon-loader')).toBeInTheDocument()
 
-    // Send page_loading = false
     act(() => {
       simulateWsMessage(ws, { type: 'page_loading', loading: false })
     })
 
     expect(screen.queryByTestId('icon-loader')).not.toBeInTheDocument()
+  })
+
+  it('shows activity section', async () => {
+    render(<BrowserDrawerPanel {...defaultProps} />)
+    await act(async () => { await new Promise(r => setTimeout(r, 10)) })
+
+    expect(screen.getByText('Activity')).toBeInTheDocument()
+    expect(screen.getByText('No browser activity yet')).toBeInTheDocument()
   })
 })

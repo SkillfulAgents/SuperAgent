@@ -70,9 +70,21 @@ const config: Config = {
 				'0%': { backgroundPosition: '-200% 0' },
 				'100%': { backgroundPosition: '200% 0' },
 			},
+			'cobalt-glow': {
+				'0%, 100%': {
+					boxShadow: '0 0 8px 2px rgba(30, 64, 175, 0.3), 0 0 20px 4px rgba(37, 99, 235, 0.15), 0 0 40px 8px rgba(59, 130, 246, 0.08)',
+				},
+				'33%': {
+					boxShadow: '0 0 12px 4px rgba(37, 99, 235, 0.4), 0 0 28px 8px rgba(59, 130, 246, 0.2), 0 0 50px 12px rgba(96, 165, 250, 0.1)',
+				},
+				'66%': {
+					boxShadow: '0 0 6px 1px rgba(30, 64, 175, 0.25), 0 0 16px 3px rgba(37, 99, 235, 0.12), 0 0 32px 6px rgba(59, 130, 246, 0.06)',
+				},
+			},
 		},
 		animation: {
 			shimmer: 'shimmer 3s ease-in-out infinite',
+			'cobalt-glow': 'cobalt-glow 4s ease-in-out infinite',
 		}
 	}
   },
