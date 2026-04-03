@@ -3,8 +3,6 @@ import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
 
-test.describe.configure({ mode: 'serial' })
-
 test.describe('Tool Call Rendering', () => {
   let appPage: AppPage
   let agentPage: AgentPage

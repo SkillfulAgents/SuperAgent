@@ -3,8 +3,6 @@ import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
 
-// Run browser tests serially
-test.describe.configure({ mode: 'serial' })
 
 test.describe('Browser Streaming', () => {
   let appPage: AppPage

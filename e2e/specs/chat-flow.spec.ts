@@ -3,8 +3,6 @@ import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
 
-// Run chat flow tests serially to avoid conflicts
-test.describe.configure({ mode: 'serial' })
 
 test.describe('Chat Flow', () => {
   let appPage: AppPage

@@ -3,7 +3,7 @@ import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
 
-// Run persistence tests serially to avoid conflicts
+// Serial: tests reload the page and verify DB state, sensitive to concurrent DB writes
 test.describe.configure({ mode: 'serial' })
 
 test.describe('Persistence', () => {

@@ -64,8 +64,16 @@ export class AppPage {
     await this.waitForAppLoaded()
     // Dismiss wizard if it auto-opened (safety net for clean test state)
     await this.dismissWizardIfVisible()
-    // Wait a moment for any loading states to resolve
-    await this.page.waitForTimeout(500)
+    // Wait for the app to be interactive (create agent button visible).
+    // If the wizard appeared after our check (race with parallel tests),
+    // try dismissing it once more.
+    const createBtn = this.page.locator('[data-testid="create-agent-button"]')
+    try {
+      await expect(createBtn).toBeVisible({ timeout: 3000 })
+    } catch {
+      await this.dismissWizardIfVisible()
+      await expect(createBtn).toBeVisible()
+    }
   }
 
   /**
@@ -86,7 +94,11 @@ export class AppPage {
    * Reload the page and wait for it to be ready
    */
   async reload() {
-    await this.page.reload()
-    await this.waitForAppLoaded()
+    // Wait for both the page load and the agents API response to complete
+    await Promise.all([
+      this.page.waitForResponse((resp) => resp.url().includes('/api/agents') && resp.status() === 200),
+      this.page.reload(),
+    ])
+    await this.waitForAgentsLoaded()
   }
 }

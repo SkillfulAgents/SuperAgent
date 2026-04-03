@@ -3,8 +3,6 @@ import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
 
-// Run proxy review tests serially to avoid conflicts
-test.describe.configure({ mode: 'serial' })
 
 test.describe('Proxy Review Requests', () => {
   let appPage: AppPage

@@ -2,8 +2,6 @@ import { test, expect } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 
-// Run agent lifecycle tests serially to avoid conflicts
-test.describe.configure({ mode: 'serial' })
 
 test.describe('Agent Lifecycle', () => {
   let appPage: AppPage

@@ -89,11 +89,51 @@ jobs:
       - name: Run E2E tests
         run: npm run test:e2e
 
-      - name: Run a11y audit
-        if: always()
-        continue-on-error: true
-        run: E2E_MOCK=true npx playwright test e2e/specs/a11y-audit.spec.ts --project=web-chromium
+  e2e-auth-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Rebuild native modules
+        run: npm rebuild better-sqlite3
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
 
       - name: Run Auth E2E tests
-        if: always()
         run: npm run test:e2e:auth
+
+  e2e-a11y-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Rebuild native modules
+        run: npm rebuild better-sqlite3
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run a11y audit
+        continue-on-error: true
+        run: E2E_MOCK=true npx playwright test e2e/specs/a11y-audit.spec.ts --project=web-chromium

@@ -17,11 +17,11 @@ try {
 export default defineConfig({
   testDir: './e2e',
   testIgnore: ['**/auth/**'],  // Auth tests use separate config (playwright.auth.config.ts)
-  fullyParallel: false,  // Run tests serially for more reliable state management
+  fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  workers: 1,  // Use single worker to avoid database conflicts
-  reporter: [['html', { open: 'never' }], ['list']],
+  workers: process.env.CI ? 2 : 2,
+  reporter: process.env.CI ? [['list']] : [['html', { open: 'never' }], ['list']],
 
   use: {
     baseURL: 'http://localhost:3000',
@@ -31,12 +31,35 @@ export default defineConfig({
 
   projects: [
     {
-      name: 'web-chromium',
+      // Wizard tests toggle setupCompleted (global shared state).
+      // Must run alone before anything else to avoid poisoning other tests.
+      name: 'wizard',
+      testMatch: '**/getting-started-wizard.spec.ts',
       use: { ...devices['Desktop Chrome'] },
+      fullyParallel: false,
     },
     {
-      name: 'electron',
-      // Custom fixture handles Electron launch
+      // Settings/policy tests modify global settings but don't toggle setupCompleted.
+      // Safe to run after wizard tests complete.
+      name: 'global-state',
+      testMatch: [
+        '**/settings.spec.ts',
+        '**/policy-settings.spec.ts',
+      ],
+      use: { ...devices['Desktop Chrome'] },
+      fullyParallel: false,
+      dependencies: ['wizard'],
+    },
+    {
+      name: 'web-chromium',
+      testIgnore: [
+        '**/auth/**',
+        '**/getting-started-wizard.spec.ts',
+        '**/settings.spec.ts',
+        '**/policy-settings.spec.ts',
+      ],
+      use: { ...devices['Desktop Chrome'] },
+      dependencies: ['global-state'],
     },
   ],
 

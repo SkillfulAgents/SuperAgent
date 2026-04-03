@@ -33,7 +33,7 @@ export class SimpleTextResponseScenario implements MockScenario {
 
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
     const words = this.responseText.split(' ')
-    const finalDelay = 300 + words.length * 30
+    const finalDelay = 60 + words.length * 5
 
     // Start assistant message - wrapped in stream_event
     // The content needs a 'type' field that MessagePersister.handleMessage switches on
@@ -42,7 +42,7 @@ export class SimpleTextResponseScenario implements MockScenario {
         type: 'stream_event',
         content: { type: 'stream_event', event: { type: 'message_start' } },
       })
-    }, 50)
+    }, 10)
 
     // Stream content block start - text block
     setTimeout(() => {
@@ -50,7 +50,7 @@ export class SimpleTextResponseScenario implements MockScenario {
         type: 'stream_event',
         content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
       })
-    }, 100)
+    }, 20)
 
     // Stream text in chunks
     words.forEach((word, i) => {
@@ -59,7 +59,7 @@ export class SimpleTextResponseScenario implements MockScenario {
           type: 'stream_event',
           content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: (i > 0 ? ' ' : '') + word } } },
         })
-      }, 150 + i * 30)
+      }, 30 + i * 5)
     })
 
     // End content block
@@ -68,7 +68,7 @@ export class SimpleTextResponseScenario implements MockScenario {
         type: 'stream_event',
         content: { type: 'stream_event', event: { type: 'content_block_stop' } },
       })
-    }, 200 + words.length * 30)
+    }, 40 + words.length * 5)
 
     // End message
     setTimeout(() => {
@@ -76,7 +76,7 @@ export class SimpleTextResponseScenario implements MockScenario {
         type: 'stream_event',
         content: { type: 'stream_event', event: { type: 'message_stop' } },
       })
-    }, 250 + words.length * 30)
+    }, 50 + words.length * 5)
 
     // Write JSONL entries before sending result
     setTimeout(() => {
@@ -121,7 +121,7 @@ export class ApiErrorScenario implements MockScenario {
         message: { content: userMessage },
         timestamp: new Date().toISOString(),
       })
-    }, 50)
+    }, 10)
 
     // Write assistant message with error field (SDK sets this on API failures)
     setTimeout(() => {
@@ -141,7 +141,7 @@ export class ApiErrorScenario implements MockScenario {
           error: this.errorCode,
         },
       })
-    }, 100)
+    }, 20)
 
     // Emit error result
     setTimeout(() => {
@@ -155,7 +155,7 @@ export class ApiErrorScenario implements MockScenario {
           errors: [this.errorMessage],
         },
       })
-    }, 200)
+    }, 40)
   }
 }
 
@@ -188,7 +188,7 @@ export class ToolUseScenario implements MockScenario {
   ) {}
 
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
-    let delay = 50
+    let delay = 10
     const toolId = `tool_${Date.now()}`
 
     // Start assistant message
@@ -198,7 +198,7 @@ export class ToolUseScenario implements MockScenario {
         content: { type: 'stream_event', event: { type: 'message_start' } },
       })
     }, delay)
-    delay += 50
+    delay += 10
 
     // Tool use start
     setTimeout(() => {
@@ -217,7 +217,7 @@ export class ToolUseScenario implements MockScenario {
         },
       })
     }, delay)
-    delay += 50
+    delay += 10
 
     // Tool input delta
     setTimeout(() => {
@@ -235,7 +235,7 @@ export class ToolUseScenario implements MockScenario {
         },
       })
     }, delay)
-    delay += 100
+    delay += 20
 
     // Tool use stop
     setTimeout(() => {
@@ -244,7 +244,7 @@ export class ToolUseScenario implements MockScenario {
         content: { type: 'stream_event', event: { type: 'content_block_stop' } },
       })
     }, delay)
-    delay += 50
+    delay += 10
 
     // Tool result comes as a 'user' type message
     setTimeout(() => {
@@ -262,7 +262,7 @@ export class ToolUseScenario implements MockScenario {
         },
       })
     }, delay)
-    delay += 100
+    delay += 20
 
     // Final text response - new text block
     setTimeout(() => {
@@ -271,7 +271,7 @@ export class ToolUseScenario implements MockScenario {
         content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
       })
     }, delay)
-    delay += 50
+    delay += 10
 
     const words = this.finalText.split(' ')
     words.forEach((word, i) => {
@@ -280,9 +280,9 @@ export class ToolUseScenario implements MockScenario {
           type: 'stream_event',
           content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: (i > 0 ? ' ' : '') + word } } },
         })
-      }, delay + i * 30)
+      }, delay + i * 5)
     })
-    delay += words.length * 30 + 50
+    delay += words.length * 5 + 10
 
     // End content block
     setTimeout(() => {
@@ -291,7 +291,7 @@ export class ToolUseScenario implements MockScenario {
         content: { type: 'stream_event', event: { type: 'content_block_stop' } },
       })
     }, delay)
-    delay += 50
+    delay += 10
 
     // End message
     setTimeout(() => {
@@ -300,7 +300,7 @@ export class ToolUseScenario implements MockScenario {
         content: { type: 'stream_event', event: { type: 'message_stop' } },
       })
     }, delay)
-    delay += 50
+    delay += 10
 
     // Write JSONL entries before sending result
     const finalDelay = delay
@@ -358,7 +358,7 @@ export class UserInputRequestScenario implements MockScenario {
   constructor(private tools: UserInputTool[]) {}
 
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
-    let delay = 50
+    let delay = 10
     const toolIds: string[] = []
 
     // Pre-generate tool IDs so we can register pending inputs immediately
@@ -377,7 +377,7 @@ export class UserInputRequestScenario implements MockScenario {
         content: { type: 'stream_event', event: { type: 'message_start' } },
       })
     }, delay)
-    delay += 50
+    delay += 10
 
     // Emit each tool use block
     for (let toolIndex = 0; toolIndex < this.tools.length; toolIndex++) {
@@ -400,7 +400,7 @@ export class UserInputRequestScenario implements MockScenario {
           },
         })
       }, delay)
-      delay += 50
+      delay += 10
 
       // content_block_delta (input_json_delta)
       setTimeout(() => {
@@ -418,7 +418,7 @@ export class UserInputRequestScenario implements MockScenario {
           },
         })
       }, delay)
-      delay += 50
+      delay += 10
 
       // content_block_stop — triggers MessagePersister to detect user input tools
       setTimeout(() => {
@@ -427,7 +427,7 @@ export class UserInputRequestScenario implements MockScenario {
           content: { type: 'stream_event', event: { type: 'content_block_stop' } },
         })
       }, delay)
-      delay += 100
+      delay += 50
     }
 
     // message_stop
@@ -437,7 +437,7 @@ export class UserInputRequestScenario implements MockScenario {
         content: { type: 'stream_event', event: { type: 'message_stop' } },
       })
     }, delay)
-    delay += 50
+    delay += 10
 
     // Write JSONL entries (for message-based recovery on page refresh)
     const capturedToolIds = [...toolIds]
@@ -483,7 +483,7 @@ export class ProxyReviewScenario implements MockScenario {
 
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
     const agentSlug = client.getAgentId()
-    let delay = 50
+    let delay = 10
 
     // Start streaming an assistant message first
     setTimeout(() => {
@@ -492,7 +492,7 @@ export class ProxyReviewScenario implements MockScenario {
         content: { type: 'stream_event', event: { type: 'message_start' } },
       })
     }, delay)
-    delay += 50
+    delay += 10
 
     // Stream some text
     const text = `Making API call: ${this.method} ${this.targetPath}`
@@ -502,7 +502,7 @@ export class ProxyReviewScenario implements MockScenario {
         content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
       })
     }, delay)
-    delay += 50
+    delay += 10
 
     setTimeout(() => {
       client.emitStreamMessage(sessionId, {
@@ -510,7 +510,7 @@ export class ProxyReviewScenario implements MockScenario {
         content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } },
       })
     }, delay)
-    delay += 50
+    delay += 10
 
     setTimeout(() => {
       client.emitStreamMessage(sessionId, {
@@ -518,7 +518,7 @@ export class ProxyReviewScenario implements MockScenario {
         content: { type: 'stream_event', event: { type: 'content_block_stop' } },
       })
     }, delay)
-    delay += 50
+    delay += 10
 
     setTimeout(() => {
       client.emitStreamMessage(sessionId, {
@@ -526,7 +526,7 @@ export class ProxyReviewScenario implements MockScenario {
         content: { type: 'stream_event', event: { type: 'message_stop' } },
       })
     }, delay)
-    delay += 100
+    delay += 20
 
     // Now trigger the proxy review via ReviewManager
     const capturedDelay = delay
@@ -915,7 +915,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
                 type: 'result',
                 content: { type: 'result', subtype: 'success' },
               })
-            }, 200)
+            }, 50)
           }
           break
         }
@@ -1004,7 +1004,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
         // Execute the scenario
         scenario.execute(sessionId, this, options.initialMessage!)
-      }, 500)  // Increased delay to ensure subscription is set up
+      }, 100)  // Brief delay to ensure subscription is set up
     }
 
     return session

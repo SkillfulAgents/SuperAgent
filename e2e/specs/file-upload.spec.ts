@@ -6,8 +6,6 @@ import * as path from 'path'
 import * as fs from 'fs'
 import * as os from 'os'
 
-// Run tests serially to avoid conflicts
-test.describe.configure({ mode: 'serial' })
 
 test.describe('File & Folder Upload', () => {
   let appPage: AppPage
