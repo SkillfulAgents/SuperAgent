@@ -27,12 +27,7 @@ function formatSecretReason(secretName: string, reason: string): string {
     return `Provide ${secretName}`
   }
 
-  const normalizedReason =
-    trimmedReason[0] === trimmedReason[0]?.toUpperCase()
-      ? trimmedReason[0].toLowerCase() + trimmedReason.slice(1)
-      : trimmedReason
-
-  return `Provide ${secretName} ${normalizedReason}`
+  return trimmedReason
 }
 
 export function SecretRequestItem({

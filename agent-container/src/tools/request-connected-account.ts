@@ -32,7 +32,7 @@ Common toolkits include gmail, slack, github, notion, linear, salesforce, and ma
       .string()
       .optional()
       .describe(
-        'Explain why you need access to this service - what you will use it for. This helps the user understand the request.'
+        "A question for the user following the pattern 'Allow access to {service} to {purpose}?'. Never use first person. Must end with '?'. Example: 'Allow access to Gmail to search for the shipping confirmation?'"
       ),
   },
   async (args) => {
