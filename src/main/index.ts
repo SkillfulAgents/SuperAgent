@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItem, nativeTheme, session, shell, Notification } from 'electron'
-import { execFileSync } from 'child_process'
+import { execFileSync, exec } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
@@ -270,7 +270,7 @@ ipcMain.handle('open-external', async (_event, url: string) => {
 })
 
 // IPC handler for launching an elevated PowerShell window (Windows only)
-ipcMain.handle('launch-powershell-admin', async (_event, command: string) => {
+ipcMain.handle('launch-powershell-admin', (_event, command: string) => {
   if (process.platform !== 'win32') {
     throw new Error('PowerShell admin launch is only supported on Windows')
   }
@@ -278,11 +278,19 @@ ipcMain.handle('launch-powershell-admin', async (_event, command: string) => {
   if (!allowedCommands.includes(command)) {
     throw new Error('Command not allowed')
   }
-  const { spawn } = await import('child_process')
-  spawn('powershell', [
-    '-Command',
-    `Start-Process powershell -Verb RunAs -ArgumentList '-NoExit', '-Command "${command}"'`,
-  ], { detached: true, stdio: 'ignore' }).unref()
+  return new Promise<void>((resolve, reject) => {
+    // Use exec with shell:true so cmd.exe handles the quoting.
+    // Start-Process -Verb RunAs triggers the UAC elevation prompt.
+    const psCommand = `Start-Process powershell.exe -Verb RunAs -ArgumentList '-NoExit -Command ${command}'`
+    exec(`powershell.exe -Command "${psCommand}"`, (error) => {
+      if (error) {
+        console.error('Failed to launch elevated PowerShell:', error)
+        reject(new Error(`Failed to launch PowerShell: ${error.message}`))
+      } else {
+        resolve()
+      }
+    })
+  })
 })
 
 // IPC handler for tray visibility

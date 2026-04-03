@@ -19,13 +19,16 @@ const WSL_INSTALL_COMMAND = 'wsl --install'
 export function Wsl2InstallGuide({ onRefresh, isRefreshing }: Wsl2InstallGuideProps) {
   const [copied, setCopied] = useState(false)
   const [launched, setLaunched] = useState(false)
+  const [launchError, setLaunchError] = useState<string | null>(null)
 
   const handleLaunchInstall = async () => {
+    setLaunchError(null)
     try {
       await window.electronAPI?.launchPowershellAdmin(WSL_INSTALL_COMMAND)
       setLaunched(true)
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to launch PowerShell:', error)
+      setLaunchError(error?.message || 'Failed to launch PowerShell. Try running the command manually.')
     }
   }
 
@@ -74,6 +77,9 @@ export function Wsl2InstallGuide({ onRefresh, isRefreshing }: Wsl2InstallGuidePr
             <p className="text-xs text-muted-foreground mt-1.5">
               You may see a Windows security prompt (UAC) — click Yes to allow.
             </p>
+            {launchError && (
+              <p className="text-xs text-destructive mt-1.5">{launchError}</p>
+            )}
           </div>
         </div>
 
