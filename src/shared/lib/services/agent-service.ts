@@ -75,8 +75,9 @@ async function parseAgentClaudeMd(slug: string): Promise<AgentConfig | null> {
   // Validate required fields
   if (!frontmatter.name) {
     console.warn(`Agent ${slug} has invalid CLAUDE.md: missing name`)
-    // Use slug as fallback name
     frontmatter.name = slug
+  } else {
+    frontmatter.name = String(frontmatter.name)
   }
 
   if (!frontmatter.createdAt) {
