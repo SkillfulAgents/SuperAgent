@@ -156,8 +156,10 @@ export function serializeMarkdownWithFrontmatter(
 
     let serialized: string
     if (typeof value === 'string') {
-      // Quote strings that contain special characters
-      if (value.includes(':') || value.includes('#') || value.includes('\n')) {
+      const needsQuoting = value.includes(':') || value.includes('#') || value.includes('\n')
+        || value === '' || value === 'true' || value === 'false' || value === 'null'
+        || !isNaN(Number(value))
+      if (needsQuoting) {
         serialized = `"${value.replace(/"/g, '\\"')}"`
       } else {
         serialized = value
