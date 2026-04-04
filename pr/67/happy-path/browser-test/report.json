@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the Super Agent successfully opens a browser, navigates to https://example.com, retrieves the page title \"Example Domain\", and reports it back in the chat.",
+  "steps": [
+    "Navigated to http://localhost:47891 - Successfully loaded the Super Agent application with list of agents in sidebar and main content area showing \"Your Agents\"",
+    "Found and clicked the \"QA-20260404-020651-ng9b\" agent in the sidebar - Successfully opened the agent chat interface, showing \"Start a conversation with QA-20260404-020651-ng9b\" and an input field",
+    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field - Message was successfully typed and visible in the input field",
+    "Clicked the \"Send message\" button to send the message - Message was sent successfully, agent status changed to \"working\", and a new session \"Browser Navigation Test Session\" was created",
+    "Waited up to 3 minutes for a response - Response arrived within 20 seconds, well within the timeout window",
+    "Verified the response mentions \"Example Domain\" - Response clearly states \"The page title is **Example Domain**. It's the standard IANA example domain page with a single \"Learn more\" link.\" The response includes successful execution of multiple browser tool calls (Open Browser, Page Snapshot, Browser Command to get title, and Close Browser)"
+  ],
+  "bugs": [],
+  "durationMs": 87412,
+  "sessionId": "260a0514-c340-428d-982e-7a2c2f4875ae",
+  "cost": {
+    "inputTokens": 261,
+    "outputTokens": 2726,
+    "cacheCreationTokens": 38560,
+    "cacheReadTokens": 832965,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.145388
+  }
+}
