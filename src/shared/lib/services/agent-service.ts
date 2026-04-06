@@ -76,9 +76,8 @@ async function parseAgentClaudeMd(slug: string): Promise<AgentConfig | null> {
   if (!frontmatter.name) {
     console.warn(`Agent ${slug} has invalid CLAUDE.md: missing name`)
     frontmatter.name = slug
-  } else {
-    frontmatter.name = String(frontmatter.name)
   }
+  frontmatter.name = String(frontmatter.name)
 
   if (!frontmatter.createdAt) {
     // Use directory creation time as fallback
