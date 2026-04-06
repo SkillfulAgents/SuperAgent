@@ -14,6 +14,10 @@ import { Label } from '@renderer/components/ui/label'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Loader2, ExternalLink, AlertTriangle } from 'lucide-react'
 import { useSkillPRInfo, useCreateSkillPR } from '@renderer/hooks/use-agent-skills'
+import {
+  getPlatformSubmissionOutcome,
+  type PlatformSubmissionOutcome,
+} from './platform-submission-result'
 
 interface SkillPRDialogProps {
   open: boolean
@@ -38,6 +42,7 @@ export function SkillPRDialog({
   const [body, setBody] = useState('')
   const [newVersion, setNewVersion] = useState('')
   const [prUrl, setPrUrl] = useState<string | null>(null)
+  const [submissionOutcome, setSubmissionOutcome] = useState<PlatformSubmissionOutcome | null>(null)
 
   // Populate fields when AI suggestions arrive
   useEffect(() => {
@@ -55,6 +60,7 @@ export function SkillPRDialog({
       setBody('')
       setNewVersion('')
       setPrUrl(null)
+      setSubmissionOutcome(null)
       createPR.reset()
     }
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -62,6 +68,8 @@ export function SkillPRDialog({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!title.trim() || !body.trim()) return
+
+    setSubmissionOutcome(null)
 
     try {
       const result = await createPR.mutateAsync({
@@ -71,6 +79,14 @@ export function SkillPRDialog({
         body: body.trim(),
         newVersion: newVersion.trim() || undefined,
       })
+      const outcome = getPlatformSubmissionOutcome(result.prUrl)
+      setSubmissionOutcome(outcome)
+
+      if (outcome.kind === 'error') {
+        setPrUrl(null)
+        return
+      }
+
       setPrUrl(result.prUrl)
     } catch {
       // Error is handled by createPR.error
@@ -92,14 +108,10 @@ export function SkillPRDialog({
             <div className="py-6 space-y-3">
               <Alert>
                 <AlertDescription>
-                  {prUrl.startsWith('platform:')
-                    ? prUrl === 'platform:merged'
-                      ? 'Changes submitted and merged successfully.'
-                      : 'Changes submitted for review.'
-                    : 'Pull request created successfully.'}
+                  {submissionOutcome?.message ?? 'Pull request created successfully.'}
                 </AlertDescription>
               </Alert>
-              {!prUrl.startsWith('platform:') && (
+              {submissionOutcome?.showExternalLink !== false && (
                 <a
                   href={prUrl}
                   target="_blank"
@@ -184,6 +196,13 @@ export function SkillPRDialog({
                 <Alert variant="destructive">
                   <AlertTriangle className="h-4 w-4" />
                   <AlertDescription>{createPR.error.message}</AlertDescription>
+                </Alert>
+              )}
+
+              {submissionOutcome?.kind === 'error' && (
+                <Alert variant="destructive">
+                  <AlertTriangle className="h-4 w-4" />
+                  <AlertDescription>{submissionOutcome.message}</AlertDescription>
                 </Alert>
               )}
             </div>

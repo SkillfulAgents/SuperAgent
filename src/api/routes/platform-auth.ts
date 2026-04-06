@@ -45,6 +45,7 @@ platformAuth.post('/complete', async (c) => {
     token?: string
     email?: string | null
     label?: string | null
+    orgId?: string | null
     orgName?: string | null
     role?: string | null
   }>()
@@ -57,6 +58,7 @@ platformAuth.post('/complete', async (c) => {
     token: body.token,
     email: body.email,
     label: body.label,
+    orgId: body.orgId,
     orgName: body.orgName,
     role: body.role,
   })

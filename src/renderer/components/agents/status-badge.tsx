@@ -5,6 +5,9 @@ interface StatusBadgeProps {
     type: 'local' | 'up_to_date' | 'update_available' | 'locally_modified'
     skillsetId?: string
     skillsetName?: string
+    skillsetOrgId?: string
+    skillsetOrgName?: string
+    publishable?: boolean
     latestVersion?: string
     openPrUrl?: string
   }

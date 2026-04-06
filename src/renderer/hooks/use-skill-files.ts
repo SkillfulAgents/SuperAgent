@@ -1,5 +1,5 @@
 import { apiFetch } from '@renderer/lib/api'
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ApiSkillFileEntry } from '@shared/lib/types/api'
 
 export function useSkillFiles(agentSlug: string | null, skillDir: string | null) {
@@ -37,6 +37,8 @@ export function useSkillFileContent(
 }
 
 export function useSaveSkillFile() {
+  const queryClient = useQueryClient()
+
   return useMutation<
     { saved: boolean },
     Error,
@@ -53,6 +55,9 @@ export function useSaveSkillFile() {
       )
       if (!res.ok) throw new Error('Failed to save file')
       return res.json()
+    },
+    onSuccess: (_, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['agent-skills', vars.agentSlug] })
     },
   })
 }

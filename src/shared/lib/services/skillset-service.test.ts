@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import crypto from 'crypto'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
@@ -85,6 +86,7 @@ import {
   getSkillPublishInfo,
   validateSkillsetUrl,
   createSkillPR,
+  getSkillPRInfo,
   getInstalledSkillMetadata,
   getSkillsetRepoDir,
 } from './skillset-service'
@@ -124,12 +126,20 @@ describe('skillset-service', () => {
     skillDirName: string,
     skillMdContent: string,
     metadata?: InstalledSkillMetadata,
+    extraFiles?: Record<string, string>,
   ): Promise<string> {
     const skillDir = path.join(
       testDir, 'agents', agentSlug, 'workspace', '.claude', 'skills', skillDirName,
     )
     await fs.promises.mkdir(skillDir, { recursive: true })
     await fs.promises.writeFile(path.join(skillDir, 'SKILL.md'), skillMdContent, 'utf-8')
+    if (extraFiles) {
+      for (const [relativePath, content] of Object.entries(extraFiles)) {
+        const fullPath = path.join(skillDir, relativePath)
+        await fs.promises.mkdir(path.dirname(fullPath), { recursive: true })
+        await fs.promises.writeFile(fullPath, content, 'utf-8')
+      }
+    }
     if (metadata) {
       await fs.promises.writeFile(
         path.join(skillDir, '.skillset-metadata.json'),
@@ -184,6 +194,17 @@ describe('skillset-service', () => {
       addedAt: '2026-01-01T00:00:00.000Z',
       ...overrides,
     }
+  }
+
+  function hashTestSkillPackage(files: Record<string, string>): string {
+    const hash = crypto.createHash('sha256')
+    for (const relativePath of Object.keys(files).sort()) {
+      hash.update(relativePath, 'utf-8')
+      hash.update('\0', 'utf-8')
+      hash.update(files[relativePath], 'utf-8')
+      hash.update('\0', 'utf-8')
+    }
+    return hash.digest('hex')
   }
 
   function buildIndex(overrides: Partial<SkillsetIndex> = {}): SkillsetIndex {
@@ -250,6 +271,43 @@ describe('skillset-service', () => {
       expect(result[0].status).toEqual({ type: 'local' })
       expect(result[0].name).toBe('My Cool Skill')
       expect(result[0].path).toBe('my-cool-skill')
+    })
+
+    it('detects local modifications when a non-SKILL file changes', async () => {
+      const skillPath = 'skills/multi-file/SKILL.md'
+      const extraFiles = {
+        'sync/helper.py': 'print("v1")\n',
+      }
+      const meta = buildMetadata({
+        skillPath,
+        skillName: 'Multi File Skill',
+        originalContentHash: hashTestSkillPackage({
+          'SKILL.md': SKILL_MD_PLAIN,
+          ...extraFiles,
+        }),
+      })
+      const config = buildSkillsetConfig()
+      const index = buildIndex({
+        skills: [{ name: meta.skillName, path: skillPath, description: 'desc', version: '1.0.0' }],
+      })
+
+      await createSkillDir('test-agent', 'multi-file', SKILL_MD_PLAIN, meta, extraFiles)
+      await createSkillsetCache(config.id, index, {
+        [skillPath]: SKILL_MD_PLAIN,
+        'skills/multi-file/sync/helper.py': 'print("v1")\n',
+      })
+
+      const before = await getAgentSkillsWithStatus('test-agent', [config])
+      expect(before[0].status.type).toBe('up_to_date')
+
+      await fs.promises.writeFile(
+        path.join(testDir, 'agents', 'test-agent', 'workspace', '.claude', 'skills', 'multi-file', 'sync', 'helper.py'),
+        'print("v2")\n',
+        'utf-8',
+      )
+
+      const after = await getAgentSkillsWithStatus('test-agent', [config])
+      expect(after[0].status.type).toBe('locally_modified')
     })
 
     it('returns up_to_date when content matches and versions match', async () => {
@@ -469,7 +527,7 @@ Instructions here`
       await refreshAgentSkills('test-agent', [config])
 
       const updated = await readMetadata('test-agent', 'test-skill')
-      expect(updated.originalContentHash).toBe(contentHash(modifiedContent))
+      expect(updated.originalContentHash).toBe(hashTestSkillPackage({ 'SKILL.md': modifiedContent }))
       expect(updated.openPrUrl).toBeUndefined()
 
       // .skillset-original.md also updated
@@ -608,7 +666,7 @@ Instructions here`
       const meta = await readMetadata('test-agent', 'new-skill')
       expect(meta.skillsetId).toBe(config.id)
       expect(meta.openPrUrl).toBe('https://github.com/TestOrg/skills/pull/99')
-      expect(meta.originalContentHash).toBe(contentHash(SKILL_MD_PLAIN))
+      expect(meta.originalContentHash).toBe(hashTestSkillPackage({ 'SKILL.md': SKILL_MD_PLAIN }))
 
       const originalPath = path.join(
         testDir, 'agents', 'test-agent', 'workspace', '.claude', 'skills',
@@ -729,6 +787,62 @@ metadata:
       const result = await getSkillPublishInfo('test-agent', 'versioned-skill', skillsetConfig)
 
       expect(result.suggestedVersion).toBe('2.5.0')
+    })
+  })
+
+  describe('getSkillPRInfo', () => {
+    it('uses package diff when only auxiliary files changed', async () => {
+      const meta = buildMetadata({
+        skillPath: 'skills/word-counter/SKILL.md',
+        skillName: 'Word Counter',
+      })
+      await createSkillDir(
+        'test-agent',
+        'word-counter',
+        SKILL_MD_PLAIN,
+        meta,
+        { 'sync/helper.py': 'print("new")\n' },
+      )
+      await fs.promises.writeFile(
+        path.join(
+          testDir,
+          'agents',
+          'test-agent',
+          'workspace',
+          '.claude',
+          'skills',
+          'word-counter',
+          '.skillset-original.md',
+        ),
+        SKILL_MD_PLAIN,
+        'utf-8',
+      )
+      await createSkillsetCache(meta.skillsetId, buildIndex(), {
+        [meta.skillPath]: SKILL_MD_PLAIN,
+        'skills/word-counter/sync/helper.py': 'print("old")\n',
+      })
+      mockExecFileAsNoOp()
+      mockGetApiKey.mockReturnValue('sk-test-key')
+      mockAnthropicCreate.mockResolvedValue({
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            title: 'Update word counter helper logic',
+            body: 'Refreshes the helper implementation for word counting.',
+            version: '1.0.1',
+          }),
+        }],
+      })
+
+      const result = await getSkillPRInfo('test-agent', 'word-counter')
+
+      expect(result.suggestedTitle).toBe('Update word counter helper logic')
+      expect(mockAnthropicCreate).toHaveBeenCalledTimes(1)
+
+      const requestPayload = mockAnthropicCreate.mock.calls[0]?.[0] as {
+        messages?: Array<{ content?: string }>
+      }
+      expect(requestPayload.messages?.[0]?.content).toContain('Modified file: sync/helper.py')
     })
   })
 
@@ -1559,6 +1673,38 @@ Just content, no frontmatter at all.`
       // Content should be unchanged since there is no frontmatter to update
       expect(writtenContent).toBe(skillMd)
     })
+
+    it('copies non-SKILL files into the PR branch', async () => {
+      const skillPath = 'skills/multi-file/SKILL.md'
+      const meta = buildMetadata({
+        skillPath,
+        skillName: 'Multi File Skill',
+      })
+      const config = buildSkillsetConfig()
+      await createSkillDir(
+        'test-agent',
+        'multi-file',
+        SKILL_MD_PLAIN,
+        meta,
+        { 'sync/run.py': 'print("ship it")\n' },
+      )
+      await createSkillsetCache(config.id, buildIndex(), {
+        [skillPath]: SKILL_MD_PLAIN,
+        'skills/multi-file/sync/run.py': 'print("old")\n',
+      })
+
+      await createSkillPR('test-agent', 'multi-file', {
+        title: 'Update skill',
+        body: 'Updated',
+      })
+
+      const repoDir = getSkillsetRepoDir(config.id)
+      const writtenAuxFile = await fs.promises.readFile(
+        path.join(repoDir, 'skills', 'multi-file', 'sync', 'run.py'),
+        'utf-8',
+      )
+      expect(writtenAuxFile).toBe('print("ship it")\n')
+    })
   })
 
   // --------------------------------------------------------------------------
@@ -1680,6 +1826,39 @@ description:
         type: 'up_to_date',
         skillsetId: 'unknown-skillset',
         skillsetName: 'unknown-skillset',
+      })
+    })
+
+    it('treats hidden platform skillsets as local skills', async () => {
+      const skillContent = '# Test Skill\nOriginal content'
+      const meta = buildMetadata({
+        originalContentHash: contentHash(skillContent),
+        skillsetId: 'platform--skillsets/org_old/local--local',
+        provider: 'platform',
+        platformRepoId: 'skillsets/org_old/local',
+        skillsetName: 'local',
+      })
+      const config = buildSkillsetConfig({
+        id: 'platform--skillsets/org_old/local--local',
+        name: 'local',
+        provider: 'platform',
+        platformRepoId: 'skillsets/org_old/local',
+        platformOrgId: 'org_old',
+        platformOrgName: 'Old Org',
+      })
+
+      await createSkillDir('test-agent', 'hidden-platform-skill', skillContent, meta)
+
+      const result = await getAgentSkillsWithStatus('test-agent', [config], {
+        currentPlatformOrgId: 'org_current',
+      })
+      expect(result[0].status).toEqual({
+        type: 'local',
+        skillsetId: 'platform--skillsets/org_old/local--local',
+        skillsetName: 'local',
+        skillsetOrgId: 'org_old',
+        skillsetOrgName: 'Old Org',
+        publishable: false,
       })
     })
 
@@ -1862,6 +2041,30 @@ metadata:
         (s: { path: string }) => s.path === 'skills/default-ver/SKILL.md',
       )
       expect(entry.version).toBe('1.0.0')
+    })
+
+    it('publishes non-SKILL files alongside the skill definition', async () => {
+      const config = buildSkillsetConfig()
+      await createSkillDir(
+        'test-agent',
+        'packaged-skill',
+        SKILL_MD_PLAIN,
+        undefined,
+        { 'sync/helper.py': 'print("helper")\n' },
+      )
+      await createSkillsetCache(config.id, buildIndex({ skills: [] }))
+
+      await publishSkillToSkillset('test-agent', 'packaged-skill', config, {
+        title: 'Add skill',
+        body: 'Adding',
+      })
+
+      const repoDir = getSkillsetRepoDir(config.id)
+      const writtenAuxFile = await fs.promises.readFile(
+        path.join(repoDir, 'skills', 'packaged-skill', 'sync', 'helper.py'),
+        'utf-8',
+      )
+      expect(writtenAuxFile).toBe('print("helper")\n')
     })
   })
 })

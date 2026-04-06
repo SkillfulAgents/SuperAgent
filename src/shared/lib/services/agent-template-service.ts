@@ -52,6 +52,7 @@ import {
   GIT_ENV,
   getEffectiveSkillsetName,
   getEffectiveRepoId,
+  resolvePlatformSkillsetScope,
   ensureGhAuthenticated,
   copyDirectoryFiltered,
   writeJsonFile,
@@ -715,16 +716,37 @@ export async function collectAgentRequiredEnvVars(
 export async function getAgentTemplateStatus(
   agentSlug: string,
   skillsets: SkillsetConfig[],
+  options?: {
+    currentPlatformOrgId?: string | null
+  },
 ): Promise<AgentTemplateStatus> {
   const meta = await getInstalledAgentMetadata(agentSlug)
   if (!meta) {
     return { type: 'local' }
   }
 
-  const skillsetName =
-    skillsets.find((s) => s.id === meta.skillsetId)?.name
-    || getEffectiveSkillsetName(meta)
-    || meta.skillsetId
+  const skillsetConfig = skillsets.find((s) => s.id === meta.skillsetId)
+  const {
+    skillsetName,
+    skillsetOrgId,
+    skillsetOrgName,
+    isCurrentPlatformOrg,
+  } = resolvePlatformSkillsetScope({
+    provider: meta.provider,
+    currentPlatformOrgId: options?.currentPlatformOrgId,
+    config: skillsetConfig,
+    meta,
+  })
+  if (meta.provider === 'platform' && !isCurrentPlatformOrg) {
+    return {
+      type: 'local',
+      skillsetId: meta.skillsetId,
+      skillsetName,
+      skillsetOrgId,
+      skillsetOrgName,
+      publishable: false,
+    }
+  }
   const workspaceDir = getAgentWorkspaceDir(agentSlug)
 
   if (meta.pendingQueueItemId && meta.provider === 'platform') {
@@ -753,11 +775,11 @@ export async function getAgentTemplateStatus(
   const currentHash = await computeAgentTemplateHash(workspaceDir)
 
   if (currentHash !== meta.originalContentHash) {
-    return { type: 'locally_modified', skillsetId: meta.skillsetId, skillsetName, openPrUrl: meta.openPrUrl }
+    return { type: 'locally_modified', skillsetId: meta.skillsetId, skillsetName, skillsetOrgId, skillsetOrgName, openPrUrl: meta.openPrUrl }
   }
 
   if (meta.openPrUrl) {
-    return { type: 'locally_modified', skillsetId: meta.skillsetId, skillsetName, openPrUrl: meta.openPrUrl }
+    return { type: 'locally_modified', skillsetId: meta.skillsetId, skillsetName, skillsetOrgId, skillsetOrgName, openPrUrl: meta.openPrUrl }
   }
 
   // Check for updates
@@ -769,11 +791,13 @@ export async function getAgentTemplateStatus(
       type: 'update_available',
       skillsetId: meta.skillsetId,
       skillsetName,
+      skillsetOrgId,
+      skillsetOrgName,
       latestVersion: agentEntry.version,
     }
   }
 
-  return { type: 'up_to_date', skillsetId: meta.skillsetId, skillsetName }
+  return { type: 'up_to_date', skillsetId: meta.skillsetId, skillsetName, skillsetOrgId, skillsetOrgName }
 }
 
 /**
@@ -1076,8 +1100,7 @@ Rules for the version bump:
       suggestedBody: parsed.body || fallback.suggestedBody,
       suggestedVersion: parsed.version || fallback.suggestedVersion,
     }
-  } catch (error) {
-    console.error('Failed to generate agent PR suggestions:', error)
+  } catch {
     return fallback
   }
 }
@@ -1148,8 +1171,7 @@ Generate:
       suggestedBody: parsed.body || fallback.suggestedBody,
       suggestedVersion: parsed.version || fallback.suggestedVersion,
     }
-  } catch (error) {
-    console.error('Failed to generate agent publish suggestions:', error)
+  } catch {
     return fallback
   }
 }

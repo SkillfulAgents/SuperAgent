@@ -25,6 +25,7 @@ import {
 import { StatusBadge } from '@renderer/components/agents/status-badge'
 import { AgentTemplatePRDialog } from '@renderer/components/agents/agent-template-pr-dialog'
 import { AgentTemplatePublishDialog } from '@renderer/components/agents/agent-template-publish-dialog'
+import { OrgSourceLabel } from '@renderer/components/agents/org-source-label'
 import { Trash2, Download, HardDriveDownload, RefreshCw, GitPullRequest, Upload, Loader2 } from 'lucide-react'
 
 interface GeneralTabProps {
@@ -44,6 +45,7 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
   const updateTemplate = useUpdateAgentTemplate()
   const exportTemplate = useExportAgentTemplate()
   const exportFull = useExportAgentFull()
+  const templateOrganizationLabel = templateStatus?.skillsetOrgName || null
 
   const handleDelete = async () => {
     setIsDeleting(true)
@@ -71,16 +73,12 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
       </div>
 
       {/* Template Status */}
-      {templateStatus && templateStatus.type !== 'local' && (
+      {templateStatus && (templateStatus.type !== 'local' || !!templateOrganizationLabel) && (
         <div className="space-y-2">
           <h3 className="text-sm font-medium">Template Status</h3>
           <div className="flex items-center gap-2 flex-wrap">
             <StatusBadge status={templateStatus} />
-            {templateStatus.skillsetName && (
-              <span className="text-xs text-muted-foreground">
-                from {templateStatus.skillsetName}
-              </span>
-            )}
+            <OrgSourceLabel orgName={templateOrganizationLabel} />
           </div>
           <div className="flex gap-2 mt-2">
             {templateStatus.type === 'update_available' && (
@@ -163,7 +161,7 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
-          {templateStatus?.type === 'local' && (
+          {templateStatus?.type === 'local' && templateStatus.publishable !== false && (
             <Button
               size="sm"
               variant="outline"

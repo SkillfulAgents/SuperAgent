@@ -2,7 +2,7 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import path from 'path'
 import fs from 'fs'
-import type { SkillProvider } from '@shared/lib/types/skillset'
+import type { SkillProvider, SkillsetConfig } from '@shared/lib/types/skillset'
 import { ensureDirectory } from '@shared/lib/utils/file-storage'
 
 const execFileAsync = promisify(execFile)
@@ -33,6 +33,96 @@ export function getEffectiveRepoId(
   skillsetId: string,
 ): string {
   return (provider === 'platform' && platformRepoId) ? platformRepoId : skillsetId
+}
+
+/**
+ * Platform repo IDs are namespaced as {namespace}/{orgId}/{skillsetName}.
+ */
+export function getPlatformOrgIdFromRepoId(platformRepoId?: string): string | undefined {
+  if (!platformRepoId) return undefined
+  const parts = platformRepoId.split('/')
+  return parts.length >= 3 ? parts[1] : undefined
+}
+
+/**
+ * Prefer stored org names; fall back to legacy platform descriptions like
+ * "Default skillset for DataWizz Demo Org".
+ */
+export function getPlatformOrgName(config?: Pick<SkillsetConfig, 'platformOrgName' | 'description'>): string | undefined {
+  if (!config) return undefined
+  if (config.platformOrgName) return config.platformOrgName
+
+  const prefix = 'Default skillset for '
+  if (config.description?.startsWith(prefix)) {
+    return config.description.slice(prefix.length).trim() || undefined
+  }
+
+  return undefined
+}
+
+export function resolvePlatformSkillsetScope(params: {
+  provider?: SkillProvider
+  currentPlatformOrgId?: string | null
+  config?: Pick<SkillsetConfig, 'name' | 'description' | 'platformOrgId' | 'platformOrgName' | 'platformRepoId'>
+  meta: {
+    skillsetId: string
+    skillsetName?: string
+    platformRepoId?: string
+  }
+}) {
+  const skillsetOrgId =
+    params.config?.platformOrgId
+    || getPlatformOrgIdFromRepoId(params.config?.platformRepoId)
+    || getPlatformOrgIdFromRepoId(params.meta.platformRepoId)
+  const skillsetOrgName = getPlatformOrgName(params.config)
+  const skillsetName =
+    params.config?.name
+    || getEffectiveSkillsetName(params.meta)
+    || params.meta.skillsetId
+  const isCurrentPlatformOrg =
+    params.provider !== 'platform'
+    || !skillsetOrgId
+    || skillsetOrgId === params.currentPlatformOrgId
+
+  return {
+    skillsetName,
+    skillsetOrgId,
+    skillsetOrgName,
+    isCurrentPlatformOrg,
+  }
+}
+
+/**
+ * Hide platform skillsets that do not belong to the currently connected org.
+ * Non-platform skillsets are always kept.
+ */
+export function filterSkillsetsForCurrentPlatformOrg(
+  configs: SkillsetConfig[],
+  currentPlatformOrgId: string | null,
+): SkillsetConfig[] {
+  return configs.filter((config) => {
+    if (config.provider !== 'platform') return true
+    if (!currentPlatformOrgId) return false
+    return config.platformOrgId === currentPlatformOrgId
+  })
+}
+
+export function buildSkillsetScope(
+  configs: SkillsetConfig[],
+  currentPlatformOrgId: string | null,
+) {
+  return {
+    allSkillsets: configs,
+    visibleSkillsets: filterSkillsetsForCurrentPlatformOrg(configs, currentPlatformOrgId),
+    currentPlatformOrgId,
+  }
+}
+
+export function findVisibleSkillsetById(
+  scope: ReturnType<typeof buildSkillsetScope>,
+  skillsetId: string,
+): SkillsetConfig | undefined {
+  return scope.visibleSkillsets.find((skillset) => skillset.id === skillsetId)
 }
 
 /**

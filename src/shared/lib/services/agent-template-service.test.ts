@@ -1449,6 +1449,48 @@ describe('getAgentTemplateStatus', () => {
       expect(result.skillsetName).toBe('orphaned-skillset-id')
     }
   })
+
+  it('returns local when platform template belongs to a hidden org skillset', async () => {
+    const workspaceDir = createWorkspace('hidden-platform-agent', {
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+    })
+
+    const currentHash = await computeAgentTemplateHash(workspaceDir)
+    const meta: InstalledAgentMetadata = {
+      skillsetId: 'platform--skillsets/org_old/local--local',
+      skillsetUrl: 'https://platform.example/skills/repo',
+      provider: 'platform',
+      platformRepoId: 'skillsets/org_old/local',
+      skillsetName: 'local',
+      agentName: 'Hidden Platform Agent',
+      agentPath: 'agents/hidden-platform-agent/',
+      installedVersion: '1.0.0',
+      installedAt: '2026-01-01T00:00:00.000Z',
+      originalContentHash: currentHash,
+    }
+    await writeMetadata('hidden-platform-agent', meta)
+
+    const config = buildSkillsetConfig({
+      id: 'platform--skillsets/org_old/local--local',
+      name: 'local',
+      provider: 'platform',
+      platformRepoId: 'skillsets/org_old/local',
+      platformOrgId: 'org_old',
+      platformOrgName: 'Old Org',
+    })
+
+    const result = await getAgentTemplateStatus('hidden-platform-agent', [config], {
+      currentPlatformOrgId: 'org_current',
+    })
+    expect(result).toEqual({
+      type: 'local',
+      skillsetId: 'platform--skillsets/org_old/local--local',
+      skillsetName: 'local',
+      skillsetOrgId: 'org_old',
+      skillsetOrgName: 'Old Org',
+      publishable: false,
+    })
+  })
 })
 
 // ============================================================================

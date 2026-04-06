@@ -13,13 +13,18 @@ import {
   ensureSkillsetCached,
 } from '@shared/lib/services/skillset-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
-import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import { getPlatformAccessToken, getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
 import type { SkillsetConfig, SkillProvider } from '@shared/lib/types/skillset'
 import type { ApiSkillsetConfig } from '@shared/lib/types/api'
+import { buildSkillsetScope } from '@shared/lib/utils/skillset-helpers'
 
 const skillsets = new Hono()
 
 skillsets.use('*', Authenticated())
+
+function getSkillsetScope() {
+  return buildSkillsetScope(getSettings().skillsets || [], getPlatformAuthStatus().orgId)
+}
 
 function configToApiResponse(config: SkillsetConfig, skillCount: number, agentCount: number = 0): ApiSkillsetConfig {
   return {
@@ -37,11 +42,10 @@ function configToApiResponse(config: SkillsetConfig, skillCount: number, agentCo
 // GET /api/skillsets - List configured skillsets
 skillsets.get('/', async (c) => {
   try {
-    const settings = getSettings()
-    const configs = settings.skillsets || []
+    const scope = getSkillsetScope()
     const result: ApiSkillsetConfig[] = []
 
-    for (const config of configs) {
+    for (const config of scope.visibleSkillsets) {
       const index = await getSkillsetIndex(config.id, {
         platformRepoId: config.platformRepoId,
       })
@@ -238,15 +242,33 @@ skillsets.post('/sync-platform', IsAdmin(), async (c) => {
     }
 
     const settings = getSettings()
+    const platformAuth = getPlatformAuthStatus()
+    const currentPlatformOrgId = platformAuth.orgId
+    const currentPlatformOrgName = platformAuth.orgName
     const existing = settings.skillsets || []
     const added: SkillsetConfig[] = []
+    let updatedExisting = false
 
     for (const remote of data.skillsets) {
       const skillsetId = `platform--${remote.repoId}--${remote.name}`
       console.log('[sync-platform] processing remote: name=%s repoId=%s → skillsetId=%s', remote.name, remote.repoId, skillsetId)
 
-      if (existing.some((s) => s.id === skillsetId)) {
-        console.log('[sync-platform] already registered, skip')
+      const existingConfig = existing.find((s) => s.id === skillsetId)
+      if (existingConfig) {
+        if (
+          existingConfig.platformOrgId !== currentPlatformOrgId
+          || existingConfig.name !== remote.name
+          || existingConfig.description !== (remote.description || '')
+        ) {
+          existingConfig.name = remote.name
+          existingConfig.description = remote.description || ''
+          existingConfig.platformOrgId = currentPlatformOrgId ?? undefined
+          existingConfig.platformOrgName = currentPlatformOrgName ?? undefined
+          updatedExisting = true
+          console.log('[sync-platform] updated existing config: %s', JSON.stringify(existingConfig))
+        } else {
+          console.log('[sync-platform] already registered, skip')
+        }
         continue
       }
 
@@ -258,18 +280,22 @@ skillsets.post('/sync-platform', IsAdmin(), async (c) => {
         addedAt: new Date().toISOString(),
         provider: 'platform',
         platformRepoId: remote.repoId,
+        ...(currentPlatformOrgId ? { platformOrgId: currentPlatformOrgId } : {}),
+        ...(currentPlatformOrgName ? { platformOrgName: currentPlatformOrgName } : {}),
       }
       existing.push(config)
       added.push(config)
       console.log('[sync-platform] added new config: %s', JSON.stringify(config))
     }
 
-    if (added.length > 0) {
+    if (added.length > 0 || updatedExisting) {
       updateSettings({ ...settings, skillsets: existing })
-      console.log('[sync-platform] saved %d new configs to settings', added.length)
+      console.log('[sync-platform] saved config changes to settings (added=%d updated=%s)', added.length, updatedExisting)
     }
 
-    const allPlatform = existing.filter((s) => s.provider === 'platform' && s.platformRepoId)
+    const allPlatform = existing.filter(
+      (s) => s.provider === 'platform' && s.platformRepoId && s.platformOrgId === currentPlatformOrgId,
+    )
     console.log('[sync-platform] will ensure clone for %d platform skillsets', allPlatform.length)
     const cloned = new Set<string>()
     for (const config of allPlatform) {

@@ -14,6 +14,10 @@ import { Label } from '@renderer/components/ui/label'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Loader2, ExternalLink, AlertTriangle } from 'lucide-react'
 import { useAgentTemplatePRInfo, useCreateAgentTemplatePR } from '@renderer/hooks/use-agent-templates'
+import {
+  getPlatformSubmissionOutcome,
+  type PlatformSubmissionOutcome,
+} from './platform-submission-result'
 
 interface AgentTemplatePRDialogProps {
   open: boolean
@@ -35,6 +39,7 @@ export function AgentTemplatePRDialog({
   const [body, setBody] = useState('')
   const [newVersion, setNewVersion] = useState('')
   const [prUrl, setPrUrl] = useState<string | null>(null)
+  const [submissionOutcome, setSubmissionOutcome] = useState<PlatformSubmissionOutcome | null>(null)
 
   useEffect(() => {
     if (prInfo) {
@@ -50,6 +55,7 @@ export function AgentTemplatePRDialog({
       setBody('')
       setNewVersion('')
       setPrUrl(null)
+      setSubmissionOutcome(null)
       createPR.reset()
     }
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -65,6 +71,14 @@ export function AgentTemplatePRDialog({
         body: body.trim(),
         newVersion: newVersion.trim() || undefined,
       })
+      const outcome = getPlatformSubmissionOutcome(result.prUrl)
+      setSubmissionOutcome(outcome)
+
+      if (outcome.kind === 'error') {
+        setPrUrl(null)
+        return
+      }
+
       setPrUrl(result.prUrl)
     } catch {
       // Error is handled by createPR.error
@@ -86,14 +100,10 @@ export function AgentTemplatePRDialog({
             <div className="py-6 space-y-3">
               <Alert>
                 <AlertDescription>
-                  {prUrl.startsWith('platform:')
-                    ? prUrl === 'platform:merged'
-                      ? 'Changes submitted and merged successfully.'
-                      : 'Changes submitted for review.'
-                    : 'Pull request created successfully.'}
+                  {submissionOutcome?.message ?? 'Pull request created successfully.'}
                 </AlertDescription>
               </Alert>
-              {!prUrl.startsWith('platform:') && (
+              {submissionOutcome?.showExternalLink !== false && (
                 <a
                   href={prUrl}
                   target="_blank"
@@ -175,6 +185,13 @@ export function AgentTemplatePRDialog({
                 <Alert variant="destructive">
                   <AlertTriangle className="h-4 w-4" />
                   <AlertDescription>{createPR.error.message}</AlertDescription>
+                </Alert>
+              )}
+
+              {submissionOutcome?.kind === 'error' && (
+                <Alert variant="destructive">
+                  <AlertTriangle className="h-4 w-4" />
+                  <AlertDescription>{submissionOutcome.message}</AlertDescription>
                 </Alert>
               )}
             </div>

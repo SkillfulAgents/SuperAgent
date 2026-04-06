@@ -159,6 +159,7 @@ export interface PlatformAuthSettings {
   tokenPreview: string
   email: string | null
   label: string | null
+  orgId: string | null
   orgName: string | null
   role: string | null
   createdAt: string

@@ -31,12 +31,14 @@ describe('platform-auth-service', () => {
       token: 'plat_superagent_token_1234567890abcdef',
       email: 'user@example.com',
       label: 'SuperAgent',
+      orgId: 'org_test_123',
     })
 
     expect(status).toMatchObject({
       connected: true,
       email: 'user@example.com',
       label: 'SuperAgent',
+      orgId: 'org_test_123',
     })
     expect(status.tokenPreview).toBe('plat_s...cdef')
     expect(getPlatformAccessToken('local')).toBe('plat_superagent_token_1234567890abcdef')

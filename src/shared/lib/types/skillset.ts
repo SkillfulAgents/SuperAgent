@@ -42,6 +42,8 @@ export interface SkillsetConfig {
   addedAt: string // ISO date
   provider?: SkillProvider // defaults to 'github'
   platformRepoId?: string // CodeStorage repo ID for platform provider
+  platformOrgId?: string // owning org ID for platform provider
+  platformOrgName?: string // owning org name for platform provider
 }
 
 // ============================================================================
@@ -56,7 +58,7 @@ export interface InstalledSkillMetadata {
   skillPath: string // path within skillset repo
   installedVersion: string
   installedAt: string // ISO date
-  originalContentHash: string // SHA-256 of SKILL.md at install time
+  originalContentHash: string // SHA-256 of the installed skill package at install time
   openPrUrl?: string // URL of an open PR for local changes
   provider?: SkillProvider // defaults to 'github'
   platformRepoId?: string
@@ -87,10 +89,37 @@ export interface SkillFrontmatterMetadata {
 
 /** Skill status for UI display */
 export type SkillStatus =
-  | { type: 'local' }
-  | { type: 'up_to_date'; skillsetId: string; skillsetName: string }
-  | { type: 'update_available'; skillsetId: string; skillsetName: string; latestVersion: string }
-  | { type: 'locally_modified'; skillsetId: string; skillsetName: string; openPrUrl?: string }
+  | {
+    type: 'local'
+    skillsetId?: string
+    skillsetName?: string
+    skillsetOrgId?: string
+    skillsetOrgName?: string
+    publishable?: boolean
+  }
+  | {
+    type: 'up_to_date'
+    skillsetId: string
+    skillsetName: string
+    skillsetOrgId?: string
+    skillsetOrgName?: string
+  }
+  | {
+    type: 'update_available'
+    skillsetId: string
+    skillsetName: string
+    skillsetOrgId?: string
+    skillsetOrgName?: string
+    latestVersion: string
+  }
+  | {
+    type: 'locally_modified'
+    skillsetId: string
+    skillsetName: string
+    skillsetOrgId?: string
+    skillsetOrgName?: string
+    openPrUrl?: string
+  }
 
 /** Extended skill info with status */
 export interface SkillWithStatus {
@@ -141,10 +170,37 @@ export interface InstalledAgentMetadata {
 
 /** Agent template status (mirrors SkillStatus) */
 export type AgentTemplateStatus =
-  | { type: 'local' }
-  | { type: 'up_to_date'; skillsetId: string; skillsetName: string }
-  | { type: 'update_available'; skillsetId: string; skillsetName: string; latestVersion: string }
-  | { type: 'locally_modified'; skillsetId: string; skillsetName: string; openPrUrl?: string }
+  | {
+    type: 'local'
+    skillsetId?: string
+    skillsetName?: string
+    skillsetOrgId?: string
+    skillsetOrgName?: string
+    publishable?: boolean
+  }
+  | {
+    type: 'up_to_date'
+    skillsetId: string
+    skillsetName: string
+    skillsetOrgId?: string
+    skillsetOrgName?: string
+  }
+  | {
+    type: 'update_available'
+    skillsetId: string
+    skillsetName: string
+    skillsetOrgId?: string
+    skillsetOrgName?: string
+    latestVersion: string
+  }
+  | {
+    type: 'locally_modified'
+    skillsetId: string
+    skillsetName: string
+    skillsetOrgId?: string
+    skillsetOrgName?: string
+    openPrUrl?: string
+  }
 
 /** An agent available from a skillset that is not yet installed */
 export interface DiscoverableAgent {

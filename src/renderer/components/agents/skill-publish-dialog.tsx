@@ -16,6 +16,10 @@ import { Loader2, ExternalLink, AlertTriangle, ChevronLeft } from 'lucide-react'
 import { useSkillPublishInfo, usePublishSkill } from '@renderer/hooks/use-agent-skills'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
 import type { ApiSkillsetConfig } from '@shared/lib/types/api'
+import {
+  getPlatformSubmissionOutcome,
+  type PlatformSubmissionOutcome,
+} from './platform-submission-result'
 
 interface SkillPublishDialogProps {
   open: boolean
@@ -38,6 +42,7 @@ export function SkillPublishDialog({
   const [body, setBody] = useState('')
   const [newVersion, setNewVersion] = useState('')
   const [prUrl, setPrUrl] = useState<string | null>(null)
+  const [submissionOutcome, setSubmissionOutcome] = useState<PlatformSubmissionOutcome | null>(null)
 
   const { data: publishInfo, isLoading: isLoadingInfo, error: infoError } = useSkillPublishInfo(
     step === 'form' ? agentSlug : null,
@@ -64,6 +69,7 @@ export function SkillPublishDialog({
       setBody('')
       setNewVersion('')
       setPrUrl(null)
+      setSubmissionOutcome(null)
       publishSkill.reset()
     }
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -79,12 +85,15 @@ export function SkillPublishDialog({
     setTitle('')
     setBody('')
     setNewVersion('')
+    setSubmissionOutcome(null)
     publishSkill.reset()
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!title.trim() || !body.trim() || !selectedSkillset) return
+
+    setSubmissionOutcome(null)
 
     try {
       const result = await publishSkill.mutateAsync({
@@ -95,6 +104,14 @@ export function SkillPublishDialog({
         body: body.trim(),
         newVersion: newVersion.trim() || undefined,
       })
+      const outcome = getPlatformSubmissionOutcome(result.prUrl)
+      setSubmissionOutcome(outcome)
+
+      if (outcome.kind === 'error') {
+        setPrUrl(null)
+        return
+      }
+
       setPrUrl(result.prUrl)
     } catch {
       // Error is handled by publishSkill.error
@@ -160,18 +177,20 @@ export function SkillPublishDialog({
               <div className="py-6 space-y-3">
                 <Alert>
                   <AlertDescription>
-                    Pull request created successfully.
+                    {submissionOutcome?.message ?? 'Pull request created successfully.'}
                   </AlertDescription>
                 </Alert>
-                <a
-                  href={prUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-2 text-sm text-primary hover:underline"
-                >
-                  <ExternalLink className="h-4 w-4" />
-                  {prUrl}
-                </a>
+                {submissionOutcome?.showExternalLink !== false && (
+                  <a
+                    href={prUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-2 text-sm text-primary hover:underline"
+                  >
+                    <ExternalLink className="h-4 w-4" />
+                    {prUrl}
+                  </a>
+                )}
               </div>
             ) : (
               <div className="py-4 space-y-4">
@@ -243,6 +262,13 @@ export function SkillPublishDialog({
                   <Alert variant="destructive">
                     <AlertTriangle className="h-4 w-4" />
                     <AlertDescription>{publishSkill.error.message}</AlertDescription>
+                  </Alert>
+                )}
+
+                {submissionOutcome?.kind === 'error' && (
+                  <Alert variant="destructive">
+                    <AlertTriangle className="h-4 w-4" />
+                    <AlertDescription>{submissionOutcome.message}</AlertDescription>
                   </Alert>
                 )}
               </div>

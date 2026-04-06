@@ -6,6 +6,7 @@ import { StatusBadge } from './status-badge'
 import { SkillPRDialog } from './skill-pr-dialog'
 import { SkillPublishDialog } from './skill-publish-dialog'
 import { SkillContextMenu } from './skill-context-menu'
+import { OrgSourceLabel } from './org-source-label'
 import type { ApiSkillWithStatus } from '@shared/lib/types/api'
 
 interface AgentSkillCardProps {
@@ -17,6 +18,7 @@ export function AgentSkillCard({ skill, agentSlug }: AgentSkillCardProps) {
   const updateSkill = useUpdateSkill()
   const [prDialogOpen, setPrDialogOpen] = useState(false)
   const [publishDialogOpen, setPublishDialogOpen] = useState(false)
+  const organizationLabel = skill.status.skillsetOrgName || null
 
   return (
     <SkillContextMenu skill={skill} agentSlug={agentSlug}>
@@ -30,11 +32,9 @@ export function AgentSkillCard({ skill, agentSlug }: AgentSkillCardProps) {
           <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">
             {skill.description}
           </p>
-          {skill.status.skillsetName && (
-            <p className="text-xs text-muted-foreground mt-1">
-              From: {skill.status.skillsetName}
-            </p>
-          )}
+          <div className="mt-1">
+            <OrgSourceLabel orgName={organizationLabel} />
+          </div>
         </div>
         <div className="flex gap-1 shrink-0">
           {skill.status.type === 'update_available' && (
@@ -66,7 +66,7 @@ export function AgentSkillCard({ skill, agentSlug }: AgentSkillCardProps) {
               Open PR
             </Button>
           )}
-          {skill.status.type === 'local' && (
+          {skill.status.type === 'local' && skill.status.publishable !== false && (
             <Button
               size="icon"
               variant="ghost"

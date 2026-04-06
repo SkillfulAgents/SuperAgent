@@ -7,6 +7,7 @@ export interface PlatformAuthStatus {
   tokenPreview: string | null
   email: string | null
   label: string | null
+  orgId: string | null
   orgName: string | null
   role: string | null
   createdAt: string | null
@@ -17,6 +18,7 @@ interface SavePlatformAuthInput {
   token: string
   email?: string | null
   label?: string | null
+  orgId?: string | null
   orgName?: string | null
   role?: string | null
 }
@@ -46,6 +48,7 @@ export function getPlatformAuthStatus(_userId?: string): PlatformAuthStatus {
       tokenPreview: null,
       email: null,
       label: null,
+      orgId: null,
       orgName: null,
       role: null,
       createdAt: null,
@@ -58,6 +61,7 @@ export function getPlatformAuthStatus(_userId?: string): PlatformAuthStatus {
     tokenPreview: record.tokenPreview,
     email: record.email,
     label: record.label,
+    orgId: record.orgId,
     orgName: record.orgName,
     role: record.role,
     createdAt: record.createdAt,
@@ -78,6 +82,7 @@ export function savePlatformAuth(_userId: string, input: SavePlatformAuthInput):
     tokenPreview: buildTokenPreview(trimmedToken),
     email: input.email?.trim() || null,
     label: input.label?.trim() || null,
+    orgId: input.orgId?.trim() || null,
     orgName: input.orgName?.trim() || null,
     role: input.role?.trim() || null,
     createdAt: existing?.createdAt ?? now,
