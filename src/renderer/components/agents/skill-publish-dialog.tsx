@@ -16,10 +16,7 @@ import { Loader2, ExternalLink, AlertTriangle, ChevronLeft } from 'lucide-react'
 import { useSkillPublishInfo, usePublishSkill } from '@renderer/hooks/use-agent-skills'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
 import type { ApiSkillsetConfig } from '@shared/lib/types/api'
-import {
-  getPlatformSubmissionOutcome,
-  type PlatformSubmissionOutcome,
-} from './platform-submission-result'
+import { getPlatformSubmissionRejectedMessage } from './platform-submission'
 
 interface SkillPublishDialogProps {
   open: boolean
@@ -42,7 +39,7 @@ export function SkillPublishDialog({
   const [body, setBody] = useState('')
   const [newVersion, setNewVersion] = useState('')
   const [prUrl, setPrUrl] = useState<string | null>(null)
-  const [submissionOutcome, setSubmissionOutcome] = useState<PlatformSubmissionOutcome | null>(null)
+  const [rejectionMessage, setRejectionMessage] = useState<string | null>(null)
 
   const { data: publishInfo, isLoading: isLoadingInfo, error: infoError } = useSkillPublishInfo(
     step === 'form' ? agentSlug : null,
@@ -69,7 +66,7 @@ export function SkillPublishDialog({
       setBody('')
       setNewVersion('')
       setPrUrl(null)
-      setSubmissionOutcome(null)
+      setRejectionMessage(null)
       publishSkill.reset()
     }
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -85,7 +82,7 @@ export function SkillPublishDialog({
     setTitle('')
     setBody('')
     setNewVersion('')
-    setSubmissionOutcome(null)
+    setRejectionMessage(null)
     publishSkill.reset()
   }
 
@@ -93,7 +90,7 @@ export function SkillPublishDialog({
     e.preventDefault()
     if (!title.trim() || !body.trim() || !selectedSkillset) return
 
-    setSubmissionOutcome(null)
+    setRejectionMessage(null)
 
     try {
       const result = await publishSkill.mutateAsync({
@@ -104,10 +101,9 @@ export function SkillPublishDialog({
         body: body.trim(),
         newVersion: newVersion.trim() || undefined,
       })
-      const outcome = getPlatformSubmissionOutcome(result.prUrl)
-      setSubmissionOutcome(outcome)
-
-      if (outcome.kind === 'error') {
+      const nextRejectionMessage = getPlatformSubmissionRejectedMessage(result.prUrl)
+      if (nextRejectionMessage) {
+        setRejectionMessage(nextRejectionMessage)
         setPrUrl(null)
         return
       }
@@ -177,10 +173,12 @@ export function SkillPublishDialog({
               <div className="py-6 space-y-3">
                 <Alert>
                   <AlertDescription>
-                    {submissionOutcome?.message ?? 'Pull request created successfully.'}
+                    {prUrl.startsWith('platform:')
+                      ? 'Changes submitted successfully.'
+                      : 'Pull request created successfully.'}
                   </AlertDescription>
                 </Alert>
-                {submissionOutcome?.showExternalLink !== false && (
+                {!prUrl.startsWith('platform:') && (
                   <a
                     href={prUrl}
                     target="_blank"
@@ -265,10 +263,10 @@ export function SkillPublishDialog({
                   </Alert>
                 )}
 
-                {submissionOutcome?.kind === 'error' && (
+                {rejectionMessage && (
                   <Alert variant="destructive">
                     <AlertTriangle className="h-4 w-4" />
-                    <AlertDescription>{submissionOutcome.message}</AlertDescription>
+                    <AlertDescription>{rejectionMessage}</AlertDescription>
                   </Alert>
                 )}
               </div>

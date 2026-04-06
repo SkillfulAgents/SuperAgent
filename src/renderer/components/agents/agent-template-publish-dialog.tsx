@@ -16,10 +16,7 @@ import { Loader2, ExternalLink, AlertTriangle, ChevronLeft } from 'lucide-react'
 import { useAgentTemplatePublishInfo, usePublishAgentTemplate } from '@renderer/hooks/use-agent-templates'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
 import type { ApiSkillsetConfig } from '@shared/lib/types/api'
-import {
-  getPlatformSubmissionOutcome,
-  type PlatformSubmissionOutcome,
-} from './platform-submission-result'
+import { getPlatformSubmissionRejectedMessage } from './platform-submission'
 
 interface AgentTemplatePublishDialogProps {
   open: boolean
@@ -40,7 +37,7 @@ export function AgentTemplatePublishDialog({
   const [body, setBody] = useState('')
   const [newVersion, setNewVersion] = useState('')
   const [prUrl, setPrUrl] = useState<string | null>(null)
-  const [submissionOutcome, setSubmissionOutcome] = useState<PlatformSubmissionOutcome | null>(null)
+  const [rejectionMessage, setRejectionMessage] = useState<string | null>(null)
 
   const { data: publishInfo, isLoading: isLoadingInfo, error: infoError } = useAgentTemplatePublishInfo(
     step === 'form' ? agentSlug : null,
@@ -64,7 +61,7 @@ export function AgentTemplatePublishDialog({
       setBody('')
       setNewVersion('')
       setPrUrl(null)
-      setSubmissionOutcome(null)
+      setRejectionMessage(null)
       publishAgent.reset()
     }
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -81,7 +78,7 @@ export function AgentTemplatePublishDialog({
     setBody('')
     setNewVersion('')
     setPrUrl(null)
-    setSubmissionOutcome(null)
+    setRejectionMessage(null)
     publishAgent.reset()
   }
 
@@ -89,7 +86,7 @@ export function AgentTemplatePublishDialog({
     e.preventDefault()
     if (!title.trim() || !body.trim() || !selectedSkillset) return
 
-    setSubmissionOutcome(null)
+    setRejectionMessage(null)
 
     try {
       const result = await publishAgent.mutateAsync({
@@ -99,10 +96,9 @@ export function AgentTemplatePublishDialog({
         body: body.trim(),
         newVersion: newVersion.trim() || undefined,
       })
-      const outcome = getPlatformSubmissionOutcome(result.prUrl)
-      setSubmissionOutcome(outcome)
-
-      if (outcome.kind === 'error') {
+      const nextRejectionMessage = getPlatformSubmissionRejectedMessage(result.prUrl)
+      if (nextRejectionMessage) {
+        setRejectionMessage(nextRejectionMessage)
         setPrUrl(null)
         return
       }
@@ -172,10 +168,12 @@ export function AgentTemplatePublishDialog({
               <div className="py-6 space-y-3">
                 <Alert>
                   <AlertDescription>
-                  {submissionOutcome?.message ?? 'Pull request created successfully.'}
+                    {prUrl.startsWith('platform:')
+                      ? 'Changes submitted successfully.'
+                      : 'Pull request created successfully.'}
                   </AlertDescription>
                 </Alert>
-                {submissionOutcome?.showExternalLink !== false && (
+                {!prUrl.startsWith('platform:') && (
                   <a
                     href={prUrl}
                     target="_blank"
@@ -260,10 +258,10 @@ export function AgentTemplatePublishDialog({
                   </Alert>
                 )}
 
-                {submissionOutcome?.kind === 'error' && (
+                {rejectionMessage && (
                   <Alert variant="destructive">
                     <AlertTriangle className="h-4 w-4" />
-                    <AlertDescription>{submissionOutcome.message}</AlertDescription>
+                    <AlertDescription>{rejectionMessage}</AlertDescription>
                   </Alert>
                 )}
               </div>

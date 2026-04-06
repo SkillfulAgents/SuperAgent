@@ -73,6 +73,7 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
       </div>
 
       {/* Template Status */}
+      {/* Hidden-org platform templates are downgraded to local, but we still show the source org. */}
       {templateStatus && (templateStatus.type !== 'local' || !!templateOrganizationLabel) && (
         <div className="space-y-2">
           <h3 className="text-sm font-medium">Template Status</h3>

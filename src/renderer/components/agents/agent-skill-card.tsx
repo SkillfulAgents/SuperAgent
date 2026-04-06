@@ -32,6 +32,7 @@ export function AgentSkillCard({ skill, agentSlug }: AgentSkillCardProps) {
           <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">
             {skill.description}
           </p>
+          {/* Hidden-org platform skills are downgraded to local, but we still show the source org. */}
           <div className="mt-1">
             <OrgSourceLabel orgName={organizationLabel} />
           </div>
