@@ -89,8 +89,7 @@ import { withRetry } from '@shared/lib/utils/retry'
 import { transformMessages, type TransformedMessage, type TransformedItem } from '@shared/lib/utils/message-transform'
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings } from '@shared/lib/config/settings'
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
-import { getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
-import { buildSkillsetAccessScope, findAccessibleSkillsetById } from '@shared/lib/utils/skillset-helpers'
+import { getSkillsetAccessScope, findAccessibleSkillsetById } from '@shared/lib/utils/skillset-helpers'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import * as fs from 'fs'
@@ -236,14 +235,6 @@ export async function resolveInterruptedSubagents(
 }
 
 const agents = new Hono()
-
-function getAllSkillsets() {
-  return getSettings().skillsets || []
-}
-
-function getSkillsetAccessScope() {
-  return buildSkillsetAccessScope(getAllSkillsets(), getPlatformAuthStatus().orgId)
-}
 
 agents.use('*', Authenticated())
 

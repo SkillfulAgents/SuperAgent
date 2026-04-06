@@ -17,7 +17,11 @@ export function AgentSkillCard({ skill, agentSlug }: AgentSkillCardProps) {
   const updateSkill = useUpdateSkill()
   const [prDialogOpen, setPrDialogOpen] = useState(false)
   const [publishDialogOpen, setPublishDialogOpen] = useState(false)
-  const organizationLabel = skill.status.skillsetOrgName || null
+  const sourceLabel = skill.status.skillsetOrgName
+    ? `From org: ${skill.status.skillsetOrgName}`
+    : skill.status.skillsetName
+      ? `From: ${skill.status.skillsetName}`
+      : null
 
   return (
     <SkillContextMenu skill={skill} agentSlug={agentSlug}>
@@ -31,13 +35,10 @@ export function AgentSkillCard({ skill, agentSlug }: AgentSkillCardProps) {
           <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">
             {skill.description}
           </p>
-          {/* Hidden-org platform skills are downgraded to local, but we still show the source org. */}
-          {organizationLabel && (
-            <div className="mt-1">
-              <span className="text-xs text-muted-foreground">
-                From org: <span className="font-semibold text-foreground">{organizationLabel}</span>
-              </span>
-            </div>
+          {sourceLabel && (
+            <p className="text-xs text-muted-foreground mt-1">
+              {sourceLabel}
+            </p>
           )}
         </div>
         <div className="flex gap-1 shrink-0">

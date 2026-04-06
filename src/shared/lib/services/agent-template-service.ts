@@ -45,6 +45,7 @@ import type {
   DiscoverableAgent,
   RequiredEnvVar,
   SkillProvider,
+  PlatformSubmitResult,
 } from '@shared/lib/types/skillset'
 import type { ApiAgent } from '@shared/lib/types/api'
 import type { AgentFrontmatter } from '@shared/lib/types/agent'
@@ -59,11 +60,6 @@ import {
 } from '@shared/lib/utils/skillset-helpers'
 
 const execFileAsync = promisify(execFile)
-
-type PlatformSubmitResult = {
-  status: string
-  queueItem?: { id: string; branch_name: string; status: string }
-}
 
 // ============================================================================
 // Constants
@@ -590,7 +586,7 @@ export async function updateAgentFromSkillset(
   await refreshSkillset(meta.skillsetId, meta.skillsetUrl, meta.provider, meta.platformRepoId, effectiveSkillsetName)
 
   // Re-read the index to get the latest version
-  const index = await getSkillsetIndex(meta.skillsetId, { platformRepoId: meta.platformRepoId, skillsetName: effectiveSkillsetName })
+  const index = await getSkillsetIndex(meta.skillsetId, { platformRepoId: meta.platformRepoId })
   if (!index || !index.agents) return { updated: false }
 
   const agentEntry = index.agents.find((a) => a.path === meta.agentPath)
@@ -779,7 +775,7 @@ export async function getAgentTemplateStatus(
   }
 
   // Check for updates: version bump in index.json OR file content change in the remote cache
-  const index = await getSkillsetIndex(meta.skillsetId, { platformRepoId: meta.platformRepoId, skillsetName: getEffectiveSkillsetName(meta) })
+  const index = await getSkillsetIndex(meta.skillsetId, { platformRepoId: meta.platformRepoId })
   const agentEntry = index?.agents?.find((a) => a.path === meta.agentPath)
   const versionChanged = !!(agentEntry && agentEntry.version !== meta.installedVersion)
 
@@ -1473,19 +1469,6 @@ export async function publishAgentToSkillset(
   }
 
   const ctx = await prepareForkBranch(repoDir, `add-agent-${agentDirName}`)
-
-  if (conflict) {
-    // Clean up
-    await execFileAsync('git', ['checkout', ctx.baseBranch], {
-      cwd: repoDir, timeout: 10000, env: GIT_ENV,
-    }).catch(() => {})
-    await execFileAsync('git', ['branch', '-D', ctx.branchName], {
-      cwd: repoDir, timeout: 5000, env: GIT_ENV,
-    }).catch(() => {})
-    throw new Error(
-      `An agent already exists at "${agentPathInRepo}" in this skillset.`
-    )
-  }
 
   // Create agent directory and copy template files
   const destDir = path.join(repoDir, 'agents', agentDirName)

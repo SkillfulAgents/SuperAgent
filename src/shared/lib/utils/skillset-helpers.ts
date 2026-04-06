@@ -4,6 +4,8 @@ import path from 'path'
 import fs from 'fs'
 import type { SkillProvider, SkillsetConfig } from '@shared/lib/types/skillset'
 import { ensureDirectory } from '@shared/lib/utils/file-storage'
+import { getSettings } from '@shared/lib/config/settings'
+import { getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
 
 const execFileAsync = promisify(execFile)
 
@@ -123,6 +125,12 @@ export function findAccessibleSkillsetById(
   skillsetId: string,
 ): SkillsetConfig | undefined {
   return scope.accessibleSkillsets.find((skillset) => skillset.id === skillsetId)
+}
+
+export type SkillsetAccessScope = ReturnType<typeof buildSkillsetAccessScope>
+
+export function getSkillsetAccessScope(): SkillsetAccessScope {
+  return buildSkillsetAccessScope(getSettings().skillsets || [], getPlatformAuthStatus().orgId)
 }
 
 /**

@@ -31,6 +31,7 @@ import type {
   SkillWithStatus,
   SkillStatus,
   SkillProvider,
+  PlatformSubmitResult,
 } from '@shared/lib/types/skillset'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
@@ -473,6 +474,18 @@ async function resolveCloneUrl(url: string, provider?: SkillProvider, skillsetNa
   }
 
   const data = await res.json() as { url: string; defaultBranch: string }
+
+  // Validate returned URL to prevent SSRF via malicious platform responses
+  try {
+    const parsed = new URL(data.url)
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      throw new Error(`Unsafe clone URL protocol: ${parsed.protocol}`)
+    }
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith('Unsafe clone URL')) throw e
+    throw new Error(`Invalid clone URL returned by platform: ${data.url}`)
+  }
+
   return data.url
 }
 
@@ -595,7 +608,7 @@ export async function refreshSkillset(
  */
 export async function getSkillsetIndex(
   skillsetId: string,
-  options?: { platformRepoId?: string; skillsetName?: string },
+  options?: { platformRepoId?: string },
 ): Promise<SkillsetIndex | null> {
   const effectiveId = options?.platformRepoId || skillsetId
   const repoDir = getSkillsetRepoDir(effectiveId)
@@ -722,7 +735,6 @@ export async function updateSkillFromSkillset(
   // Re-install the skill (overwrites existing)
   const index = await getSkillsetIndex(meta.skillsetId, {
     platformRepoId: meta.platformRepoId,
-    skillsetName: effectiveSkillsetName,
   })
   if (!index) return { updated: false }
 
@@ -1364,11 +1376,15 @@ async function checkPlatformQueueItemStatus(
     const res = await fetch(`${proxyBase}/v1/skills/queue/${encodeURIComponent(queueItemId)}`, {
       headers: { Authorization: `Bearer ${token}` },
     })
-    if (!res.ok) return null
+    if (!res.ok) {
+      console.warn(`Failed to check platform queue item ${queueItemId}: ${res.status}`)
+      return null
+    }
 
     const data = await res.json() as { item: { id: string; status: string } }
     return data.item?.status ?? null
-  } catch {
+  } catch (error) {
+    console.warn(`Failed to check platform queue item ${queueItemId}:`, error)
     return null
   }
 }
@@ -1376,11 +1392,6 @@ async function checkPlatformQueueItemStatus(
 /**
  * Submit a skill update to the platform via proxy submit-update API.
  */
-type PlatformSubmitResult = {
-  status: string
-  queueItem?: { id: string; branch_name: string; status: string }
-}
-
 async function submitSkillToPlatform(
   meta: InstalledSkillMetadata,
   files: Array<{ path: string; content: string }>,

@@ -44,7 +44,11 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
   const updateTemplate = useUpdateAgentTemplate()
   const exportTemplate = useExportAgentTemplate()
   const exportFull = useExportAgentFull()
-  const templateOrganizationLabel = templateStatus?.skillsetOrgName || null
+  const templateSourceLabel = templateStatus?.skillsetOrgName
+    ? `From org: ${templateStatus.skillsetOrgName}`
+    : templateStatus?.skillsetName
+      ? `From: ${templateStatus.skillsetName}`
+      : null
 
   const handleDelete = async () => {
     setIsDeleting(true)
@@ -72,15 +76,14 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
       </div>
 
       {/* Template Status */}
-      {/* Hidden-org platform templates are downgraded to local, but we still show the source org. */}
-      {templateStatus && (templateStatus.type !== 'local' || !!templateOrganizationLabel) && (
+      {templateStatus && (templateStatus.type !== 'local' || !!templateSourceLabel) && (
         <div className="space-y-2">
           <h3 className="text-sm font-medium">Template Status</h3>
           <div className="flex items-center gap-2 flex-wrap">
             <StatusBadge status={templateStatus} />
-            {templateOrganizationLabel && (
+            {templateSourceLabel && (
               <span className="text-xs text-muted-foreground">
-                From org: <span className="font-semibold text-foreground">{templateOrganizationLabel}</span>
+                {templateSourceLabel}
               </span>
             )}
           </div>

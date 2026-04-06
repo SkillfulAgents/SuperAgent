@@ -202,6 +202,12 @@ export type AgentTemplateStatus =
     openPrUrl?: string
   }
 
+/** Result from submitting a skill/agent update to the platform queue. */
+export type PlatformSubmitResult = {
+  status: string
+  queueItem?: { id: string; branch_name: string; status: string }
+}
+
 /** An agent available from a skillset that is not yet installed */
 export interface DiscoverableAgent {
   skillsetId: string
