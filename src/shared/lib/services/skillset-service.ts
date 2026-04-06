@@ -1283,7 +1283,7 @@ export async function createSkillPR(
 function updateFrontmatterVersion(content: string, newVersion: string): string {
   const match = content.match(/^(---\s*\n)([\s\S]*?)(\n---)/);
   if (!match) {
-    return `---\nversion: ${newVersion}\n---\n${content}`
+    return content
   }
 
   let frontmatter = match[2]

@@ -172,6 +172,39 @@ export class SessionPage {
 
   // --- User Input Request Helpers ---
 
+  private getVisiblePendingRequest(testId: string) {
+    return this.page.locator(`[data-testid="${testId}"]:visible`).first()
+  }
+
+  private async focusPendingRequest(selector: string, timeout = 15000) {
+    const target = this.page.locator(selector)
+    await expect(target.first()).toBeAttached({ timeout })
+
+    const visibleTarget = this.page.locator(`${selector}:visible`).first()
+    for (let i = 0; i < 5; i++) {
+      if (await visibleTarget.count()) {
+        return visibleTarget
+      }
+
+      const nextButton = this.page.locator('[data-testid="pending-request-next-btn"]:visible').first()
+      if (await nextButton.count() && await nextButton.isEnabled()) {
+        await nextButton.click()
+        continue
+      }
+
+      const prevButton = this.page.locator('[data-testid="pending-request-prev-btn"]:visible').first()
+      if (await prevButton.count() && await prevButton.isEnabled()) {
+        await prevButton.click()
+        continue
+      }
+
+      break
+    }
+
+    await expect(visibleTarget).toBeVisible({ timeout })
+    return visibleTarget
+  }
+
   /**
    * Wait for a secret request to appear in the UI
    */
@@ -179,9 +212,9 @@ export class SessionPage {
     if (secretName) {
       await expect(
         this.page.locator(`[data-testid="secret-request"][data-secret-name="${secretName}"]`)
-      ).toBeVisible({ timeout })
+      ).toBeAttached({ timeout })
     } else {
-      await expect(this.page.locator('[data-testid="secret-request"]').first()).toBeVisible({ timeout })
+      await expect(this.getVisiblePendingRequest('secret-request')).toBeVisible({ timeout })
     }
   }
 
@@ -196,9 +229,11 @@ export class SessionPage {
    * Fill in and provide a secret value
    */
   async provideSecret(value: string, secretName?: string) {
-    const container = secretName
-      ? this.page.locator(`[data-testid="secret-request"][data-secret-name="${secretName}"]`)
-      : this.page.locator('[data-testid="secret-request"]').first()
+    const container = await this.focusPendingRequest(
+      secretName
+        ? `[data-testid="secret-request"][data-secret-name="${secretName}"]`
+        : '[data-testid="secret-request"]'
+    )
 
     await container.locator('input[placeholder^="Paste "]').fill(value)
     await container.locator('[data-testid="secret-provide-btn"]').click()
@@ -208,9 +243,11 @@ export class SessionPage {
    * Decline a secret request
    */
   async declineSecret(secretName?: string) {
-    const container = secretName
-      ? this.page.locator(`[data-testid="secret-request"][data-secret-name="${secretName}"]`)
-      : this.page.locator('[data-testid="secret-request"]').first()
+    const container = await this.focusPendingRequest(
+      secretName
+        ? `[data-testid="secret-request"][data-secret-name="${secretName}"]`
+        : '[data-testid="secret-request"]'
+    )
 
     await container.locator('[data-testid="secret-decline-btn"]').click()
   }
@@ -234,7 +271,7 @@ export class SessionPage {
    * Select a question option by its label text and submit
    */
   async answerQuestion(optionLabel: string) {
-    const container = this.page.locator('[data-testid="question-request"]').first()
+    const container = await this.focusPendingRequest('[data-testid="question-request"]')
 
     // Click the label containing the option text (the label wraps both radio/checkbox and text)
     await container.locator('label').filter({ hasText: optionLabel }).click()
@@ -247,7 +284,7 @@ export class SessionPage {
    * Decline a question request
    */
   async declineQuestion() {
-    const container = this.page.locator('[data-testid="question-request"]').first()
+    const container = await this.focusPendingRequest('[data-testid="question-request"]')
     await container.locator('[data-testid="question-decline-btn"]').click()
   }
 
@@ -292,7 +329,7 @@ export class SessionPage {
   // --- Proxy Review Request Helpers ---
 
   async waitForProxyReviewRequest(timeout = 15000) {
-    await expect(this.page.locator('[data-testid="proxy-review-request"]').first()).toBeVisible({ timeout })
+    await expect(this.getVisiblePendingRequest('proxy-review-request')).toBeVisible({ timeout })
   }
 
   getProxyReviewRequests() {
@@ -300,14 +337,14 @@ export class SessionPage {
   }
 
   async allowProxyReview() {
-    const container = this.page.locator('[data-testid="proxy-review-request"]').first()
+    const container = await this.focusPendingRequest('[data-testid="proxy-review-request"]')
     // The Allow button is now a popover — click it to open, then click "Allow Once"
     await container.locator('[data-testid="proxy-review-always-allow-btn"]').click()
     await this.page.locator('[data-testid="proxy-review-allow-once-menu-btn"]').click()
   }
 
   async denyProxyReview() {
-    const container = this.page.locator('[data-testid="proxy-review-request"]').first()
+    const container = await this.focusPendingRequest('[data-testid="proxy-review-request"]')
     await container.locator('[data-testid="proxy-review-deny-btn"]').click()
   }
 
@@ -318,7 +355,7 @@ export class SessionPage {
   }
 
   async alwaysAllowScope(scope: string) {
-    const container = this.page.locator('[data-testid="proxy-review-request"]').first()
+    const container = await this.focusPendingRequest('[data-testid="proxy-review-request"]')
     // Open the Allow popover, then click the "Always allow <scope>" button
     await container.locator('[data-testid="proxy-review-always-allow-btn"]').click()
     await this.page.locator(`[data-testid="proxy-review-always-allow-${scope}"]`).click()

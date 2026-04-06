@@ -98,11 +98,15 @@ export function RequestItemShell({
   }
 
   const paginationControls = pagination && pagination.count > 1 ? (
-    <div className="inline-flex items-center gap-0.5 px-0.5 py-0.5 text-foreground">
+    <div
+      className="inline-flex items-center gap-0.5 px-0.5 py-0.5 text-foreground"
+      data-testid="pending-request-pagination"
+    >
       <button
         type="button"
         onClick={pagination.goPrev}
         disabled={pagination.currentIndex === 0}
+        data-testid="pending-request-prev-btn"
         className={cn(
           'inline-flex h-5 w-5 items-center justify-center rounded transition-colors',
           pagination.currentIndex === 0 ? 'cursor-not-allowed opacity-40' : 'hover:bg-muted'
@@ -117,6 +121,7 @@ export function RequestItemShell({
         type="button"
         onClick={pagination.goNext}
         disabled={pagination.currentIndex === pagination.count - 1}
+        data-testid="pending-request-next-btn"
         className={cn(
           'inline-flex h-5 w-5 items-center justify-center rounded transition-colors',
           pagination.currentIndex === pagination.count - 1 ? 'cursor-not-allowed opacity-40' : 'hover:bg-muted'
