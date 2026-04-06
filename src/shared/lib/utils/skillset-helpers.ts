@@ -107,22 +107,22 @@ export function filterSkillsetsForCurrentPlatformOrg(
   })
 }
 
-export function buildSkillsetScope(
+export function buildSkillsetAccessScope(
   configs: SkillsetConfig[],
   currentPlatformOrgId: string | null,
 ) {
   return {
-    allSkillsets: configs,
-    visibleSkillsets: filterSkillsetsForCurrentPlatformOrg(configs, currentPlatformOrgId),
+    configuredSkillsets: configs,
+    accessibleSkillsets: filterSkillsetsForCurrentPlatformOrg(configs, currentPlatformOrgId),
     currentPlatformOrgId,
   }
 }
 
-export function findVisibleSkillsetById(
-  scope: ReturnType<typeof buildSkillsetScope>,
+export function findAccessibleSkillsetById(
+  scope: ReturnType<typeof buildSkillsetAccessScope>,
   skillsetId: string,
 ): SkillsetConfig | undefined {
-  return scope.visibleSkillsets.find((skillset) => skillset.id === skillsetId)
+  return scope.accessibleSkillsets.find((skillset) => skillset.id === skillsetId)
 }
 
 /**

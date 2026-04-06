@@ -16,14 +16,14 @@ import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { getPlatformAccessToken, getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
 import type { SkillsetConfig, SkillProvider } from '@shared/lib/types/skillset'
 import type { ApiSkillsetConfig } from '@shared/lib/types/api'
-import { buildSkillsetScope } from '@shared/lib/utils/skillset-helpers'
+import { buildSkillsetAccessScope } from '@shared/lib/utils/skillset-helpers'
 
 const skillsets = new Hono()
 
 skillsets.use('*', Authenticated())
 
-function getSkillsetScope() {
-  return buildSkillsetScope(getSettings().skillsets || [], getPlatformAuthStatus().orgId)
+function getSkillsetAccessScope() {
+  return buildSkillsetAccessScope(getSettings().skillsets || [], getPlatformAuthStatus().orgId)
 }
 
 function configToApiResponse(config: SkillsetConfig, skillCount: number, agentCount: number = 0): ApiSkillsetConfig {
@@ -42,10 +42,10 @@ function configToApiResponse(config: SkillsetConfig, skillCount: number, agentCo
 // GET /api/skillsets - List configured skillsets
 skillsets.get('/', async (c) => {
   try {
-    const scope = getSkillsetScope()
+    const scope = getSkillsetAccessScope()
     const result: ApiSkillsetConfig[] = []
 
-    for (const config of scope.visibleSkillsets) {
+    for (const config of scope.accessibleSkillsets) {
       const index = await getSkillsetIndex(config.id, {
         platformRepoId: config.platformRepoId,
       })

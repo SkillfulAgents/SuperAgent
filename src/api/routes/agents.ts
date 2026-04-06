@@ -90,7 +90,7 @@ import { transformMessages, type TransformedMessage, type TransformedItem } from
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings } from '@shared/lib/config/settings'
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import { getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
-import { buildSkillsetScope, findVisibleSkillsetById } from '@shared/lib/utils/skillset-helpers'
+import { buildSkillsetAccessScope, findAccessibleSkillsetById } from '@shared/lib/utils/skillset-helpers'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import * as fs from 'fs'
@@ -241,8 +241,8 @@ function getAllSkillsets() {
   return getSettings().skillsets || []
 }
 
-function getSkillsetScope() {
-  return buildSkillsetScope(getAllSkillsets(), getPlatformAuthStatus().orgId)
+function getSkillsetAccessScope() {
+  return buildSkillsetAccessScope(getAllSkillsets(), getPlatformAuthStatus().orgId)
 }
 
 agents.use('*', Authenticated())
@@ -358,8 +358,8 @@ async function processImport(c: Context, zipBuffer: Buffer, formData: FormData) 
 // Uses ?refresh=true to force a cache refresh before reading
 agents.get('/discoverable-agents', async (c) => {
   try {
-    const scope = getSkillsetScope()
-    const ssArray = scope.visibleSkillsets
+    const scope = getSkillsetAccessScope()
+    const ssArray = scope.accessibleSkillsets
     const shouldRefresh = c.req.query('refresh') === 'true'
 
     if (shouldRefresh) {
@@ -383,8 +383,8 @@ agents.post('/install-from-skillset', async (c) => {
       return c.json({ error: 'skillsetId and agentPath are required' }, 400)
     }
 
-    const scope = getSkillsetScope()
-    const config = findVisibleSkillsetById(scope, skillsetId)
+    const scope = getSkillsetAccessScope()
+    const config = findAccessibleSkillsetById(scope, skillsetId)
     if (!config) {
       return c.json({ error: 'Skillset not found' }, 404)
     }
@@ -2862,8 +2862,8 @@ agents.get('/:id/mcp-audit-log', AgentAdmin(), async (c) => {
 agents.get('/:id/skills', AgentRead(), async (c) => {
   try {
     const id = c.req.param('id')
-    const scope = getSkillsetScope()
-    const skills = await getAgentSkillsWithStatus(id, scope.allSkillsets, {
+    const scope = getSkillsetAccessScope()
+    const skills = await getAgentSkillsWithStatus(id, scope.configuredSkillsets, {
       currentPlatformOrgId: scope.currentPlatformOrgId,
     })
     return c.json({ skills })
@@ -2877,8 +2877,8 @@ agents.get('/:id/skills', AgentRead(), async (c) => {
 agents.get('/:id/discoverable-skills', AgentRead(), async (c) => {
   try {
     const id = c.req.param('id')
-    const scope = getSkillsetScope()
-    const skills = await getDiscoverableSkills(id, scope.visibleSkillsets)
+    const scope = getSkillsetAccessScope()
+    const skills = await getDiscoverableSkills(id, scope.accessibleSkillsets)
     return c.json({ skills })
   } catch (error) {
     console.error('Failed to fetch discoverable skills:', error)
@@ -2897,8 +2897,8 @@ agents.post('/:id/skills/install', AgentAdmin(), async (c) => {
     }
 
     // Find the skillset config
-    const scope = getSkillsetScope()
-    const config = findVisibleSkillsetById(scope, skillsetId)
+    const scope = getSkillsetAccessScope()
+    const config = findAccessibleSkillsetById(scope, skillsetId)
     if (!config) {
       return c.json({ error: 'Skillset not found' }, 404)
     }
@@ -2991,8 +2991,8 @@ agents.get('/:id/skills/:dir/publish-info', AgentAdmin(), async (c) => {
       return c.json({ error: 'skillsetId query parameter is required' }, 400)
     }
 
-    const scope = getSkillsetScope()
-    const config = findVisibleSkillsetById(scope, skillsetId)
+    const scope = getSkillsetAccessScope()
+    const config = findAccessibleSkillsetById(scope, skillsetId)
     if (!config) {
       return c.json({ error: 'Skillset not found' }, 404)
     }
@@ -3017,8 +3017,8 @@ agents.post('/:id/skills/:dir/publish', AgentAdmin(), async (c) => {
       return c.json({ error: 'skillsetId, title, and body are required' }, 400)
     }
 
-    const scope = getSkillsetScope()
-    const config = findVisibleSkillsetById(scope, skillsetId)
+    const scope = getSkillsetAccessScope()
+    const config = findAccessibleSkillsetById(scope, skillsetId)
     if (!config) {
       return c.json({ error: 'Skillset not found' }, 404)
     }
@@ -3084,8 +3084,8 @@ agents.post('/:id/export-full', AgentAdmin(), async (c) => {
 agents.get('/:id/template-status', AgentRead(), async (c) => {
   try {
     const slug = c.req.param('id')
-    const scope = getSkillsetScope()
-    const status = await getAgentTemplateStatus(slug, scope.allSkillsets, {
+    const scope = getSkillsetAccessScope()
+    const status = await getAgentTemplateStatus(slug, scope.configuredSkillsets, {
       currentPlatformOrgId: scope.currentPlatformOrgId,
     })
     return c.json(status)
@@ -3150,8 +3150,8 @@ agents.get('/:id/template-publish-info', AgentRead(), async (c) => {
       return c.json({ error: 'skillsetId query parameter is required' }, 400)
     }
 
-    const scope = getSkillsetScope()
-    const config = findVisibleSkillsetById(scope, skillsetId)
+    const scope = getSkillsetAccessScope()
+    const config = findAccessibleSkillsetById(scope, skillsetId)
     if (!config) {
       return c.json({ error: 'Skillset not found' }, 404)
     }
@@ -3175,8 +3175,8 @@ agents.post('/:id/template-publish', AgentAdmin(), async (c) => {
       return c.json({ error: 'skillsetId, title, and body are required' }, 400)
     }
 
-    const scope = getSkillsetScope()
-    const config = findVisibleSkillsetById(scope, skillsetId)
+    const scope = getSkillsetAccessScope()
+    const config = findAccessibleSkillsetById(scope, skillsetId)
     if (!config) {
       return c.json({ error: 'Skillset not found' }, 404)
     }
@@ -3193,10 +3193,10 @@ agents.post('/:id/template-publish', AgentAdmin(), async (c) => {
 // POST /api/agents/:id/template-refresh - Refresh status
 agents.post('/:id/template-refresh', AgentUser(), async (c) => {
   try {
-    const scope = getSkillsetScope()
-    await refreshAgentTemplates(scope.visibleSkillsets)
+    const scope = getSkillsetAccessScope()
+    await refreshAgentTemplates(scope.accessibleSkillsets)
     const slug = c.req.param('id')
-    const status = await getAgentTemplateStatus(slug, scope.allSkillsets, {
+    const status = await getAgentTemplateStatus(slug, scope.configuredSkillsets, {
       currentPlatformOrgId: scope.currentPlatformOrgId,
     })
     return c.json(status)
@@ -3211,9 +3211,9 @@ agents.post('/:id/template-refresh', AgentUser(), async (c) => {
 agents.post('/:id/skills/refresh', AgentUser(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
-    const scope = getSkillsetScope()
-    await refreshAgentSkills(agentSlug, scope.visibleSkillsets)
-    const skills = await getAgentSkillsWithStatus(agentSlug, scope.allSkillsets, {
+    const scope = getSkillsetAccessScope()
+    await refreshAgentSkills(agentSlug, scope.accessibleSkillsets)
+    const skills = await getAgentSkillsWithStatus(agentSlug, scope.configuredSkillsets, {
       currentPlatformOrgId: scope.currentPlatformOrgId,
     })
     return c.json({ skills })
