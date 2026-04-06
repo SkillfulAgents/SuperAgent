@@ -1389,6 +1389,18 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
     }
 
     messagePersister.unsubscribeFromSession(sessionId)
+
+    // Tell the container to delete the session (cleans up browser, daemon, process)
+    try {
+      const client = containerManager.getClient(agentSlug)
+      const info = containerManager.getCachedInfo(agentSlug)
+      if (info.status === 'running') {
+        await client.fetch(`/sessions/${sessionId}`, { method: 'DELETE' })
+      }
+    } catch {
+      // Non-critical — container may not be running
+    }
+
     await deleteSession(agentSlug, sessionId)
 
     // Clean up message author records for this session
@@ -3952,7 +3964,9 @@ agents.get('/:id/browser/status', AgentRead(), async (c) => {
       return c.json({ active: false, sessionId: null })
     }
 
-    const response = await client.fetch('/browser/status')
+    const sessionId = c.req.query('sessionId')
+    const statusUrl = sessionId ? `/browser/status?sessionId=${sessionId}` : '/browser/status'
+    const response = await client.fetch(statusUrl)
     return c.json(await response.json())
   } catch (error) {
     console.error('Failed to get browser status:', error)

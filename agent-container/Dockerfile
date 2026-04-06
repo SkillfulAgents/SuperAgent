@@ -117,8 +117,9 @@ EXPOSE 3000
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOME=/home/claude
-ENV AGENT_BROWSER_STREAM_PORT=9223
-ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-blink-features=AutomationControlled,--disable-features=AutomationControlled,--disable-infobars,--disable-background-timer-throttling,--disable-popup-blocking,--disable-backgrounding-occluded-windows,--disable-renderer-backgrounding,--disable-component-update,--remote-debugging-port=9222"
+# AGENT_BROWSER_STREAM_PORT and --remote-debugging-port are allocated dynamically
+# per session at runtime (see server.ts execBrowser). Base args without port flags:
+ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-blink-features=AutomationControlled,--disable-features=AutomationControlled,--disable-infobars,--disable-background-timer-throttling,--disable-popup-blocking,--disable-backgrounding-occluded-windows,--disable-renderer-backgrounding,--disable-component-update"
 ENV AGENT_BROWSER_USER_AGENT="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 ENV AGENT_BROWSER_PROFILE=/workspace/.browser-profile
 ENV DISABLE_AUTOUPDATER=1

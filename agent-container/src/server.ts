@@ -6,13 +6,14 @@ import * as http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import * as fs from 'fs';
 import * as path from 'path';
-import { execFile, execSync } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as dns from 'dns';
 
 import { inputManager } from './input-manager';
 import { dashboardManager } from './dashboard-manager';
-import { tabManager } from './tab-manager';
+import { getTabManager, removeTabManager, setAllMaxTabs, type TabInfo } from './tab-manager';
+import * as net from 'net';
 
 import { getEditingCommands } from './cdp-editing-commands';
 
@@ -59,7 +60,7 @@ app.post('/sessions', async (c) => {
     }
 
     if (body.maxBrowserTabs) {
-      tabManager.setMaxTabs(body.maxBrowserTabs);
+      setAllMaxTabs(body.maxBrowserTabs);
     }
     const session = await sessionManager.createSession(body);
     return c.json(session, 201);
@@ -90,6 +91,10 @@ app.get('/sessions', (c) => {
 
 app.delete('/sessions/:id', async (c) => {
   const sessionId = c.req.param('id');
+
+  // Close the browser for this session before deleting (awaited, not fire-and-forget)
+  await closeBrowserForSession(sessionId);
+
   const deleted = await sessionManager.deleteSession(sessionId);
 
   if (!deleted) {
@@ -534,13 +539,28 @@ app.all('/artifacts/:slug', async (c) => {
 // Browser automation endpoints (agent-browser tool proxy)
 // ============================================================
 
-interface BrowserState {
+interface BrowserSessionState {
   active: boolean;
-  sessionId: string | null;
   cdpUrl: string | null;
+  cdpPort: number | null;  // allocated debugging port (container mode only)
+  streamPort: number;  // allocated stream port (all modes — each daemon needs its own)
+  profileDir: string;  // per-session profile path
 }
 
-let browserState: BrowserState = { active: false, sessionId: null, cdpUrl: null };
+const browserSessions: Map<string, BrowserSessionState> = new Map();
+const MAX_CONCURRENT_BROWSERS = 5;
+
+/** Find a free TCP port (same pattern as ChromeProvider) */
+function findFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.listen(0, '127.0.0.1', () => {
+      const port = (server.address() as net.AddressInfo).port;
+      server.close(() => resolve(port));
+    });
+    server.on('error', reject);
+  });
+}
 
 
 const execFileAsync = promisify(execFile);
@@ -573,49 +593,65 @@ async function ensureBrowserDownloadPreferences(profileDir: string, downloadDir:
   await fs.promises.writeFile(prefsPath, JSON.stringify(prefs, null, 2));
 }
 
-// Ensure --remote-debugging-port=9222 is present in browser args so we can
+// Ensure --remote-debugging-port is present in browser args so we can
 // connect directly to Chrome's CDP for screencast (bypassing agent-browser's
 // StreamServer which doesn't follow tab switches).
-function ensureRemoteDebuggingPort(args: string): string {
-  if (args.includes('--remote-debugging-port')) return args;
-  return args + ',--remote-debugging-port=9222';
+function ensureRemoteDebuggingPort(args: string, port: number): string {
+  // Replace existing --remote-debugging-port with the session-specific one
+  const replaced = args.replace(/--remote-debugging-port=\d+/, `--remote-debugging-port=${port}`);
+  if (replaced !== args) return replaced;
+  return args + `,--remote-debugging-port=${port}`;
 }
 
-// Clean up any stale agent-browser daemon process and socket file.
+// Clean up a specific session's agent-browser daemon process and socket file.
 // Prevents "Daemon failed to start" errors when a previous daemon is left
 // running (e.g. browser closed externally, conversation ended without closing,
 // or previous execBrowser timed out).
-function cleanupAgentBrowserDaemon(): void {
+function cleanupAgentBrowserDaemon(sessionId: string): void {
   const socketDir = process.env.AGENT_BROWSER_SOCKET_DIR
     || (process.env.XDG_RUNTIME_DIR ? path.join(process.env.XDG_RUNTIME_DIR, 'agent-browser') : null)
     || path.join(process.env.HOME || '/home/claude', '.agent-browser');
-  const session = process.env.AGENT_BROWSER_SESSION || 'default';
+  const session = `session-${sessionId}`;
   const socketPath = path.join(socketDir, `${session}.sock`);
+  // Removing the socket is sufficient to prevent "Daemon failed to start" on next open.
+  // The orphaned daemon process (if any) is harmless — it can't receive commands without
+  // the socket, and will be cleaned up on container shutdown via gracefulShutdown.
   try { fs.unlinkSync(socketPath); } catch { /* ignore missing */ }
-  try { execSync('pkill -f "agent-browser" 2>/dev/null || true', { timeout: 3000 }); } catch { /* ignore */ }
 }
 
 // Execute an agent-browser CLI command and return the result.
 // Uses execFile (no shell) to prevent command injection.
-async function execBrowser(args: string[], cdpUrl?: string): Promise<{ stdout: string; exitCode: number }> {
+// Each session gets its own daemon via AGENT_BROWSER_SESSION env var.
+async function execBrowser(args: string[], cdpUrl?: string, sessionId?: string): Promise<{ stdout: string; exitCode: number }> {
   try {
     const fullArgs = cdpUrl ? ['--cdp', cdpUrl, ...args] : args;
+
+    // Build per-session environment overrides.
+    // streamPort and cdpPort are dynamically allocated per session at browser open time.
+    const sessionEnv: Record<string, string> = { ...process.env } as Record<string, string>;
+    if (sessionId) {
+      sessionEnv.AGENT_BROWSER_SESSION = `session-${sessionId}`;
+      const session = browserSessions.get(sessionId);
+      if (session) {
+        sessionEnv.AGENT_BROWSER_STREAM_PORT = String(session.streamPort);
+        if (session.cdpPort) {
+          sessionEnv.AGENT_BROWSER_ARGS = ensureRemoteDebuggingPort(
+            process.env.AGENT_BROWSER_ARGS || '--no-sandbox,--disable-blink-features=AutomationControlled',
+            session.cdpPort,
+          );
+        }
+      }
+    }
+
     const { stdout } = await execFileAsync('agent-browser', fullArgs, {
       timeout: 30000,
-      env: {
-        ...process.env,
-        AGENT_BROWSER_STREAM_PORT: process.env.AGENT_BROWSER_STREAM_PORT || '9223',
-        AGENT_BROWSER_ARGS: ensureRemoteDebuggingPort(process.env.AGENT_BROWSER_ARGS || '--no-sandbox,--disable-blink-features=AutomationControlled'),
-      },
+      env: sessionEnv,
     });
     return { stdout: stdout.trim(), exitCode: 0 };
   } catch (error: any) {
     if (error.stderr) {
       console.error('[Browser] agent-browser stderr:', error.stderr);
     }
-    // Combine stdout, stderr, and message for maximum debuggability.
-    // The error shown to users includes the full command line (from error.message)
-    // which contains the CDP URL — helpful for diagnosing connectivity issues.
     const parts = [
       error.stdout?.trim(),
       error.stderr?.trim(),
@@ -637,7 +673,7 @@ interface HostBrowserInfo {
 // Launch the host browser via CDP if AGENT_BROWSER_USE_HOST is set.
 // Returns the CDP WebSocket URL and host download dir, or undefined if not using host browser.
 // Throws if host browser mode is enabled but the browser fails to launch.
-async function launchHostBrowserIfNeeded(): Promise<HostBrowserInfo | undefined> {
+async function launchHostBrowserIfNeeded(sessionId: string): Promise<HostBrowserInfo | undefined> {
   if (!process.env.AGENT_BROWSER_USE_HOST) {
     return undefined;
   }
@@ -656,7 +692,7 @@ async function launchHostBrowserIfNeeded(): Promise<HostBrowserInfo | undefined>
   const response = await fetch(`${hostAppUrl}/api/browser/launch-host-browser`, {
     method: 'POST',
     headers: browserAuthHeaders,
-    body: JSON.stringify({ agentId: agentId || 'default' }),
+    body: JSON.stringify({ agentId: agentId || 'default', sessionId }),
   });
 
   if (!response.ok) {
@@ -755,8 +791,8 @@ async function setDownloadBehaviorViaCDP(cdpUrl: string, downloadPath: string): 
   });
 }
 
-// Tell the host to stop the Chrome process for this agent.
-async function stopHostBrowserIfNeeded(): Promise<void> {
+// Tell the host to stop the Chrome process for this agent session.
+async function stopHostBrowserIfNeeded(sessionId: string): Promise<void> {
   if (!process.env.AGENT_BROWSER_USE_HOST) return;
 
   const hostAppUrl = process.env.HOST_APP_URL;
@@ -772,7 +808,7 @@ async function stopHostBrowserIfNeeded(): Promise<void> {
     await fetch(`${hostAppUrl}/api/browser/stop-host-browser`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ agentId }),
+      body: JSON.stringify({ agentId, sessionId }),
     });
   } catch (error) {
     console.error('[Browser] Error stopping host browser:', error);
@@ -780,10 +816,7 @@ async function stopHostBrowserIfNeeded(): Promise<void> {
 }
 
 // Broadcast a browser_active event to the owning session's WebSocket subscribers
-function broadcastBrowserEvent(active: boolean): void {
-  if (!browserState.sessionId) return;
-  const sessionId = browserState.sessionId;
-
+function broadcastBrowserEvent(sessionId: string, active: boolean): void {
   // Broadcast through the session manager's subscriber system
   sessionManager.broadcast(sessionId, {
     type: 'browser_active',
@@ -792,73 +825,112 @@ function broadcastBrowserEvent(active: boolean): void {
   });
 }
 
-// Validate that the requesting session owns the browser (or browser is not active)
-function validateBrowserSession(requestSessionId: string): string | null {
-  if (browserState.active && browserState.sessionId !== requestSessionId) {
-    return `Browser is owned by session ${browserState.sessionId}`;
-  }
-  return null;
+/** Look up the browser session for a given sessionId, or null if none active */
+function getBrowserSession(sessionId: string): BrowserSessionState | null {
+  return browserSessions.get(sessionId) ?? null;
+}
+
+/** Fully close and clean up the browser for a session (awaitable). */
+async function closeBrowserForSession(sessionId: string): Promise<void> {
+  const session = browserSessions.get(sessionId);
+  if (!session?.active) return;
+
+  try {
+    await execBrowser(['close'], session.cdpUrl || undefined, sessionId);
+  } catch { /* best-effort */ }
+  cleanupAgentBrowserDaemon(sessionId);
+  await stopHostBrowserIfNeeded(sessionId);
+  cleanupCdpScreencast(sessionId);
+  broadcastBrowserEvent(sessionId, false);
+  browserSessions.delete(sessionId);
+  removeTabManager(sessionId);
 }
 
 // GET /browser/status - Check if browser is running
 app.get('/browser/status', (c) => {
-  return c.json(browserState);
+  const sessionId = c.req.query('sessionId');
+  if (sessionId) {
+    const session = browserSessions.get(sessionId);
+    return c.json({ active: session?.active ?? false, sessionId: session ? sessionId : null, cdpUrl: session?.cdpUrl ?? null });
+  }
+  // Return summary of all active sessions
+  const activeSessions = Array.from(browserSessions.entries())
+    .filter(([, s]) => s.active)
+    .map(([id]) => id);
+  return c.json({ active: activeSessions.length > 0, activeSessions });
 });
 
 
 // POST /browser/open - Start browser and navigate to URL
 app.post('/browser/open', async (c) => {
+  let openSessionId: string | undefined;
   try {
     const body = await c.req.json<{ sessionId: string; url: string }>();
+    openSessionId = body.sessionId;
 
     if (!body.sessionId || !body.url) {
       return c.json({ error: 'sessionId and url are required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
-    if (validationError) {
-      return c.json({ error: validationError }, 409);
+    // Check concurrent browser limit
+    const activeBrowserCount = Array.from(browserSessions.values()).filter(s => s.active).length;
+    if (!browserSessions.has(body.sessionId) && activeBrowserCount >= MAX_CONCURRENT_BROWSERS) {
+      return c.json({ error: `Maximum concurrent browsers reached (${MAX_CONCURRENT_BROWSERS}). Close a browser in another session first.` }, 429);
     }
 
-    // If browser is already active, check for a matching tab before opening a new one
-    if (browserState.active) {
-      const matchingTab = await tabManager.findMatchingTab(body.url);
+    const tm = getTabManager(body.sessionId);
+
+    // If this session already has an active browser, check for a matching tab before opening a new one
+    const existingSession = browserSessions.get(body.sessionId);
+    if (existingSession?.active) {
+      const matchingTab = await tm.findMatchingTab(body.url);
       if (matchingTab) {
-        await execBrowser(['tab', String(matchingTab.index)], browserState.cdpUrl || undefined);
-        await tabManager.syncTabCount();
-        notifyBrowserAction();
+        await execBrowser(['tab', String(matchingTab.index)], existingSession.cdpUrl || undefined, body.sessionId);
+        await tm.syncTabCount();
+        notifyBrowserAction(body.sessionId);
         return c.json({ success: true, switchedToExisting: true, tabIndex: matchingTab.index, url: matchingTab.url });
       }
     }
 
-    const hostBrowser = await launchHostBrowserIfNeeded();
+    // Allocate per-session resources
+    const isHostMode = !!process.env.AGENT_BROWSER_USE_HOST;
+    // streamPort is always needed — each agent-browser daemon binds its own stream server
+    const streamPort = await findFreePort();
+    // cdpPort only needed in container mode (host mode uses host Chrome's port)
+    const cdpPort = isHostMode ? null : await findFreePort();
+
+    const baseProfile = process.env.AGENT_BROWSER_PROFILE || '/workspace/.browser-profile';
+    const profileDir = `${baseProfile}-${body.sessionId}`;
+
+    // Pre-register the session so execBrowser can find port info
+    browserSessions.set(body.sessionId, { active: false, cdpUrl: null, cdpPort, streamPort, profileDir });
+
+    const hostBrowser = await launchHostBrowserIfNeeded(body.sessionId);
     const cdpUrl = hostBrowser?.cdpUrl;
-    const profile = process.env.AGENT_BROWSER_PROFILE || '/workspace/.browser-profile';
 
     // Configure Chrome to save downloads to /workspace/downloads so the agent can access them
-    await ensureBrowserDownloadPreferences(profile, WORKSPACE_DOWNLOADS_DIR);
+    await ensureBrowserDownloadPreferences(profileDir, WORKSPACE_DOWNLOADS_DIR);
 
     // Clean up any leftover daemon state before starting
-    cleanupAgentBrowserDaemon();
+    cleanupAgentBrowserDaemon(body.sessionId);
 
-    let result = await execBrowser(['open', body.url, '--profile', profile], cdpUrl);
+    let result = await execBrowser(['open', body.url, '--profile', profileDir], cdpUrl, body.sessionId);
 
     // Retry once on failure — agent-browser daemon startup can be flaky
     if (result.exitCode !== 0) {
       console.error('[Browser] First open attempt failed, retrying:', result.stdout);
-      cleanupAgentBrowserDaemon();
+      cleanupAgentBrowserDaemon(body.sessionId);
       await new Promise(r => setTimeout(r, 1000));
-      result = await execBrowser(['open', body.url, '--profile', profile], cdpUrl);
+      result = await execBrowser(['open', body.url, '--profile', profileDir], cdpUrl, body.sessionId);
     }
 
     if (result.exitCode !== 0) {
+      browserSessions.delete(body.sessionId);
       const debugInfo = cdpUrl ? ` [cdp=${cdpUrl}, mode=host, attempts=2]` : ' [mode=local, attempts=2]';
       return c.json({ error: `${result.stdout}${debugInfo}`, success: false }, 500);
     }
 
     // Override Playwright's download interception via CDP so downloads go to workspace.
-    // For host browser: use the host-filesystem path (volume-mounted as /workspace).
-    // For container browser: use /workspace/downloads directly.
     const downloadPath = hostBrowser?.hostDownloadDir || WORKSPACE_DOWNLOADS_DIR;
     if (cdpUrl) {
       try {
@@ -868,12 +940,14 @@ app.post('/browser/open', async (c) => {
       }
     }
 
-    browserState = { active: true, sessionId: body.sessionId, cdpUrl: cdpUrl || null };
-    tabManager.resetTabCount();
-    broadcastBrowserEvent(true);
+    browserSessions.set(body.sessionId, { active: true, cdpUrl: cdpUrl || null, cdpPort, streamPort, profileDir });
+    tm.resetTabCount();
+    broadcastBrowserEvent(body.sessionId, true);
 
     return c.json({ success: true });
   } catch (error: any) {
+    // Clean up pre-registered session on unexpected error
+    if (openSessionId) browserSessions.delete(openSessionId);
     console.error('[Browser] Error opening browser:', error);
     return c.json({ error: error.message || 'Failed to open browser' }, 500);
   }
@@ -888,21 +962,12 @@ app.post('/browser/close', async (c) => {
       return c.json({ error: 'sessionId is required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
-    if (validationError) {
-      return c.json({ error: validationError }, 409);
+    const session = browserSessions.get(body.sessionId);
+    if (!session?.active) {
+      return c.json({ error: 'No active browser for this session' }, 400);
     }
 
-    await execBrowser(['close'], browserState.cdpUrl || undefined);
-    cleanupAgentBrowserDaemon();
-
-    // If using host browser, tell the host to kill the Chrome process
-    await stopHostBrowserIfNeeded();
-
-    cleanupCdpScreencast();
-    broadcastBrowserEvent(false);
-    browserState = { active: false, sessionId: null, cdpUrl: null };
-    tabManager.resetTabCount();
+    await closeBrowserForSession(body.sessionId);
 
     return c.json({ success: true });
   } catch (error: any) {
@@ -912,14 +977,32 @@ app.post('/browser/close', async (c) => {
 });
 
 // POST /browser/notify-closed - Host browser was closed externally, clean up state
-app.post('/browser/notify-closed', (c) => {
-  if (browserState.active) {
-    cleanupAgentBrowserDaemon();
-    cleanupCdpScreencast();
-    broadcastBrowserEvent(false);
-    browserState = { active: false, sessionId: null, cdpUrl: null };
-    tabManager.resetTabCount();
-    console.log('[Browser] Browser closed externally, state cleaned up');
+app.post('/browser/notify-closed', async (c) => {
+  const body = await c.req.json<{ sessionId?: string }>().catch(() => ({} as { sessionId?: string }));
+
+  if (body.sessionId) {
+    // Clean up specific session
+    const session = browserSessions.get(body.sessionId);
+    if (session?.active) {
+      cleanupAgentBrowserDaemon(body.sessionId);
+      cleanupCdpScreencast(body.sessionId);
+      broadcastBrowserEvent(body.sessionId, false);
+      browserSessions.delete(body.sessionId);
+      removeTabManager(body.sessionId);
+      console.log(`[Browser] Browser for session ${body.sessionId} closed externally, state cleaned up`);
+    }
+  } else {
+    // Backward compat: clean up all sessions
+    for (const [sessionId, session] of browserSessions) {
+      if (session.active) {
+        cleanupAgentBrowserDaemon(sessionId);
+        cleanupCdpScreencast(sessionId);
+        broadcastBrowserEvent(sessionId, false);
+        removeTabManager(sessionId);
+      }
+    }
+    browserSessions.clear();
+    console.log('[Browser] All browsers closed externally, state cleaned up');
   }
   return c.json({ success: true });
 });
@@ -933,12 +1016,8 @@ app.post('/browser/snapshot', async (c) => {
       return c.json({ error: 'sessionId is required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
-    if (validationError) {
-      return c.json({ error: validationError }, 409);
-    }
-
-    if (!browserState.active) {
+    const session = getBrowserSession(body.sessionId);
+    if (!session?.active) {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
@@ -946,19 +1025,20 @@ app.post('/browser/snapshot', async (c) => {
     if (body.interactive !== false) snapshotArgs.push('-i');
     if (body.compact !== false) snapshotArgs.push('-c');
 
-    const result = await execBrowser(snapshotArgs, browserState.cdpUrl || undefined);
+    const result = await execBrowser(snapshotArgs, session.cdpUrl || undefined, body.sessionId);
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
+    const tm = getTabManager(body.sessionId);
     // Try to parse JSON output
     try {
       const parsed = JSON.parse(result.stdout);
-      return c.json({ ...parsed, tabCount: tabManager.getTabCount() });
+      return c.json({ ...parsed, tabCount: tm.getTabCount() });
     } catch {
       // Return raw output if not valid JSON
-      return c.json({ snapshot: result.stdout, tabCount: tabManager.getTabCount() });
+      return c.json({ snapshot: result.stdout, tabCount: tm.getTabCount() });
     }
   } catch (error: any) {
     console.error('[Browser] Error taking snapshot:', error);
@@ -975,23 +1055,19 @@ app.post('/browser/click', async (c) => {
       return c.json({ error: 'sessionId and ref are required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
-    if (validationError) {
-      return c.json({ error: validationError }, 409);
-    }
-
-    if (!browserState.active) {
+    const session = getBrowserSession(body.sessionId);
+    if (!session?.active) {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const result = await execBrowser(['click', body.ref], browserState.cdpUrl || undefined);
+    const result = await execBrowser(['click', body.ref], session.cdpUrl || undefined, body.sessionId);
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
-    const tabInfo = await tabManager.detectNewTab();
-    notifyBrowserAction();
+    const tabInfo = await getTabManager(body.sessionId).detectNewTab();
+    notifyBrowserAction(body.sessionId);
     return c.json({ success: true, ...(tabInfo && { tabInfo }) });
   } catch (error: any) {
     console.error('[Browser] Error clicking:', error);
@@ -1008,22 +1084,18 @@ app.post('/browser/fill', async (c) => {
       return c.json({ error: 'sessionId, ref, and value are required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
-    if (validationError) {
-      return c.json({ error: validationError }, 409);
-    }
-
-    if (!browserState.active) {
+    const session = getBrowserSession(body.sessionId);
+    if (!session?.active) {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const result = await execBrowser(['fill', body.ref, body.value], browserState.cdpUrl || undefined);
+    const result = await execBrowser(['fill', body.ref, body.value], session.cdpUrl || undefined, body.sessionId);
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
-    notifyBrowserAction();
+    notifyBrowserAction(body.sessionId);
     return c.json({ success: true });
   } catch (error: any) {
     console.error('[Browser] Error filling:', error);
@@ -1040,25 +1112,21 @@ app.post('/browser/scroll', async (c) => {
       return c.json({ error: 'sessionId and direction are required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
-    if (validationError) {
-      return c.json({ error: validationError }, 409);
-    }
-
-    if (!browserState.active) {
+    const session = getBrowserSession(body.sessionId);
+    if (!session?.active) {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
     const scrollArgs = ['scroll', body.direction];
     if (body.amount !== undefined) scrollArgs.push(String(body.amount));
 
-    const result = await execBrowser(scrollArgs, browserState.cdpUrl || undefined);
+    const result = await execBrowser(scrollArgs, session.cdpUrl || undefined, body.sessionId);
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
-    notifyBrowserAction();
+    notifyBrowserAction(body.sessionId);
     return c.json({ success: true });
   } catch (error: any) {
     console.error('[Browser] Error scrolling:', error);
@@ -1075,12 +1143,8 @@ app.post('/browser/wait', async (c) => {
       return c.json({ error: 'sessionId and for are required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
-    if (validationError) {
-      return c.json({ error: validationError }, 409);
-    }
-
-    if (!browserState.active) {
+    const session = getBrowserSession(body.sessionId);
+    if (!session?.active) {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
@@ -1089,7 +1153,7 @@ app.post('/browser/wait', async (c) => {
     const waitArgs = isLoadState
       ? ['wait', '--load', body.for]
       : ['wait', body.for];
-    const result = await execBrowser(waitArgs, browserState.cdpUrl || undefined);
+    const result = await execBrowser(waitArgs, session.cdpUrl || undefined, body.sessionId);
 
     if (result.exitCode !== 0) {
       // Load state waits (especially networkidle) often time out on real-world pages
@@ -1117,23 +1181,19 @@ app.post('/browser/press', async (c) => {
       return c.json({ error: 'sessionId and key are required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
-    if (validationError) {
-      return c.json({ error: validationError }, 409);
-    }
-
-    if (!browserState.active) {
+    const session = getBrowserSession(body.sessionId);
+    if (!session?.active) {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const result = await execBrowser(['press', body.key], browserState.cdpUrl || undefined);
+    const result = await execBrowser(['press', body.key], session.cdpUrl || undefined, body.sessionId);
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
-    const tabInfo = await tabManager.detectNewTab();
-    notifyBrowserAction();
+    const tabInfo = await getTabManager(body.sessionId).detectNewTab();
+    notifyBrowserAction(body.sessionId);
     return c.json({ success: true, ...(tabInfo && { tabInfo }) });
   } catch (error: any) {
     console.error('[Browser] Error pressing key:', error);
@@ -1150,19 +1210,15 @@ app.post('/browser/screenshot', async (c) => {
       return c.json({ error: 'sessionId is required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
-    if (validationError) {
-      return c.json({ error: validationError }, 409);
-    }
-
-    if (!browserState.active) {
+    const session = getBrowserSession(body.sessionId);
+    if (!session?.active) {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
     const screenshotArgs = ['screenshot'];
     if (body.full) screenshotArgs.push('--full');
 
-    const result = await execBrowser(screenshotArgs, browserState.cdpUrl || undefined);
+    const result = await execBrowser(screenshotArgs, session.cdpUrl || undefined, body.sessionId);
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
@@ -1184,22 +1240,18 @@ app.post('/browser/select', async (c) => {
       return c.json({ error: 'sessionId, ref, and value are required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
-    if (validationError) {
-      return c.json({ error: validationError }, 409);
-    }
-
-    if (!browserState.active) {
+    const session = getBrowserSession(body.sessionId);
+    if (!session?.active) {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const result = await execBrowser(['select', body.ref, body.value], browserState.cdpUrl || undefined);
+    const result = await execBrowser(['select', body.ref, body.value], session.cdpUrl || undefined, body.sessionId);
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
-    notifyBrowserAction();
+    notifyBrowserAction(body.sessionId);
     return c.json({ success: true });
   } catch (error: any) {
     console.error('[Browser] Error selecting:', error);
@@ -1216,22 +1268,18 @@ app.post('/browser/hover', async (c) => {
       return c.json({ error: 'sessionId and ref are required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
-    if (validationError) {
-      return c.json({ error: validationError }, 409);
-    }
-
-    if (!browserState.active) {
+    const session = getBrowserSession(body.sessionId);
+    if (!session?.active) {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const result = await execBrowser(['hover', body.ref], browserState.cdpUrl || undefined);
+    const result = await execBrowser(['hover', body.ref], session.cdpUrl || undefined, body.sessionId);
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
-    notifyBrowserAction();
+    notifyBrowserAction(body.sessionId);
     return c.json({ success: true });
   } catch (error: any) {
     console.error('[Browser] Error hovering:', error);
@@ -1248,12 +1296,8 @@ app.post('/browser/run', async (c) => {
       return c.json({ error: 'sessionId and command are required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
-    if (validationError) {
-      return c.json({ error: validationError }, 409);
-    }
-
-    if (!browserState.active) {
+    const session = getBrowserSession(body.sessionId);
+    if (!session?.active) {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
@@ -1264,7 +1308,7 @@ app.post('/browser/run', async (c) => {
 
     const actualArgs = rewriteTabNewCommand(commandArgs);
 
-    const result = await execBrowser(actualArgs, browserState.cdpUrl || undefined);
+    const result = await execBrowser(actualArgs, session.cdpUrl || undefined, body.sessionId);
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
@@ -1273,10 +1317,10 @@ app.post('/browser/run', async (c) => {
     const cmd = body.command.trim().toLowerCase();
     let tabInfo = null;
     if (cmd.startsWith('tab') || cmd.includes('.click(') || cmd.startsWith('click') || cmd.startsWith('dblclick')) {
-      tabInfo = await tabManager.detectNewTab();
+      tabInfo = await getTabManager(body.sessionId).detectNewTab();
     }
 
-    notifyBrowserAction();
+    notifyBrowserAction(body.sessionId);
     return c.json({ success: true, output: result.stdout, ...(tabInfo && { tabInfo }) });
   } catch (error: any) {
     console.error('[Browser] Error running command:', error);
@@ -1286,7 +1330,11 @@ app.post('/browser/run', async (c) => {
 
 // GET /browser/tab-status - Return cached tab count (instant, no daemon query)
 app.get('/browser/tab-status', (c) => {
-  return c.json({ tabCount: tabManager.getTabCount() });
+  const sessionId = c.req.query('sessionId');
+  if (sessionId) {
+    return c.json({ tabCount: getTabManager(sessionId).getTabCount() });
+  }
+  return c.json({ tabCount: 0 });
 });
 
 async function buildFileTree(
@@ -1361,13 +1409,15 @@ server.on('upgrade', (request: http.IncomingMessage, socket: any, head: Buffer) 
 
   // Check if this is a browser stream endpoint
   if (pathname === '/browser/stream') {
-    if (!browserState.active) {
+    const streamSessionId = url.searchParams.get('sessionId');
+    const streamSession = streamSessionId ? browserSessions.get(streamSessionId) : null;
+    if (!streamSession?.active) {
       socket.destroy();
       return;
     }
 
     browserWss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
-      handleBrowserStreamConnection(ws);
+      handleBrowserStreamConnection(ws, streamSessionId!);
     });
     return;
   }
@@ -1436,7 +1486,7 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
 // which tab is active and switch the screencast if needed.
 // ============================================================
 
-let cdpScreencast: {
+interface CdpScreencastState {
   clientWs: WebSocket;
   cdpWs: WebSocket;
   currentTargetId: string;
@@ -1449,14 +1499,23 @@ let cdpScreencast: {
   autoFollow: boolean;
   /** Pending CDP message IDs for get_selection requests */
   pendingSelections: Set<number>;
-} | null = null;
+  /** Per-session tab poll interval */
+  tabPollInterval: NodeJS.Timeout | null;
+}
 
-/** Derive the CDP HTTP endpoint from the current browser state */
-function getCdpHttpEndpoint(): string {
-  if (browserState.cdpUrl) {
-    const match = browserState.cdpUrl.match(/^wss?:\/\/([^/]+)/);
+const cdpScreencasts: Map<string, CdpScreencastState> = new Map();
+
+/** Derive the CDP HTTP endpoint from a session's browser state */
+function getCdpHttpEndpoint(sessionId: string): string {
+  const session = browserSessions.get(sessionId);
+  if (session?.cdpUrl) {
+    const match = session.cdpUrl.match(/^wss?:\/\/([^/]+)/);
     if (match) return `http://${match[1]}`;
   }
+  // Container mode: use the per-session allocated port
+  if (session?.cdpPort) return `http://localhost:${session.cdpPort}`;
+  // Should not be reached — cdpUrl or cdpPort is always set per session
+  console.warn(`[CDP] getCdpHttpEndpoint: no CDP info for session ${sessionId}`);
   return 'http://localhost:9222';
 }
 
@@ -1479,12 +1538,10 @@ interface BrowserTabInfo {
   active: boolean;
 }
 
-let tabPollInterval: NodeJS.Timeout | null = null;
-
 /** Get ALL CDP page targets across all strategies */
-async function getAllPageTargets(): Promise<PageTarget[]> {
+async function getAllPageTargets(sessionId: string): Promise<PageTarget[]> {
   // Try Chrome's HTTP /json endpoint first (works for local Chrome)
-  const endpoint = getCdpHttpEndpoint();
+  const endpoint = getCdpHttpEndpoint(sessionId);
   try {
     const res = await fetch(`${endpoint}/json`);
     const targets = await res.json() as Array<{ id: string; type: string; url: string; title?: string; webSocketDebuggerUrl: string }>;
@@ -1522,7 +1579,7 @@ async function getAllPageTargets(): Promise<PageTarget[]> {
       const debugRes = await fetch(`${hostAppUrl}/api/browser/debug-info`, {
         method: 'POST',
         headers: debugHeaders,
-        body: JSON.stringify({ agentId }),
+        body: JSON.stringify({ agentId, sessionId }),
       });
       if (debugRes.ok) {
         const debugInfo = await debugRes.json() as { pages?: Array<{ id: string; url: string; title?: string; wsUrl: string }> };
@@ -1543,23 +1600,25 @@ async function getAllPageTargets(): Promise<PageTarget[]> {
   }
 
   // Fallback: try CDP Target.getTargets over WebSocket
-  if (!browserState.cdpUrl) return [];
-  const target = await findPageTargetViaCdp(browserState.cdpUrl);
+  const sessionState = browserSessions.get(sessionId);
+  if (!sessionState?.cdpUrl) return [];
+  const target = await findPageTargetViaCdp(sessionState.cdpUrl);
   return target ? [target] : [];
 }
 
 /** Find the CDP page target that corresponds to agent-browser's active page */
-async function findActivePageTarget(): Promise<PageTarget | null> {
-  const allTargets = await getAllPageTargets();
+async function findActivePageTarget(sessionId: string): Promise<PageTarget | null> {
+  const allTargets = await getAllPageTargets(sessionId);
   if (allTargets.length === 0) return null;
   if (allTargets.length === 1) return allTargets[0];
 
   // Use daemon to find which is active
+  const tm = getTabManager(sessionId);
   try {
-    const tabs = await tabManager.queryTabs();
+    const tabs = await tm.queryTabs();
     const active = tabs.find(t => t.active);
     if (active) {
-      const byUrl = allTargets.find(p => tabManager.urlsMatch(p.url, active.url));
+      const byUrl = allTargets.find(p => tm.urlsMatch(p.url, active.url));
       if (byUrl) return byUrl;
     }
   } catch (err) {
@@ -1600,7 +1659,7 @@ function findPageTargetViaCdp(browserWsUrl: string): Promise<PageTarget | null> 
 }
 
 /** Helper to build a CDP message, adding sessionId when in session mode */
-function cdpMsg(state: NonNullable<typeof cdpScreencast>, method: string, params?: Record<string, unknown>): string {
+function cdpMsg(state: CdpScreencastState, method: string, params?: Record<string, unknown>): string {
   const msg: Record<string, unknown> = { id: ++state.msgId, method };
   if (params) msg.params = params;
   if (state.cdpSessionId) msg.sessionId = state.cdpSessionId;
@@ -1608,11 +1667,12 @@ function cdpMsg(state: NonNullable<typeof cdpScreencast>, method: string, params
 }
 
 /** Connect CDP screencast to a page target and forward frames to the client */
-function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket, requiresSession = false) {
+function connectCdpToTarget(sessionId: string, targetId: string, wsUrl: string, clientWs: WebSocket, requiresSession = false) {
   const cdpWs = new WebSocket(wsUrl);
-  const prevAutoFollow = cdpScreencast?.autoFollow ?? true;
-  cdpScreencast = { clientWs, cdpWs, currentTargetId: targetId, msgId: 0, lastDeviceWidth: 0, lastDeviceHeight: 0, cdpSessionId: null, autoFollow: prevAutoFollow, pendingSelections: new Set() };
-  const state = cdpScreencast;
+  const prevState = cdpScreencasts.get(sessionId);
+  const prevAutoFollow = prevState?.autoFollow ?? true;
+  const state: CdpScreencastState = { clientWs, cdpWs, currentTargetId: targetId, msgId: 0, lastDeviceWidth: 0, lastDeviceHeight: 0, cdpSessionId: null, autoFollow: prevAutoFollow, pendingSelections: new Set(), tabPollInterval: prevState?.tabPollInterval ?? null };
+  cdpScreencasts.set(sessionId, state);
 
   cdpWs.on('open', () => {
     if (requiresSession) {
@@ -1685,15 +1745,17 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
 
   cdpWs.on('close', () => {
     // If this wasn't our active connection (already replaced by a tab switch), ignore
-    if (cdpScreencast?.cdpWs !== cdpWs) return;
+    const currentState = cdpScreencasts.get(sessionId);
+    if (currentState?.cdpWs !== cdpWs) return;
 
     // Unexpected close — try to recover by switching to agent's active tab
-    findActivePageTarget().then(target => {
-      if (target && cdpScreencast?.clientWs === clientWs && clientWs.readyState === WebSocket.OPEN) {
+    findActivePageTarget(sessionId).then(target => {
+      const latestState = cdpScreencasts.get(sessionId);
+      if (target && latestState?.clientWs === clientWs && clientWs.readyState === WebSocket.OPEN) {
         console.log('[CDP] Recovering from closed target, switching to', target.id);
-        cdpScreencast.autoFollow = true;
-        switchScreencastTarget(target, clientWs);
-        broadcastTabList();
+        latestState.autoFollow = true;
+        switchScreencastTarget(sessionId, target, clientWs);
+        broadcastTabList(sessionId);
       } else if (clientWs.readyState === WebSocket.OPEN) {
         clientWs.close();
       }
@@ -1707,22 +1769,25 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
   });
 }
 
-function cleanupCdpScreencast() {
-  if (!cdpScreencast) return;
-  if (cdpScreencast.cdpWs.readyState === WebSocket.OPEN) {
-    cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Page.stopScreencast'));
-    cdpScreencast.cdpWs.close();
+function cleanupCdpScreencast(sessionId: string) {
+  const state = cdpScreencasts.get(sessionId);
+  if (!state) return;
+  if (state.tabPollInterval) { clearInterval(state.tabPollInterval); state.tabPollInterval = null; }
+  if (state.cdpWs.readyState === WebSocket.OPEN) {
+    state.cdpWs.send(cdpMsg(state, 'Page.stopScreencast'));
+    state.cdpWs.close();
   }
-  cdpScreencast = null;
+  cdpScreencasts.delete(sessionId);
 }
 
 /** Switch the CDP screencast to a different target, keeping the client WS alive */
-function switchScreencastTarget(target: PageTarget, clientWs: WebSocket): void {
-  if (cdpScreencast?.cdpWs.readyState === WebSocket.OPEN) {
-    cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Page.stopScreencast'));
-    cdpScreencast.cdpWs.close();
+function switchScreencastTarget(sessionId: string, target: PageTarget, clientWs: WebSocket): void {
+  const state = cdpScreencasts.get(sessionId);
+  if (state?.cdpWs.readyState === WebSocket.OPEN) {
+    state.cdpWs.send(cdpMsg(state, 'Page.stopScreencast'));
+    state.cdpWs.close();
   }
-  connectCdpToTarget(target.id, target.wsUrl, clientWs, target.requiresSession);
+  connectCdpToTarget(sessionId, target.id, target.wsUrl, clientWs, target.requiresSession);
   if (clientWs.readyState === WebSocket.OPEN) {
     clientWs.send(JSON.stringify({ type: 'tab_switched', targetId: target.id }));
   }
@@ -1730,22 +1795,24 @@ function switchScreencastTarget(target: PageTarget, clientWs: WebSocket): void {
 
 /** Broadcast tab list to the connected frontend viewer.
  *  Accepts pre-fetched data to avoid redundant calls when used alongside findActivePageTarget. */
-async function broadcastTabList(prefetched?: { allTargets: PageTarget[]; daemonTabs: Awaited<ReturnType<typeof tabManager.queryTabs>> }): Promise<void> {
-  if (!cdpScreencast) return;
-  const clientWs = cdpScreencast.clientWs;
+async function broadcastTabList(sessionId: string, prefetched?: { allTargets: PageTarget[]; daemonTabs: TabInfo[] }): Promise<void> {
+  const screencast = cdpScreencasts.get(sessionId);
+  if (!screencast) return;
+  const clientWs = screencast.clientWs;
   if (clientWs.readyState !== WebSocket.OPEN) return;
 
+  const tm = getTabManager(sessionId);
   try {
     const { allTargets, daemonTabs } = prefetched ?? {
-      allTargets: await getAllPageTargets(),
-      daemonTabs: await tabManager.queryTabs(),
+      allTargets: await getAllPageTargets(sessionId),
+      daemonTabs: await tm.queryTabs(),
     };
 
     const claimedTargetIds = new Set<string>();
     const tabs: BrowserTabInfo[] = [];
     for (const dt of daemonTabs) {
-      const target = allTargets.find(t => tabManager.urlsMatch(t.url, dt.url) && !claimedTargetIds.has(t.id));
-      if (!target) continue; // skip tabs with no CDP match (timing edge case, resolves on next poll)
+      const target = allTargets.find(t => tm.urlsMatch(t.url, dt.url) && !claimedTargetIds.has(t.id));
+      if (!target) continue;
       claimedTargetIds.add(target.id);
       tabs.push({
         targetId: target.id,
@@ -1759,18 +1826,18 @@ async function broadcastTabList(prefetched?: { allTargets: PageTarget[]; daemonT
     const activeEntry = tabs.find(t => t.active);
     const activeTargetId = activeEntry?.targetId;
 
-    // Auto-follow: switch screencast if active target changed (e.g. user clicked a link that opened a new tab)
-    if (cdpScreencast?.autoFollow && activeTargetId && activeTargetId !== cdpScreencast?.currentTargetId) {
+    // Auto-follow: switch screencast if active target changed
+    if (screencast.autoFollow && activeTargetId && activeTargetId !== screencast.currentTargetId) {
       const target = allTargets.find(t => t.id === activeTargetId);
       if (target) {
-        switchScreencastTarget(target, clientWs);
+        switchScreencastTarget(sessionId, target, clientWs);
       }
     }
 
     clientWs.send(JSON.stringify({
       type: 'tab_list',
       tabs,
-      activeTargetId: activeEntry?.targetId ?? cdpScreencast?.currentTargetId ?? '',
+      activeTargetId: activeEntry?.targetId ?? screencast.currentTargetId ?? '',
     }));
   } catch (err) {
     console.error('[CDP] Failed to broadcast tab list:', err);
@@ -1778,35 +1845,38 @@ async function broadcastTabList(prefetched?: { allTargets: PageTarget[]; daemonT
 }
 
 /** After a browser action, check if the active tab changed and switch screencast */
-function notifyBrowserAction() {
-  if (!cdpScreencast) return;
-  const currentClient = cdpScreencast.clientWs;
+function notifyBrowserAction(sessionId: string) {
+  const screencast = cdpScreencasts.get(sessionId);
+  if (!screencast) return;
+  const currentClient = screencast.clientWs;
+  const tm = getTabManager(sessionId);
   // Brief delay to let agent-browser update its internal state after the action
   setTimeout(async () => {
-    if (!cdpScreencast || cdpScreencast.clientWs !== currentClient) return;
+    const latestScreencast = cdpScreencasts.get(sessionId);
+    if (!latestScreencast || latestScreencast.clientWs !== currentClient) return;
 
     try {
       // Fetch once and share across both operations
       const [allTargets, daemonTabs] = await Promise.all([
-        getAllPageTargets(),
-        tabManager.queryTabs(),
+        getAllPageTargets(sessionId),
+        tm.queryTabs(),
       ]);
 
       // Resolve the active target from daemon info
       const activeDaemonTab = daemonTabs.find(t => t.active);
       let activeTarget: PageTarget | null = allTargets[0] ?? null;
       if (activeDaemonTab && allTargets.length > 1) {
-        activeTarget = allTargets.find(p => tabManager.urlsMatch(p.url, activeDaemonTab.url)) ?? activeTarget;
+        activeTarget = allTargets.find(p => tm.urlsMatch(p.url, activeDaemonTab.url)) ?? activeTarget;
       }
 
       // Switch screencast only if auto-following and target changed
-      if (activeTarget && activeTarget.id !== cdpScreencast.currentTargetId && cdpScreencast.autoFollow) {
+      if (activeTarget && activeTarget.id !== latestScreencast.currentTargetId && latestScreencast.autoFollow) {
         console.log(`[CDP] Auto-following to target ${activeTarget.id}`);
-        switchScreencastTarget(activeTarget, currentClient);
+        switchScreencastTarget(sessionId, activeTarget, currentClient);
       }
 
       // Always broadcast updated tab list (so frontend sees agent's active tab move)
-      broadcastTabList({ allTargets, daemonTabs });
+      broadcastTabList(sessionId, { allTargets, daemonTabs });
     } catch (err) {
       console.error('[CDP] notifyBrowserAction failed:', err);
     }
@@ -1814,11 +1884,11 @@ function notifyBrowserAction() {
 }
 
 // Handle browser stream WebSocket - CDP-based screencast
-function handleBrowserStreamConnection(ws: WebSocket) {
-  // If there's an existing screencast, close it (single viewer)
-  cleanupCdpScreencast();
+function handleBrowserStreamConnection(ws: WebSocket, sessionId: string) {
+  // If there's an existing screencast for this session, close it (single viewer per session)
+  cleanupCdpScreencast(sessionId);
 
-  findActivePageTarget().then((target) => {
+  findActivePageTarget(sessionId).then((target) => {
     if (!target) {
       console.error('[CDP] No active page target found');
       if (ws.readyState === WebSocket.OPEN) {
@@ -1827,8 +1897,8 @@ function handleBrowserStreamConnection(ws: WebSocket) {
       ws.close();
       return;
     }
-    connectCdpToTarget(target.id, target.wsUrl, ws, target.requiresSession);
-    broadcastTabList();
+    connectCdpToTarget(sessionId, target.id, target.wsUrl, ws, target.requiresSession);
+    broadcastTabList(sessionId);
   }).catch((err) => {
     console.error('[CDP] Failed to start screencast:', err);
     if (ws.readyState === WebSocket.OPEN) {
@@ -1837,36 +1907,40 @@ function handleBrowserStreamConnection(ws: WebSocket) {
     ws.close();
   });
 
-  // Start tab list polling
-  tabPollInterval = setInterval(() => broadcastTabList(), 2000);
+  // Start tab list polling for this session
+  // Store interval in the screencast state (will be set after connectCdpToTarget creates it)
+  const pollInterval = setInterval(() => broadcastTabList(sessionId), 2000);
+  // Attach after a tick so connectCdpToTarget has set the state
+  setTimeout(() => {
+    const state = cdpScreencasts.get(sessionId);
+    if (state) state.tabPollInterval = pollInterval;
+  }, 0);
 
   // Forward input events and handle tab control messages from client
-  // Protocol: see src/renderer/components/browser/browser-preview.tsx
   ws.on('message', async (rawData) => {
     try {
       const data = JSON.parse(rawData.toString());
-      if (!cdpScreencast) return;
+      const screencast = cdpScreencasts.get(sessionId);
+      if (!screencast) return;
 
       if (data.type === 'switch_tab' && data.targetId) {
-        // User wants to view a specific tab
-        const allTargets = await getAllPageTargets();
+        const allTargets = await getAllPageTargets(sessionId);
         const target = allTargets.find(t => t.id === data.targetId);
-        if (target && cdpScreencast && cdpScreencast.cdpWs.readyState === WebSocket.OPEN) {
-          cdpScreencast.autoFollow = false;
-          switchScreencastTarget(target, ws);
+        if (target && screencast.cdpWs.readyState === WebSocket.OPEN) {
+          screencast.autoFollow = false;
+          switchScreencastTarget(sessionId, target, ws);
         }
       } else if (data.type === 'follow_agent') {
-        if (cdpScreencast) cdpScreencast.autoFollow = data.enabled !== false;
-        if (cdpScreencast?.autoFollow) {
-          // Snap to agent's active tab immediately
-          const target = await findActivePageTarget();
-          if (target && cdpScreencast && target.id !== cdpScreencast.currentTargetId) {
-            switchScreencastTarget(target, ws);
+        screencast.autoFollow = data.enabled !== false;
+        if (screencast.autoFollow) {
+          const target = await findActivePageTarget(sessionId);
+          if (target && target.id !== screencast.currentTargetId) {
+            switchScreencastTarget(sessionId, target, ws);
           }
         }
-      } else if (cdpScreencast.cdpWs.readyState === WebSocket.OPEN) {
+      } else if (screencast.cdpWs.readyState === WebSocket.OPEN) {
         if (data.type === 'input_mouse') {
-          cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Input.dispatchMouseEvent', {
+          screencast.cdpWs.send(cdpMsg(screencast, 'Input.dispatchMouseEvent', {
             type: data.eventType,
             x: Math.round(data.x),
             y: Math.round(data.y),
@@ -1877,7 +1951,7 @@ function handleBrowserStreamConnection(ws: WebSocket) {
             modifiers: data.modifiers || 0,
           }));
         } else if (data.type === 'input_keyboard') {
-          cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Input.dispatchKeyEvent', {
+          screencast.cdpWs.send(cdpMsg(screencast, 'Input.dispatchKeyEvent', {
             type: data.eventType,
             key: data.key,
             code: data.code,
@@ -1887,14 +1961,11 @@ function handleBrowserStreamConnection(ws: WebSocket) {
             modifiers: data.modifiers || 0,
           }));
         } else if (data.type === 'input_press') {
-          // Playwright-style key press: look up editing commands from Playwright's
-          // macEditingCommands map and include them in the CDP event. This is required
-          // for Chrome to trigger keyboard shortcuts (selectAll, cut, undo, etc.) via CDP.
           const mods = data.modifiers || 0;
           const isPrintable = data.key && data.key.length === 1;
           const commands = getEditingCommands(data.code, mods);
 
-          cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Input.dispatchKeyEvent', {
+          screencast.cdpWs.send(cdpMsg(screencast, 'Input.dispatchKeyEvent', {
             type: isPrintable ? 'keyDown' : 'rawKeyDown',
             key: data.key, code: data.code,
             text: isPrintable ? data.key : '',
@@ -1905,40 +1976,54 @@ function handleBrowserStreamConnection(ws: WebSocket) {
             commands,
           }));
 
-          cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Input.dispatchKeyEvent', {
+          screencast.cdpWs.send(cdpMsg(screencast, 'Input.dispatchKeyEvent', {
             type: 'keyUp', key: data.key, code: data.code,
             windowsVirtualKeyCode: data.keyCode || 0,
             nativeVirtualKeyCode: data.keyCode || 0,
             modifiers: mods,
           }));
         } else if (data.type === 'input_paste' && data.text) {
-          cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Input.insertText', {
+          screencast.cdpWs.send(cdpMsg(screencast, 'Input.insertText', {
             text: data.text,
           }));
         } else if (data.type === 'get_selection') {
-          // Capture the message ID before cdpMsg increments it, to avoid re-parsing
-          const msgId = cdpScreencast.msgId + 1;
-          const msgStr = cdpMsg(cdpScreencast, 'Runtime.evaluate', {
+          const msgId = screencast.msgId + 1;
+          const msgStr = cdpMsg(screencast, 'Runtime.evaluate', {
             expression: 'window.getSelection().toString()',
             returnByValue: true,
           });
-          cdpScreencast.pendingSelections.add(msgId);
-          cdpScreencast.cdpWs.send(msgStr);
+          screencast.pendingSelections.add(msgId);
+          screencast.cdpWs.send(msgStr);
         }
       }
     } catch { /* ignore parse errors for non-JSON frames */ }
   });
 
   ws.on('close', () => {
-    if (tabPollInterval) { clearInterval(tabPollInterval); tabPollInterval = null; }
-    if (cdpScreencast?.clientWs === ws) cleanupCdpScreencast();
+    const state = cdpScreencasts.get(sessionId);
+    if (state?.clientWs === ws) cleanupCdpScreencast(sessionId);
+    else if (pollInterval) clearInterval(pollInterval);
   });
 
   ws.on('error', () => {
-    if (tabPollInterval) { clearInterval(tabPollInterval); tabPollInterval = null; }
-    if (cdpScreencast?.clientWs === ws) cleanupCdpScreencast();
+    const state = cdpScreencasts.get(sessionId);
+    if (state?.clientWs === ws) cleanupCdpScreencast(sessionId);
+    else if (pollInterval) clearInterval(pollInterval);
   });
 }
+
+// Fallback cleanup when session is deleted without going through DELETE /sessions/:id.
+// This handler is synchronous (EventEmitter.emit), so we can only do sync cleanup here.
+// The DELETE endpoint handles the full async cleanup before this fires.
+sessionManager.on('session-deleting', (sessionId: string) => {
+  const session = browserSessions.get(sessionId);
+  if (session?.active) {
+    cleanupAgentBrowserDaemon(sessionId);
+    cleanupCdpScreencast(sessionId);
+    browserSessions.delete(sessionId);
+    removeTabManager(sessionId);
+  }
+});
 
 // Start dashboard processes asynchronously (don't block server startup)
 dashboardManager.scanAndStartAll().catch((error) => {
@@ -1989,14 +2074,12 @@ async function gracefulShutdown(signal: string) {
 
   console.log(`\nReceived ${signal}, shutting down gracefully...`);
 
-  // Close browser if active
-  if (browserState.active) {
+  // Close all active browser sessions
+  for (const sessionId of Array.from(browserSessions.keys())) {
     try {
-      await execBrowser(['close'], browserState.cdpUrl || undefined);
-      await stopHostBrowserIfNeeded();
-      browserState = { active: false, sessionId: null, cdpUrl: null };
+      await closeBrowserForSession(sessionId);
     } catch (error) {
-      console.error('Error closing browser:', error);
+      console.error(`Error closing browser for session ${sessionId}:`, error);
     }
   }
 

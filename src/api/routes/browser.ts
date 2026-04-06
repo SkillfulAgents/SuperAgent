@@ -7,12 +7,24 @@ import { IsAgent } from '../middleware/auth'
 
 const browser = new Hono()
 
+/** Build a composite instanceId from agentId and optional sessionId */
+function buildInstanceId(agentId: string, sessionId?: string): string {
+  return sessionId ? `${agentId}:${sessionId}` : agentId
+}
+
+/** Parse a composite instanceId back to [agentId, sessionId] */
+function parseInstanceId(instanceId: string): { agentId: string; sessionId?: string } {
+  const colonIdx = instanceId.indexOf(':')
+  if (colonIdx === -1) return { agentId: instanceId }
+  return { agentId: instanceId.slice(0, colonIdx), sessionId: instanceId.slice(colonIdx + 1) }
+}
+
 // POST /api/browser/launch-host-browser - Launch browser on host for CDP connection
 browser.post('/launch-host-browser', IsAgent(), async (c) => {
   try {
-    const body = await c.req.json<{ agentId?: string }>().catch(() => ({} as { agentId?: string }))
-    // Fall back to 'default' for backward compat with containers that don't send agentId yet
+    const body = await c.req.json<{ agentId?: string; sessionId?: string }>().catch(() => ({} as { agentId?: string; sessionId?: string }))
     const agentId = body.agentId || 'default'
+    const instanceId = buildInstanceId(agentId, body.sessionId)
 
     const provider = getActiveProvider()
     if (!provider) {
@@ -25,7 +37,7 @@ browser.post('/launch-host-browser', IsAgent(), async (c) => {
       options.chromeProfileId = settings.app.chromeProfileId
     }
 
-    const connectionInfo = await provider.launch(agentId, options, agentId)
+    const connectionInfo = await provider.launch(instanceId, options, agentId)
     return c.json(connectionInfo)
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Failed to launch browser'
@@ -34,16 +46,16 @@ browser.post('/launch-host-browser', IsAgent(), async (c) => {
   }
 })
 
-// POST /api/browser/stop-host-browser - Stop the host browser process for a specific agent
+// POST /api/browser/stop-host-browser - Stop the host browser process for a specific agent session
 browser.post('/stop-host-browser', IsAgent(), async (c) => {
   try {
-    const body = await c.req.json<{ agentId?: string }>().catch(() => ({} as { agentId?: string }))
-    // Fall back to 'default' for backward compat with containers that don't send agentId yet
+    const body = await c.req.json<{ agentId?: string; sessionId?: string }>().catch(() => ({} as { agentId?: string; sessionId?: string }))
     const agentId = body.agentId || 'default'
+    const instanceId = buildInstanceId(agentId, body.sessionId)
 
     const provider = getActiveProvider()
     if (provider) {
-      await provider.stop(agentId)
+      await provider.stop(instanceId)
     }
     return c.json({ success: true })
   } catch (error: unknown) {
@@ -56,15 +68,16 @@ browser.post('/stop-host-browser', IsAgent(), async (c) => {
 // POST /api/browser/debug-info - Get fresh debug/screencast connection info for an active browser session
 browser.post('/debug-info', IsAgent(), async (c) => {
   try {
-    const body = await c.req.json<{ agentId?: string }>().catch(() => ({} as { agentId?: string }))
+    const body = await c.req.json<{ agentId?: string; sessionId?: string }>().catch(() => ({} as { agentId?: string; sessionId?: string }))
     const agentId = body.agentId || 'default'
+    const instanceId = buildInstanceId(agentId, body.sessionId)
 
     const provider = getActiveProvider()
     if (!provider?.getDebugInfo) {
       return c.json({ pages: [] })
     }
 
-    const debugInfo = await provider.getDebugInfo(agentId)
+    const debugInfo = await provider.getDebugInfo(instanceId)
     return c.json(debugInfo || { pages: [] })
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Failed to get debug info'
@@ -78,14 +91,19 @@ browser.post('/debug-info', IsAgent(), async (c) => {
 // broadcast to frontend SSE clients so the preview disappears.
 setOnExternalClose(async (instanceId: string) => {
   console.log(`[Browser] Host browser for instance ${instanceId} closed externally`)
+  const { agentId, sessionId } = parseInstanceId(instanceId)
 
   // Broadcast to all frontend SSE clients with the agentSlug so UI can scope it
-  messagePersister.broadcastGlobal({ type: 'browser_active', active: false, agentSlug: instanceId })
+  messagePersister.broadcastGlobal({ type: 'browser_active', active: false, agentSlug: agentId, sessionId })
 
   // Notify the affected container to clean up its internal browser state.
   try {
-    const client = containerManager.getClient(instanceId)
-    await client.fetch('/browser/notify-closed', { method: 'POST' })
+    const client = containerManager.getClient(agentId)
+    await client.fetch('/browser/notify-closed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId }),
+    })
   } catch {
     // Non-critical — frontend is already notified
   }

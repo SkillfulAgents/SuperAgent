@@ -254,6 +254,9 @@ export class SessionManager extends EventEmitter {
     const sessionData = this.sessions.get(sessionId);
     if (!sessionData) return false;
 
+    // Emit event so browser resources can be cleaned up before process stops
+    this.emit('session-deleting', sessionId);
+
     // Stop the process
     await sessionData.process.stop();
 

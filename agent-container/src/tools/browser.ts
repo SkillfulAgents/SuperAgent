@@ -9,7 +9,7 @@
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { readFile } from 'fs/promises'
 import { z } from 'zod'
-import { tabManager } from '../tab-manager'
+import { getTabManager } from '../tab-manager'
 
 const CONTAINER_URL = `http://localhost:${process.env.PORT || '3000'}`
 
@@ -50,7 +50,8 @@ function errorResult(message: string) {
 
 /** Get tab warning from cached tab count (no network call needed — same process) */
 function getTabWarning(): string {
-  return tabManager.formatTabWarning(tabManager.getTabCount())
+  const tm = getTabManager(currentSessionId!)
+  return tm.formatTabWarning(tm.getTabCount())
 }
 
 export function stripAnsi(str: string): string {
@@ -171,7 +172,7 @@ Use compact=true (default) to reduce output size.`,
       ? String(data.snapshot)
       : JSON.stringify(data, null, 2)
 
-    text += tabManager.formatTabStatus(tabCount)
+    text += getTabManager(currentSessionId!).formatTabStatus(tabCount)
 
     return {
       content: [{ type: 'text' as const, text }],
@@ -193,7 +194,7 @@ export const browserClickTool = tool(
 
     let text = `Clicked ${args.ref}. Use browser_snapshot to see the updated page.`
     if (tabInfo) {
-      text += tabManager.formatTabNotification(tabInfo)
+      text += getTabManager(currentSessionId!).formatTabNotification(tabInfo)
     } else {
       text += getTabWarning()
     }
@@ -296,7 +297,7 @@ export const browserPressTool = tool(
 
     let text = `Pressed "${args.key}".`
     if (tabInfo) {
-      text += tabManager.formatTabNotification(tabInfo)
+      text += getTabManager(currentSessionId!).formatTabNotification(tabInfo)
     } else {
       text += getTabWarning()
     }
@@ -415,7 +416,7 @@ Available commands:
     let text = data.output ? String(data.output) : 'Command executed.'
     const tabInfo = data.tabInfo as { activeIndex: number; activeUrl: string; tabCount: number } | undefined
     if (tabInfo) {
-      text += tabManager.formatTabNotification(tabInfo)
+      text += getTabManager(currentSessionId!).formatTabNotification(tabInfo)
     } else {
       text += getTabWarning()
     }
@@ -472,7 +473,7 @@ export const browserGetStateTool = tool(
         ? String(data.snapshot)
         : JSON.stringify(data, null, 2)
       parts.push(`**Accessibility Snapshot:**\n${snapshot}`)
-      const tabStatus = tabManager.formatTabStatus(tabCount)
+      const tabStatus = getTabManager(currentSessionId!).formatTabStatus(tabCount)
       if (tabStatus) parts.push(tabStatus.trim())
     } else {
       parts.push(`**Accessibility Snapshot:** Error - ${snapshotResult.error}`)
