@@ -2,6 +2,7 @@ import { apiFetch } from '@renderer/lib/api'
 
 import { useEffect, useRef, useState } from 'react'
 import { HelpCircle, Check, ChevronLeft, ChevronRight } from 'lucide-react'
+import { useRequestHandler } from '@renderer/hooks/use-request-handler'
 import { Button } from '@renderer/components/ui/button'
 import { Textarea } from '@renderer/components/ui/textarea'
 import { DeclineButton } from './decline-button'
@@ -25,8 +26,6 @@ interface QuestionRequestItemProps {
   onComplete: () => void
 }
 
-type RequestStatus = 'pending' | 'submitting' | 'answered' | 'declined'
-
 export function QuestionRequestItem({
   toolUseId,
   questions,
@@ -46,8 +45,7 @@ export function QuestionRequestItem({
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0)
   const otherTextareaRef = useRef<HTMLTextAreaElement | null>(null)
 
-  const [status, setStatus] = useState<RequestStatus>('pending')
-  const [error, setError] = useState<string | null>(null)
+  const { status, error, submit } = useRequestHandler(onComplete)
 
   useEffect(() => {
     const textarea = otherTextareaRef.current
@@ -151,75 +149,37 @@ export function QuestionRequestItem({
     return (selection as string) || ''
   }
 
-  const handleSubmit = async () => {
+  const postAnswer = async (body: Record<string, unknown>) => {
+    const response = await apiFetch(
+      `/api/agents/${agentSlug}/sessions/${sessionId}/answer-question`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ toolUseId, ...body }),
+      }
+    )
+    if (!response.ok) {
+      const data = await response.json()
+      throw new Error(data.error || 'Request failed')
+    }
+  }
+
+  const handleSubmit = () => {
     if (!areAllQuestionsAnswered()) return
 
-    setStatus('submitting')
-    setError(null)
-
-    // Build answers object
     const answers: Record<string, string> = {}
     questions.forEach((q, i) => {
       answers[q.question] = getAnswerForQuestion(i, q)
     })
 
-    try {
-      const response = await apiFetch(
-        `/api/agents/${agentSlug}/sessions/${sessionId}/answer-question`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            toolUseId,
-            answers,
-          }),
-        }
-      )
-
-      if (!response.ok) {
-        const data = await response.json()
-        throw new Error(data.error || 'Failed to submit answers')
-      }
-
-      setStatus('answered')
-      onComplete()
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Failed to submit answers'
-      setError(message)
-      setStatus('pending')
-    }
+    submit(() => postAnswer({ answers }), 'answered')
   }
 
-  const handleDecline = async (reason?: string) => {
-    setStatus('submitting')
-    setError(null)
-
-    try {
-      const response = await apiFetch(
-        `/api/agents/${agentSlug}/sessions/${sessionId}/answer-question`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            toolUseId,
-            decline: true,
-            declineReason: reason || 'User declined to answer',
-          }),
-        }
-      )
-
-      if (!response.ok) {
-        const data = await response.json()
-        throw new Error(data.error || 'Failed to decline')
-      }
-
-      setStatus('declined')
-      onComplete()
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Failed to decline'
-      setError(message)
-      setStatus('pending')
-    }
+  const handleDecline = (reason?: string) => {
+    submit(
+      () => postAnswer({ decline: true, declineReason: reason || 'User declined to answer' }),
+      'declined',
+    )
   }
 
   const titleText = questions.length === 1 ? 'Question' : 'Questions'

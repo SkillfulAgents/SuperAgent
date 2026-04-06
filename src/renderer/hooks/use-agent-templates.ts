@@ -1,4 +1,5 @@
 import { apiFetch } from '@renderer/lib/api'
+import { downloadBlob } from '@renderer/lib/download'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import type { ApiAgent, ApiDiscoverableAgent, ApiAgentTemplateStatus } from '@shared/lib/types/api'
@@ -58,16 +59,7 @@ export function useExportAgentTemplate() {
         throw new Error(data.error || 'Failed to export template')
       }
 
-      // Trigger browser download
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `${agentName || agentSlug}-template.zip`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
+      await downloadBlob(res, `${agentName || agentSlug}-template.zip`)
     },
   })
 }
@@ -86,16 +78,7 @@ export function useExportAgentFull() {
         throw new Error(data.error || 'Failed to export agent')
       }
 
-      // Trigger browser download
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `${agentName || agentSlug}-full.zip`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
+      await downloadBlob(res, `${agentName || agentSlug}-full.zip`)
     },
   })
 }

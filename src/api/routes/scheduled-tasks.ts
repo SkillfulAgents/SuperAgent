@@ -6,9 +6,7 @@
  */
 
 import { Hono } from 'hono'
-import type { Context, Next, MiddlewareHandler } from 'hono'
-import { and, eq } from 'drizzle-orm'
-import { getActiveLlmProvider } from '@shared/lib/llm-provider'
+import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
 import {
   getScheduledTask,
   cancelScheduledTask,
@@ -29,46 +27,18 @@ import { messagePersister } from '@shared/lib/container/message-persister'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { validateCronExpression } from '@shared/lib/services/schedule-parser'
 import { withRetry } from '@shared/lib/utils/retry'
-import { Authenticated, type AgentRole, ROLE_HIERARCHY } from '../middleware/auth'
-import { isAuthMode } from '@shared/lib/auth/mode'
-import { getCurrentUserId } from '@shared/lib/auth/config'
-import { db } from '@shared/lib/db'
-import { agentAcl } from '@shared/lib/db/schema'
+import { Authenticated, EntityAgentRole } from '../middleware/auth'
 
 const scheduledTasksRouter = new Hono()
 
 scheduledTasksRouter.use('*', Authenticated())
 
-/**
- * Middleware that loads the scheduled task, checks the user's role on its agent,
- * and stashes the task on the context for downstream handlers.
- */
-function TaskAgentRole(minRole: AgentRole): MiddlewareHandler {
-  return async (c: Context, next: Next) => {
-    const taskId = c.req.param('taskId')!
-    const task = await getScheduledTask(taskId)
-    if (!task) {
-      return c.json({ error: 'Scheduled task not found' }, 404)
-    }
-    c.set('scheduledTask' as never, task as never)
-
-    if (!isAuthMode()) return next()
-
-    const userId = getCurrentUserId(c)
-    const [row] = await db
-      .select({ role: agentAcl.role })
-      .from(agentAcl)
-      .where(and(eq(agentAcl.userId, userId), eq(agentAcl.agentSlug, task.agentSlug)))
-      .limit(1)
-
-    const userRole = (row?.role as AgentRole) ?? null
-    if (!userRole || ROLE_HIERARCHY[userRole] < ROLE_HIERARCHY[minRole]) {
-      return c.json({ error: 'Forbidden' }, 403)
-    }
-
-    return next()
-  }
-}
+const TaskAgentRole = EntityAgentRole({
+  paramName: 'taskId',
+  lookupFn: getScheduledTask,
+  contextKey: 'scheduledTask',
+  entityName: 'Scheduled task',
+})
 
 // GET /api/scheduled-tasks/:taskId - Get a single scheduled task
 scheduledTasksRouter.get('/:taskId', TaskAgentRole('viewer'), async (c) => {
@@ -217,12 +187,7 @@ scheduledTasksRouter.post('/:taskId/describe-schedule', TaskAgentRole('viewer'),
       return c.json({ error: 'Task is not a recurring cron task' }, 400)
     }
 
-    const provider = getActiveLlmProvider()
-    if (!provider.getApiKeyStatus().isConfigured) {
-      return c.json({ error: 'LLM API key not configured' }, 500)
-    }
-
-    const client = provider.createClient()
+    const client = getConfiguredLlmClient()
     const response = await withRetry(() =>
       client.messages.create({
         model: getEffectiveModels().summarizerModel,
@@ -243,17 +208,16 @@ Examples:
       })
     )
 
-    const textBlock = response.content.find((block) => block.type === 'text')
-    const description = textBlock?.type === 'text' ? textBlock.text.trim() : null
-
+    const description = extractTextFromLlmResponse(response)
     if (!description) {
       return c.json({ error: 'Failed to generate description' }, 500)
     }
 
     return c.json({ description })
   } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Failed to describe schedule'
     console.error('Failed to describe schedule:', error)
-    return c.json({ error: 'Failed to describe schedule' }, 500)
+    return c.json({ error: msg }, 500)
   }
 })
 
@@ -270,12 +234,7 @@ scheduledTasksRouter.post('/:taskId/parse-schedule', TaskAgentRole('user'), asyn
       return c.json({ error: 'description is required' }, 400)
     }
 
-    const provider = getActiveLlmProvider()
-    if (!provider.getApiKeyStatus().isConfigured) {
-      return c.json({ error: 'LLM API key not configured' }, 500)
-    }
-
-    const client = provider.createClient()
+    const client = getConfiguredLlmClient()
     const response = await withRetry(() =>
       client.messages.create({
         model: getEffectiveModels().summarizerModel,
@@ -296,9 +255,7 @@ Examples:
       })
     )
 
-    const textBlock = response.content.find((block) => block.type === 'text')
-    const expression = textBlock?.type === 'text' ? textBlock.text.trim() : null
-
+    const expression = extractTextFromLlmResponse(response)
     if (!expression) {
       return c.json({ error: 'Failed to generate cron expression' }, 500)
     }
@@ -316,8 +273,9 @@ Examples:
 
     return c.json({ expression })
   } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Failed to parse schedule'
     console.error('Failed to parse schedule description:', error)
-    return c.json({ error: 'Failed to parse schedule' }, 500)
+    return c.json({ error: msg }, 500)
   }
 })
 

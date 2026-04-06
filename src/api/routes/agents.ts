@@ -88,7 +88,7 @@ import {
 import { withRetry } from '@shared/lib/utils/retry'
 import { transformMessages, type TransformedMessage, type TransformedItem } from '@shared/lib/utils/message-transform'
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings } from '@shared/lib/config/settings'
-import { getActiveLlmProvider } from '@shared/lib/llm-provider'
+import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import * as fs from 'fs'
@@ -464,7 +464,7 @@ async function createOwnerAcl(c: Context, agentSlug: string) {
 
 // Create LLM client using the active provider
 function getLlmClient(): Anthropic {
-  return getActiveLlmProvider().createClient()
+  return getConfiguredLlmClient()
 }
 
 // Model used for generating session names (lightweight task)
@@ -498,9 +498,7 @@ Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
       })
     )
 
-    const textBlock = response.content.find((block) => block.type === 'text')
-    const sessionName = textBlock?.type === 'text' ? textBlock.text.trim() : null
-
+    const sessionName = extractTextFromLlmResponse(response)
     if (sessionName) {
       await updateSessionName(agentSlug, sessionId, sessionName)
       messagePersister.broadcastSessionUpdate(sessionId)

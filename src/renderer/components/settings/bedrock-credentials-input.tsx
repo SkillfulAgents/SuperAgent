@@ -3,9 +3,10 @@ import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Button } from '@renderer/components/ui/button'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
+import { PasswordInput } from '@renderer/components/ui/password-input'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { apiFetch } from '@renderer/lib/api'
-import { AlertTriangle, Eye, EyeOff, Check, Loader2, ChevronRight } from 'lucide-react'
+import { AlertTriangle, Check, Loader2, ChevronRight } from 'lucide-react'
 import type { ApiKeyStatus } from '@shared/lib/config/settings'
 
 interface BedrockCredentialsInputProps {
@@ -27,12 +28,10 @@ export function BedrockCredentialsInput({
 
   // Simple auth fields
   const [apiKeyInput, setApiKeyInput] = useState('')
-  const [showApiKey, setShowApiKey] = useState(false)
 
   // Advanced auth fields
   const [accessKeyId, setAccessKeyId] = useState('')
   const [secretAccessKey, setSecretAccessKey] = useState('')
-  const [showSecret, setShowSecret] = useState(false)
 
   // Region (shared)
   const [region, setRegion] = useState('')
@@ -60,7 +59,6 @@ export function BedrockCredentialsInput({
           },
         })
         setApiKeyInput('')
-        setShowApiKey(false)
       }
     } catch {
       setValidationResult({ valid: false, error: 'Failed to validate' })
@@ -95,7 +93,6 @@ export function BedrockCredentialsInput({
         })
         setAccessKeyId('')
         setSecretAccessKey('')
-        setShowSecret(false)
       }
     } catch {
       setValidationResult({ valid: false, error: 'Failed to validate' })
@@ -169,25 +166,13 @@ export function BedrockCredentialsInput({
           {/* Simple: Bedrock API Key */}
           <div className="space-y-1">
             <Label htmlFor="bedrock-api-key" className="text-xs">Bedrock API Key</Label>
-            <div className="relative">
-              <Input
-                id="bedrock-api-key"
-                type={showApiKey ? 'text' : 'password'}
-                value={apiKeyInput}
-                onChange={(e) => { setApiKeyInput(e.target.value); setValidationResult(null) }}
-                placeholder={apiKeyStatus?.isConfigured ? '••••••••••••••••' : 'Enter Bedrock API key...'}
-                className="pr-10"
-                disabled={disabled || isBusy}
-              />
-              <button
-                type="button"
-                onClick={() => setShowApiKey(!showApiKey)}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                disabled={disabled || isBusy}
-              >
-                {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
-            </div>
+            <PasswordInput
+              id="bedrock-api-key"
+              value={apiKeyInput}
+              onChange={(e) => { setApiKeyInput(e.target.value); setValidationResult(null) }}
+              placeholder={apiKeyStatus?.isConfigured ? '••••••••••••••••' : 'Enter Bedrock API key...'}
+              disabled={disabled || isBusy}
+            />
           </div>
 
           <button
@@ -227,25 +212,13 @@ export function BedrockCredentialsInput({
           </div>
           <div className="space-y-1">
             <Label htmlFor="bedrock-secret-key" className="text-xs">AWS Secret Access Key</Label>
-            <div className="relative">
-              <Input
-                id="bedrock-secret-key"
-                type={showSecret ? 'text' : 'password'}
-                value={secretAccessKey}
-                onChange={(e) => { setSecretAccessKey(e.target.value); setValidationResult(null) }}
-                placeholder={apiKeyStatus?.isConfigured ? '••••••••••••••••' : 'Enter secret key...'}
-                className="pr-10"
-                disabled={disabled || isBusy}
-              />
-              <button
-                type="button"
-                onClick={() => setShowSecret(!showSecret)}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                disabled={disabled || isBusy}
-              >
-                {showSecret ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
-            </div>
+            <PasswordInput
+              id="bedrock-secret-key"
+              value={secretAccessKey}
+              onChange={(e) => { setSecretAccessKey(e.target.value); setValidationResult(null) }}
+              placeholder={apiKeyStatus?.isConfigured ? '••••••••••••••••' : 'Enter secret key...'}
+              disabled={disabled || isBusy}
+            />
           </div>
 
           <button

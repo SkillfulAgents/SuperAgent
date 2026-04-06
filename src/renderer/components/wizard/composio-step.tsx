@@ -73,7 +73,6 @@ export function ComposioStep({ onCanProceedChange, saveRef }: ComposioStepProps)
       {!isComposioConfigured && (
         <>
           <ComposioApiKeyInput
-            idPrefix="wizard-composio-key"
             showRemoveButton={false}
             showSourceIndicator={false}
           />

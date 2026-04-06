@@ -80,7 +80,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
 
   const handleCancel = async () => {
     try {
-      await cancelTask.mutateAsync({ taskId, agentSlug })
+      await cancelTask.mutateAsync({ id: taskId, agentSlug })
       handleScheduledTaskDeleted(taskId)
     } catch (err) {
       console.error('Failed to cancel scheduled task:', err)

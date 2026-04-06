@@ -1,6 +1,7 @@
 import { apiFetch } from '@renderer/lib/api'
 import { useState, useRef, useCallback } from 'react'
 import { CloudUpload, FileIcon, X } from 'lucide-react'
+import { useRequestHandler } from '@renderer/hooks/use-request-handler'
 import { Button } from '@renderer/components/ui/button'
 import { DeclineButton } from './decline-button'
 import { RequestItemShell } from './request-item-shell'
@@ -17,8 +18,6 @@ interface FileRequestItemProps {
   onComplete: () => void
 }
 
-type RequestStatus = 'pending' | 'submitting' | 'uploaded' | 'declined'
-
 export function FileRequestItem({
   toolUseId,
   description,
@@ -29,8 +28,7 @@ export function FileRequestItem({
   onComplete,
 }: FileRequestItemProps) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [status, setStatus] = useState<RequestStatus>('pending')
-  const [error, setError] = useState<string | null>(null)
+  const { status, error, submit, setError } = useRequestHandler(onComplete)
   const [isDragOver, setIsDragOver] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -40,30 +38,21 @@ export function FileRequestItem({
       setSelectedFile(file)
       setError(null)
     }
-  }, [])
+  }, [setError])
 
-  const handleUpload = async () => {
+  const handleUpload = () => {
     if (!selectedFile) return
-
-    setStatus('submitting')
-    setError(null)
-
-    try {
-      // Upload the file
+    submit(async () => {
       const formData = new FormData()
       formData.append('file', selectedFile)
       const uploadResponse = await apiFetch(
         `/api/agents/${agentSlug}/sessions/${sessionId}/upload-file`,
         { method: 'POST', body: formData }
       )
-
-      if (!uploadResponse.ok) {
-        throw new Error('Failed to upload file')
-      }
+      if (!uploadResponse.ok) throw new Error('Failed to upload file')
 
       const { path } = await uploadResponse.json()
 
-      // Resolve the pending input with the file path
       const provideResponse = await apiFetch(
         `/api/agents/${agentSlug}/sessions/${sessionId}/provide-file`,
         {
@@ -72,26 +61,15 @@ export function FileRequestItem({
           body: JSON.stringify({ toolUseId, filePath: path }),
         }
       )
-
       if (!provideResponse.ok) {
         const data = await provideResponse.json()
         throw new Error(data.error || 'Failed to provide file')
       }
-
-      setStatus('uploaded')
-      onComplete()
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Failed to upload file'
-      setError(message)
-      setStatus('pending')
-    }
+    }, 'uploaded')
   }
 
-  const handleDecline = async (reason?: string) => {
-    setStatus('submitting')
-    setError(null)
-
-    try {
+  const handleDecline = (reason?: string) => {
+    submit(async () => {
       const response = await apiFetch(
         `/api/agents/${agentSlug}/sessions/${sessionId}/provide-file`,
         {
@@ -104,19 +82,11 @@ export function FileRequestItem({
           }),
         }
       )
-
       if (!response.ok) {
         const data = await response.json()
         throw new Error(data.error || 'Failed to decline request')
       }
-
-      setStatus('declined')
-      onComplete()
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Failed to decline request'
-      setError(message)
-      setStatus('pending')
-    }
+    }, 'declined')
   }
 
   const handleDragOver = (e: React.DragEvent) => {
