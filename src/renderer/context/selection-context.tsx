@@ -5,19 +5,18 @@ interface SelectionContextType {
   selectedAgentSlug: string | null
   selectedSessionId: string | null
   selectedScheduledTaskId: string | null
+  selectedWebhookTriggerId: string | null
   selectedDashboardSlug: string | null
   selectAgent: (agentSlug: string | null) => void
   selectSession: (sessionId: string | null) => void
   selectScheduledTask: (taskId: string | null) => void
+  selectWebhookTrigger: (triggerId: string | null) => void
   selectDashboard: (slug: string | null) => void
   clearSelection: () => void
-  // Called when an agent is deleted - clears selection if it was selected
   handleAgentDeleted: (agentSlug: string) => void
-  // Called when a session is deleted - clears selection if it was selected
   handleSessionDeleted: (sessionId: string) => void
-  // Called when a scheduled task is deleted/cancelled - clears selection if it was selected
   handleScheduledTaskDeleted: (taskId: string) => void
-  // Called when a dashboard is deleted - clears selection if it was selected
+  handleWebhookTriggerDeleted: (triggerId: string) => void
   handleDashboardDeleted: (slug: string) => void
 }
 
@@ -27,24 +26,35 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
   const [selectedAgentSlug, setSelectedAgentSlug] = useState<string | null>(null)
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const [selectedScheduledTaskId, setSelectedScheduledTaskId] = useState<string | null>(null)
+  const [selectedWebhookTriggerId, setSelectedWebhookTriggerId] = useState<string | null>(null)
   const [selectedDashboardSlug, setSelectedDashboardSlug] = useState<string | null>(null)
 
   const selectAgent = useCallback((agentSlug: string | null) => {
     setSelectedAgentSlug(agentSlug)
     setSelectedSessionId(null)
     setSelectedScheduledTaskId(null)
+    setSelectedWebhookTriggerId(null)
     setSelectedDashboardSlug(null)
   }, [])
 
   const selectSession = useCallback((sessionId: string | null) => {
     setSelectedSessionId(sessionId)
     setSelectedScheduledTaskId(null)
+    setSelectedWebhookTriggerId(null)
     setSelectedDashboardSlug(null)
   }, [])
 
   const selectScheduledTask = useCallback((taskId: string | null) => {
     setSelectedScheduledTaskId(taskId)
     setSelectedSessionId(null)
+    setSelectedWebhookTriggerId(null)
+    setSelectedDashboardSlug(null)
+  }, [])
+
+  const selectWebhookTrigger = useCallback((triggerId: string | null) => {
+    setSelectedWebhookTriggerId(triggerId)
+    setSelectedSessionId(null)
+    setSelectedScheduledTaskId(null)
     setSelectedDashboardSlug(null)
   }, [])
 
@@ -52,12 +62,14 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedDashboardSlug(slug)
     setSelectedSessionId(null)
     setSelectedScheduledTaskId(null)
+    setSelectedWebhookTriggerId(null)
   }, [])
 
   const clearSelection = useCallback(() => {
     setSelectedAgentSlug(null)
     setSelectedSessionId(null)
     setSelectedScheduledTaskId(null)
+    setSelectedWebhookTriggerId(null)
     setSelectedDashboardSlug(null)
   }, [])
 
@@ -66,6 +78,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
       setSelectedAgentSlug(null)
       setSelectedSessionId(null)
       setSelectedScheduledTaskId(null)
+      setSelectedWebhookTriggerId(null)
       setSelectedDashboardSlug(null)
     }
   }, [selectedAgentSlug])
@@ -82,6 +95,12 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     }
   }, [selectedScheduledTaskId])
 
+  const handleWebhookTriggerDeleted = useCallback((triggerId: string) => {
+    if (selectedWebhookTriggerId === triggerId) {
+      setSelectedWebhookTriggerId(null)
+    }
+  }, [selectedWebhookTriggerId])
+
   const handleDashboardDeleted = useCallback((slug: string) => {
     if (selectedDashboardSlug === slug) {
       setSelectedDashboardSlug(null)
@@ -94,15 +113,18 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
         selectedAgentSlug,
         selectedSessionId,
         selectedScheduledTaskId,
+        selectedWebhookTriggerId,
         selectedDashboardSlug,
         selectAgent,
         selectSession,
         selectScheduledTask,
+        selectWebhookTrigger,
         selectDashboard,
         clearSelection,
         handleAgentDeleted,
         handleSessionDeleted,
         handleScheduledTaskDeleted,
+        handleWebhookTriggerDeleted,
         handleDashboardDeleted,
       }}
     >

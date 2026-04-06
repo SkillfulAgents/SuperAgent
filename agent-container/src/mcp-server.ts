@@ -12,6 +12,12 @@ import { searchConnectedAccountServicesTool } from './tools/search-connected-acc
 import { requestRemoteMcpTool } from './tools/request-remote-mcp'
 import { searchRemoteMcpServicesTool } from './tools/search-remote-mcp-services'
 import { scheduleTaskTool } from './tools/schedule-task'
+import {
+  getAvailableTriggersTool,
+  listTriggersTool,
+  setupTriggerTool,
+  cancelTriggerTool,
+} from './tools/webhook-triggers'
 import { deliverFileTool } from './tools/deliver-file'
 import { requestFileTool } from './tools/request-file'
 import { requestBrowserInputTool } from './tools/request-browser-input'
@@ -34,6 +40,9 @@ export function createUserInputMcpServer() {
   const hostPlatform = process.env.HOST_PLATFORM
   const includeScriptRun = hostPlatform === 'darwin' || hostPlatform === 'win32'
 
+  // Webhook trigger tools only available when platform Composio is active
+  const includeWebhookTriggers = process.env.COMPOSIO_PLATFORM_MODE === 'true'
+
   return createSdkMcpServer({
     name: 'user-input',
     version: '1.0.0',
@@ -42,6 +51,7 @@ export function createUserInputMcpServer() {
       requestRemoteMcpTool, searchRemoteMcpServicesTool, scheduleTaskTool,
       deliverFileTool, requestFileTool, requestBrowserInputTool,
       ...(includeScriptRun ? [requestScriptRunTool] : []),
+      ...(includeWebhookTriggers ? [getAvailableTriggersTool, listTriggersTool, setupTriggerTool, cancelTriggerTool] : []),
     ],
   })
 }

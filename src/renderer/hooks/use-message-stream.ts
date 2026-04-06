@@ -728,6 +728,12 @@ function getOrCreateEventSource(
           queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', taskAgentSlug] })
         }
       }
+      else if (data.type === 'webhook_trigger_created' || data.type === 'webhook_trigger_cancelled') {
+        const triggerAgentSlug = (data as { agentSlug?: string }).agentSlug
+        if (triggerAgentSlug) {
+          queryClient.invalidateQueries({ queryKey: ['webhook-triggers', triggerAgentSlug] })
+        }
+      }
       else if (data.type === 'subagent_updated') {
         // Subagent message persisted or agentId discovered — refetch persisted messages.
         // Preserve existing streaming state; SubAgentBlock's isStreamingMessagePersisted

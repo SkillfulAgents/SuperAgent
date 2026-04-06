@@ -15,7 +15,9 @@ async function getAuthLazy() {
   return _getAuth()
 }
 
-type AgentRole = 'owner' | 'user' | 'viewer'
+// Re-export from shared types so existing consumers (webhook-triggers.ts etc.) keep working
+export { type AgentRole, ROLE_HIERARCHY, hasMinRole } from '@shared/lib/types/agent'
+import { type AgentRole, ROLE_HIERARCHY, hasMinRole } from '@shared/lib/types/agent'
 
 /**
  * Authenticated — verifies user session and attaches user to context.
@@ -57,12 +59,6 @@ function isAdmin(user: { role?: string }): boolean {
   return user.role === 'admin'
 }
 
-const ROLE_HIERARCHY: Record<AgentRole, number> = { viewer: 0, user: 1, owner: 2 }
-
-function hasMinRole(actual: AgentRole | null, required: AgentRole): boolean {
-  if (!actual) return false
-  return ROLE_HIERARCHY[actual] >= ROLE_HIERARCHY[required]
-}
 
 /**
  * AgentRead — user has any role on the agent (viewer+).

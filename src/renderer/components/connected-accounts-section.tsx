@@ -21,9 +21,10 @@ import {
   useDeleteConnectedAccount,
   useRenameConnectedAccount,
   useInvalidateConnectedAccounts,
+  useTriggerCountsPerAccount,
   type ConnectedAccount,
 } from '@renderer/hooks/use-connected-accounts'
-import { Trash2, Loader2, Pencil, Check, X, Search } from 'lucide-react'
+import { Trash2, Loader2, Pencil, Check, X, Search, Zap } from 'lucide-react'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { useQuery } from '@tanstack/react-query'
 import type { Provider } from '@shared/lib/composio/providers'
@@ -46,6 +47,7 @@ export function ConnectedAccountsSection() {
       return res.json()
     },
   })
+  const { data: triggerCounts } = useTriggerCountsPerAccount()
   const initiateConnection = useInitiateConnection()
   const deleteAccount = useDeleteConnectedAccount()
   const renameAccount = useRenameConnectedAccount()
@@ -244,6 +246,12 @@ export function ConnectedAccountsSection() {
                         </div>
                         <p className="text-xs text-muted-foreground">
                           {provider?.displayName || account.toolkitSlug} · connected {connectedAgo}
+                          {(triggerCounts?.[account.id] ?? 0) > 0 && (
+                            <span className="inline-flex items-center gap-0.5 ml-1 align-middle">
+                              · <Zap className="h-3 w-3" />
+                              {triggerCounts![account.id]} trigger{triggerCounts![account.id] > 1 ? 's' : ''}
+                            </span>
+                          )}
                         </p>
                       </>
                     )}

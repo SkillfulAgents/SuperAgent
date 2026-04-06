@@ -525,4 +525,13 @@ export async function getAccountDisplayName(
   return fallbackName
 }
 
+/**
+ * Check if the platform Composio integration is active.
+ * Returns true when using org-managed Composio via the platform proxy,
+ * false when using a local Composio API key or when not connected.
+ */
+export function isPlatformComposioActive(): boolean {
+  return !shouldUseLocalComposioKey() && Boolean(getPlatformComposioToken())
+}
+
 export { ComposioApiError }

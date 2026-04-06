@@ -29,7 +29,7 @@ import { messagePersister } from '@shared/lib/container/message-persister'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { validateCronExpression } from '@shared/lib/services/schedule-parser'
 import { withRetry } from '@shared/lib/utils/retry'
-import { Authenticated } from '../middleware/auth'
+import { Authenticated, type AgentRole, ROLE_HIERARCHY } from '../middleware/auth'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { db } from '@shared/lib/db'
@@ -38,9 +38,6 @@ import { agentAcl } from '@shared/lib/db/schema'
 const scheduledTasksRouter = new Hono()
 
 scheduledTasksRouter.use('*', Authenticated())
-
-type AgentRole = 'owner' | 'user' | 'viewer'
-const ROLE_HIERARCHY: Record<AgentRole, number> = { viewer: 0, user: 1, owner: 2 }
 
 /**
  * Middleware that loads the scheduled task, checks the user's role on its agent,

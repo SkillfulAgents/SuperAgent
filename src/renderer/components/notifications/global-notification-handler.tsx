@@ -145,6 +145,16 @@ export function GlobalNotificationHandler() {
             break
           }
 
+          case 'webhook_trigger_created':
+          case 'webhook_trigger_cancelled': {
+            const agentSlug = data.agentSlug as string | undefined
+            if (agentSlug) {
+              queryClient.invalidateQueries({ queryKey: ['webhook-triggers', agentSlug] })
+            }
+            queryClient.invalidateQueries({ queryKey: ['agents'] })
+            break
+          }
+
           case 'mount_health_warning': {
             // Some mounted folders are missing — show banner in agent view
             setMountWarning(queryClient, {

@@ -2,8 +2,7 @@ import { createContext, useContext, useCallback, useMemo, type ReactNode } from 
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSession, signOut as authSignOut } from '@renderer/lib/auth-client'
 import { apiFetch } from '@renderer/lib/api'
-
-type AgentRole = 'owner' | 'user' | 'viewer'
+import type { AgentRole } from '@shared/lib/types/agent'
 
 interface AgentRoleInfo {
   role: AgentRole

@@ -56,6 +56,52 @@ vi.mock('@shared/lib/computer-use/types', () => ({
   TIMED_GRANT_DURATION_MS: 15 * 60 * 1000,
 }))
 
+// Mock webhook trigger dependencies
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type MockFn = (...args: any[]) => any
+const mockCreateWebhookTrigger = vi.fn<MockFn>(() => Promise.resolve('trigger_new_id'))
+const mockListActiveWebhookTriggers = vi.fn<MockFn>(() => Promise.resolve([]))
+const mockCancelWebhookTriggerWithCleanup = vi.fn<MockFn>(() => Promise.resolve(true))
+vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
+  createWebhookTrigger: (...args: unknown[]) => mockCreateWebhookTrigger(...args),
+  listActiveWebhookTriggers: (...args: unknown[]) => mockListActiveWebhookTriggers(...args),
+  cancelWebhookTriggerWithCleanup: (...args: unknown[]) => mockCancelWebhookTriggerWithCleanup(...args),
+}))
+
+const mockGetAvailableTriggers = vi.fn<MockFn>(() => Promise.resolve([]))
+const mockEnableComposioTrigger = vi.fn<MockFn>(() => Promise.resolve('composio_trigger_id'))
+const mockDeleteComposioTrigger = vi.fn<MockFn>(() => Promise.resolve())
+vi.mock('@shared/lib/composio/triggers', () => ({
+  getAvailableTriggers: (...args: unknown[]) => mockGetAvailableTriggers(...args),
+  enableComposioTrigger: (...args: unknown[]) => mockEnableComposioTrigger(...args),
+  deleteComposioTrigger: (...args: unknown[]) => mockDeleteComposioTrigger(...args),
+}))
+
+const mockIsPlatformComposioActive = vi.fn(() => true)
+vi.mock('@shared/lib/composio/client', () => ({
+  isPlatformComposioActive: () => mockIsPlatformComposioActive(),
+}))
+
+const mockDbSelect = vi.fn<MockFn>()
+vi.mock('@shared/lib/db', () => ({
+  db: {
+    select: (...args: unknown[]) => mockDbSelect(...args),
+  },
+}))
+vi.mock('@shared/lib/db/schema', () => ({
+  connectedAccounts: { id: 'id', composioConnectionId: 'composio_connection_id', toolkitSlug: 'toolkit_slug' },
+}))
+
+// Mock container-manager (used by resolveContainerInput / rejectContainerInput)
+const mockContainerClientFetch = vi.fn<MockFn>(() => Promise.resolve({ ok: true }))
+vi.mock('./container-manager', () => ({
+  containerManager: {
+    getClient: () => ({
+      fetch: (...args: unknown[]) => mockContainerClientFetch(...args),
+    }),
+  },
+}))
+
 // Import after mocks are set up
 import { messagePersister } from './message-persister'
 
@@ -2141,6 +2187,395 @@ describe('MessagePersister', () => {
       // Should NOT broadcast stream_api_error
       const apiErrorEvents = sseEvents.filter(e => e.type === 'stream_api_error')
       expect(apiErrorEvents).toHaveLength(0)
+    })
+  })
+
+  // ============================================================================
+  // Webhook trigger tool handling
+  // ============================================================================
+
+  describe('webhook trigger tool handling', () => {
+    function collectGlobalEvents(): { events: any[]; cleanup: () => void } {
+      const events: any[] = []
+      const cleanup = messagePersister.addGlobalNotificationClient((data) => {
+        events.push(data)
+      })
+      return { events, cleanup }
+    }
+
+    function simulateToolUse(toolName: string, toolId: string, input: Record<string, unknown>) {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: toolId, name: toolName },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_stop' },
+      })
+    }
+
+    // Helper to set up the db.select() mock chain for connected account lookups
+    function mockDbSelectAccount(account: { id: string; composioConnectionId: string; toolkitSlug: string } | null) {
+      const result = account ? [account] : []
+      mockDbSelect.mockReturnValue({
+        from: () => ({
+          where: () => ({
+            limit: () => Promise.resolve(result),
+          }),
+        }),
+      })
+    }
+
+    // Wait for async handler to complete (they are fire-and-forget via ;(async () => {...})())
+    // Multiple awaits needed because the handlers chain several async operations
+    async function flushHandlers() {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+
+    beforeEach(() => {
+      mockContainerClientFetch.mockClear()
+      mockCreateWebhookTrigger.mockClear()
+      mockCancelWebhookTriggerWithCleanup.mockClear()
+      mockGetAvailableTriggers.mockClear()
+      mockEnableComposioTrigger.mockClear()
+      mockDeleteComposioTrigger.mockClear()
+      mockListActiveWebhookTriggers.mockClear()
+      mockDbSelect.mockClear()
+
+      mockIsPlatformComposioActive.mockReturnValue(true)
+      mockContainerClientFetch.mockResolvedValue({ ok: true })
+      mockCreateWebhookTrigger.mockResolvedValue('trigger_new_id')
+      mockCancelWebhookTriggerWithCleanup.mockResolvedValue(true)
+      mockGetAvailableTriggers.mockResolvedValue([
+        { slug: 'GMAIL_NEW_EMAIL', name: 'New Email', description: 'Fires on new email', type: 'webhook' },
+        { slug: 'SLACK_NEW_MESSAGE', name: 'New Message', description: 'Fires on new Slack message', type: 'webhook' },
+      ])
+      mockDbSelectAccount({ id: 'ca_1', composioConnectionId: 'composio_ca_1', toolkitSlug: 'gmail' })
+    })
+
+    describe('setup_trigger', () => {
+      it('broadcasts webhook_trigger_created on success', async () => {
+        const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
+        sseEvents.length = 0
+
+        simulateToolUse('mcp__user-input__setup_trigger', 'tool-setup-1', {
+          connected_account_id: 'ca_1',
+          trigger_type: 'GMAIL_NEW_EMAIL',
+          prompt: 'Summarize this email',
+          name: 'Email Handler',
+        })
+
+        await flushHandlers()
+
+        const sseCreated = sseEvents.filter(e => e.type === 'webhook_trigger_created')
+        expect(sseCreated).toHaveLength(1)
+        expect(sseCreated[0].triggerId).toBe('trigger_new_id')
+        expect(sseCreated[0].triggerType).toBe('GMAIL_NEW_EMAIL')
+        expect(sseCreated[0].name).toBe('Email Handler')
+        expect(sseCreated[0].agentSlug).toBe(AGENT_SLUG)
+
+        const globalCreated = globalEvents.filter(e => e.type === 'webhook_trigger_created')
+        expect(globalCreated).toHaveLength(1)
+        expect(globalCreated[0].triggerId).toBe('trigger_new_id')
+
+        // Verify resolve was called
+        expect(mockContainerClientFetch).toHaveBeenCalledWith(
+          '/inputs/tool-setup-1/resolve',
+          expect.objectContaining({ method: 'POST' }),
+        )
+
+        globalCleanup()
+      })
+
+      it('validates trigger type against available triggers', async () => {
+        sseEvents.length = 0
+
+        simulateToolUse('mcp__user-input__setup_trigger', 'tool-setup-bad', {
+          connected_account_id: 'ca_1',
+          trigger_type: 'NONEXISTENT_TRIGGER',
+          prompt: 'Test',
+        })
+
+        await flushHandlers()
+
+        // Should reject with helpful error
+        expect(mockContainerClientFetch).toHaveBeenCalledWith(
+          '/inputs/tool-setup-bad/reject',
+          expect.objectContaining({
+            method: 'POST',
+            body: expect.stringContaining('Invalid trigger type'),
+          }),
+        )
+
+        // Should NOT broadcast creation
+        const sseCreated = sseEvents.filter(e => e.type === 'webhook_trigger_created')
+        expect(sseCreated).toHaveLength(0)
+      })
+
+      it('rejects when platform Composio is not active', async () => {
+        mockIsPlatformComposioActive.mockReturnValue(false)
+        sseEvents.length = 0
+
+        simulateToolUse('mcp__user-input__setup_trigger', 'tool-setup-noplatform', {
+          connected_account_id: 'ca_1',
+          trigger_type: 'GMAIL_NEW_EMAIL',
+          prompt: 'Test',
+        })
+
+        await flushHandlers()
+
+        expect(mockContainerClientFetch).toHaveBeenCalledWith(
+          '/inputs/tool-setup-noplatform/reject',
+          expect.objectContaining({
+            method: 'POST',
+            body: expect.stringContaining('only available with platform Composio'),
+          }),
+        )
+      })
+
+      it('rejects when connected account not found', async () => {
+        mockDbSelectAccount(null)
+        sseEvents.length = 0
+
+        simulateToolUse('mcp__user-input__setup_trigger', 'tool-setup-noaccount', {
+          connected_account_id: 'ca_nonexistent',
+          trigger_type: 'GMAIL_NEW_EMAIL',
+          prompt: 'Test',
+        })
+
+        await flushHandlers()
+
+        expect(mockContainerClientFetch).toHaveBeenCalledWith(
+          '/inputs/tool-setup-noaccount/reject',
+          expect.objectContaining({
+            method: 'POST',
+            body: expect.stringContaining('not found'),
+          }),
+        )
+      })
+
+      it('rolls back Composio trigger if SQLite save fails', async () => {
+        mockCreateWebhookTrigger.mockRejectedValue(new Error('DB write failed'))
+        sseEvents.length = 0
+
+        simulateToolUse('mcp__user-input__setup_trigger', 'tool-setup-dbfail', {
+          connected_account_id: 'ca_1',
+          trigger_type: 'GMAIL_NEW_EMAIL',
+          prompt: 'Test',
+        })
+
+        await flushHandlers()
+
+        expect(mockEnableComposioTrigger).toHaveBeenCalled()
+        expect(mockDeleteComposioTrigger).toHaveBeenCalledWith('composio_trigger_id')
+
+        expect(mockContainerClientFetch).toHaveBeenCalledWith(
+          '/inputs/tool-setup-dbfail/reject',
+          expect.objectContaining({
+            method: 'POST',
+            body: expect.stringContaining('Failed to save trigger locally'),
+          }),
+        )
+      })
+    })
+
+    describe('cancel_trigger', () => {
+      it('broadcasts webhook_trigger_cancelled on success', async () => {
+        const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
+        sseEvents.length = 0
+
+        simulateToolUse('mcp__user-input__cancel_trigger', 'tool-cancel-1', {
+          trigger_id: 'trigger_existing',
+        })
+
+        await flushHandlers()
+
+        const sseCancelled = sseEvents.filter(e => e.type === 'webhook_trigger_cancelled')
+        expect(sseCancelled).toHaveLength(1)
+        expect(sseCancelled[0].triggerId).toBe('trigger_existing')
+        expect(sseCancelled[0].agentSlug).toBe(AGENT_SLUG)
+
+        const globalCancelled = globalEvents.filter(e => e.type === 'webhook_trigger_cancelled')
+        expect(globalCancelled).toHaveLength(1)
+
+        expect(mockContainerClientFetch).toHaveBeenCalledWith(
+          '/inputs/tool-cancel-1/resolve',
+          expect.objectContaining({ method: 'POST' }),
+        )
+
+        globalCleanup()
+      })
+
+      it('rejects when trigger not found or already cancelled', async () => {
+        mockCancelWebhookTriggerWithCleanup.mockResolvedValue(false)
+        sseEvents.length = 0
+
+        simulateToolUse('mcp__user-input__cancel_trigger', 'tool-cancel-notfound', {
+          trigger_id: 'trigger_gone',
+        })
+
+        await flushHandlers()
+
+        expect(mockContainerClientFetch).toHaveBeenCalledWith(
+          '/inputs/tool-cancel-notfound/reject',
+          expect.objectContaining({
+            method: 'POST',
+            body: expect.stringContaining('not found or already cancelled'),
+          }),
+        )
+
+        const sseCancelled = sseEvents.filter(e => e.type === 'webhook_trigger_cancelled')
+        expect(sseCancelled).toHaveLength(0)
+      })
+
+      it('rejects when trigger_id is missing', async () => {
+        sseEvents.length = 0
+
+        simulateToolUse('mcp__user-input__cancel_trigger', 'tool-cancel-noid', {})
+
+        await flushHandlers()
+
+        expect(mockContainerClientFetch).toHaveBeenCalledWith(
+          '/inputs/tool-cancel-noid/reject',
+          expect.objectContaining({
+            method: 'POST',
+            body: expect.stringContaining('Missing required field'),
+          }),
+        )
+      })
+    })
+
+    describe('list_triggers', () => {
+      it('resolves with formatted trigger list', async () => {
+        mockListActiveWebhookTriggers.mockResolvedValue([
+          {
+            id: 't1', name: 'Email Handler', triggerType: 'GMAIL_NEW_EMAIL',
+            connectedAccountId: 'ca_1', fireCount: 3, prompt: 'Summarize email',
+          },
+          {
+            id: 't2', name: null, triggerType: 'SLACK_NEW_MESSAGE',
+            connectedAccountId: 'ca_2', fireCount: 0, prompt: 'Handle slack message',
+          },
+        ])
+
+        simulateToolUse('mcp__user-input__list_triggers', 'tool-list-1', {})
+
+        await flushHandlers()
+
+        expect(mockContainerClientFetch).toHaveBeenCalledWith(
+          '/inputs/tool-list-1/resolve',
+          expect.objectContaining({
+            method: 'POST',
+            body: expect.stringContaining('Email Handler'),
+          }),
+        )
+        // Verify both triggers appear in the resolved body
+        const resolveCall = mockContainerClientFetch.mock.calls.find(
+          (c) => c[0] === '/inputs/tool-list-1/resolve'
+        )
+        expect(resolveCall).toBeDefined()
+        const body = JSON.parse(resolveCall![1].body)
+        expect(body.value).toContain('GMAIL_NEW_EMAIL')
+        expect(body.value).toContain('SLACK_NEW_MESSAGE')
+      })
+
+      it('resolves with empty message when no triggers', async () => {
+        mockListActiveWebhookTriggers.mockResolvedValue([])
+
+        simulateToolUse('mcp__user-input__list_triggers', 'tool-list-empty', {})
+
+        await flushHandlers()
+
+        const resolveCall = mockContainerClientFetch.mock.calls.find(
+          (c) => c[0] === '/inputs/tool-list-empty/resolve'
+        )
+        expect(resolveCall).toBeDefined()
+        const body = JSON.parse(resolveCall![1].body)
+        expect(body.value).toContain('No active webhook triggers')
+      })
+    })
+
+    describe('get_available_triggers', () => {
+      it('resolves with formatted available triggers', async () => {
+        simulateToolUse('mcp__user-input__get_available_triggers', 'tool-avail-1', {
+          connected_account_id: 'ca_1',
+        })
+
+        await flushHandlers()
+
+        const resolveCall = mockContainerClientFetch.mock.calls.find(
+          (c) => c[0] === '/inputs/tool-avail-1/resolve'
+        )
+        expect(resolveCall).toBeDefined()
+        const body = JSON.parse(resolveCall![1].body)
+        expect(body.value).toContain('GMAIL_NEW_EMAIL')
+        expect(body.value).toContain('SLACK_NEW_MESSAGE')
+        expect(body.value).toContain('setup_trigger')
+      })
+
+      it('rejects when connected account not found', async () => {
+        mockDbSelectAccount(null)
+
+        simulateToolUse('mcp__user-input__get_available_triggers', 'tool-avail-noaccount', {
+          connected_account_id: 'ca_missing',
+        })
+
+        await flushHandlers()
+
+        expect(mockContainerClientFetch).toHaveBeenCalledWith(
+          '/inputs/tool-avail-noaccount/reject',
+          expect.objectContaining({
+            method: 'POST',
+            body: expect.stringContaining('not found'),
+          }),
+        )
+      })
+
+      it('rejects when platform Composio is not active', async () => {
+        mockIsPlatformComposioActive.mockReturnValue(false)
+
+        simulateToolUse('mcp__user-input__get_available_triggers', 'tool-avail-noplatform', {
+          connected_account_id: 'ca_1',
+        })
+
+        await flushHandlers()
+
+        expect(mockContainerClientFetch).toHaveBeenCalledWith(
+          '/inputs/tool-avail-noplatform/reject',
+          expect.objectContaining({
+            method: 'POST',
+            body: expect.stringContaining('only available with platform Composio'),
+          }),
+        )
+      })
+
+      it('resolves with empty message when no triggers available', async () => {
+        mockGetAvailableTriggers.mockResolvedValue([])
+
+        simulateToolUse('mcp__user-input__get_available_triggers', 'tool-avail-empty', {
+          connected_account_id: 'ca_1',
+        })
+
+        await flushHandlers()
+
+        const resolveCall = mockContainerClientFetch.mock.calls.find(
+          (c) => c[0] === '/inputs/tool-avail-empty/resolve'
+        )
+        expect(resolveCall).toBeDefined()
+        const body = JSON.parse(resolveCall![1].body)
+        expect(body.value).toContain('No webhook triggers available')
+      })
     })
   })
 })

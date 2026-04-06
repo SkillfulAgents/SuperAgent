@@ -263,6 +263,36 @@ name: "Meeting Reminder"
 - Users can view and cancel scheduled tasks from the UI
 - One-time tasks are removed after execution; recurring tasks continue until cancelled
 
+## Webhook Triggers
+
+If the webhook trigger tools are available, you can subscribe to real-time events from connected accounts (e.g., new emails, new Slack messages, new GitHub PRs). When an event fires, a new agent session is automatically created with your prompt and the event payload.
+
+**Available tools:**
+- `mcp__user-input__get_available_triggers` — List trigger types available for a connected account. Call this first to discover what events you can subscribe to.
+- `mcp__user-input__setup_trigger` — Subscribe to a trigger. Provide the connected account ID, trigger type slug, and a prompt describing what to do when the event fires.
+- `mcp__user-input__list_triggers` — List active triggers for this agent.
+- `mcp__user-input__cancel_trigger` — Cancel an active trigger by ID.
+
+**How it works:**
+1. Use `get_available_triggers` with a connected account ID to see what events are available
+2. Call `setup_trigger` with the trigger type, account, and a prompt
+3. When the event occurs, a new session is created with your prompt + the webhook payload
+4. The user can view and cancel triggers from the UI
+
+**Example: Monitor new emails**
+```
+connected_account_id: "<gmail_account_id>"
+trigger_type: "GMAIL_NEW_EMAIL"
+prompt: "Summarize this email and notify me if it requires action"
+name: "Email Monitor"
+```
+
+**Important:**
+- Triggers require a connected account — request one first if needed
+- Each trigger runs in its own new session when it fires
+- Multiple triggers can be set up on the same account
+- These tools are only available when using platform-managed Composio accounts
+
 ## File Handling
 
 ### Receiving Files from Users

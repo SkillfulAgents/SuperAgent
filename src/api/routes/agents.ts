@@ -13,6 +13,7 @@ import {
   agentExists,
 } from '@shared/lib/services/agent-service'
 import { containerManager } from '@shared/lib/container/container-manager'
+import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import {
@@ -2340,6 +2341,24 @@ agents.get('/:id/scheduled-tasks', AgentRead(), async (c) => {
   } catch (error) {
     console.error('Failed to fetch scheduled tasks:', error)
     return c.json({ error: 'Failed to fetch scheduled tasks' }, 500)
+  }
+})
+
+// GET /api/agents/:id/webhook-triggers - List webhook triggers for an agent
+agents.get('/:id/webhook-triggers', AgentRead(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const status = c.req.query('status')
+
+    const triggers = status === 'active'
+      ? await listActiveWebhookTriggers(slug)
+      : status === 'cancelled'
+      ? await listCancelledWebhookTriggers(slug)
+      : await listWebhookTriggers(slug)
+    return c.json(triggers)
+  } catch (error) {
+    console.error('Failed to fetch webhook triggers:', error)
+    return c.json({ error: 'Failed to fetch webhook triggers' }, 500)
   }
 })
 

@@ -17,8 +17,7 @@ import {
   TooltipTrigger,
 } from '@renderer/components/ui/tooltip'
 import { Loader2, Plus, Trash2, UserPlus, X } from 'lucide-react'
-
-type AgentRole = 'owner' | 'user' | 'viewer'
+import type { AgentRole } from '@shared/lib/types/agent'
 
 interface AccessEntry {
   userId: string

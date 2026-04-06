@@ -603,19 +603,69 @@ export async function removeToolCall(
 }
 
 /**
- * Get all sessions created by a scheduled task
+ * Get sessions matching a metadata predicate.
+ * Reads metadata first to find matching session IDs, then only stats those files
+ * instead of loading all sessions for the agent.
+ */
+async function getSessionsByMetadata(
+  agentSlug: string,
+  predicate: (meta: SessionMetadata) => boolean,
+): Promise<SessionInfo[]> {
+  const metadata = await readSessionMetadata(agentSlug)
+
+  // Find matching session IDs from metadata (fast — no filesystem I/O)
+  const matchingIds: string[] = []
+  for (const [sessionId, meta] of Object.entries(metadata)) {
+    if (predicate(meta)) matchingIds.push(sessionId)
+  }
+  if (matchingIds.length === 0) return []
+
+  // Only stat the matching JSONL files
+  const sessions: SessionInfo[] = []
+  for (const sessionId of matchingIds) {
+    const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+    try {
+      const stat = await fs.promises.stat(jsonlPath)
+      sessions.push({
+        id: sessionId,
+        agentSlug,
+        name: metadata[sessionId]?.name || 'New Session',
+        createdAt: stat.birthtime,
+        lastActivityAt: new Date(stat.mtimeMs),
+        messageCount: 0,
+      })
+    } catch {
+      // JSONL doesn't exist yet — use metadata createdAt
+      sessions.push({
+        id: sessionId,
+        agentSlug,
+        name: metadata[sessionId]?.name || 'New Session',
+        createdAt: new Date(metadata[sessionId]?.createdAt || Date.now()),
+        lastActivityAt: new Date(metadata[sessionId]?.createdAt || Date.now()),
+        messageCount: 0,
+      })
+    }
+  }
+
+  return sessions
+}
+
+/**
+ * Get all sessions created by a scheduled task.
  */
 export async function getSessionsByScheduledTask(
   agentSlug: string,
   scheduledTaskId: string
 ): Promise<SessionInfo[]> {
-  // Get all sessions and their metadata
-  const allSessions = await listSessions(agentSlug)
-  const metadata = await readSessionMetadata(agentSlug)
+  return getSessionsByMetadata(agentSlug, (meta) => meta.scheduledTaskId === scheduledTaskId)
+}
 
-  // Filter sessions that were created by this scheduled task
-  return allSessions.filter((session) => {
-    const sessionMeta = metadata[session.id]
-    return sessionMeta?.scheduledTaskId === scheduledTaskId
-  })
+/**
+ * Get all sessions that were spawned by a webhook trigger.
+ */
+export async function getSessionsByWebhookTrigger(
+  agentSlug: string,
+  webhookTriggerId: string
+): Promise<SessionInfo[]> {
+  return getSessionsByMetadata(agentSlug, (meta) => meta.webhookTriggerId === webhookTriggerId)
 }

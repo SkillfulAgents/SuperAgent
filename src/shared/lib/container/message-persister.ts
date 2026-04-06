@@ -1,6 +1,20 @@
 import type { ContainerClient, StreamMessage, SlashCommandInfo } from './types'
 import type { SessionUsage } from '@shared/lib/types/agent'
 import { createScheduledTask } from '@shared/lib/services/scheduled-task-service'
+import {
+  createWebhookTrigger,
+  listActiveWebhookTriggers,
+  cancelWebhookTriggerWithCleanup,
+} from '@shared/lib/services/webhook-trigger-service'
+import {
+  getAvailableTriggers,
+  enableComposioTrigger,
+  deleteComposioTrigger,
+} from '@shared/lib/composio/triggers'
+import { isPlatformComposioActive } from '@shared/lib/composio/client'
+import { db } from '@shared/lib/db'
+import { connectedAccounts } from '@shared/lib/db/schema'
+import { eq } from 'drizzle-orm'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { updateSessionMetadata } from '@shared/lib/services/session-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
@@ -54,6 +68,7 @@ async function getContainerManager() {
   return _containerManagerModule.containerManager
 }
 
+// TODO this file is too big, this class is HUGE. Needs breaking up
 class MessagePersister {
   private streamingStates: Map<string, StreamingState> = new Map()
   private subscriptions: Map<string, () => void> = new Map()
@@ -1073,6 +1088,28 @@ class MessagePersister {
             )
           }
 
+          // Webhook trigger tools
+          if (state.currentToolUse.name === 'mcp__user-input__get_available_triggers') {
+            this.handleGetAvailableTriggersTool(
+              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
+            )
+          }
+          if (state.currentToolUse.name === 'mcp__user-input__setup_trigger') {
+            this.handleSetupTriggerTool(
+              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
+            )
+          }
+          if (state.currentToolUse.name === 'mcp__user-input__list_triggers') {
+            this.handleListTriggersTool(
+              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
+            )
+          }
+          if (state.currentToolUse.name === 'mcp__user-input__cancel_trigger') {
+            this.handleCancelTriggerTool(
+              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
+            )
+          }
+
           // Check if this is an AskUserQuestion tool
           if (state.currentToolUse.name === 'AskUserQuestion') {
             this.handleAskUserQuestionTool(
@@ -1341,6 +1378,307 @@ class MessagePersister {
         })
       } catch (error) {
         console.error('[MessagePersister] Error handling schedule task:', error)
+      }
+    })()
+  }
+
+  // ============================================================================
+  // Webhook Trigger Tool Handlers
+  // ============================================================================
+
+  /**
+   * Resolve a blocking tool in the container with a string value.
+   */
+  private async resolveContainerInput(agentSlug: string, toolUseId: string, value: string): Promise<void> {
+    const cm = await getContainerManager()
+    const client = cm.getClient(agentSlug)
+    await client.fetch(`/inputs/${encodeURIComponent(toolUseId)}/resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value }),
+    })
+  }
+
+  /**
+   * Reject a blocking tool in the container with an error message.
+   */
+  private async rejectContainerInput(agentSlug: string, toolUseId: string, reason: string): Promise<void> {
+    const cm = await getContainerManager()
+    const client = cm.getClient(agentSlug)
+    await client.fetch(`/inputs/${encodeURIComponent(toolUseId)}/reject`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason }),
+    })
+  }
+
+  // Handle get_available_triggers - blocking: fetch from Composio and resolve
+  private handleGetAvailableTriggersTool(
+    sessionId: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug?: string
+  ): void {
+    ;(async () => {
+      try {
+        if (!agentSlug) {
+          console.error('[MessagePersister] get_available_triggers missing agentSlug')
+          return
+        }
+
+        if (!isPlatformComposioActive()) {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Webhook triggers are only available with platform Composio')
+          return
+        }
+
+        let input: { connected_account_id: string }
+        try {
+          input = JSON.parse(toolInput)
+        } catch {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input')
+          return
+        }
+
+        // Look up the connected account to get its toolkit slug
+        const [account] = await db
+          .select()
+          .from(connectedAccounts)
+          .where(eq(connectedAccounts.id, input.connected_account_id))
+          .limit(1)
+
+        if (!account) {
+          await this.rejectContainerInput(agentSlug, toolUseId, `Connected account ${input.connected_account_id} not found`)
+          return
+        }
+
+        const triggers = await getAvailableTriggers(account.toolkitSlug)
+        const formatted = triggers.length === 0
+          ? 'No webhook triggers available for this account.'
+          : `Available triggers for ${account.toolkitSlug}:\n\n${triggers.map((t) =>
+              `- **${t.slug}** (${t.name}): ${t.description}${t.type === 'poll' ? ' [poll-based]' : ''}`
+            ).join('\n')}\n\nUse setup_trigger with the trigger slug to subscribe.`
+
+        await this.resolveContainerInput(agentSlug, toolUseId, formatted)
+      } catch (error) {
+        console.error('[MessagePersister] Error handling get_available_triggers:', error)
+        if (agentSlug) {
+          await this.rejectContainerInput(agentSlug, toolUseId, String(error)).catch(console.error)
+        }
+      }
+    })()
+  }
+
+  // Handle setup_trigger - blocking: dual-write to Composio + SQLite, then resolve
+  private handleSetupTriggerTool(
+    sessionId: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug?: string
+  ): void {
+    ;(async () => {
+      try {
+        if (!agentSlug) {
+          console.error('[MessagePersister] setup_trigger missing agentSlug')
+          return
+        }
+
+        if (!isPlatformComposioActive()) {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Webhook triggers are only available with platform Composio')
+          return
+        }
+
+        let input: {
+          connected_account_id: string
+          trigger_type: string
+          prompt: string
+          name?: string
+          trigger_config?: Record<string, unknown>
+        }
+        try {
+          input = JSON.parse(toolInput)
+        } catch {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input')
+          return
+        }
+
+        if (!input.connected_account_id || !input.trigger_type || !input.prompt) {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Missing required fields: connected_account_id, trigger_type, and prompt are required')
+          return
+        }
+
+        // Resolve local SQLite account ID → Composio connection ID
+        const [account] = await db
+          .select()
+          .from(connectedAccounts)
+          .where(eq(connectedAccounts.id, input.connected_account_id))
+          .limit(1)
+
+        if (!account) {
+          await this.rejectContainerInput(agentSlug, toolUseId, `Connected account ${input.connected_account_id} not found`)
+          return
+        }
+
+        const composioConnectionId = account.composioConnectionId
+
+        // Validate trigger type against available triggers for this account
+        const availableTriggers = await getAvailableTriggers(account.toolkitSlug)
+        const validSlugs = availableTriggers.map((t) => t.slug)
+        if (!validSlugs.includes(input.trigger_type)) {
+          const suggestion = validSlugs.length > 0
+            ? `\n\nAvailable triggers for ${account.toolkitSlug}: ${validSlugs.join(', ')}`
+            : `\n\nNo triggers are available for ${account.toolkitSlug}.`
+          await this.rejectContainerInput(agentSlug, toolUseId,
+            `Invalid trigger type "${input.trigger_type}" for this account.${suggestion}`)
+          return
+        }
+
+        // 1. Enable trigger on Composio via proxy (using Composio's ca_* ID)
+        const composioTriggerId = await enableComposioTrigger(
+          input.trigger_type,
+          composioConnectionId,
+          input.trigger_config,
+        )
+
+        // 2. Save to SQLite (store the local account ID for app-level lookups)
+        let triggerId: string
+        try {
+          triggerId = await createWebhookTrigger({
+            agentSlug,
+            composioTriggerId,
+            connectedAccountId: input.connected_account_id,
+            triggerType: input.trigger_type,
+            triggerConfig: input.trigger_config ? JSON.stringify(input.trigger_config) : undefined,
+            prompt: input.prompt,
+            name: input.name,
+            createdBySessionId: sessionId,
+          })
+        } catch (dbError) {
+          // Rollback Composio trigger
+          console.error('[MessagePersister] SQLite save failed, rolling back Composio trigger:', dbError)
+          await deleteComposioTrigger(composioTriggerId).catch(console.error)
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Failed to save trigger locally').catch(console.error)
+          return
+        }
+
+        // 3. Broadcast events
+        this.broadcastToSSE(sessionId, {
+          type: 'webhook_trigger_created',
+          toolUseId,
+          triggerId,
+          triggerType: input.trigger_type,
+          name: input.name,
+          agentSlug,
+        })
+
+        this.broadcastGlobal({
+          type: 'webhook_trigger_created',
+          triggerId,
+          agentSlug,
+        })
+
+        const triggerName = input.name || input.trigger_type
+        await this.resolveContainerInput(agentSlug, toolUseId,
+          `Webhook trigger "${triggerName}" created successfully (ID: ${triggerId}).\n\nTrigger type: ${input.trigger_type}\nConnected account: ${input.connected_account_id}\nPrompt: ${input.prompt.substring(0, 100)}${input.prompt.length > 100 ? '...' : ''}\n\nThe trigger is now active and will fire when the event occurs.`)
+
+        console.log(`[MessagePersister] Webhook trigger ${triggerId} created (composio: ${composioTriggerId})`)
+      } catch (error) {
+        console.error('[MessagePersister] Error handling setup_trigger:', error)
+        if (agentSlug) {
+          const msg = error instanceof Error ? error.message : String(error)
+          await this.rejectContainerInput(agentSlug, toolUseId, `Failed to set up trigger: ${msg}`).catch(console.error)
+        }
+      }
+    })()
+  }
+
+  // Handle list_triggers - blocking: read from SQLite and resolve
+  private handleListTriggersTool(
+    _sessionId: string,
+    toolUseId: string,
+    _toolInput: string,
+    agentSlug?: string
+  ): void {
+    ;(async () => {
+      try {
+        if (!agentSlug) {
+          console.error('[MessagePersister] list_triggers missing agentSlug')
+          return
+        }
+
+        const triggers = await listActiveWebhookTriggers(agentSlug)
+        const formatted = triggers.length === 0
+          ? 'No active webhook triggers for this agent.'
+          : `Active webhook triggers:\n\n${triggers.map((t) =>
+              `- **${t.name || t.triggerType}** (ID: ${t.id})\n  Type: ${t.triggerType}\n  Account: ${t.connectedAccountId}\n  Fires: ${t.fireCount} time(s)\n  Prompt: ${t.prompt.substring(0, 80)}${t.prompt.length > 80 ? '...' : ''}`
+            ).join('\n\n')}`
+
+        await this.resolveContainerInput(agentSlug, toolUseId, formatted)
+      } catch (error) {
+        console.error('[MessagePersister] Error handling list_triggers:', error)
+        if (agentSlug) {
+          await this.rejectContainerInput(agentSlug, toolUseId, String(error)).catch(console.error)
+        }
+      }
+    })()
+  }
+
+  // Handle cancel_trigger - blocking: dual-delete from Composio + SQLite, then resolve
+  private handleCancelTriggerTool(
+    sessionId: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug?: string
+  ): void {
+    ;(async () => {
+      try {
+        if (!agentSlug) {
+          console.error('[MessagePersister] cancel_trigger missing agentSlug')
+          return
+        }
+
+        let input: { trigger_id: string }
+        try {
+          input = JSON.parse(toolInput)
+        } catch {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input')
+          return
+        }
+
+        if (!input.trigger_id) {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Missing required field: trigger_id')
+          return
+        }
+
+        const cancelled = await cancelWebhookTriggerWithCleanup(input.trigger_id)
+        if (!cancelled) {
+          await this.rejectContainerInput(agentSlug, toolUseId, `Trigger ${input.trigger_id} not found or already cancelled`)
+          return
+        }
+
+        // Broadcast events
+        this.broadcastToSSE(sessionId, {
+          type: 'webhook_trigger_cancelled',
+          toolUseId,
+          triggerId: input.trigger_id,
+          agentSlug,
+        })
+
+        this.broadcastGlobal({
+          type: 'webhook_trigger_cancelled',
+          triggerId: input.trigger_id,
+          agentSlug,
+        })
+
+        await this.resolveContainerInput(agentSlug, toolUseId,
+          `Trigger ${input.trigger_id} has been cancelled. It will no longer fire webhook events.`)
+
+        console.log(`[MessagePersister] Webhook trigger ${input.trigger_id} cancelled`)
+      } catch (error) {
+        console.error('[MessagePersister] Error handling cancel_trigger:', error)
+        if (agentSlug) {
+          const msg = error instanceof Error ? error.message : String(error)
+          await this.rejectContainerInput(agentSlug, toolUseId, `Failed to cancel trigger: ${msg}`).catch(console.error)
+        }
       }
     })()
   }

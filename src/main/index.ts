@@ -45,7 +45,8 @@ if (!app.isPackaged) {
 // This uses ~/Library/Application Support/Superagent (or Superagent-Dev) on macOS
 // or %APPDATA%/Superagent (or Superagent-Dev) on Windows
 // Note: app.getPath() works synchronously before app.whenReady()
-process.env.SUPERAGENT_DATA_DIR = app.getPath('userData')
+// Respect SUPERAGENT_DATA_DIR if already set (e.g. for local dev with a custom data dir)
+process.env.SUPERAGENT_DATA_DIR ??= app.getPath('userData')
 console.log(`Data directory: ${process.env.SUPERAGENT_DATA_DIR}`)
 
 // Register auto-update IPC handlers early (before window creation)

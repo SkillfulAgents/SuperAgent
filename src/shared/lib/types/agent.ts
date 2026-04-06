@@ -7,6 +7,19 @@
 import type { SlashCommandInfo } from '../container/types'
 
 // ============================================================================
+// Agent Roles
+// ============================================================================
+
+export type AgentRole = 'owner' | 'user' | 'viewer'
+
+export const ROLE_HIERARCHY: Record<AgentRole, number> = { viewer: 0, user: 1, owner: 2 }
+
+export function hasMinRole(actual: AgentRole | null, required: AgentRole): boolean {
+  if (!actual) return false
+  return ROLE_HIERARCHY[actual] >= ROLE_HIERARCHY[required]
+}
+
+// ============================================================================
 // Agent Types
 // ============================================================================
 
@@ -70,6 +83,10 @@ export interface SessionMetadata {
   isScheduledExecution?: boolean
   scheduledTaskId?: string
   scheduledTaskName?: string
+  // Webhook trigger fields - present when session was created from a webhook trigger
+  isWebhookExecution?: boolean
+  webhookTriggerId?: string
+  webhookTriggerName?: string
   // Context window usage from the last completed turn
   lastUsage?: SessionUsage
   // Available slash commands from the agent SDK

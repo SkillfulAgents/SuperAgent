@@ -14,6 +14,7 @@ import { getAppBaseUrlFromRequest, getCurrentUserId } from '@shared/lib/auth/con
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { Authenticated, OwnsAccount, IsAdmin, Or } from '../middleware/auth'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
+import { countActiveTriggersPerAccount } from '@shared/lib/services/webhook-trigger-service'
 
 const connectedAccountsRouter = new Hono()
 
@@ -310,6 +311,31 @@ connectedAccountsRouter.get('/callback', async (c) => {
         error: error.message || 'Failed to complete OAuth',
       })
     )
+  }
+})
+
+// GET /api/connected-accounts/trigger-counts - active webhook trigger counts per account
+connectedAccountsRouter.get('/trigger-counts', async (c) => {
+  try {
+    // Scope to current user's accounts to prevent cross-user data leakage
+    let userAccountIds: string[] | undefined
+    if (isAuthMode()) {
+      const userId = getCurrentUserId(c)
+      const userAccounts = await db
+        .select({ id: connectedAccounts.id })
+        .from(connectedAccounts)
+        .where(eq(connectedAccounts.userId, userId))
+      userAccountIds = userAccounts.map((a) => a.id)
+      if (userAccountIds.length === 0) {
+        return c.json({})
+      }
+    }
+
+    const counts = await countActiveTriggersPerAccount(userAccountIds)
+    return c.json(counts)
+  } catch (error) {
+    console.error('Failed to fetch trigger counts:', error)
+    return c.json({}, 200) // gracefully return empty on error
   }
 })
 

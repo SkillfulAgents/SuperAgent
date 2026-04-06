@@ -186,6 +186,27 @@ class NotificationManager {
       body: `${taskDisplay} started for ${displayName}`,
     })
   }
+
+  /**
+   * Trigger notification when a webhook event starts a session
+   */
+  async triggerWebhookSessionStarted(
+    sessionId: string,
+    agentSlug: string,
+    triggerName?: string,
+    agentName?: string
+  ): Promise<void> {
+    const displayName = agentName || await this.getAgentDisplayName(agentSlug)
+    const triggerDisplay = triggerName || 'Webhook trigger'
+
+    await this.triggerNotification({
+      type: 'session_webhook',
+      sessionId,
+      agentSlug,
+      title: 'Webhook Trigger Fired',
+      body: `${triggerDisplay} fired for ${displayName}`,
+    })
+  }
 }
 
 // Export singleton instance

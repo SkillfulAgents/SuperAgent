@@ -1,1 +1,2 @@
 - do not run npm build on changes as it ruins the dev server. Instead, run typecheck + lint
+- when running E2E tests, always pipe output through tee to a file so results are preserved: `E2E_MOCK=true npx playwright test 2>&1 | tee /tmp/e2e-results.txt`

@@ -120,6 +120,10 @@ vi.mock('@shared/lib/browser/chrome-profile', () => ({
 
 vi.mock('@shared/lib/services/agent-service', () => ({}))
 
+vi.mock('@shared/lib/composio/client', () => ({
+  isPlatformComposioActive: () => false,
+}))
+
 vi.mock('@shared/lib/services/timezone-resolver', () => ({
   resolveTimezoneForAgent: () => 'America/New_York',
 }))

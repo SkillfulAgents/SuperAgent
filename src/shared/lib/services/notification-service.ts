@@ -16,7 +16,7 @@ import { count } from 'drizzle-orm'
 // Re-export types for external use
 export type { Notification, NewNotification }
 
-export type NotificationType = 'session_complete' | 'session_waiting' | 'session_scheduled'
+export type NotificationType = 'session_complete' | 'session_waiting' | 'session_scheduled' | 'session_webhook'
 
 // ============================================================================
 // Types

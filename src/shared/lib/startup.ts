@@ -3,6 +3,8 @@ import { containerManager } from './container/container-manager'
 import { shutdownActiveRunner } from './container/client-factory'
 import { reviewManager } from './proxy/review-manager'
 import { taskScheduler } from './scheduler/task-scheduler'
+import { triggerManager } from './scheduler/trigger-manager'
+import { isPlatformComposioActive } from './composio/client'
 import { autoSleepMonitor } from './scheduler/auto-sleep-monitor'
 import { stopAllProviders } from '../../main/host-browser'
 import { listAgents } from './services/agent-service'
@@ -47,6 +49,13 @@ export async function initializeServices() {
     console.error('Failed to start task scheduler:', error)
   })
 
+  // Start trigger manager (only when platform Composio is connected)
+  if (isPlatformComposioActive()) {
+    triggerManager.start().catch((error) => {
+      console.error('Failed to start trigger manager:', error)
+    })
+  }
+
   // Start auto-sleep monitor
   autoSleepMonitor.start().catch((error) => {
     console.error('Failed to start auto-sleep monitor:', error)
@@ -77,6 +86,7 @@ export async function shutdownServices() {
   reviewManager.rejectAll()
   await stopAllProviders()
   taskScheduler.stop()
+  triggerManager.stop()
   autoSleepMonitor.stop()
   containerManager.stopStatusSync()
   containerManager.stopHealthMonitor()

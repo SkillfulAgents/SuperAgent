@@ -21,8 +21,7 @@ const browserWss = new WebSocketServer({ noServer: true })
 
 const LOCALHOST_ADDRS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
 
-type AgentRole = 'owner' | 'user' | 'viewer'
-const ROLE_HIERARCHY: Record<AgentRole, number> = { viewer: 0, user: 1, owner: 2 }
+import { type AgentRole, ROLE_HIERARCHY } from '@shared/lib/types/agent'
 
 async function authenticateWs(
   request: IncomingMessage,

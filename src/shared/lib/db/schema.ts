@@ -171,7 +171,7 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
 // Notifications - user notifications for session events
 export const notifications = sqliteTable('notifications', {
   id: text('id').primaryKey(),
-  type: text('type', { enum: ['session_complete', 'session_waiting', 'session_scheduled'] }).notNull(),
+  type: text('type', { enum: ['session_complete', 'session_waiting', 'session_scheduled', 'session_webhook'] }).notNull(),
   sessionId: text('session_id').notNull(),
   agentSlug: text('agent_slug').notNull(),
   title: text('title').notNull(),
@@ -324,6 +324,44 @@ export const mcpToolPolicies = sqliteTable('mcp_tool_policies', {
   mcpToolUnique: uniqueIndex('mcp_tool_policies_unique').on(table.mcpId, table.toolName),
 }))
 
+// Webhook triggers - Composio trigger subscriptions for agents
+export const webhookTriggers = sqliteTable('webhook_triggers', {
+  id: text('id').primaryKey(),
+  agentSlug: text('agent_slug').notNull(),
+
+  // Composio details
+  composioTriggerId: text('composio_trigger_id'), // set after Composio confirms (e.g. "ti_...")
+  connectedAccountId: text('connected_account_id').notNull(),
+  triggerType: text('trigger_type').notNull(), // slug e.g. 'GMAIL_NEW_EMAIL'
+  triggerConfig: text('trigger_config'), // JSON string
+
+  // What to do when triggered
+  prompt: text('prompt').notNull(),
+  name: text('name'),
+
+  // Status
+  status: text('status', { enum: ['active', 'paused', 'cancelled', 'failed'] })
+    .notNull()
+    .default('active'),
+
+  // Execution tracking
+  lastFiredAt: integer('last_fired_at', { mode: 'timestamp_ms' }),
+  fireCount: integer('fire_count').notNull().default(0),
+  lastSessionId: text('last_session_id'),
+
+  // Ownership
+  createdBySessionId: text('created_by_session_id'),
+  createdByUserId: text('created_by_user_id'),
+
+  // Timestamps
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  cancelledAt: integer('cancelled_at', { mode: 'timestamp_ms' }),
+}, (table) => ({
+  agentSlugIdx: index('webhook_triggers_agent_slug_idx').on(table.agentSlug),
+  statusIdx: index('webhook_triggers_status_idx').on(table.status),
+  composioTriggerIdx: index('webhook_triggers_composio_idx').on(table.composioTriggerId),
+}))
+
 // Type exports for convenience
 export type ConnectedAccount = typeof connectedAccounts.$inferSelect
 export type NewConnectedAccount = typeof connectedAccounts.$inferInsert
@@ -355,3 +393,5 @@ export type ApiScopePolicy = typeof apiScopePolicies.$inferSelect
 export type NewApiScopePolicy = typeof apiScopePolicies.$inferInsert
 export type McpToolPolicy = typeof mcpToolPolicies.$inferSelect
 export type NewMcpToolPolicy = typeof mcpToolPolicies.$inferInsert
+export type WebhookTrigger = typeof webhookTriggers.$inferSelect
+export type NewWebhookTrigger = typeof webhookTriggers.$inferInsert

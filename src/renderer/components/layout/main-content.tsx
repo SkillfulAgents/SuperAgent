@@ -7,6 +7,7 @@ import { SessionContextMenu } from '@renderer/components/sessions/session-contex
 import { AgentLanding } from '@renderer/components/agents/agent-landing'
 import { HomePage } from '@renderer/components/home/home-page'
 import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/scheduled-task-view'
+import { WebhookTriggerView } from '@renderer/components/webhook-triggers/webhook-trigger-view'
 import { BrowserPreview } from '@renderer/components/browser/browser-preview'
 import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
 import { Button } from '@renderer/components/ui/button'
@@ -38,6 +39,7 @@ export function MainContent() {
     selectedAgentSlug: agentSlug,
     selectedSessionId: sessionId,
     selectedScheduledTaskId: scheduledTaskId,
+    selectedWebhookTriggerId: webhookTriggerId,
     selectedDashboardSlug: dashboardSlug,
     selectSession,
   } = useSelection()
@@ -372,6 +374,9 @@ export function MainContent() {
         ) : /* Show scheduled task view when a scheduled task is selected */
         scheduledTaskId ? (
           <ScheduledTaskView taskId={scheduledTaskId} agentSlug={agentSlug} />
+        ) : /* Show webhook trigger view when a webhook trigger is selected */
+        webhookTriggerId ? (
+          <WebhookTriggerView triggerId={webhookTriggerId} agentSlug={agentSlug} />
         ) : sessionId ? (
           /* Show messages when a session is selected */
           <div className="relative flex-1 grid grid-rows-[1fr_auto] min-h-0">

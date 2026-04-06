@@ -15,6 +15,7 @@ import { ungrabAC } from '@shared/lib/computer-use/executor'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getMountsWithHealth } from '@shared/lib/services/mount-service'
+import { isPlatformComposioActive } from '@shared/lib/composio/client'
 
 /** Interval for syncing container status with reality (in ms). Default: 300 seconds */
 const STATUS_SYNC_INTERVAL_MS = parseInt(
@@ -497,6 +498,11 @@ class ContainerManager {
 
       // Tell the agent container which host OS is running (for script type selection)
       envVars['HOST_PLATFORM'] = process.platform
+
+      // Enable webhook trigger tools when platform Composio is active
+      if (isPlatformComposioActive()) {
+        envVars['COMPOSIO_PLATFORM_MODE'] = 'true'
+      }
 
       // Inject user-defined custom env vars (set in global settings)
       if (settings.customEnvVars) {

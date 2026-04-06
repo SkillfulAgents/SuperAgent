@@ -133,6 +133,20 @@ export function useRenameConnectedAccount() {
 }
 
 /**
+ * Hook to fetch active webhook trigger counts per connected account
+ */
+export function useTriggerCountsPerAccount() {
+  return useQuery<Record<string, number>>({
+    queryKey: ['trigger-counts-per-account'],
+    queryFn: async () => {
+      const res = await apiFetch('/api/connected-accounts/trigger-counts')
+      if (!res.ok) return {}
+      return res.json()
+    },
+  })
+}
+
+/**
  * Invalidate connected accounts cache (call after OAuth callback)
  */
 export function useInvalidateConnectedAccounts() {
