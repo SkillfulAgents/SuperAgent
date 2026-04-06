@@ -983,7 +983,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
     const slug = c.req.param('id')
 
 
-    const sessionList = await listSessions(slug)
+    const sessionList = await listSessions(slug, { excludeAutomated: true })
     const unreadSessionIds = await getSessionIdsWithUnreadNotifications(slug)
     const hasAgentLevelReviews = reviewManager.getPendingReviewsForAgent(slug).length > 0
     const sessionsWithStatus = sessionList.map((session) => {
@@ -1334,6 +1334,10 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       messageCount: session.messageCount,
       isActive,
       lastUsage: metadata?.lastUsage,
+      scheduledTaskId: metadata?.scheduledTaskId,
+      scheduledTaskName: metadata?.scheduledTaskName,
+      webhookTriggerId: metadata?.webhookTriggerId,
+      webhookTriggerName: metadata?.webhookTriggerName,
     })
   } catch (error) {
     console.error('Failed to fetch session:', error)

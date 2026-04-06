@@ -274,6 +274,36 @@ describe('session-service', () => {
       expect(sessions[0].messageCount).toBe(0)
     })
 
+    it('excludes scheduled/webhook sessions when excludeAutomated is set', async () => {
+      await createSessionFile('test-agent', 'manual-session', SAMPLE_JSONL_ENTRIES)
+      await createSessionFile('test-agent', 'scheduled-session', SAMPLE_JSONL_ENTRIES)
+      await createSessionFile('test-agent', 'webhook-session', SAMPLE_JSONL_ENTRIES)
+      await createSessionMetadata('test-agent', {
+        'manual-session': { name: 'Manual' },
+        'scheduled-session': { name: 'Scheduled', isScheduledExecution: true, scheduledTaskId: 'task-1' },
+        'webhook-session': { name: 'Webhook', isWebhookExecution: true, webhookTriggerId: 'trigger-1' },
+      })
+
+      const allSessions = await listSessions('test-agent')
+      expect(allSessions.length).toBe(3)
+
+      const filtered = await listSessions('test-agent', { excludeAutomated: true })
+      expect(filtered.length).toBe(1)
+      expect(filtered[0].name).toBe('Manual')
+    })
+
+    it('excludes automated metadata-only sessions (no JSONL) when excludeAutomated is set', async () => {
+      await createSessionsDir('test-agent')
+      await createSessionMetadata('test-agent', {
+        'manual-pending': { name: 'Manual Pending', createdAt: '2026-01-24T10:00:00.000Z' },
+        'scheduled-pending': { name: 'Scheduled Pending', createdAt: '2026-01-24T11:00:00.000Z', isScheduledExecution: true, scheduledTaskId: 'task-2' },
+      })
+
+      const filtered = await listSessions('test-agent', { excludeAutomated: true })
+      expect(filtered.length).toBe(1)
+      expect(filtered[0].name).toBe('Manual Pending')
+    })
+
     it('sorts sessions by last activity (newest first)', async () => {
       const oldEntries = [
         {

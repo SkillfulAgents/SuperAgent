@@ -15,7 +15,7 @@ import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { DonutChart } from '@renderer/components/ui/donut-chart'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
-import { Plus, Play, Square, ChevronRight, Settings, Clock, Loader2, AlertCircle, AlertTriangle, X } from 'lucide-react'
+import { Plus, Play, Square, ChevronRight, ChevronLeft, Settings, Clock, Loader2, AlertCircle, AlertTriangle, X, CalendarClock, Webhook } from 'lucide-react'
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useAgent, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
 import { useSessions, useSession } from '@renderer/hooks/use-sessions'
@@ -42,6 +42,8 @@ export function MainContent() {
     selectedWebhookTriggerId: webhookTriggerId,
     selectedDashboardSlug: dashboardSlug,
     selectSession,
+    selectScheduledTask,
+    selectWebhookTrigger,
   } = useSelection()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [contextBarExpanded, setContextBarExpanded] = useState(false)
@@ -364,6 +366,44 @@ export function MainContent() {
           >
             <X className="h-3.5 w-3.5" />
           </button>
+        </div>
+      )}
+
+      {/* Automated session indicator — links back to the parent trigger/schedule */}
+      {sessionId && session?.scheduledTaskId && (
+        <div className="shrink-0 border-b bg-background px-4 py-2">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <button
+              onClick={() => selectScheduledTask(session.scheduledTaskId!)}
+              className="inline-flex items-center gap-1 text-primary hover:underline shrink-0"
+            >
+              <ChevronLeft className="h-3 w-3" />
+              View schedule
+            </button>
+            <span className="mx-1 text-border">|</span>
+            <CalendarClock className="h-3 w-3 shrink-0" />
+            <span>
+              Session created by scheduled job{session.scheduledTaskName ? ` "${session.scheduledTaskName}"` : ''}
+            </span>
+          </div>
+        </div>
+      )}
+      {sessionId && session?.webhookTriggerId && (
+        <div className="shrink-0 border-b bg-background px-4 py-2">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <button
+              onClick={() => selectWebhookTrigger(session.webhookTriggerId!)}
+              className="inline-flex items-center gap-1 text-primary hover:underline shrink-0"
+            >
+              <ChevronLeft className="h-3 w-3" />
+              View trigger
+            </button>
+            <span className="mx-1 text-border">|</span>
+            <Webhook className="h-3 w-3 shrink-0" />
+            <span>
+              Session created by webhook trigger{session.webhookTriggerName ? ` "${session.webhookTriggerName}"` : ''}
+            </span>
+          </div>
         </div>
       )}
 

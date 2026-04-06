@@ -227,11 +227,19 @@ export async function getSessionSummary(agentSlug: string): Promise<{
  * List all sessions for an agent using file stats and metadata.
  * Does NOT read full JSONL file contents — safe for large session directories.
  */
-export async function listSessions(agentSlug: string): Promise<SessionInfo[]> {
+export async function listSessions(
+  agentSlug: string,
+  options?: { excludeAutomated?: boolean },
+): Promise<SessionInfo[]> {
   const sessionsDir = getAgentSessionsDir(agentSlug)
 
   // Read session metadata (includes newly created sessions without JSONL yet)
   const metadata = await readSessionMetadata(agentSlug)
+
+  const isAutomated = (sessionId: string) => {
+    const meta = metadata[sessionId]
+    return meta?.isScheduledExecution || meta?.isWebhookExecution
+  }
 
   // Track which sessions we've processed
   const processedSessionIds = new Set<string>()
@@ -268,6 +276,11 @@ export async function listSessions(agentSlug: string): Promise<SessionInfo[]> {
         continue
       }
 
+      // Skip scheduled/webhook sessions when requested
+      if (options?.excludeAutomated && isAutomated(sessionId)) {
+        continue
+      }
+
       sessions.push({
         id: sessionId,
         agentSlug,
@@ -283,6 +296,11 @@ export async function listSessions(agentSlug: string): Promise<SessionInfo[]> {
   // (newly created sessions where Claude hasn't written yet)
   for (const [sessionId, sessionMeta] of Object.entries(metadata)) {
     if (!processedSessionIds.has(sessionId) && sessionMeta.createdAt) {
+      // Skip scheduled/webhook sessions when requested
+      if (options?.excludeAutomated && isAutomated(sessionId)) {
+        continue
+      }
+
       const createdAt = new Date(sessionMeta.createdAt)
       sessions.push({
         id: sessionId,

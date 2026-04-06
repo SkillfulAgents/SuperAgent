@@ -79,6 +79,11 @@ export interface ApiSession {
   isAwaitingInput?: boolean
   hasUnreadNotifications?: boolean
   lastUsage?: SessionUsage
+  // Present when session was created by a scheduled task or webhook trigger
+  scheduledTaskId?: string
+  scheduledTaskName?: string
+  webhookTriggerId?: string
+  webhookTriggerName?: string
 }
 
 // ============================================================================
