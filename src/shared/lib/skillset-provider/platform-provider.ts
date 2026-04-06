@@ -1,10 +1,12 @@
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
-import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import { getPlatformAccessToken, getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
 import { getEffectiveSkillsetName } from '@shared/lib/utils/skillset-helpers'
-import type { PlatformSubmitResult } from '@shared/lib/types/skillset'
+import type { PlatformSubmitResult, SkillsetConfig } from '@shared/lib/types/skillset'
 import {
   BaseSkillsetProvider,
   type SkillsetHostedUpdateInput,
+  type SkillsetPublishInput,
+  type SkillsetPublishResult,
   type SkillsetRemoteDescriptor,
 } from './base-skillset-provider'
 
@@ -64,7 +66,16 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
     return data.url || url
   }
 
-  override async submitUpdate(input: SkillsetHostedUpdateInput): Promise<PlatformSubmitResult> {
+  override async publishUpdate(input: SkillsetPublishInput): Promise<SkillsetPublishResult> {
+    const result = await this.submitUpdate(input)
+    return {
+      prUrl: `platform:${result.status}`,
+      status: result.status,
+      queueItem: result.queueItem,
+    }
+  }
+
+  private async submitUpdate(input: SkillsetHostedUpdateInput): Promise<PlatformSubmitResult> {
     const proxyBase = getPlatformProxyBaseUrl()
     const token = getPlatformAccessToken()
     if (!proxyBase || !token) {
@@ -145,5 +156,33 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
       skillCount: skillset.skill_count,
       agentCount: skillset.agent_count,
     }))
+  }
+
+  override async ensureSyncPreconditions(): Promise<void> {
+    const auth = getPlatformAuthStatus()
+    if (!auth.connected) {
+      throw new Error('Platform not connected')
+    }
+  }
+
+  override buildSkillsetConfig(remote: SkillsetRemoteDescriptor): SkillsetConfig {
+    const auth = getPlatformAuthStatus()
+    return {
+      ...super.buildSkillsetConfig(remote),
+      platformRepoId: remote.repoId,
+      ...(auth.orgId ? { platformOrgId: auth.orgId } : {}),
+      ...(auth.orgName ? { platformOrgName: auth.orgName } : {}),
+    }
+  }
+
+  override updateSkillsetConfig(existing: SkillsetConfig, remote: SkillsetRemoteDescriptor): boolean {
+    let changed = super.updateSkillsetConfig(existing, remote)
+    const auth = getPlatformAuthStatus()
+    if (existing.platformOrgId !== auth.orgId) {
+      existing.platformOrgId = auth.orgId ?? undefined
+      existing.platformOrgName = auth.orgName ?? undefined
+      changed = true
+    }
+    return changed
   }
 }

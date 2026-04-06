@@ -219,16 +219,6 @@ function toPlatformSkillFiles(
   }))
 }
 
-async function writeSkillPackageFiles(destDir: string, files: SkillPackageFile[]): Promise<void> {
-  await ensureDirectory(destDir)
-
-  for (const file of files) {
-    const destPath = path.join(destDir, file.relativePath)
-    await ensureDirectory(path.dirname(destPath))
-    await fs.promises.writeFile(destPath, file.content, 'utf-8')
-  }
-}
-
 async function getRepoSkillPackageFiles(
   repoDir: string,
   skillPath: string,
@@ -1195,135 +1185,6 @@ export async function getSkillPRInfo(
   }
 }
 
-// ============================================================================
-// Shared Git Fork/Branch/PR Helper
-// ============================================================================
-
-export interface ForkBranchContext {
-  repoDir: string
-  upstreamNwo: string
-  forkOwner: string
-  baseBranch: string
-  branchName: string
-}
-
-/**
- * Prepare a git fork, feature branch, and remote for creating a PR.
- * Handles: cleanup, fork, remote setup, base branch detection, and branch creation.
- */
-export async function prepareForkBranch(
-  repoDir: string,
-  branchPrefix: string,
-): Promise<ForkBranchContext> {
-  // Clean up any leftover state from previous failed attempts
-  await execFileAsync('git', ['checkout', '.'], {
-    cwd: repoDir, timeout: 5000, env: GIT_ENV,
-  }).catch(() => { /* ignore */ })
-
-  // Get the upstream repo nwo (name-with-owner e.g. "DatawizzAI/skills")
-  const { stdout: upstreamNwoRaw } = await execFileAsync(
-    'gh',
-    ['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'],
-    { cwd: repoDir, timeout: 10000 }
-  )
-  const upstreamNwo = upstreamNwoRaw.trim()
-
-  // Fork the skillset repo (idempotent - no-op if already forked)
-  await execFileAsync('gh', ['repo', 'fork', '--clone=false', '--remote=false'], {
-    cwd: repoDir,
-    timeout: 30000,
-  })
-
-  // Get the authenticated user's login to identify the fork
-  const { stdout: userLogin } = await execFileAsync(
-    'gh',
-    ['api', 'user', '--jq', '.login'],
-    { timeout: 10000 }
-  )
-  const forkOwner = userLogin.trim()
-  const repoName = upstreamNwo.split('/')[1]
-
-  // Ensure the fork remote is configured
-  const forkRemoteName = 'fork'
-  const forkUrl = `https://github.com/${forkOwner}/${repoName}.git`
-
-  try {
-    await execFileAsync('git', ['remote', 'add', forkRemoteName, forkUrl], {
-      cwd: repoDir, timeout: 5000, env: GIT_ENV,
-    })
-  } catch {
-    await execFileAsync('git', ['remote', 'set-url', forkRemoteName, forkUrl], {
-      cwd: repoDir, timeout: 5000, env: GIT_ENV,
-    })
-  }
-
-  // Determine the default branch
-  let baseBranch = 'main'
-  try {
-    const { stdout: originHead } = await execFileAsync(
-      'git', ['symbolic-ref', 'refs/remotes/origin/HEAD'],
-      { cwd: repoDir, timeout: 5000, env: GIT_ENV }
-    )
-    baseBranch = originHead.trim().replace('refs/remotes/origin/', '')
-  } catch {
-    try {
-      await execFileAsync('git', ['rev-parse', '--verify', 'origin/main'],
-        { cwd: repoDir, timeout: 5000, env: GIT_ENV })
-      baseBranch = 'main'
-    } catch {
-      baseBranch = 'master'
-    }
-  }
-
-  // Switch to the default branch before creating a new feature branch
-  await execFileAsync('git', ['checkout', baseBranch], {
-    cwd: repoDir, timeout: 10000, env: GIT_ENV,
-  })
-
-  const branchName = `${branchPrefix}-${Date.now()}`
-  await execFileAsync('git', ['checkout', '-b', branchName], {
-    cwd: repoDir, timeout: 10000, env: GIT_ENV,
-  })
-
-  return { repoDir, upstreamNwo, forkOwner, baseBranch, branchName }
-}
-
-/**
- * Push staged changes and create a PR. Always cleans up the local branch afterwards.
- */
-export async function pushAndCreatePR(
-  ctx: ForkBranchContext,
-  options: { title: string; body: string },
-): Promise<string> {
-  await execFileAsync('git', ['push', 'fork', ctx.branchName], {
-    cwd: ctx.repoDir, timeout: 30000, env: GIT_ENV,
-  })
-
-  try {
-    const { stdout: prStdout } = await execFileAsync(
-      'gh',
-      [
-        'pr', 'create',
-        '--repo', ctx.upstreamNwo,
-        '--title', options.title,
-        '--body', options.body,
-        '--head', `${ctx.forkOwner}:${ctx.branchName}`,
-        '--base', ctx.baseBranch,
-      ],
-      { cwd: ctx.repoDir, timeout: 30000 }
-    )
-    return prStdout.trim()
-  } finally {
-    await execFileAsync('git', ['checkout', ctx.baseBranch], {
-      cwd: ctx.repoDir, timeout: 10000, env: GIT_ENV,
-    }).catch(() => { /* ignore */ })
-
-    await execFileAsync('git', ['branch', '-D', ctx.branchName], {
-      cwd: ctx.repoDir, timeout: 5000, env: GIT_ENV,
-    }).catch(() => { /* ignore */ })
-  }
-}
-
 /**
  * Create a PR for local modifications to a skill using gh CLI.
  * For platform provider, submits via proxy submit-update instead.
@@ -1356,65 +1217,47 @@ export async function createSkillPR(
   }
 
   const hostingProvider = getSkillsetProvider(meta.provider)
-
-  if (hostingProvider.publishMode === 'hosted_submit') {
-    const modifiedHash = hashSkillPackageFiles(packageFiles)
-    const result = await hostingProvider.submitUpdate({
-      skillsetId: meta.skillsetId,
-      skillsetUrl: meta.skillsetUrl,
-      skillsetName: getEffectiveSkillsetName(meta),
-      platformRepoId: meta.platformRepoId,
-      targetName: path.basename(path.dirname(meta.skillPath)),
-      targetType: 'skill',
-      files: toPlatformSkillFiles(path.posix.dirname(meta.skillPath), packageFiles),
-      title: options.title,
-      message: options.body,
-    })
-
-    if (result.queueItem?.id && result.status !== 'merged') {
-      meta.pendingQueueItemId = result.queueItem.id
-    } else if (result.status === 'merged') {
-      await refreshSkillset(meta.skillsetId, meta.skillsetUrl, meta.provider, meta.platformRepoId, getEffectiveSkillsetName(meta))
-      meta.originalContentHash = modifiedHash
-      meta.pendingQueueItemId = undefined
-      await fs.promises.writeFile(path.join(skillDir, 'SKILL.md'), modifiedContent, 'utf-8')
-      await fs.promises.writeFile(
-        path.join(getAgentSkillsDir(agentSlug), skillDirName, '.skillset-original.md'),
-        modifiedContent,
-        'utf-8',
-      )
-    }
-    await writeJsonFile(getSkillMetadataPath(agentSlug, skillDirName), meta)
-
-    return { prUrl: `platform:${result.status}` }
-  }
-
-  // GitHub provider: existing fork + PR flow
   const repoDir = getSkillsetRepoDir(meta.skillsetId)
-  const ctx = await prepareForkBranch(repoDir, `update-${skillDirName}`)
+  const skillFiles = toPlatformSkillFiles(path.posix.dirname(meta.skillPath), packageFiles)
 
-  // Copy the modified skill package to the repo and stage it
-  const destDir = path.join(repoDir, path.dirname(meta.skillPath))
-  await writeSkillPackageFiles(destDir, packageFiles)
-
-  await execFileAsync('git', ['add', path.posix.dirname(meta.skillPath)], {
-    cwd: repoDir, timeout: 10000, env: GIT_ENV,
+  const result = await hostingProvider.publishUpdate({
+    repoDir,
+    branchPrefix: `update-${skillDirName}`,
+    files: skillFiles,
+    title: options.title,
+    body: options.body,
+    gitAddPaths: [path.posix.dirname(meta.skillPath)],
+    skillsetId: meta.skillsetId,
+    skillsetUrl: meta.skillsetUrl,
+    skillsetName: getEffectiveSkillsetName(meta),
+    platformRepoId: meta.platformRepoId,
+    targetName: path.basename(path.dirname(meta.skillPath)),
+    targetType: 'skill',
+    message: options.body,
   })
 
-  await execFileAsync(
-    'git',
-    ['commit', '-m', options.title],
-    { cwd: repoDir, timeout: 10000, env: GIT_ENV }
-  )
+  if (result.queueItem?.id && result.status !== 'merged') {
+    meta.pendingQueueItemId = result.queueItem.id
+  } else if (result.status === 'merged') {
+    const modifiedHash = hashSkillPackageFiles(packageFiles)
+    await refreshSkillset(meta.skillsetId, meta.skillsetUrl, meta.provider, meta.platformRepoId, getEffectiveSkillsetName(meta))
+    meta.originalContentHash = modifiedHash
+    meta.pendingQueueItemId = undefined
+    await fs.promises.writeFile(path.join(skillDir, 'SKILL.md'), modifiedContent, 'utf-8')
+    await fs.promises.writeFile(
+      path.join(getAgentSkillsDir(agentSlug), skillDirName, '.skillset-original.md'),
+      modifiedContent,
+      'utf-8',
+    )
+  }
 
-  const prUrl = await pushAndCreatePR(ctx, options)
+  if (result.prUrl.startsWith('http')) {
+    meta.openPrUrl = result.prUrl
+  }
 
-  // Save the PR URL in metadata so the UI can show it
-  const metadataPath = getSkillMetadataPath(agentSlug, skillDirName)
-  meta.openPrUrl = prUrl
-  await fs.promises.writeFile(metadataPath, JSON.stringify(meta, null, 2), 'utf-8')
+  await writeJsonFile(getSkillMetadataPath(agentSlug, skillDirName), meta)
 
-  return { prUrl }
+  return { prUrl: result.prUrl }
 }
 
 /**
@@ -1601,108 +1444,44 @@ export async function publishSkillToSkillset(
 
   const hostingProvider = getSkillsetProvider(skillsetConfig.provider)
 
-  if (hostingProvider.publishMode === 'hosted_submit') {
-    const result = await hostingProvider.submitUpdate({
-      skillsetId: skillsetConfig.id,
-      skillsetUrl: skillsetConfig.url,
-      skillsetName: skillsetConfig.name,
-      platformRepoId: skillsetConfig.platformRepoId,
-      targetName: skillDirName,
-      targetType: 'skill',
-      files: toPlatformSkillFiles(`skills/${skillDirName}`, packageFiles),
-      title: options.title,
-      message: options.body,
-    })
-
-    const metadata: InstalledSkillMetadata = {
-      skillsetId: skillsetConfig.id,
-      skillsetUrl: skillsetConfig.url,
-      skillName,
-      skillPath: skillPathInRepo,
-      installedVersion: version,
-      installedAt: new Date().toISOString(),
-      originalContentHash: hashSkillPackageFiles(packageFiles),
-      provider: 'platform',
-      platformRepoId: skillsetConfig.platformRepoId,
-      skillsetName: skillsetConfig.name,
-    }
-
-    if (result.queueItem?.id && result.status !== 'merged') {
-      metadata.pendingQueueItemId = result.queueItem.id
-    } else if (result.status === 'merged') {
-      metadata.originalContentHash = hashSkillPackageFiles(packageFiles)
-      await fs.promises.writeFile(path.join(skillDir, 'SKILL.md'), skillContent, 'utf-8')
-    }
-
-    await writeJsonFile(getSkillMetadataPath(agentSlug, skillDirName), metadata)
-
-    await fs.promises.writeFile(
-      path.join(getAgentSkillsDir(agentSlug), skillDirName, '.skillset-original.md'),
-      skillContent,
-      'utf-8'
-    )
-
-    return { prUrl: `platform:${result.status}` }
-  }
-
-  // GitHub provider: existing fork + PR flow
-  // Ensure the skillset cache is available
   const repoDir = getSkillsetRepoDir(skillsetConfig.id)
   if (!(await isGitRepo(repoDir))) {
     await ensureSkillsetCached(skillsetConfig.id, skillsetConfig.url, skillsetConfig.provider, undefined, skillsetConfig.name)
   }
 
-  const ctx = await prepareForkBranch(repoDir, `add-${skillDirName}`)
-
-  // Check for naming conflict — abort if a skill already exists at this path
+  // Check for naming conflict
   const index = await readIndexJson(repoDir)
-  const conflict = index.skills.find(
-    (s) => s.path === skillPathInRepo
-  )
+  const conflict = index.skills.find((s) => s.path === skillPathInRepo)
   if (conflict) {
-    // Clean up the branch before throwing
-    await execFileAsync('git', ['checkout', ctx.baseBranch], {
-      cwd: repoDir, timeout: 10000, env: GIT_ENV,
-    }).catch(() => { /* ignore */ })
-    await execFileAsync('git', ['branch', '-D', ctx.branchName], {
-      cwd: repoDir, timeout: 5000, env: GIT_ENV,
-    }).catch(() => { /* ignore */ })
     throw new Error(
       `A skill already exists at "${conflict.path}" in this skillset. Choose a different name or use a different skillset.`
     )
   }
 
-  // Create skill directory and write the full skill package
-  const destDir = path.join(repoDir, 'skills', skillDirName)
-  await writeSkillPackageFiles(destDir, packageFiles)
+  // Prepare skill files + updated index.json
+  const skillFiles = toPlatformSkillFiles(`skills/${skillDirName}`, packageFiles)
+  index.skills.push({ name: skillName, path: skillPathInRepo, description, version })
+  const allFiles = [
+    ...skillFiles,
+    { path: 'index.json', content: JSON.stringify(index, null, 2) + '\n' },
+  ]
 
-  // Update index.json with the new skill entry
-  index.skills.push({
-    name: skillName,
-    path: skillPathInRepo,
-    description,
-    version,
+  const result = await hostingProvider.publishUpdate({
+    repoDir,
+    branchPrefix: `add-${skillDirName}`,
+    files: allFiles,
+    title: options.title,
+    body: options.body,
+    gitAddPaths: [`skills/${skillDirName}`, 'index.json'],
+    skillsetId: skillsetConfig.id,
+    skillsetUrl: skillsetConfig.url,
+    skillsetName: skillsetConfig.name,
+    platformRepoId: skillsetConfig.platformRepoId,
+    targetName: skillDirName,
+    targetType: 'skill',
+    message: options.body,
   })
-  await fs.promises.writeFile(
-    path.join(repoDir, 'index.json'),
-    JSON.stringify(index, null, 2) + '\n',
-    'utf-8'
-  )
 
-  // Stage the full skill directory and updated index
-  await execFileAsync('git', ['add', `skills/${skillDirName}`, 'index.json'], {
-    cwd: repoDir, timeout: 10000, env: GIT_ENV,
-  })
-
-  await execFileAsync(
-    'git',
-    ['commit', '-m', options.title],
-    { cwd: repoDir, timeout: 10000, env: GIT_ENV }
-  )
-
-  const prUrl = await pushAndCreatePR(ctx, options)
-
-  // Write metadata so the skill is now tracked as belonging to this skillset
   const metadata: InstalledSkillMetadata = {
     skillsetId: skillsetConfig.id,
     skillsetUrl: skillsetConfig.url,
@@ -1711,20 +1490,31 @@ export async function publishSkillToSkillset(
     installedVersion: version,
     installedAt: new Date().toISOString(),
     originalContentHash: hashSkillPackageFiles(packageFiles),
-    openPrUrl: prUrl,
+    provider: skillsetConfig.provider,
+    platformRepoId: skillsetConfig.platformRepoId,
+    skillsetName: skillsetConfig.name,
   }
 
-  const metadataPath = getSkillMetadataPath(agentSlug, skillDirName)
-  await fs.promises.writeFile(metadataPath, JSON.stringify(metadata, null, 2), 'utf-8')
+  if (result.queueItem?.id && result.status !== 'merged') {
+    metadata.pendingQueueItemId = result.queueItem.id
+  } else if (result.status === 'merged') {
+    metadata.originalContentHash = hashSkillPackageFiles(packageFiles)
+    await fs.promises.writeFile(path.join(skillDir, 'SKILL.md'), skillContent, 'utf-8')
+  }
 
-  // Store original content for future diffs
+  if (result.prUrl.startsWith('http')) {
+    metadata.openPrUrl = result.prUrl
+  }
+
+  await writeJsonFile(getSkillMetadataPath(agentSlug, skillDirName), metadata)
+
   await fs.promises.writeFile(
     path.join(getAgentSkillsDir(agentSlug), skillDirName, '.skillset-original.md'),
     skillContent,
     'utf-8'
   )
 
-  return { prUrl }
+  return { prUrl: result.prUrl }
 }
 
 export { copyDirectoryFiltered as copyDirectory } from '@shared/lib/utils/skillset-helpers'

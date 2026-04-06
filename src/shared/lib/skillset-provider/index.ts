@@ -1,14 +1,3 @@
-export { BaseSkillsetProvider } from './base-skillset-provider'
-export type {
-  SkillsetHostedUpdateFile,
-  SkillsetHostedUpdateInput,
-  SkillsetHostedUpdateType,
-  SkillsetPublishMode,
-  SkillsetRemoteDescriptor,
-} from './base-skillset-provider'
-export { GithubSkillsetProvider } from './github-provider'
-export { PlatformSkillsetProvider } from './platform-provider'
-
 import type { SkillProvider } from '@shared/lib/types/skillset'
 import { BaseSkillsetProvider } from './base-skillset-provider'
 import { GithubSkillsetProvider } from './github-provider'

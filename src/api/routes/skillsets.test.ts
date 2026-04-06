@@ -146,7 +146,11 @@ describe('skillsets routes', () => {
     const app = new Hono()
     app.route('/api/skillsets', skillsets)
 
-    const res = await app.request('/api/skillsets/sync-platform', { method: 'POST' })
+    const res = await app.request('/api/skillsets/sync-remote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'platform' }),
+    })
     expect(res.status).toBe(200)
 
     expect(mockUpdateSettings).toHaveBeenCalledTimes(1)

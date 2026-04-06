@@ -13,7 +13,6 @@ import {
   ensureSkillsetCached,
 } from '@shared/lib/services/skillset-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
-import { getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
 import type { SkillsetConfig, SkillProvider } from '@shared/lib/types/skillset'
 import type { ApiSkillsetConfig } from '@shared/lib/types/api'
 import { getSkillsetAccessScope } from '@shared/lib/utils/skillset-helpers'
@@ -204,57 +203,42 @@ skillsets.get('/:id/agents', async (c) => {
   }
 })
 
-// POST /api/skillsets/sync-platform - Auto-register platform skillsets after connecting
-skillsets.post('/sync-platform', IsAdmin(), async (c) => {
+// POST /api/skillsets/sync-remote - Auto-register remote skillsets from a provider
+// Currently only 'platform' supports remote sync, but the route is provider-agnostic.
+skillsets.post('/sync-remote', IsAdmin(), async (c) => {
   try {
-    const platformAuth = getPlatformAuthStatus()
-    if (!platformAuth.connected) {
-      return c.json({ error: 'Platform not connected' }, 400)
+    const body = await c.req.json<{ provider?: SkillProvider }>().catch(() => ({} as { provider?: SkillProvider }))
+    const providerId = body.provider ?? 'platform'
+    const provider = getSkillsetProvider(providerId)
+
+    if (!provider.supportsRemoteSync) {
+      return c.json({ error: `Provider '${providerId}' does not support remote sync` }, 400)
     }
 
-    const platformProvider = getSkillsetProvider('platform')
-    const remoteSkillsets = await platformProvider.listRemoteSkillsets()
+    await provider.ensureSyncPreconditions()
+
+    const remoteSkillsets = await provider.listRemoteSkillsets()
     if (!remoteSkillsets.length) {
       return c.json({ synced: 0, skillsets: [] })
     }
 
     const settings = getSettings()
-    const currentPlatformOrgId = platformAuth.orgId
-    const currentPlatformOrgName = platformAuth.orgName
     const existing = settings.skillsets || []
     const added: SkillsetConfig[] = []
     let updatedExisting = false
 
     for (const remote of remoteSkillsets) {
-      const skillsetId = `platform--${remote.repoId}--${remote.name}`
+      const skillsetId = `${providerId}--${remote.repoId}--${remote.name}`
 
       const existingConfig = existing.find((s) => s.id === skillsetId)
       if (existingConfig) {
-        if (
-          existingConfig.platformOrgId !== currentPlatformOrgId
-          || existingConfig.name !== remote.name
-          || existingConfig.description !== (remote.description || '')
-        ) {
-          existingConfig.name = remote.name
-          existingConfig.description = remote.description || ''
-          existingConfig.platformOrgId = currentPlatformOrgId ?? undefined
-          existingConfig.platformOrgName = currentPlatformOrgName ?? undefined
+        if (provider.updateSkillsetConfig(existingConfig, remote)) {
           updatedExisting = true
         }
         continue
       }
 
-      const config: SkillsetConfig = {
-        id: skillsetId,
-        url: platformProvider.getRegistrationUrl('platform://skills/repo'),
-        name: remote.name,
-        description: remote.description || '',
-        addedAt: new Date().toISOString(),
-        provider: 'platform',
-        platformRepoId: remote.repoId,
-        ...(currentPlatformOrgId ? { platformOrgId: currentPlatformOrgId } : {}),
-        ...(currentPlatformOrgName ? { platformOrgName: currentPlatformOrgName } : {}),
-      }
+      const config = provider.buildSkillsetConfig(remote)
       existing.push(config)
       added.push(config)
     }
@@ -263,21 +247,20 @@ skillsets.post('/sync-platform', IsAdmin(), async (c) => {
       updateSettings({ ...settings, skillsets: existing })
     }
 
-    const allPlatform = existing.filter(
-      (s) => s.provider === 'platform' && s.platformRepoId && s.platformOrgId === currentPlatformOrgId,
-    )
+    const allForProvider = existing.filter((s) => s.provider === providerId)
     const cloned = new Set<string>()
-    for (const config of allPlatform) {
-      if (!cloned.has(config.platformRepoId!)) {
-        cloned.add(config.platformRepoId!)
-        await ensureSkillsetCached(config.id, config.url, 'platform', config.platformRepoId, config.name)
+    for (const config of allForProvider) {
+      const cacheKey = config.platformRepoId || config.id
+      if (!cloned.has(cacheKey)) {
+        cloned.add(cacheKey)
+        await ensureSkillsetCached(config.id, config.url, providerId, config.platformRepoId, config.name)
       }
     }
 
     return c.json({ synced: added.length, skillsets: added.map((a) => a.name) })
   } catch (error) {
-    console.error('Failed to sync platform skillsets:', error)
-    const message = error instanceof Error ? error.message : 'Failed to sync platform skillsets'
+    console.error('Failed to sync remote skillsets:', error)
+    const message = error instanceof Error ? error.message : 'Failed to sync remote skillsets'
     return c.json({ error: message }, 500)
   }
 })

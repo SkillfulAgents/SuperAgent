@@ -20,8 +20,6 @@ vi.mock('@shared/lib/services/skillset-service', async (importOriginal) => {
     getSkillsetIndex: vi.fn(),
     readIndexJson: vi.fn(),
     refreshSkillset: vi.fn(),
-    prepareForkBranch: vi.fn(),
-    pushAndCreatePR: vi.fn(),
     copyDirectory: vi.fn(),
     // Keep the real parseSkillFrontmatter for collectAgentRequiredEnvVars tests
   }

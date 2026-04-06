@@ -137,7 +137,10 @@ export function useSavePlatformAccessKey() {
       await applyPlatformDefaults().catch(() => {})
 
       // Auto-sync platform skillsets
-      void apiFetch('/api/skillsets/sync-platform', { method: 'POST' })
+      void apiFetch('/api/skillsets/sync-remote', {
+        method: 'POST',
+        body: JSON.stringify({ provider: 'platform' }),
+      })
         .then(() => queryClient.invalidateQueries({ queryKey: ['skillsets'] }))
         .catch(() => {})
     },
@@ -179,7 +182,10 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
       })
 
       // Auto-sync platform skillsets after successful connection
-      void apiFetch('/api/skillsets/sync-platform', { method: 'POST' })
+      void apiFetch('/api/skillsets/sync-remote', {
+        method: 'POST',
+        body: JSON.stringify({ provider: 'platform' }),
+      })
         .then(() => queryClient.invalidateQueries({ queryKey: ['skillsets'] }))
         .catch(() => {})
 

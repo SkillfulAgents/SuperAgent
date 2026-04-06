@@ -10,8 +10,6 @@ import path from 'path'
 import fs from 'fs'
 import archiver from 'archiver'
 import AdmZip from 'adm-zip'
-import { execFile } from 'child_process'
-import { promisify } from 'util'
 import {
   getAgentWorkspaceDir,
   getAgentClaudeMdPath,
@@ -30,8 +28,6 @@ import {
   getSkillsetIndex,
   readIndexJson,
   refreshSkillset,
-  prepareForkBranch,
-  pushAndCreatePR,
   parseSkillFrontmatter,
 } from '@shared/lib/services/skillset-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
@@ -48,15 +44,12 @@ import type {
 import type { ApiAgent } from '@shared/lib/types/api'
 import type { AgentFrontmatter } from '@shared/lib/types/agent'
 import {
-  GIT_ENV,
   getEffectiveSkillsetName,
   getEffectiveRepoId,
   resolvePlatformSkillsetScope,
   copyDirectoryFiltered,
   writeJsonFile,
 } from '@shared/lib/utils/skillset-helpers'
-
-const execFileAsync = promisify(execFile)
 
 // ============================================================================
 // Constants
@@ -1187,96 +1180,59 @@ export async function createAgentPR(
   const targetName = path.basename(meta.agentPath.replace(/\/$/, ''))
 
   const hostingProvider = getSkillsetProvider(meta.provider)
-
-  if (hostingProvider.publishMode === 'hosted_submit') {
-    const files = await collectAgentFilesForPlatform(workspaceDir, meta.agentPath, {
-      claudeMdContent: nextClaudeMdContent,
-    })
-    const result = await hostingProvider.submitUpdate({
-      skillsetId: meta.skillsetId,
-      skillsetUrl: meta.skillsetUrl,
-      skillsetName: getEffectiveSkillsetName(meta),
-      platformRepoId: meta.platformRepoId,
-      targetName,
-      targetType: 'agent',
-      files,
-      title: options.title,
-      message: options.body,
-    })
-
-    if (result.queueItem?.id && result.status !== 'merged') {
-      meta.pendingQueueItemId = result.queueItem.id
-    } else if (result.status === 'merged') {
-      const effectiveSkillsetName = getEffectiveSkillsetName(meta)
-      await refreshSkillset(meta.skillsetId, meta.skillsetUrl, meta.provider, meta.platformRepoId, effectiveSkillsetName)
-      const repoDir = getSkillsetRepoDir(getEffectiveRepoId(meta.provider, meta.platformRepoId, meta.skillsetId))
-      const agentDirInRepo = path.join(repoDir, meta.agentPath.replace(/\/$/, ''))
-      if (await directoryExists(agentDirInRepo)) {
-        await copyTemplateFiles(agentDirInRepo, workspaceDir)
-      } else {
-        await fs.promises.writeFile(claudeMdPath, nextClaudeMdContent, 'utf-8')
-      }
-      meta.originalContentHash = await computeAgentTemplateHash(workspaceDir)
-      meta.pendingQueueItemId = undefined
-    }
-
-    await writeJsonFile(getAgentMetadataPath(agentSlug), meta)
-    return { prUrl: `platform:${result.status}` }
-  }
-
   const repoDir = getSkillsetRepoDir(getEffectiveRepoId(meta.provider, meta.platformRepoId, meta.skillsetId))
-  const ctx = await prepareForkBranch(repoDir, `update-agent-${agentSlug}`)
 
-  // Copy template files from workspace to the repo agent dir
-  const agentDirInRepo = path.join(repoDir, meta.agentPath.replace(/\/$/, ''))
-  await ensureDirectory(agentDirInRepo)
+  const files = await collectAgentFilesForPlatform(workspaceDir, meta.agentPath, {
+    claudeMdContent: nextClaudeMdContent,
+  })
 
-  const templateFiles = await walkTemplateFiles(workspaceDir)
-  for (const relativePath of templateFiles) {
-    const srcPath = path.join(workspaceDir, relativePath)
-    const destPath = path.join(agentDirInRepo, relativePath)
-    await ensureDirectory(path.dirname(destPath))
-    await fs.promises.copyFile(srcPath, destPath)
-  }
-
-  // Update version in index.json if provided
   if (options.newVersion) {
     const index = await readIndexJson(repoDir)
     if (index.agents) {
       const agentEntry = index.agents.find((a) => a.path === meta.agentPath)
       if (agentEntry) {
         agentEntry.version = options.newVersion
-        await fs.promises.writeFile(
-          path.join(repoDir, 'index.json'),
-          JSON.stringify(index, null, 2) + '\n',
-          'utf-8'
-        )
+        files.push({ path: 'index.json', content: JSON.stringify(index, null, 2) + '\n' })
       }
     }
   }
 
-  // Stage and commit
-  await execFileAsync('git', ['add', '.'], {
-    cwd: repoDir, timeout: 10000, env: GIT_ENV,
+  const result = await hostingProvider.publishUpdate({
+    repoDir,
+    branchPrefix: `update-agent-${agentSlug}`,
+    files,
+    title: options.title,
+    body: options.body,
+    skillsetId: meta.skillsetId,
+    skillsetUrl: meta.skillsetUrl,
+    skillsetName: getEffectiveSkillsetName(meta),
+    platformRepoId: meta.platformRepoId,
+    targetName,
+    targetType: 'agent',
+    message: options.body,
   })
 
-  await execFileAsync(
-    'git',
-    ['commit', '-m', options.title],
-    { cwd: repoDir, timeout: 10000, env: GIT_ENV }
-  )
+  if (result.queueItem?.id && result.status !== 'merged') {
+    meta.pendingQueueItemId = result.queueItem.id
+  } else if (result.status === 'merged') {
+    const effectiveSkillsetName = getEffectiveSkillsetName(meta)
+    await refreshSkillset(meta.skillsetId, meta.skillsetUrl, meta.provider, meta.platformRepoId, effectiveSkillsetName)
+    const agentDirInRepo = path.join(repoDir, meta.agentPath.replace(/\/$/, ''))
+    if (await directoryExists(agentDirInRepo)) {
+      await copyTemplateFiles(agentDirInRepo, workspaceDir)
+    } else {
+      await fs.promises.writeFile(claudeMdPath, nextClaudeMdContent, 'utf-8')
+    }
+    meta.originalContentHash = await computeAgentTemplateHash(workspaceDir)
+    meta.pendingQueueItemId = undefined
+  }
 
-  const prUrl = await pushAndCreatePR(ctx, options)
+  if (result.prUrl.startsWith('http')) {
+    meta.openPrUrl = result.prUrl
+  }
 
-  // Save PR URL in metadata
-  meta.openPrUrl = prUrl
-  await fs.promises.writeFile(
-    getAgentMetadataPath(agentSlug),
-    JSON.stringify(meta, null, 2),
-    'utf-8'
-  )
-
-  return { prUrl }
+  await writeJsonFile(getAgentMetadataPath(agentSlug), meta)
+  return { prUrl: result.prUrl }
 }
 
 // ============================================================================
@@ -1367,104 +1323,31 @@ export async function publishAgentToSkillset(
 
   const hostingProvider = getSkillsetProvider(skillsetConfig.provider)
 
-  if (hostingProvider.publishMode === 'hosted_submit') {
-    const files = await collectAgentFilesForPlatform(workspaceDir, agentPathInRepo, {
-      claudeMdContent,
-    })
-    const result = await hostingProvider.submitUpdate({
-      skillsetId: skillsetConfig.id,
-      skillsetUrl: skillsetConfig.url,
-      skillsetName: skillsetConfig.name,
-      platformRepoId: skillsetConfig.platformRepoId,
-      targetName: agentDirName,
-      targetType: 'agent',
-      files,
-      title: options.title,
-      message: options.body,
-    })
-
-    const metadata: InstalledAgentMetadata = {
-      skillsetId: skillsetConfig.id,
-      skillsetUrl: skillsetConfig.url,
-      agentName,
-      agentPath: agentPathInRepo,
-      installedVersion: version,
-      installedAt: new Date().toISOString(),
-      originalContentHash: await computeAgentTemplateHash(workspaceDir),
-      provider: 'platform',
-      platformRepoId: skillsetConfig.platformRepoId,
-      skillsetName: skillsetConfig.name,
-    }
-
-    if (result.queueItem?.id && result.status !== 'merged') {
-      metadata.pendingQueueItemId = result.queueItem.id
-    } else if (result.status === 'merged') {
-      await refreshSkillset(
-        skillsetConfig.id,
-        skillsetConfig.url,
-        skillsetConfig.provider,
-        skillsetConfig.platformRepoId,
-        skillsetConfig.name,
-      )
-      const repoDirAfter = getSkillsetRepoDir(getEffectiveRepoId(skillsetConfig.provider, skillsetConfig.platformRepoId, skillsetConfig.id))
-      const agentDirInRepo = path.join(repoDirAfter, agentPathInRepo.replace(/\/$/, ''))
-      if (await directoryExists(agentDirInRepo)) {
-        await copyTemplateFiles(agentDirInRepo, workspaceDir)
-      } else {
-        await fs.promises.writeFile(claudeMdPath, claudeMdContent, 'utf-8')
-      }
-      metadata.originalContentHash = await computeAgentTemplateHash(workspaceDir)
-    }
-
-    await writeJsonFile(getAgentMetadataPath(agentSlug), metadata)
-    return { prUrl: `platform:${result.status}` }
-  }
-
-  const ctx = await prepareForkBranch(repoDir, `add-agent-${agentDirName}`)
-
-  // Create agent directory and copy template files
-  const destDir = path.join(repoDir, 'agents', agentDirName)
-  await ensureDirectory(destDir)
-
-  const templateFiles = await walkTemplateFiles(workspaceDir)
-  for (const relativePath of templateFiles) {
-    const srcPath = path.join(workspaceDir, relativePath)
-    const destPath = path.join(destDir, relativePath)
-    await ensureDirectory(path.dirname(destPath))
-    await fs.promises.copyFile(srcPath, destPath)
-  }
-
-  // Update index.json with the new agent entry
+  // Prepare agent template files + updated index.json
+  const files = await collectAgentFilesForPlatform(workspaceDir, agentPathInRepo, {
+    claudeMdContent,
+  })
   if (!index.agents) {
     index.agents = []
   }
-  index.agents.push({
-    name: agentName,
-    path: agentPathInRepo,
-    description,
-    version,
+  index.agents.push({ name: agentName, path: agentPathInRepo, description, version })
+  files.push({ path: 'index.json', content: JSON.stringify(index, null, 2) + '\n' })
+
+  const result = await hostingProvider.publishUpdate({
+    repoDir,
+    branchPrefix: `add-agent-${agentDirName}`,
+    files,
+    title: options.title,
+    body: options.body,
+    skillsetId: skillsetConfig.id,
+    skillsetUrl: skillsetConfig.url,
+    skillsetName: skillsetConfig.name,
+    platformRepoId: skillsetConfig.platformRepoId,
+    targetName: agentDirName,
+    targetType: 'agent',
+    message: options.body,
   })
-  await fs.promises.writeFile(
-    path.join(repoDir, 'index.json'),
-    JSON.stringify(index, null, 2) + '\n',
-    'utf-8'
-  )
 
-  // Stage and commit
-  await execFileAsync('git', ['add', '.'], {
-    cwd: repoDir, timeout: 10000, env: GIT_ENV,
-  })
-
-  await execFileAsync(
-    'git',
-    ['commit', '-m', options.title],
-    { cwd: repoDir, timeout: 10000, env: GIT_ENV }
-  )
-
-  const prUrl = await pushAndCreatePR(ctx, options)
-
-  // Write metadata so the agent is now tracked
-  const hash = await computeAgentTemplateHash(workspaceDir)
   const metadata: InstalledAgentMetadata = {
     skillsetId: skillsetConfig.id,
     skillsetUrl: skillsetConfig.url,
@@ -1472,17 +1355,36 @@ export async function publishAgentToSkillset(
     agentPath: agentPathInRepo,
     installedVersion: version,
     installedAt: new Date().toISOString(),
-    originalContentHash: hash,
-    openPrUrl: prUrl,
+    originalContentHash: await computeAgentTemplateHash(workspaceDir),
     provider: skillsetConfig.provider,
     platformRepoId: skillsetConfig.platformRepoId,
+    skillsetName: skillsetConfig.name,
   }
 
-  await fs.promises.writeFile(
-    getAgentMetadataPath(agentSlug),
-    JSON.stringify(metadata, null, 2),
-    'utf-8'
-  )
+  if (result.queueItem?.id && result.status !== 'merged') {
+    metadata.pendingQueueItemId = result.queueItem.id
+  } else if (result.status === 'merged') {
+    await refreshSkillset(
+      skillsetConfig.id,
+      skillsetConfig.url,
+      skillsetConfig.provider,
+      skillsetConfig.platformRepoId,
+      skillsetConfig.name,
+    )
+    const repoDirAfter = getSkillsetRepoDir(getEffectiveRepoId(skillsetConfig.provider, skillsetConfig.platformRepoId, skillsetConfig.id))
+    const agentDirInRepo = path.join(repoDirAfter, agentPathInRepo.replace(/\/$/, ''))
+    if (await directoryExists(agentDirInRepo)) {
+      await copyTemplateFiles(agentDirInRepo, workspaceDir)
+    } else {
+      await fs.promises.writeFile(claudeMdPath, claudeMdContent, 'utf-8')
+    }
+    metadata.originalContentHash = await computeAgentTemplateHash(workspaceDir)
+  }
 
-  return { prUrl }
+  if (result.prUrl.startsWith('http')) {
+    metadata.openPrUrl = result.prUrl
+  }
+
+  await writeJsonFile(getAgentMetadataPath(agentSlug), metadata)
+  return { prUrl: result.prUrl }
 }
