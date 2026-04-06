@@ -50,7 +50,7 @@ export function UpdateSection() {
             {status.state === 'checking' && 'Checking for updates...'}
             {status.state === 'not-available' && 'You are on the latest version'}
             {status.state === 'available' && `Version ${status.version} is available`}
-            {status.state === 'downloading' && `Downloading... ${Math.round(status.progress ?? 0)}%`}
+            {status.state === 'downloading' && <span>Downloading... <span className="tabular-nums">{Math.round(status.progress ?? 0)}%</span></span>}
             {status.state === 'downloaded' && `Version ${status.version} is ready to install`}
             {status.state === 'error' && `Update error: ${status.error}`}
           </p>
@@ -77,7 +77,7 @@ export function UpdateSection() {
           {status.state === 'downloading' && (
             <Button variant="outline" size="sm" disabled>
               <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              {Math.round(status.progress ?? 0)}%
+              <span className="tabular-nums">{Math.round(status.progress ?? 0)}%</span>
             </Button>
           )}
           {status.state === 'downloaded' && (
