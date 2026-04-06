@@ -80,6 +80,7 @@ export function AgentLanding({ agent, onSessionCreated }: AgentLandingProps) {
       onSessionCreated(session.id, content)
     }, [createSession, agent.slug, onSessionCreated]),
     submitDisabled: createSession.isPending || !isRuntimeReady,
+    keepMessageUntilComplete: true,
   })
 
   // Auto-expand when message gets long (5+ lines)
