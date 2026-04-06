@@ -6,7 +6,8 @@
  */
 
 import { useState } from 'react'
-import { Clock, Calendar, Repeat, Trash2, MessageSquare, Globe, Play, Pencil, Loader2 } from 'lucide-react'
+import { Clock, Calendar, Repeat, Trash2, Globe, Play, Pencil, Loader2 } from 'lucide-react'
+import { RelatedSessions } from '@renderer/components/sessions/related-sessions'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
@@ -293,31 +294,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
           </div>
         </div>
 
-        {/* Related Sessions */}
-        {sessions.length > 0 && (
-          <div className="mt-6">
-            <h3 className="text-sm font-medium text-muted-foreground mb-2">
-              Related Sessions ({sessions.length})
-            </h3>
-            <div className="space-y-2">
-              {sessions.map((session) => (
-                <button
-                  key={session.id}
-                  onClick={() => selectSession(session.id)}
-                  className="w-full flex items-center gap-3 p-3 rounded-lg border hover:bg-muted/50 transition-colors text-left"
-                >
-                  <MessageSquare className="h-4 w-4 text-muted-foreground shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium truncate">{session.name}</div>
-                    <div className="text-xs text-muted-foreground">
-                      {formatInTaskTz(session.createdAt)}
-                    </div>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
+        <RelatedSessions sessions={sessions} formatDate={formatInTaskTz} className="mt-6" />
 
         {/* Last execution info */}
         {task.lastExecutedAt && sessions.length === 0 && (

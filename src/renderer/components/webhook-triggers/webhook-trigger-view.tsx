@@ -5,8 +5,10 @@
  * that fires when events occur, related sessions, and a cancel option.
  */
 
-import { useState } from 'react'
-import { Zap, Trash2, MessageSquare, Loader2, Settings2 } from 'lucide-react'
+
+
+import { Zap, Trash2, Loader2, Settings2 } from 'lucide-react'
+import { RelatedSessions } from '@renderer/components/sessions/related-sessions'
 import { Button } from '@renderer/components/ui/button'
 import {
   useWebhookTrigger,
@@ -36,7 +38,7 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
   const { data: trigger, isLoading, error } = useWebhookTrigger(triggerId)
   const { data: sessions = [] } = useWebhookTriggerSessions(triggerId)
   const cancelTrigger = useCancelWebhookTrigger()
-  const { handleWebhookTriggerDeleted, selectSession } = useSelection()
+  const { handleWebhookTriggerDeleted } = useSelection()
   const { canUseAgent } = useUser()
   const canCancel = canUseAgent(agentSlug)
 
@@ -203,31 +205,7 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
           </div>
         </div>
 
-        {/* Related Sessions */}
-        {sessions.length > 0 && (
-          <div className="mb-6">
-            <h3 className="text-sm font-medium text-muted-foreground mb-2">
-              Related Sessions ({sessions.length})
-            </h3>
-            <div className="space-y-2">
-              {sessions.map((session) => (
-                <button
-                  key={session.id}
-                  onClick={() => selectSession(session.id)}
-                  className="w-full flex items-center gap-3 p-3 rounded-lg border hover:bg-muted/50 transition-colors text-left"
-                >
-                  <MessageSquare className="h-4 w-4 text-muted-foreground shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium truncate">{session.name}</div>
-                    <div className="text-xs text-muted-foreground">
-                      {formatDate(session.createdAt)}
-                    </div>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
+        <RelatedSessions sessions={sessions} formatDate={formatDate} className="mb-6" />
 
         {/* Created */}
         <div className="mb-6">
