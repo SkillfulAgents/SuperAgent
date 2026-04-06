@@ -75,9 +75,9 @@ async function parseAgentClaudeMd(slug: string): Promise<AgentConfig | null> {
   // Validate required fields
   if (!frontmatter.name) {
     console.warn(`Agent ${slug} has invalid CLAUDE.md: missing name`)
-    // Use slug as fallback name
     frontmatter.name = slug
   }
+  frontmatter.name = String(frontmatter.name)
 
   if (!frontmatter.createdAt) {
     // Use directory creation time as fallback
@@ -173,7 +173,8 @@ export async function listAgentsWithStatus(): Promise<ApiAgent[]> {
  * Create a new agent (returns API format with stopped status)
  */
 export async function createAgent(input: CreateAgentInput): Promise<ApiAgent> {
-  const { name, description, instructions } = input
+  const { name: rawName, description, instructions } = input
+  const name = String(rawName)
 
   // Generate unique slug
   const slug = await generateUniqueAgentSlug(name)
@@ -226,7 +227,7 @@ export async function updateAgent(
   }
 
   if (updates.name !== undefined) {
-    newFrontmatter.name = updates.name
+    newFrontmatter.name = String(updates.name)
   }
   if (updates.description !== undefined) {
     newFrontmatter.description = updates.description || undefined
@@ -287,7 +288,8 @@ export async function deleteAgent(slug: string): Promise<boolean> {
  * Create a new agent with an empty workspace, ready for files to be placed into it.
  * Used by template import/install which populates the workspace after creation.
  */
-export async function createAgentFromExistingWorkspace(name: string): Promise<ApiAgent> {
+export async function createAgentFromExistingWorkspace(rawName: string): Promise<ApiAgent> {
+  const name = String(rawName)
   const slug = await generateUniqueAgentSlug(name)
 
   const workspaceDir = getAgentWorkspaceDir(slug)
