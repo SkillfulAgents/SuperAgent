@@ -12,8 +12,8 @@ import {
   removeSkillsetCache,
   ensureSkillsetCached,
 } from '@shared/lib/services/skillset-service'
-import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
-import { getPlatformAccessToken, getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
+import { getSkillsetProvider } from '@shared/lib/skillset-provider'
+import { getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
 import type { SkillsetConfig, SkillProvider } from '@shared/lib/types/skillset'
 import type { ApiSkillsetConfig } from '@shared/lib/types/api'
 import { getSkillsetAccessScope } from '@shared/lib/utils/skillset-helpers'
@@ -44,6 +44,7 @@ skillsets.get('/', async (c) => {
     for (const config of scope.accessibleSkillsets) {
       const index = await getSkillsetIndex(config.id, {
         platformRepoId: config.platformRepoId,
+        provider: config.provider,
       })
       result.push(configToApiResponse(config, index?.skills.length ?? 0, index?.agents?.length ?? 0))
     }
@@ -167,6 +168,7 @@ skillsets.get('/:id/skills', async (c) => {
     const config = (settings.skillsets || []).find((s) => s.id === id)
     const index = await getSkillsetIndex(id, {
       platformRepoId: config?.platformRepoId,
+      provider: config?.provider,
     })
 
     if (!index) {
@@ -188,6 +190,7 @@ skillsets.get('/:id/agents', async (c) => {
     const config = (settings.skillsets || []).find((s) => s.id === id)
     const index = await getSkillsetIndex(id, {
       platformRepoId: config?.platformRepoId,
+      provider: config?.provider,
     })
 
     if (!index) {
@@ -204,37 +207,25 @@ skillsets.get('/:id/agents', async (c) => {
 // POST /api/skillsets/sync-platform - Auto-register platform skillsets after connecting
 skillsets.post('/sync-platform', IsAdmin(), async (c) => {
   try {
-    const proxyBase = getPlatformProxyBaseUrl()
-    const token = getPlatformAccessToken()
-    if (!proxyBase || !token) {
+    const platformAuth = getPlatformAuthStatus()
+    if (!platformAuth.connected) {
       return c.json({ error: 'Platform not connected' }, 400)
     }
 
-    const fetchUrl = `${proxyBase}/v1/skills/skillsets`
-    const res = await fetch(fetchUrl, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-    if (!res.ok) {
-      return c.json({ error: `Failed to fetch platform skillsets: ${res.status}` }, 502)
-    }
-
-    const data = await res.json() as {
-      skillsets: Array<{ name: string; path: string; repoId: string; description: string; skill_count: number; agent_count: number }>
-    }
-
-    if (!data.skillsets?.length) {
+    const platformProvider = getSkillsetProvider('platform')
+    const remoteSkillsets = await platformProvider.listRemoteSkillsets()
+    if (!remoteSkillsets.length) {
       return c.json({ synced: 0, skillsets: [] })
     }
 
     const settings = getSettings()
-    const platformAuth = getPlatformAuthStatus()
     const currentPlatformOrgId = platformAuth.orgId
     const currentPlatformOrgName = platformAuth.orgName
     const existing = settings.skillsets || []
     const added: SkillsetConfig[] = []
     let updatedExisting = false
 
-    for (const remote of data.skillsets) {
+    for (const remote of remoteSkillsets) {
       const skillsetId = `platform--${remote.repoId}--${remote.name}`
 
       const existingConfig = existing.find((s) => s.id === skillsetId)
@@ -255,7 +246,7 @@ skillsets.post('/sync-platform', IsAdmin(), async (c) => {
 
       const config: SkillsetConfig = {
         id: skillsetId,
-        url: `${proxyBase}/v1/skills/repo`,
+        url: platformProvider.getRegistrationUrl('platform://skills/repo'),
         name: remote.name,
         description: remote.description || '',
         addedAt: new Date().toISOString(),

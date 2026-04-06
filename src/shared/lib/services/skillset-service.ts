@@ -31,16 +31,13 @@ import type {
   SkillWithStatus,
   SkillStatus,
   SkillProvider,
-  PlatformSubmitResult,
 } from '@shared/lib/types/skillset'
-import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
-import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import {
   GIT_ENV,
   getEffectiveSkillsetName,
   getEffectiveRepoId,
   resolvePlatformSkillsetScope,
-  ensureGhAuthenticated,
   copyDirectoryFiltered,
   writeJsonFile,
 } from '@shared/lib/utils/skillset-helpers'
@@ -444,52 +441,6 @@ async function getOriginalFromGitHistory(
 }
 
 // ============================================================================
-// Platform Provider Helpers
-// ============================================================================
-
-/**
- * Resolve the effective clone URL. For platform provider, exchanges the
- * platform Bearer token for a short-lived JWT-authenticated Git URL via proxy.
- */
-async function resolveCloneUrl(url: string, provider?: SkillProvider, skillsetName?: string): Promise<string> {
-  if (provider !== 'platform') return url
-
-  const proxyBase = getPlatformProxyBaseUrl()
-  const token = getPlatformAccessToken()
-  if (!proxyBase || !token) {
-    throw new Error('Platform not connected. Please connect to platform first.')
-  }
-
-  if (!skillsetName) {
-    throw new Error('skillsetName is required for platform provider')
-  }
-
-  const fetchUrl = `${proxyBase}/v1/skills/git-url?skillset=${encodeURIComponent(skillsetName)}`
-  const res = await fetch(fetchUrl, {
-    headers: { Authorization: `Bearer ${token}` },
-  })
-
-  if (!res.ok) {
-    throw new Error(`Failed to get platform Git URL: ${res.status} ${res.statusText}`)
-  }
-
-  const data = await res.json() as { url: string; defaultBranch: string }
-
-  // Validate returned URL to prevent SSRF via malicious platform responses
-  try {
-    const parsed = new URL(data.url)
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-      throw new Error(`Unsafe clone URL protocol: ${parsed.protocol}`)
-    }
-  } catch (e) {
-    if (e instanceof Error && e.message.startsWith('Unsafe clone URL')) throw e
-    throw new Error(`Invalid clone URL returned by platform: ${data.url}`)
-  }
-
-  return data.url
-}
-
-// ============================================================================
 // Skillset Cache Management
 // ============================================================================
 
@@ -514,7 +465,8 @@ export async function ensureSkillsetCached(
   platformRepoId?: string,
   skillsetName?: string,
 ): Promise<string> {
-  const effectiveId = getEffectiveRepoId(provider, platformRepoId, skillsetId)
+  const hostingProvider = getSkillsetProvider(provider)
+  const effectiveId = hostingProvider.getEffectiveRepoId(skillsetId, platformRepoId)
   const repoDir = getSkillsetRepoDir(effectiveId)
 
   if (await isGitRepo(repoDir)) return repoDir
@@ -531,7 +483,11 @@ export async function ensureSkillsetCached(
     await fs.promises.rm(repoDir, { recursive: true, force: true })
   }
 
-  const cloneUrl = await resolveCloneUrl(url, provider, skillsetName)
+  const cloneUrl = await hostingProvider.resolveCloneUrl(url, {
+    skillsetId,
+    skillsetName,
+    platformRepoId,
+  })
   await gitClone(cloneUrl, repoDir)
   return repoDir
 }
@@ -585,12 +541,17 @@ export async function refreshSkillset(
   platformRepoId?: string,
   skillsetName?: string,
 ): Promise<SkillsetIndex> {
-  const effectiveId = getEffectiveRepoId(provider, platformRepoId, skillsetId)
+  const hostingProvider = getSkillsetProvider(provider)
+  const effectiveId = hostingProvider.getEffectiveRepoId(skillsetId, platformRepoId)
   const repoDir = getSkillsetRepoDir(effectiveId)
 
   if (await isGitRepo(repoDir)) {
-    if (provider === 'platform') {
-      const freshUrl = await resolveCloneUrl(url, provider, skillsetName)
+    const freshUrl = await hostingProvider.resolveCloneUrl(url, {
+      skillsetId,
+      skillsetName,
+      platformRepoId,
+    })
+    if (freshUrl !== url) {
       await execFileAsync('git', ['remote', 'set-url', 'origin', freshUrl], {
         cwd: repoDir, timeout: 5000, env: GIT_ENV,
       })
@@ -608,9 +569,11 @@ export async function refreshSkillset(
  */
 export async function getSkillsetIndex(
   skillsetId: string,
-  options?: { platformRepoId?: string },
+  options?: { platformRepoId?: string; provider?: SkillProvider },
 ): Promise<SkillsetIndex | null> {
-  const effectiveId = options?.platformRepoId || skillsetId
+  const effectiveId = options?.provider
+    ? getSkillsetProvider(options.provider).getEffectiveRepoId(skillsetId, options.platformRepoId)
+    : (options?.platformRepoId || skillsetId)
   const repoDir = getSkillsetRepoDir(effectiveId)
   if (!await isGitRepo(repoDir)) return null
 
@@ -735,6 +698,7 @@ export async function updateSkillFromSkillset(
   // Re-install the skill (overwrites existing)
   const index = await getSkillsetIndex(meta.skillsetId, {
     platformRepoId: meta.platformRepoId,
+    provider: meta.provider,
   })
   if (!index) return { updated: false }
 
@@ -795,6 +759,7 @@ export async function getAgentSkillsWithStatus(
   for (const ss of skillsets) {
     const index = await getSkillsetIndex(ss.id, {
       platformRepoId: ss.platformRepoId,
+      provider: ss.provider,
     })
     if (index) indexMap.set(ss.id, index)
   }
@@ -869,8 +834,8 @@ export async function getAgentSkillsWithStatus(
         return cachePackageHash
       }
 
-      if (meta.pendingQueueItemId && meta.provider === 'platform') {
-        const queueStatus = await checkPlatformQueueItemStatus(meta.pendingQueueItemId)
+      if (meta.pendingQueueItemId) {
+        const queueStatus = await getSkillsetProvider(meta.provider).getQueueItemStatus(meta.pendingQueueItemId)
         if (queueStatus === 'merged' || queueStatus === 'rejected') {
           if (queueStatus === 'merged') {
             try {
@@ -1049,6 +1014,7 @@ export async function getDiscoverableSkills(
   for (const ss of skillsets) {
     const index = await getSkillsetIndex(ss.id, {
       platformRepoId: ss.platformRepoId,
+      provider: ss.provider,
     })
     if (!index) continue
 
@@ -1217,9 +1183,7 @@ export async function getSkillPRInfo(
     throw new Error('Skill has no skillset metadata - cannot create PR')
   }
 
-  if (meta.provider !== 'platform') {
-    await ensureGhAuthenticated()
-  }
+  await getSkillsetProvider(meta.provider).ensurePublishPreconditions()
 
   const suggestions = await generatePRSuggestions(meta, agentSlug, skillDirName)
 
@@ -1361,77 +1325,6 @@ export async function pushAndCreatePR(
 }
 
 /**
- * Check the status of a platform queue item by fetching the org queue
- * and finding the item by ID.
- * Returns 'pending' | 'merged' | 'rejected' | null (if not found).
- */
-async function checkPlatformQueueItemStatus(
-  queueItemId: string,
-): Promise<string | null> {
-  const proxyBase = getPlatformProxyBaseUrl()
-  const token = getPlatformAccessToken()
-  if (!proxyBase || !token) return null
-
-  try {
-    const res = await fetch(`${proxyBase}/v1/skills/queue/${encodeURIComponent(queueItemId)}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-    if (!res.ok) {
-      console.warn(`Failed to check platform queue item ${queueItemId}: ${res.status}`)
-      return null
-    }
-
-    const data = await res.json() as { item: { id: string; status: string } }
-    return data.item?.status ?? null
-  } catch (error) {
-    console.warn(`Failed to check platform queue item ${queueItemId}:`, error)
-    return null
-  }
-}
-
-/**
- * Submit a skill update to the platform via proxy submit-update API.
- */
-async function submitSkillToPlatform(
-  meta: InstalledSkillMetadata,
-  files: Array<{ path: string; content: string }>,
-  title: string,
-  message: string,
-): Promise<PlatformSubmitResult> {
-  const proxyBase = getPlatformProxyBaseUrl()
-  const token = getPlatformAccessToken()
-  if (!proxyBase || !token) {
-    throw new Error('Platform not connected. Please connect to platform first.')
-  }
-
-  const skillsetName = getEffectiveSkillsetName(meta) ?? meta.skillsetId
-  const targetName = path.basename(path.dirname(meta.skillPath))
-
-  const res = await fetch(`${proxyBase}/v1/skills/submit-update`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      skillsetName,
-      targetName,
-      targetType: 'skill',
-      files,
-      title,
-      message,
-    }),
-  })
-
-  if (!res.ok) {
-    const body = await res.text()
-    throw new Error(`Platform submit failed: ${res.status} ${body}`)
-  }
-
-  return await res.json() as PlatformSubmitResult
-}
-
-/**
  * Create a PR for local modifications to a skill using gh CLI.
  * For platform provider, submits via proxy submit-update instead.
  * Accepts user-provided title, body, and optional new version.
@@ -1462,15 +1355,21 @@ export async function createSkillPR(
     modifiedContent = getSkillMdFromPackageFiles(packageFiles)
   }
 
-  // Platform provider: submit via proxy API instead of fork+PR
-  if (meta.provider === 'platform') {
+  const hostingProvider = getSkillsetProvider(meta.provider)
+
+  if (hostingProvider.publishMode === 'hosted_submit') {
     const modifiedHash = hashSkillPackageFiles(packageFiles)
-    const result = await submitSkillToPlatform(
-      meta,
-      toPlatformSkillFiles(path.posix.dirname(meta.skillPath), packageFiles),
-      options.title,
-      options.body,
-    )
+    const result = await hostingProvider.submitUpdate({
+      skillsetId: meta.skillsetId,
+      skillsetUrl: meta.skillsetUrl,
+      skillsetName: getEffectiveSkillsetName(meta),
+      platformRepoId: meta.platformRepoId,
+      targetName: path.basename(path.dirname(meta.skillPath)),
+      targetType: 'skill',
+      files: toPlatformSkillFiles(path.posix.dirname(meta.skillPath), packageFiles),
+      title: options.title,
+      message: options.body,
+    })
 
     if (result.queueItem?.id && result.status !== 'merged') {
       meta.pendingQueueItemId = result.queueItem.id
@@ -1654,9 +1553,7 @@ export async function getSkillPublishInfo(
     throw new Error('SKILL.md not found')
   }
 
-  if (skillsetConfig.provider !== 'platform') {
-    await ensureGhAuthenticated()
-  }
+  await getSkillsetProvider(skillsetConfig.provider).ensurePublishPreconditions()
 
   const skillName = getDisplayName(skillDirName)
   const suggestions = await generatePublishSuggestions(skillContent, skillName)
@@ -1702,25 +1599,20 @@ export async function publishSkillToSkillset(
   const description = parseDescription(skillContent)
   const skillPathInRepo = `skills/${skillDirName}/SKILL.md`
 
-  // Platform provider: submit via proxy API instead of fork+PR
-  if (skillsetConfig.provider === 'platform') {
-    const result = await submitSkillToPlatform(
-      {
-        skillsetId: skillsetConfig.id,
-        skillsetUrl: skillsetConfig.url,
-        skillName,
-        skillPath: skillPathInRepo,
-        installedVersion: version,
-        installedAt: new Date().toISOString(),
-        originalContentHash: hashSkillPackageFiles(packageFiles),
-        provider: 'platform',
-        platformRepoId: skillsetConfig.platformRepoId,
-        skillsetName: skillsetConfig.name,
-      },
-      toPlatformSkillFiles(`skills/${skillDirName}`, packageFiles),
-      options.title,
-      options.body,
-    )
+  const hostingProvider = getSkillsetProvider(skillsetConfig.provider)
+
+  if (hostingProvider.publishMode === 'hosted_submit') {
+    const result = await hostingProvider.submitUpdate({
+      skillsetId: skillsetConfig.id,
+      skillsetUrl: skillsetConfig.url,
+      skillsetName: skillsetConfig.name,
+      platformRepoId: skillsetConfig.platformRepoId,
+      targetName: skillDirName,
+      targetType: 'skill',
+      files: toPlatformSkillFiles(`skills/${skillDirName}`, packageFiles),
+      title: options.title,
+      message: options.body,
+    })
 
     const metadata: InstalledSkillMetadata = {
       skillsetId: skillsetConfig.id,

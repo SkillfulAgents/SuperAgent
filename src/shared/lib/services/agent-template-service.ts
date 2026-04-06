@@ -34,8 +34,7 @@ import {
   pushAndCreatePR,
   parseSkillFrontmatter,
 } from '@shared/lib/services/skillset-service'
-import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
-import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import { createAgentFromExistingWorkspace } from '@shared/lib/services/agent-service'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import type {
@@ -45,7 +44,6 @@ import type {
   DiscoverableAgent,
   RequiredEnvVar,
   SkillProvider,
-  PlatformSubmitResult,
 } from '@shared/lib/types/skillset'
 import type { ApiAgent } from '@shared/lib/types/api'
 import type { AgentFrontmatter } from '@shared/lib/types/agent'
@@ -54,7 +52,6 @@ import {
   getEffectiveSkillsetName,
   getEffectiveRepoId,
   resolvePlatformSkillsetScope,
-  ensureGhAuthenticated,
   copyDirectoryFiltered,
   writeJsonFile,
 } from '@shared/lib/utils/skillset-helpers'
@@ -586,7 +583,10 @@ export async function updateAgentFromSkillset(
   await refreshSkillset(meta.skillsetId, meta.skillsetUrl, meta.provider, meta.platformRepoId, effectiveSkillsetName)
 
   // Re-read the index to get the latest version
-  const index = await getSkillsetIndex(meta.skillsetId, { platformRepoId: meta.platformRepoId })
+  const index = await getSkillsetIndex(meta.skillsetId, {
+    platformRepoId: meta.platformRepoId,
+    provider: meta.provider,
+  })
   if (!index || !index.agents) return { updated: false }
 
   const agentEntry = index.agents.find((a) => a.path === meta.agentPath)
@@ -745,8 +745,8 @@ export async function getAgentTemplateStatus(
   }
   const workspaceDir = getAgentWorkspaceDir(agentSlug)
 
-  if (meta.pendingQueueItemId && meta.provider === 'platform') {
-    const queueStatus = await checkPlatformQueueItemStatus(meta.pendingQueueItemId)
+  if (meta.pendingQueueItemId) {
+    const queueStatus = await getSkillsetProvider(meta.provider).getQueueItemStatus(meta.pendingQueueItemId)
     if (queueStatus === 'merged' || queueStatus === 'rejected') {
       if (queueStatus === 'merged') {
         const effectiveSkillsetName = getEffectiveSkillsetName(meta)
@@ -775,7 +775,10 @@ export async function getAgentTemplateStatus(
   }
 
   // Check for updates: version bump in index.json OR file content change in the remote cache
-  const index = await getSkillsetIndex(meta.skillsetId, { platformRepoId: meta.platformRepoId })
+  const index = await getSkillsetIndex(meta.skillsetId, {
+    platformRepoId: meta.platformRepoId,
+    provider: meta.provider,
+  })
   const agentEntry = index?.agents?.find((a) => a.path === meta.agentPath)
   const versionChanged = !!(agentEntry && agentEntry.version !== meta.installedVersion)
 
@@ -834,24 +837,6 @@ function updateAgentFrontmatterVersion(content: string, newVersion: string): str
   )
 }
 
-async function checkPlatformQueueItemStatus(queueItemId: string): Promise<string | null> {
-  const proxyBase = getPlatformProxyBaseUrl()
-  const token = getPlatformAccessToken()
-  if (!proxyBase || !token) return null
-
-  try {
-    const res = await fetch(`${proxyBase}/v1/skills/queue/${encodeURIComponent(queueItemId)}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-    if (!res.ok) return null
-
-    const data = await res.json() as { item: { status: string } }
-    return data.item?.status ?? null
-  } catch {
-    return null
-  }
-}
-
 async function collectAgentFilesForPlatform(
   workspaceDir: string,
   agentPathInRepo: string,
@@ -872,44 +857,6 @@ async function collectAgentFilesForPlatform(
   }))
 }
 
-async function submitAgentToPlatform(
-  meta: Pick<InstalledAgentMetadata, 'skillsetId' | 'skillsetUrl' | 'agentPath' | 'platformRepoId' | 'skillsetName'>,
-  files: Array<{ path: string; content: string }>,
-  title: string,
-  message: string,
-  targetName: string,
-): Promise<PlatformSubmitResult> {
-  const proxyBase = getPlatformProxyBaseUrl()
-  const token = getPlatformAccessToken()
-  if (!proxyBase || !token) {
-    throw new Error('Platform not connected. Please connect to platform first.')
-  }
-
-  const skillsetName = getEffectiveSkillsetName(meta) ?? meta.skillsetId
-  const res = await fetch(`${proxyBase}/v1/skills/submit-update`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      skillsetName,
-      targetName,
-      targetType: 'agent',
-      files,
-      title,
-      message,
-    }),
-  })
-
-  if (!res.ok) {
-    const body = await res.text()
-    throw new Error(`Platform submit failed: ${res.status} ${body}`)
-  }
-
-  return await res.json() as PlatformSubmitResult
-}
-
 // ============================================================================
 // Discoverable Agents
 // ============================================================================
@@ -924,7 +871,10 @@ export async function getDiscoverableAgents(
   const discoverable: DiscoverableAgent[] = []
 
   for (const ss of skillsets) {
-    const index = await getSkillsetIndex(ss.id, { platformRepoId: ss.platformRepoId })
+    const index = await getSkillsetIndex(ss.id, {
+      platformRepoId: ss.platformRepoId,
+      provider: ss.provider,
+    })
     if (!index || !index.agents) continue
 
     for (const agent of index.agents) {
@@ -1201,9 +1151,7 @@ export async function getAgentPRInfo(
     throw new Error('Agent has no skillset metadata - cannot create PR')
   }
 
-  if (meta.provider !== 'platform') {
-    await ensureGhAuthenticated()
-  }
+  await getSkillsetProvider(meta.provider).ensurePublishPreconditions()
 
   const suggestions = await generateAgentPRSuggestions(meta, agentSlug)
 
@@ -1238,17 +1186,23 @@ export async function createAgentPR(
     : claudeMdContent
   const targetName = path.basename(meta.agentPath.replace(/\/$/, ''))
 
-  if (meta.provider === 'platform') {
+  const hostingProvider = getSkillsetProvider(meta.provider)
+
+  if (hostingProvider.publishMode === 'hosted_submit') {
     const files = await collectAgentFilesForPlatform(workspaceDir, meta.agentPath, {
       claudeMdContent: nextClaudeMdContent,
     })
-    const result = await submitAgentToPlatform(
-      meta,
-      files,
-      options.title,
-      options.body,
+    const result = await hostingProvider.submitUpdate({
+      skillsetId: meta.skillsetId,
+      skillsetUrl: meta.skillsetUrl,
+      skillsetName: getEffectiveSkillsetName(meta),
+      platformRepoId: meta.platformRepoId,
       targetName,
-    )
+      targetType: 'agent',
+      files,
+      title: options.title,
+      message: options.body,
+    })
 
     if (result.queueItem?.id && result.status !== 'merged') {
       meta.pendingQueueItemId = result.queueItem.id
@@ -1354,9 +1308,7 @@ export async function getAgentPublishInfo(
     throw new Error('CLAUDE.md not found')
   }
 
-  if (skillsetConfig.provider !== 'platform') {
-    await ensureGhAuthenticated()
-  }
+  await getSkillsetProvider(skillsetConfig.provider).ensurePublishPreconditions()
 
   const { frontmatter } = parseMarkdownWithFrontmatter<AgentFrontmatter>(claudeMdContent)
   const agentName = frontmatter.name || agentSlug
@@ -1413,23 +1365,23 @@ export async function publishAgentToSkillset(
     )
   }
 
-  if (skillsetConfig.provider === 'platform') {
+  const hostingProvider = getSkillsetProvider(skillsetConfig.provider)
+
+  if (hostingProvider.publishMode === 'hosted_submit') {
     const files = await collectAgentFilesForPlatform(workspaceDir, agentPathInRepo, {
       claudeMdContent,
     })
-    const result = await submitAgentToPlatform(
-      {
-        skillsetId: skillsetConfig.id,
-        skillsetUrl: skillsetConfig.url,
-        agentPath: agentPathInRepo,
-        platformRepoId: skillsetConfig.platformRepoId,
-        skillsetName: skillsetConfig.name,
-      },
+    const result = await hostingProvider.submitUpdate({
+      skillsetId: skillsetConfig.id,
+      skillsetUrl: skillsetConfig.url,
+      skillsetName: skillsetConfig.name,
+      platformRepoId: skillsetConfig.platformRepoId,
+      targetName: agentDirName,
+      targetType: 'agent',
       files,
-      options.title,
-      options.body,
-      agentDirName,
-    )
+      title: options.title,
+      message: options.body,
+    })
 
     const metadata: InstalledAgentMetadata = {
       skillsetId: skillsetConfig.id,
