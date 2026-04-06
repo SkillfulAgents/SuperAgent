@@ -24,7 +24,7 @@ export function StatusBadge({ status }: StatusBadgeProps) {
     case 'update_available':
       return (
         <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-500/10 text-yellow-700 dark:text-yellow-400">
-          Update available
+          Update available{status.latestVersion ? ` (v${status.latestVersion})` : ''}
         </span>
       )
     case 'locally_modified':

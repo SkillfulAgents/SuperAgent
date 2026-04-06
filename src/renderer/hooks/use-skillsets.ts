@@ -84,22 +84,4 @@ export function useRefreshSkillset() {
   })
 }
 
-export function useSyncPlatformSkillsets() {
-  const queryClient = useQueryClient()
-
-  return useMutation<{ synced: number; skillsets: string[] }, Error>({
-    mutationFn: async () => {
-      const res = await apiFetch('/api/skillsets/sync-platform', { method: 'POST' })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || 'Failed to sync platform skillsets')
-      }
-      return res.json()
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['skillsets'] })
-      queryClient.invalidateQueries({ queryKey: ['discoverable-skills'] })
-    },
-  })
-}
 

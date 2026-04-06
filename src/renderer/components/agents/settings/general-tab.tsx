@@ -25,7 +25,6 @@ import {
 import { StatusBadge } from '@renderer/components/agents/status-badge'
 import { AgentTemplatePRDialog } from '@renderer/components/agents/agent-template-pr-dialog'
 import { AgentTemplatePublishDialog } from '@renderer/components/agents/agent-template-publish-dialog'
-import { OrgSourceLabel } from '@renderer/components/agents/org-source-label'
 import { Trash2, Download, HardDriveDownload, RefreshCw, GitPullRequest, Upload, Loader2 } from 'lucide-react'
 
 interface GeneralTabProps {
@@ -79,7 +78,11 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
           <h3 className="text-sm font-medium">Template Status</h3>
           <div className="flex items-center gap-2 flex-wrap">
             <StatusBadge status={templateStatus} />
-            <OrgSourceLabel orgName={templateOrganizationLabel} />
+            {templateOrganizationLabel && (
+              <span className="text-xs text-muted-foreground">
+                From org: <span className="font-semibold text-foreground">{templateOrganizationLabel}</span>
+              </span>
+            )}
           </div>
           <div className="flex gap-2 mt-2">
             {templateStatus.type === 'update_available' && (
@@ -162,6 +165,7 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
+          {/* Hidden-org platform templates are shown as local, but must not be re-published from this org. */}
           {templateStatus?.type === 'local' && templateStatus.publishable !== false && (
             <Button
               size="sm"

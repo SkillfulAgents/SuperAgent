@@ -353,6 +353,32 @@ describe('skillset-service', () => {
       })
     })
 
+    it('returns update_available when remote content changed but version is same', async () => {
+      const originalContent = '# Test Skill\nOriginal content'
+      const updatedContent = '# Test Skill\nRemote updated content'
+      const meta = buildMetadata({ originalContentHash: contentHash(originalContent) })
+      const config = buildSkillsetConfig()
+      const index = buildIndex({
+        skills: [{ name: 'Test Skill', path: meta.skillPath, description: 'desc', version: '1.0.0' }],
+      })
+
+      await createSkillDir('test-agent', 'test-skill', originalContent, meta)
+      // Cache has updated content but same version in index.json
+      await createSkillsetCache(config.id, index, {
+        [path.dirname(meta.skillPath) + '/SKILL.md']: updatedContent,
+      })
+
+      const result = await getAgentSkillsWithStatus('test-agent', [config])
+
+      expect(result).toHaveLength(1)
+      expect(result[0].status).toEqual({
+        type: 'update_available',
+        skillsetId: 'test-skillset',
+        skillsetName: 'Test Skillset',
+        // latestVersion omitted when only content changed (no version bump)
+      })
+    })
+
     it('returns locally_modified when content hash differs from original', async () => {
       const originalContent = '# Test Skill\nOriginal content'
       const modifiedContent = '# Test Skill\nModified content'

@@ -110,7 +110,7 @@ export type SkillStatus =
     skillsetName: string
     skillsetOrgId?: string
     skillsetOrgName?: string
-    latestVersion: string
+    latestVersion?: string // omitted when only content changed, no version bump
   }
   | {
     type: 'locally_modified'
@@ -191,7 +191,7 @@ export type AgentTemplateStatus =
     skillsetName: string
     skillsetOrgId?: string
     skillsetOrgName?: string
-    latestVersion: string
+    latestVersion?: string
   }
   | {
     type: 'locally_modified'

@@ -771,29 +771,36 @@ export async function getAgentTemplateStatus(
     }
   }
 
-  // Check for local modifications
+  // Determine status: locally modified > open PR > update available > up to date
   const currentHash = await computeAgentTemplateHash(workspaceDir)
 
-  if (currentHash !== meta.originalContentHash) {
+  if (currentHash !== meta.originalContentHash || meta.openPrUrl) {
     return { type: 'locally_modified', skillsetId: meta.skillsetId, skillsetName, skillsetOrgId, skillsetOrgName, openPrUrl: meta.openPrUrl }
   }
 
-  if (meta.openPrUrl) {
-    return { type: 'locally_modified', skillsetId: meta.skillsetId, skillsetName, skillsetOrgId, skillsetOrgName, openPrUrl: meta.openPrUrl }
-  }
-
-  // Check for updates
+  // Check for updates: version bump in index.json OR file content change in the remote cache
   const index = await getSkillsetIndex(meta.skillsetId, { platformRepoId: meta.platformRepoId, skillsetName: getEffectiveSkillsetName(meta) })
   const agentEntry = index?.agents?.find((a) => a.path === meta.agentPath)
+  const versionChanged = !!(agentEntry && agentEntry.version !== meta.installedVersion)
 
-  if (agentEntry && agentEntry.version !== meta.installedVersion) {
+  // Also compare remote cache hash — catches edits where version was not bumped
+  const effectiveRepoId = getEffectiveRepoId(meta.provider, meta.platformRepoId, meta.skillsetId)
+  const repoDir = getSkillsetRepoDir(effectiveRepoId)
+  const agentDirInRepo = path.join(repoDir, meta.agentPath.replace(/\/$/, ''))
+  let contentChanged = false
+  if (await directoryExists(agentDirInRepo)) {
+    const remoteCacheHash = await computeAgentTemplateHash(agentDirInRepo)
+    contentChanged = remoteCacheHash !== meta.originalContentHash
+  }
+
+  if (versionChanged || contentChanged) {
     return {
       type: 'update_available',
       skillsetId: meta.skillsetId,
       skillsetName,
       skillsetOrgId,
       skillsetOrgName,
-      latestVersion: agentEntry.version,
+      latestVersion: versionChanged ? agentEntry!.version : undefined,
     }
   }
 

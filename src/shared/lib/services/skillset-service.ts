@@ -886,7 +886,9 @@ export async function getAgentSkillsWithStatus(
         }
       }
 
-      // Check for local modifications
+      // Legacy hash migration: older installs stored only the SKILL.md hash in
+      // originalContentHash.  If the full-package hash doesn't match but the
+      // single-file SKILL.md hash does, transparently upgrade the stored hash.
       const currentPackageFiles = await readSkillPackageFiles(skillPath)
       const currentSkillMdHash = contentHash(skillMdContent)
       const currentHash = hashSkillPackageFiles(currentPackageFiles)
@@ -899,23 +901,29 @@ export async function getAgentSkillsWithStatus(
         }
       }
 
-      if (currentHash !== meta.originalContentHash) {
-        status = { type: 'locally_modified', skillsetId: meta.skillsetId, skillsetName, skillsetOrgId, skillsetOrgName, openPrUrl: meta.openPrUrl }
-      } else if (meta.openPrUrl) {
+      // Determine status: locally modified > open PR > update available > up to date
+      if (currentHash !== meta.originalContentHash || meta.openPrUrl) {
         status = { type: 'locally_modified', skillsetId: meta.skillsetId, skillsetName, skillsetOrgId, skillsetOrgName, openPrUrl: meta.openPrUrl }
       } else {
-        // Check for updates
+        // Check for updates: version bump in index.json OR file content change in the remote cache
         const index = indexMap.get(meta.skillsetId)
         const skillEntry = index?.skills.find((s) => s.path === meta.skillPath)
+        const versionChanged = !!(skillEntry && skillEntry.version && skillEntry.version !== meta.installedVersion)
 
-        if (skillEntry && skillEntry.version && skillEntry.version !== meta.installedVersion) {
+        const remoteCacheHash = await getCachePackageHash()
+        const contentChanged = !!(remoteCacheHash && remoteCacheHash !== meta.originalContentHash)
+
+        if (versionChanged || contentChanged) {
           status = {
             type: 'update_available',
             skillsetId: meta.skillsetId,
             skillsetName,
             skillsetOrgId,
             skillsetOrgName,
-            latestVersion: skillEntry.version,
+            // Show remote version only when it actually differs from installed;
+            // when only content changed (no version bump), omit to avoid
+            // confusing badge like "Update available (v1.0.0)" on a v1.0.0 install.
+            latestVersion: versionChanged ? skillEntry!.version : undefined,
           }
         } else {
           status = { type: 'up_to_date', skillsetId: meta.skillsetId, skillsetName, skillsetOrgId, skillsetOrgName }

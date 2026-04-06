@@ -6,7 +6,6 @@ import { StatusBadge } from './status-badge'
 import { SkillPRDialog } from './skill-pr-dialog'
 import { SkillPublishDialog } from './skill-publish-dialog'
 import { SkillContextMenu } from './skill-context-menu'
-import { OrgSourceLabel } from './org-source-label'
 import type { ApiSkillWithStatus } from '@shared/lib/types/api'
 
 interface AgentSkillCardProps {
@@ -33,9 +32,13 @@ export function AgentSkillCard({ skill, agentSlug }: AgentSkillCardProps) {
             {skill.description}
           </p>
           {/* Hidden-org platform skills are downgraded to local, but we still show the source org. */}
-          <div className="mt-1">
-            <OrgSourceLabel orgName={organizationLabel} />
-          </div>
+          {organizationLabel && (
+            <div className="mt-1">
+              <span className="text-xs text-muted-foreground">
+                From org: <span className="font-semibold text-foreground">{organizationLabel}</span>
+              </span>
+            </div>
+          )}
         </div>
         <div className="flex gap-1 shrink-0">
           {skill.status.type === 'update_available' && (
@@ -67,6 +70,7 @@ export function AgentSkillCard({ skill, agentSlug }: AgentSkillCardProps) {
               Open PR
             </Button>
           )}
+          {/* Hidden-org platform skills are shown as local, but must not be re-published from this org. */}
           {skill.status.type === 'local' && skill.status.publishable !== false && (
             <Button
               size="icon"

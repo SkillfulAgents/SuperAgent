@@ -8,10 +8,8 @@ import {
   useAddSkillset,
   useRemoveSkillset,
   useRefreshSkillset,
-  useSyncPlatformSkillsets,
 } from '@renderer/hooks/use-skillsets'
-import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
-import { AlertTriangle, Loader2, Trash2, RefreshCw, Library, Cloud } from 'lucide-react'
+import { AlertTriangle, Loader2, Trash2, RefreshCw, Library } from 'lucide-react'
 
 export function SkillsetsTab() {
   const { data: skillsets, isLoading } = useSkillsets()
@@ -19,9 +17,6 @@ export function SkillsetsTab() {
   const addSkillset = useAddSkillset()
   const removeSkillset = useRemoveSkillset()
   const refreshSkillset = useRefreshSkillset()
-  const syncPlatform = useSyncPlatformSkillsets()
-  const { data: platformAuth } = usePlatformAuthStatus()
-
   const [urlInput, setUrlInput] = useState('')
   const [validationResult, setValidationResult] = useState<{
     valid: boolean
@@ -106,42 +101,6 @@ export function SkillsetsTab() {
           Enter a git repository URL containing an index.json file. Supports HTTPS and SSH URLs.
         </p>
       </div>
-
-      {/* Sync Platform Skillsets */}
-      {platformAuth?.connected && (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/50">
-            <div className="flex items-center gap-2">
-              <Cloud className="h-4 w-4 text-muted-foreground" />
-              <span className="text-sm text-muted-foreground">
-                Sync skillsets from your platform organization
-              </span>
-            </div>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={() => syncPlatform.mutate()}
-              disabled={syncPlatform.isPending}
-            >
-              {syncPlatform.isPending ? (
-                <>
-                  <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-                  Syncing...
-                </>
-              ) : (
-                'Sync Platform'
-              )}
-            </Button>
-          </div>
-          {syncPlatform.error && (
-            <Alert variant="destructive">
-              <AlertTriangle className="h-4 w-4" />
-              <AlertDescription>{syncPlatform.error.message}</AlertDescription>
-            </Alert>
-          )}
-        </div>
-      )}
 
       {/* Skillset List */}
       <div className="space-y-3">
