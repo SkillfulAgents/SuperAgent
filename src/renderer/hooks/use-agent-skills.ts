@@ -62,7 +62,7 @@ export function useInstallSkill() {
   })
 }
 
-export function useUpdateSkill() {
+function useSkillSyncMutation(errorMessage: string) {
   const queryClient = useQueryClient()
 
   return useMutation<
@@ -76,7 +76,7 @@ export function useUpdateSkill() {
       })
       if (!res.ok) {
         const data = await res.json()
-        throw new Error(data.error || 'Failed to update skill')
+        throw new Error(data.error || errorMessage)
       }
       return res.json()
     },
@@ -86,28 +86,12 @@ export function useUpdateSkill() {
   })
 }
 
-export function useForceSyncSkill() {
-  const queryClient = useQueryClient()
+export function useUpdateSkill() {
+  return useSkillSyncMutation('Failed to update skill')
+}
 
-  return useMutation<
-    { updated: boolean },
-    Error,
-    { agentSlug: string; skillDir: string }
-  >({
-    mutationFn: async ({ agentSlug, skillDir }) => {
-      const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/skills/${encodeURIComponent(skillDir)}/update`, {
-        method: 'POST',
-      })
-      if (!res.ok) {
-        const data = await res.json()
-        throw new Error(data.error || 'Failed to sync skill from remote')
-      }
-      return res.json()
-    },
-    onSuccess: (_, vars) => {
-      queryClient.invalidateQueries({ queryKey: ['agent-skills', vars.agentSlug] })
-    },
-  })
+export function useForceSyncSkill() {
+  return useSkillSyncMutation('Failed to sync skill from remote')
 }
 
 export interface SkillPRInfo {

@@ -254,7 +254,7 @@ export function useRefreshAgentTemplateStatus() {
   })
 }
 
-export function useUpdateAgentTemplate() {
+function useTemplateUpdateMutation(errorMessage: string) {
   const queryClient = useQueryClient()
 
   return useMutation<
@@ -268,7 +268,7 @@ export function useUpdateAgentTemplate() {
       })
       if (!res.ok) {
         const data = await res.json()
-        throw new Error(data.error || 'Failed to update template')
+        throw new Error(data.error || errorMessage)
       }
       return res.json()
     },
@@ -279,29 +279,12 @@ export function useUpdateAgentTemplate() {
   })
 }
 
-export function useForceSyncAgentTemplate() {
-  const queryClient = useQueryClient()
+export function useUpdateAgentTemplate() {
+  return useTemplateUpdateMutation('Failed to update template')
+}
 
-  return useMutation<
-    { updated: boolean },
-    Error,
-    { agentSlug: string }
-  >({
-    mutationFn: async ({ agentSlug }) => {
-      const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/template-update`, {
-        method: 'POST',
-      })
-      if (!res.ok) {
-        const data = await res.json()
-        throw new Error(data.error || 'Failed to sync template from remote')
-      }
-      return res.json()
-    },
-    onSuccess: (_, vars) => {
-      queryClient.invalidateQueries({ queryKey: ['agent-template-status', vars.agentSlug] })
-      queryClient.invalidateQueries({ queryKey: ['agents'] })
-    },
-  })
+export function useForceSyncAgentTemplate() {
+  return useTemplateUpdateMutation('Failed to sync template from remote')
 }
 
 export interface AgentTemplatePRInfo {
