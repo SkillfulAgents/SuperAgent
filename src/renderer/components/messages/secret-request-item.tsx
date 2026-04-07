@@ -2,6 +2,7 @@ import { apiFetch } from '@renderer/lib/api'
 
 import { useState } from 'react'
 import { Key, Eye, EyeOff, Globe, ArrowUpRight } from 'lucide-react'
+import { useRequestHandler } from '@renderer/hooks/use-request-handler'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
@@ -19,8 +20,6 @@ interface SecretRequestItemProps {
   readOnly?: boolean
   onComplete: () => void
 }
-
-type RequestStatus = 'pending' | 'submitting' | 'provided' | 'declined' | 'fetch-requested'
 
 function formatSecretReason(secretName: string, reason: string): string {
   const trimmedReason = reason.trim()
@@ -47,95 +46,40 @@ export function SecretRequestItem({
 }: SecretRequestItemProps) {
   const [value, setValue] = useState('')
   const [showValue, setShowValue] = useState(false)
-  const [status, setStatus] = useState<RequestStatus>('pending')
-  const [error, setError] = useState<string | null>(null)
+  const { status, error, submit } = useRequestHandler(onComplete)
 
-  const handleProvide = async () => {
+  const postSecret = async (body: Record<string, unknown>) => {
+    const response = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/provide-secret`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ toolUseId, secretName, ...body }),
+    })
+    if (!response.ok) {
+      const data = await response.json()
+      throw new Error(data.error || 'Request failed')
+    }
+  }
+
+  const handleProvide = () => {
     if (!value.trim()) return
-
-    setStatus('submitting')
-    setError(null)
-
-    try {
-      const response = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/provide-secret`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          toolUseId,
-          secretName,
-          value: value.trim(),
-        }),
-      })
-
-      if (!response.ok) {
-        const data = await response.json()
-        throw new Error(data.error || 'Failed to provide secret')
-      }
-
-      setStatus('provided')
-      onComplete()
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to provide secret')
-      setStatus('pending')
-    }
+    submit(() => postSecret({ value: value.trim() }), 'provided')
   }
 
-  const handleDecline = async (reason?: string) => {
-    setStatus('submitting')
-    setError(null)
-
-    try {
-      const response = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/provide-secret`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          toolUseId,
-          secretName,
-          decline: true,
-          declineReason: reason || 'User declined to provide the secret',
-        }),
-      })
-
-      if (!response.ok) {
-        const data = await response.json()
-        throw new Error(data.error || 'Failed to decline request')
-      }
-
-      setStatus('declined')
-      onComplete()
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to decline request')
-      setStatus('pending')
-    }
+  const handleDecline = (reason?: string) => {
+    submit(
+      () => postSecret({ decline: true, declineReason: reason || 'User declined to provide the secret' }),
+      'declined',
+    )
   }
 
-  const handleFetchForMe = async () => {
-    setStatus('submitting')
-    setError(null)
-
-    try {
-      const response = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/provide-secret`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          toolUseId,
-          secretName,
-          decline: true,
-          declineReason: `The user wants you to fetch this secret (${secretName}) automatically. Use the browser to navigate to the appropriate website and retrieve the API key or token. If you cannot do this, explain to the user why not and request the secret again. When fetched -- make sure to save it to the .env file with the key name "${secretName}" so it's available for future sessions without needing to request it again.`,
-        }),
-      })
-
-      if (!response.ok) {
-        const data = await response.json()
-        throw new Error(data.error || 'Failed to send request')
-      }
-
-      setStatus('fetch-requested')
-      onComplete()
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to send request')
-      setStatus('pending')
-    }
+  const handleFetchForMe = () => {
+    submit(
+      () => postSecret({
+        decline: true,
+        declineReason: `The user wants you to fetch this secret (${secretName}) automatically. Use the browser to navigate to the appropriate website and retrieve the API key or token. If you cannot do this, explain to the user why not and request the secret again. When fetched -- make sure to save it to the .env file with the key name "${secretName}" so it's available for future sessions without needing to request it again.`,
+      }),
+      'fetch-requested',
+    )
   }
 
   // Build completed config for the 3 outcome states

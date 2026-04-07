@@ -1,4 +1,5 @@
 import { getSettings, updateSettings, type PlatformAuthSettings } from '@shared/lib/config/settings'
+import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 
 export type PlatformAuthRecord = PlatformAuthSettings
 
@@ -105,7 +106,6 @@ export async function revokePlatformTokenRemotely(): Promise<boolean> {
   const token = readRecord()?.token
   if (!token) return false
 
-  const { getPlatformProxyBaseUrl } = await import('@shared/lib/platform-auth/config')
   const proxyBase = getPlatformProxyBaseUrl()
   if (!proxyBase) return false
 

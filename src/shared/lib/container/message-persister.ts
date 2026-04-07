@@ -21,6 +21,7 @@ import { notificationManager } from '@shared/lib/notifications/notification-mana
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
+import { resolveAppFromWindowRef } from '@shared/lib/computer-use/executor'
 import { getRequiredPermissionLevel, resolveTargetApp, type ComputerUsePermissionLevel } from '@shared/lib/computer-use/types'
 import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
 import * as path from 'path'
@@ -1983,7 +1984,6 @@ class MessagePersister {
       // so that failures here don't leave orphaned pending entries.
       if (method === 'grab' && !appName && params.ref && typeof params.ref === 'string') {
         try {
-          const { resolveAppFromWindowRef } = await import('@shared/lib/computer-use/executor')
           appName = await resolveAppFromWindowRef(params.ref)
         } catch {
           // Non-fatal — proceed without app name

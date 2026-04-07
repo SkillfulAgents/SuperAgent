@@ -58,6 +58,7 @@ import {
   OwnsMcpByParam,
   HasNotificationAccess,
   Or,
+  EntityAgentRole,
 } from './auth'
 
 // ---------------------------------------------------------------------------
@@ -1271,6 +1272,90 @@ describe('Auth Middleware', () => {
       expect(res.status).toBe(200)
       expect(mockGetSession).not.toHaveBeenCalled()
       expect(mockSelect).not.toHaveBeenCalled()
+    })
+  })
+
+  // =========================================================================
+  // EntityAgentRole()
+  // =========================================================================
+
+  describe('EntityAgentRole()', () => {
+    const mockLookup = vi.fn<(id: string) => Promise<{ agentSlug: string; name: string } | null>>()
+
+    const TestEntityRole = EntityAgentRole({
+      paramName: 'entityId',
+      lookupFn: mockLookup,
+      contextKey: 'testEntity',
+      entityName: 'Test entity',
+    })
+
+    function buildEntityApp(minRole: 'viewer' | 'user' | 'owner') {
+      const app = new Hono()
+      // Attach a user (Authenticated middleware is assumed to have run)
+      app.use('*', async (c, next) => {
+        c.set('user' as never, { id: 'user-1', role: 'user' } as never)
+        return next()
+      })
+      app.get('/:entityId', TestEntityRole(minRole), (c) => {
+        const entity = c.get('testEntity' as never)
+        return c.json({ ok: true, entity })
+      })
+      return app
+    }
+
+    beforeEach(() => {
+      mockLookup.mockReset()
+    })
+
+    it('returns 404 when entity is not found', async () => {
+      mockLookup.mockResolvedValue(null)
+      const app = buildEntityApp('viewer')
+      const res = await request(app, '/missing-id')
+      expect(res.status).toBe(404)
+      expect(await res.json()).toEqual({ error: 'Test entity not found' })
+    })
+
+    it('stashes entity on context and passes through when auth is disabled', async () => {
+      mockIsAuthMode.mockReturnValue(false)
+      const entity = { agentSlug: 'my-agent', name: 'My Entity' }
+      mockLookup.mockResolvedValue(entity)
+
+      const app = buildEntityApp('viewer')
+      const res = await request(app, '/entity-1')
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.entity).toEqual(entity)
+      expect(mockSelect).not.toHaveBeenCalled()
+    })
+
+    it('passes when user has sufficient role', async () => {
+      const entity = { agentSlug: 'my-agent', name: 'My Entity' }
+      mockLookup.mockResolvedValue(entity)
+      mockAclQuery('user') // user >= viewer
+
+      const app = buildEntityApp('viewer')
+      const res = await request(app, '/entity-1')
+      expect(res.status).toBe(200)
+    })
+
+    it('returns 403 when user has insufficient role', async () => {
+      const entity = { agentSlug: 'my-agent', name: 'My Entity' }
+      mockLookup.mockResolvedValue(entity)
+      mockAclQuery('viewer') // viewer < user
+
+      const app = buildEntityApp('user')
+      const res = await request(app, '/entity-1')
+      expect(res.status).toBe(403)
+    })
+
+    it('returns 403 when user has no ACL entry', async () => {
+      const entity = { agentSlug: 'my-agent', name: 'My Entity' }
+      mockLookup.mockResolvedValue(entity)
+      mockAclQuery(null)
+
+      const app = buildEntityApp('viewer')
+      const res = await request(app, '/entity-1')
+      expect(res.status).toBe(403)
     })
   })
 })

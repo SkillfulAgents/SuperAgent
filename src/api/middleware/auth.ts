@@ -133,6 +133,52 @@ export function IsAdmin(): MiddlewareHandler {
 }
 
 // ---------------------------------------------------------------------------
+// Entity-based agent role middleware
+// ---------------------------------------------------------------------------
+
+/**
+ * EntityAgentRole — generic factory for middleware that loads an entity (e.g.
+ * a scheduled task or webhook trigger) by route param, stashes it on the Hono
+ * context, then verifies the user holds at least `minRole` on the entity's agent.
+ *
+ * Usage:
+ *   const TaskRole = EntityAgentRole({
+ *     paramName: 'taskId',
+ *     lookupFn: getScheduledTask,
+ *     contextKey: 'scheduledTask',
+ *     entityName: 'Scheduled task',
+ *   })
+ *   router.get('/:taskId', TaskRole('viewer'), handler)
+ */
+export function EntityAgentRole<T extends { agentSlug: string }>(opts: {
+  paramName: string
+  lookupFn: (id: string) => Promise<T | null | undefined>
+  contextKey: string
+  entityName: string
+}): (minRole: AgentRole) => MiddlewareHandler {
+  return (minRole: AgentRole): MiddlewareHandler => {
+    return async (c: Context, next: Next) => {
+      const id = c.req.param(opts.paramName)!
+      const entity = await opts.lookupFn(id)
+      if (!entity) {
+        return c.json({ error: `${opts.entityName} not found` }, 404)
+      }
+      c.set(opts.contextKey as never, entity as never)
+
+      if (!isAuthMode()) return next()
+
+      const user = getUser(c)
+      const role = await getUserAgentRole(user.id, entity.agentSlug)
+      if (!hasMinRole(role, minRole)) {
+        return c.json({ error: 'Forbidden' }, 403)
+      }
+
+      return next()
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Ownership middleware
 // ---------------------------------------------------------------------------
 

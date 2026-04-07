@@ -1,6 +1,6 @@
 {
   "name": "superagent",
-  "version": "0.3.4-rc.1",
+  "version": "0.3.4-rc.2",
   "private": true,
   "main": "dist/main/index.js",
   "scripts": {
@@ -15,7 +15,7 @@
     "preview": "npm run build && node dist/web/server.mjs",
     "download:lima": "bash scripts/download-lima.sh",
     "download:wsl-rootfs": "bash scripts/download-wsl-rootfs.sh",
-    "dist:mac": "npm run download:lima && electron-vite build && electron-builder --mac --publish never",
+    "dist:mac": "PLATFORM_PROXY_URL=${PLATFORM_PROXY_URL:-https://platformproxy.gamutagents.com} npm run download:lima && electron-vite build && electron-builder --mac --publish never",
     "dist:win": "npm run download:wsl-rootfs && electron-vite build && electron-builder --win --publish never",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts,.tsx",

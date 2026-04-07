@@ -2,11 +2,13 @@
  * Supabase Realtime Client
  *
  * Lightweight WebSocket client for subscribing to Supabase Realtime
- * postgres_changes events. Uses native WebSocket (no SDK dependency).
+ * postgres_changes events. Uses the `ws` package for Node.js compatibility
+ * (this runs in the Electron main process, not the renderer).
  *
  * Protocol reference: https://supabase.com/docs/guides/realtime
  */
 
+import WebSocket from 'ws'
 import type { RealtimeConfig } from './webhook-events-client'
 
 type RealtimeCallback = (payload: unknown) => void
@@ -45,10 +47,12 @@ export class SupabaseRealtimeClient {
   private async doConnect(): Promise<void> {
     if (this.isStopped || !this.config) return
 
-    const { url, jwt } = this.config
+    const { url, apikey, jwt } = this.config
 
-    // Build WebSocket URL with JWT
-    const wsUrl = `${url}/websocket?apikey=${encodeURIComponent(jwt)}&vsn=1.0.0`
+    // apikey param = Supabase project anon key (for gateway auth)
+    // jwt is sent later in the phx_join payload as access_token (for RLS)
+    const wsUrl = `${url}/websocket?apikey=${encodeURIComponent(apikey)}&vsn=1.0.0`
+    console.log(`[SupabaseRealtime] Connecting to ${url}/websocket`)
 
     return new Promise((resolve, reject) => {
       try {
@@ -123,7 +127,8 @@ export class SupabaseRealtimeClient {
       }
 
       this.ws.onerror = (err) => {
-        console.error('[SupabaseRealtime] WebSocket error:', err)
+        const message = err instanceof Error ? err.message : (err as { message?: string })?.message ?? String(err)
+        console.error('[SupabaseRealtime] WebSocket error:', message)
       }
 
       this.ws.onclose = () => {

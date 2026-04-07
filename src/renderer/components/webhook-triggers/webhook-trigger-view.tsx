@@ -44,7 +44,7 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
 
   const handleCancel = async () => {
     try {
-      await cancelTrigger.mutateAsync({ triggerId, agentSlug })
+      await cancelTrigger.mutateAsync({ id: triggerId, agentSlug })
       handleWebhookTriggerDeleted(triggerId)
     } catch (err) {
       console.error('Failed to cancel webhook trigger:', err)

@@ -14,7 +14,7 @@ import fs from 'fs'
 import yaml from 'js-yaml'
 import { getDataDir } from '@shared/lib/config/data-dir'
 import { getEffectiveModels } from '@shared/lib/config/settings'
-import { getActiveLlmProvider } from '@shared/lib/llm-provider'
+import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
 import { withRetry } from '@shared/lib/utils/retry'
 import {
   getAgentWorkspaceDir,
@@ -1079,11 +1079,15 @@ async function generatePRSuggestions(
 
   if (originalContent === modifiedContent && packageDiff.changedFileCount === 0) return fallback
 
-  const provider = getActiveLlmProvider()
-  if (!provider.getApiKeyStatus().isConfigured) return fallback
+  let client
+  try {
+    client = getConfiguredLlmClient()
+  } catch {
+    console.warn('[PR suggestions] No LLM API key configured')
+    return fallback
+  }
 
   try {
-    const client = provider.createClient()
     const model = getEffectiveModels().summarizerModel
 
     const response = await withRetry(() =>
@@ -1139,10 +1143,10 @@ Rules for the version bump:
       })
     )
 
-    const textBlock = response.content.find((block) => block.type === 'text')
-    if (!textBlock || textBlock.type !== 'text') return fallback
+    const text = extractTextFromLlmResponse(response)
+    if (!text) return fallback
 
-    const parsed = JSON.parse(textBlock.text)
+    const parsed = JSON.parse(text)
     return {
       suggestedTitle: parsed.title || fallback.suggestedTitle,
       suggestedBody: parsed.body || fallback.suggestedBody,
@@ -1306,11 +1310,15 @@ async function generatePublishSuggestions(
     suggestedVersion: currentVersion,
   }
 
-  const provider = getActiveLlmProvider()
-  if (!provider.getApiKeyStatus().isConfigured) return fallback
+  let client
+  try {
+    client = getConfiguredLlmClient()
+  } catch {
+    console.warn('[Publish suggestions] No LLM API key configured')
+    return fallback
+  }
 
   try {
-    const client = provider.createClient()
     const model = getEffectiveModels().summarizerModel
 
     const response = await withRetry(() =>
@@ -1353,10 +1361,10 @@ Generate:
       })
     )
 
-    const textBlock = response.content.find((block) => block.type === 'text')
-    if (!textBlock || textBlock.type !== 'text') return fallback
+    const text = extractTextFromLlmResponse(response)
+    if (!text) return fallback
 
-    const parsed = JSON.parse(textBlock.text)
+    const parsed = JSON.parse(text)
     return {
       suggestedTitle: parsed.title || fallback.suggestedTitle,
       suggestedBody: parsed.body || fallback.suggestedBody,

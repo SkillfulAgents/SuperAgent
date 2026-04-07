@@ -20,7 +20,7 @@ import {
   serializeMarkdownWithFrontmatter,
 } from '@shared/lib/utils/file-storage'
 import { getEffectiveModels } from '@shared/lib/config/settings'
-import { getActiveLlmProvider } from '@shared/lib/llm-provider'
+import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
 import { withRetry } from '@shared/lib/utils/retry'
 import {
   ensureSkillsetCached,
@@ -31,7 +31,7 @@ import {
   parseSkillFrontmatter,
 } from '@shared/lib/services/skillset-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
-import { createAgentFromExistingWorkspace } from '@shared/lib/services/agent-service'
+import { createAgentFromExistingWorkspace, getAgentWithStatus, listAgents } from '@shared/lib/services/agent-service'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import type {
   SkillsetConfig,
@@ -486,7 +486,6 @@ export async function importAgentFromTemplate(
   }
 
   // Re-read the agent to get updated info
-  const { getAgentWithStatus } = await import('@shared/lib/services/agent-service')
   const result = await getAgentWithStatus(agent.slug)
   return result || agent
 }
@@ -550,7 +549,6 @@ export async function installAgentFromSkillset(
   )
 
   // Re-read the agent
-  const { getAgentWithStatus } = await import('@shared/lib/services/agent-service')
   const result = await getAgentWithStatus(agent.slug)
   return result || agent
 }
@@ -923,7 +921,6 @@ export async function refreshAgentTemplates(
   }
 
   // Reconcile installed agents
-  const { listAgents } = await import('@shared/lib/services/agent-service')
   const agents = await listAgents()
 
   for (const agent of agents) {
@@ -990,11 +987,14 @@ async function generateAgentPRSuggestions(
   const modifiedContent = await readFileOrNull(claudeMdPath)
   if (!modifiedContent) return fallback
 
-  const provider = getActiveLlmProvider()
-  if (!provider.getApiKeyStatus().isConfigured) return fallback
+  let client
+  try {
+    client = getConfiguredLlmClient()
+  } catch {
+    return fallback
+  }
 
   try {
-    const client = provider.createClient()
     const model = getEffectiveModels().summarizerModel
 
     const response = await withRetry(() =>
@@ -1037,10 +1037,10 @@ Rules for the version bump:
       })
     )
 
-    const textBlock = response.content.find((block) => block.type === 'text')
-    if (!textBlock || textBlock.type !== 'text') return fallback
+    const text = extractTextFromLlmResponse(response)
+    if (!text) return fallback
 
-    const parsed = JSON.parse(textBlock.text)
+    const parsed = JSON.parse(text)
     return {
       suggestedTitle: parsed.title || fallback.suggestedTitle,
       suggestedBody: parsed.body || fallback.suggestedBody,
@@ -1061,11 +1061,14 @@ async function generateAgentPublishSuggestions(
     suggestedVersion: '1.0.0',
   }
 
-  const provider = getActiveLlmProvider()
-  if (!provider.getApiKeyStatus().isConfigured) return fallback
+  let client
+  try {
+    client = getConfiguredLlmClient()
+  } catch {
+    return fallback
+  }
 
   try {
-    const client = provider.createClient()
     const model = getEffectiveModels().summarizerModel
 
     const response = await withRetry(() =>
@@ -1108,10 +1111,10 @@ Generate:
       })
     )
 
-    const textBlock = response.content.find((block) => block.type === 'text')
-    if (!textBlock || textBlock.type !== 'text') return fallback
+    const text = extractTextFromLlmResponse(response)
+    if (!text) return fallback
 
-    const parsed = JSON.parse(textBlock.text)
+    const parsed = JSON.parse(text)
     return {
       suggestedTitle: parsed.title || fallback.suggestedTitle,
       suggestedBody: parsed.body || fallback.suggestedBody,

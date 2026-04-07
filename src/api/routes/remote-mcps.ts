@@ -19,6 +19,17 @@ function safeParseTools(json: string | null): McpToolInfo[] {
   }
 }
 
+/** Strip sensitive fields before sending to the frontend. */
+function sanitizeServer(server: typeof remoteMcpServers.$inferSelect) {
+  return {
+    ...server,
+    accessToken: undefined,
+    refreshToken: undefined,
+    oauthClientSecret: undefined,
+    tools: safeParseTools(server.toolsJson),
+  }
+}
+
 /**
  * Escape a string for safe inclusion in HTML content
  */
@@ -139,14 +150,7 @@ remoteMcps.get('/', async (c) => {
 
   const servers = await query
   return c.json({
-    servers: servers.map((s) => ({
-      ...s,
-      // Don't expose tokens to the frontend
-      accessToken: undefined,
-      refreshToken: undefined,
-      oauthClientSecret: undefined,
-      tools: safeParseTools(s.toolsJson),
-    })),
+    servers: servers.map(sanitizeServer),
   })
 })
 
@@ -210,13 +214,7 @@ remoteMcps.post('/', async (c) => {
     .limit(1)
 
   return c.json({
-    server: {
-      ...server,
-      accessToken: undefined,
-      refreshToken: undefined,
-      oauthClientSecret: undefined,
-      tools: safeParseTools(server.toolsJson),
-    },
+    server: sanitizeServer(server),
   }, 201)
 })
 
@@ -370,13 +368,7 @@ remoteMcps.get('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
   }
 
   return c.json({
-    server: {
-      ...server,
-      accessToken: undefined,
-      refreshToken: undefined,
-      oauthClientSecret: undefined,
-      tools: safeParseTools(server.toolsJson),
-    },
+    server: sanitizeServer(server),
   })
 })
 
@@ -420,13 +412,7 @@ remoteMcps.patch('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
     .limit(1)
 
   return c.json({
-    server: {
-      ...updated,
-      accessToken: undefined,
-      refreshToken: undefined,
-      oauthClientSecret: undefined,
-      tools: safeParseTools(updated.toolsJson),
-    },
+    server: sanitizeServer(updated),
   })
 })
 

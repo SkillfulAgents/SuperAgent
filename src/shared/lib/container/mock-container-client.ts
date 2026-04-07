@@ -12,6 +12,7 @@ import type {
   StreamMessage,
 } from './types'
 import { getSessionJsonlPath } from '../utils/file-storage'
+import { reviewManager } from '../proxy/review-manager'
 
 /**
  * Mock scenario interface for simulating different response patterns
@@ -531,7 +532,6 @@ export class ProxyReviewScenario implements MockScenario {
     // Now trigger the proxy review via ReviewManager
     const capturedDelay = delay
     setTimeout(async () => {
-      const { reviewManager } = await import('../proxy/review-manager')
       // Fire-and-forget — the promise resolves when the user decides
       reviewManager.requestReview({
         agentSlug,

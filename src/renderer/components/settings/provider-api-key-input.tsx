@@ -1,5 +1,4 @@
-import { useState } from 'react'
-import { Input } from '@renderer/components/ui/input'
+import { useState, type ReactNode } from 'react'
 import { Label } from '@renderer/components/ui/label'
 import { Button } from '@renderer/components/ui/button'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
@@ -13,21 +12,32 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
+import { PasswordInput } from '@renderer/components/ui/password-input'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { apiFetch } from '@renderer/lib/api'
-import { AlertTriangle, Eye, EyeOff, Check, Loader2 } from 'lucide-react'
+import { AlertTriangle, Check, Loader2 } from 'lucide-react'
 import type { ApiKeyStatus, LlmProviderId } from '@shared/lib/config/settings'
 
 interface ProviderApiKeyInputProps {
-  providerId: LlmProviderId
+  providerId: LlmProviderId | string
   label: string
   placeholder?: string
   envVarName?: string
-  apiKeySettingsField: 'anthropicApiKey' | 'openrouterApiKey' | 'bedrockApiKey'
+  apiKeySettingsField: string
+  /** Key in settings.apiKeyStatus to read status from. Defaults to providerId. */
+  apiKeyStatusKey?: string
+  /** POST endpoint for key validation. */
+  validationEndpoint?: string
+  /** Build the validation request body. Receives the trimmed key. Defaults to `{ provider, apiKey }`. */
+  validationBody?: (apiKey: string) => Record<string, unknown>
   showSourceIndicator?: boolean
   showNotConfiguredAlert?: boolean
   showHelpText?: boolean
   showRemoveButton?: boolean
+  /** Whether to show a confirmation dialog before removing. */
+  showRemoveConfirm?: boolean
+  /** Custom help text node. When provided, replaces the default help text. */
+  helpText?: ReactNode
   disabled?: boolean
 }
 
@@ -37,24 +47,28 @@ export function ProviderApiKeyInput({
   placeholder = 'Enter API key...',
   envVarName,
   apiKeySettingsField,
+  apiKeyStatusKey,
+  validationEndpoint = '/api/settings/validate-llm-key',
+  validationBody,
   showSourceIndicator = true,
   showNotConfiguredAlert = true,
   showHelpText = true,
   showRemoveButton = true,
+  showRemoveConfirm = true,
+  helpText,
   disabled = false,
 }: ProviderApiKeyInputProps) {
   const { data: settings } = useSettings()
   const updateSettings = useUpdateSettings()
 
   const [apiKeyInput, setApiKeyInput] = useState('')
-  const [showApiKey, setShowApiKey] = useState(false)
   const [isValidating, setIsValidating] = useState(false)
   const [validationResult, setValidationResult] = useState<{ valid: boolean; error?: string } | null>(null)
   const [isRemoving, setIsRemoving] = useState(false)
-  const [showRemoveConfirm, setShowRemoveConfirm] = useState(false)
+  const [showRemoveDialog, setShowRemoveDialog] = useState(false)
 
   const statusMap = settings?.apiKeyStatus as Record<string, ApiKeyStatus> | undefined
-  const apiKeyStatus: ApiKeyStatus | undefined = statusMap?.[providerId]
+  const apiKeyStatus: ApiKeyStatus | undefined = statusMap?.[apiKeyStatusKey ?? providerId]
 
   const handleValidateAndSave = async () => {
     if (!apiKeyInput.trim()) return
@@ -62,10 +76,13 @@ export function ProviderApiKeyInput({
     setValidationResult(null)
 
     try {
-      const res = await apiFetch('/api/settings/validate-llm-key', {
+      const body = validationBody
+        ? validationBody(apiKeyInput.trim())
+        : { provider: providerId, apiKey: apiKeyInput.trim() }
+      const res = await apiFetch(validationEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: providerId, apiKey: apiKeyInput.trim() }),
+        body: JSON.stringify(body),
       })
       const result = await res.json()
       setValidationResult(result)
@@ -75,7 +92,6 @@ export function ProviderApiKeyInput({
           apiKeys: { [apiKeySettingsField]: apiKeyInput.trim() },
         })
         setApiKeyInput('')
-        setShowApiKey(false)
       }
     } catch {
       setValidationResult({ valid: false, error: 'Failed to validate API key' })
@@ -91,7 +107,7 @@ export function ProviderApiKeyInput({
         apiKeys: { [apiKeySettingsField]: '' },
       })
       setValidationResult(null)
-      setShowRemoveConfirm(false)
+      setShowRemoveDialog(false)
     } catch (error) {
       console.error('Failed to remove API key:', error)
     } finally {
@@ -101,6 +117,12 @@ export function ProviderApiKeyInput({
 
   const isBusy = isValidating || isRemoving
   const idPrefix = `${providerId}-api-key`
+
+  const defaultHelpText = apiKeyStatus?.source === 'settings'
+    ? 'Your API key is saved locally. Enter a new key to replace it.'
+    : apiKeyStatus?.source === 'env'
+      ? 'Save a key here to override the environment variable.'
+      : 'Your API key will be saved locally in ~/.superagent/settings.json'
 
   return (
     <div className="space-y-2">
@@ -131,28 +153,16 @@ export function ProviderApiKeyInput({
         </Alert>
       )}
 
-      <div className="relative">
-        <Input
-          id={idPrefix}
-          type={showApiKey ? 'text' : 'password'}
-          value={apiKeyInput}
-          onChange={(e) => {
-            setApiKeyInput(e.target.value)
-            setValidationResult(null)
-          }}
-          placeholder={apiKeyStatus?.isConfigured ? '••••••••••••••••' : placeholder}
-          className="pr-10"
-          disabled={disabled || isBusy}
-        />
-        <button
-          type="button"
-          onClick={() => setShowApiKey(!showApiKey)}
-          className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-          disabled={disabled || isBusy}
-        >
-          {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-        </button>
-      </div>
+      <PasswordInput
+        id={idPrefix}
+        value={apiKeyInput}
+        onChange={(e) => {
+          setApiKeyInput(e.target.value)
+          setValidationResult(null)
+        }}
+        placeholder={apiKeyStatus?.isConfigured ? '••••••••••••••••' : placeholder}
+        disabled={disabled || isBusy}
+      />
 
       {validationResult && (
         <Alert variant={validationResult.valid ? 'default' : 'destructive'}>
@@ -171,11 +181,7 @@ export function ProviderApiKeyInput({
 
       {showHelpText && (
         <p className="text-xs text-muted-foreground">
-          {apiKeyStatus?.source === 'settings'
-            ? 'Your API key is saved locally. Enter a new key to replace it.'
-            : apiKeyStatus?.source === 'env'
-              ? 'Save a key here to override the environment variable.'
-              : 'Your API key will be saved locally in ~/.superagent/settings.json'}
+          {helpText ?? defaultHelpText}
         </p>
       )}
 
@@ -196,7 +202,7 @@ export function ProviderApiKeyInput({
           <Button
             size="sm"
             variant="outline"
-            onClick={() => setShowRemoveConfirm(true)}
+            onClick={showRemoveConfirm ? () => setShowRemoveDialog(true) : handleRemoveApiKey}
             disabled={isBusy}
           >
             {isRemoving ? 'Removing...' : 'Remove Saved Key'}
@@ -204,26 +210,28 @@ export function ProviderApiKeyInput({
         )}
       </div>
 
-      <AlertDialog open={showRemoveConfirm} onOpenChange={setShowRemoveConfirm}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Remove Saved Key</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to remove the saved API key? This will disable agent features until a new key is configured.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={isRemoving}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleRemoveApiKey}
-              disabled={isRemoving}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {isRemoving ? 'Removing...' : 'Remove'}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {showRemoveConfirm && (
+        <AlertDialog open={showRemoveDialog} onOpenChange={setShowRemoveDialog}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Remove Saved Key</AlertDialogTitle>
+              <AlertDialogDescription>
+                Are you sure you want to remove the saved API key? This will disable agent features until a new key is configured.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={isRemoving}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={handleRemoveApiKey}
+                disabled={isRemoving}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                {isRemoving ? 'Removing...' : 'Remove'}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
     </div>
   )
 }

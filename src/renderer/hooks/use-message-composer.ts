@@ -15,10 +15,12 @@ interface UseMessageComposerOptions {
   onSubmit: (content: string) => Promise<void>
   /** Additional guard conditions that prevent submission (e.g. isActive, isOffline). */
   submitDisabled?: boolean
+  /** When true, keep the message in the input until onSubmit resolves (useful when there's a navigation delay). Defaults to false. */
+  keepMessageUntilComplete?: boolean
 }
 
 export function useMessageComposer(options: UseMessageComposerOptions) {
-  const { agentSlug, onSubmit, submitDisabled } = options
+  const { agentSlug, onSubmit, submitDisabled, keepMessageUntilComplete } = options
 
   const [message, setMessage] = useState('')
   const [isUploading, setIsUploading] = useState(false)
@@ -138,17 +140,26 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
       setIsUploading(false)
     }
 
-    // Clear input immediately so the message doesn't linger while the network request is in flight
-    setMessage('')
-    clearAttachments()
+    if (!keepMessageUntilComplete) {
+      // Clear input immediately so the message doesn't linger while the network request is in flight
+      setMessage('')
+      clearAttachments()
+    }
 
     try {
       await onSubmit(content)
     } catch (error) {
       console.error('Failed to submit:', error)
-      // Restore message so the user doesn't lose their text
-      setMessage(content)
+      if (!keepMessageUntilComplete) {
+        // Restore message so the user doesn't lose their text
+        setMessage(content)
+      }
       return
+    }
+
+    if (keepMessageUntilComplete) {
+      setMessage('')
+      clearAttachments()
     }
   }
 
