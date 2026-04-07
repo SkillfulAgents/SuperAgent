@@ -1,23 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Successfully verified that the QA-20260407-191830-5oro agent can execute browser commands and return the correct page title",
+  "reason": "QA-20260407-210420-l6nm agent successfully opened browser, navigated to https://example.com, and returned response confirming the page title is \"Example Domain\"",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded the Super Agent application",
-    "Found and clicked the \"QA-20260407-191830-5oro\" agent in the sidebar — Successfully selected the agent and opened its chat interface",
-    "Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully sent and agent status changed to \"working\"",
-    "Waited up to 3 minutes for a response — Response received successfully within ~12 seconds",
-    "Verified the response mentions \"Example Domain\" — Screenshot confirms the agent returned the message \"The page title is Example Domain. It's a simple placeholder page with a \"Learn more\" link.\" which clearly mentions \"Example Domain\""
+    "Navigated to http://localhost:47891 - Successfully loaded Super Agent interface with sidebar containing multiple agents including QA-20260407-210420-l6nm",
+    "Clicked on \"QA-20260407-210420-l6nm\" agent in sidebar - Successfully selected the agent and opened the chat interface with \"Start a conversation\" prompt",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the message input field - Message successfully entered in the textbox and Send button became enabled",
+    "Clicked Send message button - Message was sent successfully, agent status changed to \"working\" with timer starting",
+    "Waited up to 180 seconds for response - Agent completed the task in 12 seconds and returned complete response with browser tool execution details",
+    "Verified response mentions \"Example Domain\" - Response clearly states \"The page title is Example Domain. It's the classic IANA example page with a single 'Learn more' link.\" Successful completion confirmed via screenshot showing:"
   ],
   "bugs": [],
-  "durationMs": 78466,
-  "sessionId": "b1cf25b8-35e8-498a-9632-0a1797f805d3",
+  "durationMs": 82153,
+  "sessionId": "f6a9afac-6ca5-41bf-94ec-b02f3e81ebdd",
   "cost": {
-    "inputTokens": 261,
-    "outputTokens": 1896,
-    "cacheCreationTokens": 33801,
-    "cacheReadTokens": 764623,
+    "inputTokens": 207,
+    "outputTokens": 2329,
+    "cacheCreationTokens": 94913,
+    "cacheReadTokens": 538318,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.128455
+    "totalCostUsd": 0.184325
   }
 }
