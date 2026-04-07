@@ -15,6 +15,10 @@ vi.mock('@shared/lib/container/container-manager', () => ({
   },
 }))
 
+vi.mock('@shared/lib/platform-auth/config', () => ({
+  getPlatformProxyBaseUrl: () => 'http://localhost:3000',
+}))
+
 vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveModels: () => ({
     agentModel: 'claude-sonnet-4-20250514',
