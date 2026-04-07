@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the agent can execute browser commands, navigate to a URL, retrieve the page title, and respond with the correct information mentioning \"Example Domain\"",
+  "steps": [
+    "Step 1 - Navigated to http://localhost:47891 - Page loaded successfully showing Super Agent interface with three agents listed in sidebar",
+    "Step 2 - Found and clicked on \"QA-20260407-170015-xrrn\" agent in the sidebar - Agent chat interface opened showing \"Start a conversation with QA-20260407-170015-xrrn\"",
+    "Step 3 - Typed message: \"Open a browser and go to https://example.com. Tell me the page title.\" - Message was entered correctly in the message input field",
+    "Step 4 - Sent message using Cmd+Enter - Message sent successfully, agent status changed to \"working\", and a new session \"Browser Navigation and Page Title Check\" was created",
+    "Step 5 - Waited up to 3 minutes for response - Response received successfully within approximately 12 seconds, showing the agent executed: Open Browser tool, Page Snapshot tool, Browser Command (get title), and Close Browser tool",
+    "Step 5 - Verified response mentions \"Example Domain\" - Response text displays: \"The page title is **Example Domain**. It's the standard IANA example domain page with a single \"Learn more\" link.\" - requirement met"
+  ],
+  "bugs": [],
+  "durationMs": 85168,
+  "sessionId": "f64cd917-0bf1-40d6-8614-f868d48a59f8",
+  "cost": {
+    "inputTokens": 342,
+    "outputTokens": 3282,
+    "cacheCreationTokens": 112857,
+    "cacheReadTokens": 1048526,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.262676
+  }
+}
