@@ -86,6 +86,30 @@ export function useUpdateSkill() {
   })
 }
 
+export function useForceSyncSkill() {
+  const queryClient = useQueryClient()
+
+  return useMutation<
+    { updated: boolean },
+    Error,
+    { agentSlug: string; skillDir: string }
+  >({
+    mutationFn: async ({ agentSlug, skillDir }) => {
+      const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/skills/${encodeURIComponent(skillDir)}/update`, {
+        method: 'POST',
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || 'Failed to sync skill from remote')
+      }
+      return res.json()
+    },
+    onSuccess: (_, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['agent-skills', vars.agentSlug] })
+    },
+  })
+}
+
 export interface SkillPRInfo {
   skillName: string
   skillPath: string

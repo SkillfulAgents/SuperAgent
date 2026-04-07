@@ -17,6 +17,7 @@ import {
 import { useDeleteAgent } from '@renderer/hooks/use-agents'
 import { useSelection } from '@renderer/context/selection-context'
 import {
+  useForceSyncAgentTemplate,
   useAgentTemplateStatus,
   useRefreshAgentTemplateStatus,
   useUpdateAgentTemplate,
@@ -39,10 +40,12 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
   const [isDeleting, setIsDeleting] = useState(false)
   const [prDialogOpen, setPrDialogOpen] = useState(false)
   const [publishDialogOpen, setPublishDialogOpen] = useState(false)
+  const [forceSyncDialogOpen, setForceSyncDialogOpen] = useState(false)
   const deleteAgent = useDeleteAgent()
   const { handleAgentDeleted } = useSelection()
   const { data: templateStatus } = useAgentTemplateStatus(agentSlug)
   const refreshTemplateStatus = useRefreshAgentTemplateStatus()
+  const forceSyncTemplate = useForceSyncAgentTemplate()
   const updateTemplate = useUpdateAgentTemplate()
   const exportTemplate = useExportAgentTemplate()
   const exportFull = useExportAgentFull()
@@ -118,15 +121,32 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
                 Update
               </Button>
             )}
-            {templateStatus.type === 'locally_modified' && !templateStatus.openPrUrl && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setPrDialogOpen(true)}
-              >
-                <GitPullRequest className="h-3 w-3 mr-1" />
-                Open PR
-              </Button>
+            {templateStatus.type === 'locally_modified' && (
+              <>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setForceSyncDialogOpen(true)}
+                  disabled={forceSyncTemplate.isPending}
+                >
+                  {forceSyncTemplate.isPending ? (
+                    <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-3 w-3 mr-1" />
+                  )}
+                  Force Sync
+                </Button>
+                {!templateStatus.openPrUrl && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setPrDialogOpen(true)}
+                  >
+                    <GitPullRequest className="h-3 w-3 mr-1" />
+                    Open PR
+                  </Button>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -248,6 +268,33 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
         onOpenChange={setPublishDialogOpen}
         agentSlug={agentSlug}
       />
+
+      <AlertDialog open={forceSyncDialogOpen} onOpenChange={setForceSyncDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Force sync template from remote?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will discard your local template changes and replace them with the latest
+              version from the skillset.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={forceSyncTemplate.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault()
+                forceSyncTemplate.mutate(
+                  { agentSlug },
+                  { onSuccess: () => setForceSyncDialogOpen(false) }
+                )
+              }}
+              disabled={forceSyncTemplate.isPending}
+            >
+              {forceSyncTemplate.isPending ? 'Syncing...' : 'Force Sync'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

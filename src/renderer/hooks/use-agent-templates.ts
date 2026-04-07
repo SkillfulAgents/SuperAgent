@@ -279,6 +279,31 @@ export function useUpdateAgentTemplate() {
   })
 }
 
+export function useForceSyncAgentTemplate() {
+  const queryClient = useQueryClient()
+
+  return useMutation<
+    { updated: boolean },
+    Error,
+    { agentSlug: string }
+  >({
+    mutationFn: async ({ agentSlug }) => {
+      const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/template-update`, {
+        method: 'POST',
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || 'Failed to sync template from remote')
+      }
+      return res.json()
+    },
+    onSuccess: (_, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['agent-template-status', vars.agentSlug] })
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
+    },
+  })
+}
+
 export interface AgentTemplatePRInfo {
   agentName: string
   agentPath: string
