@@ -18,6 +18,7 @@ import { useDeleteAgent } from '@renderer/hooks/use-agents'
 import { useSelection } from '@renderer/context/selection-context'
 import {
   useAgentTemplateStatus,
+  useRefreshAgentTemplateStatus,
   useUpdateAgentTemplate,
   useExportAgentTemplate,
   useExportAgentFull,
@@ -41,6 +42,7 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
   const deleteAgent = useDeleteAgent()
   const { handleAgentDeleted } = useSelection()
   const { data: templateStatus } = useAgentTemplateStatus(agentSlug)
+  const refreshTemplateStatus = useRefreshAgentTemplateStatus()
   const updateTemplate = useUpdateAgentTemplate()
   const exportTemplate = useExportAgentTemplate()
   const exportFull = useExportAgentFull()
@@ -78,7 +80,20 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
       {/* Template Status */}
       {templateStatus && (templateStatus.type !== 'local' || !!templateSourceLabel) && (
         <div className="space-y-2">
-          <h3 className="text-sm font-medium">Template Status</h3>
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-medium">Template Status</h3>
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="h-6 w-6"
+              onClick={() => refreshTemplateStatus.mutate({ agentSlug })}
+              disabled={refreshTemplateStatus.isPending}
+              title="Refresh template status from upstream"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${refreshTemplateStatus.isPending ? 'animate-spin' : ''}`} />
+            </Button>
+          </div>
           <div className="flex items-center gap-2 flex-wrap">
             <StatusBadge status={templateStatus} />
             {templateSourceLabel && (

@@ -215,15 +215,59 @@ export function useInstallAgentFromSkillset() {
   })
 }
 
+const templateRefreshSet = new Set<string>()
+
 export function useAgentTemplateStatus(agentSlug: string | null) {
+  const queryClient = useQueryClient()
+
   return useQuery<ApiAgentTemplateStatus>({
     queryKey: ['agent-template-status', agentSlug],
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug!)}/template-status`)
       if (!res.ok) throw new Error('Failed to fetch template status')
-      return res.json()
+      const cached = await res.json() as ApiAgentTemplateStatus
+
+      if (!templateRefreshSet.has(agentSlug!)) {
+        templateRefreshSet.add(agentSlug!)
+        apiFetch(`/api/agents/${encodeURIComponent(agentSlug!)}/template-refresh`, { method: 'POST' })
+          .then(async (r) => {
+            if (r.ok) {
+              const fresh = await r.json() as ApiAgentTemplateStatus
+              if (JSON.stringify(fresh) !== JSON.stringify(cached)) {
+                queryClient.setQueryData(['agent-template-status', agentSlug], fresh)
+              }
+            }
+          })
+          .catch(() => {})
+      }
+
+      return cached
     },
     enabled: !!agentSlug,
+  })
+}
+
+export function useRefreshAgentTemplateStatus() {
+  const queryClient = useQueryClient()
+
+  return useMutation<
+    ApiAgentTemplateStatus,
+    Error,
+    { agentSlug: string }
+  >({
+    mutationFn: async ({ agentSlug }) => {
+      const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/template-refresh`, {
+        method: 'POST',
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || 'Failed to refresh template status')
+      }
+      return res.json()
+    },
+    onSuccess: (data, vars) => {
+      queryClient.setQueryData(['agent-template-status', vars.agentSlug], data)
+    },
   })
 }
 
