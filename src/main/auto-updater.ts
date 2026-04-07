@@ -51,11 +51,11 @@ export function registerUpdateHandlers() {
     try {
       const autoUpdater = await getAutoUpdater()
       const isPreRelease = app.getVersion().includes('-')
-      const wantPrerelease = isPreRelease || !!getSettings().app?.allowPrereleaseUpdates
+      const wantPrerelease = !!getSettings().app?.allowPrereleaseUpdates
 
       autoUpdater.allowPrerelease = wantPrerelease
 
-      if (!isPreRelease) {
+      if (!isPreRelease || !wantPrerelease) {
         // Stable user: electron-updater handles this correctly.
         //   wantPrerelease=false → latest stable
         //   wantPrerelease=true  → absolute latest (feed order = newest first)
@@ -153,8 +153,7 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
     // Don't auto-download — let the user choose
     autoUpdater.autoDownload = false
     autoUpdater.autoInstallOnAppQuit = true
-    const isPreRelease = app.getVersion().includes('-')
-    autoUpdater.allowPrerelease = isPreRelease || !!getSettings().app?.allowPrereleaseUpdates
+    autoUpdater.allowPrerelease = !!getSettings().app?.allowPrereleaseUpdates
 
     autoUpdater.on('checking-for-update', () => {
       setStatus({ state: 'checking' })
