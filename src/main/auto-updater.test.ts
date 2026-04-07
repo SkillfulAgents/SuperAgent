@@ -149,7 +149,33 @@ describe('check-for-updates', () => {
 
   // ---- RC user (the core fix) -----------------------------------------------
 
-  describe('RC user', () => {
+  describe('RC user (prereleases off)', () => {
+    it('gets stable only, ignoring newer RC', async () => {
+      setupReleases({ currentVersion: '0.3.2-rc.1', latestRC: '0.3.4-rc.1', latestStable: '0.3.3' })
+
+      await handlers['check-for-updates']()
+
+      expect(getStatus()).toMatchObject({ state: 'available', version: '0.3.3' })
+      // Single check — stable-only fast path
+      expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(1)
+      expect(mockAutoUpdater.allowPrerelease).toBe(false)
+    })
+
+    it('already on RC newer than stable → not-available', async () => {
+      setupReleases({ currentVersion: '0.3.4-rc.1', latestRC: '0.3.4-rc.1', latestStable: '0.3.3' })
+
+      await handlers['check-for-updates']()
+
+      expect(getStatus()).toMatchObject({ state: 'not-available' })
+      expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe('RC user (prereleases on)', () => {
+    beforeEach(() => {
+      vi.mocked(getSettings).mockReturnValue({ app: { allowPrereleaseUpdates: true } } as any)
+    })
+
     it('gets stable when stable > latest RC', async () => {
       setupReleases({ currentVersion: '0.2.8-rc.1', latestRC: '0.2.9-rc.2', latestStable: '0.2.11' })
 
@@ -191,6 +217,7 @@ describe('check-for-updates', () => {
 
   describe('error handling', () => {
     it('RC user: prerelease check fails → falls back to stable', async () => {
+      vi.mocked(getSettings).mockReturnValue({ app: { allowPrereleaseUpdates: true } } as any)
       vi.mocked(app.getVersion).mockReturnValue('0.2.8-rc.1')
 
       let callIdx = 0
@@ -209,6 +236,7 @@ describe('check-for-updates', () => {
     })
 
     it('RC user: stable check fails → keeps prerelease result', async () => {
+      vi.mocked(getSettings).mockReturnValue({ app: { allowPrereleaseUpdates: true } } as any)
       vi.mocked(app.getVersion).mockReturnValue('0.2.8-rc.1')
 
       let callIdx = 0
@@ -229,6 +257,7 @@ describe('check-for-updates', () => {
     })
 
     it('RC user: both checks fail → not-available', async () => {
+      vi.mocked(getSettings).mockReturnValue({ app: { allowPrereleaseUpdates: true } } as any)
       vi.mocked(app.getVersion).mockReturnValue('0.2.8-rc.1')
       mockAutoUpdater.checkForUpdates.mockRejectedValue(new Error('Network error'))
 
@@ -241,6 +270,10 @@ describe('check-for-updates', () => {
   // ---- Channel management ----------------------------------------------------
 
   describe('channel management', () => {
+    beforeEach(() => {
+      vi.mocked(getSettings).mockReturnValue({ app: { allowPrereleaseUpdates: true } } as any)
+    })
+
     it('sets channel to prerelease channel derived from version', async () => {
       setupReleases({ currentVersion: '0.2.8-rc.1', latestRC: '0.2.12-rc.1', latestStable: '0.2.11' })
 
@@ -289,6 +322,10 @@ describe('check-for-updates', () => {
   // ---- Consecutive checks (regression for null channel bug) -----------------
 
   describe('consecutive checks', () => {
+    beforeEach(() => {
+      vi.mocked(getSettings).mockReturnValue({ app: { allowPrereleaseUpdates: true } } as any)
+    })
+
     it('RC user: second check works after first (no null channel)', async () => {
       setupReleases({ currentVersion: '0.3.0-rc.1', latestRC: '0.3.0-rc.6', latestStable: '0.2.12' })
 
