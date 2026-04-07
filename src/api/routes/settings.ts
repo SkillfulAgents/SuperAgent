@@ -27,6 +27,7 @@ import { containerManager } from '@shared/lib/container/container-manager'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
 import { VALID_LIMA_VM_MEMORY_OPTIONS } from '@shared/lib/container/types'
 import { detectAllProviders } from '../../main/host-browser'
+import { revokePlatformToken } from '@shared/lib/services/platform-auth-service'
 import { db } from '@shared/lib/db'
 import { proxyAuditLog, proxyTokens, agentConnectedAccounts, scheduledTasks, notifications, connectedAccounts, userSettings } from '@shared/lib/db/schema'
 import fs from 'fs'
@@ -481,7 +482,6 @@ settings.post('/factory-reset', async (c) => {
   try {
     // Revoke platform token remotely before clearing local state
     try {
-      const { revokePlatformToken } = await import('@shared/lib/services/platform-auth-service')
       await revokePlatformToken({ clearLocal: false })
     } catch {
       // Best-effort: continue with reset even if remote revoke fails

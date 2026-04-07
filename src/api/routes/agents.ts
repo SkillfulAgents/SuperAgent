@@ -87,7 +87,10 @@ import {
 } from '@shared/lib/services/agent-template-service'
 import { withRetry } from '@shared/lib/utils/retry'
 import { transformMessages, type TransformedMessage, type TransformedItem } from '@shared/lib/utils/message-transform'
-import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings } from '@shared/lib/config/settings'
+import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
+import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
+import { executeComputerUseCommand, checkACPermissions, ungrabAC } from '@shared/lib/computer-use/executor'
+import { resolveTargetApp } from '@shared/lib/computer-use/types'
 import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
@@ -1459,8 +1462,7 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
 
       // Replay current computer use grab state (with icon if cached)
       const agentSlugForStream = c.req.param('id')
-      const { computerUsePermissionManager: cuPermMgr } = await import('@shared/lib/computer-use/permission-manager')
-      const grabbedApp = cuPermMgr.getGrabbedApp(agentSlugForStream)
+      const grabbedApp = computerUsePermissionManager.getGrabbedApp(agentSlugForStream)
       if (grabbedApp) {
         const { getAppIconBase64 } = await import('@shared/lib/computer-use/app-icon')
         const appIcon = await getAppIconBase64(grabbedApp)
@@ -2029,11 +2031,8 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
     // Run path: validate platform, execute script
     // Permission is now managed by ComputerUsePermissionManager (use_host_shell level)
     // The permission grant happens when the user clicks "Allow" in the UI
-    const { VALID_SCRIPT_TYPES } = await import('@shared/lib/config/settings')
-
     // Record permission grant if grantType is provided
     if (body.grantType && ['once', 'timed', 'always'].includes(body.grantType)) {
-      const { computerUsePermissionManager } = await import('@shared/lib/computer-use/permission-manager')
       computerUsePermissionManager.grantPermission(agentSlug, 'use_host_shell', body.grantType)
     }
 
@@ -2193,8 +2192,6 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
     }
 
     // Check macOS permissions before executing
-    const { executeComputerUseCommand, checkACPermissions } = await import('@shared/lib/computer-use/executor')
-    const { resolveTargetApp } = await import('@shared/lib/computer-use/types')
     const missingPermissions = await checkACPermissions()
     if (missingPermissions) {
       return c.json({
@@ -2204,7 +2201,6 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
     }
 
     // Record the permission grant
-    const { computerUsePermissionManager } = await import('@shared/lib/computer-use/permission-manager')
     if (grantType && ['once', 'timed', 'always'].includes(grantType)) {
       computerUsePermissionManager.grantPermission(agentSlug, permissionLevel || 'use_application', grantType, appName)
     }
@@ -2297,12 +2293,9 @@ agents.post('/:id/sessions/:sessionId/computer-use/revoke', AgentUser(), async (
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    const { computerUsePermissionManager } = await import('@shared/lib/computer-use/permission-manager')
-
     const appName = computerUsePermissionManager.getGrabbedApp(agentSlug)
 
     // Ungrab via AC
-    const { ungrabAC } = await import('@shared/lib/computer-use/executor')
     await ungrabAC()
 
     // Clear grab state

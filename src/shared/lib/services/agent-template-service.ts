@@ -34,7 +34,7 @@ import {
   copyDirectory,
   parseSkillFrontmatter,
 } from '@shared/lib/services/skillset-service'
-import { createAgentFromExistingWorkspace } from '@shared/lib/services/agent-service'
+import { createAgentFromExistingWorkspace, getAgentWithStatus, listAgents } from '@shared/lib/services/agent-service'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import type {
   SkillsetConfig,
@@ -487,7 +487,6 @@ export async function importAgentFromTemplate(
   }
 
   // Re-read the agent to get updated info
-  const { getAgentWithStatus } = await import('@shared/lib/services/agent-service')
   const result = await getAgentWithStatus(agent.slug)
   return result || agent
 }
@@ -547,7 +546,6 @@ export async function installAgentFromSkillset(
   )
 
   // Re-read the agent
-  const { getAgentWithStatus } = await import('@shared/lib/services/agent-service')
   const result = await getAgentWithStatus(agent.slug)
   return result || agent
 }
@@ -846,7 +844,6 @@ export async function refreshAgentTemplates(
   }
 
   // Reconcile installed agents
-  const { listAgents } = await import('@shared/lib/services/agent-service')
   const agents = await listAgents()
 
   for (const agent of agents) {
