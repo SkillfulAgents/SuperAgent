@@ -4,7 +4,7 @@ import type {
   SkillsetProviderData,
 } from '@shared/lib/types/skillset'
 
-export type SkillsetPublishMode = 'pull_request' | 'hosted_submit' | 'read_only'
+export type SkillsetPublishMode = 'pull_request' | 'hosted_submit'
 
 export type SkillsetHostedUpdateType = 'skill' | 'agent'
 
@@ -88,7 +88,6 @@ export abstract class BaseSkillsetProvider {
   }
 
   getAccessInfo(params: {
-    currentContext?: Record<string, unknown>
     config?: Pick<SkillsetConfig, 'name' | 'description' | 'providerData'>
     meta: Pick<SkillsetProviderRef, 'skillsetId' | 'skillsetName' | 'providerData'>
   }): SkillsetAccessInfo {
@@ -98,6 +97,32 @@ export abstract class BaseSkillsetProvider {
       sourceLabel: skillsetName,
       isAccessible: true,
     }
+  }
+
+  getConfigAccessInfo(config: SkillsetConfig): SkillsetAccessInfo {
+    const providerData = this.normalizeProviderData(config)
+    return this.getAccessInfo({
+      config: { name: config.name, description: config.description, providerData },
+      meta: { skillsetId: config.id, skillsetName: config.name, providerData },
+    })
+  }
+
+  getInstalledAccessInfo(
+    meta: SkillsetProviderRef,
+    config?: SkillsetConfig,
+  ): SkillsetAccessInfo {
+    return this.getAccessInfo({
+      config: config ? {
+        name: config.name,
+        description: config.description,
+        providerData: this.normalizeProviderData(config),
+      } : undefined,
+      meta: {
+        skillsetId: meta.skillsetId,
+        skillsetName: meta.skillsetName,
+        providerData: meta.providerData,
+      },
+    })
   }
 
   getDisplayInfo(): SkillsetDisplayInfo {

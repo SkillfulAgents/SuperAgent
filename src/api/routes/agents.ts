@@ -85,7 +85,7 @@ import {
   hasOnboardingSkill,
   collectAgentRequiredEnvVars,
 } from '@shared/lib/services/agent-template-service'
-import { getSkillsetProvider } from '@shared/lib/skillset-provider'
+import { getSkillsetProvider, getAccessibleSkillsets } from '@shared/lib/skillset-provider'
 import { withRetry } from '@shared/lib/utils/retry'
 import { transformMessages, type TransformedMessage, type TransformedItem } from '@shared/lib/utils/message-transform'
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
@@ -93,7 +93,6 @@ import { computerUsePermissionManager } from '@shared/lib/computer-use/permissio
 import { executeComputerUseCommand, checkACPermissions, ungrabAC } from '@shared/lib/computer-use/executor'
 import { resolveTargetApp } from '@shared/lib/computer-use/types'
 import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
-import { getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import * as fs from 'fs'
@@ -104,18 +103,9 @@ import type { ApiAgent } from '@shared/lib/types/api'
 
 function getSkillsetAccessScope() {
   const configs = getSettings().skillsets || []
-  const currentContext = { platformOrgId: getPlatformAuthStatus().orgId }
   return {
     configuredSkillsets: configs,
-    accessibleSkillsets: configs.filter((config) => {
-      const provider = getSkillsetProvider(config.provider)
-      return provider.getAccessInfo({
-        currentContext,
-        config: { name: config.name, description: config.description, providerData: provider.normalizeProviderData(config) },
-        meta: { skillsetId: config.id, skillsetName: config.name, providerData: provider.normalizeProviderData(config) },
-      }).isAccessible
-    }),
-    currentContext,
+    accessibleSkillsets: getAccessibleSkillsets(configs),
   }
 }
 
@@ -2873,9 +2863,7 @@ agents.get('/:id/skills', AgentRead(), async (c) => {
   try {
     const id = c.req.param('id')
     const scope = getSkillsetAccessScope()
-    const skills = await getAgentSkillsWithStatus(id, scope.configuredSkillsets, {
-      currentContext: scope.currentContext,
-    })
+    const skills = await getAgentSkillsWithStatus(id, scope.configuredSkillsets)
     return c.json({ skills })
   } catch (error) {
     console.error('Failed to fetch skills:', error)
@@ -3091,9 +3079,7 @@ agents.get('/:id/template-status', AgentRead(), async (c) => {
   try {
     const slug = c.req.param('id')
     const scope = getSkillsetAccessScope()
-    const status = await getAgentTemplateStatus(slug, scope.configuredSkillsets, {
-      currentContext: scope.currentContext,
-    })
+    const status = await getAgentTemplateStatus(slug, scope.configuredSkillsets)
     return c.json(status)
   } catch (error) {
     console.error('Failed to get template status:', error)
@@ -3202,9 +3188,7 @@ agents.post('/:id/template-refresh', AgentUser(), async (c) => {
     const scope = getSkillsetAccessScope()
     await refreshAgentTemplates(scope.accessibleSkillsets)
     const slug = c.req.param('id')
-    const status = await getAgentTemplateStatus(slug, scope.configuredSkillsets, {
-      currentContext: scope.currentContext,
-    })
+    const status = await getAgentTemplateStatus(slug, scope.configuredSkillsets)
     return c.json(status)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to refresh template'
@@ -3219,9 +3203,7 @@ agents.post('/:id/skills/refresh', AgentUser(), async (c) => {
     const agentSlug = c.req.param('id')
     const scope = getSkillsetAccessScope()
     await refreshAgentSkills(agentSlug, scope.accessibleSkillsets)
-    const skills = await getAgentSkillsWithStatus(agentSlug, scope.configuredSkillsets, {
-      currentContext: scope.currentContext,
-    })
+    const skills = await getAgentSkillsWithStatus(agentSlug, scope.configuredSkillsets)
     return c.json({ skills })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to refresh skills'

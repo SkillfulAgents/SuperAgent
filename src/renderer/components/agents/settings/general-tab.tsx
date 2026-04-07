@@ -27,7 +27,9 @@ import {
 import { StatusBadge } from '@renderer/components/agents/status-badge'
 import { AgentTemplatePRDialog } from '@renderer/components/agents/agent-template-pr-dialog'
 import { AgentTemplatePublishDialog } from '@renderer/components/agents/agent-template-publish-dialog'
-import { Trash2, Download, HardDriveDownload, RefreshCw, GitPullRequest, Upload, Loader2 } from 'lucide-react'
+import { Trash2, Download, HardDriveDownload, RefreshCw, GitPullRequest, Send, Upload, Loader2 } from 'lucide-react'
+import { getReviewActionLabel, isPullRequestPublishMode } from '@renderer/lib/skillset-publish-ui'
+import { useSkillsetPublishMode } from '@renderer/hooks/use-skillsets'
 
 interface GeneralTabProps {
   name: string
@@ -50,6 +52,9 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
   const exportTemplate = useExportAgentTemplate()
   const exportFull = useExportAgentFull()
   const templateSourceLabel = templateStatus?.sourceLabel || templateStatus?.skillsetName || null
+  const publishMode = useSkillsetPublishMode(templateStatus?.skillsetId)
+  const isPR = isPullRequestPublishMode(publishMode)
+  const SubmitIcon = isPR ? GitPullRequest : Send
 
   const handleDelete = async () => {
     setIsDeleting(true)
@@ -138,8 +143,8 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
                     variant="outline"
                     onClick={() => setPrDialogOpen(true)}
                   >
-                    <GitPullRequest className="h-3 w-3 mr-1" />
-                    Open PR
+                    <SubmitIcon className="h-3 w-3 mr-1" />
+                    {getReviewActionLabel(publishMode)}
                   </Button>
                 )}
               </>
@@ -256,6 +261,7 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
         open={prDialogOpen}
         onOpenChange={setPrDialogOpen}
         agentSlug={agentSlug}
+        publishMode={publishMode}
       />
 
       {/* Publish Dialog */}

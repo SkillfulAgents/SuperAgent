@@ -1,15 +1,8 @@
 import { ExternalLink, Check } from 'lucide-react'
+import type { ApiItemStatus } from '@shared/lib/types/api'
 
 interface StatusBadgeProps {
-  status: {
-    type: 'local' | 'up_to_date' | 'update_available' | 'locally_modified'
-    skillsetId?: string
-    skillsetName?: string
-    sourceLabel?: string
-    publishable?: boolean
-    latestVersion?: string
-    openPrUrl?: string
-  }
+  status: ApiItemStatus
 }
 
 export function StatusBadge({ status }: StatusBadgeProps) {
@@ -35,7 +28,7 @@ export function StatusBadge({ status }: StatusBadgeProps) {
           className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-purple-500/10 text-purple-700 dark:text-purple-400 hover:underline"
         >
           <ExternalLink className="h-3 w-3" />
-          PR opened
+          Submitted
         </a>
       ) : (
         <span className="text-xs px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-700 dark:text-blue-400">

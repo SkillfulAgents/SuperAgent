@@ -774,9 +774,6 @@ export async function getInstalledSkillMetadata(
 export async function getAgentSkillsWithStatus(
   agentSlug: string,
   skillsets: SkillsetConfig[],
-  options?: {
-    currentContext?: Record<string, unknown>
-  },
 ): Promise<SkillWithStatus[]> {
   const skillsDir = getAgentSkillsDir(agentSlug)
 
@@ -827,15 +824,7 @@ export async function getAgentSkillsWithStatus(
         skillsetName,
         sourceLabel,
         isAccessible,
-      } = hostingProvider.getAccessInfo({
-        currentContext: options?.currentContext,
-        config: ssConfig ? {
-          name: ssConfig.name,
-          description: ssConfig.description,
-          providerData: configRef?.providerData,
-        } : undefined,
-        meta: metaRef,
-      })
+      } = hostingProvider.getInstalledAccessInfo(metaRef, ssConfig)
 
       if (!isAccessible) {
         status = {

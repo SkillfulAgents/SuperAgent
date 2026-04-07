@@ -732,9 +732,6 @@ export async function collectAgentRequiredEnvVars(
 export async function getAgentTemplateStatus(
   agentSlug: string,
   skillsets: SkillsetConfig[],
-  options?: {
-    currentContext?: Record<string, unknown>
-  },
 ): Promise<AgentTemplateStatus> {
   const meta = await getInstalledAgentMetadata(agentSlug)
   if (!meta) {
@@ -749,15 +746,7 @@ export async function getAgentTemplateStatus(
     skillsetName,
     sourceLabel,
     isAccessible,
-  } = hostingProvider.getAccessInfo({
-    currentContext: options?.currentContext,
-    config: skillsetConfig ? {
-      name: skillsetConfig.name,
-      description: skillsetConfig.description,
-      providerData: configRef?.providerData,
-    } : undefined,
-    meta: metaRef,
-  })
+  } = hostingProvider.getInstalledAccessInfo(metaRef, skillsetConfig)
   if (!isAccessible) {
     return {
       type: 'local',

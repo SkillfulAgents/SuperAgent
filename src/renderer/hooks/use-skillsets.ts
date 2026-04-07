@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ApiSkillsetConfig } from '@shared/lib/types/api'
@@ -65,6 +66,20 @@ export function useRemoveSkillset() {
       queryClient.invalidateQueries({ queryKey: ['skillsets'] })
     },
   })
+}
+
+/**
+ * Look up the publishMode for a skillset by its ID.
+ * Falls back to 'pull_request' if the skillset is unknown (e.g. removed).
+ */
+export function useSkillsetPublishMode(
+  skillsetId: string | undefined,
+): ApiSkillsetConfig['publishMode'] {
+  const { data: skillsets } = useSkillsets()
+  return useMemo(
+    () => skillsets?.find((s) => s.id === skillsetId)?.publishMode ?? 'pull_request',
+    [skillsets, skillsetId],
+  )
 }
 
 export function useRefreshSkillset() {

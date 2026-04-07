@@ -14,18 +14,23 @@ import { Label } from '@renderer/components/ui/label'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Loader2, ExternalLink, AlertTriangle } from 'lucide-react'
 import { useAgentTemplatePRInfo, useCreateAgentTemplatePR } from '@renderer/hooks/use-agent-templates'
+import { getSubmitDialogCopy } from '@renderer/lib/skillset-publish-ui'
+import type { ApiSkillsetConfig } from '@shared/lib/types/api'
 
 interface AgentTemplatePRDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   agentSlug: string
+  publishMode?: ApiSkillsetConfig['publishMode']
 }
 
 export function AgentTemplatePRDialog({
   open,
   onOpenChange,
   agentSlug,
+  publishMode = 'pull_request',
 }: AgentTemplatePRDialogProps) {
+  const copy = getSubmitDialogCopy('agent template', publishMode)
   const { data: prInfo, isLoading: isLoadingInfo, error: infoError } = useAgentTemplatePRInfo(
     open ? agentSlug : null,
   )
@@ -76,9 +81,9 @@ export function AgentTemplatePRDialog({
       <DialogContent className="max-w-lg">
         <form onSubmit={handleSubmit}>
           <DialogHeader>
-            <DialogTitle>Open Pull Request</DialogTitle>
+            <DialogTitle>{copy.title}</DialogTitle>
             <DialogDescription>
-              Submit your local agent template changes back to the skillset repository.
+              {copy.description}
             </DialogDescription>
           </DialogHeader>
 
@@ -113,7 +118,7 @@ export function AgentTemplatePRDialog({
               )}
 
               <div className="space-y-1.5">
-                <Label htmlFor="agent-pr-title">PR Title</Label>
+                <Label htmlFor="agent-pr-title">{copy.titleLabel}</Label>
                 <div className="relative">
                   <Input
                     id="agent-pr-title"
@@ -198,10 +203,10 @@ export function AgentTemplatePRDialog({
                   {createPR.isPending ? (
                     <>
                       <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      Creating PR...
+                      {copy.pendingButton}
                     </>
                   ) : (
-                    'Create Pull Request'
+                    copy.submitButton
                   )}
                 </Button>
               </>

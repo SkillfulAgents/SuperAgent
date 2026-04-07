@@ -15,6 +15,7 @@ import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Loader2, ExternalLink, AlertTriangle, ChevronLeft } from 'lucide-react'
 import { useAgentTemplatePublishInfo, usePublishAgentTemplate } from '@renderer/hooks/use-agent-templates'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
+import { getPublishDialogCopy } from '@renderer/lib/skillset-publish-ui'
 import type { ApiSkillsetConfig } from '@shared/lib/types/api'
 
 interface AgentTemplatePublishDialogProps {
@@ -62,6 +63,8 @@ export function AgentTemplatePublishDialog({
       publishAgent.reset()
     }
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const copy = getPublishDialogCopy('agent template', selectedSkillset?.publishMode ?? 'pull_request')
 
   const handleSkillsetSelect = (ss: ApiSkillsetConfig) => {
     setSelectedSkillset(ss)
@@ -147,7 +150,7 @@ export function AgentTemplatePublishDialog({
             <DialogHeader>
               <DialogTitle>Publish Agent Template</DialogTitle>
               <DialogDescription>
-                Submit this agent template to the {selectedSkillset?.name} skillset via a pull request.
+                Submit this agent template to the {selectedSkillset?.name} skillset{copy.descriptionSuffix ? ` ${copy.descriptionSuffix}` : ''}.
               </DialogDescription>
             </DialogHeader>
 
@@ -182,7 +185,7 @@ export function AgentTemplatePublishDialog({
                 )}
 
                 <div className="space-y-1.5">
-                  <Label htmlFor="agent-publish-title">PR Title</Label>
+                  <Label htmlFor="agent-publish-title">{copy.titleLabel}</Label>
                   <div className="relative">
                     <Input
                       id="agent-publish-title"
@@ -276,10 +279,10 @@ export function AgentTemplatePublishDialog({
                     {publishAgent.isPending ? (
                       <>
                         <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                        Publishing...
+                        {copy.pendingButton}
                       </>
                     ) : (
-                      'Create Pull Request'
+                      copy.submitButton
                     )}
                   </Button>
                 </>

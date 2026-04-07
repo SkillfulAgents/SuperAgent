@@ -1,7 +1,9 @@
 import { useState } from 'react'
-import { Sparkles, RefreshCw, GitPullRequest, Loader2, Upload } from 'lucide-react'
+import { Sparkles, RefreshCw, GitPullRequest, Send, Loader2, Upload } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { useForceSyncSkill, useUpdateSkill } from '@renderer/hooks/use-agent-skills'
+import { useSkillsetPublishMode } from '@renderer/hooks/use-skillsets'
+import { getReviewActionLabel, isPullRequestPublishMode } from '@renderer/lib/skillset-publish-ui'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -30,6 +32,9 @@ export function AgentSkillCard({ skill, agentSlug }: AgentSkillCardProps) {
   const [publishDialogOpen, setPublishDialogOpen] = useState(false)
   const [forceSyncDialogOpen, setForceSyncDialogOpen] = useState(false)
   const sourceLabel = skill.status.sourceLabel || skill.status.skillsetName || null
+  const publishMode = useSkillsetPublishMode(skill.status.skillsetId)
+  const isPR = isPullRequestPublishMode(publishMode)
+  const SubmitIcon = isPR ? GitPullRequest : Send
 
   return (
     <SkillContextMenu skill={skill} agentSlug={agentSlug}>
@@ -92,8 +97,8 @@ export function AgentSkillCard({ skill, agentSlug }: AgentSkillCardProps) {
                 className="h-7 text-xs"
                 onClick={() => setPrDialogOpen(true)}
               >
-                <GitPullRequest className="h-3 w-3 mr-1" />
-                Open PR
+                <SubmitIcon className="h-3 w-3 mr-1" />
+                {getReviewActionLabel(publishMode)}
               </Button>
             </>
           )}
@@ -115,6 +120,7 @@ export function AgentSkillCard({ skill, agentSlug }: AgentSkillCardProps) {
           onOpenChange={setPrDialogOpen}
           agentSlug={agentSlug}
           skillDir={skill.path}
+          publishMode={publishMode}
         />
         <SkillPublishDialog
           open={publishDialogOpen}

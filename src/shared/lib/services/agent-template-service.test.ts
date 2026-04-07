@@ -42,6 +42,15 @@ vi.mock('@shared/lib/utils/retry', () => ({
   withRetry: async (fn: () => Promise<unknown>) => fn(),
 }))
 
+const mockGetPlatformAuthStatus = vi.fn(() => ({ orgId: undefined as string | undefined }))
+vi.mock('@shared/lib/services/platform-auth-service', () => ({
+  getPlatformAuthStatus: (...args: unknown[]) => mockGetPlatformAuthStatus(...args),
+  getPlatformAccessToken: vi.fn(() => undefined),
+}))
+vi.mock('@shared/lib/platform-auth/config', () => ({
+  getPlatformProxyBaseUrl: vi.fn(() => undefined),
+}))
+
 import {
   validateAgentTemplate,
   exportAgentTemplate,
@@ -1481,9 +1490,8 @@ describe('getAgentTemplateStatus', () => {
       },
     })
 
-    const result = await getAgentTemplateStatus('hidden-platform-agent', [config], {
-      currentContext: { platformOrgId: 'org_current' },
-    })
+    mockGetPlatformAuthStatus.mockReturnValue({ orgId: 'org_current' })
+    const result = await getAgentTemplateStatus('hidden-platform-agent', [config])
     expect(result).toEqual({
       type: 'local',
       skillsetId: 'platform--skillsets/org_old/local--local',

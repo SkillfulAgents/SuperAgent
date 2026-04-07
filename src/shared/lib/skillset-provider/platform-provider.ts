@@ -54,7 +54,6 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
   }
 
   override getAccessInfo(params: {
-    currentContext?: Record<string, unknown>
     config?: Pick<SkillsetConfig, 'name' | 'description' | 'providerData'>
     meta: Pick<SkillsetProviderRef, 'skillsetId' | 'skillsetName' | 'providerData'>
   }): SkillsetAccessInfo {
@@ -63,13 +62,11 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
     const orgId = configData.orgId || this.getOrgIdFromRepoId(configData.repoId) || this.getOrgIdFromRepoId(metaData.repoId)
     const orgName = configData.orgName || this.getPlatformOrgName(params.config?.description)
     const skillsetName = params.config?.name || this.getSkillsetDisplayName(params.meta)
-    const currentPlatformOrgId = typeof params.currentContext?.platformOrgId === 'string'
-      ? params.currentContext.platformOrgId
-      : undefined
+    const currentOrgId = getPlatformAuthStatus().orgId ?? undefined
     return {
       skillsetName,
       sourceLabel: orgName ? `From org: ${orgName}` : skillsetName,
-      isAccessible: !orgId || orgId === currentPlatformOrgId,
+      isAccessible: !orgId || orgId === currentOrgId,
     }
   }
 

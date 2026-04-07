@@ -12,25 +12,15 @@ import {
   removeSkillsetCache,
   ensureSkillsetCached,
 } from '@shared/lib/services/skillset-service'
-import { getSkillsetProvider } from '@shared/lib/skillset-provider'
+import { getSkillsetProvider, getAccessibleSkillsets } from '@shared/lib/skillset-provider'
 import type { SkillsetConfig, SkillProvider } from '@shared/lib/types/skillset'
 import type { ApiSkillsetConfig } from '@shared/lib/types/api'
-import { getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
 
 function getSkillsetAccessScope() {
   const configs = getSettings().skillsets || []
-  const currentContext = { platformOrgId: getPlatformAuthStatus().orgId }
   return {
     configuredSkillsets: configs,
-    accessibleSkillsets: configs.filter((config) => {
-      const provider = getSkillsetProvider(config.provider)
-      return provider.getAccessInfo({
-        currentContext,
-        config: { name: config.name, description: config.description, providerData: provider.normalizeProviderData(config) },
-        meta: { skillsetId: config.id, skillsetName: config.name, providerData: provider.normalizeProviderData(config) },
-      }).isAccessible
-    }),
-    currentContext,
+    accessibleSkillsets: getAccessibleSkillsets(configs),
   }
 }
 
@@ -63,6 +53,7 @@ function configToApiResponse(config: SkillsetConfig, skillCount: number, agentCo
     provider: config.provider,
     badgeLabel: display.badgeLabel,
     showUrl: display.showUrl,
+    publishMode: provider.publishMode,
   }
 }
 
