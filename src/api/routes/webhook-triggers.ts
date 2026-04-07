@@ -13,6 +13,7 @@ import {
 import {
   getSessionsByWebhookTrigger,
 } from '@shared/lib/services/session-service'
+import { messagePersister } from '@shared/lib/container/message-persister'
 import { Authenticated, EntityAgentRole } from '../middleware/auth'
 
 const webhookTriggersRouter = new Hono()
@@ -42,7 +43,11 @@ webhookTriggersRouter.get('/:triggerId/sessions', TriggerAgentRole('viewer'), as
   try {
     const trigger = c.get('webhookTrigger' as never) as Awaited<ReturnType<typeof getWebhookTrigger>>
     const sessions = await getSessionsByWebhookTrigger(trigger!.agentSlug, trigger!.id)
-    return c.json(sessions)
+    const sessionsWithStatus = sessions.map((session) => ({
+      ...session,
+      isActive: messagePersister.isSessionActive(session.id),
+    }))
+    return c.json(sessionsWithStatus)
   } catch (error) {
     console.error('Failed to fetch sessions for webhook trigger:', error)
     return c.json({ error: 'Failed to fetch sessions' }, 500)

@@ -56,7 +56,11 @@ scheduledTasksRouter.get('/:taskId/sessions', TaskAgentRole('viewer'), async (c)
   try {
     const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
     const sessions = await getSessionsByScheduledTask(task!.agentSlug, task!.id)
-    return c.json(sessions)
+    const sessionsWithStatus = sessions.map((session) => ({
+      ...session,
+      isActive: messagePersister.isSessionActive(session.id),
+    }))
+    return c.json(sessionsWithStatus)
   } catch (error) {
     console.error('Failed to fetch sessions for scheduled task:', error)
     return c.json({ error: 'Failed to fetch sessions' }, 500)

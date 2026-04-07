@@ -1,12 +1,20 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { MessageSquare, ChevronLeft, ChevronRight } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@renderer/components/ui/select'
 import { useSelection } from '@renderer/context/selection-context'
 
 interface SessionItem {
   id: string
   name: string
   createdAt: string
+  isActive?: boolean
 }
 
 interface RelatedSessionsProps {
@@ -15,21 +23,45 @@ interface RelatedSessionsProps {
   className?: string
 }
 
+type SortOrder = 'newest' | 'oldest'
+
 const PAGE_SIZE = 10
 
 export function RelatedSessions({ sessions, formatDate, className }: RelatedSessionsProps) {
   const [page, setPage] = useState(0)
-  const totalPages = Math.ceil(sessions.length / PAGE_SIZE)
-  const paginated = sessions.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
+  const [sortOrder, setSortOrder] = useState<SortOrder>('newest')
   const { selectSession } = useSelection()
+
+  const sorted = useMemo(() => {
+    const copy = [...sessions]
+    copy.sort((a, b) => {
+      const diff = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      return sortOrder === 'newest' ? diff : -diff
+    })
+    return copy
+  }, [sessions, sortOrder])
+
+  const totalPages = Math.ceil(sorted.length / PAGE_SIZE)
+  const paginated = sorted.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
 
   if (sessions.length === 0) return null
 
   return (
     <div className={className}>
-      <h3 className="text-sm font-medium text-muted-foreground mb-2">
-        Related Sessions ({sessions.length})
-      </h3>
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="text-sm font-medium text-muted-foreground">
+          Related Sessions ({sessions.length})
+        </h3>
+        <Select value={sortOrder} onValueChange={(v) => { setSortOrder(v as SortOrder); setPage(0) }}>
+          <SelectTrigger className="h-7 w-[130px] text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="newest">Newest first</SelectItem>
+            <SelectItem value="oldest">Oldest first</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
       <div className="space-y-2">
         {paginated.map((session) => (
           <button
@@ -39,7 +71,15 @@ export function RelatedSessions({ sessions, formatDate, className }: RelatedSess
           >
             <MessageSquare className="h-4 w-4 text-muted-foreground shrink-0" />
             <div className="flex-1 min-w-0">
-              <div className="font-medium truncate">{session.name}</div>
+              <div className="font-medium truncate flex items-center gap-2">
+                {session.isActive && (
+                  <span className="relative flex h-2 w-2 shrink-0">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-current opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-current"></span>
+                  </span>
+                )}
+                {session.name}
+              </div>
               <div className="text-xs text-muted-foreground">
                 {formatDate(session.createdAt)}
               </div>
