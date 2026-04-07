@@ -18,17 +18,18 @@ export interface ReviewDetails {
  * e.g. "list_meetings" → "listing meetings", "get_user_profile" → "getting user profile",
  *      "send_message" → "sending message", "search_contacts" → "searching contacts"
  */
-function humanizeActionName(name: string): string {
-  const words = name.replace(/[_-]/g, ' ').trim().split(' ')
-  if (words.length === 0) return name
+export function humanizeActionName(name: string): string {
+  const words = name.replace(/[_-]/g, ' ').trim().split(/\s+/)
+  if (words.length === 0 || words[0] === '') return name || 'action'
 
   // Convert first word (the verb) to gerund form
   const verb = words[0]
   let gerund: string
   if (verb.endsWith('e') && !verb.endsWith('ee')) {
     gerund = verb.slice(0, -1) + 'ing' // e.g. "create" → "creating"
-  } else if (/^[a-z]+[bcdfghlmnprstvwz]$/.test(verb) && verb.length <= 4) {
-    gerund = verb + verb[verb.length - 1] + 'ing' // e.g. "get" → "getting"
+  } else if (/^[a-z]*[bcdfghjklmnpqrstvwxyz][aeiou][bcdfghlmnprstvwz]$/.test(verb) && verb.length <= 4) {
+    // Double final consonant for short CVC verbs: "get" → "getting", "run" → "running"
+    gerund = verb + verb[verb.length - 1] + 'ing'
   } else {
     gerund = verb + 'ing' // e.g. "list" → "listing", "search" → "searching"
   }
@@ -52,8 +53,10 @@ export function generateReviewDisplayText(
   const descriptions = Object.values(scopeDescriptions)
   if (descriptions.length > 0) {
     const desc = descriptions[0]
-    // Ensure it ends with '?'
-    return desc.endsWith('?') ? desc : `Allow ${desc.charAt(0).toLowerCase()}${desc.slice(1)}?`
+    if (desc.endsWith('?')) return desc
+    // Strip leading "allow" (case-insensitive) to avoid "Allow allow..."
+    const stripped = desc.replace(/^allow\s+/i, '')
+    return `Allow ${stripped.charAt(0).toLowerCase()}${stripped.slice(1)}?`
   }
 
   const toolkitDisplay = toolkit.charAt(0).toUpperCase() + toolkit.slice(1)

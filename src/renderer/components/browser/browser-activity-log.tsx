@@ -1,19 +1,23 @@
 import { useMemo, useEffect, useRef, useState } from 'react'
 import { Loader2, ChevronRight, ChevronDown } from 'lucide-react'
 import { ScrollArea } from '@renderer/components/ui/scroll-area'
-import { useMessages, useSubagentMessages } from '@renderer/hooks/use-messages'
+import { useMessages } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
+import { useQueries } from '@tanstack/react-query'
+import { apiFetch } from '@renderer/lib/api'
 import { getToolRenderer } from '@renderer/components/messages/tool-renderers'
 import { parseToolResult } from '@renderer/lib/parse-tool-result'
 import { cn } from '@shared/lib/utils/cn'
-import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
+import type { ApiMessage, ApiMessageOrBoundary, ApiToolCall } from '@shared/lib/types/api'
 
 const BROWSER_TOOL_PREFIX = 'mcp__browser__'
 const MAX_ENTRIES = 80
 
-type FlatItem =
-  | { kind: 'text'; key: string; text: string }
-  | { kind: 'tool'; key: string; toolCall: ApiToolCall }
+interface FlatItem {
+  kind: 'tool'
+  key: string
+  toolCall: ApiToolCall
+}
 
 interface BrowserActivityLogProps {
   sessionId: string
@@ -23,114 +27,90 @@ interface BrowserActivityLogProps {
 export function BrowserActivityLog({ sessionId, agentSlug }: BrowserActivityLogProps) {
   const { data: messages } = useMessages(sessionId, agentSlug)
   const { streamingToolUse, activeSubagents } = useMessageStream(sessionId, agentSlug)
-  const scrollRef = useRef<HTMLDivElement>(null)
+  const bottomSentinelRef = useRef<HTMLDivElement>(null)
 
-  // Find the browser subagent ID
-  const subagentId = useMemo(() => {
-    for (const sub of activeSubagents ?? []) {
-      if (sub.agentId && sub.streamingToolUse?.name.startsWith(BROWSER_TOOL_PREFIX)) {
-        return sub.agentId
-      }
-    }
-    if (!messages) return null
-    let lastSubagentId: string | null = null
+  // Collect ALL subagent IDs from the session messages
+  const subagentIds = useMemo(() => {
+    if (!messages) return []
+    const ids: string[] = []
     for (const msg of messages) {
       if (msg.type !== 'assistant') continue
       const apiMsg = msg as ApiMessage
       if (!apiMsg.toolCalls) continue
       for (const tc of apiMsg.toolCalls) {
         if ((tc.name === 'Task' || tc.name === 'Agent') && tc.subagent?.agentId) {
-          lastSubagentId = tc.subagent.agentId
+          ids.push(tc.subagent.agentId)
         }
       }
     }
-    return lastSubagentId
-  }, [messages, activeSubagents])
+    return ids
+  }, [messages])
 
-  const { data: subMessages } = useSubagentMessages(sessionId, agentSlug, subagentId)
+  // Fetch messages for ALL subagents in parallel
+  const subagentQueries = useQueries({
+    queries: subagentIds.map((subId) => ({
+      queryKey: ['subagent-messages', sessionId, agentSlug, subId],
+      queryFn: async () => {
+        const res = await apiFetch(
+          `/api/agents/${agentSlug}/sessions/${sessionId}/subagent/${subId}/messages`
+        )
+        if (!res.ok) throw new Error('Failed to fetch subagent messages')
+        return res.json() as Promise<ApiMessageOrBoundary[]>
+      },
+      refetchInterval: false as const,
+    })),
+  })
 
-  // Flatten subagent messages into interleaved text + tool call items
+  // Extract browser tool calls from all sources, deduplicated and in message order
   const flatItems = useMemo(() => {
+    const seen = new Set<string>()
     const items: FlatItem[] = []
 
-    const processMessages = (msgs: typeof messages) => {
+    const extractBrowserTools = (msgs: ApiMessageOrBoundary[] | undefined) => {
       if (!msgs) return
       for (const msg of msgs) {
         if (msg.type !== 'assistant') continue
         const apiMsg = msg as ApiMessage
-        if (apiMsg.content.text) {
-          items.push({ kind: 'text', key: `text-${apiMsg.id}`, text: apiMsg.content.text })
-        }
         for (const tc of apiMsg.toolCalls ?? []) {
-          if (tc.name.startsWith(BROWSER_TOOL_PREFIX)) {
+          if (tc.name.startsWith(BROWSER_TOOL_PREFIX) && !seen.has(tc.id)) {
+            seen.add(tc.id)
             items.push({ kind: 'tool', key: `tool-${tc.id}`, toolCall: tc })
           }
         }
       }
     }
 
-    processMessages(subMessages)
+    // Process main messages first (they're in chronological order)
+    extractBrowserTools(messages)
 
-    if (messages) {
-      for (const msg of messages) {
-        if (msg.type !== 'assistant') continue
-        const apiMsg = msg as ApiMessage
-        if (!apiMsg.toolCalls) continue
-        for (const tc of apiMsg.toolCalls) {
-          if (tc.name.startsWith(BROWSER_TOOL_PREFIX)) {
-            const exists = items.some(i => i.kind === 'tool' && i.toolCall.id === tc.id)
-            if (!exists) {
-              items.push({ kind: 'tool', key: `tool-${tc.id}`, toolCall: tc })
-            }
-          }
-        }
-      }
+    // Then add any browser tools from subagents that aren't already included
+    for (const query of subagentQueries) {
+      extractBrowserTools(query.data)
     }
 
     return items.slice(-MAX_ENTRIES)
-  }, [messages, subMessages])
+  }, [messages, subagentQueries])
 
-  // Streaming browser tool
+  // Streaming browser tool (from active subagent or main agent)
   const streamingBrowserTool = useMemo(() => {
     if (streamingToolUse?.name.startsWith(BROWSER_TOOL_PREFIX)) {
-      const persisted = flatItems.some(i => i.kind === 'tool' && i.toolCall.id === streamingToolUse.id)
+      const persisted = flatItems.some(i => i.toolCall.id === streamingToolUse.id)
       if (!persisted) return streamingToolUse
     }
     for (const sub of activeSubagents ?? []) {
       if (sub.streamingToolUse?.name.startsWith(BROWSER_TOOL_PREFIX)) {
-        const persisted = flatItems.some(i => i.kind === 'tool' && i.toolCall.id === sub.streamingToolUse!.id)
+        const persisted = flatItems.some(i => i.toolCall.id === sub.streamingToolUse!.id)
         if (!persisted) return sub.streamingToolUse
       }
     }
     return null
   }, [streamingToolUse, activeSubagents, flatItems])
 
-  // Streaming assistant text from subagent
-  const streamingText = useMemo(() => {
-    for (const sub of activeSubagents ?? []) {
-      if (sub.streamingMessage) {
-        const lastTextItem = [...flatItems].reverse().find(i => i.kind === 'text')
-        if (lastTextItem && lastTextItem.kind === 'text') {
-          const persisted = lastTextItem.text.trim()
-          const streaming = sub.streamingMessage.trim()
-          if (persisted.startsWith(streaming) || streaming.startsWith(persisted)) {
-            return null
-          }
-        }
-        return sub.streamingMessage
-      }
-    }
-    return null
-  }, [activeSubagents, flatItems])
-
   useEffect(() => {
-    const el = scrollRef.current
-    if (el) {
-      el.scrollTop = el.scrollHeight
-    }
-  }, [flatItems.length, streamingBrowserTool, streamingText])
+    bottomSentinelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  }, [flatItems.length, streamingBrowserTool])
 
-  if (flatItems.length === 0 && !streamingBrowserTool && !streamingText) {
+  if (flatItems.length === 0 && !streamingBrowserTool) {
     return (
       <div className="flex-1 min-h-0 flex items-center justify-center px-4 py-4">
         <span className="text-xs text-muted-foreground">No browser activity yet</span>
@@ -140,24 +120,14 @@ export function BrowserActivityLog({ sessionId, agentSlug }: BrowserActivityLogP
 
   return (
     <ScrollArea className="flex-1 min-h-0">
-      <div ref={scrollRef} className="px-4 py-2 space-y-2.5">
-        {flatItems.map((item) =>
-          item.kind === 'text' ? (
-            <p key={item.key} className="text-[11px] leading-normal text-muted-foreground">
-              {item.text}
-            </p>
-          ) : (
-            <CompactToolCall key={item.key} toolCall={item.toolCall} />
-          )
-        )}
-        {streamingText && (
-          <p className="text-[11px] leading-normal text-muted-foreground animate-pulse">
-            {streamingText}
-          </p>
-        )}
+      <div className="px-4 py-2 space-y-2.5">
+        {flatItems.map((item) => (
+          <CompactToolCall key={item.key} toolCall={item.toolCall} />
+        ))}
         {streamingBrowserTool && (
           <CompactStreamingTool name={streamingBrowserTool.name} partialInput={streamingBrowserTool.partialInput} />
         )}
+        <div ref={bottomSentinelRef} />
       </div>
     </ScrollArea>
   )

@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Globe, MousePointerClick, PanelRightClose, PanelRightOpen, Pause, Square, Expand, Shrink } from 'lucide-react'
+import { Globe, MousePointerClick, PanelRightClose, PanelRightOpen, Pause, Play, Square, Expand, Shrink } from 'lucide-react'
 import { BrowserActivityLog } from './browser-activity-log'
+import { BrowserTabBar } from './browser-tab-bar'
 import { useBrowserStream } from '@renderer/hooks/use-browser-stream'
 import { Button } from '@renderer/components/ui/button'
 import { apiFetch } from '@renderer/lib/api'
+import { removeBrowserInputRequest } from '@renderer/hooks/use-message-stream'
 import { cn } from '@shared/lib/utils/cn'
 import { useSidebar } from '@renderer/components/ui/sidebar'
 import {
@@ -96,13 +98,17 @@ export function BrowserDrawerPanel({
         setDrawerWidth(newWidth)
       }
 
-      const handleMouseUp = () => {
+      const handleMouseUp = (upEvent: MouseEvent) => {
         document.removeEventListener('mousemove', handleMouseMove)
         document.removeEventListener('mouseup', handleMouseUp)
         document.body.style.cursor = ''
         document.body.style.userSelect = ''
         setIsResizing(false)
         setIsExpanded(false)
+        // Persist final width once on mouseup instead of every pixel
+        const dx = startXRef.current - upEvent.clientX
+        const finalWidth = Math.min(MAX_DRAWER_WIDTH, Math.max(MIN_DRAWER_WIDTH, startWidthRef.current + dx))
+        localStorage.setItem(DRAWER_WIDTH_STORAGE_KEY, String(Math.round(finalWidth)))
       }
 
       document.addEventListener('mousemove', handleMouseMove)
@@ -111,12 +117,40 @@ export function BrowserDrawerPanel({
     [drawerWidth]
   )
 
-  // Persist width on change during resize
-  useEffect(() => {
-    if (isResizing) {
-      localStorage.setItem(DRAWER_WIDTH_STORAGE_KEY, String(Math.round(drawerWidth)))
+
+  // --- Pause / Resume ---
+  const [isPaused, setIsPaused] = useState(false)
+
+  const handlePauseResume = useCallback(async () => {
+    if (isPaused) {
+      // Resume by sending a "resume" message
+      try {
+        await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/messages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: 'resume' }),
+        })
+        setIsPaused(false)
+      } catch (err) {
+        console.error('Failed to resume session:', err)
+      }
+    } else {
+      // Pause by interrupting the session
+      try {
+        await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/interrupt`, {
+          method: 'POST',
+        })
+        setIsPaused(true)
+      } catch (err) {
+        console.error('Failed to pause session:', err)
+      }
     }
-  }, [drawerWidth, isResizing])
+  }, [agentSlug, sessionId, isPaused])
+
+  // Reset paused state when browser becomes inactive (session ended, not just paused)
+  useEffect(() => {
+    if (!browserActive) setIsPaused(false)
+  }, [browserActive])
 
   // --- Browser input action handlers ---
   const [actionStatus, setActionStatus] = useState<'idle' | 'completing' | 'declining'>('idle')
@@ -124,7 +158,7 @@ export function BrowserDrawerPanel({
     ? stream.pendingBrowserInputRequests[stream.pendingBrowserInputRequests.length - 1]
     : null
 
-  const submitBrowserInput = useCallback(async (body: object, action: 'completing' | 'declining') => {
+  const submitBrowserInput = useCallback(async (body: Record<string, unknown> & { toolUseId: string }, action: 'completing' | 'declining') => {
     setActionStatus(action)
     try {
       await apiFetch(
@@ -135,6 +169,8 @@ export function BrowserDrawerPanel({
           body: JSON.stringify(body),
         }
       )
+      // Remove from pending requests so the chat card dismisses and status updates immediately
+      removeBrowserInputRequest(sessionId, body.toolUseId)
     } catch (err) {
       console.error('Failed to submit browser input:', err)
     } finally {
@@ -182,7 +218,13 @@ export function BrowserDrawerPanel({
           'h-full border-l bg-background flex flex-col shrink-0 overflow-hidden relative shadow-[-4px_0_16px_rgba(0,0,0,0.08)] dark:shadow-[-4px_0_16px_rgba(0,0,0,0.3)]',
           !isResizing && 'transition-[width] duration-300 ease-in-out'
         )}
-        style={{ width: isOpen ? drawerWidth : 0 }}
+        style={{ width: isOpen ? drawerWidth : 0, contain: 'layout paint', willChange: 'transform' }}
+        onTransitionEnd={(e) => {
+          // After the close animation finishes, mark as user-closed so reopen button shows
+          if (e.propertyName === 'width' && !isOpen) {
+            setUserClosed(true)
+          }
+        }}
         data-testid="browser-drawer-panel"
       >
         {/* Resize handle on left edge */}
@@ -208,106 +250,118 @@ export function BrowserDrawerPanel({
           </span>
           <button
             className="p-0.5 rounded hover:bg-muted transition-colors"
-            onClick={() => {
-              setIsOpen(false)
-              setTimeout(() => setUserClosed(true), 300)
-            }}
+            onClick={() => setIsOpen(false)}
             title="Hide browser panel"
           >
             <PanelRightClose className="h-4 w-4" />
           </button>
         </div>
 
-        {/* Canvas viewport with padding */}
-        <div className="shrink-0 p-4">
-          <div className="relative overflow-hidden rounded-lg bg-black animate-cobalt-glow">
-            <canvas
-              ref={canvasRef}
-              className={`w-full object-contain ${stream.isViewOnly ? 'cursor-not-allowed' : 'cursor-default'}`}
-              style={{ aspectRatio: stream.aspectRatio }}
-              tabIndex={stream.isViewOnly ? -1 : 0}
-              data-testid="browser-canvas"
-              onMouseDown={stream.isViewOnly ? undefined : stream.handleMouseDown}
-              onMouseUp={stream.isViewOnly ? undefined : stream.handleMouseUp}
-              onMouseMove={stream.isViewOnly ? undefined : stream.handleMouseMove}
-              onWheel={stream.isViewOnly ? undefined : stream.handleWheel}
-              onKeyDown={stream.isViewOnly ? undefined : stream.handleKeyDown}
-              onKeyUp={stream.isViewOnly ? undefined : stream.handleKeyUp}
-              onPaste={stream.isViewOnly ? undefined : stream.handlePaste}
-              onContextMenu={(e) => e.preventDefault()}
-            />
-            {!stream.connected && (
-              <div className="absolute inset-0 flex items-center justify-center bg-black/50">
-                <span className="text-white text-xs">Connecting to browser stream...</span>
-              </div>
-            )}
-            {stream.showOverlay && (
-              <div
-                className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 backdrop-blur-sm cursor-pointer z-10 transition-opacity duration-300"
-                role="button"
-                tabIndex={0}
-                onClick={stream.dismissOverlay}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault()
-                    stream.dismissOverlay()
-                  }
-                }}
-              >
-                <span className="relative flex h-3 w-3 mb-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
-                </span>
-                <span className="text-white text-sm font-medium mb-3">Your input needed</span>
-                <MousePointerClick className="h-6 w-6 text-white animate-pulse" />
-                <span className="text-white/70 text-xs mt-1">Click to interact</span>
-              </div>
-            )}
-          </div>
+        {/* Tab bar — shown when any tabs are reported */}
+        {stream.tabs.length >= 1 && (
+          <BrowserTabBar
+            tabs={stream.tabs}
+            viewingTargetId={stream.viewingTargetId}
+            autoFollow={stream.autoFollow}
+            loading={stream.pageLoading}
+            onTabClick={stream.handleTabClick}
+            onCloseTab={stream.handleCloseTab}
+            onToggleAutoFollow={stream.toggleAutoFollow}
+          />
+        )}
 
-          {/* Browser controls pill */}
-          <div className="flex justify-center mt-2 relative z-20">
-            <div className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-background px-2 py-1 shadow-md">
-              <button
-                className="p-1.5 rounded-full hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
-                title="Pause"
-              >
-                <Pause className="h-3.5 w-3.5 fill-current" />
-              </button>
-              <button
-                className="p-1.5 rounded-full hover:bg-muted transition-colors text-red-500 hover:text-red-600"
-                onClick={stream.handleCloseClick}
-                title="Stop browser"
-              >
-                <Square className="h-3.5 w-3.5 fill-current" />
-              </button>
-              <button
-                className="p-1.5 rounded-full hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
-                onClick={() => {
-                  if (isExpanded) {
-                    setDrawerWidth(preExpandWidthRef.current ?? DEFAULT_DRAWER_WIDTH)
-                    if (sidebarWasOpenRef.current) setSidebarOpen(true)
-                    setIsExpanded(false)
-                  } else {
-                    preExpandWidthRef.current = drawerWidth
-                    sidebarWasOpenRef.current = sidebarOpen
-                    setDrawerWidth(MAX_DRAWER_WIDTH)
-                    setSidebarOpen(false)
-                    setIsExpanded(true)
-                  }
-                }}
-                title={isExpanded ? 'Collapse' : 'Expand'}
-              >
-                {isExpanded ? <Shrink className="h-3.5 w-3.5" /> : <Expand className="h-3.5 w-3.5" />}
-              </button>
+        {/* Canvas viewport — full width, edge-to-edge. Glow only when agent is actively working */}
+        <div className={cn('relative shrink-0 overflow-hidden bg-black border-y border-border/40', isActive && !stream.needsAttention && 'browser-glow-container')}>
+          <canvas
+            ref={canvasRef}
+            className={`w-full block ${stream.isViewOnly ? 'cursor-not-allowed' : 'cursor-default'}`}
+            style={{ aspectRatio: stream.aspectRatio, willChange: 'transform' }}
+            tabIndex={stream.isViewOnly ? -1 : 0}
+            data-testid="browser-canvas"
+            onMouseDown={stream.isViewOnly ? undefined : stream.handleMouseDown}
+            onMouseUp={stream.isViewOnly ? undefined : stream.handleMouseUp}
+            onMouseMove={stream.isViewOnly ? undefined : stream.handleMouseMove}
+            onWheel={stream.isViewOnly ? undefined : stream.handleWheel}
+            onKeyDown={stream.isViewOnly ? undefined : stream.handleKeyDown}
+            onKeyUp={stream.isViewOnly ? undefined : stream.handleKeyUp}
+            onPaste={stream.isViewOnly ? undefined : stream.handlePaste}
+            onContextMenu={(e) => e.preventDefault()}
+          />
+          {!stream.connected && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+              <span className="text-white text-xs">Connecting to browser stream...</span>
             </div>
+          )}
+          {stream.showOverlay && (
+            <div
+              className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 backdrop-blur-sm cursor-pointer z-10 transition-opacity duration-300"
+              role="button"
+              tabIndex={0}
+              onClick={stream.dismissOverlay}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  stream.dismissOverlay()
+                }
+              }}
+            >
+              <span className="relative flex h-3 w-3 mb-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
+              </span>
+              <span className="text-white text-sm font-medium mb-3">Your input needed</span>
+              <MousePointerClick className="h-6 w-6 text-white animate-pulse" />
+              <span className="text-white/70 text-xs mt-1">Click to interact</span>
+            </div>
+          )}
+
+        </div>
+
+        {/* Browser controls pill — sticky to bottom of drawer, always visible */}
+        <div className="sticky bottom-2 z-20 flex justify-center pointer-events-none shrink-0 -mt-10">
+          <div className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-background px-2 py-1 shadow-md pointer-events-auto">
+            {(isPaused || (isActive && !stream.needsAttention)) && (
+              <button
+                className="p-1.5 rounded-full hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+                onClick={handlePauseResume}
+                title={isPaused ? 'Resume' : 'Pause'}
+              >
+                {isPaused ? <Play className="h-3.5 w-3.5 fill-current" /> : <Pause className="h-3.5 w-3.5 fill-current" />}
+              </button>
+            )}
+            <button
+              className="p-1.5 rounded-full hover:bg-muted transition-colors text-red-500 hover:text-red-600"
+              onClick={stream.handleCloseClick}
+              title="Stop browser"
+            >
+              <Square className="h-3.5 w-3.5 fill-current" />
+            </button>
+            <button
+              className="p-1.5 rounded-full hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+              onClick={() => {
+                if (isExpanded) {
+                  setDrawerWidth(preExpandWidthRef.current ?? DEFAULT_DRAWER_WIDTH)
+                  if (sidebarWasOpenRef.current) setSidebarOpen(true)
+                  setIsExpanded(false)
+                } else {
+                  preExpandWidthRef.current = drawerWidth
+                  sidebarWasOpenRef.current = sidebarOpen
+                  setDrawerWidth(MAX_DRAWER_WIDTH)
+                  setSidebarOpen(false)
+                  setIsExpanded(true)
+                }
+              }}
+              title={isExpanded ? 'Collapse' : 'Expand'}
+            >
+              {isExpanded ? <Shrink className="h-3.5 w-3.5" /> : <Expand className="h-3.5 w-3.5" />}
+            </button>
           </div>
         </div>
 
         {/* Action bar — shown when browser input is needed */}
         {stream.needsAttention && latestRequest && (
-          <div className="shrink-0 px-4">
-            <div className="rounded-lg border border-border/60 bg-muted/30 p-3 mt-1 flex items-center gap-2">
+          <div className="shrink-0 px-4 mt-3">
+            <div className="rounded-lg border border-border/60 bg-muted/30 p-3 flex items-center gap-2">
               <span className="text-xs font-medium text-foreground flex-1 truncate">
                 {latestRequest.message || 'Your input needed'}
               </span>

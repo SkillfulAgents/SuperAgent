@@ -20,6 +20,7 @@ vi.mock('@renderer/context/user-context', () => ({
 
 vi.mock('@renderer/hooks/use-messages', () => ({
   useMessages: () => ({ data: [] }),
+  useSubagentMessages: () => ({ data: [] }),
 }))
 
 vi.mock('@renderer/components/messages/tool-renderers', () => ({
@@ -31,12 +32,20 @@ vi.mock('lucide-react', () => ({
   Globe: (props: any) => <span data-testid="icon-globe" {...props} />,
   ChevronUp: (props: any) => <span data-testid="icon-chevron-up" {...props} />,
   ChevronDown: (props: any) => <span data-testid="icon-chevron-down" {...props} />,
+  ChevronRight: (props: any) => <span data-testid="icon-chevron-right" {...props} />,
   X: (props: any) => <span data-testid="icon-x" {...props} />,
   Loader2: (props: any) => <span data-testid="icon-loader" {...props} />,
   MousePointerClick: (props: any) => <span data-testid="icon-mouse" {...props} />,
   Eye: (props: any) => <span data-testid="icon-eye" {...props} />,
   EyeOff: (props: any) => <span data-testid="icon-eye-off" {...props} />,
   Check: (props: any) => <span data-testid="icon-check" {...props} />,
+  PanelRightClose: (props: any) => <span data-testid="icon-panel-right-close" {...props} />,
+  PanelRightOpen: (props: any) => <span data-testid="icon-panel-right-open" {...props} />,
+  Pause: (props: any) => <span data-testid="icon-pause" {...props} />,
+  Play: (props: any) => <span data-testid="icon-play" {...props} />,
+  Square: (props: any) => <span data-testid="icon-square" {...props} />,
+  Expand: (props: any) => <span data-testid="icon-expand" {...props} />,
+  Shrink: (props: any) => <span data-testid="icon-shrink" {...props} />,
 }))
 
 // Mock alert dialog to avoid Radix DOM issues
@@ -60,6 +69,11 @@ vi.mock('@renderer/components/ui/button', () => ({
 vi.mock('@renderer/components/ui/scroll-area', () => ({
   ScrollArea: ({ children, className }: any) => <div className={className}>{children}</div>,
   ScrollBar: () => null,
+}))
+
+// Mock sidebar
+vi.mock('@renderer/components/ui/sidebar', () => ({
+  useSidebar: () => ({ open: true, setOpen: vi.fn() }),
 }))
 
 // Track WebSocket instances
@@ -110,7 +124,16 @@ beforeEach(() => {
   vi.stubGlobal('requestAnimationFrame', (cb: () => void) => setTimeout(cb, 0))
 })
 
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BrowserDrawerPanel } from './browser-drawer-panel'
+
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: false } },
+})
+
+function Wrapper({ children }: { children: React.ReactNode }) {
+  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+}
 
 const defaultProps = {
   agentSlug: 'test-agent',
@@ -129,24 +152,24 @@ function simulateWsMessage(ws: MockWebSocket, data: Record<string, unknown>) {
 
 describe('BrowserDrawerPanel', () => {
   it('renders the drawer when browserActive is true', async () => {
-    render(<BrowserDrawerPanel {...defaultProps} />)
+    render(<BrowserDrawerPanel {...defaultProps} />, { wrapper: Wrapper })
     expect(screen.getByTestId('browser-drawer-panel')).toBeInTheDocument()
   })
 
   it('does not render when browserActive is false', () => {
-    render(<BrowserDrawerPanel {...defaultProps} browserActive={false} />)
+    render(<BrowserDrawerPanel {...defaultProps} browserActive={false} />, { wrapper: Wrapper })
     expect(screen.queryByTestId('browser-drawer-panel')).not.toBeInTheDocument()
   })
 
   it('shows "Browser" text in header', async () => {
-    render(<BrowserDrawerPanel {...defaultProps} />)
+    render(<BrowserDrawerPanel {...defaultProps} />, { wrapper: Wrapper })
     await act(async () => { await new Promise(r => setTimeout(r, 10)) })
     // Use exact match to avoid colliding with "Close Browser" in dialog
     expect(screen.getByText('Browser (connecting...)')).toBeInTheDocument()
   })
 
   it('shows tab bar when tab_list message is received', async () => {
-    render(<BrowserDrawerPanel {...defaultProps} />)
+    render(<BrowserDrawerPanel {...defaultProps} />, { wrapper: Wrapper })
     await act(async () => { await new Promise(r => setTimeout(r, 10)) })
 
     const ws = getLatestWs()
@@ -166,7 +189,7 @@ describe('BrowserDrawerPanel', () => {
   })
 
   it('auto-follow updates viewingTargetId from tab_list activeTargetId', async () => {
-    render(<BrowserDrawerPanel {...defaultProps} />)
+    render(<BrowserDrawerPanel {...defaultProps} />, { wrapper: Wrapper })
     await act(async () => { await new Promise(r => setTimeout(r, 10)) })
 
     const ws = getLatestWs()
@@ -186,7 +209,7 @@ describe('BrowserDrawerPanel', () => {
   })
 
   it('tab_switched message updates viewingTargetId', async () => {
-    render(<BrowserDrawerPanel {...defaultProps} />)
+    render(<BrowserDrawerPanel {...defaultProps} />, { wrapper: Wrapper })
     await act(async () => { await new Promise(r => setTimeout(r, 10)) })
 
     const ws = getLatestWs()
@@ -211,7 +234,7 @@ describe('BrowserDrawerPanel', () => {
 
   it('tab click sends switch_tab WS message and disables auto-follow', async () => {
     const user = userEvent.setup()
-    render(<BrowserDrawerPanel {...defaultProps} />)
+    render(<BrowserDrawerPanel {...defaultProps} />, { wrapper: Wrapper })
     await act(async () => { await new Promise(r => setTimeout(r, 10)) })
 
     const ws = getLatestWs()
@@ -237,7 +260,7 @@ describe('BrowserDrawerPanel', () => {
 
   it('toggle auto-follow sends follow_agent WS message', async () => {
     const user = userEvent.setup()
-    render(<BrowserDrawerPanel {...defaultProps} />)
+    render(<BrowserDrawerPanel {...defaultProps} />, { wrapper: Wrapper })
     await act(async () => { await new Promise(r => setTimeout(r, 10)) })
 
     const ws = getLatestWs()
@@ -259,7 +282,7 @@ describe('BrowserDrawerPanel', () => {
   })
 
   it('falls back to agent active tab when viewed tab is closed', async () => {
-    render(<BrowserDrawerPanel {...defaultProps} />)
+    render(<BrowserDrawerPanel {...defaultProps} />, { wrapper: Wrapper })
     await act(async () => { await new Promise(r => setTimeout(r, 10)) })
 
     const ws = getLatestWs()
@@ -295,7 +318,7 @@ describe('BrowserDrawerPanel', () => {
   })
 
   it('shows loading spinner when page_loading is true', async () => {
-    render(<BrowserDrawerPanel {...defaultProps} />)
+    render(<BrowserDrawerPanel {...defaultProps} />, { wrapper: Wrapper })
     await act(async () => { await new Promise(r => setTimeout(r, 10)) })
 
     const ws = getLatestWs()
@@ -325,7 +348,7 @@ describe('BrowserDrawerPanel', () => {
   })
 
   it('shows activity section', async () => {
-    render(<BrowserDrawerPanel {...defaultProps} />)
+    render(<BrowserDrawerPanel {...defaultProps} />, { wrapper: Wrapper })
     await act(async () => { await new Promise(r => setTimeout(r, 10)) })
 
     expect(screen.getByText('Activity')).toBeInTheDocument()

@@ -107,4 +107,33 @@ describe('BrowserTabBar', () => {
     const spinner = container.querySelector('.animate-spin')
     expect(spinner).not.toBeInTheDocument()
   })
+
+  it('right-click on tab shows context menu with Close tab', async () => {
+    const user = userEvent.setup()
+    render(<BrowserTabBar {...defaultProps} onCloseTab={vi.fn()} />)
+
+    await user.pointer({ keys: '[MouseRight]', target: screen.getByText('Tab 1') })
+    expect(await screen.findByText('Close tab')).toBeInTheDocument()
+  })
+
+  it('Close tab is disabled on the agent-active tab', async () => {
+    const user = userEvent.setup()
+    render(<BrowserTabBar {...defaultProps} onCloseTab={vi.fn()} />)
+
+    // Tab 0 is the active tab (active: true)
+    await user.pointer({ keys: '[MouseRight]', target: screen.getByText('Tab 0') })
+    const menuItem = await screen.findByText('Close tab')
+    expect(menuItem.closest('[data-disabled]')).toBeTruthy()
+  })
+
+  it('Close tab calls onCloseTab for non-active tab', async () => {
+    const onCloseTab = vi.fn()
+    const user = userEvent.setup()
+    render(<BrowserTabBar {...defaultProps} onCloseTab={onCloseTab} />)
+
+    // Tab 1 is not the active tab
+    await user.pointer({ keys: '[MouseRight]', target: screen.getByText('Tab 1') })
+    await user.click(await screen.findByText('Close tab'))
+    expect(onCloseTab).toHaveBeenCalledWith('target-1')
+  })
 })

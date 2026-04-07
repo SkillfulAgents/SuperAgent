@@ -1,5 +1,11 @@
 import { Eye, EyeOff, Loader2 } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from '@renderer/components/ui/context-menu'
 
 // Protocol: see agent-container/src/server.ts
 export interface BrowserTabInfo {
@@ -16,31 +22,43 @@ interface BrowserTabBarProps {
   autoFollow: boolean
   loading?: boolean
   onTabClick: (targetId: string) => void
+  onCloseTab?: (targetId: string) => void
   onToggleAutoFollow: () => void
 }
 
-export function BrowserTabBar({ tabs, viewingTargetId, autoFollow, loading, onTabClick, onToggleAutoFollow }: BrowserTabBarProps) {
+export function BrowserTabBar({ tabs, viewingTargetId, autoFollow, loading, onTabClick, onCloseTab, onToggleAutoFollow }: BrowserTabBarProps) {
   return (
-    <div className="flex items-center gap-0.5 px-1 py-0.5 bg-muted/30 border-b overflow-x-auto shrink-0" style={{ height: 24 }}>
+    <div className="flex items-center gap-0.5 px-1.5 py-1 bg-muted/30 border-b overflow-x-auto shrink-0" style={{ height: 30 }}>
       {tabs.map((tab) => {
         const isViewing = tab.targetId === viewingTargetId
         const isAgentActive = tab.active
 
         return (
-          <button
-            key={tab.targetId}
-            className={cn(
-              'relative flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] leading-tight max-w-[100px] truncate transition-colors',
-              isViewing ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-muted/50',
-            )}
-            onClick={() => onTabClick(tab.targetId)}
-            title={tab.title || tab.url}
-          >
-            <span className="truncate">{tab.title || tab.url || `Tab ${tab.index + 1}`}</span>
-            {isAgentActive && (
-              <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
-            )}
-          </button>
+          <ContextMenu key={tab.targetId}>
+            <ContextMenuTrigger asChild>
+              <button
+                className={cn(
+                  'relative flex items-center gap-1 px-2 py-1 rounded text-[11px] leading-tight max-w-[120px] truncate transition-colors',
+                  isViewing ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-muted/50',
+                )}
+                onClick={() => onTabClick(tab.targetId)}
+                title={tab.title || tab.url}
+              >
+                <span className="truncate">{tab.title || tab.url || `Tab ${tab.index + 1}`}</span>
+                {isAgentActive && (
+                  <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
+                )}
+              </button>
+            </ContextMenuTrigger>
+            <ContextMenuContent>
+              <ContextMenuItem
+                disabled={isAgentActive}
+                onClick={() => onCloseTab?.(tab.targetId)}
+              >
+                Close tab
+              </ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenu>
         )
       })}
       {loading && (

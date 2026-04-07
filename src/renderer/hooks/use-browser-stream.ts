@@ -43,6 +43,10 @@ export function useBrowserStream({
   const autoFollowRef = useRef(autoFollow)
   autoFollowRef.current = autoFollow
 
+  // Lifecycle refs for cleanup
+  const isMountedRef = useRef(true)
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   const { pendingBrowserInputRequests } = useMessageStream(sessionId, agentSlug)
   const needsAttention = browserActive && pendingBrowserInputRequests.length > 0 && !isViewOnly
   const latestRequestId = pendingBrowserInputRequests.length > 0
@@ -56,25 +60,65 @@ export function useBrowserStream({
     deviceHeight: 720,
   })
 
-  // --- Frame rendering ---
-  const renderFrame = useCallback((blob: Blob) => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-
-    const img = new Image()
-    img.onload = () => {
-      if (canvas.width !== img.width || canvas.height !== img.height) {
-        canvas.width = img.width
-        canvas.height = img.height
-        setAspectRatio(`${img.width} / ${img.height}`)
-      }
-      ctx.drawImage(img, 0, 0)
-      URL.revokeObjectURL(img.src)
+  // Track window resize to skip expensive processing during resize
+  const isResizingWindowRef = useRef(false)
+  const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    const onResize = () => {
+      isResizingWindowRef.current = true
+      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current)
+      resizeTimerRef.current = setTimeout(() => {
+        isResizingWindowRef.current = false
+      }, 200)
     }
-    img.src = URL.createObjectURL(blob)
+    window.addEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current)
+    }
+  }, [])
+
+  // --- Frame rendering (rAF-throttled, off-thread decode) ---
+  const pendingBlobRef = useRef<Blob | null>(null)
+  const rafIdRef = useRef<number | null>(null)
+  const ctxRef = useRef<CanvasRenderingContext2D | null>(null)
+
+  const renderFrame = useCallback((blob: Blob) => {
+    pendingBlobRef.current = blob
+
+    // Schedule render on next animation frame (coalesces multiple WS frames into one paint)
+    if (rafIdRef.current === null) {
+      rafIdRef.current = requestAnimationFrame(() => {
+        rafIdRef.current = null
+        const latestBlob = pendingBlobRef.current
+        pendingBlobRef.current = null
+        if (!latestBlob) return
+
+        const canvas = canvasRef.current
+        if (!canvas) return
+        // Cache context — desynchronized skips the compositor for lower latency
+        if (!ctxRef.current) {
+          ctxRef.current = canvas.getContext('2d', { desynchronized: true })
+        }
+        const ctx = ctxRef.current
+        if (!ctx) return
+
+        // Decode image off the main thread
+        createImageBitmap(latestBlob).then((bitmap) => {
+          const needsResize = canvas.width !== bitmap.width || canvas.height !== bitmap.height
+          if (needsResize) {
+            canvas.width = bitmap.width
+            canvas.height = bitmap.height
+            const newRatio = `${bitmap.width} / ${bitmap.height}`
+            setAspectRatio(prev => prev === newRatio ? prev : newRatio)
+          }
+          ctx.drawImage(bitmap, 0, 0)
+          bitmap.close()
+        }).catch(() => {
+          // Ignore decode errors (corrupt frame)
+        })
+      })
+    }
   }, [canvasRef])
 
   // --- WebSocket connection ---
@@ -86,6 +130,12 @@ export function useBrowserStream({
         setConnected(false)
       }
       return
+    }
+
+    isMountedRef.current = true
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
     }
 
     const baseUrl = getApiBaseUrl()
@@ -102,24 +152,33 @@ export function useBrowserStream({
 
     ws.onmessage = (event) => {
       try {
+        // During window resize, skip frame rendering entirely to keep resize smooth
+        const resizing = isResizingWindowRef.current
+
         if (event.data instanceof Blob) {
-          renderFrame(event.data)
+          if (!resizing) renderFrame(event.data)
           return
         }
 
         const data = typeof event.data === 'string' ? JSON.parse(event.data) : null
         if (!data) return
 
-        if (data.type === 'page_loading') {
-          setPageLoading(data.loading)
-        } else if (data.type === 'metadata') {
+        // Metadata updates are cheap (ref only, no re-render)
+        if (data.type === 'metadata') {
           metadataRef.current = {
             deviceWidth: data.deviceWidth || 1280,
             deviceHeight: data.deviceHeight || 720,
           }
+          return
+        }
+
+        if (data.type === 'page_loading') {
+          setPageLoading(prev => prev === data.loading ? prev : data.loading)
         } else if (data.type === 'frame' && data.data) {
-          const blob = base64ToBlob(data.data, 'image/jpeg')
-          if (blob) renderFrame(blob)
+          if (!resizing) {
+            const blob = base64ToBlob(data.data, 'image/jpeg')
+            if (blob) renderFrame(blob)
+          }
 
           if (data.metadata) {
             metadataRef.current = {
@@ -128,14 +187,20 @@ export function useBrowserStream({
             }
           }
         } else if (data.type === 'tab_list') {
-          setTabs(data.tabs)
-          setAgentActiveTargetId(data.activeTargetId)
+          setTabs(prev => {
+            if (prev.length === data.tabs.length && prev.every((t: BrowserTabInfo, i: number) =>
+              t.targetId === data.tabs[i].targetId && t.title === data.tabs[i].title &&
+              t.url === data.tabs[i].url && t.active === data.tabs[i].active
+            )) return prev
+            return data.tabs
+          })
+          setAgentActiveTargetId(prev => prev === data.activeTargetId ? prev : data.activeTargetId)
           if (autoFollowRef.current) {
-            setViewingTargetId(data.activeTargetId)
+            setViewingTargetId(prev => prev === data.activeTargetId ? prev : data.activeTargetId)
           }
         } else if (data.type === 'tab_switched') {
-          setAgentActiveTargetId(data.targetId)
-          setViewingTargetId(data.targetId)
+          setAgentActiveTargetId(prev => prev === data.targetId ? prev : data.targetId)
+          setViewingTargetId(prev => prev === data.targetId ? prev : data.targetId)
         } else if (data.type === 'selection_result' && data.text) {
           navigator.clipboard.writeText(data.text).catch(() => {})
         }
@@ -145,27 +210,40 @@ export function useBrowserStream({
     }
 
     ws.onclose = () => {
+      if (!isMountedRef.current) return
       setConnected(false)
       setPageLoading(false)
       apiFetch(`/api/agents/${agentSlug}/browser/status`)
         .then((res) => res.json())
         .then((status: { active?: boolean; sessionId?: string }) => {
+          if (!isMountedRef.current) return
           if (!status.active || status.sessionId !== sessionId) {
             clearBrowserActive(sessionId)
           } else {
-            setTimeout(() => setReconnectKey(k => k + 1), 1000)
+            reconnectTimerRef.current = setTimeout(() => setReconnectKey(k => k + 1), 1000)
           }
         })
         .catch(() => {
-          clearBrowserActive(sessionId)
+          if (isMountedRef.current) clearBrowserActive(sessionId)
         })
     }
 
     ws.onerror = () => {
-      setConnected(false)
+      if (isMountedRef.current) setConnected(false)
     }
 
     return () => {
+      isMountedRef.current = false
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = null
+      }
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current)
+        rafIdRef.current = null
+      }
+      pendingBlobRef.current = null
+      ctxRef.current = null
       ws.close()
       wsRef.current = null
       setConnected(false)
@@ -377,6 +455,10 @@ export function useBrowserStream({
     sendMessage({ type: 'switch_tab', targetId })
   }, [viewingTargetId, sendMessage])
 
+  const handleCloseTab = useCallback((targetId: string) => {
+    sendMessage({ type: 'close_tab', targetId })
+  }, [sendMessage])
+
   const toggleAutoFollow = useCallback(() => {
     const next = !autoFollow
     setAutoFollow(next)
@@ -442,6 +524,7 @@ export function useBrowserStream({
     handlePaste,
     // Tab handlers
     handleTabClick,
+    handleCloseTab,
     toggleAutoFollow,
     // Close handlers
     closeBrowser,
