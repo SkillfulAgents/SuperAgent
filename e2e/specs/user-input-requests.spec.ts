@@ -30,10 +30,9 @@ test.describe('User Input Requests', () => {
     // Wait for the secret request UI to appear
     await sessionPage.waitForSecretRequest('OPENAI_API_KEY')
 
-    // Verify the secret name and reason are shown
+    // Verify the reason is shown (secret name is in data-secret-name attribute, not visible text)
     const request = sessionPage.getSecretRequests().first()
-    await expect(request).toContainText('OPENAI_API_KEY')
-    await expect(request).toContainText('needed for API access')
+    await expect(request).toContainText('Needed for API access')
 
     // Fill in and provide the secret
     await sessionPage.provideSecret('sk-test-12345', 'OPENAI_API_KEY')
@@ -114,8 +113,7 @@ test.describe('User Input Requests', () => {
     await expect(questionRequests).toHaveCount(1)
 
     // Verify content (toContainText works on hidden elements in the stack)
-    await expect(secretRequests.first()).toContainText('DATABASE_URL')
-    await expect(secretRequests.first()).toContainText('connection string for the database')
+    await expect(secretRequests.first()).toContainText('Connection string for the database')
     await expect(questionRequests.first()).toContainText('Which cloud provider do you prefer?')
     await expect(questionRequests.first()).toContainText('AWS')
     await expect(questionRequests.first()).toContainText('GCP')

@@ -102,7 +102,7 @@ export function BrowserInputRequestItem({
                 <>
                   <div className="pt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{message}</div>
                   <p className="pt-2 text-xs text-muted-foreground">
-                    Click &apos;Done&apos; when you have completed the suggested step(s).
+                    Click &apos;Done&apos; when you have completed the suggested steps.
                   </p>
                 </>
               ),
@@ -115,7 +115,7 @@ export function BrowserInputRequestItem({
     >
       <p className="pt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{message}</p>
       <p className="mt-2 text-xs text-muted-foreground">
-        Click &apos;Done&apos; when you have completed the suggested step(s).
+        Click &apos;Done&apos; when you have completed the suggested steps.
       </p>
 
       {requirements.length > 0 && (

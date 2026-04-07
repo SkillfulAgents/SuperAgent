@@ -25,7 +25,7 @@ describe('SecretRequestItem', () => {
 
   it('renders pending state with secret name and reason', () => {
     render(<SecretRequestItem {...defaultProps} />)
-    expect(screen.getByText('Provide OPENAI_API_KEY needed for embeddings')).toBeInTheDocument()
+    expect(screen.getByText('Needed for embeddings')).toBeInTheDocument()
     expect(screen.getByTestId('secret-provide-btn')).toBeInTheDocument()
     expect(screen.getByTestId('secret-decline-btn')).toBeInTheDocument()
   })

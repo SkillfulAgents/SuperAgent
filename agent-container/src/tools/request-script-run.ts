@@ -18,7 +18,7 @@ Examples:
 - PowerShell on Windows: scriptType "powershell", script: 'Get-Process | Select-Object -First 5'`,
   {
     script: z.string().describe('The script code to execute on the host machine'),
-    explanation: z.string().describe('A clear, human-readable explanation of what this script does and why'),
+    explanation: z.string().describe("A question for the user following the pattern 'Allow {what the script does}?'. Plain English, never use first person. Must end with '?'. Example: 'Allow opening the project URL in the default browser?'"),
     scriptType: z.enum(['applescript', 'shell', 'powershell']).describe(
       'The type of script to execute. Check HOST_PLATFORM env var: darwin → applescript or shell, win32 → powershell'
     ),

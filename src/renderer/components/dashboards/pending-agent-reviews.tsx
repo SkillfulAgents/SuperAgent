@@ -36,6 +36,7 @@ export function PendingAgentReviews({ agentSlug, readOnly, onReviewResolved }: P
           targetPath={review.targetPath}
           matchedScopes={review.matchedScopes}
           scopeDescriptions={review.scopeDescriptions}
+          displayText={review.displayText}
           agentSlug={agentSlug}
           readOnly={readOnly}
           onComplete={() => {
