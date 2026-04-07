@@ -45,8 +45,7 @@ export interface ApiAgentTemplateStatus {
   type: 'local' | 'up_to_date' | 'update_available' | 'locally_modified'
   skillsetId?: string
   skillsetName?: string
-  skillsetOrgId?: string
-  skillsetOrgName?: string
+  sourceLabel?: string
   publishable?: boolean
   latestVersion?: string
   openPrUrl?: string
@@ -214,8 +213,7 @@ export interface ApiSkillWithStatus {
     type: 'local' | 'up_to_date' | 'update_available' | 'locally_modified'
     skillsetId?: string
     skillsetName?: string
-    skillsetOrgId?: string
-    skillsetOrgName?: string
+    sourceLabel?: string
     publishable?: boolean
     latestVersion?: string
     openPrUrl?: string
@@ -259,6 +257,8 @@ export interface ApiSkillsetConfig {
   agentCount: number
   addedAt: string
   provider?: 'github' | 'platform'
+  badgeLabel?: string
+  showUrl: boolean
 }
 
 // ============================================================================

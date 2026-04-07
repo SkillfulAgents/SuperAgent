@@ -29,11 +29,7 @@ export function AgentSkillCard({ skill, agentSlug }: AgentSkillCardProps) {
   const [prDialogOpen, setPrDialogOpen] = useState(false)
   const [publishDialogOpen, setPublishDialogOpen] = useState(false)
   const [forceSyncDialogOpen, setForceSyncDialogOpen] = useState(false)
-  const sourceLabel = skill.status.skillsetOrgName
-    ? `From org: ${skill.status.skillsetOrgName}`
-    : skill.status.skillsetName
-      ? `From: ${skill.status.skillsetName}`
-      : null
+  const sourceLabel = skill.status.sourceLabel || skill.status.skillsetName || null
 
   return (
     <SkillContextMenu skill={skill} agentSlug={agentSlug}>

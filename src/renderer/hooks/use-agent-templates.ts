@@ -315,7 +315,7 @@ export function useCreateAgentTemplatePR() {
   const queryClient = useQueryClient()
 
   return useMutation<
-    { prUrl: string },
+    { prUrl?: string; successMessage: string },
     Error,
     { agentSlug: string; title: string; body: string; newVersion?: string }
   >({
@@ -370,7 +370,7 @@ export function usePublishAgentTemplate() {
   const queryClient = useQueryClient()
 
   return useMutation<
-    { prUrl: string },
+    { prUrl?: string; successMessage: string },
     Error,
     {
       agentSlug: string

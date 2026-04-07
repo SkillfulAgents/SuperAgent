@@ -3,7 +3,6 @@ import { promisify } from 'util'
 import path from 'path'
 import fs from 'fs'
 import { ensureDirectory } from '@shared/lib/utils/file-storage'
-import { GIT_ENV, ensureGhAuthenticated } from '@shared/lib/utils/skillset-helpers'
 import {
   BaseSkillsetProvider,
   type SkillsetPublishInput,
@@ -11,6 +10,11 @@ import {
 } from './base-skillset-provider'
 
 const execFileAsync = promisify(execFile)
+
+const GIT_ENV = {
+  ...process.env,
+  GIT_TERMINAL_PROMPT: '0',
+}
 
 interface ForkBranchContext {
   repoDir: string
@@ -26,7 +30,21 @@ export class GithubSkillsetProvider extends BaseSkillsetProvider {
   readonly publishMode = 'pull_request' as const
 
   async ensurePublishPreconditions(): Promise<void> {
-    await ensureGhAuthenticated()
+    await this.ensureAuthenticated()
+  }
+
+  private async ensureAuthenticated(): Promise<void> {
+    try {
+      await execFileAsync('gh', ['--version'], { timeout: 5000 })
+    } catch {
+      throw new Error('GitHub CLI (gh) is not installed. Install it from https://cli.github.com')
+    }
+
+    try {
+      await execFileAsync('gh', ['auth', 'status'], { timeout: 5000 })
+    } catch {
+      throw new Error('GitHub CLI is not authenticated. Run `gh auth login` to sign in. See https://cli.github.com')
+    }
   }
 
   override async publishUpdate(input: SkillsetPublishInput): Promise<SkillsetPublishResult> {
@@ -52,7 +70,7 @@ export class GithubSkillsetProvider extends BaseSkillsetProvider {
       body: input.body,
     })
 
-    return { prUrl }
+    return { prUrl, successMessage: 'Pull request created successfully.' }
   }
 
   private async prepareForkBranch(

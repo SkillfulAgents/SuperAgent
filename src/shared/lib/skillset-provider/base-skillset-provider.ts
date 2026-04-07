@@ -35,7 +35,8 @@ export type SkillsetPublishInput = {
 } & SkillsetHostedUpdateInput
 
 export type SkillsetPublishResult = {
-  prUrl: string
+  prUrl?: string
+  successMessage: string
   status?: string
   queueItem?: { id: string; branch_name: string; status: string }
 }
@@ -57,9 +58,13 @@ export type SkillsetProviderRef = {
 
 export type SkillsetAccessInfo = {
   skillsetName: string
-  skillsetOrgId?: string
-  skillsetOrgName?: string
+  sourceLabel?: string
   isAccessible: boolean
+}
+
+export type SkillsetDisplayInfo = {
+  badgeLabel?: string
+  showUrl: boolean
 }
 
 export abstract class BaseSkillsetProvider {
@@ -83,14 +88,20 @@ export abstract class BaseSkillsetProvider {
   }
 
   getAccessInfo(params: {
-    currentPlatformOrgId?: string | null
+    currentContext?: Record<string, unknown>
     config?: Pick<SkillsetConfig, 'name' | 'description' | 'providerData'>
     meta: Pick<SkillsetProviderRef, 'skillsetId' | 'skillsetName' | 'providerData'>
   }): SkillsetAccessInfo {
+    const skillsetName = params.config?.name || this.getSkillsetDisplayName(params.meta)
     return {
-      skillsetName: params.config?.name || this.getSkillsetDisplayName(params.meta),
+      skillsetName,
+      sourceLabel: skillsetName,
       isAccessible: true,
     }
+  }
+
+  getDisplayInfo(): SkillsetDisplayInfo {
+    return { showUrl: true }
   }
 
   async resolveCloneUrl(url: string, _options?: SkillsetProviderRef): Promise<string> {

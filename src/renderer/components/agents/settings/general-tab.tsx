@@ -49,11 +49,7 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
   const updateTemplate = useUpdateAgentTemplate()
   const exportTemplate = useExportAgentTemplate()
   const exportFull = useExportAgentFull()
-  const templateSourceLabel = templateStatus?.skillsetOrgName
-    ? `From org: ${templateStatus.skillsetOrgName}`
-    : templateStatus?.skillsetName
-      ? `From: ${templateStatus.skillsetName}`
-      : null
+  const templateSourceLabel = templateStatus?.sourceLabel || templateStatus?.skillsetName || null
 
   const handleDelete = async () => {
     setIsDeleting(true)

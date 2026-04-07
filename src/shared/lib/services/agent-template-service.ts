@@ -46,7 +46,7 @@ import type { AgentFrontmatter } from '@shared/lib/types/agent'
 import {
   copyDirectoryFiltered,
   writeJsonFile,
-} from '@shared/lib/utils/skillset-helpers'
+} from '@shared/lib/utils/file-storage'
 
 // ============================================================================
 // Constants
@@ -733,7 +733,7 @@ export async function getAgentTemplateStatus(
   agentSlug: string,
   skillsets: SkillsetConfig[],
   options?: {
-    currentPlatformOrgId?: string | null
+    currentContext?: Record<string, unknown>
   },
 ): Promise<AgentTemplateStatus> {
   const meta = await getInstalledAgentMetadata(agentSlug)
@@ -747,11 +747,10 @@ export async function getAgentTemplateStatus(
   const hostingProvider = getSkillsetProvider(meta.provider)
   const {
     skillsetName,
-    skillsetOrgId,
-    skillsetOrgName,
+    sourceLabel,
     isAccessible,
   } = hostingProvider.getAccessInfo({
-    currentPlatformOrgId: options?.currentPlatformOrgId,
+    currentContext: options?.currentContext,
     config: skillsetConfig ? {
       name: skillsetConfig.name,
       description: skillsetConfig.description,
@@ -764,8 +763,7 @@ export async function getAgentTemplateStatus(
       type: 'local',
       skillsetId: meta.skillsetId,
       skillsetName,
-      skillsetOrgId,
-      skillsetOrgName,
+      sourceLabel,
       publishable: false,
     }
   }
@@ -795,7 +793,7 @@ export async function getAgentTemplateStatus(
   const currentHash = await computeAgentTemplateHash(workspaceDir)
 
   if (currentHash !== meta.originalContentHash || meta.openPrUrl) {
-    return { type: 'locally_modified', skillsetId: meta.skillsetId, skillsetName, skillsetOrgId, skillsetOrgName, openPrUrl: meta.openPrUrl }
+    return { type: 'locally_modified', skillsetId: meta.skillsetId, skillsetName, sourceLabel, openPrUrl: meta.openPrUrl }
   }
 
   // Check for updates: version bump in index.json OR file content change in the remote cache
@@ -817,13 +815,12 @@ export async function getAgentTemplateStatus(
       type: 'update_available',
       skillsetId: meta.skillsetId,
       skillsetName,
-      skillsetOrgId,
-      skillsetOrgName,
+      sourceLabel,
       latestVersion: versionChanged ? agentEntry!.version : undefined,
     }
   }
 
-  return { type: 'up_to_date', skillsetId: meta.skillsetId, skillsetName, skillsetOrgId, skillsetOrgName }
+  return { type: 'up_to_date', skillsetId: meta.skillsetId, skillsetName, sourceLabel }
 }
 
 /**
@@ -1192,7 +1189,7 @@ export async function getAgentPRInfo(
 export async function createAgentPR(
   agentSlug: string,
   options: { title: string; body: string; newVersion?: string },
-): Promise<{ prUrl: string }> {
+): Promise<{ prUrl?: string; successMessage: string }> {
   const meta = await getInstalledAgentMetadata(agentSlug)
   if (!meta) {
     throw new Error('Agent has no skillset metadata - cannot create PR')
@@ -1257,12 +1254,12 @@ export async function createAgentPR(
     meta.pendingQueueItemId = undefined
   }
 
-  if (result.prUrl.startsWith('http')) {
+  if (result.prUrl) {
     meta.openPrUrl = result.prUrl
   }
 
   await writeJsonFile(getAgentMetadataPath(agentSlug), meta)
-  return { prUrl: result.prUrl }
+  return { prUrl: result.prUrl, successMessage: result.successMessage }
 }
 
 // ============================================================================
@@ -1316,7 +1313,7 @@ export async function publishAgentToSkillset(
   agentSlug: string,
   skillsetConfig: SkillsetConfig,
   options: { title: string; body: string; newVersion?: string },
-): Promise<{ prUrl: string }> {
+): Promise<{ prUrl?: string; successMessage: string }> {
   const workspaceDir = getAgentWorkspaceDir(agentSlug)
   const claudeMdPath = getAgentClaudeMdPath(agentSlug)
   let claudeMdContent = await readFileOrNull(claudeMdPath)
@@ -1406,10 +1403,10 @@ export async function publishAgentToSkillset(
     metadata.originalContentHash = await computeAgentTemplateHash(workspaceDir)
   }
 
-  if (result.prUrl.startsWith('http')) {
+  if (result.prUrl) {
     metadata.openPrUrl = result.prUrl
   }
 
   await writeJsonFile(getAgentMetadataPath(agentSlug), metadata)
-  return { prUrl: result.prUrl }
+  return { prUrl: result.prUrl, successMessage: result.successMessage }
 }

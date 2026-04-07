@@ -34,12 +34,16 @@ import type {
 } from '@shared/lib/types/skillset'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import {
-  GIT_ENV,
   copyDirectoryFiltered,
   writeJsonFile,
-} from '@shared/lib/utils/skillset-helpers'
+} from '@shared/lib/utils/file-storage'
 
 const execFileAsync = promisify(execFile)
+
+const GIT_ENV = {
+  ...process.env,
+  GIT_TERMINAL_PROMPT: '0',
+}
 
 // ============================================================================
 // Path Helpers
@@ -771,7 +775,7 @@ export async function getAgentSkillsWithStatus(
   agentSlug: string,
   skillsets: SkillsetConfig[],
   options?: {
-    currentPlatformOrgId?: string | null
+    currentContext?: Record<string, unknown>
   },
 ): Promise<SkillWithStatus[]> {
   const skillsDir = getAgentSkillsDir(agentSlug)
@@ -821,11 +825,10 @@ export async function getAgentSkillsWithStatus(
       const hostingProvider = getSkillsetProvider(meta.provider)
       const {
         skillsetName,
-        skillsetOrgId,
-        skillsetOrgName,
+        sourceLabel,
         isAccessible,
       } = hostingProvider.getAccessInfo({
-        currentPlatformOrgId: options?.currentPlatformOrgId,
+        currentContext: options?.currentContext,
         config: ssConfig ? {
           name: ssConfig.name,
           description: ssConfig.description,
@@ -839,8 +842,7 @@ export async function getAgentSkillsWithStatus(
           type: 'local',
           skillsetId: meta.skillsetId,
           skillsetName,
-          skillsetOrgId,
-          skillsetOrgName,
+          sourceLabel,
           publishable: false,
         }
         skills.push({
@@ -908,7 +910,7 @@ export async function getAgentSkillsWithStatus(
 
       // Determine status: locally modified > open PR > update available > up to date
       if (currentHash !== meta.originalContentHash || meta.openPrUrl) {
-        status = { type: 'locally_modified', skillsetId: meta.skillsetId, skillsetName, skillsetOrgId, skillsetOrgName, openPrUrl: meta.openPrUrl }
+        status = { type: 'locally_modified', skillsetId: meta.skillsetId, skillsetName, sourceLabel, openPrUrl: meta.openPrUrl }
       } else {
         // Check for updates: version bump in index.json OR file content change in the remote cache
         const index = indexMap.get(meta.skillsetId)
@@ -923,15 +925,14 @@ export async function getAgentSkillsWithStatus(
             type: 'update_available',
             skillsetId: meta.skillsetId,
             skillsetName,
-            skillsetOrgId,
-            skillsetOrgName,
+            sourceLabel,
             // Show remote version only when it actually differs from installed;
             // when only content changed (no version bump), omit to avoid
             // confusing badge like "Update available (v1.0.0)" on a v1.0.0 install.
             latestVersion: versionChanged ? skillEntry!.version : undefined,
           }
         } else {
-          status = { type: 'up_to_date', skillsetId: meta.skillsetId, skillsetName, skillsetOrgId, skillsetOrgName }
+          status = { type: 'up_to_date', skillsetId: meta.skillsetId, skillsetName, sourceLabel }
         }
       }
     }
@@ -1260,7 +1261,7 @@ export async function createSkillPR(
     body: string
     newVersion?: string
   },
-): Promise<{ prUrl: string }> {
+): Promise<{ prUrl?: string; successMessage: string }> {
   sanitizeDirName(skillDirName)
   const meta = await getInstalledSkillMetadata(agentSlug, skillDirName)
   if (!meta) {
@@ -1314,13 +1315,13 @@ export async function createSkillPR(
     )
   }
 
-  if (result.prUrl.startsWith('http')) {
+  if (result.prUrl) {
     meta.openPrUrl = result.prUrl
   }
 
   await writeJsonFile(getSkillMetadataPath(agentSlug, skillDirName), meta)
 
-  return { prUrl: result.prUrl }
+  return { prUrl: result.prUrl, successMessage: result.successMessage }
 }
 
 /**
@@ -1489,7 +1490,7 @@ export async function publishSkillToSkillset(
     body: string
     newVersion?: string
   },
-): Promise<{ prUrl: string }> {
+): Promise<{ prUrl?: string; successMessage: string }> {
   sanitizeDirName(skillDirName)
 
   const skillDir = path.join(getAgentSkillsDir(agentSlug), skillDirName)
@@ -1570,7 +1571,7 @@ export async function publishSkillToSkillset(
     await fs.promises.writeFile(path.join(skillDir, 'SKILL.md'), skillContent, 'utf-8')
   }
 
-  if (result.prUrl.startsWith('http')) {
+  if (result.prUrl) {
     metadata.openPrUrl = result.prUrl
   }
 
@@ -1582,7 +1583,7 @@ export async function publishSkillToSkillset(
     'utf-8'
   )
 
-  return { prUrl: result.prUrl }
+  return { prUrl: result.prUrl, successMessage: result.successMessage }
 }
 
-export { copyDirectoryFiltered as copyDirectory } from '@shared/lib/utils/skillset-helpers'
+export { copyDirectoryFiltered as copyDirectory } from '@shared/lib/utils/file-storage'

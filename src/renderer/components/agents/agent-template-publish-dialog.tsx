@@ -16,7 +16,6 @@ import { Loader2, ExternalLink, AlertTriangle, ChevronLeft } from 'lucide-react'
 import { useAgentTemplatePublishInfo, usePublishAgentTemplate } from '@renderer/hooks/use-agent-templates'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
 import type { ApiSkillsetConfig } from '@shared/lib/types/api'
-import { getPlatformSubmissionRejectedMessage } from './platform-submission'
 
 interface AgentTemplatePublishDialogProps {
   open: boolean
@@ -36,8 +35,7 @@ export function AgentTemplatePublishDialog({
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [newVersion, setNewVersion] = useState('')
-  const [prUrl, setPrUrl] = useState<string | null>(null)
-  const [rejectionMessage, setRejectionMessage] = useState<string | null>(null)
+  const [publishResult, setPublishResult] = useState<{ prUrl?: string; successMessage: string } | null>(null)
 
   const { data: publishInfo, isLoading: isLoadingInfo, error: infoError } = useAgentTemplatePublishInfo(
     step === 'form' ? agentSlug : null,
@@ -60,8 +58,7 @@ export function AgentTemplatePublishDialog({
       setTitle('')
       setBody('')
       setNewVersion('')
-      setPrUrl(null)
-      setRejectionMessage(null)
+      setPublishResult(null)
       publishAgent.reset()
     }
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -77,16 +74,13 @@ export function AgentTemplatePublishDialog({
     setTitle('')
     setBody('')
     setNewVersion('')
-    setPrUrl(null)
-    setRejectionMessage(null)
+    setPublishResult(null)
     publishAgent.reset()
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!title.trim() || !body.trim() || !selectedSkillset) return
-
-    setRejectionMessage(null)
 
     try {
       const result = await publishAgent.mutateAsync({
@@ -96,14 +90,7 @@ export function AgentTemplatePublishDialog({
         body: body.trim(),
         newVersion: newVersion.trim() || undefined,
       })
-      const nextRejectionMessage = getPlatformSubmissionRejectedMessage(result.prUrl)
-      if (nextRejectionMessage) {
-        setRejectionMessage(nextRejectionMessage)
-        setPrUrl(null)
-        return
-      }
-
-      setPrUrl(result.prUrl)
+      setPublishResult(result)
     } catch {
       // Error is handled by publishAgent.error
     }
@@ -164,24 +151,22 @@ export function AgentTemplatePublishDialog({
               </DialogDescription>
             </DialogHeader>
 
-            {prUrl ? (
+            {publishResult ? (
               <div className="py-6 space-y-3">
                 <Alert>
                   <AlertDescription>
-                    {prUrl.startsWith('platform:')
-                      ? 'Changes submitted successfully.'
-                      : 'Pull request created successfully.'}
+                    {publishResult.successMessage}
                   </AlertDescription>
                 </Alert>
-                {!prUrl.startsWith('platform:') && (
+                {publishResult.prUrl && (
                   <a
-                    href={prUrl}
+                    href={publishResult.prUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="flex items-center gap-2 text-sm text-primary hover:underline"
                   >
                     <ExternalLink className="h-4 w-4" />
-                    {prUrl}
+                    {publishResult.prUrl}
                   </a>
                 )}
               </div>
@@ -258,17 +243,11 @@ export function AgentTemplatePublishDialog({
                   </Alert>
                 )}
 
-                {rejectionMessage && (
-                  <Alert variant="destructive">
-                    <AlertTriangle className="h-4 w-4" />
-                    <AlertDescription>{rejectionMessage}</AlertDescription>
-                  </Alert>
-                )}
               </div>
             )}
 
             <DialogFooter>
-              {prUrl ? (
+              {publishResult ? (
                 <Button type="button" onClick={() => onOpenChange(false)}>
                   Done
                 </Button>

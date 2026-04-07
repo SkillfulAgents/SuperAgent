@@ -122,7 +122,7 @@ export function useCreateSkillPR() {
   const queryClient = useQueryClient()
 
   return useMutation<
-    { prUrl: string },
+    { prUrl?: string; successMessage: string },
     Error,
     { agentSlug: string; skillDir: string; title: string; body: string; newVersion?: string }
   >({
@@ -178,7 +178,7 @@ export function usePublishSkill() {
   const queryClient = useQueryClient()
 
   return useMutation<
-    { prUrl: string },
+    { prUrl?: string; successMessage: string },
     Error,
     {
       agentSlug: string

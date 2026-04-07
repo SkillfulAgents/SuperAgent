@@ -54,20 +54,27 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
   }
 
   override getAccessInfo(params: {
-    currentPlatformOrgId?: string | null
+    currentContext?: Record<string, unknown>
     config?: Pick<SkillsetConfig, 'name' | 'description' | 'providerData'>
     meta: Pick<SkillsetProviderRef, 'skillsetId' | 'skillsetName' | 'providerData'>
   }): SkillsetAccessInfo {
     const configData = this.getPlatformData(params.config)
     const metaData = this.getPlatformData(params.meta)
-    const skillsetOrgId = configData.orgId || this.getOrgIdFromRepoId(configData.repoId) || this.getOrgIdFromRepoId(metaData.repoId)
-    const skillsetOrgName = configData.orgName || this.getPlatformOrgName(params.config?.description)
+    const orgId = configData.orgId || this.getOrgIdFromRepoId(configData.repoId) || this.getOrgIdFromRepoId(metaData.repoId)
+    const orgName = configData.orgName || this.getPlatformOrgName(params.config?.description)
+    const skillsetName = params.config?.name || this.getSkillsetDisplayName(params.meta)
+    const currentPlatformOrgId = typeof params.currentContext?.platformOrgId === 'string'
+      ? params.currentContext.platformOrgId
+      : undefined
     return {
-      skillsetName: params.config?.name || this.getSkillsetDisplayName(params.meta),
-      skillsetOrgId,
-      skillsetOrgName,
-      isAccessible: !skillsetOrgId || skillsetOrgId === params.currentPlatformOrgId,
+      skillsetName,
+      sourceLabel: orgName ? `From org: ${orgName}` : skillsetName,
+      isAccessible: !orgId || orgId === currentPlatformOrgId,
     }
+  }
+
+  override getDisplayInfo() {
+    return { badgeLabel: 'Platform', showUrl: false }
   }
 
   override getRegistrationUrl(url: string): string {
@@ -120,8 +127,11 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
 
   override async publishUpdate(input: SkillsetPublishInput): Promise<SkillsetPublishResult> {
     const result = await this.submitUpdate(input)
+    if (result.status === 'rejected') {
+      throw new Error('This upload was rejected by the platform. Review the changes and try again.')
+    }
     return {
-      prUrl: `platform:${result.status}`,
+      successMessage: 'Changes submitted successfully.',
       status: result.status,
       queueItem: result.queueItem,
     }

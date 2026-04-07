@@ -328,6 +328,7 @@ describe('skillset-service', () => {
         type: 'up_to_date',
         skillsetId: 'test-skillset',
         skillsetName: 'Test Skillset',
+        sourceLabel: 'Test Skillset',
       })
     })
 
@@ -349,6 +350,7 @@ describe('skillset-service', () => {
         type: 'update_available',
         skillsetId: 'test-skillset',
         skillsetName: 'Test Skillset',
+        sourceLabel: 'Test Skillset',
         latestVersion: '2.0.0',
       })
     })
@@ -375,7 +377,7 @@ describe('skillset-service', () => {
         type: 'update_available',
         skillsetId: 'test-skillset',
         skillsetName: 'Test Skillset',
-        // latestVersion omitted when only content changed (no version bump)
+        sourceLabel: 'Test Skillset',
       })
     })
 
@@ -414,6 +416,7 @@ describe('skillset-service', () => {
         type: 'locally_modified',
         skillsetId: 'test-skillset',
         skillsetName: 'Test Skillset',
+        sourceLabel: 'Test Skillset',
         openPrUrl: prUrl,
       })
     })
@@ -437,6 +440,7 @@ describe('skillset-service', () => {
         type: 'locally_modified',
         skillsetId: 'test-skillset',
         skillsetName: 'Test Skillset',
+        sourceLabel: 'Test Skillset',
         openPrUrl: prUrl,
       })
     })
@@ -1852,6 +1856,7 @@ description:
         type: 'up_to_date',
         skillsetId: 'unknown-skillset',
         skillsetName: 'unknown-skillset',
+        sourceLabel: 'unknown-skillset',
       })
     })
 
@@ -1880,14 +1885,13 @@ description:
       await createSkillDir('test-agent', 'hidden-platform-skill', skillContent, meta)
 
       const result = await getAgentSkillsWithStatus('test-agent', [config], {
-        currentPlatformOrgId: 'org_current',
+        currentContext: { platformOrgId: 'org_current' },
       })
       expect(result[0].status).toEqual({
         type: 'local',
         skillsetId: 'platform--skillsets/org_old/local--local',
         skillsetName: 'local',
-        skillsetOrgId: 'org_old',
-        skillsetOrgName: 'Old Org',
+        sourceLabel: 'From org: Old Org',
         publishable: false,
       })
     })

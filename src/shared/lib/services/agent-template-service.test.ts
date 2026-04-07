@@ -1482,14 +1482,13 @@ describe('getAgentTemplateStatus', () => {
     })
 
     const result = await getAgentTemplateStatus('hidden-platform-agent', [config], {
-      currentPlatformOrgId: 'org_current',
+      currentContext: { platformOrgId: 'org_current' },
     })
     expect(result).toEqual({
       type: 'local',
       skillsetId: 'platform--skillsets/org_old/local--local',
       skillsetName: 'local',
-      skillsetOrgId: 'org_old',
-      skillsetOrgName: 'Old Org',
+      sourceLabel: 'From org: Old Org',
       publishable: false,
     })
   })

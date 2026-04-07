@@ -129,9 +129,9 @@ export function SkillsetsTab() {
                   <span className="text-xs text-muted-foreground">
                     {ss.skillCount} {ss.skillCount === 1 ? 'skill' : 'skills'}
                   </span>
-                  {ss.provider === 'platform' && (
+                  {ss.badgeLabel && (
                     <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
-                      Platform
+                      {ss.badgeLabel}
                     </span>
                   )}
                 </div>
@@ -140,7 +140,7 @@ export function SkillsetsTab() {
                     {ss.description}
                   </p>
                 )}
-                {ss.provider !== 'platform' && (
+                {ss.showUrl && (
                   <p className="text-xs text-muted-foreground mt-1 font-mono truncate">
                     {ss.url}
                   </p>

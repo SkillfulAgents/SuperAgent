@@ -15,7 +15,24 @@ import {
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import type { SkillsetConfig, SkillProvider } from '@shared/lib/types/skillset'
 import type { ApiSkillsetConfig } from '@shared/lib/types/api'
-import { getSkillsetAccessScope } from '@shared/lib/utils/skillset-helpers'
+import { getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
+
+function getSkillsetAccessScope() {
+  const configs = getSettings().skillsets || []
+  const currentContext = { platformOrgId: getPlatformAuthStatus().orgId }
+  return {
+    configuredSkillsets: configs,
+    accessibleSkillsets: configs.filter((config) => {
+      const provider = getSkillsetProvider(config.provider)
+      return provider.getAccessInfo({
+        currentContext,
+        config: { name: config.name, description: config.description, providerData: provider.normalizeProviderData(config) },
+        meta: { skillsetId: config.id, skillsetName: config.name, providerData: provider.normalizeProviderData(config) },
+      }).isAccessible
+    }),
+    currentContext,
+  }
+}
 
 function toSkillsetRef(config: Pick<SkillsetConfig, 'id' | 'url' | 'name' | 'provider' | 'providerData'>) {
   const provider = getSkillsetProvider(config.provider)
@@ -33,6 +50,8 @@ const skillsets = new Hono()
 skillsets.use('*', Authenticated())
 
 function configToApiResponse(config: SkillsetConfig, skillCount: number, agentCount: number = 0): ApiSkillsetConfig {
+  const provider = getSkillsetProvider(config.provider)
+  const display = provider.getDisplayInfo()
   return {
     id: config.id,
     url: config.url,
@@ -42,6 +61,8 @@ function configToApiResponse(config: SkillsetConfig, skillCount: number, agentCo
     agentCount,
     addedAt: config.addedAt,
     provider: config.provider,
+    badgeLabel: display.badgeLabel,
+    showUrl: display.showUrl,
   }
 }
 

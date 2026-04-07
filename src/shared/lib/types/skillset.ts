@@ -94,31 +94,27 @@ export type SkillStatus =
     type: 'local'
     skillsetId?: string
     skillsetName?: string
-    skillsetOrgId?: string
-    skillsetOrgName?: string
+    sourceLabel?: string
     publishable?: boolean
   }
   | {
     type: 'up_to_date'
     skillsetId: string
     skillsetName: string
-    skillsetOrgId?: string
-    skillsetOrgName?: string
+    sourceLabel?: string
   }
   | {
     type: 'update_available'
     skillsetId: string
     skillsetName: string
-    skillsetOrgId?: string
-    skillsetOrgName?: string
-    latestVersion?: string // omitted when only content changed, no version bump
+    sourceLabel?: string
+    latestVersion?: string
   }
   | {
     type: 'locally_modified'
     skillsetId: string
     skillsetName: string
-    skillsetOrgId?: string
-    skillsetOrgName?: string
+    sourceLabel?: string
     openPrUrl?: string
   }
 
@@ -175,31 +171,27 @@ export type AgentTemplateStatus =
     type: 'local'
     skillsetId?: string
     skillsetName?: string
-    skillsetOrgId?: string
-    skillsetOrgName?: string
+    sourceLabel?: string
     publishable?: boolean
   }
   | {
     type: 'up_to_date'
     skillsetId: string
     skillsetName: string
-    skillsetOrgId?: string
-    skillsetOrgName?: string
+    sourceLabel?: string
   }
   | {
     type: 'update_available'
     skillsetId: string
     skillsetName: string
-    skillsetOrgId?: string
-    skillsetOrgName?: string
+    sourceLabel?: string
     latestVersion?: string
   }
   | {
     type: 'locally_modified'
     skillsetId: string
     skillsetName: string
-    skillsetOrgId?: string
-    skillsetOrgName?: string
+    sourceLabel?: string
     openPrUrl?: string
   }
 
