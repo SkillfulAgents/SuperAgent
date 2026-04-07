@@ -93,7 +93,7 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
         skillsetName,
         targetName: input.targetName,
         targetType: input.targetType,
-        files: input.files,
+        files: input.files?.filter((f) => f.path !== 'index.json'),
         title: input.title,
         message: input.message,
       }),
