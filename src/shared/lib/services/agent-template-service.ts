@@ -932,39 +932,39 @@ export async function refreshAgentTemplates(
 
     const effectiveRepoId = getEffectiveRepoId(meta.provider, meta.platformRepoId, meta.skillsetId)
 
-    // If content matches original and has openPrUrl, check if PR was merged
-    if (currentHash === meta.originalContentHash && meta.openPrUrl) {
-      const repoDir = getSkillsetRepoDir(effectiveRepoId)
-      const agentDirInRepo = path.join(repoDir, meta.agentPath.replace(/\/$/, ''))
-      if (await directoryExists(agentDirInRepo)) {
-        const repoHash = await computeAgentTemplateHash(agentDirInRepo)
-        if (repoHash === currentHash) {
-          meta.openPrUrl = undefined
-          await fs.promises.writeFile(
-            getAgentMetadataPath(agent.slug),
-            JSON.stringify(meta, null, 2),
-            'utf-8'
-          )
-        }
+    const repoDir = getSkillsetRepoDir(effectiveRepoId)
+    const agentDirInRepo = path.join(repoDir, meta.agentPath.replace(/\/$/, ''))
+    if (!(await directoryExists(agentDirInRepo))) continue
+
+    const repoHash = await computeAgentTemplateHash(agentDirInRepo)
+
+    // Local matches remote — clear any stale PR link
+    if (repoHash === currentHash) {
+      if (meta.openPrUrl || currentHash !== meta.originalContentHash) {
+        meta.originalContentHash = currentHash
+        meta.openPrUrl = undefined
+        await writeJsonFile(getAgentMetadataPath(agent.slug), meta)
       }
+      continue
     }
 
-    // If modified, check if changes are now upstream
-    if (currentHash !== meta.originalContentHash) {
-      const repoDir = getSkillsetRepoDir(effectiveRepoId)
-      const agentDirInRepo = path.join(repoDir, meta.agentPath.replace(/\/$/, ''))
-      if (await directoryExists(agentDirInRepo)) {
-        const repoHash = await computeAgentTemplateHash(agentDirInRepo)
-        if (repoHash === currentHash) {
-          meta.originalContentHash = currentHash
-          meta.openPrUrl = undefined
-          await fs.promises.writeFile(
-            getAgentMetadataPath(agent.slug),
-            JSON.stringify(meta, null, 2),
-            'utf-8'
-          )
+    // Remote has moved forward (e.g. PR merged, possibly with version bump).
+    // Overwrite local files with the merged remote content so the template
+    // transitions cleanly to up_to_date instead of lingering as locally_modified.
+    if (meta.openPrUrl && repoHash !== meta.originalContentHash) {
+      await copyTemplateFiles(agentDirInRepo, workspaceDir)
+      meta.originalContentHash = repoHash
+      meta.openPrUrl = undefined
+
+      try {
+        const index = await readIndexJson(repoDir)
+        const agentEntry = index.agents?.find((a: { path: string }) => a.path === meta.agentPath)
+        if (agentEntry?.version) {
+          meta.installedVersion = agentEntry.version
         }
-      }
+      } catch { /* best-effort version update */ }
+
+      await writeJsonFile(getAgentMetadataPath(agent.slug), meta)
     }
   }
 }

@@ -383,11 +383,50 @@ async function gitClone(url: string, dest: string): Promise<void> {
 }
 
 async function gitPull(repoDir: string): Promise<void> {
-  await execFileAsync('git', ['pull'], {
-    cwd: repoDir,
-    timeout: 30000,
-    env: GIT_ENV,
+  // Ensure we're on the default branch before pulling.
+  // After a PR flow the repo may be left on a detached HEAD or stale branch.
+  try {
+    const { stdout: headRef } = await execFileAsync(
+      'git', ['symbolic-ref', 'refs/remotes/origin/HEAD'],
+      { cwd: repoDir, timeout: 5000, env: GIT_ENV },
+    )
+    const defaultBranch = headRef.trim().replace('refs/remotes/origin/', '')
+    await execFileAsync('git', ['checkout', defaultBranch], {
+      cwd: repoDir, timeout: 10000, env: GIT_ENV,
+    })
+  } catch {
+    // Fallback: try main, then master
+    try {
+      await execFileAsync('git', ['checkout', 'main'], {
+        cwd: repoDir, timeout: 10000, env: GIT_ENV,
+      })
+    } catch {
+      await execFileAsync('git', ['checkout', 'master'], {
+        cwd: repoDir, timeout: 10000, env: GIT_ENV,
+      }).catch(() => {})
+    }
+  }
+
+  await execFileAsync('git', ['fetch', 'origin'], {
+    cwd: repoDir, timeout: 30000, env: GIT_ENV,
   })
+
+  // Hard-reset to origin so we always get the latest upstream content,
+  // even if the local branch drifted (e.g. leftover PR branch commits).
+  try {
+    const { stdout: branch } = await execFileAsync(
+      'git', ['rev-parse', '--abbrev-ref', 'HEAD'],
+      { cwd: repoDir, timeout: 5000, env: GIT_ENV },
+    )
+    await execFileAsync('git', ['reset', '--hard', `origin/${branch.trim()}`], {
+      cwd: repoDir, timeout: 10000, env: GIT_ENV,
+    })
+  } catch {
+    // Fallback to normal pull if reset fails
+    await execFileAsync('git', ['pull'], {
+      cwd: repoDir, timeout: 30000, env: GIT_ENV,
+    })
+  }
 }
 
 async function isGitRepo(dir: string): Promise<boolean> {
@@ -969,6 +1008,26 @@ export async function refreshAgentSkills(
         skillMdContent,
         'utf-8'
       )
+      continue
+    }
+
+    // Remote has moved forward (e.g. PR merged, possibly with version bump).
+    // Overwrite local files with the merged remote content so the skill
+    // transitions cleanly to up_to_date instead of lingering as locally_modified.
+    if (meta.openPrUrl && cacheHash && cacheHash !== currentHash && cacheHash !== meta.originalContentHash) {
+      const skillDirInRepo = path.join(skillRepoDir, path.dirname(meta.skillPath))
+      await copyDirectoryFiltered(skillDirInRepo, path.join(skillsDir, entry.name))
+      const freshContent = await readFileOrNull(path.join(skillsDir, entry.name, 'SKILL.md'))
+      meta.originalContentHash = cacheHash
+      meta.openPrUrl = undefined
+      await writeJsonFile(getSkillMetadataPath(agentSlug, entry.name), meta)
+      if (freshContent) {
+        await fs.promises.writeFile(
+          path.join(skillsDir, entry.name, '.skillset-original.md'),
+          freshContent,
+          'utf-8'
+        )
+      }
       continue
     }
 
