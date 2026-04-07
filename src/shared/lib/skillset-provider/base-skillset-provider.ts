@@ -1,6 +1,7 @@
 import type {
   SkillProvider,
   SkillsetConfig,
+  SkillsetProviderData,
 } from '@shared/lib/types/skillset'
 
 export type SkillsetPublishMode = 'pull_request' | 'hosted_submit' | 'read_only'
@@ -16,7 +17,7 @@ export type SkillsetHostedUpdateInput = {
   skillsetId: string
   skillsetUrl: string
   skillsetName?: string
-  platformRepoId?: string
+  providerData?: SkillsetProviderData
   targetName: string
   targetType: SkillsetHostedUpdateType
   files: SkillsetHostedUpdateFile[]
@@ -47,6 +48,20 @@ export type SkillsetRemoteDescriptor = {
   agentCount: number
 }
 
+export type SkillsetProviderRef = {
+  skillsetId: string
+  skillsetUrl?: string
+  skillsetName?: string
+  providerData?: SkillsetProviderData
+}
+
+export type SkillsetAccessInfo = {
+  skillsetName: string
+  skillsetOrgId?: string
+  skillsetOrgName?: string
+  isAccessible: boolean
+}
+
 export abstract class BaseSkillsetProvider {
   abstract readonly id: SkillProvider
   abstract readonly name: string
@@ -55,15 +70,30 @@ export abstract class BaseSkillsetProvider {
   readonly supportsSuggestions: boolean = true
   readonly supportsRemoteSync: boolean = false
 
-  getEffectiveRepoId(skillsetId: string, _platformRepoId?: string): string {
-    return skillsetId
+  normalizeProviderData(source?: { providerData?: SkillsetProviderData } | null): SkillsetProviderData | undefined {
+    return source?.providerData
   }
 
-  async resolveCloneUrl(url: string, _options?: {
-    skillsetId?: string
-    skillsetName?: string
-    platformRepoId?: string
-  }): Promise<string> {
+  getEffectiveRepoId(ref: SkillsetProviderRef): string {
+    return ref.skillsetId
+  }
+
+  getSkillsetDisplayName(ref: Pick<SkillsetProviderRef, 'skillsetId' | 'skillsetName'>): string {
+    return ref.skillsetName || ref.skillsetId
+  }
+
+  getAccessInfo(params: {
+    currentPlatformOrgId?: string | null
+    config?: Pick<SkillsetConfig, 'name' | 'description' | 'providerData'>
+    meta: Pick<SkillsetProviderRef, 'skillsetId' | 'skillsetName' | 'providerData'>
+  }): SkillsetAccessInfo {
+    return {
+      skillsetName: params.config?.name || this.getSkillsetDisplayName(params.meta),
+      isAccessible: true,
+    }
+  }
+
+  async resolveCloneUrl(url: string, _options?: SkillsetProviderRef): Promise<string> {
     return url
   }
 

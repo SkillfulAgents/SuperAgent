@@ -1855,22 +1855,26 @@ description:
       })
     })
 
-    it('treats hidden platform skillsets as local skills', async () => {
+    it('treats inaccessible provider-scoped skillsets as local skills', async () => {
       const skillContent = '# Test Skill\nOriginal content'
       const meta = buildMetadata({
         originalContentHash: contentHash(skillContent),
         skillsetId: 'platform--skillsets/org_old/local--local',
         provider: 'platform',
-        platformRepoId: 'skillsets/org_old/local',
+        providerData: {
+          repoId: 'skillsets/org_old/local',
+        },
         skillsetName: 'local',
       })
       const config = buildSkillsetConfig({
         id: 'platform--skillsets/org_old/local--local',
         name: 'local',
         provider: 'platform',
-        platformRepoId: 'skillsets/org_old/local',
-        platformOrgId: 'org_old',
-        platformOrgName: 'Old Org',
+        providerData: {
+          repoId: 'skillsets/org_old/local',
+          orgId: 'org_old',
+          orgName: 'Old Org',
+        },
       })
 
       await createSkillDir('test-agent', 'hidden-platform-skill', skillContent, meta)

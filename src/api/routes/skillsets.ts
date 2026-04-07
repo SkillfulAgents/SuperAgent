@@ -17,6 +17,17 @@ import type { SkillsetConfig, SkillProvider } from '@shared/lib/types/skillset'
 import type { ApiSkillsetConfig } from '@shared/lib/types/api'
 import { getSkillsetAccessScope } from '@shared/lib/utils/skillset-helpers'
 
+function toSkillsetRef(config: Pick<SkillsetConfig, 'id' | 'url' | 'name' | 'provider' | 'providerData'>) {
+  const provider = getSkillsetProvider(config.provider)
+  return {
+    skillsetId: config.id,
+    skillsetUrl: config.url,
+    provider: config.provider,
+    skillsetName: config.name,
+    providerData: provider.normalizeProviderData(config),
+  }
+}
+
 const skillsets = new Hono()
 
 skillsets.use('*', Authenticated())
@@ -41,10 +52,7 @@ skillsets.get('/', async (c) => {
     const result: ApiSkillsetConfig[] = []
 
     for (const config of scope.accessibleSkillsets) {
-      const index = await getSkillsetIndex(config.id, {
-        platformRepoId: config.platformRepoId,
-        provider: config.provider,
-      })
+      const index = await getSkillsetIndex(toSkillsetRef(config))
       result.push(configToApiResponse(config, index?.skills.length ?? 0, index?.agents?.length ?? 0))
     }
 
@@ -131,7 +139,7 @@ skillsets.delete('/:id', IsAdmin(), async (c) => {
     updateSettings({ ...settings, skillsets: filtered })
 
     // Clean up cache
-    await removeSkillsetCache(id)
+    await removeSkillsetCache(toSkillsetRef(existing.find((s) => s.id === id)!))
 
     return c.body(null, 204)
   } catch (error) {
@@ -151,7 +159,7 @@ skillsets.post('/:id/refresh', IsAdmin(), async (c) => {
       return c.json({ error: 'Skillset not found' }, 404)
     }
 
-    const index = await refreshSkillset(id, config.url, config.provider, config.platformRepoId, config.name)
+    const index = await refreshSkillset(toSkillsetRef(config))
     return c.json({ skills: index.skills })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to refresh skillset'
@@ -165,10 +173,7 @@ skillsets.get('/:id/skills', async (c) => {
     const id = c.req.param('id')
     const settings = getSettings()
     const config = (settings.skillsets || []).find((s) => s.id === id)
-    const index = await getSkillsetIndex(id, {
-      platformRepoId: config?.platformRepoId,
-      provider: config?.provider,
-    })
+    const index = config ? await getSkillsetIndex(toSkillsetRef(config)) : null
 
     if (!index) {
       return c.json({ error: 'Skillset not found or not cached' }, 404)
@@ -187,10 +192,7 @@ skillsets.get('/:id/agents', async (c) => {
     const id = c.req.param('id')
     const settings = getSettings()
     const config = (settings.skillsets || []).find((s) => s.id === id)
-    const index = await getSkillsetIndex(id, {
-      platformRepoId: config?.platformRepoId,
-      provider: config?.provider,
-    })
+    const index = config ? await getSkillsetIndex(toSkillsetRef(config)) : null
 
     if (!index) {
       return c.json({ error: 'Skillset not found or not cached' }, 404)
@@ -250,10 +252,11 @@ skillsets.post('/sync-remote', IsAdmin(), async (c) => {
     const allForProvider = existing.filter((s) => s.provider === providerId)
     const cloned = new Set<string>()
     for (const config of allForProvider) {
-      const cacheKey = config.platformRepoId || config.id
+      const configRef = toSkillsetRef(config)
+      const cacheKey = provider.getEffectiveRepoId(configRef)
       if (!cloned.has(cacheKey)) {
         cloned.add(cacheKey)
-        await ensureSkillsetCached(config.id, config.url, providerId, config.platformRepoId, config.name)
+        await ensureSkillsetCached(configRef)
       }
     }
 

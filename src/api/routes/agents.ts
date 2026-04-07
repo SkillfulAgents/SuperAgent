@@ -85,6 +85,7 @@ import {
   hasOnboardingSkill,
   collectAgentRequiredEnvVars,
 } from '@shared/lib/services/agent-template-service'
+import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import { withRetry } from '@shared/lib/utils/retry'
 import { transformMessages, type TransformedMessage, type TransformedItem } from '@shared/lib/utils/message-transform'
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
@@ -100,6 +101,17 @@ import { Readable } from 'stream'
 import pLimit from 'p-limit'
 import * as path from 'path'
 import type { ApiAgent } from '@shared/lib/types/api'
+
+function toSkillsetRef(config: { id: string; url: string; name: string; provider?: 'github' | 'platform'; providerData?: Record<string, unknown> }) {
+  const provider = getSkillsetProvider(config.provider)
+  return {
+    skillsetId: config.id,
+    skillsetUrl: config.url,
+    provider: config.provider,
+    skillsetName: config.name,
+    providerData: provider.normalizeProviderData(config),
+  }
+}
 
 /**
  * Enrich an array of ApiAgent objects with summary fields:
@@ -384,8 +396,7 @@ agents.post('/install-from-skillset', async (c) => {
     }
 
     const agent = await installAgentFromSkillset(
-      skillsetId,
-      config.url,
+      toSkillsetRef(config),
       agentPath,
       agentName || agentPath,
       agentVersion || '0.0.0',
@@ -2887,14 +2898,10 @@ agents.post('/:id/skills/install', AgentAdmin(), async (c) => {
 
     const result = await installSkillFromSkillset(
       agentSlug,
-      skillsetId,
-      config.url,
+      toSkillsetRef(config),
       skillPath,
       skillName || skillPath,
       skillVersion || '0.0.0',
-      config.provider,
-      config.platformRepoId,
-      config.name,
     )
 
     // If env vars were provided, save them as agent secrets

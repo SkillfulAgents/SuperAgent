@@ -35,9 +35,6 @@ import type {
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import {
   GIT_ENV,
-  getEffectiveSkillsetName,
-  getEffectiveRepoId,
-  resolvePlatformSkillsetScope,
   copyDirectoryFiltered,
   writeJsonFile,
 } from '@shared/lib/utils/skillset-helpers'
@@ -74,6 +71,43 @@ function sanitizeDirName(name: string): string {
     throw new Error(`Invalid directory name: ${name}`)
   }
   return name
+}
+
+type SkillsetRef = {
+  skillsetId: string
+  skillsetUrl: string
+  provider?: SkillProvider
+  skillsetName?: string
+  providerData?: SkillsetConfig['providerData']
+}
+
+function toSkillsetRefFromConfig(config: Pick<SkillsetConfig, 'id' | 'url' | 'name' | 'provider' | 'providerData'>): SkillsetRef {
+  const provider = getSkillsetProvider(config.provider)
+  return {
+    skillsetId: config.id,
+    skillsetUrl: config.url,
+    provider: config.provider,
+    skillsetName: config.name,
+    providerData: provider.normalizeProviderData(config),
+  }
+}
+
+function toSkillsetRefFromMeta(
+  meta: Pick<InstalledSkillMetadata, 'skillsetId' | 'skillsetUrl' | 'skillsetName' | 'provider' | 'providerData'>,
+): SkillsetRef {
+  const provider = getSkillsetProvider(meta.provider)
+  return {
+    skillsetId: meta.skillsetId,
+    skillsetUrl: meta.skillsetUrl,
+    provider: meta.provider,
+    skillsetName: meta.skillsetName,
+    providerData: provider.normalizeProviderData(meta),
+  }
+}
+
+function getSkillsetRepoDirForRef(ref: Pick<SkillsetRef, 'skillsetId' | 'provider' | 'providerData'>): string {
+  const provider = getSkillsetProvider(ref.provider)
+  return getSkillsetRepoDir(provider.getEffectiveRepoId(ref))
 }
 
 // ============================================================================
@@ -487,16 +521,9 @@ export async function ensureGitInstalled(): Promise<void> {
   }
 }
 
-export async function ensureSkillsetCached(
-  skillsetId: string,
-  url: string,
-  provider?: SkillProvider,
-  platformRepoId?: string,
-  skillsetName?: string,
-): Promise<string> {
-  const hostingProvider = getSkillsetProvider(provider)
-  const effectiveId = hostingProvider.getEffectiveRepoId(skillsetId, platformRepoId)
-  const repoDir = getSkillsetRepoDir(effectiveId)
+export async function ensureSkillsetCached(ref: SkillsetRef): Promise<string> {
+  const hostingProvider = getSkillsetProvider(ref.provider)
+  const repoDir = getSkillsetRepoDir(hostingProvider.getEffectiveRepoId(ref))
 
   if (await isGitRepo(repoDir)) return repoDir
 
@@ -512,11 +539,7 @@ export async function ensureSkillsetCached(
     await fs.promises.rm(repoDir, { recursive: true, force: true })
   }
 
-  const cloneUrl = await hostingProvider.resolveCloneUrl(url, {
-    skillsetId,
-    skillsetName,
-    platformRepoId,
-  })
+  const cloneUrl = await hostingProvider.resolveCloneUrl(ref.skillsetUrl, ref)
   await gitClone(cloneUrl, repoDir)
   return repoDir
 }
@@ -556,38 +579,27 @@ export async function readIndexJson(repoDir: string): Promise<SkillsetIndex> {
  */
 export async function validateSkillsetUrl(url: string, provider?: SkillProvider): Promise<SkillsetIndex> {
   const skillsetId = urlToSkillsetId(url)
-  const repoDir = await ensureSkillsetCached(skillsetId, url, provider)
+  const repoDir = await ensureSkillsetCached({ skillsetId, skillsetUrl: url, provider })
   return readIndexJson(repoDir)
 }
 
 /**
  * Refresh a cached skillset repo (git pull) and return the updated index.
  */
-export async function refreshSkillset(
-  skillsetId: string,
-  url: string,
-  provider?: SkillProvider,
-  platformRepoId?: string,
-  skillsetName?: string,
-): Promise<SkillsetIndex> {
-  const hostingProvider = getSkillsetProvider(provider)
-  const effectiveId = hostingProvider.getEffectiveRepoId(skillsetId, platformRepoId)
-  const repoDir = getSkillsetRepoDir(effectiveId)
+export async function refreshSkillset(ref: SkillsetRef): Promise<SkillsetIndex> {
+  const hostingProvider = getSkillsetProvider(ref.provider)
+  const repoDir = getSkillsetRepoDir(hostingProvider.getEffectiveRepoId(ref))
 
   if (await isGitRepo(repoDir)) {
-    const freshUrl = await hostingProvider.resolveCloneUrl(url, {
-      skillsetId,
-      skillsetName,
-      platformRepoId,
-    })
-    if (freshUrl !== url) {
+    const freshUrl = await hostingProvider.resolveCloneUrl(ref.skillsetUrl, ref)
+    if (freshUrl !== ref.skillsetUrl) {
       await execFileAsync('git', ['remote', 'set-url', 'origin', freshUrl], {
         cwd: repoDir, timeout: 5000, env: GIT_ENV,
       })
     }
     await gitPull(repoDir)
   } else {
-    await ensureSkillsetCached(skillsetId, url, provider, platformRepoId, skillsetName)
+    await ensureSkillsetCached(ref)
   }
 
   return readIndexJson(repoDir)
@@ -597,13 +609,9 @@ export async function refreshSkillset(
  * Get the skillset index from local cache (no network).
  */
 export async function getSkillsetIndex(
-  skillsetId: string,
-  options?: { platformRepoId?: string; provider?: SkillProvider },
+  ref: Pick<SkillsetRef, 'skillsetId' | 'provider' | 'providerData'>,
 ): Promise<SkillsetIndex | null> {
-  const effectiveId = options?.provider
-    ? getSkillsetProvider(options.provider).getEffectiveRepoId(skillsetId, options.platformRepoId)
-    : (options?.platformRepoId || skillsetId)
-  const repoDir = getSkillsetRepoDir(effectiveId)
+  const repoDir = getSkillsetRepoDirForRef(ref)
   if (!await isGitRepo(repoDir)) return null
 
   try {
@@ -616,8 +624,8 @@ export async function getSkillsetIndex(
 /**
  * Remove a skillset cache directory.
  */
-export async function removeSkillsetCache(skillsetId: string): Promise<void> {
-  const repoDir = getSkillsetRepoDir(skillsetId)
+export async function removeSkillsetCache(ref: Pick<SkillsetRef, 'skillsetId' | 'provider' | 'providerData'>): Promise<void> {
+  const repoDir = getSkillsetRepoDirForRef(ref)
   if (await directoryExists(repoDir)) {
     await fs.promises.rm(repoDir, { recursive: true, force: true })
   }
@@ -629,18 +637,14 @@ export async function removeSkillsetCache(skillsetId: string): Promise<void> {
  */
 export async function installSkillFromSkillset(
   agentSlug: string,
-  skillsetId: string,
-  skillsetUrl: string,
+  skillsetRef: SkillsetRef,
   skillPath: string,
   skillName: string,
   skillVersion: string,
-  provider?: SkillProvider,
-  platformRepoId?: string,
-  skillsetName?: string,
 ): Promise<{ requiredEnvVars?: Array<{ name: string; description: string }> }> {
-  const repoDir = getSkillsetRepoDir(getEffectiveRepoId(provider, platformRepoId, skillsetId))
+  const repoDir = getSkillsetRepoDirForRef(skillsetRef)
   if (!(await isGitRepo(repoDir))) {
-    await ensureSkillsetCached(skillsetId, skillsetUrl, provider, platformRepoId, skillsetName)
+    await ensureSkillsetCached(skillsetRef)
   }
 
   // Determine source and destination directories
@@ -670,16 +674,16 @@ export async function installSkillFromSkillset(
 
   // Write metadata file
   const metadata: InstalledSkillMetadata = {
-    skillsetId,
-    skillsetUrl,
+    skillsetId: skillsetRef.skillsetId,
+    skillsetUrl: skillsetRef.skillsetUrl,
     skillName,
     skillPath,
     installedVersion: skillVersion,
     installedAt: new Date().toISOString(),
     originalContentHash: hash,
-    provider,
-    platformRepoId,
-    skillsetName,
+    provider: skillsetRef.provider,
+    providerData: skillsetRef.providerData,
+    skillsetName: skillsetRef.skillsetName,
   }
 
   await fs.promises.writeFile(
@@ -719,16 +723,13 @@ export async function updateSkillFromSkillset(
     return { updated: false }
   }
 
-  const effectiveSkillsetName = getEffectiveSkillsetName(meta)
+  const skillsetRef = toSkillsetRefFromMeta(meta)
 
   // Refresh the skillset cache
-  await refreshSkillset(meta.skillsetId, meta.skillsetUrl, meta.provider, meta.platformRepoId, effectiveSkillsetName)
+  await refreshSkillset(skillsetRef)
 
   // Re-install the skill (overwrites existing)
-  const index = await getSkillsetIndex(meta.skillsetId, {
-    platformRepoId: meta.platformRepoId,
-    provider: meta.provider,
-  })
+  const index = await getSkillsetIndex(skillsetRef)
   if (!index) return { updated: false }
 
   const skillEntry = index.skills.find((s) => s.path === meta.skillPath)
@@ -736,14 +737,10 @@ export async function updateSkillFromSkillset(
 
   await installSkillFromSkillset(
     agentSlug,
-    meta.skillsetId,
-    meta.skillsetUrl,
+    skillsetRef,
     meta.skillPath,
     meta.skillName,
     skillEntry.version,
-    meta.provider,
-    meta.platformRepoId,
-    effectiveSkillsetName,
   )
 
   return { updated: true }
@@ -786,10 +783,7 @@ export async function getAgentSkillsWithStatus(
   // Build a map of skillset indexes for quick lookup
   const indexMap = new Map<string, SkillsetIndex>()
   for (const ss of skillsets) {
-    const index = await getSkillsetIndex(ss.id, {
-      platformRepoId: ss.platformRepoId,
-      provider: ss.provider,
-    })
+    const index = await getSkillsetIndex(toSkillsetRefFromConfig(ss))
     if (index) indexMap.set(ss.id, index)
   }
 
@@ -822,19 +816,25 @@ export async function getAgentSkillsWithStatus(
       status = { type: 'local' }
     } else {
       const ssConfig = skillsetConfigMap.get(meta.skillsetId)
+      const metaRef = toSkillsetRefFromMeta(meta)
+      const configRef = ssConfig ? toSkillsetRefFromConfig(ssConfig) : undefined
+      const hostingProvider = getSkillsetProvider(meta.provider)
       const {
         skillsetName,
         skillsetOrgId,
         skillsetOrgName,
-        isCurrentPlatformOrg,
-      } = resolvePlatformSkillsetScope({
-        provider: meta.provider,
+        isAccessible,
+      } = hostingProvider.getAccessInfo({
         currentPlatformOrgId: options?.currentPlatformOrgId,
-        config: ssConfig,
-        meta,
+        config: ssConfig ? {
+          name: ssConfig.name,
+          description: ssConfig.description,
+          providerData: configRef?.providerData,
+        } : undefined,
+        meta: metaRef,
       })
 
-      if (meta.provider === 'platform' && !isCurrentPlatformOrg) {
+      if (!isAccessible) {
         status = {
           type: 'local',
           skillsetId: meta.skillsetId,
@@ -853,8 +853,7 @@ export async function getAgentSkillsWithStatus(
       }
 
       // If there's a pending platform submission, check its status
-      const effectiveRepoId = getEffectiveRepoId(meta.provider, ssConfig?.platformRepoId ?? meta.platformRepoId, meta.skillsetId)
-      const skillRepoDir = getSkillsetRepoDir(effectiveRepoId)
+      const skillRepoDir = getSkillsetRepoDirForRef(configRef ?? metaRef)
       let cachePackageHash: string | null | undefined
       const getCachePackageHash = async (): Promise<string | null> => {
         if (cachePackageHash !== undefined) return cachePackageHash
@@ -868,7 +867,7 @@ export async function getAgentSkillsWithStatus(
         if (queueStatus === 'merged' || queueStatus === 'rejected') {
           if (queueStatus === 'merged') {
             try {
-              await refreshSkillset(meta.skillsetId, meta.skillsetUrl, meta.provider, meta.platformRepoId, getEffectiveSkillsetName(meta))
+              await refreshSkillset(metaRef)
             } catch { /* best-effort pull */ }
             const mergedFiles = await getRepoSkillPackageFiles(skillRepoDir, meta.skillPath)
             if (mergedFiles) {
@@ -964,7 +963,7 @@ export async function refreshAgentSkills(
   // Refresh all skillset caches
   for (const ss of skillsets) {
     try {
-      await refreshSkillset(ss.id, ss.url, ss.provider, ss.platformRepoId, ss.name)
+      await refreshSkillset(toSkillsetRefFromConfig(ss))
     } catch (error) {
       console.warn(`Failed to refresh skillset ${ss.id}:`, error)
     }
@@ -991,10 +990,9 @@ export async function refreshAgentSkills(
     const currentSkillMdHash = contentHash(skillMdContent)
     const isSingleFileLegacySkill = currentPackageFiles.length === 1 && currentPackageFiles[0]?.relativePath === 'SKILL.md'
 
-    // Resolve the correct repo directory (platform skillsets may share a clone)
+    // Resolve the provider-owned cache directory for this installed skill.
     const ssConfig = configMap.get(meta.skillsetId)
-    const effectiveRepoId = ssConfig?.platformRepoId || meta.skillsetId
-    const skillRepoDir = getSkillsetRepoDir(effectiveRepoId)
+    const skillRepoDir = getSkillsetRepoDirForRef(ssConfig ? toSkillsetRefFromConfig(ssConfig) : toSkillsetRefFromMeta(meta))
 
     // Legacy hash migration: older installs stored only the SKILL.md content hash.
     // Upgrade to the full-package hash before any comparisons so all branches
@@ -1066,10 +1064,8 @@ export async function getDiscoverableSkills(
   const discoverable: DiscoverableSkill[] = []
 
   for (const ss of skillsets) {
-    const index = await getSkillsetIndex(ss.id, {
-      platformRepoId: ss.platformRepoId,
-      provider: ss.provider,
-    })
+    const ssRef = toSkillsetRefFromConfig(ss)
+    const index = await getSkillsetIndex(ssRef)
     if (!index) continue
 
     for (const skill of index.skills) {
@@ -1078,8 +1074,7 @@ export async function getDiscoverableSkills(
 
       // Try to get required_env_vars from the cached SKILL.md
       let requiredEnvVars: Array<{ name: string; description: string }> | undefined
-      const effectiveRepoId = ss.platformRepoId || ss.id
-      const repoDir = getSkillsetRepoDir(effectiveRepoId)
+      const repoDir = getSkillsetRepoDirForRef(ssRef)
       const skillMdPath = path.join(repoDir, skill.path)
       const content = await readFileOrNull(skillMdPath)
       if (content) {
@@ -1118,8 +1113,7 @@ async function generatePRSuggestions(
   }
 
   const skillDir = path.join(getAgentSkillsDir(agentSlug), skillDirName)
-  const effectiveRepoId = meta.platformRepoId || meta.skillsetId
-  const repoDir = getSkillsetRepoDir(effectiveRepoId)
+  const repoDir = getSkillsetRepoDirForRef(toSkillsetRefFromMeta(meta))
   const modifiedPackageFiles = await readSkillPackageFiles(skillDir)
 
   // Read original SKILL.md: prefer stored copy, fall back to git history
@@ -1284,8 +1278,9 @@ export async function createSkillPR(
     modifiedContent = getSkillMdFromPackageFiles(packageFiles)
   }
 
+  const metaRef = toSkillsetRefFromMeta(meta)
   const hostingProvider = getSkillsetProvider(meta.provider)
-  const repoDir = getSkillsetRepoDir(meta.skillsetId)
+  const repoDir = getSkillsetRepoDirForRef(metaRef)
   const skillFiles = toPlatformSkillFiles(path.posix.dirname(meta.skillPath), packageFiles)
 
   const result = await hostingProvider.publishUpdate({
@@ -1297,8 +1292,8 @@ export async function createSkillPR(
     gitAddPaths: [path.posix.dirname(meta.skillPath)],
     skillsetId: meta.skillsetId,
     skillsetUrl: meta.skillsetUrl,
-    skillsetName: getEffectiveSkillsetName(meta),
-    platformRepoId: meta.platformRepoId,
+    skillsetName: metaRef.skillsetName,
+    providerData: metaRef.providerData,
     targetName: path.basename(path.dirname(meta.skillPath)),
     targetType: 'skill',
     message: options.body,
@@ -1308,7 +1303,7 @@ export async function createSkillPR(
     meta.pendingQueueItemId = result.queueItem.id
   } else if (result.status === 'merged') {
     const modifiedHash = hashSkillPackageFiles(packageFiles)
-    await refreshSkillset(meta.skillsetId, meta.skillsetUrl, meta.provider, meta.platformRepoId, getEffectiveSkillsetName(meta))
+    await refreshSkillset(metaRef)
     meta.originalContentHash = modifiedHash
     meta.pendingQueueItemId = undefined
     await fs.promises.writeFile(path.join(skillDir, 'SKILL.md'), modifiedContent, 'utf-8')
@@ -1515,10 +1510,11 @@ export async function publishSkillToSkillset(
   const skillPathInRepo = `skills/${skillDirName}/SKILL.md`
 
   const hostingProvider = getSkillsetProvider(skillsetConfig.provider)
+  const skillsetRef = toSkillsetRefFromConfig(skillsetConfig)
 
-  const repoDir = getSkillsetRepoDir(skillsetConfig.id)
+  const repoDir = getSkillsetRepoDirForRef(skillsetRef)
   if (!(await isGitRepo(repoDir))) {
-    await ensureSkillsetCached(skillsetConfig.id, skillsetConfig.url, skillsetConfig.provider, undefined, skillsetConfig.name)
+    await ensureSkillsetCached(skillsetRef)
   }
 
   // Check for naming conflict
@@ -1548,7 +1544,7 @@ export async function publishSkillToSkillset(
     skillsetId: skillsetConfig.id,
     skillsetUrl: skillsetConfig.url,
     skillsetName: skillsetConfig.name,
-    platformRepoId: skillsetConfig.platformRepoId,
+    providerData: skillsetRef.providerData,
     targetName: skillDirName,
     targetType: 'skill',
     message: options.body,
@@ -1563,7 +1559,7 @@ export async function publishSkillToSkillset(
     installedAt: new Date().toISOString(),
     originalContentHash: hashSkillPackageFiles(packageFiles),
     provider: skillsetConfig.provider,
-    platformRepoId: skillsetConfig.platformRepoId,
+    providerData: skillsetRef.providerData,
     skillsetName: skillsetConfig.name,
   }
 

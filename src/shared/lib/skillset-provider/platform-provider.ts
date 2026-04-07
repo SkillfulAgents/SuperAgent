@@ -1,14 +1,25 @@
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { getPlatformAccessToken, getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
-import { getEffectiveSkillsetName } from '@shared/lib/utils/skillset-helpers'
-import type { PlatformSubmitResult, SkillsetConfig } from '@shared/lib/types/skillset'
+import type {
+  PlatformSubmitResult,
+  SkillsetConfig,
+  SkillsetProviderData,
+} from '@shared/lib/types/skillset'
 import {
   BaseSkillsetProvider,
+  type SkillsetAccessInfo,
   type SkillsetHostedUpdateInput,
   type SkillsetPublishInput,
   type SkillsetPublishResult,
+  type SkillsetProviderRef,
   type SkillsetRemoteDescriptor,
 } from './base-skillset-provider'
+
+type PlatformProviderData = {
+  repoId?: string
+  orgId?: string
+  orgName?: string
+}
 
 export class PlatformSkillsetProvider extends BaseSkillsetProvider {
   readonly id = 'platform'
@@ -16,8 +27,47 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
   readonly publishMode = 'hosted_submit' as const
   readonly supportsRemoteSync = true
 
-  override getEffectiveRepoId(skillsetId: string, platformRepoId?: string): string {
-    return platformRepoId || skillsetId
+  override normalizeProviderData(source?: { providerData?: SkillsetProviderData } | null): SkillsetProviderData | undefined {
+    const providerData = source?.providerData
+    const record = source as Record<string, unknown> | undefined
+    // Temporary compatibility bridge while older persisted settings/metadata
+    // still use top-level platform* fields.
+    const repoId = this.readString(providerData?.repoId) ?? this.readString(record?.platformRepoId)
+    const orgId = this.readString(providerData?.orgId) ?? this.readString(record?.platformOrgId)
+    const orgName = this.readString(providerData?.orgName) ?? this.readString(record?.platformOrgName)
+    if (!repoId && !orgId && !orgName) return undefined
+    return {
+      ...(repoId ? { repoId } : {}),
+      ...(orgId ? { orgId } : {}),
+      ...(orgName ? { orgName } : {}),
+    }
+  }
+
+  override getEffectiveRepoId(ref: SkillsetProviderRef): string {
+    return this.getPlatformData(ref).repoId || ref.skillsetId
+  }
+
+  override getSkillsetDisplayName(ref: Pick<SkillsetProviderRef, 'skillsetId' | 'skillsetName' | 'providerData'>): string {
+    return ref.skillsetName
+      || this.getPlatformData(ref).repoId?.split('/').pop()
+      || ref.skillsetId
+  }
+
+  override getAccessInfo(params: {
+    currentPlatformOrgId?: string | null
+    config?: Pick<SkillsetConfig, 'name' | 'description' | 'providerData'>
+    meta: Pick<SkillsetProviderRef, 'skillsetId' | 'skillsetName' | 'providerData'>
+  }): SkillsetAccessInfo {
+    const configData = this.getPlatformData(params.config)
+    const metaData = this.getPlatformData(params.meta)
+    const skillsetOrgId = configData.orgId || this.getOrgIdFromRepoId(configData.repoId) || this.getOrgIdFromRepoId(metaData.repoId)
+    const skillsetOrgName = configData.orgName || this.getPlatformOrgName(params.config?.description)
+    return {
+      skillsetName: params.config?.name || this.getSkillsetDisplayName(params.meta),
+      skillsetOrgId,
+      skillsetOrgName,
+      isAccessible: !skillsetOrgId || skillsetOrgId === params.currentPlatformOrgId,
+    }
   }
 
   override getRegistrationUrl(url: string): string {
@@ -25,18 +75,20 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
     return proxyBase ? `${proxyBase}/v1/skills/repo` : url
   }
 
-  override async resolveCloneUrl(url: string, options?: {
-    skillsetId?: string
-    skillsetName?: string
-    platformRepoId?: string
-  }): Promise<string> {
+  override async resolveCloneUrl(url: string, options?: SkillsetProviderRef): Promise<string> {
     const proxyBase = getPlatformProxyBaseUrl()
     const token = getPlatformAccessToken()
     if (!proxyBase || !token) {
       throw new Error('Platform not connected. Please connect to platform first.')
     }
 
-    const skillsetName = options?.skillsetName
+    const skillsetName = options
+      ? this.getSkillsetDisplayName({
+        skillsetId: options.skillsetId,
+        skillsetName: options.skillsetName,
+        providerData: options.providerData,
+      })
+      : undefined
     if (!skillsetName) {
       throw new Error('skillsetName is required for platform provider')
     }
@@ -82,7 +134,7 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
       throw new Error('Platform not connected. Please connect to platform first.')
     }
 
-    const skillsetName = getEffectiveSkillsetName(input) ?? input.skillsetId
+    const skillsetName = this.getSkillsetDisplayName(input)
     const res = await fetch(`${proxyBase}/v1/skills/submit-update`, {
       method: 'POST',
       headers: {
@@ -169,20 +221,57 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
     const auth = getPlatformAuthStatus()
     return {
       ...super.buildSkillsetConfig(remote),
-      platformRepoId: remote.repoId,
-      ...(auth.orgId ? { platformOrgId: auth.orgId } : {}),
-      ...(auth.orgName ? { platformOrgName: auth.orgName } : {}),
+      providerData: {
+        repoId: remote.repoId,
+        ...(auth.orgId ? { orgId: auth.orgId } : {}),
+        ...(auth.orgName ? { orgName: auth.orgName } : {}),
+      },
     }
   }
 
   override updateSkillsetConfig(existing: SkillsetConfig, remote: SkillsetRemoteDescriptor): boolean {
     let changed = super.updateSkillsetConfig(existing, remote)
     const auth = getPlatformAuthStatus()
-    if (existing.platformOrgId !== auth.orgId) {
-      existing.platformOrgId = auth.orgId ?? undefined
-      existing.platformOrgName = auth.orgName ?? undefined
+    const current = this.getPlatformData(existing)
+    const next: PlatformProviderData = {
+      repoId: remote.repoId,
+      ...(auth.orgId ? { orgId: auth.orgId } : {}),
+      ...(auth.orgName ? { orgName: auth.orgName } : {}),
+    }
+    if (
+      current.repoId !== next.repoId
+      || current.orgId !== next.orgId
+      || current.orgName !== next.orgName
+    ) {
+      existing.providerData = next
       changed = true
     }
     return changed
+  }
+
+  private getPlatformData(source?: { providerData?: SkillsetProviderData } | null): PlatformProviderData {
+    const providerData = this.normalizeProviderData(source)
+    return {
+      repoId: this.readString(providerData?.repoId),
+      orgId: this.readString(providerData?.orgId),
+      orgName: this.readString(providerData?.orgName),
+    }
+  }
+
+  private readString(value: unknown): string | undefined {
+    return typeof value === 'string' && value.length > 0 ? value : undefined
+  }
+
+  private getOrgIdFromRepoId(repoId?: string): string | undefined {
+    if (!repoId) return undefined
+    const parts = repoId.split('/')
+    return parts.length >= 3 ? parts[1] : undefined
+  }
+
+  private getPlatformOrgName(description?: string): string | undefined {
+    if (!description) return undefined
+    const prefix = 'Default skillset for '
+    if (!description.startsWith(prefix)) return undefined
+    return description.slice(prefix.length).trim() || undefined
   }
 }

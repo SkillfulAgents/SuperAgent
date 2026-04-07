@@ -63,7 +63,7 @@ describe('skillsets routes', () => {
     mockEnsureSkillsetCached.mockResolvedValue(undefined)
   })
 
-  it('lists only platform skillsets from the current org', async () => {
+  it('lists only skillsets accessible to the current provider context', async () => {
     mockGetSettings.mockReturnValue({
       skillsets: [
         {
@@ -81,8 +81,10 @@ describe('skillsets routes', () => {
           description: 'Current org local',
           addedAt: '2026-01-01T00:00:00.000Z',
           provider: 'platform',
-          platformRepoId: 'repo-current',
-          platformOrgId: 'org_current',
+          providerData: {
+            repoId: 'repo-current',
+            orgId: 'org_current',
+          },
         },
         {
           id: 'platform--repo-old--legacy',
@@ -91,8 +93,10 @@ describe('skillsets routes', () => {
           description: 'Old org legacy',
           addedAt: '2026-01-01T00:00:00.000Z',
           provider: 'platform',
-          platformRepoId: 'repo-old',
-          platformOrgId: 'org_old',
+          providerData: {
+            repoId: 'repo-old',
+            orgId: 'org_old',
+          },
         },
       ],
     })
@@ -110,7 +114,7 @@ describe('skillsets routes', () => {
     ])
   })
 
-  it('backfills platformOrgId when syncing existing platform skillsets', async () => {
+  it('backfills providerData access fields when syncing existing platform skillsets', async () => {
     const existingSettings = {
       skillsets: [
         {
@@ -120,7 +124,9 @@ describe('skillsets routes', () => {
           description: '',
           addedAt: '2026-01-01T00:00:00.000Z',
           provider: 'platform',
-          platformRepoId: 'repo-current',
+          providerData: {
+            repoId: 'repo-current',
+          },
         },
       ],
     }
@@ -157,9 +163,11 @@ describe('skillsets routes', () => {
     const updatedSettings = mockUpdateSettings.mock.calls[0][0]
     expect(updatedSettings.skillsets[0]).toMatchObject({
       id: 'platform--repo-current--local',
-      platformRepoId: 'repo-current',
-      platformOrgId: 'org_current',
       description: 'Current org local',
+      providerData: {
+        repoId: 'repo-current',
+        orgId: 'org_current',
+      },
     })
 
     vi.unstubAllGlobals()

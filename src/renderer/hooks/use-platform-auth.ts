@@ -136,7 +136,7 @@ export function useSavePlatformAccessKey() {
       queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
       await applyPlatformDefaults().catch(() => {})
 
-      // Auto-sync platform skillsets
+      // Auto-sync provider-owned skillsets after platform auth is ready.
       void apiFetch('/api/skillsets/sync-remote', {
         method: 'POST',
         body: JSON.stringify({ provider: 'platform' }),
@@ -181,7 +181,7 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
         setError(err instanceof Error ? err.message : 'Failed to apply platform defaults.')
       })
 
-      // Auto-sync platform skillsets after successful connection
+      // Auto-sync provider-owned skillsets after successful connection.
       void apiFetch('/api/skillsets/sync-remote', {
         method: 'POST',
         body: JSON.stringify({ provider: 'platform' }),

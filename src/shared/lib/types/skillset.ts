@@ -33,6 +33,9 @@ export interface SkillsetIndex {
 /** Skill provider type */
 export type SkillProvider = 'github' | 'platform'
 
+/** Provider-specific serialized data owned by the concrete provider */
+export type SkillsetProviderData = Record<string, unknown>
+
 /** A configured skillset in user settings */
 export interface SkillsetConfig {
   id: string // deterministic slug from URL
@@ -41,9 +44,7 @@ export interface SkillsetConfig {
   description: string // from index.json description
   addedAt: string // ISO date
   provider?: SkillProvider // defaults to 'github'
-  platformRepoId?: string // CodeStorage repo ID for platform provider
-  platformOrgId?: string // owning org ID for platform provider
-  platformOrgName?: string // owning org name for platform provider
+  providerData?: SkillsetProviderData
 }
 
 // ============================================================================
@@ -61,7 +62,7 @@ export interface InstalledSkillMetadata {
   originalContentHash: string // SHA-256 of the installed skill package at install time
   openPrUrl?: string // URL of an open PR for local changes
   provider?: SkillProvider // defaults to 'github'
-  platformRepoId?: string
+  providerData?: SkillsetProviderData
   skillsetName?: string
   pendingQueueItemId?: string // platform queue item ID for pending submissions
 }
@@ -163,7 +164,7 @@ export interface InstalledAgentMetadata {
   originalContentHash: string // SHA-256 of template-eligible files
   openPrUrl?: string
   provider?: SkillProvider
-  platformRepoId?: string
+  providerData?: SkillsetProviderData
   skillsetName?: string
   pendingQueueItemId?: string
 }

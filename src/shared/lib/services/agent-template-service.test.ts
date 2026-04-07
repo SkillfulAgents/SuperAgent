@@ -1458,7 +1458,9 @@ describe('getAgentTemplateStatus', () => {
       skillsetId: 'platform--skillsets/org_old/local--local',
       skillsetUrl: 'https://platform.example/skills/repo',
       provider: 'platform',
-      platformRepoId: 'skillsets/org_old/local',
+      providerData: {
+        repoId: 'skillsets/org_old/local',
+      },
       skillsetName: 'local',
       agentName: 'Hidden Platform Agent',
       agentPath: 'agents/hidden-platform-agent/',
@@ -1472,9 +1474,11 @@ describe('getAgentTemplateStatus', () => {
       id: 'platform--skillsets/org_old/local--local',
       name: 'local',
       provider: 'platform',
-      platformRepoId: 'skillsets/org_old/local',
-      platformOrgId: 'org_old',
-      platformOrgName: 'Old Org',
+      providerData: {
+        repoId: 'skillsets/org_old/local',
+        orgId: 'org_old',
+        orgName: 'Old Org',
+      },
     })
 
     const result = await getAgentTemplateStatus('hidden-platform-agent', [config], {
@@ -1689,8 +1693,8 @@ describe('getDiscoverableAgents', () => {
   })
 
   it('returns agents from multiple skillsets sorted alphabetically', async () => {
-    mockGetSkillsetIndex.mockImplementation(async (id: string) => {
-      if (id === 'skillset-a') {
+    mockGetSkillsetIndex.mockImplementation(async (ref) => {
+      if (ref.skillsetId === 'skillset-a') {
         return {
           skillset_name: 'Skillset A',
           description: 'A',
@@ -1701,7 +1705,7 @@ describe('getDiscoverableAgents', () => {
           ],
         }
       }
-      if (id === 'skillset-b') {
+      if (ref.skillsetId === 'skillset-b') {
         return {
           skillset_name: 'Skillset B',
           description: 'B',

@@ -2,10 +2,11 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import path from 'path'
 import fs from 'fs'
-import type { SkillProvider, SkillsetConfig } from '@shared/lib/types/skillset'
+import type { SkillsetConfig } from '@shared/lib/types/skillset'
 import { ensureDirectory } from '@shared/lib/utils/file-storage'
 import { getSettings } from '@shared/lib/config/settings'
 import { getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
+import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 
 const execFileAsync = promisify(execFile)
 
@@ -14,99 +15,21 @@ export const GIT_ENV = {
   GIT_TERMINAL_PROMPT: '0',
 }
 
-/**
- * Derive the effective skillset name from metadata fields.
- * Falls back from skillsetName → last segment of platformRepoId.
- */
-export function getEffectiveSkillsetName(
-  meta: { skillsetName?: string; platformRepoId?: string },
-): string | undefined {
-  return meta.skillsetName
-    ?? (meta.platformRepoId ? meta.platformRepoId.split('/').pop() : undefined)
-}
-
-/**
- * Derive the effective repo ID used for local cache directory naming.
- * Platform providers use platformRepoId; GitHub uses skillsetId.
- */
-export function getEffectiveRepoId(
-  provider: SkillProvider | undefined,
-  platformRepoId: string | undefined,
-  skillsetId: string,
-): string {
-  return (provider === 'platform' && platformRepoId) ? platformRepoId : skillsetId
-}
-
-/**
- * Platform repo IDs are namespaced as {namespace}/{orgId}/{skillsetName}.
- */
-export function getPlatformOrgIdFromRepoId(platformRepoId?: string): string | undefined {
-  if (!platformRepoId) return undefined
-  const parts = platformRepoId.split('/')
-  return parts.length >= 3 ? parts[1] : undefined
-}
-
-/**
- * Prefer stored org names; fall back to legacy platform descriptions like
- * "Default skillset for DataWizz Demo Org".
- */
-export function getPlatformOrgName(config?: Pick<SkillsetConfig, 'platformOrgName' | 'description'>): string | undefined {
-  if (!config) return undefined
-  if (config.platformOrgName) return config.platformOrgName
-
-  const prefix = 'Default skillset for '
-  if (config.description?.startsWith(prefix)) {
-    return config.description.slice(prefix.length).trim() || undefined
-  }
-
-  return undefined
-}
-
-export function resolvePlatformSkillsetScope(params: {
-  provider?: SkillProvider
-  currentPlatformOrgId?: string | null
-  config?: Pick<SkillsetConfig, 'name' | 'description' | 'platformOrgId' | 'platformOrgName' | 'platformRepoId'>
-  meta: {
-    skillsetId: string
-    skillsetName?: string
-    platformRepoId?: string
-  }
-}) {
-  const skillsetOrgId =
-    params.config?.platformOrgId
-    || getPlatformOrgIdFromRepoId(params.config?.platformRepoId)
-    || getPlatformOrgIdFromRepoId(params.meta.platformRepoId)
-  const skillsetOrgName = getPlatformOrgName(params.config)
-  const skillsetName =
-    params.config?.name
-    || getEffectiveSkillsetName(params.meta)
-    || params.meta.skillsetId
-  const isCurrentPlatformOrg =
-    params.provider !== 'platform'
-    || !skillsetOrgId
-    || skillsetOrgId === params.currentPlatformOrgId
-
-  return {
-    skillsetName,
-    skillsetOrgId,
-    skillsetOrgName,
-    isCurrentPlatformOrg,
-  }
-}
-
-/**
- * Hide platform skillsets that do not belong to the currently connected org.
- * Non-platform skillsets are always kept.
- */
-export function filterSkillsetsForCurrentPlatformOrg(
-  configs: SkillsetConfig[],
-  currentPlatformOrgId: string | null,
-): SkillsetConfig[] {
-  return configs.filter((config) => {
-    if (config.provider !== 'platform') return true
-    if (!currentPlatformOrgId) return false
-    return config.platformOrgId === currentPlatformOrgId
-  })
+function isSkillsetAccessible(config: SkillsetConfig, currentPlatformOrgId: string | null): boolean {
+  const provider = getSkillsetProvider(config.provider)
+  return provider.getAccessInfo({
+    currentPlatformOrgId,
+    config: {
+      name: config.name,
+      description: config.description,
+      providerData: provider.normalizeProviderData(config),
+    },
+    meta: {
+      skillsetId: config.id,
+      skillsetName: config.name,
+      providerData: provider.normalizeProviderData(config),
+    },
+  }).isAccessible
 }
 
 export function buildSkillsetAccessScope(
@@ -115,7 +38,7 @@ export function buildSkillsetAccessScope(
 ) {
   return {
     configuredSkillsets: configs,
-    accessibleSkillsets: filterSkillsetsForCurrentPlatformOrg(configs, currentPlatformOrgId),
+    accessibleSkillsets: configs.filter((config) => isSkillsetAccessible(config, currentPlatformOrgId)),
     currentPlatformOrgId,
   }
 }
