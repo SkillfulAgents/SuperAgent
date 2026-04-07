@@ -13,7 +13,7 @@ Example:
 - requirements: ["Navigate to the login page", "Enter your credentials", "Complete 2FA if prompted"]`,
   {
     message: z.string().describe(
-      'Informal message explaining what you need the user to do (e.g., "Hey, I need you to enter your password")'
+      "A short statement describing what the user needs to do. Never use first person or greetings. Must end with a period. Example: 'Log in to the bank account to continue the data export.'"
     ),
     requirements: z.array(z.string()).default([]).describe(
       'Optional formal list of specific actions the user should complete'

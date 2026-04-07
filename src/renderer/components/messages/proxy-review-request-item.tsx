@@ -16,6 +16,7 @@ interface ProxyReviewRequestItemProps {
   targetPath: string
   matchedScopes: string[]
   scopeDescriptions: Record<string, string>
+  displayText?: string
   agentSlug: string
   readOnly?: boolean
   onComplete: () => void
@@ -31,6 +32,7 @@ export function ProxyReviewRequestItem({
   targetPath,
   matchedScopes,
   scopeDescriptions,
+  displayText,
   agentSlug,
   readOnly,
   onComplete,
@@ -156,8 +158,15 @@ export function ProxyReviewRequestItem({
       data-testid={isCompleted ? 'proxy-review-completed' : 'proxy-review-request'}
       data-status={isCompleted ? status : undefined}
     >
+      {/* Display text (human-readable description of the request) */}
+      {displayText && (
+        <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">
+          {displayText}
+        </p>
+      )}
+
       {/* Code block showing method/path + toolkit */}
-      <div className="mt-5">
+      <div className={displayText ? 'mt-3' : 'mt-5'}>
         <div className="rounded-md border border-border bg-white px-3 py-2 dark:bg-background">
           <span className="mr-2 inline-flex h-7 items-center rounded-md bg-muted px-2.5 text-xs font-medium text-foreground/80 capitalize">
             {toolkit}

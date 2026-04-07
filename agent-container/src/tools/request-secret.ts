@@ -31,7 +31,7 @@ Always check your available environment variables first (listed at the start of 
       .string()
       .optional()
       .describe(
-        'Explain why you need this secret - what you will use it for. This helps the user understand the request.'
+        "A question for the user following the pattern 'Add {secretName} so the agent can {purpose}?'. Never use first person. Must end with '?'. Example: 'Add GITHUB_TOKEN so the agent can authenticate with the GitHub API?'"
       ),
   },
   async (args) => {

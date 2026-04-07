@@ -27,7 +27,7 @@ Example usage:
     description: z
       .string()
       .describe(
-        'Description of the file you need from the user (e.g., "Please upload the CSV file with sales data")'
+        "A short statement following the pattern 'Upload your {file description} so the agent can {purpose}.'. Never use first person. Must end with a period. Example: 'Upload your sales CSV so the agent can generate the quarterly report.'"
       ),
     fileTypes: z
       .string()
