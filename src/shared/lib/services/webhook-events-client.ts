@@ -22,6 +22,7 @@ export interface WebhookEvent {
 
 export interface RealtimeConfig {
   url: string
+  apikey: string
   jwt: string
   channel: string
 }

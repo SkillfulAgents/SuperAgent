@@ -7,6 +7,7 @@
  * Batches multiple events for the same trigger into a single session.
  */
 
+import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { messagePersister } from '@shared/lib/container/message-persister'
@@ -57,6 +58,14 @@ class TriggerManager {
     }
 
     this.isRunning = true
+
+    const proxyUrl = getPlatformProxyBaseUrl()
+    if (!proxyUrl) {
+      console.log('[TriggerManager] Platform proxy URL not configured, skipping')
+      this.isRunning = false
+      return
+    }
+
     console.log('[TriggerManager] Starting...')
 
     try {
@@ -111,7 +120,7 @@ class TriggerManager {
   }
 
   private async subscribeToRealtime(
-    config: { url: string; jwt: string; channel: string }
+    config: { url: string; apikey: string; jwt: string; channel: string }
   ): Promise<void> {
     if (this.realtimeClient) {
       this.realtimeClient.disconnect()
