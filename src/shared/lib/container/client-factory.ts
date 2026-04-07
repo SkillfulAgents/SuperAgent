@@ -364,6 +364,7 @@ export function pullImage(
 
     const allLayers = new Set<string>()
     const completedLayers = new Set<string>()
+    const stderrChunks: string[] = []
     // Docker: "abc123def: Pull complete" or "abc123def: Already exists"
     const dockerLayerPattern = /^([a-f0-9]+):\s+(.+)$/i
     const dockerCompletedStatuses = ['pull complete', 'already exists']
@@ -420,13 +421,18 @@ export function pullImage(
     }
 
     proc.stdout?.on('data', handleData)
-    proc.stderr?.on('data', handleData)
+    proc.stderr?.on('data', (data: Buffer) => {
+      stderrChunks.push(data.toString())
+      handleData(data)
+    })
 
     proc.on('close', (code) => {
       if (code === 0) {
         resolve()
       } else {
-        reject(new Error(`Image pull failed with exit code ${code}`))
+        const stderr = stderrChunks.join('').trim()
+        const detail = stderr ? `: ${stderr.slice(-500)}` : ''
+        reject(new Error(`Image pull failed with exit code ${code}${detail}`))
       }
     })
     proc.on('error', reject)
@@ -454,6 +460,7 @@ export function buildImage(
     const proc = spawnWithPath(cli, ['build', '-t', image, AGENT_CONTAINER_PATH])
 
     let stepCount = 0
+    const stderrChunks: string[] = []
 
     const handleData = (data: Buffer) => {
       const text = data.toString()
@@ -477,13 +484,18 @@ export function buildImage(
     }
 
     proc.stdout?.on('data', handleData)
-    proc.stderr?.on('data', handleData)
+    proc.stderr?.on('data', (data: Buffer) => {
+      stderrChunks.push(data.toString())
+      handleData(data)
+    })
 
     proc.on('close', (code) => {
       if (code === 0) {
         resolve()
       } else {
-        reject(new Error(`Image build failed with exit code ${code}`))
+        const stderr = stderrChunks.join('').trim()
+        const detail = stderr ? `: ${stderr.slice(-500)}` : ''
+        reject(new Error(`Image build failed with exit code ${code}${detail}`))
       }
     })
     proc.on('error', reject)
