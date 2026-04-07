@@ -951,7 +951,9 @@ export async function refreshAgentTemplates(
     // Remote has moved forward (e.g. PR merged, possibly with version bump).
     // Overwrite local files with the merged remote content so the template
     // transitions cleanly to up_to_date instead of lingering as locally_modified.
-    if (meta.openPrUrl && repoHash !== meta.originalContentHash) {
+    // Only trigger when the local content was actually modified (currentHash !== originalContentHash).
+    // If currentHash === originalContentHash, the remote difference just means the PR hasn't merged yet.
+    if (meta.openPrUrl && currentHash !== meta.originalContentHash && repoHash !== meta.originalContentHash) {
       await copyTemplateFiles(agentDirInRepo, workspaceDir)
       meta.originalContentHash = repoHash
       meta.openPrUrl = undefined

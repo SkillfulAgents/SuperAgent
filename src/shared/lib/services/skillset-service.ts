@@ -996,6 +996,14 @@ export async function refreshAgentSkills(
     const effectiveRepoId = ssConfig?.platformRepoId || meta.skillsetId
     const skillRepoDir = getSkillsetRepoDir(effectiveRepoId)
 
+    // Legacy hash migration: older installs stored only the SKILL.md content hash.
+    // Upgrade to the full-package hash before any comparisons so all branches
+    // see a consistent originalContentHash.
+    if (currentHash !== meta.originalContentHash && currentSkillMdHash === meta.originalContentHash && isSingleFileLegacySkill) {
+      meta.originalContentHash = currentHash
+      await writeJsonFile(getSkillMetadataPath(agentSlug, entry.name), meta)
+    }
+
     const repoFiles = await getRepoSkillPackageFiles(skillRepoDir, meta.skillPath)
     const cacheHash = repoFiles ? hashSkillPackageFiles(repoFiles) : null
 
@@ -1014,7 +1022,9 @@ export async function refreshAgentSkills(
     // Remote has moved forward (e.g. PR merged, possibly with version bump).
     // Overwrite local files with the merged remote content so the skill
     // transitions cleanly to up_to_date instead of lingering as locally_modified.
-    if (meta.openPrUrl && cacheHash && cacheHash !== currentHash && cacheHash !== meta.originalContentHash) {
+    // Only trigger when the local content was actually modified (currentHash !== originalContentHash).
+    // If currentHash === originalContentHash, the remote difference just means the PR hasn't merged yet.
+    if (meta.openPrUrl && cacheHash && currentHash !== meta.originalContentHash && cacheHash !== currentHash && cacheHash !== meta.originalContentHash) {
       const skillDirInRepo = path.join(skillRepoDir, path.dirname(meta.skillPath))
       await copyDirectoryFiltered(skillDirInRepo, path.join(skillsDir, entry.name))
       const freshContent = await readFileOrNull(path.join(skillsDir, entry.name, 'SKILL.md'))
@@ -1031,12 +1041,7 @@ export async function refreshAgentSkills(
       continue
     }
 
-    if (currentHash === meta.originalContentHash) continue // already in sync
-    if (currentSkillMdHash === meta.originalContentHash && isSingleFileLegacySkill) {
-      meta.originalContentHash = currentHash
-      await writeJsonFile(getSkillMetadataPath(agentSlug, entry.name), meta)
-      continue
-    }
+    if (currentHash === meta.originalContentHash) continue
   }
 }
 
