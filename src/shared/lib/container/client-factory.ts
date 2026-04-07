@@ -74,7 +74,11 @@ export function getRunnerDisplayName(runner: ContainerRunner): string {
 function getCliCommand(runner: ContainerRunner): string {
   const entry = ALL_RUNNERS.find((r) => r.name === runner)
   if (!entry) return runner
-  return typeof entry.cliCommand === 'function' ? entry.cliCommand() : entry.cliCommand
+  const cmd = typeof entry.cliCommand === 'function' ? entry.cliCommand() : entry.cliCommand
+  // Quote paths that contain spaces (e.g. Windows users with spaces in their username).
+  // Both execWithPath (shell string) and spawnWithPath (shell: true) need quoting.
+  if (cmd.includes(' ') && !cmd.startsWith('"')) return `"${cmd}"`
+  return cmd
 }
 
 /** Cache for runner availability to avoid spawning docker commands repeatedly */
