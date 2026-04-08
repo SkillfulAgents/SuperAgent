@@ -63,7 +63,7 @@ describe('skillsets routes', () => {
     mockEnsureSkillsetCached.mockResolvedValue(undefined)
   })
 
-  it('lists only skillsets accessible to the current provider context', async () => {
+  it('lists all configured skillsets (filtering happens at write-time, not query-time)', async () => {
     mockGetSettings.mockReturnValue({
       skillsets: [
         {
@@ -84,18 +84,6 @@ describe('skillsets routes', () => {
           providerData: {
             repoId: 'repo-current',
             orgId: 'org_current',
-          },
-        },
-        {
-          id: 'platform--repo-old--legacy',
-          url: 'http://platform/v1/skills/repo',
-          name: 'legacy',
-          description: 'Old org legacy',
-          addedAt: '2026-01-01T00:00:00.000Z',
-          provider: 'platform',
-          providerData: {
-            repoId: 'repo-old',
-            orgId: 'org_old',
           },
         },
       ],

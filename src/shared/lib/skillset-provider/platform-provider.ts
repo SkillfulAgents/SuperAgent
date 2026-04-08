@@ -7,12 +7,12 @@ import type {
 } from '@shared/lib/types/skillset'
 import {
   BaseSkillsetProvider,
-  type SkillsetAccessInfo,
   type SkillsetHostedUpdateInput,
   type SkillsetPublishInput,
   type SkillsetPublishResult,
   type SkillsetProviderRef,
   type SkillsetRemoteDescriptor,
+  type SkillsetSourceInfo,
 } from './base-skillset-provider'
 
 type PlatformProviderData = {
@@ -53,20 +53,16 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
       || ref.skillsetId
   }
 
-  override getAccessInfo(params: {
-    config?: Pick<SkillsetConfig, 'name' | 'description' | 'providerData'>
-    meta: Pick<SkillsetProviderRef, 'skillsetId' | 'skillsetName' | 'providerData'>
-  }): SkillsetAccessInfo {
-    const configData = this.getPlatformData(params.config)
-    const metaData = this.getPlatformData(params.meta)
-    const orgId = configData.orgId || this.getOrgIdFromRepoId(configData.repoId) || this.getOrgIdFromRepoId(metaData.repoId)
-    const orgName = configData.orgName || this.getPlatformOrgName(params.config?.description)
-    const skillsetName = params.config?.name || this.getSkillsetDisplayName(params.meta)
-    const currentOrgId = getPlatformAuthStatus().orgId ?? undefined
+  override getSourceInfo(
+    meta: SkillsetProviderRef,
+    config?: SkillsetConfig,
+  ): SkillsetSourceInfo {
+    const configData = this.getPlatformData(config)
+    const orgName = configData.orgName || this.getPlatformOrgName(config?.description)
+    const skillsetName = config?.name || this.getSkillsetDisplayName(meta)
     return {
       skillsetName,
       sourceLabel: orgName ? `From org: ${orgName}` : skillsetName,
-      isAccessible: !orgId || orgId === currentOrgId,
     }
   }
 

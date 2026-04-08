@@ -1850,7 +1850,7 @@ description:
       expect(result[0].status.type).toBe('up_to_date')
     })
 
-    it('uses skillsetId as skillsetName when config name is not found', async () => {
+    it('treats orphan skills (no matching config) as local', async () => {
       const skillContent = '# Test Skill\nOriginal content'
       const meta = buildMetadata({
         originalContentHash: contentHash(skillContent),
@@ -1860,49 +1860,13 @@ description:
       await createSkillDir('test-agent', 'orphan-skill', skillContent, meta)
 
       const result = await getAgentSkillsWithStatus('test-agent', [])
-      // With no config, the name map has no entry — falls back to skillsetId
-      expect(result[0].status).toEqual({
-        type: 'up_to_date',
-        skillsetId: 'unknown-skillset',
-        skillsetName: 'unknown-skillset',
-        sourceLabel: 'unknown-skillset',
-      })
-    })
-
-    it('treats inaccessible provider-scoped skillsets as local skills', async () => {
-      const skillContent = '# Test Skill\nOriginal content'
-      const meta = buildMetadata({
-        originalContentHash: contentHash(skillContent),
-        skillsetId: 'platform--skillsets/org_old/local--local',
-        provider: 'platform',
-        providerData: {
-          repoId: 'skillsets/org_old/local',
-        },
-        skillsetName: 'local',
-      })
-      const config = buildSkillsetConfig({
-        id: 'platform--skillsets/org_old/local--local',
-        name: 'local',
-        provider: 'platform',
-        providerData: {
-          repoId: 'skillsets/org_old/local',
-          orgId: 'org_old',
-          orgName: 'Old Org',
-        },
-      })
-
-      await createSkillDir('test-agent', 'hidden-platform-skill', skillContent, meta)
-
-      mockGetPlatformAuthStatus.mockReturnValue({ orgId: 'org_current' })
-      const result = await getAgentSkillsWithStatus('test-agent', [config])
       expect(result[0].status).toEqual({
         type: 'local',
-        skillsetId: 'platform--skillsets/org_old/local--local',
-        skillsetName: 'local',
-        sourceLabel: 'From org: Old Org',
-        publishable: false,
       })
     })
+
+    // Access filtering removed: platform skillsets are cleaned up on org switch/disconnect
+    // instead of being filtered at query time. See platform-auth-service.ts removePlatformSkillsets().
 
     it('handles multiple skills with mixed statuses', async () => {
       const originalContent = '# Test Skill\nOriginal content'

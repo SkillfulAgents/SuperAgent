@@ -817,31 +817,16 @@ export async function getAgentSkillsWithStatus(
       status = { type: 'local' }
     } else {
       const ssConfig = skillsetConfigMap.get(meta.skillsetId)
-      const metaRef = toSkillsetRefFromMeta(meta)
-      const configRef = ssConfig ? toSkillsetRefFromConfig(ssConfig) : undefined
-      const hostingProvider = getSkillsetProvider(meta.provider)
-      const {
-        skillsetName,
-        sourceLabel,
-        isAccessible,
-      } = hostingProvider.getInstalledAccessInfo(metaRef, ssConfig)
 
-      if (!isAccessible) {
-        status = {
-          type: 'local',
-          skillsetId: meta.skillsetId,
-          skillsetName,
-          sourceLabel,
-          publishable: false,
-        }
-        skills.push({
-          name: meta?.skillName || frontmatter.name || getDisplayName(entry.name),
-          description,
-          path: entry.name,
-          status,
-        })
-        continue
-      }
+      if (!ssConfig) {
+        status = { type: 'local' }
+      } else {
+      const metaRef = toSkillsetRefFromMeta(meta)
+      const configRef = toSkillsetRefFromConfig(ssConfig)
+      const hostingProvider = getSkillsetProvider(meta.provider)
+      const info = hostingProvider.getSourceInfo(metaRef, ssConfig)
+      const skillsetName = info.skillsetName
+      const sourceLabel = info.sourceLabel
 
       // If there's a pending platform submission, check its status
       const skillRepoDir = getSkillsetRepoDirForRef(configRef ?? metaRef)
@@ -923,6 +908,7 @@ export async function getAgentSkillsWithStatus(
         } else {
           status = { type: 'up_to_date', skillsetId: meta.skillsetId, skillsetName, sourceLabel }
         }
+      }
       }
     }
 

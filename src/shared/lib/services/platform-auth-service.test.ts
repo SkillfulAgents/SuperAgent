@@ -26,8 +26,8 @@ describe('platform-auth-service', () => {
     delete process.env.SUPERAGENT_DATA_DIR
   })
 
-  it('stores a token and exposes only redacted status', () => {
-    const status = savePlatformAuth('local', {
+  it('stores a token and exposes only redacted status', async () => {
+    const status = await savePlatformAuth('local', {
       token: 'plat_superagent_token_1234567890abcdef',
       email: 'user@example.com',
       label: 'SuperAgent',

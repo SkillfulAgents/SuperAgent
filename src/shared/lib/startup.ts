@@ -14,6 +14,7 @@ import { setupBrowserStreamProxy } from '../../main/browser-stream-proxy'
 import { setServerAnalyticsVersion } from './analytics/server-analytics'
 import { APP_VERSION } from './config/version'
 import { shutdownAC } from './computer-use/executor'
+import { reconcilePlatformSkillsets } from './services/platform-auth-service'
 
 /**
  * Initialize all background services.
@@ -25,6 +26,9 @@ import { shutdownAC } from './computer-use/executor'
 export async function initializeServices() {
   // Initialize server-side analytics version
   setServerAnalyticsVersion(APP_VERSION)
+
+  // Remove platform skillsets that don't belong to the currently connected org
+  await reconcilePlatformSkillsets()
 
   // Validate auth mode startup requirements before anything else
   if (isAuthMode()) {

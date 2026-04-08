@@ -56,10 +56,9 @@ export type SkillsetProviderRef = {
   providerData?: SkillsetProviderData
 }
 
-export type SkillsetAccessInfo = {
+export type SkillsetSourceInfo = {
   skillsetName: string
   sourceLabel?: string
-  isAccessible: boolean
 }
 
 export type SkillsetDisplayInfo = {
@@ -87,42 +86,12 @@ export abstract class BaseSkillsetProvider {
     return ref.skillsetName || ref.skillsetId
   }
 
-  getAccessInfo(params: {
-    config?: Pick<SkillsetConfig, 'name' | 'description' | 'providerData'>
-    meta: Pick<SkillsetProviderRef, 'skillsetId' | 'skillsetName' | 'providerData'>
-  }): SkillsetAccessInfo {
-    const skillsetName = params.config?.name || this.getSkillsetDisplayName(params.meta)
-    return {
-      skillsetName,
-      sourceLabel: skillsetName,
-      isAccessible: true,
-    }
-  }
-
-  getConfigAccessInfo(config: SkillsetConfig): SkillsetAccessInfo {
-    const providerData = this.normalizeProviderData(config)
-    return this.getAccessInfo({
-      config: { name: config.name, description: config.description, providerData },
-      meta: { skillsetId: config.id, skillsetName: config.name, providerData },
-    })
-  }
-
-  getInstalledAccessInfo(
+  getSourceInfo(
     meta: SkillsetProviderRef,
     config?: SkillsetConfig,
-  ): SkillsetAccessInfo {
-    return this.getAccessInfo({
-      config: config ? {
-        name: config.name,
-        description: config.description,
-        providerData: this.normalizeProviderData(config),
-      } : undefined,
-      meta: {
-        skillsetId: meta.skillsetId,
-        skillsetName: meta.skillsetName,
-        providerData: meta.providerData,
-      },
-    })
+  ): SkillsetSourceInfo {
+    const skillsetName = config?.name || this.getSkillsetDisplayName(meta)
+    return { skillsetName, sourceLabel: skillsetName }
   }
 
   getDisplayInfo(): SkillsetDisplayInfo {

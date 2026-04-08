@@ -1431,7 +1431,7 @@ describe('getAgentTemplateStatus', () => {
     }
   })
 
-  it('falls back to skillsetId when skillset config is not found', async () => {
+  it('returns local when skillset config is not found', async () => {
     const workspaceDir = createWorkspace('no-config-agent', {
       'CLAUDE.md': MINIMAL_CLAUDE_MD,
     })
@@ -1452,54 +1452,11 @@ describe('getAgentTemplateStatus', () => {
     mockGetSkillsetIndex.mockResolvedValue(null)
 
     const result = await getAgentTemplateStatus('no-config-agent', [])
-    if (result.type !== 'local') {
-      expect(result.skillsetName).toBe('orphaned-skillset-id')
-    }
+    expect(result.type).toBe('local')
   })
 
-  it('returns local when platform template belongs to a hidden org skillset', async () => {
-    const workspaceDir = createWorkspace('hidden-platform-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
-    })
-
-    const currentHash = await computeAgentTemplateHash(workspaceDir)
-    const meta: InstalledAgentMetadata = {
-      skillsetId: 'platform--skillsets/org_old/local--local',
-      skillsetUrl: 'https://platform.example/skills/repo',
-      provider: 'platform',
-      providerData: {
-        repoId: 'skillsets/org_old/local',
-      },
-      skillsetName: 'local',
-      agentName: 'Hidden Platform Agent',
-      agentPath: 'agents/hidden-platform-agent/',
-      installedVersion: '1.0.0',
-      installedAt: '2026-01-01T00:00:00.000Z',
-      originalContentHash: currentHash,
-    }
-    await writeMetadata('hidden-platform-agent', meta)
-
-    const config = buildSkillsetConfig({
-      id: 'platform--skillsets/org_old/local--local',
-      name: 'local',
-      provider: 'platform',
-      providerData: {
-        repoId: 'skillsets/org_old/local',
-        orgId: 'org_old',
-        orgName: 'Old Org',
-      },
-    })
-
-    mockGetPlatformAuthStatus.mockReturnValue({ orgId: 'org_current' })
-    const result = await getAgentTemplateStatus('hidden-platform-agent', [config])
-    expect(result).toEqual({
-      type: 'local',
-      skillsetId: 'platform--skillsets/org_old/local--local',
-      skillsetName: 'local',
-      sourceLabel: 'From org: Old Org',
-      publishable: false,
-    })
-  })
+  // Access filtering removed: platform skillsets are cleaned up on org switch/disconnect
+  // instead of being filtered at query time. See platform-auth-service.ts removePlatformSkillsets().
 })
 
 // ============================================================================

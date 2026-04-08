@@ -12,17 +12,9 @@ import {
   removeSkillsetCache,
   ensureSkillsetCached,
 } from '@shared/lib/services/skillset-service'
-import { getSkillsetProvider, getAccessibleSkillsets } from '@shared/lib/skillset-provider'
+import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import type { SkillsetConfig, SkillProvider } from '@shared/lib/types/skillset'
 import type { ApiSkillsetConfig } from '@shared/lib/types/api'
-
-function getSkillsetAccessScope() {
-  const configs = getSettings().skillsets || []
-  return {
-    configuredSkillsets: configs,
-    accessibleSkillsets: getAccessibleSkillsets(configs),
-  }
-}
 
 function toSkillsetRef(config: Pick<SkillsetConfig, 'id' | 'url' | 'name' | 'provider' | 'providerData'>) {
   const provider = getSkillsetProvider(config.provider)
@@ -60,10 +52,10 @@ function configToApiResponse(config: SkillsetConfig, skillCount: number, agentCo
 // GET /api/skillsets - List configured skillsets
 skillsets.get('/', async (c) => {
   try {
-    const scope = getSkillsetAccessScope()
+    const configs = getSettings().skillsets || []
     const result: ApiSkillsetConfig[] = []
 
-    for (const config of scope.accessibleSkillsets) {
+    for (const config of configs) {
       const index = await getSkillsetIndex(toSkillsetRef(config))
       result.push(configToApiResponse(config, index?.skills.length ?? 0, index?.agents?.length ?? 0))
     }

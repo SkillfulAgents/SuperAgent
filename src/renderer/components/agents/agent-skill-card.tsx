@@ -31,7 +31,7 @@ export function AgentSkillCard({ skill, agentSlug }: AgentSkillCardProps) {
   const [prDialogOpen, setPrDialogOpen] = useState(false)
   const [publishDialogOpen, setPublishDialogOpen] = useState(false)
   const [forceSyncDialogOpen, setForceSyncDialogOpen] = useState(false)
-  const sourceLabel = skill.status.sourceLabel || skill.status.skillsetName || null
+  const sourceLabel = skill.status.sourceLabel || null
   const publishMode = useSkillsetPublishMode(skill.status.skillsetId)
   const isPR = isPullRequestPublishMode(publishMode)
   const SubmitIcon = isPR ? GitPullRequest : Send

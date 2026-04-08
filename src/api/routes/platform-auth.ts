@@ -54,7 +54,7 @@ platformAuth.post('/complete', async (c) => {
     return c.json({ error: 'Missing token' }, 400)
   }
 
-  const status = savePlatformAuth(userId, {
+  const status = await savePlatformAuth(userId, {
     token: body.token,
     email: body.email,
     label: body.label,

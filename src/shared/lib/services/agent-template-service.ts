@@ -739,23 +739,15 @@ export async function getAgentTemplateStatus(
   }
 
   const skillsetConfig = skillsets.find((s) => s.id === meta.skillsetId)
-  const metaRef = toSkillsetRefFromMeta(meta)
-  const configRef = skillsetConfig ? toSkillsetRefFromConfig(skillsetConfig) : undefined
-  const hostingProvider = getSkillsetProvider(meta.provider)
-  const {
-    skillsetName,
-    sourceLabel,
-    isAccessible,
-  } = hostingProvider.getInstalledAccessInfo(metaRef, skillsetConfig)
-  if (!isAccessible) {
-    return {
-      type: 'local',
-      skillsetId: meta.skillsetId,
-      skillsetName,
-      sourceLabel,
-      publishable: false,
-    }
+  if (!skillsetConfig) {
+    return { type: 'local' }
   }
+  const metaRef = toSkillsetRefFromMeta(meta)
+  const configRef = toSkillsetRefFromConfig(skillsetConfig)
+  const hostingProvider = getSkillsetProvider(meta.provider)
+  const info = hostingProvider.getSourceInfo(metaRef, skillsetConfig)
+  const skillsetName = info.skillsetName
+  const sourceLabel = info.sourceLabel
   const workspaceDir = getAgentWorkspaceDir(agentSlug)
 
   if (meta.pendingQueueItemId) {
