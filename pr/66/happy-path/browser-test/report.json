@@ -1,24 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "QA-20260407-210420-l6nm agent successfully opened browser, navigated to https://example.com, and returned response confirming the page title is \"Example Domain\"",
+  "reason": "QA test to verify agent can open a browser, navigate to a URL, retrieve the page title, and return the result in the chat.",
   "steps": [
-    "Navigated to http://localhost:47891 - Successfully loaded Super Agent interface with sidebar containing multiple agents including QA-20260407-210420-l6nm",
-    "Clicked on \"QA-20260407-210420-l6nm\" agent in sidebar - Successfully selected the agent and opened the chat interface with \"Start a conversation\" prompt",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the message input field - Message successfully entered in the textbox and Send button became enabled",
-    "Clicked Send message button - Message was sent successfully, agent status changed to \"working\" with timer starting",
-    "Waited up to 180 seconds for response - Agent completed the task in 12 seconds and returned complete response with browser tool execution details",
-    "Verified response mentions \"Example Domain\" - Response clearly states \"The page title is Example Domain. It's the classic IANA example page with a single 'Learn more' link.\" Successful completion confirmed via screenshot showing:"
+    "Navigated to http://localhost:47891 - Page loaded successfully, displayed agent list with \"QA-20260408-000418-2vlr\" visible in sidebar.",
+    "Clicked on \"QA-20260408-000418-2vlr\" agent in sidebar - Agent interface opened, showing chat conversation area with message input field.",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in input field - Message text correctly entered and visible in input field.",
+    "Clicked send button to submit message - Message sent successfully, agent status changed to \"working\", new session created titled \"Browser Navigation and Page Title Check\".",
+    "Waited up to 3 minutes for response - Agent completed the task in 12 seconds, displayed final response.",
+    "Verified response mentions \"Example Domain\" - Response clearly states \"The page title is Example Domain.\" with checkmarks confirming successful completion of all browser operations (Open Browser, Page Snapshot, Browser Command, Close Browser)."
   ],
   "bugs": [],
-  "durationMs": 82153,
-  "sessionId": "f6a9afac-6ca5-41bf-94ec-b02f3e81ebdd",
+  "durationMs": 67832,
+  "sessionId": "6cbe5fe6-fccc-4351-9b02-12ea2b34b287",
   "cost": {
-    "inputTokens": 207,
-    "outputTokens": 2329,
-    "cacheCreationTokens": 94913,
-    "cacheReadTokens": 538318,
+    "inputTokens": 342,
+    "outputTokens": 3191,
+    "cacheCreationTokens": 48823,
+    "cacheReadTokens": 1119918,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.184325
+    "totalCostUsd": 0.189318
   }
 }
