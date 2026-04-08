@@ -168,6 +168,18 @@ describe('buildRunCommandArgs', () => {
       expect(buildRunCommandArgs('eval   ')).toEqual(['eval'])
     })
 
+    // Verify tab new commands pass through without rewrite (0.12.0 workaround removed)
+    it('passes tab new commands through as-is', () => {
+      expect(buildRunCommandArgs('tab new https://example.com')).toEqual(['tab', 'new', 'https://example.com'])
+      expect(buildRunCommandArgs('tab new')).toEqual(['tab', 'new'])
+    })
+
+    it('passes other tab commands through unchanged', () => {
+      expect(buildRunCommandArgs('tab')).toEqual(['tab'])
+      expect(buildRunCommandArgs('tab 2')).toEqual(['tab', '2'])
+      expect(buildRunCommandArgs('tab close')).toEqual(['tab', 'close'])
+    })
+
     it('handles eval with extra leading whitespace before expression', () => {
       const cmd = 'eval   document.title'
       const args = buildRunCommandArgs(cmd)

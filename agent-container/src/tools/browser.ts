@@ -145,7 +145,8 @@ export const browserSnapshotTool = tool(
   `Get an accessibility tree snapshot of the current page. Returns interactive elements with refs (like @e1, @e2) that you can use with browser_click and browser_fill.
 
 Use interactive=true (default) to get clickable/fillable elements with refs.
-Use compact=true (default) to reduce output size.`,
+Use compact=true (default) to reduce output size.
+Use json=true to get structured JSON output with a refs dictionary.`,
   {
     interactive: z
       .boolean()
@@ -157,11 +158,17 @@ Use compact=true (default) to reduce output size.`,
       .optional()
       .default(true)
       .describe('Compact output to reduce size (default: true)'),
+    json: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe('Return structured JSON with refs dictionary (default: false)'),
   },
   async (args) => {
     const result = await browserFetch('snapshot', {
       interactive: args.interactive,
       compact: args.compact,
+      json: args.json,
     })
     if (!result.success) return errorResult(result.error!)
 
@@ -309,16 +316,21 @@ export const browserPressTool = tool(
 
 export const browserScreenshotTool = tool(
   'browser_screenshot',
-  `Take a screenshot of the current page. Returns the screenshot image and the file path where it was saved. Use full=true to capture the entire scrollable page.`,
+  `Take a screenshot of the current page. Returns the screenshot image and the file path where it was saved. Use full=true to capture the entire scrollable page. Use annotate=true to overlay numbered labels on interactive elements — each label [N] corresponds to ref @eN, so you can click elements by their visual label.`,
   {
     full: z
       .boolean()
       .optional()
       .default(false)
       .describe('Capture full scrollable page (default: false, viewport only)'),
+    annotate: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe('Overlay numbered labels on interactive elements matching snapshot refs (default: false)'),
   },
   async (args) => {
-    const result = await browserFetch('screenshot', { full: args.full })
+    const result = await browserFetch('screenshot', { full: args.full, annotate: args.annotate })
     if (!result.success) return errorResult(result.error!)
     const data = result.data as Record<string, unknown>
     const rawOutput = data.output ? String(data.output) : ''
@@ -331,7 +343,13 @@ export const browserScreenshotTool = tool(
       if (image) {
         content.push({ type: 'image' as const, data: image.data, mimeType: image.mimeType })
       }
-      content.push({ type: 'text' as const, text: `Screenshot saved to: ${filePath}` })
+      // For annotated screenshots, include the ref legend after the file path
+      const cleanOutput = stripAnsi(rawOutput).trim()
+      const legendStart = cleanOutput.indexOf('\n')
+      const legend = legendStart > 0 ? cleanOutput.slice(legendStart).trim() : ''
+      const textParts = [`Screenshot saved to: ${filePath}`]
+      if (legend) textParts.push(legend)
+      content.push({ type: 'text' as const, text: textParts.join('\n') })
     } else {
       content.push({ type: 'text' as const, text: 'Screenshot taken.' })
     }
