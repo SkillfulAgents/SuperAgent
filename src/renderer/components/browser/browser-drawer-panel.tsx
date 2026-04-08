@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Globe, MousePointerClick, PanelRightClose, PanelRightOpen, Pause, Play, Square, Expand, Shrink } from 'lucide-react'
+import { Eye, EyeOff, Globe, MousePointerClick, PanelRightClose, PanelRightOpen, Pause, Play, Square, Expand, Shrink } from 'lucide-react'
 import { BrowserActivityLog } from './browser-activity-log'
 import { BrowserTabBar } from './browser-tab-bar'
 import { useBrowserStream } from '@renderer/hooks/use-browser-stream'
@@ -8,6 +8,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { removeBrowserInputRequest } from '@renderer/hooks/use-message-stream'
 import { cn } from '@shared/lib/utils/cn'
 import { useSidebar } from '@renderer/components/ui/sidebar'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -215,7 +216,7 @@ export function BrowserDrawerPanel({
     <>
       <div
         className={cn(
-          'h-full border-l bg-background flex flex-col shrink-0 overflow-hidden relative shadow-[-4px_0_16px_rgba(0,0,0,0.08)] dark:shadow-[-4px_0_16px_rgba(0,0,0,0.3)]',
+          'h-full border-l bg-background flex flex-col shrink-0 overflow-hidden relative px-1 shadow-[-4px_0_16px_rgba(0,0,0,0.08)] dark:shadow-[-4px_0_16px_rgba(0,0,0,0.3)]',
           !isResizing && 'transition-[width] duration-300 ease-in-out'
         )}
         style={{ width: isOpen ? drawerWidth : 0, contain: 'layout paint', willChange: 'transform' }}
@@ -257,21 +258,23 @@ export function BrowserDrawerPanel({
           </button>
         </div>
 
-        {/* Tab bar — shown when any tabs are reported */}
-        {stream.tabs.length >= 1 && (
-          <BrowserTabBar
-            tabs={stream.tabs}
-            viewingTargetId={stream.viewingTargetId}
-            autoFollow={stream.autoFollow}
-            loading={stream.pageLoading}
-            onTabClick={stream.handleTabClick}
-            onCloseTab={stream.handleCloseTab}
-            onToggleAutoFollow={stream.toggleAutoFollow}
-          />
-        )}
+        {/* Browser container — tab bar + canvas viewport */}
+        <div className="shrink-0 rounded-lg border border-border overflow-hidden">
+          {/* Tab bar — shown when any tabs are reported */}
+          {stream.tabs.length >= 1 && (
+            <BrowserTabBar
+              tabs={stream.tabs}
+              viewingTargetId={stream.viewingTargetId}
+              autoFollow={stream.autoFollow}
+              loading={stream.pageLoading}
+              onTabClick={stream.handleTabClick}
+              onCloseTab={stream.handleCloseTab}
+              onToggleAutoFollow={stream.toggleAutoFollow}
+            />
+          )}
 
-        {/* Canvas viewport — full width, edge-to-edge. Glow only when agent is actively working */}
-        <div className={cn('relative shrink-0 overflow-hidden bg-black border-y border-border/40', isActive && !stream.needsAttention && 'browser-glow-container')}>
+          {/* Canvas viewport */}
+          <div className={cn('relative overflow-hidden bg-black', isActive && !stream.needsAttention && 'browser-glow-container')}>
           <canvas
             ref={canvasRef}
             className={`w-full block ${stream.isViewOnly ? 'cursor-not-allowed' : 'cursor-default'}`}
@@ -316,46 +319,61 @@ export function BrowserDrawerPanel({
           )}
 
         </div>
+        </div>
 
         {/* Browser controls pill — sticky to bottom of drawer, always visible */}
         <div className="sticky bottom-2 z-20 flex justify-center pointer-events-none shrink-0 -mt-10">
-          <div className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-background px-2 py-1 shadow-md pointer-events-auto">
-            {(isPaused || (isActive && !stream.needsAttention)) && (
-              <button
-                className="p-1.5 rounded-full hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
-                onClick={handlePauseResume}
-                title={isPaused ? 'Resume' : 'Pause'}
-              >
-                {isPaused ? <Play className="h-3.5 w-3.5 fill-current" /> : <Pause className="h-3.5 w-3.5 fill-current" />}
-              </button>
-            )}
-            <button
-              className="p-1.5 rounded-full hover:bg-muted transition-colors text-red-500 hover:text-red-600"
-              onClick={stream.handleCloseClick}
-              title="Stop browser"
-            >
-              <Square className="h-3.5 w-3.5 fill-current" />
-            </button>
-            <button
-              className="p-1.5 rounded-full hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
-              onClick={() => {
-                if (isExpanded) {
-                  setDrawerWidth(preExpandWidthRef.current ?? DEFAULT_DRAWER_WIDTH)
-                  if (sidebarWasOpenRef.current) setSidebarOpen(true)
-                  setIsExpanded(false)
-                } else {
-                  preExpandWidthRef.current = drawerWidth
-                  sidebarWasOpenRef.current = sidebarOpen
-                  setDrawerWidth(MAX_DRAWER_WIDTH)
-                  setSidebarOpen(false)
-                  setIsExpanded(true)
-                }
-              }}
-              title={isExpanded ? 'Collapse' : 'Expand'}
-            >
-              {isExpanded ? <Shrink className="h-3.5 w-3.5" /> : <Expand className="h-3.5 w-3.5" />}
-            </button>
-          </div>
+          <TooltipProvider delayDuration={300}>
+            <div className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-background px-2 py-1 shadow-md pointer-events-auto">
+              {(isPaused || (isActive && !stream.needsAttention)) && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      className="p-1.5 rounded-full hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+                      onClick={handlePauseResume}
+                    >
+                      {isPaused ? <Play className="h-3.5 w-3.5 fill-current" /> : <Pause className="h-3.5 w-3.5 fill-current" />}
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">{isPaused ? 'Resume Browser' : 'Pause Browser'}</TooltipContent>
+                </Tooltip>
+              )}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    className="p-1.5 rounded-full hover:bg-muted transition-colors text-red-500 hover:text-red-600"
+                    onClick={stream.handleCloseClick}
+                  >
+                    <Square className="h-3.5 w-3.5 fill-current" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top">Stop Browser</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    className="p-1.5 rounded-full hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+                    onClick={() => {
+                      if (isExpanded) {
+                        setDrawerWidth(preExpandWidthRef.current ?? DEFAULT_DRAWER_WIDTH)
+                        if (sidebarWasOpenRef.current) setSidebarOpen(true)
+                        setIsExpanded(false)
+                      } else {
+                        preExpandWidthRef.current = drawerWidth
+                        sidebarWasOpenRef.current = sidebarOpen
+                        setDrawerWidth(MAX_DRAWER_WIDTH)
+                        setSidebarOpen(false)
+                        setIsExpanded(true)
+                      }
+                    }}
+                  >
+                    {isExpanded ? <Shrink className="h-3.5 w-3.5" /> : <Expand className="h-3.5 w-3.5" />}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top">{isExpanded ? 'Collapse' : 'Expand'}</TooltipContent>
+              </Tooltip>
+            </div>
+          </TooltipProvider>
         </div>
 
         {/* Action bar — shown when browser input is needed */}
@@ -390,7 +408,7 @@ export function BrowserDrawerPanel({
 
         {/* Activity log */}
         <div className="flex items-center gap-1 py-1.5 border-b shrink-0 mx-4 mt-4">
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Activity</span>
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Browser Activity</span>
         </div>
         <BrowserActivityLog sessionId={sessionId} agentSlug={agentSlug} />
       </div>
