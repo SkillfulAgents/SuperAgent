@@ -80,7 +80,7 @@ RUN apt-get update && apt-get install -y \
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 RUN npm install -g agent-browser@0.25.3 && \
     if agent-browser install 2>/dev/null; then \
-      chmod -R o+rx /root/.agent-browser 2>/dev/null || true; \
+      true; \
     else \
       npx playwright install chromium && \
       chmod -R o+rx /opt/playwright-browsers && \
@@ -108,7 +108,12 @@ RUN npm run build
 
 # Create non-root user for running Claude Code
 RUN useradd -m -s /bin/bash claude && \
-    chown -R claude:claude /app /workspace
+    chown -R claude:claude /app /workspace && \
+    if [ -d /root/.agent-browser/browsers ]; then \
+      mkdir -p /home/claude/.agent-browser && \
+      mv /root/.agent-browser/browsers /home/claude/.agent-browser/browsers && \
+      chown -R claude:claude /home/claude/.agent-browser; \
+    fi
 
 # Copy skills and settings into the user's Claude config directory (after user creation)
 COPY skills/ /home/claude/.claude/skills/
