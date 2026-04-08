@@ -80,7 +80,7 @@ RUN apt-get update && apt-get install -y \
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 RUN npm install -g agent-browser@0.25.3 && \
     if agent-browser install 2>/dev/null; then \
-      chmod -R o+rx /root/.cache/agent-browser; \
+      chmod -R o+rx /root/.agent-browser 2>/dev/null || true; \
     else \
       npx playwright install chromium && \
       chmod -R o+rx /opt/playwright-browsers && \
