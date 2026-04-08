@@ -144,6 +144,16 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
         }
       }
 
+      // Fallback: check in-memory streaming state for sessions not yet on the filesystem
+      // (e.g. newly created sessions whose .jsonl hasn't been written yet)
+      if (!hasActiveSessions) {
+        hasActiveSessions = messagePersister.hasActiveSessionsForAgent(agent.slug)
+      }
+      if (!hasSessionsAwaitingInput) {
+        hasSessionsAwaitingInput = messagePersister.hasSessionsAwaitingInputForAgent(agent.slug)
+          || (hasActiveSessions && hasAgentLevelReviews)
+      }
+
       // Compute scheduled task summary
       const scheduledTaskCount = pendingTasks.length
       let nextScheduledTaskAt: Date | null = null

@@ -203,6 +203,16 @@ class MessagePersister {
     return false
   }
 
+  // Check if any session for a given agent is awaiting user input
+  hasSessionsAwaitingInputForAgent(agentSlug: string): boolean {
+    for (const [, state] of this.streamingStates) {
+      if (state.agentSlug === agentSlug && state.isAwaitingInput) {
+        return true
+      }
+    }
+    return false
+  }
+
   // Mark all sessions for an agent as inactive and clean up subscriptions (e.g., when container stops)
   markAllSessionsInactiveForAgent(agentSlug: string): void {
     for (const [sessionId, state] of this.streamingStates) {
