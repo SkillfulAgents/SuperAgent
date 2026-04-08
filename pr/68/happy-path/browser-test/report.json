@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Successfully navigated to the Super Agent application, selected an agent, sent a browser navigation request, and verified the response mentions \"Example Domain\"",
+  "steps": [
+    "Step 1 - Navigated to http://localhost:47891 - Successfully loaded the Super Agent application with multiple agents visible in the sidebar",
+    "Step 2 - Found and clicked the \"QA-20260408-004322-7s9r\" agent in the sidebar - Successfully clicked the agent, which opened the conversation interface with status changed to \"idle\"",
+    "Step 3 - Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" - Successfully entered the message in the text input and clicked the Send button, message was delivered to the agent",
+    "Step 4 - Waited up to 3 minutes for a response - Agent responded within 12 seconds with tool call activities showing: Open Browser, Page Snapshot, Browser Command (get title), and Close Browser",
+    "Step 5 - Verified the response mentions \"Example Domain\" and took a screenshot - The agent's response correctly states: \"The page title is Example Domain. It's a simple placeholder page with a 'Learn more' link.\" Screenshot captured successfully showing the complete conversation with all tool calls and the final response"
+  ],
+  "bugs": [],
+  "durationMs": 77102,
+  "sessionId": "aa3a8910-9a8e-4ef3-a434-5f60f823cb1c",
+  "cost": {
+    "inputTokens": 207,
+    "outputTokens": 2198,
+    "cacheCreationTokens": 94086,
+    "cacheReadTokens": 535083,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.182313
+  }
+}
