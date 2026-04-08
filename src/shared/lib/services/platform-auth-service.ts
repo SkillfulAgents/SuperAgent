@@ -180,8 +180,11 @@ export async function savePlatformAuth(_userId: string, input: SavePlatformAuthI
 
   const existing = readRecord()
   const newOrgId = input.orgId?.trim() || null
-  if (existing?.orgId && newOrgId && existing.orgId !== newOrgId) {
-    removePlatformSkillsets(existing.orgId)
+  const orgChanged = existing?.orgId !== newOrgId
+  if (orgChanged && (existing?.orgId || newOrgId)) {
+    if (existing?.orgId) {
+      removePlatformSkillsets(existing.orgId)
+    }
     await removePlatformSkillFiles(newOrgId || undefined)
   }
 

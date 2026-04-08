@@ -265,12 +265,6 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
     return typeof value === 'string' && value.length > 0 ? value : undefined
   }
 
-  private getOrgIdFromRepoId(repoId?: string): string | undefined {
-    if (!repoId) return undefined
-    const parts = repoId.split('/')
-    return parts.length >= 3 ? parts[1] : undefined
-  }
-
   private getPlatformOrgName(description?: string): string | undefined {
     if (!description) return undefined
     const prefix = 'Default skillset for '

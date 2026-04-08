@@ -821,94 +821,91 @@ export async function getAgentSkillsWithStatus(
       if (!ssConfig) {
         status = { type: 'local' }
       } else {
-      const metaRef = toSkillsetRefFromMeta(meta)
-      const configRef = toSkillsetRefFromConfig(ssConfig)
-      const hostingProvider = getSkillsetProvider(meta.provider)
-      const info = hostingProvider.getSourceInfo(metaRef, ssConfig)
-      const skillsetName = info.skillsetName
-      const sourceLabel = info.sourceLabel
+        const metaRef = toSkillsetRefFromMeta(meta)
+        const configRef = toSkillsetRefFromConfig(ssConfig)
+        const hostingProvider = getSkillsetProvider(meta.provider)
+        const info = hostingProvider.getSourceInfo(metaRef, ssConfig)
+        const skillsetName = info.skillsetName
+        const sourceLabel = info.sourceLabel
 
-      // If there's a pending platform submission, check its status
-      const skillRepoDir = getSkillsetRepoDirForRef(configRef ?? metaRef)
-      let cachePackageHash: string | null | undefined
-      const getCachePackageHash = async (): Promise<string | null> => {
-        if (cachePackageHash !== undefined) return cachePackageHash
-        const repoFiles = await getRepoSkillPackageFiles(skillRepoDir, meta.skillPath)
-        cachePackageHash = repoFiles ? hashSkillPackageFiles(repoFiles) : null
-        return cachePackageHash
-      }
+        // If there's a pending platform submission, check its status
+        const skillRepoDir = getSkillsetRepoDirForRef(configRef ?? metaRef)
+        let cachePackageHash: string | null | undefined
+        const getCachePackageHash = async (): Promise<string | null> => {
+          if (cachePackageHash !== undefined) return cachePackageHash
+          const repoFiles = await getRepoSkillPackageFiles(skillRepoDir, meta.skillPath)
+          cachePackageHash = repoFiles ? hashSkillPackageFiles(repoFiles) : null
+          return cachePackageHash
+        }
 
-      if (meta.pendingQueueItemId) {
-        const queueStatus = await getSkillsetProvider(meta.provider).getQueueItemStatus(meta.pendingQueueItemId)
-        if (queueStatus === 'merged' || queueStatus === 'rejected') {
-          if (queueStatus === 'merged') {
-            try {
-              await refreshSkillset(metaRef)
-            } catch { /* best-effort pull */ }
-            const mergedFiles = await getRepoSkillPackageFiles(skillRepoDir, meta.skillPath)
-            if (mergedFiles) {
-              meta.originalContentHash = hashSkillPackageFiles(mergedFiles)
-              await copyDirectoryFiltered(path.join(skillRepoDir, path.dirname(meta.skillPath)), skillPath)
-              const mergedContent = getSkillMdFromPackageFiles(mergedFiles)
-              await fs.promises.writeFile(
-                path.join(skillPath, '.skillset-original.md'),
-                mergedContent,
-                'utf-8',
-              )
-              skillMdContent = mergedContent
-              description = parseDescription(mergedContent)
-              frontmatter = parseSkillFrontmatter(mergedContent)
-            } else {
-              meta.originalContentHash = await getSkillPackageHash(skillPath)
+        if (meta.pendingQueueItemId) {
+          const queueStatus = await getSkillsetProvider(meta.provider).getQueueItemStatus(meta.pendingQueueItemId)
+          if (queueStatus === 'merged' || queueStatus === 'rejected') {
+            if (queueStatus === 'merged') {
+              try {
+                await refreshSkillset(metaRef)
+              } catch { /* best-effort pull */ }
+              const mergedFiles = await getRepoSkillPackageFiles(skillRepoDir, meta.skillPath)
+              if (mergedFiles) {
+                meta.originalContentHash = hashSkillPackageFiles(mergedFiles)
+                await copyDirectoryFiltered(path.join(skillRepoDir, path.dirname(meta.skillPath)), skillPath)
+                const mergedContent = getSkillMdFromPackageFiles(mergedFiles)
+                await fs.promises.writeFile(
+                  path.join(skillPath, '.skillset-original.md'),
+                  mergedContent,
+                  'utf-8',
+                )
+                skillMdContent = mergedContent
+                description = parseDescription(mergedContent)
+                frontmatter = parseSkillFrontmatter(mergedContent)
+              } else {
+                meta.originalContentHash = await getSkillPackageHash(skillPath)
+              }
             }
+            meta.pendingQueueItemId = undefined
+            await writeJsonFile(getSkillMetadataPath(agentSlug, entry.name), meta)
           }
-          meta.pendingQueueItemId = undefined
-          await writeJsonFile(getSkillMetadataPath(agentSlug, entry.name), meta)
         }
-      }
 
-      // Legacy hash migration: older installs stored only the SKILL.md hash in
-      // originalContentHash.  If the full-package hash doesn't match but the
-      // single-file SKILL.md hash does, transparently upgrade the stored hash.
-      const currentPackageFiles = await readSkillPackageFiles(skillPath)
-      const currentSkillMdHash = contentHash(skillMdContent)
-      const currentHash = hashSkillPackageFiles(currentPackageFiles)
-      const isSingleFileLegacySkill = currentPackageFiles.length === 1 && currentPackageFiles[0]?.relativePath === 'SKILL.md'
-      if (currentHash !== meta.originalContentHash && currentSkillMdHash === meta.originalContentHash) {
-        const upstreamHash = await getCachePackageHash()
-        if (isSingleFileLegacySkill || (upstreamHash && upstreamHash === currentHash)) {
-          meta.originalContentHash = currentHash
-          await writeJsonFile(getSkillMetadataPath(agentSlug, entry.name), meta)
-        }
-      }
-
-      // Determine status: locally modified > open PR > update available > up to date
-      if (currentHash !== meta.originalContentHash || meta.openPrUrl) {
-        status = { type: 'locally_modified', skillsetId: meta.skillsetId, skillsetName, sourceLabel, openPrUrl: meta.openPrUrl }
-      } else {
-        // Check for updates: version bump in index.json OR file content change in the remote cache
-        const index = indexMap.get(meta.skillsetId)
-        const skillEntry = index?.skills.find((s) => s.path === meta.skillPath)
-        const versionChanged = !!(skillEntry && skillEntry.version && skillEntry.version !== meta.installedVersion)
-
-        const remoteCacheHash = await getCachePackageHash()
-        const contentChanged = !!(remoteCacheHash && remoteCacheHash !== meta.originalContentHash)
-
-        if (versionChanged || contentChanged) {
-          status = {
-            type: 'update_available',
-            skillsetId: meta.skillsetId,
-            skillsetName,
-            sourceLabel,
-            // Show remote version only when it actually differs from installed;
-            // when only content changed (no version bump), omit to avoid
-            // confusing badge like "Update available (v1.0.0)" on a v1.0.0 install.
-            latestVersion: versionChanged ? skillEntry!.version : undefined,
+        // Legacy hash migration: older installs stored only the SKILL.md hash in
+        // originalContentHash.  If the full-package hash doesn't match but the
+        // single-file SKILL.md hash does, transparently upgrade the stored hash.
+        const currentPackageFiles = await readSkillPackageFiles(skillPath)
+        const currentSkillMdHash = contentHash(skillMdContent)
+        const currentHash = hashSkillPackageFiles(currentPackageFiles)
+        const isSingleFileLegacySkill = currentPackageFiles.length === 1 && currentPackageFiles[0]?.relativePath === 'SKILL.md'
+        if (currentHash !== meta.originalContentHash && currentSkillMdHash === meta.originalContentHash) {
+          const upstreamHash = await getCachePackageHash()
+          if (isSingleFileLegacySkill || (upstreamHash && upstreamHash === currentHash)) {
+            meta.originalContentHash = currentHash
+            await writeJsonFile(getSkillMetadataPath(agentSlug, entry.name), meta)
           }
+        }
+
+        // Determine status: locally modified > open PR > update available > up to date
+        if (currentHash !== meta.originalContentHash || meta.openPrUrl) {
+          status = { type: 'locally_modified', skillsetId: meta.skillsetId, skillsetName, sourceLabel, openPrUrl: meta.openPrUrl }
         } else {
-          status = { type: 'up_to_date', skillsetId: meta.skillsetId, skillsetName, sourceLabel }
+          // Check for updates: version bump in index.json OR file content change in the remote cache
+          const index = indexMap.get(meta.skillsetId)
+          const skillEntry = index?.skills.find((s) => s.path === meta.skillPath)
+          const versionChanged = !!(skillEntry && skillEntry.version && skillEntry.version !== meta.installedVersion)
+
+          const remoteCacheHash = await getCachePackageHash()
+          const contentChanged = !!(remoteCacheHash && remoteCacheHash !== meta.originalContentHash)
+
+          if (versionChanged || contentChanged) {
+            status = {
+              type: 'update_available',
+              skillsetId: meta.skillsetId,
+              skillsetName,
+              sourceLabel,
+              latestVersion: versionChanged ? skillEntry!.version : undefined,
+            }
+          } else {
+            status = { type: 'up_to_date', skillsetId: meta.skillsetId, skillsetName, sourceLabel }
+          }
         }
-      }
       }
     }
 
