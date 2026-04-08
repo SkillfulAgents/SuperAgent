@@ -545,7 +545,7 @@ let browserState: BrowserState = { active: false, sessionId: null, cdpUrl: null 
 
 const execFileAsync = promisify(execFile);
 
-import { splitCommandArgs, buildRunCommandArgs, rewriteTabNewCommand } from './browser-command-args';
+import { buildRunCommandArgs } from './browser-command-args';
 
 // Ensure Chrome download preferences are set in the browser profile directory.
 // Merges with existing preferences to avoid overwriting other settings.
@@ -573,13 +573,7 @@ async function ensureBrowserDownloadPreferences(profileDir: string, downloadDir:
   await fs.promises.writeFile(prefsPath, JSON.stringify(prefs, null, 2));
 }
 
-// Ensure --remote-debugging-port=9222 is present in browser args so we can
-// connect directly to Chrome's CDP for screencast (bypassing agent-browser's
-// StreamServer which doesn't follow tab switches).
-function ensureRemoteDebuggingPort(args: string): string {
-  if (args.includes('--remote-debugging-port')) return args;
-  return args + ',--remote-debugging-port=9222';
-}
+import { readChromeDebugPort } from './chrome-debug-port';
 
 // Clean up any stale agent-browser daemon process and socket file.
 // Prevents "Daemon failed to start" errors when a previous daemon is left
@@ -593,6 +587,12 @@ function cleanupAgentBrowserDaemon(): void {
   const socketPath = path.join(socketDir, `${session}.sock`);
   try { fs.unlinkSync(socketPath); } catch { /* ignore missing */ }
   try { execSync('pkill -f "agent-browser" 2>/dev/null || true', { timeout: 3000 }); } catch { /* ignore */ }
+  // Also kill Chrome processes spawned by the daemon — otherwise they survive
+  // and hold the profile SingletonLock, causing "File exists" on retry.
+  try { execSync('pkill -f "chrome.*--headless" 2>/dev/null || true', { timeout: 3000 }); } catch { /* ignore */ }
+  // Remove stale SingletonLock from the profile directory
+  const profile = process.env.AGENT_BROWSER_PROFILE || '/workspace/.browser-profile';
+  try { fs.unlinkSync(path.join(profile, 'SingletonLock')); } catch { /* ignore */ }
 }
 
 // Execute an agent-browser CLI command and return the result.
@@ -605,7 +605,7 @@ async function execBrowser(args: string[], cdpUrl?: string): Promise<{ stdout: s
       env: {
         ...process.env,
         AGENT_BROWSER_STREAM_PORT: process.env.AGENT_BROWSER_STREAM_PORT || '9223',
-        AGENT_BROWSER_ARGS: ensureRemoteDebuggingPort(process.env.AGENT_BROWSER_ARGS || '--no-sandbox,--disable-blink-features=AutomationControlled'),
+        AGENT_BROWSER_ARGS: process.env.AGENT_BROWSER_ARGS || '--no-sandbox,--disable-blink-features=AutomationControlled',
       },
     });
     return { stdout: stdout.trim(), exitCode: 0 };
@@ -927,7 +927,7 @@ app.post('/browser/notify-closed', (c) => {
 // POST /browser/snapshot - Get accessibility tree snapshot
 app.post('/browser/snapshot', async (c) => {
   try {
-    const body = await c.req.json<{ sessionId: string; interactive?: boolean; compact?: boolean }>();
+    const body = await c.req.json<{ sessionId: string; interactive?: boolean; compact?: boolean; json?: boolean }>();
 
     if (!body.sessionId) {
       return c.json({ error: 'sessionId is required' }, 400);
@@ -942,7 +942,8 @@ app.post('/browser/snapshot', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const snapshotArgs = ['snapshot', '--json'];
+    const snapshotArgs = ['snapshot'];
+    if (body.json) snapshotArgs.push('--json');
     if (body.interactive !== false) snapshotArgs.push('-i');
     if (body.compact !== false) snapshotArgs.push('-c');
 
@@ -952,14 +953,17 @@ app.post('/browser/snapshot', async (c) => {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
-    // Try to parse JSON output
-    try {
-      const parsed = JSON.parse(result.stdout);
-      return c.json({ ...parsed, tabCount: tabManager.getTabCount() });
-    } catch {
-      // Return raw output if not valid JSON
-      return c.json({ snapshot: result.stdout, tabCount: tabManager.getTabCount() });
+    if (body.json) {
+      // Try to parse JSON output
+      try {
+        const parsed = JSON.parse(result.stdout);
+        return c.json({ ...parsed, tabCount: tabManager.getTabCount() });
+      } catch {
+        return c.json({ snapshot: result.stdout, tabCount: tabManager.getTabCount() });
+      }
     }
+
+    return c.json({ snapshot: result.stdout, tabCount: tabManager.getTabCount() });
   } catch (error: any) {
     console.error('[Browser] Error taking snapshot:', error);
     return c.json({ error: error.message || 'Failed to take snapshot' }, 500);
@@ -1144,7 +1148,7 @@ app.post('/browser/press', async (c) => {
 // POST /browser/screenshot - Take screenshot
 app.post('/browser/screenshot', async (c) => {
   try {
-    const body = await c.req.json<{ sessionId: string; full?: boolean }>();
+    const body = await c.req.json<{ sessionId: string; full?: boolean; annotate?: boolean }>();
 
     if (!body.sessionId) {
       return c.json({ error: 'sessionId is required' }, 400);
@@ -1161,6 +1165,7 @@ app.post('/browser/screenshot', async (c) => {
 
     const screenshotArgs = ['screenshot'];
     if (body.full) screenshotArgs.push('--full');
+    if (body.annotate) screenshotArgs.push('--annotate');
 
     const result = await execBrowser(screenshotArgs, browserState.cdpUrl || undefined);
 
@@ -1262,9 +1267,7 @@ app.post('/browser/run', async (c) => {
       return c.json({ error: 'Empty command' }, 400);
     }
 
-    const actualArgs = rewriteTabNewCommand(commandArgs);
-
-    const result = await execBrowser(actualArgs, browserState.cdpUrl || undefined);
+    const result = await execBrowser(commandArgs, browserState.cdpUrl || undefined);
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
@@ -1449,6 +1452,8 @@ let cdpScreencast: {
   autoFollow: boolean;
   /** Pending CDP message IDs for get_selection requests */
   pendingSelections: Set<number>;
+  /** Main frame ID — used to filter loading events to top-level frame only */
+  mainFrameId: string | null;
 } | null = null;
 
 /** Derive the CDP HTTP endpoint from the current browser state */
@@ -1457,7 +1462,9 @@ function getCdpHttpEndpoint(): string {
     const match = browserState.cdpUrl.match(/^wss?:\/\/([^/]+)/);
     if (match) return `http://${match[1]}`;
   }
-  return 'http://localhost:9222';
+  // Local browser: read the dynamic port from Chrome's DevToolsActivePort file
+  const port = readChromeDebugPort();
+  return `http://localhost:${port || 9222}`;
 }
 
 /** A discovered CDP page target */
@@ -1611,7 +1618,7 @@ function cdpMsg(state: NonNullable<typeof cdpScreencast>, method: string, params
 function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket, requiresSession = false) {
   const cdpWs = new WebSocket(wsUrl);
   const prevAutoFollow = cdpScreencast?.autoFollow ?? true;
-  cdpScreencast = { clientWs, cdpWs, currentTargetId: targetId, msgId: 0, lastDeviceWidth: 0, lastDeviceHeight: 0, cdpSessionId: null, autoFollow: prevAutoFollow, pendingSelections: new Set() };
+  cdpScreencast = { clientWs, cdpWs, currentTargetId: targetId, msgId: 0, lastDeviceWidth: 0, lastDeviceHeight: 0, cdpSessionId: null, autoFollow: prevAutoFollow, pendingSelections: new Set(), mainFrameId: null as string | null };
   const state = cdpScreencast;
 
   cdpWs.on('open', () => {
@@ -1624,17 +1631,29 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
       }));
     } else {
       // Local Chrome: page-level WebSocket, send screencast directly
+      // Bring the tab to the foreground first — headed Chrome only renders
+      // (and screencasts) the active tab.
+      cdpWs.send(cdpMsg(state, 'Page.bringToFront'));
       cdpWs.send(cdpMsg(state, 'Page.startScreencast', {
         format: 'jpeg', quality: 80, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1,
       }));
       // Enable Page domain to receive navigation lifecycle events
       cdpWs.send(cdpMsg(state, 'Page.enable'));
+      // Discover the main frame ID so we only forward loading events for the
+      // top-level frame, not iframes/ads that load continuously.
+      const frameTreeId = ++state.msgId;
+      cdpWs.send(JSON.stringify({ id: frameTreeId, method: 'Page.getFrameTree', ...(state.cdpSessionId ? { sessionId: state.cdpSessionId } : {}) }));
     }
   });
 
   cdpWs.on('message', (rawData) => {
     try {
       const msg = JSON.parse(rawData.toString());
+
+      // Capture main frame ID from Page.getFrameTree response
+      if (msg.result?.frameTree?.frame?.id && !state.mainFrameId) {
+        state.mainFrameId = msg.result.frameTree.frame.id;
+      }
 
       // Handle attachToTarget response — start screencast once we have a session
       if (requiresSession && !state.cdpSessionId && msg.result?.sessionId) {
@@ -1667,7 +1686,10 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
           clientWs.send(Buffer.from(msg.params.data, 'base64'));
         }
       } else if (msg.method === 'Page.frameStartedLoading' || msg.method === 'Page.frameStoppedLoading') {
-        if (clientWs.readyState === WebSocket.OPEN) {
+        // Only forward loading state for the main frame — subframes (ads,
+        // analytics, iframes) load continuously and would keep the spinner on.
+        const frameId = msg.params?.frameId;
+        if ((!state.mainFrameId || frameId === state.mainFrameId) && clientWs.readyState === WebSocket.OPEN) {
           clientWs.send(JSON.stringify({
             type: 'page_loading',
             loading: msg.method === 'Page.frameStartedLoading',
@@ -1742,7 +1764,7 @@ async function broadcastTabList(prefetched?: { allTargets: PageTarget[]; daemonT
     };
 
     const claimedTargetIds = new Set<string>();
-    const tabs: BrowserTabInfo[] = [];
+    let tabs: BrowserTabInfo[] = [];
     for (const dt of daemonTabs) {
       const target = allTargets.find(t => tabManager.urlsMatch(t.url, dt.url) && !claimedTargetIds.has(t.id));
       if (!target) continue; // skip tabs with no CDP match (timing edge case, resolves on next poll)
@@ -1754,6 +1776,20 @@ async function broadcastTabList(prefetched?: { allTargets: PageTarget[]; daemonT
         title: dt.title || target.title || '',
         active: dt.active,
       });
+    }
+
+    // If URL-based matching produced no tabs (daemon state is stale — common in
+    // --cdp / host browser mode where the daemon doesn't track navigations),
+    // fall back to building the tab list directly from Chrome's CDP targets.
+    if (tabs.length === 0 && allTargets.length > 0) {
+      const currentTargetId = cdpScreencast?.currentTargetId;
+      tabs = allTargets.map((t, i) => ({
+        targetId: t.id,
+        index: i,
+        url: t.url,
+        title: t.title || '',
+        active: t.id === currentTargetId,
+      }));
     }
 
     const activeEntry = tabs.find(t => t.active);
@@ -1851,7 +1887,7 @@ function handleBrowserStreamConnection(ws: WebSocket) {
         // User wants to view a specific tab
         const allTargets = await getAllPageTargets();
         const target = allTargets.find(t => t.id === data.targetId);
-        if (target && cdpScreencast && cdpScreencast.cdpWs.readyState === WebSocket.OPEN) {
+        if (target && cdpScreencast) {
           cdpScreencast.autoFollow = false;
           switchScreencastTarget(target, ws);
         }

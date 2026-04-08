@@ -1,64 +1,126 @@
-// CDP keyboard shortcut support via Playwright's macEditingCommands map.
+// CDP keyboard shortcut support.
 // Chrome's CDP Input.dispatchKeyEvent needs a `commands` array to trigger
 // editing actions (selectAll, cut, undo, etc.) on all platforms.
+//
+// This map was extracted from playwright-core's macEditingCommands and inlined
+// here because agent-browser v0.20.0+ no longer bundles playwright-core.
 
-import * as path from 'path';
-
-/**
- * Resolve the absolute path to playwright-core's macEditingCommands module.
- * playwright-core's package.json `exports` field blocks subpath requires,
- * so we find the package root first, then construct the full path.
- */
-function resolveMacEditingCommandsPath(): string | null {
-  // Strategy 1: find playwright-core via normal Node resolution, then build the subpath.
-  // require.resolve('playwright-core') gives us the main entry; we derive the package root.
-  try {
-    const mainEntry = require.resolve('playwright-core');
-    // mainEntry is something like .../playwright-core/lib/... or .../playwright-core/index.js
-    const pkgRoot = mainEntry.replace(/([\\/]playwright-core[\\/]).*$/, '$1');
-    return path.join(pkgRoot, 'lib', 'server', 'macEditingCommands');
-  } catch {
-    // playwright-core not in local node_modules
-  }
-
-  // Strategy 2: hardcoded container path (globally-installed agent-browser)
-  const containerPath = '/usr/lib/node_modules/agent-browser/node_modules/playwright-core/lib/server/macEditingCommands';
-  try {
-    require.resolve(containerPath);
-    return containerPath;
-  } catch {
-    // Not in container environment
-  }
-
-  return null;
-}
-
-/**
- * Load Playwright's macEditingCommands map, trying multiple resolution strategies
- * so we don't break if the package is hoisted or the container layout changes.
- */
-function loadMacEditingCommands(): Record<string, string | string[]> {
-  const resolvedPath = resolveMacEditingCommandsPath();
-  if (resolvedPath) {
-    try {
-      const mod = require(resolvedPath);
-      const map = mod.macEditingCommands;
-      if (map && typeof map === 'object' && Object.keys(map).length > 0) {
-        return map;
-      }
-    } catch {
-      // Fall through to warning
-    }
-  }
-
-  console.warn(
-    '[Browser] Could not load macEditingCommands from playwright-core — ' +
-    'keyboard shortcuts in browser preview may not work'
-  );
-  return {};
-}
-
-export const macEditingCommands = loadMacEditingCommands();
+export const macEditingCommands: Record<string, string | string[]> = {
+  'Backspace': 'deleteBackward:',
+  'Enter': 'insertNewline:',
+  'NumpadEnter': 'insertNewline:',
+  'Escape': 'cancelOperation:',
+  'ArrowUp': 'moveUp:',
+  'ArrowDown': 'moveDown:',
+  'ArrowLeft': 'moveLeft:',
+  'ArrowRight': 'moveRight:',
+  'F5': 'complete:',
+  'Delete': 'deleteForward:',
+  'Home': 'scrollToBeginningOfDocument:',
+  'End': 'scrollToEndOfDocument:',
+  'PageUp': 'scrollPageUp:',
+  'PageDown': 'scrollPageDown:',
+  'Shift+Backspace': 'deleteBackward:',
+  'Shift+Enter': 'insertNewline:',
+  'Shift+NumpadEnter': 'insertNewline:',
+  'Shift+Escape': 'cancelOperation:',
+  'Shift+ArrowUp': 'moveUpAndModifySelection:',
+  'Shift+ArrowDown': 'moveDownAndModifySelection:',
+  'Shift+ArrowLeft': 'moveLeftAndModifySelection:',
+  'Shift+ArrowRight': 'moveRightAndModifySelection:',
+  'Shift+F5': 'complete:',
+  'Shift+Delete': 'deleteForward:',
+  'Shift+Home': 'moveToBeginningOfDocumentAndModifySelection:',
+  'Shift+End': 'moveToEndOfDocumentAndModifySelection:',
+  'Shift+PageUp': 'pageUpAndModifySelection:',
+  'Shift+PageDown': 'pageDownAndModifySelection:',
+  'Shift+Numpad5': 'delete:',
+  'Control+Tab': 'selectNextKeyView:',
+  'Control+Enter': 'insertLineBreak:',
+  'Control+NumpadEnter': 'insertLineBreak:',
+  'Control+Quote': 'insertSingleQuoteIgnoringSubstitution:',
+  'Control+KeyA': 'moveToBeginningOfParagraph:',
+  'Control+KeyB': 'moveBackward:',
+  'Control+KeyD': 'deleteForward:',
+  'Control+KeyE': 'moveToEndOfParagraph:',
+  'Control+KeyF': 'moveForward:',
+  'Control+KeyH': 'deleteBackward:',
+  'Control+KeyK': 'deleteToEndOfParagraph:',
+  'Control+KeyL': 'centerSelectionInVisibleArea:',
+  'Control+KeyN': 'moveDown:',
+  'Control+KeyO': ['insertNewlineIgnoringFieldEditor:', 'moveBackward:'],
+  'Control+KeyP': 'moveUp:',
+  'Control+KeyT': 'transpose:',
+  'Control+KeyV': 'pageDown:',
+  'Control+KeyY': 'yank:',
+  'Control+Backspace': 'deleteBackwardByDecomposingPreviousCharacter:',
+  'Control+ArrowUp': 'scrollPageUp:',
+  'Control+ArrowDown': 'scrollPageDown:',
+  'Control+ArrowLeft': 'moveToLeftEndOfLine:',
+  'Control+ArrowRight': 'moveToRightEndOfLine:',
+  'Shift+Control+Enter': 'insertLineBreak:',
+  'Shift+Control+NumpadEnter': 'insertLineBreak:',
+  'Shift+Control+Tab': 'selectPreviousKeyView:',
+  'Shift+Control+Quote': 'insertDoubleQuoteIgnoringSubstitution:',
+  'Shift+Control+KeyA': 'moveToBeginningOfParagraphAndModifySelection:',
+  'Shift+Control+KeyB': 'moveBackwardAndModifySelection:',
+  'Shift+Control+KeyE': 'moveToEndOfParagraphAndModifySelection:',
+  'Shift+Control+KeyF': 'moveForwardAndModifySelection:',
+  'Shift+Control+KeyN': 'moveDownAndModifySelection:',
+  'Shift+Control+KeyP': 'moveUpAndModifySelection:',
+  'Shift+Control+KeyV': 'pageDownAndModifySelection:',
+  'Shift+Control+Backspace': 'deleteBackwardByDecomposingPreviousCharacter:',
+  'Shift+Control+ArrowUp': 'scrollPageUp:',
+  'Shift+Control+ArrowDown': 'scrollPageDown:',
+  'Shift+Control+ArrowLeft': 'moveToLeftEndOfLineAndModifySelection:',
+  'Shift+Control+ArrowRight': 'moveToRightEndOfLineAndModifySelection:',
+  'Alt+Backspace': 'deleteWordBackward:',
+  'Alt+Enter': 'insertNewlineIgnoringFieldEditor:',
+  'Alt+NumpadEnter': 'insertNewlineIgnoringFieldEditor:',
+  'Alt+Escape': 'complete:',
+  'Alt+ArrowUp': ['moveBackward:', 'moveToBeginningOfParagraph:'],
+  'Alt+ArrowDown': ['moveForward:', 'moveToEndOfParagraph:'],
+  'Alt+ArrowLeft': 'moveWordLeft:',
+  'Alt+ArrowRight': 'moveWordRight:',
+  'Alt+Delete': 'deleteWordForward:',
+  'Alt+PageUp': 'pageUp:',
+  'Alt+PageDown': 'pageDown:',
+  'Shift+Alt+Backspace': 'deleteWordBackward:',
+  'Shift+Alt+Enter': 'insertNewlineIgnoringFieldEditor:',
+  'Shift+Alt+NumpadEnter': 'insertNewlineIgnoringFieldEditor:',
+  'Shift+Alt+Escape': 'complete:',
+  'Shift+Alt+ArrowUp': 'moveParagraphBackwardAndModifySelection:',
+  'Shift+Alt+ArrowDown': 'moveParagraphForwardAndModifySelection:',
+  'Shift+Alt+ArrowLeft': 'moveWordLeftAndModifySelection:',
+  'Shift+Alt+ArrowRight': 'moveWordRightAndModifySelection:',
+  'Shift+Alt+Delete': 'deleteWordForward:',
+  'Shift+Alt+PageUp': 'pageUp:',
+  'Shift+Alt+PageDown': 'pageDown:',
+  'Control+Alt+KeyB': 'moveWordBackward:',
+  'Control+Alt+KeyF': 'moveWordForward:',
+  'Control+Alt+Backspace': 'deleteWordBackward:',
+  'Shift+Control+Alt+KeyB': 'moveWordBackwardAndModifySelection:',
+  'Shift+Control+Alt+KeyF': 'moveWordForwardAndModifySelection:',
+  'Shift+Control+Alt+Backspace': 'deleteWordBackward:',
+  'Meta+NumpadSubtract': 'cancel:',
+  'Meta+Backspace': 'deleteToBeginningOfLine:',
+  'Meta+ArrowUp': 'moveToBeginningOfDocument:',
+  'Meta+ArrowDown': 'moveToEndOfDocument:',
+  'Meta+ArrowLeft': 'moveToLeftEndOfLine:',
+  'Meta+ArrowRight': 'moveToRightEndOfLine:',
+  'Shift+Meta+NumpadSubtract': 'cancel:',
+  'Shift+Meta+Backspace': 'deleteToBeginningOfLine:',
+  'Shift+Meta+ArrowUp': 'moveToBeginningOfDocumentAndModifySelection:',
+  'Shift+Meta+ArrowDown': 'moveToEndOfDocumentAndModifySelection:',
+  'Shift+Meta+ArrowLeft': 'moveToLeftEndOfLineAndModifySelection:',
+  'Shift+Meta+ArrowRight': 'moveToRightEndOfLineAndModifySelection:',
+  'Meta+KeyA': 'selectAll:',
+  'Meta+KeyC': 'copy:',
+  'Meta+KeyX': 'cut:',
+  'Meta+KeyV': 'paste:',
+  'Meta+KeyZ': 'undo:',
+  'Shift+Meta+KeyZ': 'redo:',
+};
 
 /**
  * Look up CDP editing commands for a key combo.

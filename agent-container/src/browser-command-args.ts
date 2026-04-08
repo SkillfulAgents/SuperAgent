@@ -44,13 +44,3 @@ export function buildRunCommandArgs(command: string): string[] {
 
   return commandArgs;
 }
-
-// Workaround: agent-browser@0.12.0 newTab() fails with --profile (persistent context).
-// Rewrite "tab new [url]" to use window.open() which works in any context.
-export function rewriteTabNewCommand(args: string[]): string[] {
-  if (args[0] === 'tab' && args[1] === 'new') {
-    const url = args[2] || 'about:blank';
-    return ['eval', `(() => { window.open(${JSON.stringify(url)}, '_blank'); return 'opened'; })()`];
-  }
-  return args;
-}

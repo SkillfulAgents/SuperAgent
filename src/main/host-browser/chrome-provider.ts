@@ -131,6 +131,10 @@ export class ChromeProvider implements HostBrowserProvider {
         '--no-first-run',
         '--no-default-browser-check',
         `--user-data-dir=${userDataDir}`,
+        // Start with about:blank instead of chrome://newtab so agent-browser's
+        // target discovery sees a trackable page and reuses it rather than
+        // creating an extra tab (it filters out chrome:// URLs).
+        'about:blank',
       ],
       { detached: false, stdio: 'ignore' }
     )

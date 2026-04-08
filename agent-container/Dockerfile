@@ -64,7 +64,7 @@ RUN curl -fsSL https://bun.sh/install | bash && \
     ln -s /usr/local/bin/bun /usr/local/bin/bunx && \
     chmod 755 /usr/local/bin/bun
 
-# Install Chromium dependencies (needed by Playwright/agent-browser)
+# Install Chromium dependencies (needed by agent-browser)
 RUN apt-get update && apt-get install -y \
     libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
     libcups2 libdrm2 libdbus-1-3 libxkbcommon0 \
@@ -73,13 +73,21 @@ RUN apt-get update && apt-get install -y \
     libxshmfence1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install agent-browser and download Chromium
-# Set PLAYWRIGHT_BROWSERS_PATH so browsers are installed to a shared location
-# accessible by both root (build) and claude (runtime) users
+# Install agent-browser (native Rust binary since v0.20.0) and download Chromium.
+# Chrome for Testing only provides x86_64 Linux builds, so on ARM64 (e.g. Apple
+# Silicon dev) we fall back to Playwright's Chromium which supports both arches.
+# agent-browser auto-discovers Playwright's Chromium via find_playwright_chromium().
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
-RUN npm install -g agent-browser@0.12.0 && \
-    npx playwright install chromium && \
-    chmod -R o+rx /opt/playwright-browsers
+RUN npm install -g agent-browser@0.25.3 && \
+    if agent-browser install 2>/dev/null; then \
+      chmod -R o+rx /root/.agent-browser 2>/dev/null || true; \
+    else \
+      npx playwright install chromium && \
+      chmod -R o+rx /opt/playwright-browsers && \
+      for d in /opt/playwright-browsers/chromium-*/chrome-linux; do \
+        [ -d "$d" ] && [ ! -d "${d}64" ] && ln -s "$d" "${d}64"; \
+      done; \
+    fi
 
 # Create workspace directory
 RUN mkdir -p /workspace
@@ -118,7 +126,7 @@ ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOME=/home/claude
 ENV AGENT_BROWSER_STREAM_PORT=9223
-ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-blink-features=AutomationControlled,--disable-features=AutomationControlled,--disable-infobars,--disable-background-timer-throttling,--disable-popup-blocking,--disable-backgrounding-occluded-windows,--disable-renderer-backgrounding,--disable-component-update,--remote-debugging-port=9222"
+ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-blink-features=AutomationControlled,--disable-features=AutomationControlled,--disable-infobars,--disable-background-timer-throttling,--disable-popup-blocking,--disable-backgrounding-occluded-windows,--disable-renderer-backgrounding,--disable-component-update"
 ENV AGENT_BROWSER_USER_AGENT="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 ENV AGENT_BROWSER_PROFILE=/workspace/.browser-profile
 ENV DISABLE_AUTOUPDATER=1
