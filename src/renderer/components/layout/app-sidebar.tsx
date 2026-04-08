@@ -49,6 +49,7 @@ import { useScheduledTasks, type ApiScheduledTask } from '@renderer/hooks/use-sc
 import { useWebhookTriggers } from '@renderer/hooks/use-webhook-triggers'
 import { useArtifacts, type ArtifactInfo } from '@renderer/hooks/use-artifacts'
 import { GlobalSettingsDialog } from '@renderer/components/settings/global-settings-dialog'
+import { DeviceInfoDialog } from '@renderer/components/settings/device-info-dialog'
 import { ContainerSetupDialog } from '@renderer/components/settings/container-setup-dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { useUser } from '@renderer/context/user-context'
@@ -664,36 +665,56 @@ if (__RENDER_TRACKING__) {
 
 function UserFooter() {
   const { isAuthMode, user, signOut } = useUser()
+  const [deviceInfoOpen, setDeviceInfoOpen] = useState(false)
 
   if (!isAuthMode || !user) {
     return (
-      <div className="px-2 text-xs text-muted-foreground">
-        Version: {__APP_VERSION__}
+      <div className="px-2 flex items-center justify-between">
+        <span className="text-xs text-muted-foreground">Version: {__APP_VERSION__}</span>
+        <button
+          onClick={() => setDeviceInfoOpen(true)}
+          className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+        >
+          Device Info
+        </button>
+        <DeviceInfoDialog open={deviceInfoOpen} onOpenChange={setDeviceInfoOpen} />
       </div>
     )
   }
 
   return (
-    <div className="px-2 flex items-center justify-between">
-      <Popover>
-        <PopoverTrigger asChild>
-          <button className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors" data-testid="user-menu-trigger">
-            <User className="h-3 w-3" />
-            <span className="truncate max-w-[140px]">{user.name}</span>
-          </button>
-        </PopoverTrigger>
-        <PopoverContent align="start" className="w-48 p-1">
+    <div className="px-2 space-y-1">
+      <div className="flex items-center justify-between">
+        <Popover>
+          <PopoverTrigger asChild>
+            <button className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors" data-testid="user-menu-trigger">
+              <User className="h-3 w-3" />
+              <span className="truncate max-w-[140px]">{user.name}</span>
+            </button>
+          </PopoverTrigger>
+          <PopoverContent align="start" className="w-48 p-1">
+            <button
+              onClick={signOut}
+              className="flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent transition-colors"
+              data-testid="sign-out-button"
+            >
+              <LogOut className="h-4 w-4" />
+              Sign out
+            </button>
+          </PopoverContent>
+        </Popover>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">v{__APP_VERSION__}</span>
+          <span className="text-xs text-muted-foreground">·</span>
           <button
-            onClick={signOut}
-            className="flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent transition-colors"
-            data-testid="sign-out-button"
+            onClick={() => setDeviceInfoOpen(true)}
+            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
           >
-            <LogOut className="h-4 w-4" />
-            Sign out
+            Device Info
           </button>
-        </PopoverContent>
-      </Popover>
-      <span className="text-xs text-muted-foreground">v{__APP_VERSION__}</span>
+        </div>
+      </div>
+      <DeviceInfoDialog open={deviceInfoOpen} onOpenChange={setDeviceInfoOpen} />
     </div>
   )
 }

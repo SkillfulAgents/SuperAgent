@@ -5,9 +5,53 @@ import { checkAllRunnersAvailability, type ContainerRunner } from '@shared/lib/c
 import { getSettings } from '@shared/lib/config/settings'
 import { execWithPath } from '@shared/lib/container/base-container-client'
 import { getLimaHome, getLimactlPath } from '@shared/lib/container/lima-container-client'
-import { platform } from 'os'
+import { APP_VERSION } from '@shared/lib/config/version'
+import os, { platform } from 'os'
+import fs from 'fs'
 
 const debug = new Hono()
+
+// GET /api/debug/system-info — lightweight system diagnostics (available to all authenticated users)
+debug.get('/system-info', Authenticated(), (c) => {
+  const cpus = os.cpus()
+
+  let disk: { totalBytes: number; freeBytes: number } | null = null
+  try {
+    const stats = fs.statfsSync(os.homedir())
+    disk = {
+      totalBytes: stats.bsize * stats.blocks,
+      freeBytes: stats.bsize * stats.bavail,
+    }
+  } catch {
+    // statfsSync may fail on some platforms/configurations
+  }
+
+  return c.json({
+    app: {
+      version: APP_VERSION,
+      electronVersion: process.versions.electron || null,
+      chromeVersion: process.versions.chrome || null,
+      nodeVersion: process.version,
+    },
+    os: {
+      platform: platform(),
+      type: os.type(),
+      release: os.release(),
+      version: os.version(),
+      arch: process.arch,
+    },
+    hardware: {
+      cpuModel: cpus[0]?.model || null,
+      cpuCores: cpus.length,
+      totalMemoryBytes: os.totalmem(),
+      freeMemoryBytes: os.freemem(),
+    },
+    disk,
+    runtime: {
+      uptime: os.uptime(),
+    },
+  })
+})
 
 debug.use('*', Authenticated(), IsAdmin())
 
