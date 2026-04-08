@@ -111,13 +111,15 @@ echo ""
 # ─── Test 2: Host Browser Path (--cdp) ────────────────────────────
 echo "── Host Browser Path (--cdp simulation) ──"
 
-# Start a separate Chrome inside the container to simulate a host browser
+# Start a separate Chrome inside the container to simulate a host browser.
+# Find Chrome binary dynamically — it may be in agent-browser's cache (x86_64)
+# or in Playwright's cache (ARM64).
 docker exec "$CONTAINER_NAME" bash -c '
-  /opt/playwright-browsers/chromium-*/chrome-linux*/chrome \
-    --headless --no-sandbox --disable-gpu \
+  CHROME=$(find /home/claude/.agent-browser/browsers /opt/playwright-browsers -name chrome -type f 2>/dev/null | head -1)
+  if [ -z "$CHROME" ]; then echo "No Chrome binary found" >&2; exit 1; fi
+  "$CHROME" --headless --no-sandbox --disable-gpu \
     --remote-debugging-port=9444 \
     --user-data-dir=/tmp/host-profile &
-  # Wait for CDP endpoint
   for i in $(seq 1 10); do
     curl -sf http://localhost:9444/json/version >/dev/null 2>&1 && break
     sleep 1
