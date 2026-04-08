@@ -101,6 +101,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.removeAllListeners('open-create-agent')
   },
 
+  // Reclaim window focus (e.g. after Chrome steals it by opening a new tab)
+  focusWindow: () => {
+    ipcRenderer.send('focus-window')
+  },
+
   // Tray visibility control
   setTrayVisible: (visible: boolean): Promise<void> => {
     return ipcRenderer.invoke('set-tray-visible', visible)

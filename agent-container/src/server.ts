@@ -1631,9 +1631,6 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
       }));
     } else {
       // Local Chrome: page-level WebSocket, send screencast directly
-      // Bring the tab to the foreground first — headed Chrome only renders
-      // (and screencasts) the active tab.
-      cdpWs.send(cdpMsg(state, 'Page.bringToFront'));
       cdpWs.send(cdpMsg(state, 'Page.startScreencast', {
         format: 'jpeg', quality: 80, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1,
       }));
@@ -1744,10 +1741,39 @@ function switchScreencastTarget(target: PageTarget, clientWs: WebSocket): void {
     cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Page.stopScreencast'));
     cdpScreencast.cdpWs.close();
   }
+  // Activate the tab in Chrome so it renders (required for screencast).
+  // Use Target.activateTarget on a temporary browser-level CDP connection
+  // instead of Page.bringToFront, which steals OS window focus.
+  activateTargetInBackground(target.id);
   connectCdpToTarget(target.id, target.wsUrl, clientWs, target.requiresSession);
   if (clientWs.readyState === WebSocket.OPEN) {
     clientWs.send(JSON.stringify({ type: 'tab_switched', targetId: target.id }));
   }
+}
+
+/** Activate a tab in Chrome without stealing OS focus.
+ *  Opens a short-lived browser-level CDP connection to send Target.activateTarget. */
+function activateTargetInBackground(targetId: string): void {
+  const endpoint = getCdpHttpEndpoint();
+  // Fetch the browser WebSocket URL, then send activateTarget
+  fetch(`${endpoint}/json/version`)
+    .then(res => res.json() as Promise<{ webSocketDebuggerUrl: string }>)
+    .then(info => {
+      const browserWs = new WebSocket(info.webSocketDebuggerUrl);
+      browserWs.on('open', () => {
+        browserWs.send(JSON.stringify({
+          id: 1,
+          method: 'Target.activateTarget',
+          params: { targetId },
+        }));
+      });
+      browserWs.on('message', () => {
+        browserWs.close();
+      });
+      browserWs.on('error', () => { /* best-effort */ });
+      setTimeout(() => browserWs.close(), 3000);
+    })
+    .catch(() => { /* best-effort — screencast may just show stale frames */ });
 }
 
 /** Broadcast tab list to the connected frontend viewer.
@@ -1773,7 +1799,8 @@ async function broadcastTabList(prefetched?: { allTargets: PageTarget[]; daemonT
         targetId: target.id,
         index: dt.index,
         url: dt.url,
-        title: dt.title || target.title || '',
+        // Prefer Chrome's title (actual <title> tag) over daemon's (often just domain)
+        title: target.title || dt.title || '',
         active: dt.active,
       });
     }
@@ -1890,6 +1917,39 @@ function handleBrowserStreamConnection(ws: WebSocket) {
         if (target && cdpScreencast) {
           cdpScreencast.autoFollow = false;
           switchScreencastTarget(target, ws);
+        }
+      } else if (data.type === 'close_tab' && data.targetId) {
+        // Close a tab via CDP Target.closeTarget on a temporary browser-level connection
+        const endpoint = getCdpHttpEndpoint();
+        try {
+          const versionRes = await fetch(`${endpoint}/json/version`);
+          const versionInfo = await versionRes.json() as { webSocketDebuggerUrl: string };
+          const browserWs = new WebSocket(versionInfo.webSocketDebuggerUrl);
+          browserWs.on('open', () => {
+            browserWs.send(JSON.stringify({
+              id: 1,
+              method: 'Target.closeTarget',
+              params: { targetId: data.targetId },
+            }));
+          });
+          browserWs.on('message', () => {
+            browserWs.close();
+            // If we just closed the tab we were screencasting, switch to another
+            if (cdpScreencast?.currentTargetId === data.targetId) {
+              findActivePageTarget().then(target => {
+                if (target && cdpScreencast) {
+                  switchScreencastTarget(target, ws);
+                }
+                broadcastTabList();
+              });
+            } else {
+              broadcastTabList();
+            }
+          });
+          browserWs.on('error', () => {});
+          setTimeout(() => browserWs.close(), 3000);
+        } catch {
+          console.error('[CDP] Failed to close tab', data.targetId);
         }
       } else if (data.type === 'follow_agent') {
         if (cdpScreencast) cdpScreencast.autoFollow = data.enabled !== false;

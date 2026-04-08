@@ -294,6 +294,16 @@ ipcMain.handle('launch-powershell-admin', (_event, command: string) => {
   })
 })
 
+// IPC handler for reclaiming window focus (e.g. after Chrome steals it)
+ipcMain.on('focus-window', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    // app.focus() activates the app at the OS level (calls [NSApp activateIgnoringOtherApps:YES] on macOS),
+    // which is required to steal focus back from Chrome. mainWindow.focus() alone doesn't work cross-app.
+    app.focus({ steal: true })
+    mainWindow.focus()
+  }
+})
+
 // IPC handler for tray visibility
 ipcMain.handle('set-tray-visible', (_event, visible: boolean) => {
   setTrayVisible(visible)
