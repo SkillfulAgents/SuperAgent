@@ -227,9 +227,20 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   /**
-   * Returns the CLI command for this container runtime (e.g., 'docker', 'podman')
+   * Returns the CLI command for this container runtime (e.g., 'docker', 'podman').
+   * May be a bare binary name or a full path. Use getRunnerShellCommand() when
+   * interpolating into shell command strings.
    */
   protected abstract getRunnerCommand(): string
+
+  /**
+   * Returns the runner command quoted for safe interpolation into shell strings.
+   * Paths under the user's home directory may contain spaces (e.g. "C:\Users\John Doe\...").
+   */
+  protected getRunnerShellCommand(): string {
+    const cmd = this.getRunnerCommand()
+    return cmd.includes(' ') ? shellQuote(cmd) : cmd
+  }
 
   /**
    * Returns any additional flags needed for the run command.
@@ -291,7 +302,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    */
   async getInfoFromRuntime(): Promise<ContainerInfo> {
     const containerName = this.getContainerName()
-    const runner = this.getRunnerCommand()
+    const runner = this.getRunnerShellCommand()
     try {
       const { stdout } = await execWithPath(
         `${runner} inspect ${containerName}`
@@ -324,7 +335,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    */
   async getLogs(tail: number = 50): Promise<string> {
     const containerName = this.getContainerName()
-    const runner = this.getRunnerCommand()
+    const runner = this.getRunnerShellCommand()
     try {
       const { stdout, stderr } = await execWithPath(
         `${runner} logs --tail ${tail} ${containerName}`
@@ -342,7 +353,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    */
   async getStats(): Promise<ContainerStats | null> {
     const containerName = this.getContainerName()
-    const runner = this.getRunnerCommand()
+    const runner = this.getRunnerShellCommand()
     try {
       const { stdout } = await execWithPath(
         `${runner} stats ${containerName} --no-stream --format ${shellQuote('{{json .}}')}`
@@ -375,7 +386,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
   protected async getUsedPorts(): Promise<Set<number>> {
     const usedPorts = new Set<number>()
-    const runner = this.getRunnerCommand()
+    const runner = this.getRunnerShellCommand()
     try {
       const { stdout } = await execWithPath(
         `${runner} ps --format ${shellQuote('{{.Ports}}')}`
@@ -413,7 +424,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
     try {
       const settings = getSettings()
-      const runner = this.getRunnerCommand()
+      const runner = this.getRunnerShellCommand()
       const image = settings.container.agentImage
       const { cpu, memory } = settings.container.resourceLimits
 
@@ -503,7 +514,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // 2. If that times out (e.g., VM is overloaded), escalate to kill (immediate SIGKILL)
       // 3. If kill also fails, call forceStop() hook (e.g., Lima kills the VM directly)
       // 4. Remove the container
-      const runner = this.getRunnerCommand()
+      const runner = this.getRunnerShellCommand()
       const containerName = this.getContainerName()
 
       const stopped = await Promise.race([
@@ -558,7 +569,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       // Stop and remove container by name synchronously, with escalation.
       // Use 5s grace period so process can shut down cleanly before SIGKILL.
-      const runner = this.getRunnerCommand()
+      const runner = this.getRunnerShellCommand()
       const containerName = this.getContainerName()
       try {
         execSyncWithPath(`${runner} stop -t 5 ${containerName}`, { stdio: 'pipe', timeout: 10000 })
@@ -944,7 +955,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const image = settings.container.agentImage
 
     try {
-      await execWithPath(`${runner} image inspect ${image}`)
+      await execWithPath(`${this.getRunnerShellCommand()} image inspect ${image}`)
       console.log(`Container image ${image} found`)
     } catch {
       console.log(`Building container image ${image}...`)

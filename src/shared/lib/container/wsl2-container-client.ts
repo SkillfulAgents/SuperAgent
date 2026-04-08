@@ -256,7 +256,7 @@ export async function ensureWSL2Ready(): Promise<void> {
   if (wsl2ReadyPromise) {
     return wsl2ReadyPromise
   }
-  wsl2ReadyPromise = ensureWSL2ReadyImpl()
+  wsl2ReadyPromise = ensureWSL2ReadyImpl(false)
   try {
     await wsl2ReadyPromise
   } finally {
@@ -264,7 +264,7 @@ export async function ensureWSL2Ready(): Promise<void> {
   }
 }
 
-async function ensureWSL2ReadyImpl(): Promise<void> {
+async function ensureWSL2ReadyImpl(isRetry: boolean): Promise<void> {
   const wsl2Home = getWSL2Home()
   fs.mkdirSync(wsl2Home, { recursive: true })
 
@@ -364,6 +364,32 @@ async function ensureWSL2ReadyImpl(): Promise<void> {
       'containerd failed to start inside WSL2 distro. ' +
       'Try running "wsl --unregister superagent" in PowerShell and restarting the app.'
     )
+  }
+
+  // Verify the distro can mount the Windows filesystem.
+  // A broken distro (e.g., created with wrong architecture before ARM support)
+  // may appear provisioned but fail to mount /mnt/c, which breaks volume mounts
+  // and env-file access at container run time.
+  let mountHealthy = false
+  try {
+    await execWSL('test -d /mnt/c/Windows')
+    mountHealthy = true
+  } catch {
+    // /mnt/c not accessible
+  }
+
+  if (!mountHealthy) {
+    if (isRetry) {
+      throw new Error(
+        'WSL2 distro cannot mount the Windows filesystem (/mnt/c). ' +
+        'Try running "wsl --unregister superagent" in PowerShell and restarting the app.'
+      )
+    }
+    console.warn('WSL2 distro has broken Windows filesystem mounts, recreating...')
+    try {
+      await execWithPath(`wsl --unregister ${WSL2_DISTRO_NAME}`)
+    } catch { /* best-effort cleanup */ }
+    return ensureWSL2ReadyImpl(true)
   }
 
   // Create/update the nerdctl wrapper script

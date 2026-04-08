@@ -964,6 +964,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
                 targetPath={review.targetPath}
                 matchedScopes={review.matchedScopes}
                 scopeDescriptions={review.scopeDescriptions}
+                displayText={review.displayText}
                 agentSlug={agentSlug}
                 readOnly={isViewOnly}
                 onComplete={() => refetchProxyReviews()}

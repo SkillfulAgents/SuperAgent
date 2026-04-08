@@ -13,6 +13,65 @@ export interface ReviewDetails {
   scopeDescriptions: Record<string, string>
 }
 
+/**
+ * Convert a snake_case or kebab-case tool/action name into a gerund phrase.
+ * e.g. "list_meetings" → "listing meetings", "get_user_profile" → "getting user profile",
+ *      "send_message" → "sending message", "search_contacts" → "searching contacts"
+ */
+export function humanizeActionName(name: string): string {
+  const words = name.replace(/[_-]/g, ' ').trim().split(/\s+/)
+  if (words.length === 0 || words[0] === '') return name || 'action'
+
+  // Convert first word (the verb) to gerund form
+  const verb = words[0]
+  let gerund: string
+  if (verb.endsWith('e') && !verb.endsWith('ee')) {
+    gerund = verb.slice(0, -1) + 'ing' // e.g. "create" → "creating"
+  } else if (/^[a-z]*[bcdfghjklmnpqrstvwxyz][aeiou][bcdfghlmnprstvwz]$/.test(verb) && verb.length <= 4) {
+    // Double final consonant for short CVC verbs: "get" → "getting", "run" → "running"
+    gerund = verb + verb[verb.length - 1] + 'ing'
+  } else {
+    gerund = verb + 'ing' // e.g. "list" → "listing", "search" → "searching"
+  }
+
+  return [gerund, ...words.slice(1)].join(' ')
+}
+
+/**
+ * Generate a human-readable display text for a proxy review request.
+ * Uses scope descriptions when available, otherwise builds from the
+ * structured fields — with special handling for MCP tool call paths.
+ */
+export function generateReviewDisplayText(
+  toolkit: string,
+  method: string,
+  targetPath: string,
+  scopeDescriptions: Record<string, string>
+): string {
+  // Use the first scope description if available — it's usually the best
+  // human-readable summary of what the request does.
+  const descriptions = Object.values(scopeDescriptions)
+  if (descriptions.length > 0) {
+    const desc = descriptions[0]
+    if (desc.endsWith('?')) return desc
+    // Strip leading "allow" (case-insensitive) to avoid "Allow allow..."
+    const stripped = desc.replace(/^allow\s+/i, '')
+    return `Allow ${stripped.charAt(0).toLowerCase()}${stripped.slice(1)}?`
+  }
+
+  const toolkitDisplay = toolkit.charAt(0).toUpperCase() + toolkit.slice(1)
+
+  // MCP tool call pattern: "tools/call: <tool_name>" or "tools/call:<tool_name>"
+  const mcpMatch = targetPath.match(/tools\/call:\s*(.+)/)
+  if (mcpMatch) {
+    const action = humanizeActionName(mcpMatch[1])
+    return `Allow ${action} via ${toolkitDisplay}?`
+  }
+
+  // Fallback: generic description using toolkit name
+  return `Allow ${method} request to ${toolkitDisplay}?`
+}
+
 interface PendingReview {
   id: string
   details: ReviewDetails
@@ -54,6 +113,13 @@ export class ReviewManager {
 
       this.pending.set(id, { id, details, resolve, reject, timer })
 
+      const displayText = generateReviewDisplayText(
+        details.toolkit,
+        details.method,
+        details.targetPath,
+        details.scopeDescriptions
+      )
+
       // Broadcast review request to agent's active sessions
       broadcastReview(details.agentSlug, {
         type: 'proxy_review_request',
@@ -64,6 +130,7 @@ export class ReviewManager {
         targetPath: details.targetPath,
         matchedScopes: details.matchedScopes,
         scopeDescriptions: details.scopeDescriptions,
+        displayText,
       })
     })
   }
@@ -111,11 +178,17 @@ export class ReviewManager {
 
   getPendingReviewsForAgent(
     agentSlug: string
-  ): Array<{ id: string } & ReviewDetails> {
-    const results: Array<{ id: string } & ReviewDetails> = []
+  ): Array<{ id: string; displayText: string } & ReviewDetails> {
+    const results: Array<{ id: string; displayText: string } & ReviewDetails> = []
     for (const review of this.pending.values()) {
       if (review.details.agentSlug === agentSlug) {
-        results.push({ id: review.id, ...review.details })
+        const displayText = generateReviewDisplayText(
+          review.details.toolkit,
+          review.details.method,
+          review.details.targetPath,
+          review.details.scopeDescriptions
+        )
+        results.push({ id: review.id, displayText, ...review.details })
       }
     }
     return results

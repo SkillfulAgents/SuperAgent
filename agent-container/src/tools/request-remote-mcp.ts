@@ -28,7 +28,7 @@ Use this when you need to interact with an MCP server that hasn't been configure
     reason: z
       .string()
       .optional()
-      .describe('Explain why you need access to this MCP server'),
+      .describe("A question for the user following the pattern 'Allow access to {server} to {purpose}?'. Never use first person. Must end with '?'. Example: 'Allow access to Slack MCP to post the weekly summary?'"),
     authHint: z
       .enum(['oauth', 'bearer'])
       .optional()

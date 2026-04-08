@@ -6,7 +6,7 @@ vi.mock('./review-broadcast', () => ({
   broadcastReview: (...args: unknown[]) => mockBroadcastReview(...args),
 }))
 
-import { ReviewManager } from './review-manager'
+import { ReviewManager, humanizeActionName, generateReviewDisplayText } from './review-manager'
 
 describe('ReviewManager', () => {
   let manager: ReviewManager
@@ -381,6 +381,70 @@ describe('ReviewManager', () => {
     expect(agentSlug).toBe('agent-1')
     expect(event.type).toBe('proxy_review_resolved')
     expect(event.decision).toBe('deny')
+  })
+
+  describe('humanizeActionName', () => {
+    it('converts snake_case verb to gerund', () => {
+      expect(humanizeActionName('list_meetings')).toBe('listing meetings')
+      expect(humanizeActionName('search_contacts')).toBe('searching contacts')
+    })
+
+    it('doubles consonant for short verbs', () => {
+      expect(humanizeActionName('get_user')).toBe('getting user')
+      expect(humanizeActionName('set_value')).toBe('setting value')
+      expect(humanizeActionName('run_task')).toBe('running task')
+    })
+
+    it('drops trailing e before -ing', () => {
+      expect(humanizeActionName('create_document')).toBe('creating document')
+      expect(humanizeActionName('delete_file')).toBe('deleting file')
+    })
+
+    it('handles kebab-case', () => {
+      expect(humanizeActionName('send-message')).toBe('sending message')
+    })
+
+    it('handles empty string gracefully', () => {
+      expect(humanizeActionName('')).toBe('action')
+    })
+
+    it('handles single word', () => {
+      expect(humanizeActionName('list')).toBe('listing')
+    })
+  })
+
+  describe('generateReviewDisplayText', () => {
+    it('uses scope description when available', () => {
+      const result = generateReviewDisplayText('gmail', 'GET', '/path', {
+        'gmail.readonly': 'Read your email',
+      })
+      expect(result).toBe('Allow read your email?')
+    })
+
+    it('returns scope description as-is if it already ends with ?', () => {
+      const result = generateReviewDisplayText('gmail', 'GET', '/path', {
+        'gmail.readonly': 'Read your email?',
+      })
+      expect(result).toBe('Read your email?')
+    })
+
+    it('does not produce "Allow allow..." for descriptions starting with Allow', () => {
+      const result = generateReviewDisplayText('gmail', 'GET', '/path', {
+        'gmail.readonly': 'Allow reading your email',
+      })
+      expect(result).toBe('Allow reading your email?')
+      expect(result).not.toMatch(/Allow allow/i)
+    })
+
+    it('handles MCP tool call paths', () => {
+      const result = generateReviewDisplayText('slack', 'POST', 'tools/call: send_message', {})
+      expect(result).toBe('Allow sending message via Slack?')
+    })
+
+    it('falls back to generic text when no scope descriptions or MCP path', () => {
+      const result = generateReviewDisplayText('gmail', 'GET', '/api/endpoint', {})
+      expect(result).toBe('Allow GET request to Gmail?')
+    })
   })
 
   it('abort after submitDecision is a no-op (review already resolved)', async () => {

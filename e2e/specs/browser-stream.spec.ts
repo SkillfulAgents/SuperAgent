@@ -37,9 +37,9 @@ test.describe('Browser Streaming', () => {
       'browse data:text/html,<h1 style="background:blue;color:white;padding:50px">Browser E2E Test</h1>',
     )
 
-    // Wait for BrowserPreview to appear.
-    // The BrowserScenario emits browser_active:true via SSE → frontend shows the preview.
-    const browserPreview = page.locator('[data-testid="browser-preview"]')
+    // Wait for BrowserDrawerPanel to appear.
+    // The BrowserScenario emits browser_active:true via SSE → frontend shows the drawer.
+    const browserPreview = page.locator('[data-testid="browser-drawer-panel"]')
     await expect(browserPreview).toBeVisible({ timeout: 30000 })
 
     // Wait for canvas to appear (preview auto-expands when browserActive becomes true)

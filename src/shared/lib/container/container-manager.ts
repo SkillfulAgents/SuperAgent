@@ -574,23 +574,27 @@ class ContainerManager {
 
   // Stop all containers (with per-container timeout to prevent blocking shutdown)
   async stopAll(): Promise<void> {
-    // Timeout must accommodate the full escalation chain:
-    // nerdctl stop (10s) + nerdctl kill (5s) + forceStop (10s) = 25s max
-    const STOP_TIMEOUT_MS = 30000
-    const agentIds = Array.from(this.clients.keys())
-    const stopPromises = agentIds.map(async (agentId) => {
-      try {
-        await Promise.race([
-          this.stopContainer(agentId),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('Container stop timed out')), STOP_TIMEOUT_MS)
-          ),
-        ])
-      } catch (error) {
-        console.error(`Failed to stop container for agent ${agentId}:`, error)
-      }
-    })
-    await Promise.all(stopPromises)
+    // Only stop containers that are actually running (based on cached status)
+    // to avoid spawning unnecessary CLI processes during shutdown
+    const runningIds = this.getRunningAgentIds()
+    if (runningIds.length > 0) {
+      // Timeout must accommodate the full escalation chain:
+      // nerdctl stop (10s) + nerdctl kill (5s) + forceStop (10s) = 25s max
+      const STOP_TIMEOUT_MS = 30000
+      const stopPromises = runningIds.map(async (agentId) => {
+        try {
+          await Promise.race([
+            this.stopContainer(agentId),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('Container stop timed out')), STOP_TIMEOUT_MS)
+            ),
+          ])
+        } catch (error) {
+          console.error(`Failed to stop container for agent ${agentId}:`, error)
+        }
+      })
+      await Promise.all(stopPromises)
+    }
     this.clients.clear()
     this.containerStartedAt.clear()
     this.containerStatuses.clear()

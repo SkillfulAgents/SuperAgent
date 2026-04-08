@@ -191,6 +191,8 @@ describe('ensureWSL2Ready', () => {
     mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
     // nerdctl version check (containerd ready)
     mockedExecWithPath.mockResolvedValueOnce({ stdout: 'nerdctl version', stderr: '' })
+    // Mount health check: test -d /mnt/c/Windows
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
 
     // Mock bundled rootfs
     Object.defineProperty(process, 'resourcesPath', {
@@ -215,6 +217,8 @@ describe('ensureWSL2Ready', () => {
     mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
     // nerdctl version check
     mockedExecWithPath.mockResolvedValueOnce({ stdout: 'nerdctl version', stderr: '' })
+    // Mount health check: test -d /mnt/c/Windows
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
 
     await ensureWSL2Ready()
 
@@ -266,6 +270,8 @@ describe('ensureWSL2Ready', () => {
     mockSpawnProvision(0)
     // nerdctl version check
     mockedExecWithPath.mockResolvedValueOnce({ stdout: 'nerdctl version', stderr: '' })
+    // Mount health check: test -d /mnt/c/Windows
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
 
     await ensureWSL2Ready()
 
@@ -317,6 +323,83 @@ describe('ensureWSL2Ready', () => {
 
     const calls = mockedExecWithPath.mock.calls.map((c) => c[0] as string)
     expect(calls.some((c) => c.includes('--unregister'))).toBe(true)
+  })
+
+  it('recreates distro when mount health check fails', async () => {
+    // First attempt: distro exists and running but mounts are broken
+    mockWSLList([{ name: WSL2_DISTRO_NAME, state: 'Running' }])
+    mockWSLList([{ name: WSL2_DISTRO_NAME, state: 'Running' }])
+    // Provisioning check passes
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    // nerdctl version passes
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: 'nerdctl version', stderr: '' })
+    // Mount health check FAILS
+    mockedExecWithPath.mockRejectedValueOnce(new Error('exit code 1'))
+    // Unregister broken distro
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+
+    // Retry: distro doesn't exist, needs creation
+    mockWSLList([])
+    // wsl --import
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    // Provision via spawn
+    mockSpawnProvision(0)
+    // Second list: distro stopped
+    mockWSLList([{ name: WSL2_DISTRO_NAME, state: 'Stopped' }])
+    // Start distro
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: 'starting', stderr: '' })
+    // Provisioning check passes
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    // nerdctl version passes
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: 'nerdctl version', stderr: '' })
+    // Mount health check passes on retry
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+
+    // Mock bundled rootfs
+    Object.defineProperty(process, 'resourcesPath', {
+      value: 'C:\\app\\resources',
+      writable: true,
+      configurable: true,
+    })
+    mockedFs.existsSync.mockReturnValue(true)
+
+    await ensureWSL2Ready()
+
+    const calls = mockedExecWithPath.mock.calls.map((c) => c[0] as string)
+    expect(calls.filter((c) => c.includes('--unregister')).length).toBe(1)
+    expect(calls.some((c) => c.includes('--import'))).toBe(true)
+  })
+
+  it('throws on mount health check failure after retry', async () => {
+    // First attempt: broken mounts
+    mockWSLList([{ name: WSL2_DISTRO_NAME, state: 'Running' }])
+    mockWSLList([{ name: WSL2_DISTRO_NAME, state: 'Running' }])
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: 'nerdctl version', stderr: '' })
+    // Mount health check fails
+    mockedExecWithPath.mockRejectedValueOnce(new Error('exit code 1'))
+    // Unregister
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+
+    // Retry: distro recreated but mounts still broken
+    mockWSLList([])
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    mockSpawnProvision(0)
+    mockWSLList([{ name: WSL2_DISTRO_NAME, state: 'Stopped' }])
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: 'starting', stderr: '' })
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: 'nerdctl version', stderr: '' })
+    // Mount health check fails again
+    mockedExecWithPath.mockRejectedValueOnce(new Error('exit code 1'))
+
+    Object.defineProperty(process, 'resourcesPath', {
+      value: 'C:\\app\\resources',
+      writable: true,
+      configurable: true,
+    })
+    mockedFs.existsSync.mockReturnValue(true)
+
+    await expect(ensureWSL2Ready()).rejects.toThrow('cannot mount the Windows filesystem')
   })
 })
 
@@ -606,7 +689,7 @@ describe('WSL2ContainerClient.handleRunError', () => {
   }
 
   function mockEnsureWSL2ReadySuccess() {
-    // ensureWSL2Ready calls: wsl --list, wsl --list again, test -x provisioning check, nerdctl version
+    // ensureWSL2Ready calls: wsl --list, wsl --list again, test -x provisioning check, nerdctl version, mount health check
     // Mock a running distro for the minimal path
     const header = '  NAME                   STATE           VERSION'
     const line = `  ${WSL2_DISTRO_NAME.padEnd(23)}Running         2`
@@ -619,6 +702,8 @@ describe('WSL2ContainerClient.handleRunError', () => {
     mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
     // nerdctl version
     mockedExecWithPath.mockResolvedValueOnce({ stdout: 'ok', stderr: '' })
+    // Mount health check: test -d /mnt/c/Windows
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
   }
 
   it('returns true and provisions on ENOENT error', async () => {

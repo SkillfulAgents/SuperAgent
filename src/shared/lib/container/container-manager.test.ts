@@ -873,6 +873,8 @@ describe('containerManager.stopAll', () => {
   it('stops all containers and clears state', async () => {
     containerManager.getClient('agent-1')
     containerManager.getClient('agent-2')
+    containerManager.updateCachedStatus('agent-1', 'running', 4001)
+    containerManager.updateCachedStatus('agent-2', 'running', 4002)
     mockStop.mockResolvedValue({ forceStopUsed: false })
     mockGetInfoFromRuntime.mockResolvedValue({ status: 'stopped', port: null })
 
@@ -888,6 +890,8 @@ describe('containerManager.stopAll', () => {
   it('does not throw when individual container stop fails', async () => {
     containerManager.getClient('agent-1')
     containerManager.getClient('agent-2')
+    containerManager.updateCachedStatus('agent-1', 'running', 4001)
+    containerManager.updateCachedStatus('agent-2', 'running', 4002)
     // First stop fails, second succeeds
     mockStop.mockRejectedValueOnce(new Error('connection refused'))
     mockStop.mockResolvedValueOnce({ forceStopUsed: false })
@@ -902,6 +906,8 @@ describe('containerManager.stopAll', () => {
   it('times out individual containers without blocking others', async () => {
     containerManager.getClient('fast-agent')
     containerManager.getClient('slow-agent')
+    containerManager.updateCachedStatus('fast-agent', 'running', 4001)
+    containerManager.updateCachedStatus('slow-agent', 'running', 4002)
 
     let callCount = 0
     mockStop.mockImplementation(() => {
