@@ -27,7 +27,10 @@ import { getSettings } from './config/settings'
 export async function initializeServices() {
   // Initialize error reporting for non-Electron environments (Electron inits in main/index.ts).
   // initErrorReporting is a no-op if already initialized, so this is safe.
-  initErrorReporting({ environment: 'web' })
+  // Skip in dev mode — dev errors are too noisy and pollute Sentry.
+  if (process.env.NODE_ENV === 'production') {
+    initErrorReporting({ environment: 'web' })
+  }
 
   // Set platform auth user identity on error reports (if logged in)
   try {

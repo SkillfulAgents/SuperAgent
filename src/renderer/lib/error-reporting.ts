@@ -16,6 +16,9 @@ import { isElectron } from './env'
 let errorReportingEnabled = true // null/undefined means true — default on for existing users
 
 export function initRendererErrorReporting(): void {
+  // Skip in dev mode — dev errors are too noisy and pollute Sentry
+  if (import.meta.env.DEV) return
+
   try {
     Sentry.init({
       dsn: ERROR_REPORTING_INGEST_URL,

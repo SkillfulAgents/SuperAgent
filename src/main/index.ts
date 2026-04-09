@@ -52,7 +52,10 @@ console.log(`Data directory: ${process.env.SUPERAGENT_DATA_DIR}`)
 // Initialize error reporting as early as possible (after data dir is set)
 import { initErrorReporting, captureException, flushErrorReporting } from '@shared/lib/error-reporting'
 
-initErrorReporting({ environment: app.isPackaged ? 'electron' : 'electron-dev' })
+// Only report errors in production builds — dev mode generates too much noise
+if (app.isPackaged) {
+  initErrorReporting({ environment: 'electron' })
+}
 
 // Register auto-update IPC handlers early (before window creation)
 // so the renderer never gets "no handler" errors, even in dev mode
