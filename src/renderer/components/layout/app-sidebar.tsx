@@ -881,7 +881,7 @@ export function AppSidebar() {
                     ))}
                   </>
                 ) : error ? (
-                  <div className="px-2 py-4 text-sm text-destructive">
+                  <div className="px-2 py-4 text-sm text-destructive select-text">
                     Failed to load agents
                   </div>
                 ) : !agents?.length ? (
