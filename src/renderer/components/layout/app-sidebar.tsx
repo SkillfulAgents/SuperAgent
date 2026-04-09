@@ -1,5 +1,5 @@
 
-import { ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard, Loader2, WifiOff, LogOut, User, Users, CircleHelp, Ban, Zap } from 'lucide-react'
+import { ChevronDown, ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard, Loader2, WifiOff, LogOut, User, Users, CircleHelp, Ban, Zap } from 'lucide-react'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
@@ -801,10 +801,21 @@ export function AppSidebar() {
           paddingLeft: needsTrafficLightPadding ? '80px' : undefined,
         }}
       >
-        <div className="flex items-center h-full px-2">
+        <div className="flex items-center h-full px-2 gap-1">
           <button onClick={clearSelection} className="text-lg font-bold app-no-drag cursor-pointer hover:opacity-80 transition-opacity">
             Super Agent
           </button>
+          {isElectron() && getPlatform() === 'win32' && (
+            <button
+              className="app-no-drag p-0.5 rounded hover:bg-foreground/10 transition-colors cursor-default"
+              onClick={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect()
+                window.electronAPI?.popupAppMenu(Math.round(rect.left), Math.round(rect.bottom))
+              }}
+            >
+              <ChevronDown className="h-4 w-4 text-foreground/60" />
+            </button>
+          )}
         </div>
       </SidebarHeader>
 

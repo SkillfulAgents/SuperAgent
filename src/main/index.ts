@@ -180,6 +180,15 @@ function createWindow() {
       vibrancy: 'sidebar' as const,
       visualEffectState: 'active' as const,
     }),
+    ...(process.platform === 'win32' && {
+      backgroundMaterial: 'acrylic' as const,
+      titleBarStyle: 'hidden' as const,
+      titleBarOverlay: {
+        height: 48,
+        color: '#00000000',
+        symbolColor: '#888888',
+      },
+    }),
   })
 
   // Grant microphone (and camera) permissions for the renderer.
@@ -478,6 +487,39 @@ ipcMain.handle('create-dock-shortcut', (_event, { agentSlug, dashboardSlug, dash
 // IPC handler for setting native theme (controls vibrancy appearance on macOS)
 ipcMain.handle('set-native-theme', (_event, theme: string) => {
   nativeTheme.themeSource = theme as 'system' | 'light' | 'dark'
+
+  // Update Windows title bar overlay symbol color to match theme
+  if (process.platform === 'win32' && mainWindow) {
+    const isDark = nativeTheme.shouldUseDarkColors
+    mainWindow.setTitleBarOverlay({
+      symbolColor: isDark ? '#cccccc' : '#333333',
+      color: '#00000000',
+    })
+  }
+})
+
+// IPC handler for popping up the full app menu at a position (Windows custom title bar)
+ipcMain.handle('popup-app-menu', (_event, x: number, y: number) => {
+  const appMenu = Menu.getApplicationMenu()
+  const win = mainWindow
+  if (!appMenu || !win) return
+  // Build a nested menu with top-level items as submenus
+  const items: Electron.MenuItemConstructorOptions[] = []
+  for (const topItem of appMenu.items) {
+    if (topItem.submenu) {
+      const subItems: Electron.MenuItemConstructorOptions[] = topItem.submenu.items.map(subItem => ({
+        label: subItem.label,
+        type: subItem.type,
+        role: subItem.role as any,
+        accelerator: subItem.accelerator || undefined,
+        enabled: subItem.enabled,
+        click: subItem.click ? () => subItem.click!(subItem as any, win, {} as any) : undefined,
+      }))
+      items.push({ label: topItem.label, submenu: subItems })
+    }
+  }
+  const menu = Menu.buildFromTemplate(items)
+  menu.popup({ window: win, x, y })
 })
 
 // Handle OAuth callback URLs (macOS)
