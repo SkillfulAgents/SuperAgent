@@ -131,6 +131,12 @@ export class ChromeProvider implements HostBrowserProvider {
         '--no-first-run',
         '--no-default-browser-check',
         `--user-data-dir=${userDataDir}`,
+        // Prevent Chrome from throttling rendering when the window is behind
+        // other windows. Without these, screencast frames stop flowing.
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
+        '--disable-background-timer-throttling',
+        '--disable-features=CalculateNativeWinOcclusion,WebContentsOcclusion',
         // Start with about:blank instead of chrome://newtab so agent-browser's
         // target discovery sees a trackable page and reuses it rather than
         // creating an extra tab (it filters out chrome:// URLs).
