@@ -949,6 +949,39 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return { unsubscribe, ready }
   }
 
+  /**
+   * Remove old images for a given registry, keeping only the specified current tag.
+   * Each image is removed individually so in-use images don't block others.
+   * Best-effort: never throws.
+   * Subclasses can override for runtimes with different CLI syntax.
+   */
+  static async removeOldImages(cliCommand: string, registry: string, currentTag: string): Promise<void> {
+    try {
+      const { stdout } = await execWithPath(
+        `${cliCommand} images --format "{{.Repository}}:{{.Tag}}"`
+      )
+      const currentImage = `${registry}:${currentTag}`
+      const imagesToRemove = stdout
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l && l !== currentImage && l.startsWith(registry + ':'))
+
+      if (imagesToRemove.length === 0) return
+
+      console.log(`[ContainerManager] Removing ${imagesToRemove.length} old image(s):`, imagesToRemove)
+      for (const img of imagesToRemove) {
+        try {
+          await execWithPath(`${cliCommand} rmi ${img}`)
+          console.log(`[ContainerManager] Removed ${img}`)
+        } catch {
+          console.warn(`[ContainerManager] Could not remove ${img} (may be in use)`)
+        }
+      }
+    } catch (error) {
+      console.warn('[ContainerManager] Failed to remove old images:', error)
+    }
+  }
+
   private async ensureImageExists(): Promise<void> {
     const settings = getSettings()
     const runner = this.getRunnerCommand()

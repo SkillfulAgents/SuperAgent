@@ -6,7 +6,7 @@ import { LimaContainerClient, getNerdctlWrapperPath, ensureLimaReady, stopLimaVm
 import { WSL2ContainerClient, getWSL2NerdctlWrapperPath, ensureWSL2Ready, stopWSL2Distro } from './wsl2-container-client'
 import { MockContainerClient } from './mock-container-client'
 import { getSettings } from '@shared/lib/config/settings'
-import { execWithPath, spawnWithPath, AGENT_CONTAINER_PATH } from './base-container-client'
+import { BaseContainerClient, execWithPath, spawnWithPath, AGENT_CONTAINER_PATH } from './base-container-client'
 import { platform } from 'os'
 import * as fs from 'fs'
 
@@ -71,7 +71,7 @@ export function getRunnerDisplayName(runner: ContainerRunner): string {
  * Get the actual CLI command for a runner name.
  * E.g., 'apple-container' -> 'container', 'docker' -> 'docker'
  */
-function getCliCommand(runner: ContainerRunner): string {
+export function getCliCommand(runner: ContainerRunner): string {
   const entry = ALL_RUNNERS.find((r) => r.name === runner)
   if (!entry) return runner
   const cmd = typeof entry.cliCommand === 'function' ? entry.cliCommand() : entry.cliCommand
@@ -506,6 +506,31 @@ export function buildImage(
   })
 }
 
+// A concrete (non-abstract) subclass of BaseContainerClient
+type ConcreteContainerClientClass = (new (config: ContainerConfig) => BaseContainerClient) & typeof BaseContainerClient
+
+/**
+ * Get the concrete ContainerClient class for a given runner.
+ * Useful for calling static methods (e.g. removeOldImages) with proper dispatch.
+ */
+export function getContainerClientClass(runner: ContainerRunner): ConcreteContainerClientClass {
+  switch (runner) {
+    case 'apple-container':
+      return AppleContainerClient
+    case 'docker':
+      return DockerContainerClient
+    case 'podman':
+      return PodmanContainerClient
+    case 'lima':
+      return LimaContainerClient
+    case 'wsl2':
+      return WSL2ContainerClient
+    default:
+      console.warn(`Unknown container runner "${runner}", falling back to docker`)
+      return DockerContainerClient
+  }
+}
+
 /**
  * Creates a ContainerClient based on the configured container runner.
  */
@@ -518,23 +543,8 @@ export function createContainerClient(config: ContainerConfig): ContainerClient 
   console.log('[ContainerClient] Using real container client, E2E_MOCK:', process.env.E2E_MOCK)
 
   const settings = getSettings()
-  const runner = settings.container.containerRunner as ContainerRunner
-
-  switch (runner) {
-    case 'apple-container':
-      return new AppleContainerClient(config)
-    case 'docker':
-      return new DockerContainerClient(config)
-    case 'podman':
-      return new PodmanContainerClient(config)
-    case 'lima':
-      return new LimaContainerClient(config)
-    case 'wsl2':
-      return new WSL2ContainerClient(config)
-    default:
-      console.warn(`Unknown container runner "${runner}", falling back to docker`)
-      return new DockerContainerClient(config)
-  }
+  const ClientClass = getContainerClientClass(settings.container.containerRunner as ContainerRunner)
+  return new ClientClass(config)
 }
 
 /**

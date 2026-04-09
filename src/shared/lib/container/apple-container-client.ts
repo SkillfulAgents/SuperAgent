@@ -135,6 +135,40 @@ export class AppleContainerClient extends BaseContainerClient {
   }
 
   /**
+   * Apple Container uses `container image list --format json` + `container image remove`.
+   */
+  // TODO test this
+  static async removeOldImages(cliCommand: string, registry: string, currentTag: string): Promise<void> {
+    try {
+      const { stdout } = await execWithPath(`${cliCommand} image list --format json`)
+      const images = JSON.parse(stdout)
+      if (!Array.isArray(images)) return
+
+      const currentImage = `${registry}:${currentTag}`
+      const imagesToRemove = images
+        .filter((img: any) => {
+          const ref = `${img.repository}:${img.tag}`
+          return ref !== currentImage && ref.startsWith(registry + ':')
+        })
+        .map((img: any) => `${img.repository}:${img.tag}`)
+
+      if (imagesToRemove.length === 0) return
+
+      console.log(`[ContainerManager] Removing ${imagesToRemove.length} old image(s):`, imagesToRemove)
+      for (const img of imagesToRemove) {
+        try {
+          await execWithPath(`${cliCommand} image remove ${img}`)
+          console.log(`[ContainerManager] Removed ${img}`)
+        } catch {
+          console.warn(`[ContainerManager] Could not remove ${img} (may be in use)`)
+        }
+      }
+    } catch (error) {
+      console.warn('[ContainerManager] Failed to remove old images:', error)
+    }
+  }
+
+  /**
    * Check if the Apple Container CLI is available on the system.
    */
   static async isAvailable(): Promise<boolean> {

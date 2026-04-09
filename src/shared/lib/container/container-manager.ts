@@ -1,5 +1,5 @@
 import path from 'path'
-import { createContainerClient, checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, startRunner, refreshRunnerAvailability, clearRunnerAvailabilityCache, getRunnerDisplayName, type ContainerRunner } from './client-factory'
+import { createContainerClient, checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, startRunner, refreshRunnerAvailability, clearRunnerAvailabilityCache, getRunnerDisplayName, getContainerClientClass, getCliCommand, type ContainerRunner } from './client-factory'
 import type { ContainerClient, ContainerConfig, ContainerInfo, HealthCheckResult, RuntimeReadiness } from './types'
 import { healthMonitor } from './health-monitor'
 import { db } from '@shared/lib/db'
@@ -820,6 +820,17 @@ class ContainerManager {
         message: 'Ready',
         pullProgress: null,
       })
+
+      // Clean up old images after a successful pull (fire-and-forget)
+      const lastColon = image.lastIndexOf(':')
+      if (lastColon > 0 && !shouldBuild) {
+        const registry = image.substring(0, lastColon)
+        const currentTag = image.substring(lastColon + 1)
+        const ClientClass = getContainerClientClass(effectiveRunner)
+        ClientClass.removeOldImages(getCliCommand(effectiveRunner), registry, currentTag).catch((error: unknown) => {
+          console.warn('[ContainerManager] Image cleanup failed:', error)
+        })
+      }
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error)
       console.error(`[ContainerManager] Failed to ${actionLabel.toLowerCase()} image ${image}:`, errMsg)
