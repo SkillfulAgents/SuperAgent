@@ -79,7 +79,7 @@ export class ChromeProvider implements HostBrowserProvider {
 
     const status = this.detect()
     if (!status.available) {
-      throw new Error('No supported browser detected')
+      throw new Error(`No supported browser detected: ${status.reason || 'unknown reason'}`)
     }
 
     const port = await this.findFreePort()
@@ -142,8 +142,29 @@ export class ChromeProvider implements HostBrowserProvider {
         // creating an extra tab (it filters out chrome:// URLs).
         'about:blank',
       ],
-      { detached: false, stdio: 'ignore' }
+      { detached: false, stdio: ['ignore', 'ignore', 'pipe'] }
     )
+
+    // Collect stderr for diagnostics if Chrome fails to start
+    const stderrChunks: Buffer[] = []
+    browserProcess.stderr?.on('data', (chunk: Buffer) => {
+      stderrChunks.push(chunk)
+    })
+
+    // Track early process failure so waitForPort can report a useful error
+    let earlyExitCode: number | null = null
+    const earlyExitPromise = new Promise<never>((_, reject) => {
+      browserProcess.on('error', (err) => {
+        console.error(`[ChromeProvider] Browser process error for instance ${instanceId}:`, err)
+        const stderr = Buffer.concat(stderrChunks).toString().trim()
+        reject(new Error(
+          `Failed to spawn browser: ${err.message}${stderr ? `\nChrome stderr: ${stderr}` : ''}`
+        ))
+      })
+      browserProcess.on('exit', (code) => {
+        earlyExitCode = code
+      })
+    })
 
     // Chrome on Windows ignores --remote-debugging-address=0.0.0.0 and always
     // binds its CDP port to 127.0.0.1. This means containers running inside WSL2
@@ -178,10 +199,8 @@ export class ChromeProvider implements HostBrowserProvider {
     }
     this.instances.set(instanceId, instance)
 
-    browserProcess.on('error', (err) => {
-      console.error(`[ChromeProvider] Browser process error for instance ${instanceId}:`, err)
-    })
-
+    // Now that the instance is registered, wire up the exit handler for
+    // external-close notifications (separate from the earlyExitPromise above).
     browserProcess.on('exit', (code) => {
       console.log(`[ChromeProvider] Browser for instance ${instanceId} exited with code ${code}`)
       const wasIntentional = instance.stoppingIntentionally
@@ -196,7 +215,13 @@ export class ChromeProvider implements HostBrowserProvider {
     })
 
     try {
-      await this.waitForPort(port, 15000)
+      // Race the port check against early process death / spawn errors.
+      // If Chrome crashes or fails to spawn, we get an immediate error
+      // instead of waiting the full 15s timeout.
+      await Promise.race([
+        this.waitForPort(port, 15000, () => earlyExitCode, () => Buffer.concat(stderrChunks).toString().trim()),
+        earlyExitPromise,
+      ])
     } catch (err) {
       await this.stop(instanceId)
       throw err
@@ -276,14 +301,23 @@ export class ChromeProvider implements HostBrowserProvider {
     })
   }
 
-  private async waitForPort(port: number, timeoutMs: number): Promise<void> {
+  private async waitForPort(port: number, timeoutMs: number, getExitCode?: () => number | null, getStderr?: () => string): Promise<void> {
     const start = Date.now()
     while (Date.now() - start < timeoutMs) {
+      // If the process already exited, no point waiting for the port
+      const exitCode = getExitCode?.()
+      if (exitCode !== undefined && exitCode !== null) {
+        const stderr = getStderr?.()
+        throw new Error(
+          `Browser process exited with code ${exitCode} before debug port ${port} became available` +
+          (stderr ? `\nChrome stderr: ${stderr}` : '')
+        )
+      }
       if (await this.isPortOpen(port)) {
         return
       }
       await new Promise((r) => setTimeout(r, 500))
     }
-    throw new Error(`Browser debug port ${port} did not become available within ${timeoutMs}ms`)
+    throw new Error(`Browser debug port ${port} did not become available within ${timeoutMs}ms — the browser process may have failed to start`)
   }
 }
