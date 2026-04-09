@@ -68,6 +68,24 @@ export function AnalyticsTab() {
 
   return (
     <div className="space-y-6">
+      {/* Share Error Reports */}
+      <div className="flex items-center justify-between">
+        <div className="space-y-0.5">
+          <Label htmlFor="share-error-reports">Share Error Reports</Label>
+          <p className="text-xs text-muted-foreground">
+            Send error reports to help us diagnose and fix issues faster
+          </p>
+        </div>
+        <Switch
+          id="share-error-reports"
+          checked={settings?.shareErrorReports !== false}
+          onCheckedChange={(checked: boolean) => {
+            updateSettings.mutate({ shareErrorReports: checked })
+          }}
+          disabled={isSettingsLoading}
+        />
+      </div>
+
       {/* Share Analytics */}
       <div className="flex items-center justify-between">
         <div className="space-y-0.5">

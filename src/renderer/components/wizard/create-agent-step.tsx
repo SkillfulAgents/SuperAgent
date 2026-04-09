@@ -14,16 +14,22 @@ export function CreateAgentStep() {
   const [name, setName] = useState('')
   const [created, setCreated] = useState(false)
   const [shareAnalytics, setShareAnalytics] = useState(true)
+  const [shareErrorReports, setShareErrorReports] = useState(true)
   const createAgent = useCreateAgent()
   const { selectAgent } = useSelection()
   const updateSettings = useUpdateSettings()
   const { track } = useAnalyticsTracking()
 
-  // Persist the analytics preference when it changes
+  // Persist the analytics and error reporting preferences when they change
   useEffect(() => {
     updateSettings.mutate({ shareAnalytics })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shareAnalytics])
+
+  useEffect(() => {
+    updateSettings.mutate({ shareErrorReports })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shareErrorReports])
 
   const handleCreate = async () => {
     if (!name.trim()) return
@@ -87,8 +93,21 @@ export function CreateAgentStep() {
         </div>
       )}
 
-      {/* Analytics opt-in */}
-      <div className="pt-4 border-t">
+      {/* Error reporting & analytics opt-in */}
+      <div className="pt-4 border-t space-y-3">
+        <div className="flex items-center gap-3">
+          <Checkbox
+            id="wizard-share-error-reports"
+            checked={shareErrorReports}
+            onCheckedChange={(checked) => setShareErrorReports(!!checked)}
+          />
+          <div className="space-y-0.5">
+            <Label htmlFor="wizard-share-error-reports" className="cursor-pointer">Share error reports</Label>
+            <p className="text-xs text-muted-foreground">
+              Send error reports to help us diagnose and fix issues faster. You can change this later in Settings.
+            </p>
+          </div>
+        </div>
         <div className="flex items-center gap-3">
           <Checkbox
             id="wizard-share-analytics"

@@ -13,6 +13,7 @@ import { containerManager } from '@shared/lib/container/container-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { getSettings } from '@shared/lib/config/settings'
 import { isAuthMode } from '@shared/lib/auth/mode'
+import { captureException } from '@shared/lib/error-reporting'
 import { db } from '@shared/lib/db'
 import { agentAcl } from '@shared/lib/db/schema'
 import { and, eq } from 'drizzle-orm'
@@ -159,6 +160,10 @@ export function setupBrowserStreamProxy(server: ServerType): void {
 
         upstream.on('error', (error) => {
           console.error(`[BrowserProxy] Upstream error for agent ${agentSlug}:`, error)
+          captureException(error, {
+            tags: { component: 'browser-proxy', operation: 'upstream-ws' },
+            extra: { agentSlug },
+          })
           if (ws.readyState === WebSocket.OPEN) {
             ws.close(1011, 'Upstream connection error')
           }
@@ -166,12 +171,24 @@ export function setupBrowserStreamProxy(server: ServerType): void {
 
         ws.on('error', (error) => {
           console.error(`[BrowserProxy] Client error for agent ${agentSlug}:`, error)
+          // Client errors are often normal disconnects, only report non-trivial ones
+          if (!(error instanceof Error && error.message.includes('ECONNRESET'))) {
+            captureException(error, {
+              tags: { component: 'browser-proxy', operation: 'client-ws' },
+              extra: { agentSlug },
+              level: 'warning',
+            })
+          }
           if (upstream.readyState === WebSocket.OPEN) {
             upstream.close()
           }
         })
       } catch (error) {
         console.error(`[BrowserProxy] Failed to set up proxy for agent ${agentSlug}:`, error)
+        captureException(error, {
+          tags: { component: 'browser-proxy', operation: 'setup' },
+          extra: { agentSlug },
+        })
         ws.close(1011, 'Failed to connect to browser stream')
       }
   })

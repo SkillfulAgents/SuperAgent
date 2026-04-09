@@ -49,6 +49,11 @@ if (!app.isPackaged) {
 process.env.SUPERAGENT_DATA_DIR ??= app.getPath('userData')
 console.log(`Data directory: ${process.env.SUPERAGENT_DATA_DIR}`)
 
+// Initialize error reporting as early as possible (after data dir is set)
+import { initErrorReporting, captureException, flushErrorReporting } from '@shared/lib/error-reporting'
+
+initErrorReporting({ environment: app.isPackaged ? 'electron' : 'electron-dev' })
+
 // Register auto-update IPC handlers early (before window creation)
 // so the renderer never gets "no handler" errors, even in dev mode
 registerUpdateHandlers()
@@ -856,6 +861,8 @@ app.on('before-quit', async (event) => {
 // Handle uncaught exceptions
 process.on('uncaughtException', async (error) => {
   console.error('Uncaught exception:', error)
+  captureException(error, { tags: { type: 'uncaughtException' }, level: 'fatal' })
+  await flushErrorReporting(3000)
   await gracefulShutdown()
   app.quit()
 })
@@ -863,6 +870,8 @@ process.on('uncaughtException', async (error) => {
 // Handle unhandled promise rejections
 process.on('unhandledRejection', async (reason) => {
   console.error('Unhandled rejection:', reason)
+  captureException(reason instanceof Error ? reason : new Error(String(reason)), { tags: { type: 'unhandledRejection' }, level: 'fatal' })
+  await flushErrorReporting(3000)
   await gracefulShutdown()
   app.quit()
 })

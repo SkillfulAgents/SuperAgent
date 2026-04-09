@@ -7,6 +7,107 @@ import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import { DEFAULT_LIMA_VM_MEMORY } from './types'
 import type { ContainerConfig } from './types'
 import os from 'os'
+import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+
+/**
+ * Collect diagnostic data about the Lima environment at the moment of failure.
+ * Runs quick checks to surface the actual root cause of VM issues.
+ */
+function collectLimaDiagnostics(): Record<string, unknown> {
+  const diag: Record<string, unknown> = {}
+  const limaHome = getLimaHome()
+  const limactlPath = getLimactlPath()
+
+  try {
+    // Is limactl actually accessible?
+    diag.limactl_path = limactlPath
+    diag.limactl_is_bundled = limactlPath !== 'limactl'
+    try {
+      fs.accessSync(limactlPath, fs.constants.X_OK)
+      diag.limactl_executable = true
+    } catch (e: any) {
+      diag.limactl_executable = false
+      diag.limactl_access_error = e.code
+    }
+
+    // limactl version
+    try {
+      diag.limactl_version = execSync(`LIMA_HOME="${limaHome}" "${limactlPath}" --version 2>&1`, { encoding: 'utf-8', timeout: 5000 }).toString().trim()
+    } catch { diag.limactl_version = 'check_failed' }
+
+    // VM state from limactl list
+    try {
+      const raw = execSync(`LIMA_HOME="${limaHome}" "${limactlPath}" list --json 2>&1`, { encoding: 'utf-8', timeout: 10000 }).trim()
+      const vms = raw.split('\n').filter(Boolean).map((l: string) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
+      const vm = vms.find((v: any) => v.name === LIMA_VM_NAME)
+      if (vm) {
+        diag.vm_status = vm.status
+        diag.vm_arch = vm.arch
+        diag.vm_cpus = vm.cpus
+        diag.vm_memory_bytes = vm.memory
+        diag.vm_disk_bytes = vm.disk
+        diag.vm_dir = vm.dir
+        diag.vm_ssh_local_port = vm.sshLocalPort
+      } else {
+        diag.vm_status = 'not_found'
+      }
+      diag.total_vms = vms.length
+    } catch (e: any) { diag.vm_list_error = e.message?.slice(0, 500) }
+
+    // LIMA_HOME directory state
+    try {
+      diag.lima_home_exists = fs.existsSync(limaHome)
+      if (diag.lima_home_exists) {
+        const entries = fs.readdirSync(limaHome)
+        diag.lima_home_contents = entries
+        // Check if VM directory exists and has key files
+        const vmDir = path.join(limaHome, LIMA_VM_NAME)
+        if (fs.existsSync(vmDir)) {
+          diag.vm_dir_contents = fs.readdirSync(vmDir)
+        }
+      }
+    } catch { /* ignore */ }
+
+    // Nerdctl wrapper script state
+    try {
+      const wrapperPath = getNerdctlWrapperPath()
+      diag.nerdctl_wrapper_exists = fs.existsSync(wrapperPath)
+      if (diag.nerdctl_wrapper_exists) {
+        diag.nerdctl_wrapper_content = fs.readFileSync(wrapperPath, 'utf-8')
+      }
+    } catch { /* ignore */ }
+
+    // macOS virtualization framework availability
+    if (process.platform === 'darwin') {
+      try {
+        diag.macos_version = execSync('sw_vers -productVersion', { encoding: 'utf-8', timeout: 3000 }).trim()
+        diag.sip_status = execSync('csrutil status 2>&1 || true', { encoding: 'utf-8', timeout: 3000 }).trim()
+      } catch { /* ignore */ }
+    }
+
+    // Disk space on LIMA_HOME volume
+    if (process.platform !== 'win32') {
+      try {
+        const df = execSync(`df -k "${limaHome}" | tail -1`, { encoding: 'utf-8', timeout: 3000 })
+        const parts = df.trim().split(/\s+/)
+        if (parts.length >= 4) {
+          diag.disk_free_mb = Math.round(parseInt(parts[3], 10) / 1024)
+          diag.disk_total_mb = Math.round(parseInt(parts[1], 10) / 1024)
+          diag.disk_used_percent = parts[4]
+        }
+      } catch { /* ignore */ }
+    }
+
+    // System memory
+    diag.system_memory_free_mb = Math.round(os.freemem() / 1048576)
+    diag.system_memory_total_mb = Math.round(os.totalmem() / 1048576)
+
+  } catch {
+    diag.diagnostic_error = 'failed to collect diagnostics'
+  }
+
+  return diag
+}
 
 export const LIMA_VM_NAME = 'superagent'
 
@@ -173,6 +274,7 @@ export class LimaContainerClient extends BaseContainerClient {
    */
   protected async handleRunError(error: any): Promise<boolean> {
     const msg = error.message || error.stderr || String(error)
+    addErrorBreadcrumb({ category: 'lima', message: 'Container run error', data: { error: msg, agentId: this.config.agentId } })
     if (
       msg.includes('ENOENT') ||
       msg.includes('not found') ||
@@ -186,10 +288,18 @@ export class LimaContainerClient extends BaseContainerClient {
         await ensureLimaReady()
         return true
       } catch (err) {
+        captureException(err, {
+          tags: { component: 'lima', operation: 'provision' },
+          extra: { originalError: msg, agentId: this.config.agentId, ...collectLimaDiagnostics() },
+        })
         console.error('Failed to provision Lima VM:', err)
         return false
       }
     }
+    captureException(error, {
+      tags: { component: 'lima', operation: 'container-run' },
+      extra: { agentId: this.config.agentId, ...collectLimaDiagnostics() },
+    })
     return false
   }
 
@@ -271,6 +381,8 @@ async function ensureLimaReadyImpl(): Promise<void> {
   const limaHome = getLimaHome()
   fs.mkdirSync(limaHome, { recursive: true })
 
+  addErrorBreadcrumb({ category: 'lima', message: 'ensureLimaReady started', data: { limaHome } })
+
   const settings = getSettings()
   const explicitMemory = settings.container.runtimeSettings?.lima?.vmMemory
 
@@ -285,8 +397,8 @@ async function ensureLimaReadyImpl(): Promise<void> {
       vmExists = true
       vmMemory = vm.memory ? `${Math.round(vm.memory / (1024 * 1024 * 1024))}GiB` : null
     }
-  } catch {
-    // limactl not working or no VMs
+  } catch (err) {
+    addErrorBreadcrumb({ category: 'lima', message: 'limactl list failed', level: 'warning', data: { error: String(err) } })
   }
 
   // Recreate VM only if the user has explicitly set a memory preference and it differs
@@ -301,7 +413,16 @@ async function ensureLimaReadyImpl(): Promise<void> {
 
   if (!vmExists) {
     console.log('Creating Lima VM for Superagent...')
-    await createLimaVm()
+    addErrorBreadcrumb({ category: 'lima', message: 'Creating new Lima VM', data: { explicitMemory } })
+    try {
+      await createLimaVm()
+    } catch (err) {
+      captureException(err, {
+        tags: { component: 'lima', operation: 'create-vm' },
+        extra: { limaHome, explicitMemory, arch: process.arch, ...collectLimaDiagnostics() },
+      })
+      throw err
+    }
   }
 
   // Check if VM is running
@@ -316,9 +437,14 @@ async function ensureLimaReadyImpl(): Promise<void> {
 
   if (!vmRunning) {
     console.log('Starting Lima VM...')
+    addErrorBreadcrumb({ category: 'lima', message: 'Starting Lima VM' })
     try {
       await execLimactl(`start ${LIMA_VM_NAME}`)
     } catch (error) {
+      captureException(error, {
+        tags: { component: 'lima', operation: 'start-vm' },
+        extra: { limaHome, vmExists, explicitMemory, ...collectLimaDiagnostics() },
+      })
       // If start fails on a freshly created VM, delete it to avoid a zombie
       if (!vmExists) {
         console.error('Lima VM start failed after creation, cleaning up zombie VM...')
@@ -332,6 +458,7 @@ async function ensureLimaReadyImpl(): Promise<void> {
 
   // Create/update the nerdctl wrapper script
   createNerdctlWrapper()
+  addErrorBreadcrumb({ category: 'lima', message: 'ensureLimaReady completed successfully' })
 }
 
 /**

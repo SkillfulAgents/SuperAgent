@@ -89,6 +89,7 @@ function buildSettingsResponse(
     computerUse: appSettings.computerUse,
     shareAnalytics: !!appSettings.shareAnalytics,
     analyticsTargets: appSettings.analyticsTargets,
+    shareErrorReports: appSettings.shareErrorReports !== false,
   }
 }
 
@@ -144,6 +145,7 @@ settings.put('/', async (c) => {
     }
 
     // Merge new settings with current settings
+    // TODO refactor - pineapple on pizza level gross
     const newSettings: AppSettings = {
       container: {
         ...currentSettings.container,
@@ -178,6 +180,7 @@ settings.put('/', async (c) => {
       auth: body.auth !== undefined ? { ...currentSettings.auth, ...body.auth } : currentSettings.auth,
       voice: body.voice !== undefined ? { ...currentSettings.voice, ...body.voice } : currentSettings.voice,
       shareAnalytics: body.shareAnalytics !== undefined ? body.shareAnalytics : currentSettings.shareAnalytics,
+      shareErrorReports: body.shareErrorReports !== undefined ? body.shareErrorReports : currentSettings.shareErrorReports,
       computerUse: body.computerUse !== undefined
         ? { ...currentSettings.computerUse, ...body.computerUse }
         : currentSettings.computerUse,

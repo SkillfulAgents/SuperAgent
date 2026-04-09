@@ -3,6 +3,10 @@ import ReactDOM from 'react-dom/client'
 import App from './App'
 import './globals.css'
 import { initApiBaseUrl, isElectron, getPlatform } from './lib/env'
+import { initRendererErrorReporting } from './lib/error-reporting'
+
+// Initialize Sentry error reporting as early as possible
+initRendererErrorReporting()
 
 // Add vibrancy class for macOS Electron so CSS can conditionally apply transparent backgrounds
 if (isElectron() && getPlatform() === 'darwin') {

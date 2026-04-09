@@ -1,4 +1,5 @@
 import type { ContainerClient, ContainerConfig, ImagePullProgress } from './types'
+import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { DockerContainerClient } from './docker-container-client'
 import { PodmanContainerClient } from './podman-container-client'
 import { AppleContainerClient } from './apple-container-client'
@@ -133,6 +134,10 @@ export async function startRunner(runner: ContainerRunner): Promise<{ success: b
       if (error.message?.includes('already running')) {
         return { success: true, message: 'Apple Container runtime is already running.' }
       }
+      captureException(error, {
+        tags: { component: 'runtime', operation: 'start-apple-container' },
+        extra: { platform: os },
+      })
       return { success: false, message: `Failed to start Apple Container runtime: ${error.message}` }
     }
   }
@@ -432,14 +437,33 @@ export function pullImage(
 
     proc.on('close', (code) => {
       if (code === 0) {
+        addErrorBreadcrumb({ category: 'container', message: 'Image pull completed', data: { image, runner } })
         resolve()
       } else {
         const stderr = stderrChunks.join('').trim()
         const detail = stderr ? `: ${stderr.slice(-500)}` : ''
-        reject(new Error(`Image pull failed with exit code ${code}${detail}`))
+        const pullError = new Error(`Image pull failed with exit code ${code}${detail}`)
+        captureException(pullError, {
+          tags: { component: 'container', operation: 'image-pull' },
+          extra: {
+            image,
+            runner,
+            exitCode: code,
+            stderr: stderr.slice(-2000),
+            completedLayers: completedLayers.size,
+            totalLayers: allLayers.size,
+          },
+        })
+        reject(pullError)
       }
     })
-    proc.on('error', reject)
+    proc.on('error', (err) => {
+      captureException(err, {
+        tags: { component: 'container', operation: 'image-pull-spawn' },
+        extra: { image, runner },
+      })
+      reject(err)
+    })
   })
 }
 
@@ -499,10 +523,21 @@ export function buildImage(
       } else {
         const stderr = stderrChunks.join('').trim()
         const detail = stderr ? `: ${stderr.slice(-500)}` : ''
-        reject(new Error(`Image build failed with exit code ${code}${detail}`))
+        const buildError = new Error(`Image build failed with exit code ${code}${detail}`)
+        captureException(buildError, {
+          tags: { component: 'container', operation: 'image-build' },
+          extra: { image, runner, exitCode: code, stderr: stderr.slice(-2000) },
+        })
+        reject(buildError)
       }
     })
-    proc.on('error', reject)
+    proc.on('error', (err) => {
+      captureException(err, {
+        tags: { component: 'container', operation: 'image-build-spawn' },
+        extra: { image, runner },
+      })
+      reject(err)
+    })
   })
 }
 

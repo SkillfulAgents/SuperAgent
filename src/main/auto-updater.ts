@@ -1,5 +1,6 @@
 import { BrowserWindow, ipcMain, app } from 'electron'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
+import { captureException } from '@shared/lib/error-reporting'
 
 export interface UpdateStatus {
   state: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
@@ -114,6 +115,10 @@ export function registerUpdateHandlers() {
         setStatus({ state: 'not-available' })
       }
     } catch (err) {
+      captureException(err, {
+        tags: { component: 'auto-updater', operation: 'check' },
+        extra: { currentVersion: app.getVersion() },
+      })
       const message = err instanceof Error ? err.message : String(err)
       setStatus({ state: 'error', error: message })
     }
@@ -125,6 +130,10 @@ export function registerUpdateHandlers() {
       const autoUpdater = await getAutoUpdater()
       await autoUpdater.downloadUpdate()
     } catch (err) {
+      captureException(err, {
+        tags: { component: 'auto-updater', operation: 'download' },
+        extra: { currentVersion: app.getVersion(), targetVersion: currentStatus.version },
+      })
       const message = err instanceof Error ? err.message : String(err)
       setStatus({ state: 'error', error: message })
     }
@@ -176,12 +185,21 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
     })
 
     autoUpdater.on('error', (err: Error) => {
+      captureException(err, {
+        tags: { component: 'auto-updater', operation: 'runtime' },
+        extra: { currentVersion: app.getVersion(), state: currentStatus.state, suppressed: suppressErrors },
+        level: 'warning',
+      })
       if (suppressErrors) return
       setStatus({ state: 'error', error: err.message })
     })
 
     updaterReady = true
   } catch (err) {
+    captureException(err, {
+      tags: { component: 'auto-updater', operation: 'init' },
+      level: 'warning',
+    })
     console.warn('Failed to initialize auto-updater:', err)
   }
 }

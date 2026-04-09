@@ -19,6 +19,7 @@ import type {
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { getSettings } from '@shared/lib/config/settings'
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
+import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 
 const execAsync = promisify(exec)
 
@@ -422,6 +423,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       return
     }
 
+    addErrorBreadcrumb({ category: 'container', message: 'Starting container', data: { agentId: this.config.agentId } })
+
     try {
       const settings = getSettings()
       const runner = this.getRunnerShellCommand()
@@ -481,16 +484,42 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       console.log(`Started container ${stdout.trim()} on port ${port}`)
 
       // Wait for container to be healthy
+      addErrorBreadcrumb({ category: 'container', message: 'Waiting for container health check', data: { port, containerName } })
       const healthy = await this.waitForHealthy(60000)
       if (!healthy) {
         // Grab logs to help diagnose the failure
         const logs = await this.getLogs(30)
         const logsSnippet = logs ? `\n\nContainer logs:\n${logs}` : ''
-        throw new Error(`Container failed to become healthy${logsSnippet}`)
+        const healthError = new Error(`Container failed to become healthy${logsSnippet}`)
+        captureException(healthError, {
+          tags: { component: 'container', operation: 'health-check' },
+          extra: {
+            agentId: this.config.agentId,
+            containerName,
+            port,
+            image,
+            runner: settings.container.containerRunner,
+            cpu,
+            memory,
+            containerLogs: logs,
+          },
+        })
+        throw healthError
       }
 
       console.log(`Container ${containerName} is now running on port ${port}`)
     } catch (error: any) {
+      // Only capture if not already captured (health check errors are captured above)
+      if (!error.message?.includes('Container failed to become healthy')) {
+        captureException(error, {
+          tags: { component: 'container', operation: 'start' },
+          extra: {
+            agentId: this.config.agentId,
+            containerName: this.getContainerName(),
+            runner: getSettings().container.containerRunner,
+          },
+        })
+      }
       console.error('Failed to start container:', error)
       this.emit('error', error)
       throw error
@@ -524,6 +553,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       if (!stopped) {
         console.warn(`Container ${containerName} did not stop gracefully, escalating to kill`)
+        addErrorBreadcrumb({ category: 'container', message: 'Graceful stop timed out, escalating to kill', data: { containerName, agentId: this.config.agentId } })
         const killed = await Promise.race([
           execWithPathSilent(`${runner} kill ${containerName}`).then(() => true),
           new Promise<false>((resolve) => setTimeout(() => resolve(false), 5000)),
@@ -531,6 +561,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
         if (!killed) {
           console.warn(`Container ${containerName} kill also timed out, attempting force stop`)
+          captureException(new Error(`Container stop escalated to forceStop: both stop and kill timed out`), {
+            tags: { component: 'container', operation: 'stop-escalation' },
+            extra: { containerName, agentId: this.config.agentId, runner: getSettings().container.containerRunner },
+            level: 'warning',
+          })
           await this.forceStop()
           forceStopUsed = true
         }

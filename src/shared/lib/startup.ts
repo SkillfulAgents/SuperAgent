@@ -14,6 +14,8 @@ import { setupBrowserStreamProxy } from '../../main/browser-stream-proxy'
 import { setServerAnalyticsVersion } from './analytics/server-analytics'
 import { APP_VERSION } from './config/version'
 import { shutdownAC } from './computer-use/executor'
+import { initErrorReporting, setErrorReportingUser } from './error-reporting'
+import { getSettings } from './config/settings'
 
 /**
  * Initialize all background services.
@@ -23,6 +25,23 @@ import { shutdownAC } from './computer-use/executor'
  * - main/index.ts: for Electron, after SUPERAGENT_DATA_DIR is set
  */
 export async function initializeServices() {
+  // Initialize error reporting for non-Electron environments (Electron inits in main/index.ts).
+  // initErrorReporting is a no-op if already initialized, so this is safe.
+  initErrorReporting({ environment: 'web' })
+
+  // Set platform auth user identity on error reports (if logged in)
+  try {
+    const settings = getSettings()
+    if (settings.platformAuth?.token) {
+      setErrorReportingUser({
+        id: settings.platformAuth.tokenPreview,
+        email: settings.platformAuth.email ?? undefined,
+      })
+    }
+  } catch {
+    // Non-critical
+  }
+
   // Initialize server-side analytics version
   setServerAnalyticsVersion(APP_VERSION)
 

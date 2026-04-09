@@ -179,6 +179,7 @@ export interface AppSettings {
   computerUse?: ComputerUseSettings
   shareAnalytics?: boolean
   analyticsTargets?: AnalyticsTarget[]
+  shareErrorReports?: boolean
   platformAuth?: PlatformAuthSettings
 }
 
@@ -245,6 +246,7 @@ export interface GlobalSettingsResponse {
   computerUse?: ComputerUseSettings
   shareAnalytics: boolean
   analyticsTargets?: AnalyticsTarget[]
+  shareErrorReports: boolean
 }
 
 /**
@@ -355,6 +357,7 @@ export function loadSettings(): AppSettings {
         computerUse: loaded.computerUse,
         shareAnalytics: loaded.shareAnalytics ?? false,
         analyticsTargets: loaded.analyticsTargets,
+        shareErrorReports: loaded.shareErrorReports,
         platformAuth: loaded.platformAuth,
       }
     }

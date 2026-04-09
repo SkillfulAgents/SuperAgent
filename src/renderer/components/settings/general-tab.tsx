@@ -98,9 +98,25 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
         </div>
       )}
 
-      {/* Share Analytics */}
+      {/* Share Analytics & Error Reports — non-auth mode only (auth mode has these in Analytics tab) */}
       {!isAuthMode && (
-        <div className="pt-4 border-t">
+        <div className="pt-4 border-t space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <Label htmlFor="share-error-reports">Share Error Reports</Label>
+              <p className="text-xs text-muted-foreground">
+                Send error reports to help us diagnose and fix issues faster
+              </p>
+            </div>
+            <Switch
+              id="share-error-reports"
+              checked={globalSettings?.shareErrorReports !== false}
+              onCheckedChange={(checked: boolean) => {
+                updateGlobalSettings.mutate({ shareErrorReports: checked })
+              }}
+              disabled={!globalSettings}
+            />
+          </div>
           <div className="flex items-center justify-between">
             <div className="space-y-0.5">
               <Label htmlFor="share-analytics">Share Anonymous Analytics</Label>

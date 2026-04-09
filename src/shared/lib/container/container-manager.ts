@@ -13,6 +13,7 @@ import { copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
 import { messagePersister } from './message-persister'
 import { ungrabAC } from '@shared/lib/computer-use/executor'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
+import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getMountsWithHealth } from '@shared/lib/services/mount-service'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
@@ -712,6 +713,7 @@ class ContainerManager {
 
         const startResult = await startRunner(configuredRunner)
         if (startResult.success) {
+          addErrorBreadcrumb({ category: 'runtime', message: `${configuredRunner} start initiated, polling for availability` })
           // Poll for runtime to become available
           // Lima VM / WSL2 distro boot can take up to ~30s, Apple Container ~15s
           const maxPollSeconds = (configuredRunner === 'lima' || configuredRunner === 'wsl2') ? 60 : 15
@@ -727,6 +729,11 @@ class ContainerManager {
           }
 
           if (!available) {
+            const timeoutErr = new Error(`${getRunnerDisplayName(configuredRunner)} runtime failed to start within ${maxPollSeconds}s`)
+            captureException(timeoutErr, {
+              tags: { component: 'runtime', operation: 'start-timeout' },
+              extra: { runner: configuredRunner, pollSeconds: maxPollSeconds },
+            })
             this.setReadiness({
               status: 'RUNTIME_UNAVAILABLE',
               message: `${getRunnerDisplayName(configuredRunner)} runtime failed to start in time.`,
@@ -834,6 +841,10 @@ class ContainerManager {
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error)
       console.error(`[ContainerManager] Failed to ${actionLabel.toLowerCase()} image ${image}:`, errMsg)
+      captureException(error, {
+        tags: { component: 'runtime', operation: shouldBuild ? 'image-build' : 'image-pull' },
+        extra: { image, runner: effectiveRunner },
+      })
       this.setReadiness({
         status: 'ERROR',
         message: `Failed to ${actionLabel.toLowerCase()} image: ${errMsg}`,
