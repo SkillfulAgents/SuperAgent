@@ -192,6 +192,10 @@ export function useBrowserStream({
               t.targetId === data.tabs[i].targetId && t.title === data.tabs[i].title &&
               t.url === data.tabs[i].url && t.active === data.tabs[i].active
             )) return prev
+            // If a new tab appeared, Chrome may have stolen OS focus — reclaim it
+            if (data.tabs.length > prev.length && prev.length > 0) {
+              ;(window as any).electronAPI?.focusWindow?.()
+            }
             return data.tabs
           })
           setAgentActiveTargetId(prev => prev === data.activeTargetId ? prev : data.activeTargetId)

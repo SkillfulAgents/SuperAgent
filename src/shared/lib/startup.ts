@@ -15,6 +15,8 @@ import { setServerAnalyticsVersion } from './analytics/server-analytics'
 import { APP_VERSION } from './config/version'
 import { shutdownAC } from './computer-use/executor'
 import { reconcilePlatformSkillsets } from './services/platform-auth-service'
+import { initErrorReporting, setErrorReportingUser } from './error-reporting'
+import { getSettings } from './config/settings'
 
 /**
  * Initialize all background services.
@@ -24,6 +26,26 @@ import { reconcilePlatformSkillsets } from './services/platform-auth-service'
  * - main/index.ts: for Electron, after SUPERAGENT_DATA_DIR is set
  */
 export async function initializeServices() {
+  // Initialize error reporting for non-Electron environments (Electron inits in main/index.ts).
+  // initErrorReporting is a no-op if already initialized, so this is safe.
+  // Skip in dev mode — dev errors are too noisy and pollute Sentry.
+  if (process.env.NODE_ENV === 'production') {
+    initErrorReporting({ environment: 'web' })
+  }
+
+  // Set platform auth user identity on error reports (if logged in)
+  try {
+    const settings = getSettings()
+    if (settings.platformAuth?.token) {
+      setErrorReportingUser({
+        id: settings.platformAuth.tokenPreview,
+        email: settings.platformAuth.email ?? undefined,
+      })
+    }
+  } catch {
+    // Non-critical
+  }
+
   // Initialize server-side analytics version
   setServerAnalyticsVersion(APP_VERSION)
 

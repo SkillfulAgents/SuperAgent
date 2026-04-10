@@ -21,7 +21,7 @@ export function AgentList({ selectedAgentSlug, onSelectAgent }: AgentListProps) 
 
   if (error) {
     return (
-      <div className="p-4 text-sm text-destructive">
+      <div className="p-4 text-sm text-destructive select-text">
         Failed to load agents
       </div>
     )

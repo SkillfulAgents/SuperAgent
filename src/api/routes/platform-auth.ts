@@ -12,6 +12,7 @@ import {
   savePlatformAuth,
   revokePlatformToken,
 } from '@shared/lib/services/platform-auth-service'
+import { setErrorReportingUser } from '@shared/lib/error-reporting'
 
 const platformAuth = new Hono()
 
@@ -63,12 +64,22 @@ platformAuth.post('/complete', async (c) => {
     role: body.role,
   })
 
+  // Update server-side error reporting identity so Sentry events are attributable
+  setErrorReportingUser({
+    id: status.tokenPreview || undefined,
+    email: status.email || undefined,
+  })
+
   return c.json(status)
 })
 
 platformAuth.post('/revoke', async (c) => {
   const body = await c.req.json<{ clearLocal?: boolean }>().catch(() => ({} as { clearLocal?: boolean }))
   const success = await revokePlatformToken({ clearLocal: body.clearLocal })
+
+  // Clear server-side error reporting identity (falls back to tenant ID)
+  setErrorReportingUser(null)
+
   return c.json({ success })
 })
 

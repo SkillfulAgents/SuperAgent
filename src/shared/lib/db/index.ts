@@ -5,6 +5,7 @@ import * as schema from './schema'
 import fs from 'fs'
 import path from 'path'
 import { getDatabasePath, getDataDir } from '@shared/lib/config/data-dir'
+import { captureException } from '@shared/lib/error-reporting'
 
 // Run migrations on startup
 // This is safe to run on every start - it only applies pending migrations
@@ -35,12 +36,31 @@ function initDb() {
     fs.mkdirSync(dataDir, { recursive: true })
   }
 
-  _sqlite = new Database(dbPath)
-  _sqlite.pragma('journal_mode = WAL')
-  _sqlite.pragma('foreign_keys = ON')
+  try {
+    _sqlite = new Database(dbPath)
+    _sqlite.pragma('journal_mode = WAL')
+    _sqlite.pragma('foreign_keys = ON')
+  } catch (err) {
+    captureException(err, {
+      tags: { component: 'database', operation: 'open' },
+      extra: { dbPath, dataDir },
+      level: 'fatal',
+    })
+    throw err
+  }
+
   _db = drizzle(_sqlite, { schema })
 
-  migrate(_db, { migrationsFolder: getMigrationsFolder() })
+  try {
+    migrate(_db, { migrationsFolder: getMigrationsFolder() })
+  } catch (err) {
+    captureException(err, {
+      tags: { component: 'database', operation: 'migrate' },
+      extra: { dbPath, migrationsFolder: getMigrationsFolder() },
+      level: 'fatal',
+    })
+    throw err
+  }
 }
 
 export const db = new Proxy({} as BetterSQLite3Database<typeof schema>, {

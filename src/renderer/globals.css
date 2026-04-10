@@ -88,7 +88,8 @@
     user-select: none;
     -webkit-user-select: none;
   }
-  .prose, .prose *, [contenteditable], input, textarea, pre, code {
+  .prose, .prose *, [contenteditable], input, textarea, pre, code,
+  [role="alert"], [role="alert"] * {
     user-select: text;
     -webkit-user-select: text;
   }
@@ -121,7 +122,7 @@
   min-width: 0 !important;
 }
 
-/* macOS Electron vibrancy - transparent backgrounds to let native blur show through */
+/* Electron vibrancy (macOS) / acrylic (Windows) - transparent backgrounds to let native blur show through */
 .electron-vibrancy,
 .electron-vibrancy body {
   background: transparent !important;
@@ -152,6 +153,18 @@
   background: rgba(255, 255, 255, 0.1) !important;
 }
 
+/* Windows acrylic: tinted sidebar background for consistent contrast */
+.electron-vibrancy-win [data-sidebar="sidebar"] {
+  background: rgba(255, 255, 255, 0.4) !important;
+}
+.electron-vibrancy-win.dark [data-sidebar="sidebar"] {
+  background: rgba(0, 0, 0, 0.4) !important;
+}
+/* Windows reduces acrylic to opaque tint when fullscreen/maximized, so remove our extra tint */
+.electron-win-fullscreen [data-sidebar="sidebar"] {
+  background: transparent !important;
+}
+
 /* Hide all sidebar borders with vibrancy - grey lines on translucent look bad */
 .electron-vibrancy [data-sidebar="sidebar"] [data-sidebar="header"],
 .electron-vibrancy [data-sidebar="sidebar"] [data-sidebar="footer"],
@@ -177,6 +190,12 @@
 
 .app-no-drag {
   -webkit-app-region: no-drag;
+}
+
+/* Windows: pad right side of main content headers to avoid overlapping with titleBarOverlay controls */
+.electron-vibrancy-win main > div > header,
+.electron-vibrancy-win main > header {
+  padding-right: 140px;
 }
 
 /* Delivered file pill hover animation */

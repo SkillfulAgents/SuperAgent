@@ -81,6 +81,8 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     markAllSessionsInactiveForAgent: vi.fn(),
     isSessionActive: vi.fn(() => false),
     isSessionAwaitingInput: vi.fn(() => false),
+    hasActiveSessionsForAgent: vi.fn(() => false),
+    hasSessionsAwaitingInputForAgent: vi.fn(() => false),
     isSubscribed: vi.fn(() => true),
     subscribeToSession: vi.fn(),
     markSessionActive: vi.fn(),

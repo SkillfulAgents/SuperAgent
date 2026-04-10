@@ -102,7 +102,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
         {isProviderError ? (
           <ProviderErrorCard message={error} data-testid="provider-error-card" />
         ) : (
-          <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-3" data-testid="error-card">
+          <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-3 select-text" data-testid="error-card">
             <div className="flex items-center gap-2">
               <AlertTriangle className="h-4 w-4 text-destructive" />
               <span className="text-sm font-medium text-destructive">Error</span>

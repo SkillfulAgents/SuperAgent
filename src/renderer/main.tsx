@@ -3,10 +3,24 @@ import ReactDOM from 'react-dom/client'
 import App from './App'
 import './globals.css'
 import { initApiBaseUrl, isElectron, getPlatform } from './lib/env'
+import { initRendererErrorReporting } from './lib/error-reporting'
 
-// Add vibrancy class for macOS Electron so CSS can conditionally apply transparent backgrounds
-if (isElectron() && getPlatform() === 'darwin') {
+// Initialize Sentry error reporting as early as possible
+initRendererErrorReporting()
+
+// Add vibrancy class for macOS/Windows Electron so CSS can conditionally apply transparent backgrounds
+if (isElectron() && (getPlatform() === 'darwin' || getPlatform() === 'win32')) {
   document.documentElement.classList.add('electron-vibrancy')
+  if (getPlatform() === 'win32') {
+    document.documentElement.classList.add('electron-vibrancy-win')
+    // Track fullscreen state — Windows reduces acrylic opacity when maximized/fullscreen
+    window.electronAPI?.getFullScreenState().then((fs) => {
+      document.documentElement.classList.toggle('electron-win-fullscreen', fs)
+    })
+    window.electronAPI?.onFullScreenChange((fs) => {
+      document.documentElement.classList.toggle('electron-win-fullscreen', fs)
+    })
+  }
 }
 
 async function init() {

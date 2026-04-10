@@ -55,6 +55,7 @@ export interface UpdateSettingsParams {
   computerUse?: Partial<ComputerUseSettings>
   shareAnalytics?: boolean
   analyticsTargets?: AnalyticsTarget[]
+  shareErrorReports?: boolean
 }
 
 export interface UpdateSettingsError {

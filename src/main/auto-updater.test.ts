@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { app, ipcMain } from 'electron'
 import { getSettings } from '@shared/lib/config/settings'
+import { getUserSettings } from '@shared/lib/services/user-settings-service'
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const semver = require('semver')
 
@@ -16,6 +17,10 @@ vi.mock('electron', () => ({
 
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: vi.fn(() => ({ app: {} })),
+}))
+
+vi.mock('@shared/lib/services/user-settings-service', () => ({
+  getUserSettings: vi.fn(() => ({ allowPrereleaseUpdates: false })),
 }))
 
 const mockAutoUpdater = {
@@ -110,6 +115,7 @@ describe('check-for-updates', () => {
     mockAutoUpdater.allowPrerelease = false
     mockAutoUpdater.channel = undefined
     vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
+    vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
     vi.mocked(app.getVersion).mockReturnValue('0.2.5')
     await boot()
   })
@@ -127,7 +133,7 @@ describe('check-for-updates', () => {
     })
 
     it('prereleases on → single check with allowPrerelease=true', async () => {
-      vi.mocked(getSettings).mockReturnValue({ app: { allowPrereleaseUpdates: true } } as any)
+      vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: true } as any)
       setupReleases({ currentVersion: '0.2.5', latestRC: '0.2.12-rc.1', latestStable: '0.2.11' })
 
       await handlers['check-for-updates']()
@@ -173,7 +179,7 @@ describe('check-for-updates', () => {
 
   describe('RC user (prereleases on)', () => {
     beforeEach(() => {
-      vi.mocked(getSettings).mockReturnValue({ app: { allowPrereleaseUpdates: true } } as any)
+      vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: true } as any)
     })
 
     it('gets stable when stable > latest RC', async () => {
@@ -217,7 +223,7 @@ describe('check-for-updates', () => {
 
   describe('error handling', () => {
     it('RC user: prerelease check fails → falls back to stable', async () => {
-      vi.mocked(getSettings).mockReturnValue({ app: { allowPrereleaseUpdates: true } } as any)
+      vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: true } as any)
       vi.mocked(app.getVersion).mockReturnValue('0.2.8-rc.1')
 
       let callIdx = 0
@@ -236,7 +242,7 @@ describe('check-for-updates', () => {
     })
 
     it('RC user: stable check fails → keeps prerelease result', async () => {
-      vi.mocked(getSettings).mockReturnValue({ app: { allowPrereleaseUpdates: true } } as any)
+      vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: true } as any)
       vi.mocked(app.getVersion).mockReturnValue('0.2.8-rc.1')
 
       let callIdx = 0
@@ -257,7 +263,7 @@ describe('check-for-updates', () => {
     })
 
     it('RC user: both checks fail → not-available', async () => {
-      vi.mocked(getSettings).mockReturnValue({ app: { allowPrereleaseUpdates: true } } as any)
+      vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: true } as any)
       vi.mocked(app.getVersion).mockReturnValue('0.2.8-rc.1')
       mockAutoUpdater.checkForUpdates.mockRejectedValue(new Error('Network error'))
 
@@ -271,7 +277,7 @@ describe('check-for-updates', () => {
 
   describe('channel management', () => {
     beforeEach(() => {
-      vi.mocked(getSettings).mockReturnValue({ app: { allowPrereleaseUpdates: true } } as any)
+      vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: true } as any)
     })
 
     it('sets channel to prerelease channel derived from version', async () => {
@@ -323,7 +329,7 @@ describe('check-for-updates', () => {
 
   describe('consecutive checks', () => {
     beforeEach(() => {
-      vi.mocked(getSettings).mockReturnValue({ app: { allowPrereleaseUpdates: true } } as any)
+      vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: true } as any)
     })
 
     it('RC user: second check works after first (no null channel)', async () => {

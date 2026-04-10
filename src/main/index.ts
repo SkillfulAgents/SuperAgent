@@ -49,6 +49,14 @@ if (!app.isPackaged) {
 process.env.SUPERAGENT_DATA_DIR ??= app.getPath('userData')
 console.log(`Data directory: ${process.env.SUPERAGENT_DATA_DIR}`)
 
+// Initialize error reporting as early as possible (after data dir is set)
+import { initErrorReporting, captureException, flushErrorReporting } from '@shared/lib/error-reporting'
+
+// Only report errors in production builds — dev mode generates too much noise
+if (app.isPackaged) {
+  initErrorReporting({ environment: 'electron' })
+}
+
 // Register auto-update IPC handlers early (before window creation)
 // so the renderer never gets "no handler" errors, even in dev mode
 registerUpdateHandlers()
@@ -175,6 +183,15 @@ function createWindow() {
       vibrancy: 'sidebar' as const,
       visualEffectState: 'active' as const,
     }),
+    ...(process.platform === 'win32' && {
+      backgroundMaterial: 'acrylic' as const,
+      titleBarStyle: 'hidden' as const,
+      titleBarOverlay: {
+        height: 48,
+        color: '#00000000',
+        symbolColor: '#888888',
+      },
+    }),
   })
 
   // Grant microphone (and camera) permissions for the renderer.
@@ -292,6 +309,16 @@ ipcMain.handle('launch-powershell-admin', (_event, command: string) => {
       }
     })
   })
+})
+
+// IPC handler for reclaiming window focus (e.g. after Chrome steals it)
+ipcMain.on('focus-window', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    // app.focus() activates the app at the OS level (calls [NSApp activateIgnoringOtherApps:YES] on macOS),
+    // which is required to steal focus back from Chrome. mainWindow.focus() alone doesn't work cross-app.
+    app.focus({ steal: true })
+    mainWindow.focus()
+  }
 })
 
 // IPC handler for tray visibility
@@ -463,6 +490,39 @@ ipcMain.handle('create-dock-shortcut', (_event, { agentSlug, dashboardSlug, dash
 // IPC handler for setting native theme (controls vibrancy appearance on macOS)
 ipcMain.handle('set-native-theme', (_event, theme: string) => {
   nativeTheme.themeSource = theme as 'system' | 'light' | 'dark'
+
+  // Update Windows title bar overlay symbol color to match theme
+  if (process.platform === 'win32' && mainWindow) {
+    const isDark = nativeTheme.shouldUseDarkColors
+    mainWindow.setTitleBarOverlay({
+      symbolColor: isDark ? '#cccccc' : '#333333',
+      color: '#00000000',
+    })
+  }
+})
+
+// IPC handler for popping up the full app menu at a position (Windows custom title bar)
+ipcMain.handle('popup-app-menu', (_event, x: number, y: number) => {
+  const appMenu = Menu.getApplicationMenu()
+  const win = mainWindow
+  if (!appMenu || !win) return
+  // Build a nested menu with top-level items as submenus
+  const items: Electron.MenuItemConstructorOptions[] = []
+  for (const topItem of appMenu.items) {
+    if (topItem.submenu) {
+      const subItems: Electron.MenuItemConstructorOptions[] = topItem.submenu.items.map(subItem => ({
+        label: subItem.label,
+        type: subItem.type,
+        role: subItem.role as any,
+        accelerator: subItem.accelerator || undefined,
+        enabled: subItem.enabled,
+        click: subItem.click ? () => subItem.click!(subItem as any, win, {} as any) : undefined,
+      }))
+      items.push({ label: topItem.label, submenu: subItems })
+    }
+  }
+  const menu = Menu.buildFromTemplate(items)
+  menu.popup({ window: win, x, y })
 })
 
 // Handle OAuth callback URLs (macOS)
@@ -848,6 +908,8 @@ app.on('before-quit', async (event) => {
 // Handle uncaught exceptions
 process.on('uncaughtException', async (error) => {
   console.error('Uncaught exception:', error)
+  captureException(error, { tags: { type: 'uncaughtException' }, level: 'fatal' })
+  await flushErrorReporting(3000)
   await gracefulShutdown()
   app.quit()
 })
@@ -855,6 +917,8 @@ process.on('uncaughtException', async (error) => {
 // Handle unhandled promise rejections
 process.on('unhandledRejection', async (reason) => {
   console.error('Unhandled rejection:', reason)
+  captureException(reason instanceof Error ? reason : new Error(String(reason)), { tags: { type: 'unhandledRejection' }, level: 'fatal' })
+  await flushErrorReporting(3000)
   await gracefulShutdown()
   app.quit()
 })

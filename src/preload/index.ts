@@ -101,6 +101,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.removeAllListeners('open-create-agent')
   },
 
+  // Reclaim window focus (e.g. after Chrome steals it by opening a new tab)
+  focusWindow: () => {
+    ipcRenderer.send('focus-window')
+  },
+
   // Tray visibility control
   setTrayVisible: (visible: boolean): Promise<void> => {
     return ipcRenderer.invoke('set-tray-visible', visible)
@@ -124,6 +129,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Set native theme (controls vibrancy appearance on macOS)
   setNativeTheme: (theme: string): Promise<void> => {
     return ipcRenderer.invoke('set-native-theme', theme)
+  },
+
+  // Pop up the app menu at a position (Windows custom title bar)
+  popupAppMenu: (x: number, y: number): Promise<void> => {
+    return ipcRenderer.invoke('popup-app-menu', x, y)
   },
 
   // Open dashboard in a separate window
@@ -213,6 +223,7 @@ declare global {
       setBadgeCount: (count: number) => Promise<void>
       detectHostBrowser: () => Promise<{ available: boolean; browser: string | null; path: string | null }>
       setNativeTheme: (theme: string) => Promise<void>
+      popupAppMenu: (x: number, y: number) => Promise<void>
       openDashboardWindow: (agentSlug: string, dashboardSlug: string, dashboardName?: string) => Promise<void>
       showEmojiPanel: () => Promise<void>
       createDockShortcut: (agentSlug: string, dashboardSlug: string, dashboardName: string, iconPng: Uint8Array) => Promise<void>

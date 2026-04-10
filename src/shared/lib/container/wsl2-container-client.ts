@@ -6,6 +6,101 @@ import { BaseContainerClient, checkCommandAvailable, execWithPath, writeEnvFile 
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import type { ContainerConfig } from './types'
 import { getDataDir } from '@shared/lib/config/data-dir'
+import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+
+/**
+ * Collect diagnostic data about the WSL2 environment at the moment of failure.
+ */
+function collectWSL2Diagnostics(): Record<string, unknown> {
+  const diag: Record<string, unknown> = {}
+  const wsl2Home = getWSL2Home()
+
+  try {
+    // WSL version and status
+    try {
+      diag.wsl_version = execSync('wsl --version 2>&1', { encoding: 'utf-8', timeout: 5000 }).trim().replace(/\0/g, '')
+    } catch { diag.wsl_version = 'check_failed' }
+
+    try {
+      diag.wsl_status = execSync('wsl --status 2>&1', { encoding: 'utf-8', timeout: 5000 }).trim().replace(/\0/g, '')
+    } catch { diag.wsl_status = 'check_failed' }
+
+    // All distros and their states
+    try {
+      const raw = execSync('wsl --list --verbose 2>&1', { encoding: 'utf-8', timeout: 5000 }).replace(/\0/g, '')
+      const distros = parseWSLList(raw)
+      diag.all_distros = distros
+      const ours = distros.find(d => d.name === WSL2_DISTRO_NAME)
+      diag.our_distro_state = ours?.state ?? 'not_found'
+      diag.our_distro_wsl_version = ours?.version ?? 'N/A'
+    } catch { diag.all_distros = 'check_failed' }
+
+    // WSL2 home directory state
+    try {
+      diag.wsl2_home_exists = fs.existsSync(wsl2Home)
+      if (diag.wsl2_home_exists) {
+        const distroDir = path.join(wsl2Home, 'distro')
+        diag.distro_dir_exists = fs.existsSync(distroDir)
+        if (diag.distro_dir_exists) {
+          const entries = fs.readdirSync(distroDir)
+          diag.distro_dir_contents = entries
+          // Check vhdx size (the virtual disk)
+          const vhdx = entries.find(e => e.endsWith('.vhdx'))
+          if (vhdx) {
+            const stat = fs.statSync(path.join(distroDir, vhdx))
+            diag.vhdx_size_mb = Math.round(stat.size / 1048576)
+          }
+        }
+      }
+    } catch { /* ignore */ }
+
+    // Bundled rootfs availability
+    try {
+      if (process.resourcesPath) {
+        const arch = os.arch() === 'arm64' ? 'aarch64' : 'x86_64'
+        const rootfsPath = path.join(process.resourcesPath, 'wsl2', `alpine-rootfs-${arch}.tar.gz`)
+        diag.bundled_rootfs_exists = fs.existsSync(rootfsPath)
+        diag.bundled_rootfs_arch = arch
+        if (diag.bundled_rootfs_exists) {
+          diag.bundled_rootfs_size_mb = Math.round(fs.statSync(rootfsPath).size / 1048576)
+        }
+      }
+    } catch { /* ignore */ }
+
+    // Nerdctl wrapper state
+    try {
+      const wrapperPath = getWSL2NerdctlWrapperPath()
+      diag.nerdctl_wrapper_exists = fs.existsSync(wrapperPath)
+    } catch { /* ignore */ }
+
+    // Disk space on distro volume
+    try {
+      const drive = wsl2Home.substring(0, 2)
+      const wmicOut = execSync(`wmic logicaldisk where "DeviceID='${drive}'" get FreeSpace,Size /format:csv 2>nul`, { encoding: 'utf-8', timeout: 5000 })
+      const lines = wmicOut.split('\n').filter(Boolean)
+      const last = lines[lines.length - 1]?.split(',')
+      if (last && last.length >= 3) {
+        diag.disk_free_gb = Math.round(parseInt(last[1], 10) / 1073741824)
+        diag.disk_total_gb = Math.round(parseInt(last[2], 10) / 1073741824)
+      }
+    } catch { /* ignore */ }
+
+    // Windows build (WSL2 behavior varies significantly by build)
+    try {
+      diag.windows_build = execSync('cmd /c ver 2>nul', { encoding: 'utf-8', timeout: 3000 }).trim()
+    } catch { /* ignore */ }
+
+    // System memory
+    diag.system_memory_free_mb = Math.round(os.freemem() / 1048576)
+    diag.system_memory_total_mb = Math.round(os.totalmem() / 1048576)
+    diag.system_arch = os.arch()
+
+  } catch {
+    diag.diagnostic_error = 'failed to collect diagnostics'
+  }
+
+  return diag
+}
 
 export const WSL2_DISTRO_NAME = 'superagent'
 
@@ -165,6 +260,7 @@ export class WSL2ContainerClient extends BaseContainerClient {
    */
   protected async handleRunError(error: any): Promise<boolean> {
     const msg = error.message || error.stderr || String(error)
+    addErrorBreadcrumb({ category: 'wsl2', message: 'Container run error', data: { error: msg, agentId: this.config.agentId } })
     if (
       msg.includes('ENOENT') ||
       msg.includes('not found') ||
@@ -179,10 +275,18 @@ export class WSL2ContainerClient extends BaseContainerClient {
         await ensureWSL2Ready()
         return true
       } catch (err) {
+        captureException(err, {
+          tags: { component: 'wsl2', operation: 'provision' },
+          extra: { originalError: msg, agentId: this.config.agentId, ...collectWSL2Diagnostics() },
+        })
         console.error('Failed to provision WSL2 distro:', err)
         return false
       }
     }
+    captureException(error, {
+      tags: { component: 'wsl2', operation: 'container-run' },
+      extra: { agentId: this.config.agentId, ...collectWSL2Diagnostics() },
+    })
     return false
   }
 
@@ -268,6 +372,8 @@ async function ensureWSL2ReadyImpl(isRetry: boolean): Promise<void> {
   const wsl2Home = getWSL2Home()
   fs.mkdirSync(wsl2Home, { recursive: true })
 
+  addErrorBreadcrumb({ category: 'wsl2', message: 'ensureWSL2Ready started', data: { wsl2Home, isRetry } })
+
   // Check if distro exists
   let distroExists = false
   try {
@@ -280,7 +386,16 @@ async function ensureWSL2ReadyImpl(isRetry: boolean): Promise<void> {
 
   if (!distroExists) {
     console.log('Creating WSL2 distro for Superagent...')
-    await createWSL2Distro()
+    addErrorBreadcrumb({ category: 'wsl2', message: 'Creating new WSL2 distro' })
+    try {
+      await createWSL2Distro()
+    } catch (err) {
+      captureException(err, {
+        tags: { component: 'wsl2', operation: 'create-distro' },
+        extra: { wsl2Home, ...collectWSL2Diagnostics() },
+      })
+      throw err
+    }
   }
 
   // Check if distro is running
@@ -295,10 +410,15 @@ async function ensureWSL2ReadyImpl(isRetry: boolean): Promise<void> {
 
   if (!distroRunning) {
     console.log('Starting WSL2 distro...')
+    addErrorBreadcrumb({ category: 'wsl2', message: 'Starting WSL2 distro' })
     try {
       // Running any command starts the distro
       await execWSL('echo starting')
     } catch (error) {
+      captureException(error, {
+        tags: { component: 'wsl2', operation: 'start-distro' },
+        extra: { wsl2Home, distroExists, ...collectWSL2Diagnostics() },
+      })
       // If start fails on a freshly created distro, unregister to avoid a zombie
       if (!distroExists) {
         console.error('WSL2 distro start failed after creation, cleaning up...')
@@ -326,6 +446,10 @@ async function ensureWSL2ReadyImpl(isRetry: boolean): Promise<void> {
     try {
       await provisionWSL2Distro()
     } catch (error) {
+      captureException(error, {
+        tags: { component: 'wsl2', operation: 'provision' },
+        extra: { wsl2Home, isRetry, ...collectWSL2Diagnostics() },
+      })
       console.error('Re-provisioning failed, unregistering broken distro...')
       try {
         await execWithPath(`wsl --unregister ${WSL2_DISTRO_NAME}`)
@@ -360,10 +484,15 @@ async function ensureWSL2ReadyImpl(isRetry: boolean): Promise<void> {
   }
 
   if (!containerdReady) {
-    throw new Error(
+    const containerdError = new Error(
       'containerd failed to start inside WSL2 distro. ' +
       'Try running "wsl --unregister superagent" in PowerShell and restarting the app.'
     )
+    captureException(containerdError, {
+      tags: { component: 'wsl2', operation: 'containerd-start' },
+      extra: { wsl2Home, ...collectWSL2Diagnostics() },
+    })
+    throw containerdError
   }
 
   // Verify the distro can mount the Windows filesystem.
@@ -380,12 +509,18 @@ async function ensureWSL2ReadyImpl(isRetry: boolean): Promise<void> {
 
   if (!mountHealthy) {
     if (isRetry) {
-      throw new Error(
+      const mountError = new Error(
         'WSL2 distro cannot mount the Windows filesystem (/mnt/c). ' +
         'Try running "wsl --unregister superagent" in PowerShell and restarting the app.'
       )
+      captureException(mountError, {
+        tags: { component: 'wsl2', operation: 'mount-check' },
+        extra: { wsl2Home, isRetry: true, ...collectWSL2Diagnostics() },
+      })
+      throw mountError
     }
     console.warn('WSL2 distro has broken Windows filesystem mounts, recreating...')
+    addErrorBreadcrumb({ category: 'wsl2', message: 'Broken mount detected, recreating distro', level: 'warning' })
     try {
       await execWithPath(`wsl --unregister ${WSL2_DISTRO_NAME}`)
     } catch { /* best-effort cleanup */ }
@@ -394,6 +529,7 @@ async function ensureWSL2ReadyImpl(isRetry: boolean): Promise<void> {
 
   // Create/update the nerdctl wrapper script
   createWSL2NerdctlWrapper()
+  addErrorBreadcrumb({ category: 'wsl2', message: 'ensureWSL2Ready completed successfully' })
 }
 
 /**
@@ -469,6 +605,15 @@ async function provisionWSL2Distro(): Promise<void> {
     '#!/bin/sh',
     'set -e',
     '',
+    '# Fix DNS for Go-based tools (nerdctl/containerd). WSL2\'s DNS tunnel proxy',
+    '# at 10.255.255.254 has a bug (microsoft/WSL#13415) where it mangles AAAA',
+    '# queries by appending Windows search suffixes, causing Go\'s parallel',
+    '# A+AAAA resolver to fail with "no such host". single-request forces',
+    '# sequential queries to work around this. The 1.1.1.1 fallback catches',
+    '# cases where the proxy fails entirely (e.g. firewall/antivirus).',
+    'grep -q "single-request" /etc/resolv.conf 2>/dev/null || echo "options single-request" >> /etc/resolv.conf',
+    'grep -q "1.1.1.1" /etc/resolv.conf 2>/dev/null || echo "nameserver 1.1.1.1" >> /etc/resolv.conf',
+    '',
     '# Configure Alpine repositories',
     'cat > /etc/apk/repositories << "REPOS"',
     'https://dl-cdn.alpinelinux.org/alpine/v3.23/main',
@@ -484,6 +629,9 @@ async function provisionWSL2Distro(): Promise<void> {
     '# so this script is the primary mechanism for starting containerd.',
     'cat > /usr/local/bin/superagent-nerdctl << "NERDCTL_WRAPPER"',
     '#!/bin/sh',
+    '# Fix DNS for Go resolver (WSL regenerates resolv.conf on boot, so reapply)',
+    'grep -q "single-request" /etc/resolv.conf 2>/dev/null || echo "options single-request" >> /etc/resolv.conf',
+    'grep -q "1.1.1.1" /etc/resolv.conf 2>/dev/null || echo "nameserver 1.1.1.1" >> /etc/resolv.conf',
     'if ! pidof containerd > /dev/null 2>&1; then',
     '  # Use setsid to detach containerd from the shell session so it survives',
     '  # after the wsl -d ... command exits (busybox sh sends SIGHUP to bg jobs).',

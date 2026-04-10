@@ -17,13 +17,16 @@ import { useUserSettings } from './hooks/use-user-settings'
 import { useTheme } from './hooks/use-theme'
 import { useUser } from './context/user-context'
 import { useAnalyticsTracking } from './context/analytics-context'
+import { useSettings } from './hooks/use-settings'
+import { setRendererErrorReportingEnabled, setRendererErrorReportingUser } from './lib/error-reporting'
 
 function AppContent() {
   useTheme()
 
   const [wizardOpen, setWizardOpen] = useState(false)
   const { data: userSettings } = useUserSettings()
-  const { isAuthMode, isAdmin } = useUser()
+  const { data: globalSettings } = useSettings()
+  const { isAuthMode, isAdmin, user } = useUser()
   const { identify } = useAnalyticsTracking()
   const hasAutoOpened = useRef(false)
 
@@ -31,6 +34,23 @@ function AppContent() {
   useEffect(() => {
     identify()
   }, [identify])
+
+  // Sync error reporting settings
+  const shareErrorReports = globalSettings?.shareErrorReports
+  useEffect(() => {
+    if (shareErrorReports !== undefined) {
+      setRendererErrorReportingEnabled(shareErrorReports !== false)
+    }
+  }, [shareErrorReports])
+
+  // Set user identity on error reports when logged in with platform
+  useEffect(() => {
+    if (user) {
+      setRendererErrorReportingUser({ id: user.id, email: user.email })
+    } else {
+      setRendererErrorReportingUser(null)
+    }
+  }, [user])
 
   // Auto-open wizard on first launch (non-admin auth users skip — they can't configure the server)
   useEffect(() => {

@@ -1,10 +1,12 @@
-import { spawn, type ChildProcess } from 'child_process'
+import { spawn, execSync, type ChildProcess } from 'child_process'
 import fs from 'fs'
 import path from 'path'
 import net from 'net'
+import os from 'os'
 import { getDataDir, getAgentDownloadsDir } from '@shared/lib/config/data-dir'
 import { listChromeProfiles, copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo } from './types'
+import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 
 interface BrowserCandidate {
   browser: string
@@ -33,6 +35,108 @@ interface BrowserInstance {
   proxyServer: net.Server | null
   userDataDir: string
   stoppingIntentionally: boolean
+}
+
+/**
+ * Collect diagnostic data about the Chrome environment at the moment of failure.
+ * Runs quick ad-hoc checks to surface the actual root cause.
+ */
+function collectChromeDiagnostics(chromePath: string | null, port: number, userDataDir: string): Record<string, unknown> {
+  const diag: Record<string, unknown> = {}
+
+  try {
+    // Is the Chrome binary actually there and executable?
+    if (chromePath) {
+      try {
+        fs.accessSync(chromePath, fs.constants.X_OK)
+        diag.chrome_binary_exists = true
+        diag.chrome_binary_size = fs.statSync(chromePath).size
+      } catch (e: any) {
+        diag.chrome_binary_exists = false
+        diag.chrome_binary_error = e.code // ENOENT, EACCES, etc.
+      }
+    }
+
+    // Is another Chrome already running? (common cause of CDP port conflicts)
+    if (process.platform === 'darwin') {
+      try {
+        const pgrep = execSync('pgrep -f "Google Chrome" 2>/dev/null || true', { encoding: 'utf-8', timeout: 3000 }).trim()
+        const pids = pgrep.split('\n').filter(Boolean)
+        diag.other_chrome_processes = pids.length
+      } catch { diag.other_chrome_processes = 'check_failed' }
+    } else if (process.platform === 'win32') {
+      try {
+        const tasklist = execSync('tasklist /FI "IMAGENAME eq chrome.exe" /NH 2>nul', { encoding: 'utf-8', timeout: 3000 }).trim()
+        diag.other_chrome_processes = tasklist.split('\n').filter(l => l.includes('chrome.exe')).length
+      } catch { diag.other_chrome_processes = 'check_failed' }
+    }
+
+    // Is something already bound to our target port?
+    if (process.platform !== 'win32') {
+      try {
+        const lsof = execSync(`lsof -i :${port} -t 2>/dev/null || true`, { encoding: 'utf-8', timeout: 3000 }).trim()
+        diag.port_in_use_by_pids = lsof || 'none'
+      } catch { diag.port_in_use_by_pids = 'check_failed' }
+    }
+
+    // Is the user-data-dir writable? Is there a lock file from a previous crash?
+    try {
+      const lockFile = path.join(userDataDir, 'SingletonLock')
+      diag.singleton_lock_exists = fs.existsSync(lockFile)
+      if (diag.singleton_lock_exists) {
+        try {
+          diag.singleton_lock_target = fs.readlinkSync(lockFile)
+        } catch {
+          diag.singleton_lock_target = 'not_a_symlink'
+        }
+      }
+    } catch { /* ignore */ }
+
+    // Check for DevToolsActivePort file (Chrome writes this on successful CDP bind)
+    try {
+      const dtFile = path.join(userDataDir, 'DevToolsActivePort')
+      diag.devtools_active_port_exists = fs.existsSync(dtFile)
+      if (diag.devtools_active_port_exists) {
+        diag.devtools_active_port_content = fs.readFileSync(dtFile, 'utf-8').trim()
+      }
+    } catch { /* ignore */ }
+
+    // Disk space on the data dir volume
+    if (process.platform !== 'win32') {
+      try {
+        const df = execSync(`df -k "${path.dirname(userDataDir)}" | tail -1`, { encoding: 'utf-8', timeout: 3000 })
+        const parts = df.trim().split(/\s+/)
+        if (parts.length >= 4) {
+          diag.disk_free_mb = Math.round(parseInt(parts[3], 10) / 1024)
+        }
+      } catch { /* ignore */ }
+    }
+
+    // Chrome version
+    if (chromePath) {
+      if (process.platform === 'darwin') {
+        try {
+          const plistPath = path.join(path.dirname(chromePath), '..', 'Info.plist')
+          const plist = fs.readFileSync(plistPath, 'utf-8')
+          const vMatch = plist.match(/<key>CFBundleShortVersionString<\/key>\s*<string>([^<]+)<\/string>/)
+          diag.chrome_version = vMatch?.[1] ?? 'unknown'
+        } catch { diag.chrome_version = 'check_failed' }
+      } else if (process.platform === 'win32') {
+        try {
+          diag.chrome_version = execSync(`"${chromePath}" --version 2>nul`, { encoding: 'utf-8', timeout: 5000 }).trim()
+        } catch { diag.chrome_version = 'check_failed' }
+      }
+    }
+
+    // System memory pressure
+    diag.system_memory_free_mb = Math.round(os.freemem() / 1048576)
+    diag.system_memory_total_mb = Math.round(os.totalmem() / 1048576)
+
+  } catch {
+    diag.diagnostic_error = 'failed to collect diagnostics'
+  }
+
+  return diag
 }
 
 export class ChromeProvider implements HostBrowserProvider {
@@ -66,6 +170,8 @@ export class ChromeProvider implements HostBrowserProvider {
   }
 
   async launch(instanceId: string, options?: Record<string, string>, _agentId?: string): Promise<BrowserConnectionInfo> {
+    addErrorBreadcrumb({ category: 'browser', message: 'Launching host browser', data: { instanceId, platform: process.platform } })
+
     // Check if an instance already exists and its port is still open
     const existing = this.instances.get(instanceId)
     if (existing && await this.isPortOpen(existing.port)) {
@@ -79,7 +185,12 @@ export class ChromeProvider implements HostBrowserProvider {
 
     const status = this.detect()
     if (!status.available) {
-      throw new Error('No supported browser detected')
+      const err = new Error(`No supported browser detected: ${status.reason || 'unknown reason'}`)
+      captureException(err, {
+        tags: { component: 'browser', operation: 'detect' },
+        extra: { instanceId, platform: process.platform, reason: status.reason },
+      })
+      throw err
     }
 
     const port = await this.findFreePort()
@@ -131,13 +242,40 @@ export class ChromeProvider implements HostBrowserProvider {
         '--no-first-run',
         '--no-default-browser-check',
         `--user-data-dir=${userDataDir}`,
+        // Prevent Chrome from throttling rendering when the window is behind
+        // other windows. Without these, screencast frames stop flowing.
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
+        '--disable-background-timer-throttling',
+        '--disable-features=CalculateNativeWinOcclusion,WebContentsOcclusion',
         // Start with about:blank instead of chrome://newtab so agent-browser's
         // target discovery sees a trackable page and reuses it rather than
         // creating an extra tab (it filters out chrome:// URLs).
         'about:blank',
       ],
-      { detached: false, stdio: 'ignore' }
+      { detached: false, stdio: ['ignore', 'ignore', 'pipe'] }
     )
+
+    // Collect stderr for diagnostics if Chrome fails to start
+    const stderrChunks: Buffer[] = []
+    browserProcess.stderr?.on('data', (chunk: Buffer) => {
+      stderrChunks.push(chunk)
+    })
+
+    // Track early process failure so waitForPort can report a useful error
+    let earlyExitCode: number | null = null
+    const earlyExitPromise = new Promise<never>((_, reject) => {
+      browserProcess.on('error', (err) => {
+        console.error(`[ChromeProvider] Browser process error for instance ${instanceId}:`, err)
+        const stderr = Buffer.concat(stderrChunks).toString().trim()
+        reject(new Error(
+          `Failed to spawn browser: ${err.message}${stderr ? `\nChrome stderr: ${stderr}` : ''}`
+        ))
+      })
+      browserProcess.on('exit', (code) => {
+        earlyExitCode = code
+      })
+    })
 
     // Chrome on Windows ignores --remote-debugging-address=0.0.0.0 and always
     // binds its CDP port to 127.0.0.1. This means containers running inside WSL2
@@ -172,10 +310,8 @@ export class ChromeProvider implements HostBrowserProvider {
     }
     this.instances.set(instanceId, instance)
 
-    browserProcess.on('error', (err) => {
-      console.error(`[ChromeProvider] Browser process error for instance ${instanceId}:`, err)
-    })
-
+    // Now that the instance is registered, wire up the exit handler for
+    // external-close notifications (separate from the earlyExitPromise above).
     browserProcess.on('exit', (code) => {
       console.log(`[ChromeProvider] Browser for instance ${instanceId} exited with code ${code}`)
       const wasIntentional = instance.stoppingIntentionally
@@ -190,8 +326,37 @@ export class ChromeProvider implements HostBrowserProvider {
     })
 
     try {
-      await this.waitForPort(port, 15000)
+      // Race the port check against early process death / spawn errors.
+      // If Chrome crashes or fails to spawn, we get an immediate error
+      // instead of waiting the full 15s timeout.
+      await Promise.race([
+        this.waitForPort(port, 15000, () => earlyExitCode, () => Buffer.concat(stderrChunks).toString().trim()),
+        earlyExitPromise,
+      ])
     } catch (err) {
+      const stderr = Buffer.concat(stderrChunks).toString().trim()
+      // Run ad-hoc diagnostics to capture the actual root cause
+      const diagnostics = collectChromeDiagnostics(this.detectedPath, port, userDataDir)
+      captureException(err, {
+        tags: { component: 'browser', operation: 'launch' },
+        extra: {
+          instanceId,
+          port,
+          platform: process.platform,
+          arch: process.arch,
+          chromePath: this.detectedPath,
+          earlyExitCode,
+          stderr: stderr.slice(-2000),
+          userDataDir,
+          profileId,
+          spawnArgs: [
+            `--remote-debugging-port=${port}`,
+            '--remote-debugging-address=0.0.0.0',
+            `--user-data-dir=${userDataDir}`,
+          ],
+          ...diagnostics,
+        },
+      })
       await this.stop(instanceId)
       throw err
     }
@@ -270,14 +435,23 @@ export class ChromeProvider implements HostBrowserProvider {
     })
   }
 
-  private async waitForPort(port: number, timeoutMs: number): Promise<void> {
+  private async waitForPort(port: number, timeoutMs: number, getExitCode?: () => number | null, getStderr?: () => string): Promise<void> {
     const start = Date.now()
     while (Date.now() - start < timeoutMs) {
+      // If the process already exited, no point waiting for the port
+      const exitCode = getExitCode?.()
+      if (exitCode !== undefined && exitCode !== null) {
+        const stderr = getStderr?.()
+        throw new Error(
+          `Browser process exited with code ${exitCode} before debug port ${port} became available` +
+          (stderr ? `\nChrome stderr: ${stderr}` : '')
+        )
+      }
       if (await this.isPortOpen(port)) {
         return
       }
       await new Promise((r) => setTimeout(r, 500))
     }
-    throw new Error(`Browser debug port ${port} did not become available within ${timeoutMs}ms`)
+    throw new Error(`Browser debug port ${port} did not become available within ${timeoutMs}ms — the browser process may have failed to start`)
   }
 }

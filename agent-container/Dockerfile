@@ -49,7 +49,7 @@ RUN apt-get update && apt-get install -y \
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 # Install Claude Code CLI (native binary, pinned version)
-RUN curl -fsSL https://claude.ai/install.sh | bash -s 2.1.81 && \
+RUN curl -fsSL https://claude.ai/install.sh | bash -s 2.1.98 && \
     cp /root/.local/bin/claude /usr/local/bin/claude && \
     chmod 755 /usr/local/bin/claude
 
@@ -80,7 +80,7 @@ RUN apt-get update && apt-get install -y \
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 RUN npm install -g agent-browser@0.25.3 && \
     if agent-browser install 2>/dev/null; then \
-      chmod -R o+rx /root/.agent-browser 2>/dev/null || true; \
+      true; \
     else \
       npx playwright install chromium && \
       chmod -R o+rx /opt/playwright-browsers && \
@@ -108,7 +108,12 @@ RUN npm run build
 
 # Create non-root user for running Claude Code
 RUN useradd -m -s /bin/bash claude && \
-    chown -R claude:claude /app /workspace
+    chown -R claude:claude /app /workspace && \
+    if [ -d /root/.agent-browser/browsers ]; then \
+      mkdir -p /home/claude/.agent-browser && \
+      mv /root/.agent-browser/browsers /home/claude/.agent-browser/browsers && \
+      chown -R claude:claude /home/claude/.agent-browser; \
+    fi
 
 # Copy skills and settings into the user's Claude config directory (after user creation)
 COPY skills/ /home/claude/.claude/skills/
@@ -126,7 +131,7 @@ ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOME=/home/claude
 ENV AGENT_BROWSER_STREAM_PORT=9223
-ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-blink-features=AutomationControlled,--disable-features=AutomationControlled,--disable-infobars,--disable-background-timer-throttling,--disable-popup-blocking,--disable-backgrounding-occluded-windows,--disable-renderer-backgrounding,--disable-component-update"
+ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-dev-shm-usage,--disable-blink-features=AutomationControlled,--disable-features=AutomationControlled,--disable-infobars,--disable-background-timer-throttling,--disable-popup-blocking,--disable-backgrounding-occluded-windows,--disable-renderer-backgrounding,--disable-component-update"
 ENV AGENT_BROWSER_USER_AGENT="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 ENV AGENT_BROWSER_PROFILE=/workspace/.browser-profile
 ENV DISABLE_AUTOUPDATER=1

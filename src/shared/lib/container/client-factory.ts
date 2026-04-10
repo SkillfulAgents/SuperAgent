@@ -1,4 +1,5 @@
 import type { ContainerClient, ContainerConfig, ImagePullProgress } from './types'
+import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { DockerContainerClient } from './docker-container-client'
 import { PodmanContainerClient } from './podman-container-client'
 import { AppleContainerClient } from './apple-container-client'
@@ -6,7 +7,7 @@ import { LimaContainerClient, getNerdctlWrapperPath, ensureLimaReady, stopLimaVm
 import { WSL2ContainerClient, getWSL2NerdctlWrapperPath, ensureWSL2Ready, stopWSL2Distro } from './wsl2-container-client'
 import { MockContainerClient } from './mock-container-client'
 import { getSettings } from '@shared/lib/config/settings'
-import { execWithPath, spawnWithPath, AGENT_CONTAINER_PATH } from './base-container-client'
+import { BaseContainerClient, execWithPath, spawnWithPath, AGENT_CONTAINER_PATH } from './base-container-client'
 import { platform } from 'os'
 import * as fs from 'fs'
 
@@ -71,7 +72,7 @@ export function getRunnerDisplayName(runner: ContainerRunner): string {
  * Get the actual CLI command for a runner name.
  * E.g., 'apple-container' -> 'container', 'docker' -> 'docker'
  */
-function getCliCommand(runner: ContainerRunner): string {
+export function getCliCommand(runner: ContainerRunner): string {
   const entry = ALL_RUNNERS.find((r) => r.name === runner)
   if (!entry) return runner
   const cmd = typeof entry.cliCommand === 'function' ? entry.cliCommand() : entry.cliCommand
@@ -133,6 +134,10 @@ export async function startRunner(runner: ContainerRunner): Promise<{ success: b
       if (error.message?.includes('already running')) {
         return { success: true, message: 'Apple Container runtime is already running.' }
       }
+      captureException(error, {
+        tags: { component: 'runtime', operation: 'start-apple-container' },
+        extra: { platform: os },
+      })
       return { success: false, message: `Failed to start Apple Container runtime: ${error.message}` }
     }
   }
@@ -432,14 +437,33 @@ export function pullImage(
 
     proc.on('close', (code) => {
       if (code === 0) {
+        addErrorBreadcrumb({ category: 'container', message: 'Image pull completed', data: { image, runner } })
         resolve()
       } else {
         const stderr = stderrChunks.join('').trim()
         const detail = stderr ? `: ${stderr.slice(-500)}` : ''
-        reject(new Error(`Image pull failed with exit code ${code}${detail}`))
+        const pullError = new Error(`Image pull failed with exit code ${code}${detail}`)
+        captureException(pullError, {
+          tags: { component: 'container', operation: 'image-pull' },
+          extra: {
+            image,
+            runner,
+            exitCode: code,
+            stderr: stderr.slice(-2000),
+            completedLayers: completedLayers.size,
+            totalLayers: allLayers.size,
+          },
+        })
+        reject(pullError)
       }
     })
-    proc.on('error', reject)
+    proc.on('error', (err) => {
+      captureException(err, {
+        tags: { component: 'container', operation: 'image-pull-spawn' },
+        extra: { image, runner },
+      })
+      reject(err)
+    })
   })
 }
 
@@ -499,11 +523,47 @@ export function buildImage(
       } else {
         const stderr = stderrChunks.join('').trim()
         const detail = stderr ? `: ${stderr.slice(-500)}` : ''
-        reject(new Error(`Image build failed with exit code ${code}${detail}`))
+        const buildError = new Error(`Image build failed with exit code ${code}${detail}`)
+        captureException(buildError, {
+          tags: { component: 'container', operation: 'image-build' },
+          extra: { image, runner, exitCode: code, stderr: stderr.slice(-2000) },
+        })
+        reject(buildError)
       }
     })
-    proc.on('error', reject)
+    proc.on('error', (err) => {
+      captureException(err, {
+        tags: { component: 'container', operation: 'image-build-spawn' },
+        extra: { image, runner },
+      })
+      reject(err)
+    })
   })
+}
+
+// A concrete (non-abstract) subclass of BaseContainerClient
+type ConcreteContainerClientClass = (new (config: ContainerConfig) => BaseContainerClient) & typeof BaseContainerClient
+
+/**
+ * Get the concrete ContainerClient class for a given runner.
+ * Useful for calling static methods (e.g. removeOldImages) with proper dispatch.
+ */
+export function getContainerClientClass(runner: ContainerRunner): ConcreteContainerClientClass {
+  switch (runner) {
+    case 'apple-container':
+      return AppleContainerClient
+    case 'docker':
+      return DockerContainerClient
+    case 'podman':
+      return PodmanContainerClient
+    case 'lima':
+      return LimaContainerClient
+    case 'wsl2':
+      return WSL2ContainerClient
+    default:
+      console.warn(`Unknown container runner "${runner}", falling back to docker`)
+      return DockerContainerClient
+  }
 }
 
 /**
@@ -518,23 +578,8 @@ export function createContainerClient(config: ContainerConfig): ContainerClient 
   console.log('[ContainerClient] Using real container client, E2E_MOCK:', process.env.E2E_MOCK)
 
   const settings = getSettings()
-  const runner = settings.container.containerRunner as ContainerRunner
-
-  switch (runner) {
-    case 'apple-container':
-      return new AppleContainerClient(config)
-    case 'docker':
-      return new DockerContainerClient(config)
-    case 'podman':
-      return new PodmanContainerClient(config)
-    case 'lima':
-      return new LimaContainerClient(config)
-    case 'wsl2':
-      return new WSL2ContainerClient(config)
-    default:
-      console.warn(`Unknown container runner "${runner}", falling back to docker`)
-      return new DockerContainerClient(config)
-  }
+  const ClientClass = getContainerClientClass(settings.container.containerRunner as ContainerRunner)
+  return new ClientClass(config)
 }
 
 /**
