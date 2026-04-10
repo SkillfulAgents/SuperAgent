@@ -14,11 +14,13 @@ vi.mock('fs', () => ({
     mkdirSync: vi.fn(),
     writeFileSync: vi.fn(),
     unlinkSync: vi.fn(),
+    readFileSync: vi.fn(),
   },
   existsSync: vi.fn(),
   mkdirSync: vi.fn(),
   writeFileSync: vi.fn(),
   unlinkSync: vi.fn(),
+  readFileSync: vi.fn(),
 }))
 
 vi.mock('./base-container-client', () => ({
@@ -175,6 +177,11 @@ describe('ensureLimaReady', () => {
     mockedExecWithPath.mockResolvedValueOnce({ stdout: ndjson, stderr: '' })
   }
 
+  /** Mock the lima-version file so the version check doesn't trigger a recreate */
+  function mockLimaVersion(version = 'v99.0.0') {
+    mockedFs.readFileSync.mockReturnValue(version)
+  }
+
   it('creates VM and starts it when no VM exists', async () => {
     // First list: no VMs (VM exists check)
     mockLimaList([])
@@ -194,6 +201,7 @@ describe('ensureLimaReady', () => {
   })
 
   it('skips creation when VM already exists and running', async () => {
+    mockLimaVersion()
     // First list: VM exists and running
     mockLimaList([{ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 * 1024 * 1024 }])
     // Second list: still running
@@ -207,6 +215,7 @@ describe('ensureLimaReady', () => {
   })
 
   it('mutex serializes concurrent calls', async () => {
+    mockLimaVersion()
     let resolveList: ((v: any) => void) | null = null
     let callCount = 0
 
@@ -254,6 +263,7 @@ describe('ensureLimaReady', () => {
   })
 
   it('does NOT delete VM when start fails on pre-existing VM', async () => {
+    mockLimaVersion()
     // First list: VM exists
     mockLimaList([{ name: LIMA_VM_NAME, status: 'Stopped', memory: 4 * 1024 * 1024 * 1024 }])
     // Second list: still stopped
@@ -269,11 +279,35 @@ describe('ensureLimaReady', () => {
   })
 
   it('recreates VM when memory setting differs', async () => {
+    mockLimaVersion()
     mockedGetSettings.mockReturnValue({
       container: { runtimeSettings: { lima: { vmMemory: '8GiB' } } },
     } as any)
 
     // First list: VM exists with 4GiB
+    mockLimaList([{ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 * 1024 * 1024 }])
+    // stop --force
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    // delete --force
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    // createLimaVm
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    // list (running check)
+    mockLimaList([{ name: LIMA_VM_NAME, status: 'Stopped' }])
+    // start
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+
+    await ensureLimaReady()
+
+    const calls = mockedExecWithPath.mock.calls.map((c) => c[0] as string)
+    expect(calls.some((c) => c.includes('delete') && c.includes('--force'))).toBe(true)
+    expect(calls.some((c) => c.includes('create'))).toBe(true)
+  })
+
+  it('recreates VM when lima-version is older than minimum', async () => {
+    mockLimaVersion('v2.0.3')
+
+    // First list: VM exists
     mockLimaList([{ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 * 1024 * 1024 }])
     // stop --force
     mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
