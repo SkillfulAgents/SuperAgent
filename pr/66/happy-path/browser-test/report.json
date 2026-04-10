@@ -1,25 +1,17 @@
 {
   "storyId": "browser-test",
-  "passed": true,
-  "reason": "Verified that the agent can successfully execute browser operations: open browser, navigate to a URL, retrieve page title, and close browser. The response correctly identifies the page title as \"Example Domain\" when visiting https://example.com.",
-  "steps": [
-    "Navigated to http://localhost:47891 - Page loaded successfully with Super Agent interface displaying available agents including \"QA-20260408-184547-6ytg\"",
-    "Found and clicked the \"QA-20260408-184547-6ytg\" agent in the sidebar - Agent opened successfully showing chat interface with message input field",
-    "Clicked the message input field - Input field became active and ready for text entry",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message text was entered correctly in the input field",
-    "Clicked the Send message button - Message was sent successfully, agent status changed to \"working\", and new session \"Browser Navigation Page Title Check\" was created",
-    "Waited up to 180 seconds for response mentioning \"Example Domain\" - Response received within the timeout period showing the agent completed all browser operations successfully",
-    "Verified response content - Response clearly states \"The page title is Example Domain.\" confirming the agent successfully navigated to the URL and retrieved the correct page title. Tool calls shown include: Open Browser, Page Snapshot, Browser Command (get title), and Close Browser. Total execution time: 12 seconds."
-  ],
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail:  \"Example Domain\" - Response clearly states: \"The page title is \"Example Domain\". It's a simple page with a heading and a \"Learn more\" link.\" Screenshot captured showing complete response with tool call cards (Open Browser, Page Snapshot, Close Browser) all marked as completed with green checkmarks\n",
+  "steps": [],
   "bugs": [],
-  "durationMs": 91009,
-  "sessionId": "e6e0032d-77fa-4fb4-97aa-23a29a4d41e9",
+  "durationMs": 97772,
+  "sessionId": "817ea8b0-769b-46a2-b520-81424a667b8e",
   "cost": {
-    "inputTokens": 309,
-    "outputTokens": 2969,
-    "cacheCreationTokens": 38957,
-    "cacheReadTokens": 970212,
+    "inputTokens": 297,
+    "outputTokens": 8755,
+    "cacheCreationTokens": 111779,
+    "cacheReadTokens": 928106,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.160871
+    "totalCostUsd": 0.276606
   }
 }
