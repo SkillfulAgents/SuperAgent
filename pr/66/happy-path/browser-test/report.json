@@ -1,17 +1,27 @@
 {
   "storyId": "browser-test",
-  "passed": false,
-  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail:  \"Example Domain\" - Response clearly states: \"The page title is \"Example Domain\". It's a simple page with a heading and a \"Learn more\" link.\" Screenshot captured showing complete response with tool call cards (Open Browser, Page Snapshot, Close Browser) all marked as completed with green checkmarks\n",
-  "steps": [],
+  "passed": true,
+  "reason": "Successfully verified that the agent can open a browser, navigate to https://example.com, and retrieve the page title \"Example Domain\"",
+  "steps": [
+    "Navigated to http://localhost:47891 - Page loaded successfully showing Super Agent application with agents list in sidebar",
+    "Found the \"QA-20260410-175830-wmli\" agent in the sidebar - Agent was visible and clickable with \"idle\" status",
+    "Clicked on the \"QA-20260410-175830-wmli\" agent - Agent chat interface opened, showing conversation area with message input field",
+    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" into the message input field - Message was successfully entered into the textbox",
+    "Clicked the Send message button to send the message - Message was sent and agent status changed to \"working\"",
+    "Waited for agent response (initial 3 second wait) - Agent initiated browser operations, showing \"Open Browser\", \"Page Snapshot\" tool calls, and waiting for browser to load",
+    "Waited additional 10 seconds for agent to complete task - Agent completed work and returned response. Agent status changed back to \"idle\"",
+    "Verified response mentions \"Example Domain\" - Response clearly states: 'The page title is \"Example Domain\". It\\'s a simple page with a heading and a \"Learn more\" link.' Task completed in 10 seconds total",
+    "Took screenshot of completed task - Screenshot captured showing the full conversation with agent response containing \"Example Domain\" as the page title"
+  ],
   "bugs": [],
-  "durationMs": 97772,
-  "sessionId": "817ea8b0-769b-46a2-b520-81424a667b8e",
+  "durationMs": 64754,
+  "sessionId": "240f8ba0-843b-41e9-96a0-bcbf07d9b759",
   "cost": {
-    "inputTokens": 297,
-    "outputTokens": 8755,
-    "cacheCreationTokens": 111779,
-    "cacheReadTokens": 928106,
+    "inputTokens": 234,
+    "outputTokens": 8169,
+    "cacheCreationTokens": 33931,
+    "cacheReadTokens": 720153,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.276606
+    "totalCostUsd": 0.155508
   }
 }
