@@ -6,7 +6,7 @@ import { BaseContainerClient, checkCommandAvailable, execWithPath, writeEnvFile 
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import type { ContainerConfig } from './types'
 import { getDataDir } from '@shared/lib/config/data-dir'
-import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 
 /**
  * Collect diagnostic data about the WSL2 environment at the moment of failure.
@@ -415,6 +415,22 @@ async function ensureWSL2ReadyImpl(isRetry: boolean): Promise<void> {
       // Running any command starts the distro
       await execWSL('echo starting')
     } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error)
+      // HCS_E_CONNECTION_TIMEOUT means the WSL VM is stuck — a full shutdown
+      // of the WSL service usually fixes it.  Try once before giving up.
+      if (!isRetry && errMsg.includes('HCS_E_CONNECTION_TIMEOUT')) {
+        console.warn('WSL2 start timed out (HCS_E_CONNECTION_TIMEOUT), restarting WSL service and retrying...')
+        addErrorBreadcrumb({ category: 'wsl2', message: 'HCS timeout, attempting wsl --shutdown + retry' })
+        captureMessage('WSL2 HCS_E_CONNECTION_TIMEOUT — auto-recovering via wsl --shutdown', {
+          level: 'warning',
+          tags: { component: 'wsl2', operation: 'start-distro-hcs-timeout' },
+          extra: { wsl2Home, distroExists, ...collectWSL2Diagnostics() },
+        })
+        try {
+          await execWithPath('wsl --shutdown')
+        } catch { /* best-effort */ }
+        return ensureWSL2ReadyImpl(true)
+      }
       captureException(error, {
         tags: { component: 'wsl2', operation: 'start-distro' },
         extra: { wsl2Home, distroExists, ...collectWSL2Diagnostics() },
