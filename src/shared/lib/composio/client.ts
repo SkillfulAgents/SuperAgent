@@ -100,6 +100,8 @@ export interface AuthConfig {
   toolkitSlug: string
   authScheme: string
   isComposioManaged: boolean
+  status: 'ENABLED' | 'DISABLED'
+  createdAt: string
 }
 
 // API response types for POST (create) - nested structure
@@ -120,6 +122,8 @@ interface AuthConfigListItem {
   id: string
   auth_scheme: string
   is_composio_managed: boolean
+  status: 'ENABLED' | 'DISABLED'
+  created_at: string
   toolkit: {
     slug: string
     logo?: string
@@ -136,6 +140,8 @@ function mapAuthConfigCreateResponse(response: AuthConfigCreateResponse): AuthCo
     toolkitSlug: response.toolkit.slug,
     authScheme: response.auth_config.auth_scheme,
     isComposioManaged: response.auth_config.is_composio_managed,
+    status: 'ENABLED',
+    createdAt: new Date().toISOString(),
   }
 }
 
@@ -145,6 +151,8 @@ function mapAuthConfigListItem(item: AuthConfigListItem): AuthConfig {
     toolkitSlug: item.toolkit.slug,
     authScheme: item.auth_scheme,
     isComposioManaged: item.is_composio_managed,
+    status: item.status,
+    createdAt: item.created_at,
   }
 }
 
@@ -163,14 +171,18 @@ export async function listAuthConfigs(): Promise<AuthConfig[]> {
 export async function getOrCreateAuthConfig(
   providerSlug: string
 ): Promise<AuthConfig> {
-  // First, check if an auth config already exists for this provider
+  // First, check if an enabled auth config already exists for this provider
   const existing = await listAuthConfigs()
-  const existingConfig = existing.find(
-    (config) => config.toolkitSlug.toLowerCase() === providerSlug.toLowerCase()
-  )
+  const matchingConfigs = existing
+    .filter(
+      (config) =>
+        config.toolkitSlug.toLowerCase() === providerSlug.toLowerCase() &&
+        config.status !== 'DISABLED'
+    )
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
 
-  if (existingConfig) {
-    return existingConfig
+  if (matchingConfigs.length > 0) {
+    return matchingConfigs[0]
   }
 
   // Create a new auth config with Composio-managed OAuth
