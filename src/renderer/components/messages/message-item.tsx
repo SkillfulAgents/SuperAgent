@@ -124,6 +124,7 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
         {showMessageBubble && (
           <MessageContextMenu text={text || ''} onRemove={onRemoveMessage ? () => onRemoveMessage(message.id) : undefined}>
             <div
+              dir="auto"
               className={cn(
                 'rounded-lg max-w-full overflow-hidden text-foreground',
                 isUser && 'bg-zinc-100 dark:bg-zinc-800/70 px-4 py-2',
@@ -151,7 +152,7 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
 
               {/* Text content */}
               {hasText && !isSlashCommand && !isProviderErrorMessage && (
-                <div className={cn(
+                <div dir="auto" className={cn(
                   'prose prose-sm max-w-none min-w-0 break-words font-medium dark:prose-invert'
                 )}>
                   <ReactMarkdown

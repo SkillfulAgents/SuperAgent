@@ -54,6 +54,7 @@ export function ChatComposerBox({
       <div className={attachments.length > 0 ? 'mt-2' : ''}>
         <textarea
           ref={textareaRef}
+          dir="auto"
           value={value}
           onChange={onChange}
           onKeyDown={onKeyDown}
