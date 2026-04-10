@@ -14,6 +14,25 @@ try {
   // Chromium not installed (e.g., `npx playwright install` hasn't been run yet)
 }
 
+// Build a cross-platform webServer command.
+// Unix uses inline `VAR=val cmd`, Windows needs `set VAR=val && cmd`.
+const isWindows = process.platform === 'win32'
+function buildWebServerCommand() {
+  const env: Record<string, string> = {
+    SUPERAGENT_DATA_DIR: e2eDataDir,
+    E2E_MOCK: 'true',
+    PORT: '3000',
+  }
+  if (chromiumPath) env.E2E_CHROMIUM_PATH = chromiumPath
+
+  if (isWindows) {
+    const setVars = Object.entries(env).map(([k, v]) => `set "${k}=${v}"`).join(' && ')
+    return `${setVars} && node e2e/setup-e2e-data.js && npm run dev:web`
+  }
+  const inlineVars = Object.entries(env).map(([k, v]) => `${k}="${v}"`).join(' ')
+  return `${inlineVars} node e2e/setup-e2e-data.js && ${inlineVars} npm run dev:web`
+}
+
 export default defineConfig({
   testDir: './e2e',
   testIgnore: ['**/auth/**'],  // Auth tests use separate config (playwright.auth.config.ts)
@@ -64,7 +83,7 @@ export default defineConfig({
   ],
 
   webServer: {
-    command: `SUPERAGENT_DATA_DIR="${e2eDataDir}" node e2e/setup-e2e-data.js && SUPERAGENT_DATA_DIR="${e2eDataDir}" E2E_MOCK=true PORT=3000${chromiumPath ? ` E2E_CHROMIUM_PATH='${chromiumPath}'` : ''} npm run dev:web`,
+    command: buildWebServerCommand(),
     url: 'http://localhost:3000/api/settings',  // Wait for API to be ready, not just Vite
     reuseExistingServer: false,  // Always start fresh for E2E tests
     timeout: 120000,

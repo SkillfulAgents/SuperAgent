@@ -21,7 +21,7 @@ export interface HostBrowserProviderStatus {
   available: boolean
   reason?: string
   /** Chrome-specific: detected browser profiles */
-  profiles?: Array<{ id: string; name: string; avatarUrl?: string }>
+  profiles?: Array<{ id: string; name: string; avatarUrl?: string; email?: string }>
 }
 
 export interface HostBrowserProvider {

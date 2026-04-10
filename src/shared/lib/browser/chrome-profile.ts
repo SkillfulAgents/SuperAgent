@@ -26,7 +26,7 @@ export function getChromeUserDataDir(): string | null {
 /**
  * Lists Chrome profiles by reading Local State JSON.
  */
-export function listChromeProfiles(): Array<{ id: string; name: string; avatarUrl?: string }> {
+export function listChromeProfiles(): Array<{ id: string; name: string; avatarUrl?: string; email?: string }> {
   const dataDir = getChromeUserDataDir()
   if (!dataDir) return []
 
@@ -38,11 +38,29 @@ export function listChromeProfiles(): Array<{ id: string; name: string; avatarUr
     const infoCache = localState?.profile?.info_cache
     if (!infoCache || typeof infoCache !== 'object') return []
 
-    return Object.entries(infoCache).map(([id, info]) => ({
-      id,
-      name: (info as { name?: string }).name || id,
-      avatarUrl: (info as { last_downloaded_gaia_picture_url_with_size?: string }).last_downloaded_gaia_picture_url_with_size || undefined,
-    }))
+    return Object.entries(infoCache).map(([id, info]) => {
+      const email = (() => {
+        try {
+          const prefsPath = path.join(dataDir, id, 'Preferences')
+          if (!fs.existsSync(prefsPath)) return undefined
+          const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf-8'))
+          const accountInfo = prefs?.account_info
+          if (Array.isArray(accountInfo) && accountInfo.length > 0) {
+            return (accountInfo[0] as { email?: string }).email || undefined
+          }
+          return undefined
+        } catch {
+          return undefined
+        }
+      })()
+
+      return {
+        id,
+        name: (info as { name?: string }).name || id,
+        avatarUrl: (info as { last_downloaded_gaia_picture_url_with_size?: string }).last_downloaded_gaia_picture_url_with_size || undefined,
+        email,
+      }
+    })
   } catch {
     return []
   }

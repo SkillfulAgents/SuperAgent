@@ -1,30 +1,15 @@
-import { useState } from 'react'
-import { Alert, AlertDescription } from '@renderer/components/ui/alert'
+import { useState, useEffect } from 'react'
+import { RequestError } from '@renderer/components/messages/request-error'
 import { Button } from '@renderer/components/ui/button'
-import { Label } from '@renderer/components/ui/label'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@renderer/components/ui/select'
 import { ProviderApiKeyInput } from '@renderer/components/settings/provider-api-key-input'
 import { BedrockCredentialsInput } from '@renderer/components/settings/bedrock-credentials-input'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { usePlatformConnect } from '@renderer/hooks/use-platform-auth'
 import { ManualAccessKeyInput } from '@renderer/components/settings/manual-access-key-input'
-import { ChevronRight, Loader2, LogIn } from 'lucide-react'
+import { Loader2, LogIn, ChevronRight } from 'lucide-react'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 
 const PROVIDER_INSTRUCTIONS: Record<string, { steps: { text: string; link?: { href: string; label: string } }[] }> = {
-  platform: {
-    steps: [
-      { text: 'Choose Platform as your provider' },
-      { text: 'Connect your account from the Platform settings tab' },
-      { text: 'SuperAgent will use your platform token and the hosted proxy automatically' },
-    ],
-  },
   anthropic: {
     steps: [
       { text: 'Sign up for an account at', link: { href: 'https://console.anthropic.com/login', label: 'console.anthropic.com' } },
@@ -68,13 +53,35 @@ const SIMPLE_PROVIDER_KEY_CONFIG: Record<string, {
   },
 }
 
+const LLM_PROVIDER_OPTIONS: Array<{
+  id: LlmProviderId
+  label: string
+  description: string
+}> = [
+  {
+    id: 'anthropic',
+    label: 'Anthropic (Claude)',
+    description: 'Direct API access to Claude models.',
+  },
+  {
+    id: 'openrouter',
+    label: 'OpenRouter',
+    description: 'Multi-model access through a single API key.',
+  },
+  {
+    id: 'bedrock',
+    label: 'Amazon Bedrock',
+    description: 'AWS managed Claude inference with IAM or API key credentials.',
+  },
+]
+
 interface ConfigureLLMStepProps {
   mode?: 'manual' | 'platform'
   onPlatformConnected?: () => void
+  onCanProceedChange?: (canProceed: boolean) => void
 }
 
-export function ConfigureLLMStep({ mode = 'manual', onPlatformConnected }: ConfigureLLMStepProps) {
-  const [showInstructions, setShowInstructions] = useState(false)
+export function ConfigureLLMStep({ mode = 'manual', onPlatformConnected, onCanProceedChange }: ConfigureLLMStepProps) {
   const { data: settings } = useSettings()
   const updateSettings = useUpdateSettings()
   const {
@@ -93,8 +100,14 @@ export function ConfigureLLMStep({ mode = 'manual', onPlatformConnected }: Confi
   })
 
   const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
-  const providerStatus = settings?.llmProviderStatus ?? []
-  const instructions = PROVIDER_INSTRUCTIONS[activeProvider]
+  const [showInstructions, setShowInstructions] = useState<string | null>(null)
+
+  // Report to parent whether the selected provider has configured keys
+  const apiKeyStatus = (settings?.apiKeyStatus as Record<string, { isConfigured: boolean }> | undefined)
+  const activeProviderConfigured = apiKeyStatus?.[activeProvider]?.isConfigured ?? false
+  useEffect(() => {
+    onCanProceedChange?.(activeProviderConfigured)
+  }, [activeProviderConfigured, onCanProceedChange])
 
   if (mode === 'platform') {
     return (
@@ -129,14 +142,12 @@ export function ConfigureLLMStep({ mode = 'manual', onPlatformConnected }: Confi
             Connect
           </Button>
 
-          {platformError ? (
-            <Alert variant="destructive">
-              <AlertDescription>{platformError}</AlertDescription>
-            </Alert>
-          ) : null}
+          <RequestError message={platformError ?? null} />
         </div>
 
-        <ManualAccessKeyInput />
+        <div className="pt-2">
+          <ManualAccessKeyInput />
+        </div>
       </div>
     )
   }
@@ -150,114 +161,101 @@ export function ConfigureLLMStep({ mode = 'manual', onPlatformConnected }: Confi
         </p>
       </div>
 
-      <div className="space-y-2">
-        <Label>Provider</Label>
-        <Select
-          value={activeProvider}
-          onValueChange={(value) => {
-            updateSettings.mutate({ llmProvider: value as LlmProviderId })
-          }}
-        >
-          <SelectTrigger>
-            <SelectValue placeholder="Select a provider" />
-          </SelectTrigger>
-          <SelectContent>
-            {providerStatus.map((provider) => (
-              <SelectItem key={provider.id} value={provider.id}>
-                {provider.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+      <div className="space-y-3">
+        {LLM_PROVIDER_OPTIONS.map((option) => {
+          const isSelected = activeProvider === option.id
+          const instructions = PROVIDER_INSTRUCTIONS[option.id]
 
-      {activeProvider === 'bedrock' ? (
-        <BedrockCredentialsInput
-          key="bedrock"
-          showNotConfiguredAlert={false}
-        />
-      ) : activeProvider === 'platform' ? (
-        <div className="space-y-3">
-          <p className="text-sm text-muted-foreground">
-            {isConnected
-              ? `Connected to ${platformAuth?.email ?? 'Platform'}. SuperAgent will use your Platform subscription automatically.`
-              : 'Platform not connected yet. Connect now to use your Platform subscription.'}
-          </p>
-          {!isConnected ? (
-            <>
-              <Button
+          return (
+            <div
+              key={option.id}
+              className={`rounded-lg border text-left transition-colors ${
+                isSelected ? 'border-primary bg-primary/5' : 'hover:border-muted-foreground/50'
+              }`}
+            >
+              <button
                 type="button"
-                variant="outline"
-                onClick={() => {
-                  void handleConnect()
-                }}
-                disabled={isLaunching}
+                className="w-full flex items-start gap-3 p-3 text-left"
+                onClick={() => updateSettings.mutate({ llmProvider: option.id })}
               >
-                {isLaunching ? (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                ) : (
-                  <LogIn className="mr-2 h-4 w-4" />
-                )}
-                Connect Platform
-              </Button>
-              {platformError ? (
-                <Alert variant="destructive">
-                  <AlertDescription>{platformError}</AlertDescription>
-                </Alert>
-              ) : null}
-            </>
-          ) : null}
-        </div>
-      ) : (
-        <ProviderApiKeyInput
-          key={activeProvider}
-          providerId={activeProvider}
-          label={SIMPLE_PROVIDER_KEY_CONFIG[activeProvider].label}
-          placeholder={SIMPLE_PROVIDER_KEY_CONFIG[activeProvider].placeholder}
-          envVarName={SIMPLE_PROVIDER_KEY_CONFIG[activeProvider].envVarName}
-          apiKeySettingsField={SIMPLE_PROVIDER_KEY_CONFIG[activeProvider].apiKeySettingsField}
-          showNotConfiguredAlert={false}
-          showHelpText={false}
-          showRemoveButton={false}
-        />
-      )}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-sm">{option.label}</span>
+                  </div>
+                </div>
+                <div className={`mt-1 h-4 w-4 rounded-full border-2 shrink-0 flex items-center justify-center ${
+                  isSelected ? 'border-primary' : 'border-muted-foreground/40'
+                }`}>
+                  {isSelected && <div className="h-2 w-2 rounded-full bg-primary" />}
+                </div>
+              </button>
 
-      {instructions && (
-        <div className="pt-2">
-          <button
-            type="button"
-            onClick={() => setShowInstructions(!showInstructions)}
-            className="text-sm text-primary hover:underline flex items-center gap-1"
-          >
-            <ChevronRight className={`h-3 w-3 transition-transform ${showInstructions ? 'rotate-90' : ''}`} />
-            How to get started
-          </button>
-
-          {showInstructions && (
-            <div className="mt-2 p-3 rounded-md border bg-muted/30 text-sm space-y-2">
-              <ol className="list-decimal list-inside space-y-1.5 text-muted-foreground">
-                {instructions.steps.map((step, i) => (
-                  <li key={i}>
-                    {step.text}{step.link && (
-                      <>
-                        {' '}
-                        <a
-                          href={step.link.href}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-primary underline underline-offset-4"
-                        >
-                          {step.link.label}
-                        </a>
-                      </>
+              {/* Expanded settings area when selected */}
+              <div className={`grid transition-all duration-200 ease-in-out ${isSelected ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+                <div className="overflow-hidden">
+                  <div className="px-3 pb-3 pt-2">
+                    {option.id === 'bedrock' ? (
+                      <BedrockCredentialsInput
+                        key="bedrock"
+                        showNotConfiguredAlert={false}
+                      />
+                    ) : (
+                      <ProviderApiKeyInput
+                        key={option.id}
+                        providerId={option.id}
+                        label={SIMPLE_PROVIDER_KEY_CONFIG[option.id].label}
+                        placeholder={SIMPLE_PROVIDER_KEY_CONFIG[option.id].placeholder}
+                        envVarName={SIMPLE_PROVIDER_KEY_CONFIG[option.id].envVarName}
+                        apiKeySettingsField={SIMPLE_PROVIDER_KEY_CONFIG[option.id].apiKeySettingsField}
+                        showNotConfiguredAlert={false}
+                        showHelpText={false}
+                        showRemoveButton={false}
+                      />
                     )}
-                  </li>
-                ))}
-              </ol>
+
+                    {instructions && (
+                      <div className="mt-3">
+                        <button
+                          type="button"
+                          onClick={() => setShowInstructions(showInstructions === option.id ? null : option.id)}
+                          className="text-sm text-primary hover:underline flex items-center gap-1"
+                        >
+                          <ChevronRight className={`h-3 w-3 transition-transform ${showInstructions === option.id ? 'rotate-90' : ''}`} />
+                          How to get your API key
+                        </button>
+
+                        {showInstructions === option.id && (
+                          <div className="mt-2 p-2.5 rounded-md border bg-muted/30">
+                            <ol className="list-decimal list-inside space-y-1 text-xs text-muted-foreground">
+                              {instructions.steps.map((step, i) => (
+                                <li key={i}>
+                                  {step.text}{step.link && (
+                                    <>
+                                      {' '}
+                                      <a
+                                        href={step.link.href}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-primary underline underline-offset-4"
+                                      >
+                                        {step.link.label}
+                                      </a>
+                                    </>
+                                  )}
+                                </li>
+                              ))}
+                            </ol>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
-          )}
-        </div>
-      )}
+          )
+        })}
+      </div>
     </div>
   )
 }

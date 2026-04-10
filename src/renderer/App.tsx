@@ -62,20 +62,19 @@ function AppContent() {
 
   return (
     <DialogProvider onOpenWizard={() => setWizardOpen(true)}>
-      <TrayNavigationHandler>
-        <GlobalNotificationHandler />
-        <SidebarProvider className="h-screen">
-          <AppSidebar />
-          <SidebarInset className="min-w-0 h-full">
-            <MainContent />
-          </SidebarInset>
-        </SidebarProvider>
-      </TrayNavigationHandler>
-
-      <GettingStartedWizard
-        open={wizardOpen}
-        onOpenChange={setWizardOpen}
-      />
+      {wizardOpen ? (
+        <GettingStartedWizard onClose={() => setWizardOpen(false)} />
+      ) : (
+        <TrayNavigationHandler>
+          <GlobalNotificationHandler />
+          <SidebarProvider className="h-screen">
+            <AppSidebar />
+            <SidebarInset className="min-w-0 h-full">
+              <MainContent />
+            </SidebarInset>
+          </SidebarProvider>
+        </TrayNavigationHandler>
+      )}
     </DialogProvider>
   )
 }

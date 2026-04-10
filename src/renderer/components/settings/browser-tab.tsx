@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { Label } from '@renderer/components/ui/label'
 import { Input } from '@renderer/components/ui/input'
 import { Button } from '@renderer/components/ui/button'
-import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import {
   Select,
   SelectContent,
@@ -14,7 +13,8 @@ import { Switch } from '@renderer/components/ui/switch'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { apiFetch } from '@renderer/lib/api'
-import { AlertTriangle, Check, Loader2 } from 'lucide-react'
+import { Check, Loader2 } from 'lucide-react'
+import { RequestError } from '@renderer/components/messages/request-error'
 import type { HostBrowserProviderId, BrowserbaseStealthOs, LlmProviderId } from '@shared/lib/config/settings'
 import { ChromeProfileSelect } from '@renderer/components/settings/chrome-profile-select'
 
@@ -444,7 +444,7 @@ export function BrowserbaseSettings({
         <Input
           id="browserbase-api-key"
           type="password"
-          placeholder={hasSavedCredentials ? '••••••••••••••••' : 'Enter your Browserbase API key'}
+          placeholder={hasSavedCredentials ? '••••••••••••••••' : 'bb-api-...'}
           value={apiKey}
           onChange={(e) => onApiKeyChange(e.target.value)}
           disabled={disabled || isValidating}
@@ -456,35 +456,14 @@ export function BrowserbaseSettings({
         <Input
           id="browserbase-project-id"
           type="text"
-          placeholder={hasSavedCredentials ? '••••••••••••••••' : 'Enter your Browserbase project ID'}
+          placeholder={hasSavedCredentials ? '••••••••••••••••' : 'bb-proj-...'}
           value={projectId}
           onChange={(e) => onProjectIdChange(e.target.value)}
           disabled={disabled || isValidating}
         />
       </div>
 
-      {validationResult && (
-        <Alert variant={validationResult.valid ? 'default' : 'destructive'}>
-          {validationResult.valid ? (
-            <Check className="h-4 w-4" />
-          ) : (
-            <AlertTriangle className="h-4 w-4" />
-          )}
-          <AlertDescription>
-            {validationResult.valid
-              ? 'Credentials are valid and have been saved.'
-              : validationResult.error || 'Invalid credentials'}
-          </AlertDescription>
-        </Alert>
-      )}
-
-      <p className="text-xs text-muted-foreground">
-        {hasSavedCredentials
-          ? 'Your credentials are saved locally. Enter new values to replace them.'
-          : 'Get your API key and project ID from the Browserbase dashboard.'}
-      </p>
-
-      <div className="flex gap-2">
+      <div className="flex justify-end gap-2">
         {hasInput && (
           <Button size="sm" onClick={onValidateAndSave} disabled={isValidating}>
             {isValidating ? (
@@ -493,7 +472,7 @@ export function BrowserbaseSettings({
                 Validating...
               </>
             ) : (
-              'Save & Validate'
+              'Connect'
             )}
           </Button>
         )}
@@ -508,6 +487,16 @@ export function BrowserbaseSettings({
           </Button>
         )}
       </div>
+
+      {validationResult && !validationResult.valid && (
+        <RequestError message={validationResult.error || 'Invalid credentials'} />
+      )}
+      {validationResult?.valid && (
+        <p className="text-xs text-green-600 dark:text-green-400 flex items-center gap-1">
+          <Check className="h-3 w-3" />
+          Credentials saved
+        </p>
+      )}
     </div>
   )
 }

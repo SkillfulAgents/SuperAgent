@@ -201,7 +201,7 @@ export interface HostBrowserProviderInfo {
   name: string
   available: boolean
   reason?: string
-  profiles?: Array<{ id: string; name: string; avatarUrl?: string }>
+  profiles?: Array<{ id: string; name: string; avatarUrl?: string; email?: string }>
 }
 
 export interface HostBrowserStatus {

@@ -1,50 +1,50 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from '@renderer/components/ui/dialog'
 import { Button } from '@renderer/components/ui/button'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import {
-  Check,
   ChevronRight,
   ChevronLeft,
 } from 'lucide-react'
+import { isElectron, getPlatform } from '@renderer/lib/env'
 import { WelcomeStep } from './welcome-step'
 import { ConfigureLLMStep } from './configure-llm-step'
 import { DockerSetupStep } from './docker-setup-step'
 import { BrowserSetupStep } from './browser-setup-step'
 import { ComposioStep } from './composio-step'
 import { CreateAgentStep } from './create-agent-step'
+import { PrivacyStep } from './privacy-step'
+import { RibbonWave } from './ribbon-wave'
 
-type WizardStepId = 'llm' | 'browser' | 'composio' | 'runtime' | 'agent'
+type WizardStepId = 'llm' | 'browser' | 'composio' | 'runtime' | 'privacy' | 'agent'
 
 const MANUAL_STEPS: { id: WizardStepId; label: string; skippable: boolean }[] = [
   { id: 'llm', label: 'LLM', skippable: false },
-  { id: 'browser', label: 'Browser', skippable: true },
+  { id: 'browser', label: 'Browser', skippable: false },
   { id: 'composio', label: 'Composio', skippable: true },
-  { id: 'runtime', label: 'Runtime', skippable: true },
+  { id: 'runtime', label: 'Runtime', skippable: false },
+  { id: 'privacy', label: 'Privacy', skippable: false },
   { id: 'agent', label: 'Agent', skippable: true },
 ]
 
 const PLATFORM_STEPS: { id: WizardStepId; label: string; skippable: boolean }[] = [
   { id: 'llm', label: 'Platform', skippable: false },
-  { id: 'browser', label: 'Browser', skippable: true },
-  { id: 'runtime', label: 'Runtime', skippable: true },
+  { id: 'browser', label: 'Browser', skippable: false },
+  { id: 'runtime', label: 'Runtime', skippable: false },
+  { id: 'privacy', label: 'Privacy', skippable: false },
   { id: 'agent', label: 'Agent', skippable: true },
 ]
 
 interface GettingStartedWizardProps {
-  open: boolean
-  onOpenChange: (open: boolean) => void
+  onClose: () => void
 }
 
-export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizardProps) {
+export function GettingStartedWizard({ onClose }: GettingStartedWizardProps) {
   const [currentStep, setCurrentStep] = useState(0)
   const [welcomePath, setWelcomePath] = useState<'platform' | 'manual' | null>(null)
   const [composioCanProceed, setComposioCanProceed] = useState(false)
+  const [runtimeCanProceed, setRuntimeCanProceed] = useState(false)
+  const [browserCanProceed, setBrowserCanProceed] = useState(true)
+  const [llmCanProceed, setLlmCanProceed] = useState(false)
   const composioSaveRef = useRef<(() => Promise<void>) | null>(null)
   // Track whether we're restoring progress to avoid a redundant persist on resume
   const isRestoringRef = useRef(false)
@@ -59,18 +59,12 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
 
   const activeStep = welcomePath ? steps[currentStep] : null
 
-  // Resume at last known step on open, or reset to beginning.
-  // Depends on both `open` and `userSettings` so that if settings load after
-  // the dialog is already open, we still resume correctly.
+  // Resume at last known step on mount, or reset to beginning.
   const hasRestoredRef = useRef(false)
   useEffect(() => {
-    if (!open) {
-      hasRestoredRef.current = false
-      return
-    }
     // Wait for settings to load before deciding where to start
     if (!userSettings) return
-    // Only restore once per open
+    // Only restore once per mount
     if (hasRestoredRef.current) return
     hasRestoredRef.current = true
 
@@ -83,7 +77,6 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
         setWelcomePath(progress.path)
         setCurrentStep(idx)
       } else {
-        // stepId not found (e.g., removed across versions) — start fresh
         setCurrentStep(0)
         setWelcomePath(null)
       }
@@ -91,7 +84,7 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
       setCurrentStep(0)
       setWelcomePath(null)
     }
-  }, [open, userSettings])
+  }, [userSettings])
 
   // Persist progress on every step change
   useEffect(() => {
@@ -110,7 +103,7 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
   const handleFinish = async () => {
     // Use null (not undefined) so it survives JSON serialization and actually clears the field
     await updateUserSettings.mutateAsync({ setupCompleted: true, onboardingProgress: null })
-    onOpenChange(false)
+    onClose()
   }
 
   const handleComposioNext = async () => {
@@ -151,69 +144,62 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
     })
   }
 
+  const isAgentStep = activeStep?.id === 'agent'
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[600px] p-0 gap-0 [&>button]:hidden" data-testid="wizard-dialog" onPointerDownOutside={(e) => e.preventDefault()}>
-        <DialogTitle className="sr-only">Getting Started</DialogTitle>
-        <DialogDescription className="sr-only">
-          Set up Superagent for the first time
-        </DialogDescription>
+    <div className="flex h-svh bg-background overflow-hidden" data-testid="wizard-container">
+      {/* Draggable title bar region for Electron */}
+      {isElectron() && <div className="absolute top-0 left-0 right-0 h-12 app-drag-region z-10" />}
 
-        {/* Progress indicator */}
-        {welcomePath && (
-          <div className="flex items-center justify-center gap-0 px-8 pt-6 pb-2">
-            {steps.map((step, i) => (
-              <div key={i} className="flex items-center">
-                <div className="flex flex-col items-center">
-                  <div
-                    className={`flex items-center justify-center w-8 h-8 rounded-full text-xs font-medium border-2 transition-colors ${
-                      i < currentStep
-                        ? 'bg-primary border-primary text-primary-foreground'
-                        : i === currentStep
-                          ? 'border-primary text-primary bg-primary/10'
-                          : 'border-muted-foreground/30 text-muted-foreground'
-                    }`}
-                  >
-                    {i < currentStep ? <Check className="h-4 w-4" /> : i + 1}
-                  </div>
-                  <span className={`text-[10px] mt-1 ${i === currentStep ? 'text-foreground font-medium' : 'text-muted-foreground'}`}>
-                    {step.label}
-                  </span>
-                </div>
-                {i < steps.length - 1 && (
-                  <div
-                    className={`w-12 h-0.5 mx-1 mb-4 ${
-                      i < currentStep ? 'bg-primary' : 'bg-muted-foreground/30'
-                    }`}
-                  />
-                )}
-              </div>
-            ))}
-          </div>
-        )}
+      {/* Left column: wizard content */}
+      <div className={`relative flex flex-col h-svh transition-[width] duration-500 ease-in-out ${isAgentStep ? 'w-full' : 'w-full lg:w-1/2'}`}>
+        <h1 className="sr-only">Getting Started</h1>
 
-        {/* Step content */}
-        <div className="px-6 py-4 min-h-[320px]" data-testid="wizard-step-content" data-step={currentStep}>
-          {!welcomePath && (
-            <WelcomeStep
-              onChoosePlatform={handleWelcomePlatformPath}
-              onContinueToManualSetup={handleWelcomeManualSetup}
-            />
-          )}
-          {activeStep?.id === 'llm' && (
-            <ConfigureLLMStep
-              mode={welcomePath === 'platform' ? 'platform' : 'manual'}
-              onPlatformConnected={handlePlatformConnected}
-            />
-          )}
-          {activeStep?.id === 'browser' && <BrowserSetupStep />}
-          {activeStep?.id === 'composio' && <ComposioStep onCanProceedChange={setComposioCanProceed} saveRef={composioSaveRef} />}
-          {activeStep?.id === 'runtime' && <DockerSetupStep />}
-          {activeStep?.id === 'agent' && <CreateAgentStep />}
+        {/*
+          TODO(onboarding-v2): REMOVE BEFORE PR.
+          Debug-only forward/back controls for the manual and platform flows.
+          These let devs jump between steps without completing real actions.
+          Delete this entire <div> block and verify no imports are left dangling.
+        */}
+        <div className="flex flex-col gap-1 p-2 absolute top-2 right-2 opacity-40 hover:opacity-100 transition-opacity app-no-drag z-20">
+          {(['manual', 'platform'] as const).map(flow => (
+            <div key={flow} className="flex items-center gap-1">
+              <button onClick={() => { if (welcomePath === flow && currentStep === 0) setWelcomePath(null); else if (welcomePath === flow) setCurrentStep(s => s - 1); else { setWelcomePath(flow); setCurrentStep(0) } }} className="p-1 rounded hover:bg-black/10 text-xs">‹</button>
+              <span className="text-xs tabular-nums w-24 text-center">{welcomePath === flow ? `${flow} ${currentStep + 1}/${(flow === 'platform' ? PLATFORM_STEPS : MANUAL_STEPS).length}` : flow}</span>
+              <button onClick={() => { if (welcomePath !== flow) { setWelcomePath(flow); setCurrentStep(0) } else setCurrentStep(s => Math.min(s + 1, (flow === 'platform' ? PLATFORM_STEPS : MANUAL_STEPS).length - 1)) }} className="p-1 rounded hover:bg-black/10 text-xs">›</button>
+            </div>
+          ))}
         </div>
 
-        {/* Navigation buttons */}
-        <div className="flex items-center justify-between px-6 py-4 border-t">
+        <div className={`flex flex-1 flex-col justify-center py-10 w-full mx-auto transition-[max-width] duration-500 ${isAgentStep ? 'max-w-[560px]' : 'max-w-[480px]'}`}>
+          <div className="w-full">
+
+          {/* Step content */}
+          <div className="min-h-[320px]" data-testid="wizard-step-content" data-step={currentStep}>
+            {!welcomePath && (
+              <WelcomeStep
+                onChoosePlatform={handleWelcomePlatformPath}
+                onContinueToManualSetup={handleWelcomeManualSetup}
+              />
+            )}
+            {activeStep?.id === 'llm' && (
+              <ConfigureLLMStep
+                mode={welcomePath === 'platform' ? 'platform' : 'manual'}
+                onPlatformConnected={handlePlatformConnected}
+                onCanProceedChange={setLlmCanProceed}
+              />
+            )}
+            {activeStep?.id === 'browser' && <BrowserSetupStep onCanProceedChange={setBrowserCanProceed} />}
+            {activeStep?.id === 'composio' && <ComposioStep onCanProceedChange={setComposioCanProceed} saveRef={composioSaveRef} />}
+            {activeStep?.id === 'runtime' && <DockerSetupStep onCanProceedChange={setRuntimeCanProceed} />}
+            {activeStep?.id === 'privacy' && <PrivacyStep />}
+            {activeStep?.id === 'agent' && <CreateAgentStep onAgentCreated={handleFinish} />}
+          </div>
+          </div>
+        </div>
+
+        {/* Navigation buttons — hidden on welcome page */}
+        <div className={`flex items-center justify-between pb-10 w-full mx-auto transition-[max-width] duration-500 ${isAgentStep ? 'max-w-[560px]' : 'max-w-[480px]'} ${!welcomePath ? 'hidden' : ''}`}>
           {!welcomePath ? (
             <div />
           ) : (
@@ -247,16 +233,13 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
                 data-testid="wizard-skip"
               >
                 Skip
+                {isLastStep && <ChevronRight className="h-4 w-4 ml-1" />}
               </Button>
             )}
-            {!welcomePath ? null : isLastStep ? (
-              <Button onClick={handleFinish} data-testid="wizard-finish">
-                Finish
-              </Button>
-            ) : (
+            {!welcomePath || isLastStep ? null : activeStep?.id === 'llm' && welcomePath === 'platform' ? null : (
               <Button
                 onClick={activeStep?.id === 'composio' ? handleComposioNext : () => setCurrentStep((s) => s + 1)}
-                disabled={activeStep?.id === 'composio' && !composioCanProceed}
+                disabled={(activeStep?.id === 'llm' && !llmCanProceed) || (activeStep?.id === 'composio' && !composioCanProceed) || (activeStep?.id === 'runtime' && !runtimeCanProceed) || (activeStep?.id === 'browser' && !browserCanProceed)}
                 data-testid="wizard-next"
               >
                 Next
@@ -265,7 +248,12 @@ export function GettingStartedWizard({ open, onOpenChange }: GettingStartedWizar
             )}
           </div>
         </div>
-      </DialogContent>
-    </Dialog>
+      </div>
+
+      {/* Right column: cover image — slides out on the agent step */}
+      <div className={`hidden lg:block p-4 shrink-0 transition-all duration-500 ease-in-out ${isAgentStep ? 'w-0 translate-x-full opacity-0 p-0' : 'w-1/2 translate-x-0 opacity-100'} ${getPlatform() === 'win32' ? 'pt-12' : ''}`}>
+        <RibbonWave className="h-full w-full rounded-xl" />
+      </div>
+    </div>
   )
 }

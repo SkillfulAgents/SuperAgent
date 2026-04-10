@@ -1,41 +1,44 @@
 import { useState } from 'react'
-import { KeyRound, Loader2 } from 'lucide-react'
+import { Loader2 } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { Label } from '@renderer/components/ui/label'
+import { RequestError } from '@renderer/components/messages/request-error'
 import { useSavePlatformAccessKey } from '@renderer/hooks/use-platform-auth'
 
-export function ManualAccessKeyInput({ className }: { className?: string }) {
+export function ManualAccessKeyInput({ className, prefixText }: { className?: string; prefixText?: string }) {
   const [showInput, setShowInput] = useState(false)
   const [key, setKey] = useState('')
   const saveKey = useSavePlatformAccessKey()
 
   if (!showInput) {
     return (
-      <button
-        type="button"
-        className={`text-xs text-muted-foreground hover:text-foreground hover:underline ${className ?? ''}`}
-        onClick={() => setShowInput(true)}
-      >
-        <KeyRound className="inline mr-1 h-3 w-3" />
-        Add access key manually
-      </button>
+      <div className={className ?? ''}>
+        {prefixText && <>{prefixText}{' '}</>}
+        <button
+          type="button"
+          className="text-sm underline underline-offset-2 hover:text-foreground transition-colors"
+          onClick={() => setShowInput(true)}
+        >
+          Add access key
+        </button>
+      </div>
     )
   }
 
   return (
-    <div className={`space-y-2 ${className ?? ''}`}>
-      <Label className="text-xs">Paste access key</Label>
-      <div className="flex gap-2">
+    <div className={className ?? ''}>
+      <div className="flex items-center gap-2">
         <Input
           value={key}
           onChange={(e) => setKey(e.target.value)}
-          placeholder="plat_sa_..."
-          className="font-mono text-xs"
+          placeholder="Paste account key"
+          className="font-mono text-xs h-8 flex-1"
+          autoFocus
         />
         <Button
           size="sm"
+          className="h-8"
           disabled={!key.trim() || saveKey.isPending}
           onClick={() => {
             saveKey.mutate(key.trim(), {
@@ -49,9 +52,7 @@ export function ManualAccessKeyInput({ className }: { className?: string }) {
           {saveKey.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Save'}
         </Button>
       </div>
-      {saveKey.isError && (
-        <p className="text-xs text-destructive">{saveKey.error.message}</p>
-      )}
+      <RequestError message={saveKey.isError ? saveKey.error.message : null} className="mt-2" />
     </div>
   )
 }

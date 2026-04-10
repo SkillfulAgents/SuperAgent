@@ -578,6 +578,46 @@ agents.post('/', async (c) => {
   }
 })
 
+// POST /api/agents/generate-name - Generate an agent name from a prompt using a lightweight LLM
+agents.post('/generate-name', async (c) => {
+  try {
+    const body = await c.req.json()
+    const { prompt } = body as { prompt?: string }
+
+    if (!prompt?.trim()) {
+      return c.json({ error: 'Prompt is required' }, 400)
+    }
+
+    const anthropic = getLlmClient()
+    const response = await withRetry(() =>
+      anthropic.messages.create({
+        model: getSummarizerModel(),
+        max_tokens: 50,
+        messages: [
+          {
+            role: 'user',
+            content: `Generate a short, descriptive agent name (2-4 words max) based on what the user wants the agent to do. The user's description is:
+
+"${prompt.trim()}"
+
+Respond with ONLY the agent name, nothing else. No quotes, no explanation.`,
+          },
+        ],
+      })
+    )
+
+    const name = extractTextFromLlmResponse(response)?.trim()
+    if (!name) {
+      return c.json({ error: 'Failed to generate name' }, 500)
+    }
+
+    return c.json({ name })
+  } catch (error) {
+    console.error('Failed to generate agent name:', error)
+    return c.json({ error: 'Failed to generate name' }, 500)
+  }
+})
+
 // GET /api/agents/:id - Get a single agent
 agents.get('/:id', AgentRead(), async (c) => {
   try {
