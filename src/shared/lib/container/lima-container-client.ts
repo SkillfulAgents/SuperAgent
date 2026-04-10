@@ -111,6 +111,11 @@ function collectLimaDiagnostics(): Record<string, unknown> {
 
 export const LIMA_VM_NAME = 'superagent'
 
+// Minimum Lima version that includes host-to-guest time sync (lima-vm/lima#4527).
+// VMs created with older versions have a guest agent that lacks the SyncTime gRPC
+// call, causing clock drift after macOS sleep/wake.
+const MIN_LIMA_VM_VERSION = 'v2.1.1'
+
 /** Cached macOS major version */
 let cachedMacOSVersion: number | null | undefined = undefined
 
@@ -401,9 +406,30 @@ async function ensureLimaReadyImpl(): Promise<void> {
     addErrorBreadcrumb({ category: 'lima', message: 'limactl list failed', level: 'warning', data: { error: String(err) } })
   }
 
-  // Recreate VM only if the user has explicitly set a memory preference and it differs
-  if (vmExists && explicitMemory && vmMemory && vmMemory !== explicitMemory) {
+  // Check if existing VM was created with an older Lima that lacks time sync support
+  let needsRecreate = false
+  if (vmExists) {
+    try {
+      const versionFile = path.join(limaHome, LIMA_VM_NAME, 'lima-version')
+      const vmVersion = fs.readFileSync(versionFile, 'utf-8').trim()
+      if (vmVersion < MIN_LIMA_VM_VERSION) {
+        console.log(`Lima VM was created with ${vmVersion} (< ${MIN_LIMA_VM_VERSION}), recreating for time sync support...`)
+        needsRecreate = true
+      }
+    } catch {
+      // Missing lima-version file — very old VM, recreate
+      console.log('Lima VM missing version file, recreating...')
+      needsRecreate = true
+    }
+  }
+
+  // Recreate VM if the user has explicitly set a memory preference and it differs
+  if (vmExists && !needsRecreate && explicitMemory && vmMemory && vmMemory !== explicitMemory) {
     console.log(`Lima VM memory mismatch (current: ${vmMemory}, desired: ${explicitMemory}), recreating...`)
+    needsRecreate = true
+  }
+
+  if (vmExists && needsRecreate) {
     try {
       await execLimactl(`stop ${LIMA_VM_NAME} --force`)
     } catch { /* may not be running */ }

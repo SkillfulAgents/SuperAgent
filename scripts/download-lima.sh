@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-LIMA_VERSION="2.0.3"
+LIMA_VERSION="2.1.1"
 ALPINE_VERSION="3.23.3"
 ARCH="${1:-$(uname -m)}"
 
