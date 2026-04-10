@@ -49,7 +49,7 @@ RUN apt-get update && apt-get install -y \
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 # Install Claude Code CLI (native binary, pinned version)
-RUN curl -fsSL https://claude.ai/install.sh | bash -s 2.1.81 && \
+RUN curl -fsSL https://claude.ai/install.sh | bash -s 2.1.98 && \
     cp /root/.local/bin/claude /usr/local/bin/claude && \
     chmod 755 /usr/local/bin/claude
 
