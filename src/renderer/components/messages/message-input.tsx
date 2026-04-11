@@ -21,9 +21,11 @@ interface MessageInputProps {
   sessionId: string
   agentSlug: string
   onMessageSent?: (content: string) => void
+  initialDraft?: string
+  onDraftChange?: (draft: string) => void
 }
 
-export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInputProps) {
+export function MessageInput({ sessionId, agentSlug, onMessageSent, initialDraft, onDraftChange }: MessageInputProps) {
   useRenderTracker('MessageInput')
   const { canUseAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
@@ -51,11 +53,13 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
       [uploadFolder, sessionId, agentSlug]
     ),
     onSubmit: useCallback(async (content: string) => {
+      onDraftChange?.('')
       onMessageSent?.(content)
       await sendMessage.mutateAsync({ sessionId, agentSlug, content })
       track('message_sent')
-    }, [onMessageSent, sendMessage, sessionId, agentSlug, track]),
+    }, [onDraftChange, onMessageSent, sendMessage, sessionId, agentSlug, track]),
     submitDisabled: sendMessage.isPending || isActive || isOffline,
+    initialMessage: initialDraft,
   })
 
   // Extract the slash command prefix being typed (e.g. "co" from "/co")
@@ -87,6 +91,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
   const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value
     composer.setMessage(value)
+    onDraftChange?.(value)
 
     // Open slash menu when input is "/" followed by optional non-space chars (still typing command)
     if (/^\/\S*$/.test(value) && slashCommands.length > 0) {
@@ -109,7 +114,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent }: MessageInp
         }).catch(() => {})
       }
     }
-  }, [composer, slashCommands.length, isAuthMode, agentSlug, sessionId])
+  }, [composer, onDraftChange, slashCommands.length, isAuthMode, agentSlug, sessionId])
 
   const handleInterrupt = async () => {
     if (interruptSession.isPending) return
