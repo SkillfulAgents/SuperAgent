@@ -38,6 +38,34 @@ interface BrowserInstance {
 }
 
 /**
+ * Look for a recent Chrome crash report on macOS (DiagnosticReports).
+ * Returns the first few KB of the most recent .ips/.crash file written
+ * in the last 30 seconds, or null if none found.
+ */
+function collectRecentCrashReport(): string | null {
+  if (process.platform !== 'darwin') return null
+  try {
+    const dirs = [
+      path.join(os.homedir(), 'Library/Logs/DiagnosticReports'),
+      '/Library/Logs/DiagnosticReports',
+    ]
+    const cutoff = Date.now() - 30_000
+    for (const dir of dirs) {
+      if (!fs.existsSync(dir)) continue
+      const files = fs.readdirSync(dir)
+        .filter(f => /Google Chrome/i.test(f) && /\.(ips|crash)$/.test(f))
+        .map(f => ({ name: f, mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
+        .filter(f => f.mtime > cutoff)
+        .sort((a, b) => b.mtime - a.mtime)
+      if (files.length > 0) {
+        return fs.readFileSync(path.join(dir, files[0].name), 'utf-8').slice(0, 4000)
+      }
+    }
+  } catch { /* best-effort */ }
+  return null
+}
+
+/**
  * Collect diagnostic data about the Chrome environment at the moment of failure.
  * Runs quick ad-hoc checks to surface the actual root cause.
  */
@@ -256,14 +284,19 @@ export class ChromeProvider implements HostBrowserProvider {
       { detached: false, stdio: ['ignore', 'ignore', 'pipe'] }
     )
 
+    const spawnedAt = Date.now()
+
     // Collect stderr for diagnostics if Chrome fails to start
     const stderrChunks: Buffer[] = []
     browserProcess.stderr?.on('data', (chunk: Buffer) => {
       stderrChunks.push(chunk)
     })
 
-    // Track early process failure so waitForPort can report a useful error
-    let earlyExitCode: number | null = null
+    // Track early process failure so waitForPort can report a useful error.
+    // Initialise as `undefined` so we can distinguish "not exited yet" from
+    // "exited with signal" (which Node reports as code === null).
+    let earlyExitCode: number | null | undefined = undefined
+    let earlyExitSignal: string | null = null
     const earlyExitPromise = new Promise<never>((_, reject) => {
       browserProcess.on('error', (err) => {
         console.error(`[ChromeProvider] Browser process error for instance ${instanceId}:`, err)
@@ -272,8 +305,14 @@ export class ChromeProvider implements HostBrowserProvider {
           `Failed to spawn browser: ${err.message}${stderr ? `\nChrome stderr: ${stderr}` : ''}`
         ))
       })
-      browserProcess.on('exit', (code) => {
+      browserProcess.on('exit', (code, signal) => {
         earlyExitCode = code
+        earlyExitSignal = signal
+        const stderr = Buffer.concat(stderrChunks).toString().trim()
+        reject(new Error(
+          `Browser process exited with ${signal ? `signal ${signal}` : `code ${code}`} before debug port became available` +
+          (stderr ? `\nChrome stderr: ${stderr}` : '')
+        ))
       })
     })
 
@@ -346,7 +385,10 @@ export class ChromeProvider implements HostBrowserProvider {
           arch: process.arch,
           chromePath: this.detectedPath,
           earlyExitCode,
+          earlyExitSignal,
+          timeToExitMs: earlyExitCode !== undefined ? Date.now() - spawnedAt : null,
           stderr: stderr.slice(-2000),
+          crashReport: collectRecentCrashReport(),
           userDataDir,
           profileId,
           spawnArgs: [
@@ -435,12 +477,12 @@ export class ChromeProvider implements HostBrowserProvider {
     })
   }
 
-  private async waitForPort(port: number, timeoutMs: number, getExitCode?: () => number | null, getStderr?: () => string): Promise<void> {
+  private async waitForPort(port: number, timeoutMs: number, getExitCode?: () => number | null | undefined, getStderr?: () => string): Promise<void> {
     const start = Date.now()
     while (Date.now() - start < timeoutMs) {
       // If the process already exited, no point waiting for the port
       const exitCode = getExitCode?.()
-      if (exitCode !== undefined && exitCode !== null) {
+      if (exitCode !== undefined) {
         const stderr = getStderr?.()
         throw new Error(
           `Browser process exited with code ${exitCode} before debug port ${port} became available` +

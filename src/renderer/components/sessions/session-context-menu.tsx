@@ -1,5 +1,5 @@
 
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -16,10 +16,20 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
-import { useDeleteSession } from '@renderer/hooks/use-sessions'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@renderer/components/ui/dialog'
+import { Button } from '@renderer/components/ui/button'
+import { Input } from '@renderer/components/ui/input'
+import { useDeleteSession, useUpdateSessionName } from '@renderer/hooks/use-sessions'
 import { useSelection } from '@renderer/context/selection-context'
 import { useUser } from '@renderer/context/user-context'
-import { Trash2, ClipboardCopy } from 'lucide-react'
+import { Trash2, ClipboardCopy, Pencil } from 'lucide-react'
 import { apiFetch } from '@renderer/lib/api'
 
 interface SessionContextMenuProps {
@@ -36,8 +46,12 @@ export function SessionContextMenu({
   children,
 }: SessionContextMenuProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [showRenameDialog, setShowRenameDialog] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [newName, setNewName] = useState(sessionName)
+  const renameInputRef = useRef<HTMLInputElement>(null)
   const deleteSession = useDeleteSession()
+  const updateSessionName = useUpdateSessionName()
   const { handleSessionDeleted } = useSelection()
   const { canAdminAgent } = useUser()
   const isOwner = canAdminAgent(agentSlug)
@@ -52,6 +66,20 @@ export function SessionContextMenu({
       console.error('Failed to delete session:', error)
     } finally {
       setIsDeleting(false)
+    }
+  }
+
+  const handleRename = async () => {
+    const trimmed = newName.trim()
+    if (!trimmed || trimmed === sessionName) {
+      setShowRenameDialog(false)
+      return
+    }
+    try {
+      await updateSessionName.mutateAsync({ sessionId, agentSlug, name: trimmed })
+      setShowRenameDialog(false)
+    } catch (error) {
+      console.error('Failed to rename session:', error)
     }
   }
 
@@ -75,6 +103,15 @@ export function SessionContextMenu({
           {children}
         </ContextMenuTrigger>
         <ContextMenuContent>
+          {isOwner && (
+            <ContextMenuItem onClick={() => {
+              setNewName(sessionName)
+              setShowRenameDialog(true)
+            }}>
+              <Pencil className="h-4 w-4 mr-2" />
+              Rename Session
+            </ContextMenuItem>
+          )}
           <ContextMenuItem onClick={handleCopyRawLog}>
             <ClipboardCopy className="h-4 w-4 mr-2" />
             Copy Raw Log
@@ -114,6 +151,34 @@ export function SessionContextMenu({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog open={showRenameDialog} onOpenChange={setShowRenameDialog}>
+        <DialogContent className="overflow-hidden">
+          <DialogHeader>
+            <DialogTitle>Rename Session</DialogTitle>
+            <DialogDescription>
+              Enter a new name for this session.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={(e) => { e.preventDefault(); handleRename() }}>
+            <Input
+              ref={renameInputRef}
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="Session name"
+              autoFocus
+            />
+            <DialogFooter className="mt-4">
+              <Button type="button" variant="outline" onClick={() => setShowRenameDialog(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={updateSessionName.isPending || !newName.trim()}>
+                {updateSessionName.isPending ? 'Renaming...' : 'Rename'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </>
   )
 }

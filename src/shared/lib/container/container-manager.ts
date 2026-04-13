@@ -51,6 +51,9 @@ class ContainerManager {
   /** Agents currently being stopped — skip health checks, sync, and connection error recovery */
   private stoppingAgents: Set<string> = new Set()
 
+  /** Optional callback invoked before a container is stopped (e.g. to close host browser) */
+  onBeforeContainerStop: ((agentId: string) => Promise<void>) | null = null
+
   /** Unified runtime readiness state */
   private _readiness: RuntimeReadiness = process.env.E2E_MOCK === 'true'
     ? { status: 'READY', message: 'Ready (E2E mock)', pullProgress: null }
@@ -138,6 +141,14 @@ class ContainerManager {
     let forceStopUsed = false
 
     try {
+      // Stop the host browser before the container so it closes gracefully
+      // instead of getting a "socket hang up" when the container dies
+      if (this.onBeforeContainerStop) {
+        await this.onBeforeContainerStop(agentId).catch((err) => {
+          console.warn(`[ContainerManager] Pre-stop hook failed for ${agentId}:`, err)
+        })
+      }
+
       const client = this.getClient(agentId)
       const result = await client.stop()
       forceStopUsed = result.forceStopUsed

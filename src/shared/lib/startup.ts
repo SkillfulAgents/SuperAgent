@@ -6,7 +6,7 @@ import { taskScheduler } from './scheduler/task-scheduler'
 import { triggerManager } from './scheduler/trigger-manager'
 import { isPlatformComposioActive } from './composio/client'
 import { autoSleepMonitor } from './scheduler/auto-sleep-monitor'
-import { stopAllProviders } from '../../main/host-browser'
+import { getActiveProvider, stopAllProviders } from '../../main/host-browser'
 import { listAgents } from './services/agent-service'
 import { isAuthMode } from './auth/mode'
 import { validateAuthModeStartup } from './auth/startup-validation'
@@ -60,6 +60,15 @@ export async function initializeServices() {
   const agents = await listAgents()
   const slugs = agents.map((a) => a.slug)
   await containerManager.initializeAgents(slugs)
+
+  // Stop the host browser for an agent before its container is torn down,
+  // so the browser closes gracefully instead of getting a "socket hang up".
+  containerManager.onBeforeContainerStop = async (agentId) => {
+    const provider = getActiveProvider()
+    if (provider?.isRunning(agentId)) {
+      await provider.stop(agentId)
+    }
+  }
 
   // Check/pull container image (non-blocking)
   containerManager.ensureImageReady().catch((error) => {

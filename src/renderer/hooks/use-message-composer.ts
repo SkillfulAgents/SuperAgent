@@ -17,12 +17,14 @@ interface UseMessageComposerOptions {
   submitDisabled?: boolean
   /** When true, keep the message in the input until onSubmit resolves (useful when there's a navigation delay). Defaults to false. */
   keepMessageUntilComplete?: boolean
+  /** Initial message to populate the input with (e.g. restored draft). */
+  initialMessage?: string
 }
 
 export function useMessageComposer(options: UseMessageComposerOptions) {
   const { agentSlug, onSubmit, submitDisabled, keepMessageUntilComplete } = options
 
-  const [message, setMessage] = useState('')
+  const [message, setMessage] = useState(options.initialMessage ?? '')
   const [isUploading, setIsUploading] = useState(false)
   const addMountMutation = useAddMount()
 

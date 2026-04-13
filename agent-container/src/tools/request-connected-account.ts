@@ -92,7 +92,7 @@ Common toolkits include gmail, slack, github, notion, linear, salesforce, and ma
         content: [
           {
             type: 'text' as const,
-            text: `Access to ${toolkitLower} has been granted. Make API calls through the proxy:\n\nURL: $PROXY_BASE_URL/<account_id>/<target_host>/<api_path>\nAuthorization: Bearer $PROXY_TOKEN${accountInfo}`,
+            text: `Access to ${toolkitLower} has been granted. Make API calls through the proxy:\n\nURL: $PROXY_BASE_URL/<account_id>/<target_host>/<api_path>\nAuthorization: Bearer $PROXY_TOKEN${accountInfo}. As a reminder, if you run snippets that use the \`requests\` library, run \`uv --with requests\``,
           },
         ],
       }
