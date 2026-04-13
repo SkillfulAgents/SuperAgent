@@ -25,6 +25,8 @@ import { apiFetch } from '@renderer/lib/api'
 import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
 import { useQuery } from '@tanstack/react-query'
 import type { CommonMcpServer } from '@shared/lib/mcp/common-servers'
+import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
+import { PolicyDecisionToggle } from '@renderer/components/ui/policy-decision-toggle'
 import { ToolPolicyEditor } from './tool-policy-editor'
 
 export function RemoteMcpsTab() {
@@ -36,6 +38,8 @@ export function RemoteMcpsTab() {
   const initiateOAuth = useInitiateMcpOAuth()
   const invalidateRemoteMcps = useInvalidateRemoteMcps()
   const { track } = useAnalyticsTracking()
+  const { data: userSettingsData } = useUserSettings()
+  const updateSettings = useUpdateUserSettings()
   const [policyEditorMcp, setPolicyEditorMcp] = useState<{ id: string; name: string; tools: Array<{ name: string; description?: string }> } | null>(null)
 
   const { data: commonData } = useQuery<{ servers: CommonMcpServer[] }>({
@@ -268,6 +272,24 @@ export function RemoteMcpsTab() {
           <Plus className="h-4 w-4 mr-2" />
           Add Custom Server
         </Button>
+      </div>
+
+      {/* Global default MCP policy */}
+      <div className="flex items-center justify-between rounded-md border p-3">
+        <div>
+          <Label className="text-sm font-medium">Default MCP Tool Policy</Label>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Controls what happens when agents use MCP tools without a specific tool policy.
+          </p>
+        </div>
+        <PolicyDecisionToggle
+          value={userSettingsData?.defaultMcpPolicy ?? 'review'}
+          onChange={(value) => {
+            if (value === 'default') return
+            updateSettings.mutate({ defaultMcpPolicy: value })
+          }}
+          size="md"
+        />
       </div>
 
       {/* Registered servers */}
