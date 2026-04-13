@@ -795,7 +795,7 @@ function broadcastBrowserEvent(active: boolean): void {
 // Validate that the requesting session owns the browser (or browser is not active)
 function validateBrowserSession(requestSessionId: string): string | null {
   if (browserState.active && browserState.sessionId !== requestSessionId) {
-    return `Browser is owned by session ${browserState.sessionId}`;
+    return `Browser is owned by session ${browserState.sessionId}. Do not kill the browser process. Inspect browser state, resume that session, or ask the user to take over before trying browser actions again.`;
   }
   return null;
 }
