@@ -46,7 +46,7 @@ import {
   listCancelledScheduledTasks,
 } from '@shared/lib/services/scheduled-task-service'
 import { db } from '@shared/lib/db'
-import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, user as userTable, messageAuthor, apiScopePolicies } from '@shared/lib/db/schema'
+import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, user as userTable, messageAuthor, apiScopePolicies, mcpToolPolicies } from '@shared/lib/db/schema'
 import { eq, and, inArray, desc, count, like, or } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
@@ -4077,42 +4077,64 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
     decision: 'allow' | 'deny'
     scope: string
     accountId: string
+    reviewType?: 'mcp' | 'api'
   }>()
 
   if (!body.decision || !['allow', 'deny'].includes(body.decision)) {
     return c.json({ error: 'Invalid decision' }, 400)
   }
 
-  // Verify account ownership before saving policy
-  if (body.accountId && isAuthMode()) {
-    const userId = getCurrentUserId(c)
-    const [acct] = await db
-      .select({ userId: connectedAccounts.userId })
-      .from(connectedAccounts)
-      .where(eq(connectedAccounts.id, body.accountId))
-      .limit(1)
-    if (acct && acct.userId !== userId) {
-      return c.json({ error: 'Forbidden: you do not own this account' }, 403)
-    }
-  }
-
-  // Save the scope policy (may fail if account doesn't exist, e.g. in mock/E2E)
   const policyDecision = body.decision === 'allow' ? 'allow' : 'block'
   const now = new Date()
-  try {
-    await db.insert(apiScopePolicies).values({
-      id: randomUUID(),
-      accountId: body.accountId,
-      scope: body.scope,
-      decision: policyDecision,
-      createdAt: now,
-      updatedAt: now,
-    }).onConflictDoUpdate({
-      target: [apiScopePolicies.accountId, apiScopePolicies.scope],
-      set: { decision: policyDecision, updatedAt: now },
-    })
-  } catch (err) {
-    console.warn('Failed to save scope policy (account may not exist):', err)
+
+  if (body.reviewType === 'mcp') {
+    // MCP tool review — save to mcpToolPolicies
+    // accountId is actually the mcpId for MCP reviews
+    try {
+      await db.insert(mcpToolPolicies).values({
+        id: randomUUID(),
+        mcpId: body.accountId,
+        toolName: body.scope,
+        decision: policyDecision,
+        createdAt: now,
+        updatedAt: now,
+      }).onConflictDoUpdate({
+        target: [mcpToolPolicies.mcpId, mcpToolPolicies.toolName],
+        set: { decision: policyDecision, updatedAt: now },
+      })
+    } catch (err) {
+      console.warn('Failed to save MCP tool policy:', err)
+    }
+  } else {
+    // API scope review — save to apiScopePolicies
+    // Verify account ownership before saving policy
+    if (body.accountId && isAuthMode()) {
+      const userId = getCurrentUserId(c)
+      const [acct] = await db
+        .select({ userId: connectedAccounts.userId })
+        .from(connectedAccounts)
+        .where(eq(connectedAccounts.id, body.accountId))
+        .limit(1)
+      if (acct && acct.userId !== userId) {
+        return c.json({ error: 'Forbidden: you do not own this account' }, 403)
+      }
+    }
+
+    try {
+      await db.insert(apiScopePolicies).values({
+        id: randomUUID(),
+        accountId: body.accountId,
+        scope: body.scope,
+        decision: policyDecision,
+        createdAt: now,
+        updatedAt: now,
+      }).onConflictDoUpdate({
+        target: [apiScopePolicies.accountId, apiScopePolicies.scope],
+        set: { decision: policyDecision, updatedAt: now },
+      })
+    } catch (err) {
+      console.warn('Failed to save scope policy (account may not exist):', err)
+    }
   }
 
   // Submit decision for this review

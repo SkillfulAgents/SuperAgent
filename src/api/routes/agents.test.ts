@@ -133,10 +133,21 @@ const mockDbInsertValues = vi.fn()
 const mockDbDeleteWhere = vi.fn()
 const mockDbUpdateSet = vi.fn()
 
+const mockDbOnConflictDoUpdate = vi.fn()
+const mockDbInsertTable = vi.fn()
+
 vi.mock('@shared/lib/db', () => ({
   db: {
     select: (...args: unknown[]) => ({ from: (...fargs: unknown[]) => mockDbSelectFrom(...args, ...fargs) }),
-    insert: () => ({ values: (...args: unknown[]) => mockDbInsertValues(...args) }),
+    insert: (...iargs: unknown[]) => {
+      mockDbInsertTable(...iargs)
+      return {
+        values: (...args: unknown[]) => {
+          mockDbInsertValues(...args)
+          return { onConflictDoUpdate: (...cargs: unknown[]) => mockDbOnConflictDoUpdate(...cargs) }
+        },
+      }
+    },
     delete: () => ({ where: (...args: unknown[]) => mockDbDeleteWhere(...args) }),
     update: () => ({ set: (...args: unknown[]) => mockDbUpdateSet(...args) }),
     transaction: (cb: (...a: unknown[]) => unknown) => mockTransaction(cb),
@@ -144,7 +155,7 @@ vi.mock('@shared/lib/db', () => ({
 }))
 
 vi.mock('@shared/lib/db/schema', () => ({
-  connectedAccounts: { id: 'id', toolkitSlug: 'toolkit_slug' },
+  connectedAccounts: { id: 'id', toolkitSlug: 'toolkit_slug', userId: 'user_id' },
   agentConnectedAccounts: { id: 'id', agentSlug: 'agent_slug', connectedAccountId: 'connected_account_id' },
   proxyAuditLog: { agentSlug: 'agent_slug', createdAt: 'created_at' },
   remoteMcpServers: {},
@@ -153,6 +164,8 @@ vi.mock('@shared/lib/db/schema', () => ({
   agentAcl: { id: 'id', userId: 'user_id', agentSlug: 'agent_slug', role: 'role' },
   user: { id: 'id', name: 'name', email: 'email' },
   messageAuthor: { id: 'id', sessionId: 'session_id', agentSlug: 'agent_slug', userId: 'user_id' },
+  apiScopePolicies: { accountId: 'account_id', scope: 'scope' },
+  mcpToolPolicies: { mcpId: 'mcp_id', toolName: 'tool_name' },
 }))
 
 vi.mock('drizzle-orm', () => ({
@@ -2337,5 +2350,127 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(getSessionSummary).toHaveBeenCalledTimes(2)
     expect(getSessionSummary).toHaveBeenCalledWith('agent-1')
     expect(getSessionSummary).toHaveBeenCalledWith('agent-2')
+  })
+})
+
+// ============================================================================
+// Proxy Review "Always" Policy Tests
+// ============================================================================
+
+describe('POST /api/agents/:id/proxy-review/:reviewId/always', () => {
+  const app = createApp()
+
+  beforeEach(() => {
+    mockDbInsertValues.mockReset()
+    mockDbInsertTable.mockReset()
+    mockDbOnConflictDoUpdate.mockReset()
+  })
+
+  it('saves to mcpToolPolicies when reviewType is mcp', async () => {
+    const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
+      decision: 'allow',
+      scope: '*',
+      accountId: 'mcp-server-123',
+      reviewType: 'mcp',
+    })
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body).toEqual({ ok: true })
+
+    // Should insert into mcpToolPolicies (not apiScopePolicies)
+    expect(mockDbInsertTable).toHaveBeenCalledWith({ mcpId: 'mcp_id', toolName: 'tool_name' })
+    expect(mockDbInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mcpId: 'mcp-server-123',
+        toolName: '*',
+        decision: 'allow',
+      })
+    )
+  })
+
+  it('saves to apiScopePolicies when reviewType is api', async () => {
+    const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
+      decision: 'allow',
+      scope: 'gmail:read',
+      accountId: 'account-123',
+      reviewType: 'api',
+    })
+
+    expect(res.status).toBe(200)
+
+    // Should insert into apiScopePolicies (not mcpToolPolicies)
+    expect(mockDbInsertTable).toHaveBeenCalledWith({ accountId: 'account_id', scope: 'scope' })
+    expect(mockDbInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accountId: 'account-123',
+        scope: 'gmail:read',
+        decision: 'allow',
+      })
+    )
+  })
+
+  it('saves to apiScopePolicies when reviewType is omitted (backwards compat)', async () => {
+    const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
+      decision: 'allow',
+      scope: '*',
+      accountId: 'account-123',
+    })
+
+    expect(res.status).toBe(200)
+
+    // Should default to apiScopePolicies
+    expect(mockDbInsertTable).toHaveBeenCalledWith({ accountId: 'account_id', scope: 'scope' })
+  })
+
+  it('saves per-tool MCP policy (not just wildcard)', async () => {
+    const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
+      decision: 'allow',
+      scope: 'list_meetings',
+      accountId: 'mcp-server-123',
+      reviewType: 'mcp',
+    })
+
+    expect(res.status).toBe(200)
+
+    // Should save to mcpToolPolicies with the specific tool name
+    expect(mockDbInsertTable).toHaveBeenCalledWith({ mcpId: 'mcp_id', toolName: 'tool_name' })
+    expect(mockDbInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mcpId: 'mcp-server-123',
+        toolName: 'list_meetings',
+        decision: 'allow',
+      })
+    )
+  })
+
+  it('saves block decision for MCP deny', async () => {
+    const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
+      decision: 'deny',
+      scope: 'some_tool',
+      accountId: 'mcp-server-123',
+      reviewType: 'mcp',
+    })
+
+    expect(res.status).toBe(200)
+
+    expect(mockDbInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mcpId: 'mcp-server-123',
+        toolName: 'some_tool',
+        decision: 'block',
+      })
+    )
+  })
+
+  it('rejects invalid decision', async () => {
+    const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
+      decision: 'invalid',
+      scope: '*',
+      accountId: 'mcp-server-123',
+      reviewType: 'mcp',
+    })
+
+    expect(res.status).toBe(400)
   })
 })
