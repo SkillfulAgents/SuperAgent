@@ -1,91 +1,9 @@
 
 import { Clock, Repeat, CalendarClock, Globe } from 'lucide-react'
 import type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps } from './types'
+import { scheduleTaskDef, cronToHuman, type ScheduleTaskInput } from '@shared/lib/tool-definitions/schedule-task'
 
-interface ScheduleTaskInput {
-  scheduleType?: 'at' | 'cron'
-  scheduleExpression?: string
-  prompt?: string
-  name?: string
-  timezone?: string
-}
-
-function parseScheduleTaskInput(input: unknown): ScheduleTaskInput {
-  if (typeof input === 'object' && input !== null) {
-    return input as ScheduleTaskInput
-  }
-  return {}
-}
-
-/**
- * Convert a cron expression to a human-readable string
- */
-function cronToHuman(cron: string): string {
-  const parts = cron.trim().split(/\s+/)
-  if (parts.length !== 5) return cron
-
-  const [minute, hour, dayOfMonth, month, dayOfWeek] = parts
-
-  // Common patterns
-  if (cron === '* * * * *') return 'Every minute'
-  if (cron === '0 * * * *') return 'Every hour'
-  if (cron === '0 0 * * *') return 'Daily at midnight'
-  if (cron === '0 0 * * 0') return 'Weekly on Sunday'
-  if (cron === '0 0 1 * *') return 'Monthly on the 1st'
-
-  // */N patterns
-  if (minute.startsWith('*/') && hour === '*' && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
-    const interval = minute.slice(2)
-    return `Every ${interval} minutes`
-  }
-  if (minute === '0' && hour.startsWith('*/') && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
-    const interval = hour.slice(2)
-    return `Every ${interval} hours`
-  }
-
-  // Specific time patterns
-  if (minute.match(/^\d+$/) && hour.match(/^\d+$/) && dayOfMonth === '*' && month === '*') {
-    const h = parseInt(hour, 10)
-    const m = parseInt(minute, 10)
-    const time = `${h % 12 || 12}:${m.toString().padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`
-
-    if (dayOfWeek === '*') return `Daily at ${time}`
-    if (dayOfWeek === '1-5') return `Weekdays at ${time}`
-    if (dayOfWeek === '0,6') return `Weekends at ${time}`
-  }
-
-  return cron
-}
-
-function getSummary(input: unknown): string | null {
-  const { name, scheduleType, scheduleExpression, timezone } = parseScheduleTaskInput(input)
-  const isRecurring = scheduleType === 'cron'
-  const prefix = isRecurring ? '🔁' : '📅'
-
-  // Get human-readable schedule
-  let schedule = ''
-  if (scheduleType === 'cron' && scheduleExpression) {
-    schedule = cronToHuman(scheduleExpression)
-  } else if (scheduleExpression) {
-    schedule = scheduleExpression.replace(/^at\s+/i, '')
-  }
-
-  const tzSuffix = timezone ? ` (${timezone.replace(/_/g, ' ')})` : ''
-
-  if (name && schedule) {
-    return `${prefix} ${name} · ${schedule}${tzSuffix}`
-  }
-
-  if (name) {
-    return `${prefix} ${name}${tzSuffix}`
-  }
-
-  if (schedule) {
-    return `${prefix} ${schedule}${tzSuffix}`
-  }
-
-  return null
-}
+const parseScheduleTaskInput = scheduleTaskDef.parseInput
 
 function parseResult(result: unknown): string | null {
   if (!result) return null
@@ -254,7 +172,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
 export const scheduleTaskRenderer: ToolRenderer = {
   displayName: 'Schedule Task',
   icon: Clock,
-  getSummary,
+  getSummary: scheduleTaskDef.getSummary,
   ExpandedView,
   StreamingView,
 }

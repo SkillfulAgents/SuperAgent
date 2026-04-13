@@ -1,11 +1,7 @@
 
 import { KeyRound } from 'lucide-react'
 import type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps } from './types'
-
-interface RequestSecretInput {
-  secretName?: string
-  reason?: string
-}
+import { requestSecretDef, type RequestSecretInput } from '@shared/lib/tool-definitions/request-secret'
 
 function parseRequestSecretInput(input: unknown): RequestSecretInput {
   if (typeof input === 'object' && input !== null) {
@@ -15,11 +11,7 @@ function parseRequestSecretInput(input: unknown): RequestSecretInput {
 }
 
 function getSummary(input: unknown): string | null {
-  const { secretName } = parseRequestSecretInput(input)
-  if (secretName) {
-    return secretName
-  }
-  return null
+  return requestSecretDef.getSummary(input)
 }
 
 function parseResult(result: unknown): string | null {

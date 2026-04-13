@@ -1,10 +1,6 @@
 import { Upload } from 'lucide-react'
 import type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps } from './types'
-
-interface RequestFileInput {
-  description?: string
-  fileTypes?: string
-}
+import { requestFileDef, type RequestFileInput } from '@shared/lib/tool-definitions/request-file'
 
 function ExpandedView({ input, result, isError }: ToolRendererProps) {
   const { description, fileTypes } = input as RequestFileInput
@@ -53,10 +49,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
 export const requestFileRenderer: ToolRenderer = {
   displayName: 'Request File',
   icon: Upload,
-  getSummary: (input: unknown) => {
-    const { description } = input as RequestFileInput
-    return description || null
-  },
+  getSummary: (input: unknown) => requestFileDef.getSummary(input),
   ExpandedView,
   StreamingView,
 }

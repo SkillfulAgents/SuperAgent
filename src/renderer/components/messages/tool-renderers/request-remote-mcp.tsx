@@ -1,23 +1,12 @@
 
 import { Plug } from 'lucide-react'
 import type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps } from './types'
+import { requestRemoteMcpDef, type RequestRemoteMcpInput } from '@shared/lib/tool-definitions/request-remote-mcp'
 
-interface RequestRemoteMcpInput {
-  url?: string
-  name?: string
-  reason?: string
-}
-
-function parseInput(input: unknown): RequestRemoteMcpInput {
-  if (typeof input === 'object' && input !== null) {
-    return input as RequestRemoteMcpInput
-  }
-  return {}
-}
+const parseInput = requestRemoteMcpDef.parseInput
 
 function getSummary(input: unknown): string | null {
-  const { name, url } = parseInput(input)
-  return name || url || null
+  return requestRemoteMcpDef.getSummary(input)
 }
 
 function parseResult(result: unknown): string | null {

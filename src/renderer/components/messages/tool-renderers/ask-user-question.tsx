@@ -1,22 +1,7 @@
 
 import { MessageCircleQuestion } from 'lucide-react'
 import type { ToolRenderer, ToolRendererProps } from './types'
-
-interface QuestionOption {
-  label: string
-  description?: string
-}
-
-interface Question {
-  question: string
-  header?: string
-  options?: QuestionOption[]
-  multiSelect?: boolean
-}
-
-interface AskUserQuestionInput {
-  questions?: Question[]
-}
+import { askUserQuestionDef, type AskUserQuestionInput } from '@shared/lib/tool-definitions/ask-user-question'
 
 function parseInput(input: unknown): AskUserQuestionInput {
   if (typeof input === 'object' && input !== null) {
@@ -26,15 +11,7 @@ function parseInput(input: unknown): AskUserQuestionInput {
 }
 
 function getSummary(input: unknown): string | null {
-  const { questions } = parseInput(input)
-  if (!questions || !Array.isArray(questions) || questions.length === 0) return null
-
-  const first = questions[0].question
-  const truncated = first.length > 50 ? first.slice(0, 47) + '...' : first
-  if (questions.length > 1) {
-    return `${truncated} (+ ${questions.length - 1} more)`
-  }
-  return truncated
+  return askUserQuestionDef.getSummary(input)
 }
 
 /**

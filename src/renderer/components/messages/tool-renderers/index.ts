@@ -109,3 +109,7 @@ export function getToolRenderer(toolName: string): ToolRenderer | undefined {
 export function hasCustomRenderer(toolName: string): boolean {
   return toolName in toolRenderers
 }
+
+export function getRegisteredRendererNames(): string[] {
+  return Object.keys(toolRenderers)
+}

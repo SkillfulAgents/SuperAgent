@@ -1,38 +1,10 @@
 
 import { FileText } from 'lucide-react'
+import { readDef, type ReadInput } from '@shared/lib/tool-definitions/read'
 import type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps } from './types'
 
-interface ReadInput {
-  file_path?: string
-  offset?: number
-  limit?: number
-}
-
-function parseReadInput(input: unknown): ReadInput {
-  if (typeof input === 'object' && input !== null) {
-    return input as ReadInput
-  }
-  return {}
-}
-
-function getDisplayPath(filePath: string): string {
-  // Show shortened path for common prefixes
-  if (filePath.startsWith('/workspace/')) {
-    return filePath.replace('/workspace/', '')
-  }
-  return filePath
-}
-
-function getSummary(input: unknown): string | null {
-  const { file_path } = parseReadInput(input)
-  if (file_path) {
-    return getDisplayPath(file_path)
-  }
-  return null
-}
-
 function ExpandedView({ input, result, isError }: ToolRendererProps) {
-  const { file_path, offset, limit } = parseReadInput(input)
+  const { file_path, offset, limit } = readDef.parseInput(input)
 
   return (
     <div className="space-y-2">
@@ -94,8 +66,9 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
 }
 
 export const readRenderer: ToolRenderer = {
+  displayName: readDef.displayName,
   icon: FileText,
-  getSummary,
+  getSummary: readDef.getSummary,
   ExpandedView,
   StreamingView,
 }

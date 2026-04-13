@@ -6,26 +6,9 @@ import { getToolRenderer } from './tool-renderers'
 import { parseToolResult } from '@renderer/lib/parse-tool-result'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
 import type { ApiToolCall } from '@shared/lib/types/api'
+import { formatToolName } from '@shared/lib/tool-definitions/types'
 
-/**
- * Formats raw MCP tool names into human-readable display names.
- * e.g. "mcp__granola__list_meetings" → "Granola MCP: List Meetings"
- */
-export function formatToolName(rawName: string): string {
-  // Split on first `__` after the `mcp__` prefix (lazy match for server name)
-  const match = rawName.match(/^mcp__(.+?)__(.+)$/)
-  if (!match) return rawName
-
-  const [, serverSlug, toolSlug] = match
-
-  const titleCase = (s: string) =>
-    s
-      .replace(/([a-z])([A-Z])/g, '$1 $2') // split camelCase
-      .replace(/[-_]+/g, ' ')
-      .replace(/\b\w/g, c => c.toUpperCase())
-
-  return `${titleCase(serverSlug)} MCP: ${titleCase(toolSlug)}`
-}
+export { formatToolName } from '@shared/lib/tool-definitions/types'
 
 interface ToolCallItemProps {
   toolCall: ApiToolCall

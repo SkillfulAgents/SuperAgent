@@ -1,5 +1,12 @@
 import type { ContainerClient, StreamMessage, SlashCommandInfo } from './types'
 import type { SessionUsage } from '@shared/lib/types/agent'
+import type { AskUserQuestionInput } from '@shared/lib/tool-definitions/ask-user-question'
+import type { RequestSecretInput } from '@shared/lib/tool-definitions/request-secret'
+import type { RequestFileInput } from '@shared/lib/tool-definitions/request-file'
+import type { RequestConnectedAccountInput } from '@shared/lib/tool-definitions/request-connected-account'
+import type { RequestRemoteMcpInput } from '@shared/lib/tool-definitions/request-remote-mcp'
+import type { RequestBrowserInputInput } from '@shared/lib/tool-definitions/request-browser-input'
+import type { RequestScriptRunInput } from '@shared/lib/tool-definitions/request-script-run'
 import { createScheduledTask } from '@shared/lib/services/scheduled-task-service'
 import {
   createWebhookTrigger,
@@ -1246,7 +1253,7 @@ class MessagePersister {
   ): void {
     try {
       // Parse the tool input to get secretName and reason
-      let input: { secretName: string; reason?: string } = { secretName: '' }
+      let input: RequestSecretInput = {}
       try {
         input = JSON.parse(toolInput)
       } catch {
@@ -1288,7 +1295,7 @@ class MessagePersister {
   ): void {
     try {
       // Parse the tool input to get toolkit and reason
-      let input: { toolkit: string; reason?: string } = { toolkit: '' }
+      let input: RequestConnectedAccountInput = {}
       try {
         input = JSON.parse(toolInput)
       } catch {
@@ -1703,14 +1710,7 @@ class MessagePersister {
   ): void {
     try {
       // Parse the tool input to get questions
-      let input: {
-        questions?: Array<{
-          question: string
-          header: string
-          options: Array<{ label: string; description: string }>
-          multiSelect: boolean
-        }>
-      } = {}
+      let input: AskUserQuestionInput = {}
       try {
         input = JSON.parse(toolInput)
       } catch {
@@ -1750,7 +1750,7 @@ class MessagePersister {
     agentSlug?: string
   ): void {
     try {
-      let input: { description: string; fileTypes?: string } = { description: '' }
+      let input: RequestFileInput = {}
       try {
         input = JSON.parse(toolInput)
       } catch {
@@ -1791,7 +1791,7 @@ class MessagePersister {
     agentSlug?: string
   ): void {
     try {
-      let input: { url: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer' } = { url: '' }
+      let input: RequestRemoteMcpInput = {}
       try {
         input = JSON.parse(toolInput)
       } catch {
@@ -1834,7 +1834,7 @@ class MessagePersister {
     agentSlug?: string
   ): void {
     try {
-      let input: { message: string; requirements?: string[] } = { message: '' }
+      let input: RequestBrowserInputInput = {}
       try {
         input = JSON.parse(toolInput)
       } catch {
@@ -1888,7 +1888,7 @@ class MessagePersister {
     agentSlug?: string
   ): void {
     try {
-      let input: { script: string; explanation: string; scriptType: string } = { script: '', explanation: '', scriptType: '' }
+      let input: RequestScriptRunInput = {}
       try {
         input = JSON.parse(toolInput)
       } catch {

@@ -1,18 +1,8 @@
 import { Terminal } from 'lucide-react'
 import type { ToolRenderer, ToolRendererProps } from './types'
+import { requestScriptRunDef, SCRIPT_TYPE_LABELS } from '@shared/lib/tool-definitions/request-script-run'
 
-interface RequestScriptRunInput {
-  script?: string
-  explanation?: string
-  scriptType?: string
-}
-
-function parseInput(input: unknown): RequestScriptRunInput {
-  if (typeof input === 'object' && input !== null) {
-    return input as RequestScriptRunInput
-  }
-  return {}
-}
+const parseInput = requestScriptRunDef.parseInput
 
 function parseResult(result: unknown): string | null {
   if (!result) return null
@@ -40,17 +30,8 @@ function parseResult(result: unknown): string | null {
   return String(result)
 }
 
-const SCRIPT_TYPE_LABELS: Record<string, string> = {
-  applescript: 'AppleScript',
-  shell: 'Shell',
-  powershell: 'PowerShell',
-}
-
 function getSummary(input: unknown): string | null {
-  const { scriptType, explanation } = parseInput(input)
-  const typeLabel = scriptType ? SCRIPT_TYPE_LABELS[scriptType] || scriptType : ''
-  const truncated = explanation && explanation.length > 60 ? explanation.slice(0, 60) + '...' : explanation
-  return [typeLabel, truncated].filter(Boolean).join(': ') || null
+  return requestScriptRunDef.getSummary(input)
 }
 
 function ExpandedView({ input, result, isError }: ToolRendererProps) {

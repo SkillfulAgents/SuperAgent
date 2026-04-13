@@ -1,41 +1,10 @@
 
 import { Terminal } from 'lucide-react'
+import { bashDef, type BashInput } from '@shared/lib/tool-definitions/bash'
 import type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps } from './types'
 
-interface BashInput {
-  command?: string
-  description?: string
-}
-
-function parseBashInput(input: unknown): BashInput {
-  if (typeof input === 'object' && input !== null) {
-    return input as BashInput
-  }
-  return {}
-}
-
-function getSummary(input: unknown): string | null {
-  const { command, description } = parseBashInput(input)
-
-  // Prefer description if available
-  if (description) {
-    return description
-  }
-
-  // Otherwise show truncated command
-  if (command) {
-    const firstLine = command.split('\n')[0]
-    if (firstLine.length > 50) {
-      return `$ ${firstLine.slice(0, 47)}...`
-    }
-    return `$ ${firstLine}`
-  }
-
-  return null
-}
-
 function ExpandedView({ input, result, isError }: ToolRendererProps) {
-  const { command } = parseBashInput(input)
+  const { command } = bashDef.parseInput(input)
 
   return (
     <div className="rounded-md bg-black overflow-hidden">
@@ -88,8 +57,9 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
 }
 
 export const bashRenderer: ToolRenderer = {
+  displayName: bashDef.displayName,
   icon: Terminal,
-  getSummary,
+  getSummary: bashDef.getSummary,
   ExpandedView,
   StreamingView,
 }

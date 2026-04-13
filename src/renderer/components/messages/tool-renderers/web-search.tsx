@@ -2,27 +2,12 @@
 import { Globe } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { webSearchDef } from '@shared/lib/tool-definitions/web-search'
 import type { ToolRenderer, ToolRendererProps } from './types'
-
-interface WebSearchInput {
-  query?: string
-}
 
 interface SearchLink {
   title: string
   url: string
-}
-
-function parseWebSearchInput(input: unknown): WebSearchInput {
-  if (typeof input === 'object' && input !== null) {
-    return input as WebSearchInput
-  }
-  return {}
-}
-
-function getSummary(input: unknown): string | null {
-  const { query } = parseWebSearchInput(input)
-  return query ?? null
 }
 
 function parseSearchResult(result: string): { links: SearchLink[]; markdown: string } {
@@ -59,7 +44,7 @@ function parseSearchResult(result: string): { links: SearchLink[]; markdown: str
 }
 
 function ExpandedView({ input, result, isError }: ToolRendererProps) {
-  const { query } = parseWebSearchInput(input)
+  const { query } = webSearchDef.parseInput(input)
 
   if (isError || !result) {
     return (
@@ -118,8 +103,8 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
 }
 
 export const webSearchRenderer: ToolRenderer = {
-  displayName: 'Web Search',
+  displayName: webSearchDef.displayName,
   icon: Globe,
-  getSummary,
+  getSummary: webSearchDef.getSummary,
   ExpandedView,
 }

@@ -1,33 +1,11 @@
 
 import { ListTodo } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
+import { todoWriteDef } from '@shared/lib/tool-definitions/todo-write'
 import type { ToolRenderer, ToolRendererProps } from './types'
 
-interface Todo {
-  content: string
-  status: 'pending' | 'in_progress' | 'completed'
-  activeForm?: string
-}
-
-interface TodoWriteInput {
-  todos?: Todo[]
-}
-
-function parseTodoWriteInput(input: unknown): TodoWriteInput {
-  if (typeof input === 'object' && input !== null) {
-    return input as TodoWriteInput
-  }
-  return {}
-}
-
-function getSummary(input: unknown): string | null {
-  const { todos } = parseTodoWriteInput(input)
-  if (!todos || !Array.isArray(todos)) return null
-  return `Updated ${todos.length} todo item${todos.length !== 1 ? 's' : ''}`
-}
-
 function ExpandedView({ input }: ToolRendererProps) {
-  const { todos } = parseTodoWriteInput(input)
+  const { todos } = todoWriteDef.parseInput(input)
 
   if (!todos || !Array.isArray(todos) || todos.length === 0) {
     return <div className="text-xs text-muted-foreground italic">No items</div>
@@ -57,8 +35,8 @@ function ExpandedView({ input }: ToolRendererProps) {
 }
 
 export const todoWriteRenderer: ToolRenderer = {
-  displayName: 'Todo List',
+  displayName: todoWriteDef.displayName,
   icon: ListTodo,
-  getSummary,
+  getSummary: todoWriteDef.getSummary,
   ExpandedView,
 }

@@ -1,18 +1,7 @@
 
 import { FilePlus, Loader2 } from 'lucide-react'
+import { writeDef } from '@shared/lib/tool-definitions/write'
 import type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps } from './types'
-
-interface WriteInput {
-  file_path?: string
-  content?: string
-}
-
-function parseWriteInput(input: unknown): WriteInput {
-  if (typeof input === 'object' && input !== null) {
-    return input as WriteInput
-  }
-  return {}
-}
 
 /**
  * Extract a string value from partial JSON that may be incomplete
@@ -78,24 +67,8 @@ function extractPartialString(json: string, key: string): string | null {
   return value
 }
 
-function getDisplayPath(filePath: string): string {
-  // Show shortened path for common prefixes
-  if (filePath.startsWith('/workspace/')) {
-    return filePath.replace('/workspace/', '')
-  }
-  return filePath
-}
-
-function getSummary(input: unknown): string | null {
-  const { file_path } = parseWriteInput(input)
-  if (file_path) {
-    return `→ ${getDisplayPath(file_path)}`
-  }
-  return null
-}
-
 function ExpandedView({ input, result, isError }: ToolRendererProps) {
-  const { file_path, content } = parseWriteInput(input)
+  const { file_path, content } = writeDef.parseInput(input)
 
   return (
     <div className="space-y-2">
@@ -185,8 +158,9 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
 }
 
 export const writeRenderer: ToolRenderer = {
+  displayName: writeDef.displayName,
   icon: FilePlus,
-  getSummary,
+  getSummary: writeDef.getSummary,
   ExpandedView,
   StreamingView,
 }
