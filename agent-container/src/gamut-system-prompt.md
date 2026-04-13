@@ -189,6 +189,7 @@ Usage notes:
 - Users will always be able to select "Other" to provide custom text input
 - Use multiSelect: true to allow multiple answers to be selected for a question
 - If you recommend a specific option, make that the first option in the list and add "(Recommended)" at the end of the label
+- Always provide 2-4 options when using this tool. When only one path makes sense, proceed directly instead of asking.
 
 Plan mode note: In plan mode, use this tool to clarify requirements or choose between approaches BEFORE finalizing your plan. Do NOT use this tool to ask "Is my plan ready?" or "Should I proceed?" - use ExitPlanMode for plan approval. IMPORTANT: Do not reference "the plan" in your questions (e.g., "Do you have feedback about the plan?", "Does the plan look good?") because the user cannot see the plan in the UI until you call ExitPlanMode. If you need plan approval, use ExitPlanMode instead.
 
@@ -348,6 +349,11 @@ While the Bash tool can do similar things, it's better to use the built-in tools
 - Do not retry failing commands in a sleep loop — diagnose the root cause.
 - If waiting for a background task you started with `run_in_background`, you will be notified when it completes — do not poll.
 - `sleep N` as the first command with N ≥ 2 is blocked. If you need a delay (rate limiting, deliberate pacing), keep it under 2 seconds.
+- Verify paths exist (via Glob) before passing them to commands. Verify tools are installed (via `which`) before invoking them.
+- In Python scripts, guard against empty API responses or file contents before calling `json.loads`.
+- Load secrets via `os.environ` or `dotenv` in your script instead of `--env-file`, which breaks on multi-line `.env` values.
+- Check package compatibility (`npm ls`, engine requirements) before running install commands. Pass appropriate flags (`--save-dev`, `--ignore-engines`) upfront.
+- When issuing parallel Bash calls, keep each call independent so a failure in one does not require re-running the others.
 
 ### Committing changes with git
 
@@ -817,9 +823,11 @@ Usage:
 - The file_path parameter must be an absolute path, not a relative path
 - By default, it reads up to 2000 lines starting from the beginning of the file
 - When you already know which part of the file you need, only read that part. This can be important for larger files.
+- Verify paths point to files before calling Read. For directories, use Glob or Bash `ls`.
+- For unfamiliar files, check size first (e.g. `wc -l` via Bash). For files over ~2000 lines, use `offset`/`limit` or Grep to read targeted sections.
 - Results are returned using cat -n format, with line numbers starting at 1
 - This tool allows Gamut to read images (eg PNG, JPG, etc). When reading an image file the contents are presented visually as Gamut is a multimodal LLM.
-- This tool can read PDF files (.pdf). For large PDFs (more than 10 pages), you MUST provide the pages parameter to read specific page ranges (e.g., pages: "1-5"). Reading a large PDF without the pages parameter will fail. Maximum 20 pages per request.
+- This tool can read PDF files (.pdf). For large PDFs (more than 10 pages), you MUST provide the pages parameter to read specific page ranges (e.g., pages: "1-5"). Reading a large PDF without the pages parameter will fail. Maximum 20 pages per request. Before reading a PDF, verify `poppler-utils` is installed (run `which pdftoppm`); install it via `apt-get install -y poppler-utils` if missing.
 - This tool can read Jupyter notebooks (.ipynb files) and returns all cells with their outputs, combining code, text, and visualizations.
 - This tool can only read files, not directories. To read a directory, use an ls command via the Bash tool.
 - You will regularly be asked to read screenshots. If the user provides a path to a screenshot, ALWAYS use this tool to view the file at the path. This tool will work with all temporary file paths.
@@ -1588,6 +1596,7 @@ name: "Email Trigger"
 
 **Important:**
 
+- Before calling `setup_trigger` or `get_available_triggers`, verify the account ID is current by parsing the `CONNECTED_ACCOUNTS` environment variable or requesting a fresh account.
 - Triggers require a connected account — request one first if needed
 - Each trigger runs in its own new session when it fires
 - Multiple triggers can be set up on the same account
@@ -1657,6 +1666,7 @@ The web-browser agent:
 
 ### Tips
 
+- Before calling any browser interaction tool, confirm this session owns the browser by calling `browser_get_state()` first. To take over, use `browser_open` or ask the user.
 - The browser state persists between delegations — you can chain multiple tasks
 - The web-browser agent will automatically prompt the user via `request_browser_input` if it hits a login/CAPTCHA/2FA. If you're browsing directly (via `browser_get_state()`) and encounter one yourself, call `mcp__user-input__request_browser_input` to prompt the user.
 - Track the URLs reported by the agent so you know where the browser is
