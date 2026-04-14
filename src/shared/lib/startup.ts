@@ -4,6 +4,8 @@ import { shutdownActiveRunner } from './container/client-factory'
 import { reviewManager } from './proxy/review-manager'
 import { taskScheduler } from './scheduler/task-scheduler'
 import { triggerManager } from './scheduler/trigger-manager'
+import { chatIntegrationManager } from './chat-integrations/chat-integration-manager'
+import { captureException } from './error-reporting'
 import { isPlatformComposioActive } from './composio/client'
 import { autoSleepMonitor } from './scheduler/auto-sleep-monitor'
 import { getActiveProvider, stopAllProviders } from '../../main/host-browser'
@@ -87,6 +89,13 @@ export async function initializeServices() {
     })
   }
 
+  // Start chat integration manager
+  chatIntegrationManager.start().catch((error) => {
+    console.error('Failed to start chat integration manager:', error)
+    // TODO add exception capturing for all other services that start in this file
+    captureException(error, { tags: { component: 'chat-integration', operation: 'startup' } })
+  })
+
   // Start auto-sleep monitor
   autoSleepMonitor.start().catch((error) => {
     console.error('Failed to start auto-sleep monitor:', error)
@@ -115,6 +124,7 @@ export function setupServerHandlers(server: ServerType): void {
  */
 export async function shutdownServices() {
   reviewManager.rejectAll()
+  chatIntegrationManager.stop()
   await stopAllProviders()
   taskScheduler.stop()
   triggerManager.stop()

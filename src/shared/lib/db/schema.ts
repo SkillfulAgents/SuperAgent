@@ -171,7 +171,7 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
 // Notifications - user notifications for session events
 export const notifications = sqliteTable('notifications', {
   id: text('id').primaryKey(),
-  type: text('type', { enum: ['session_complete', 'session_waiting', 'session_scheduled', 'session_webhook'] }).notNull(),
+  type: text('type', { enum: ['session_complete', 'session_waiting', 'session_scheduled', 'session_webhook', 'session_chat_integration'] }).notNull(),
   sessionId: text('session_id').notNull(),
   agentSlug: text('agent_slug').notNull(),
   title: text('title').notNull(),
@@ -362,6 +362,50 @@ export const webhookTriggers = sqliteTable('webhook_triggers', {
   composioTriggerIdx: index('webhook_triggers_composio_idx').on(table.composioTriggerId),
 }))
 
+// Chat integrations - external messaging connections (Telegram, Slack, etc.)
+export const chatIntegrations = sqliteTable('chat_integrations', {
+  id: text('id').primaryKey(),
+  agentSlug: text('agent_slug').notNull(),
+  provider: text('provider', { enum: ['telegram', 'slack'] }).notNull(),
+  name: text('name'), // User-defined label
+
+  // Provider credentials (JSON: { botToken, chatId } or { botToken, appToken, channelId })
+  config: text('config').notNull(),
+
+  // Behavior settings
+  showToolCalls: integer('show_tool_calls', { mode: 'boolean' }).notNull().default(false),
+
+  // Status
+  status: text('status', { enum: ['active', 'paused', 'error', 'disconnected'] })
+    .notNull().default('active'),
+  errorMessage: text('error_message'),
+
+  // Ownership (auth mode)
+  createdByUserId: text('created_by_user_id'),
+
+  // Timestamps
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  agentSlugIdx: index('chat_integrations_agent_slug_idx').on(table.agentSlug),
+  statusIdx: index('chat_integrations_status_idx').on(table.status),
+}))
+
+// Chat integration sessions - maps external chat IDs to agent sessions (supports multi-DM)
+export const chatIntegrationSessions = sqliteTable('chat_integration_sessions', {
+  id: text('id').primaryKey(),
+  integrationId: text('integration_id').notNull()
+    .references(() => chatIntegrations.id, { onDelete: 'cascade' }),
+  externalChatId: text('external_chat_id').notNull(), // Telegram chat_id or Slack channel_id
+  sessionId: text('session_id').notNull(),
+  displayName: text('display_name'), // e.g. "John's DM", "#general"
+  archivedAt: integer('archived_at', { mode: 'timestamp_ms' }), // Set when session is cleared; null = active
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  integrationIdIdx: index('chat_integration_sessions_integration_id_idx').on(table.integrationId),
+}))
+
 // Type exports for convenience
 export type ConnectedAccount = typeof connectedAccounts.$inferSelect
 export type NewConnectedAccount = typeof connectedAccounts.$inferInsert
@@ -395,3 +439,7 @@ export type McpToolPolicy = typeof mcpToolPolicies.$inferSelect
 export type NewMcpToolPolicy = typeof mcpToolPolicies.$inferInsert
 export type WebhookTrigger = typeof webhookTriggers.$inferSelect
 export type NewWebhookTrigger = typeof webhookTriggers.$inferInsert
+export type ChatIntegration = typeof chatIntegrations.$inferSelect
+export type NewChatIntegration = typeof chatIntegrations.$inferInsert
+export type ChatIntegrationSession = typeof chatIntegrationSessions.$inferSelect
+export type NewChatIntegrationSession = typeof chatIntegrationSessions.$inferInsert

@@ -17,7 +17,8 @@ interface MessageContextMenuProps {
 export function MessageContextMenu({ text, children, onRemove }: MessageContextMenuProps) {
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(text)
+      const selection = window.getSelection()?.toString()
+      await navigator.clipboard.writeText(selection || text)
     } catch (error) {
       console.error('Failed to copy message:', error)
     }

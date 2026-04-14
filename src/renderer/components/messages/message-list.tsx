@@ -15,6 +15,7 @@ import {
 import { MessageItem } from './message-item'
 import { StreamingToolCallItem } from './tool-call-item'
 import { CompactBoundaryItem } from './compact-boundary-item'
+import { MemoryRecallItem } from './memory-recall-item'
 import { SecretRequestItem } from './secret-request-item'
 import { ConnectedAccountRequestItem } from './connected-account-request-item'
 import { RemoteMcpRequestItem } from './remote-mcp-request-item'
@@ -33,7 +34,7 @@ import { useUser } from '@renderer/context/user-context'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { useEffect, useRef, useState, useCallback, useMemo, Fragment } from 'react'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
-import type { ApiMessage, ApiCompactBoundary } from '@shared/lib/types/api'
+import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall } from '@shared/lib/types/api'
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in agent-container/src/claude-code.ts
@@ -727,7 +728,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
           return true
         }).map((item) => (
           <Fragment key={item.id}>
-            {item.type === 'compact_boundary' ? (
+            {item.type === 'memory_recall' ? (
+              <MemoryRecallItem recall={item as ApiMemoryRecall} />
+            ) : item.type === 'compact_boundary' ? (
               <CompactBoundaryItem boundary={item as ApiCompactBoundary} />
             ) : (
               <>

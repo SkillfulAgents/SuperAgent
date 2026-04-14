@@ -44,7 +44,14 @@ export interface TransformedCompactBoundary {
   createdAt: Date
 }
 
-export type TransformedItem = TransformedMessage | TransformedCompactBoundary
+export interface TransformedMemoryRecall {
+  id: string
+  type: 'memory_recall'
+  memoryPaths: string[]
+  createdAt: Date
+}
+
+export type TransformedItem = TransformedMessage | TransformedCompactBoundary | TransformedMemoryRecall
 
 /**
  * Parse a user message that may contain SDK-injected slash command XML tags.
@@ -129,13 +136,17 @@ export function isTaskNotificationMessage(entry: JsonlMessageEntry): boolean {
  * 4. Compact boundaries are paired with their following summary message
  */
 export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry)[]): TransformedItem[] {
-  // Pre-pass: identify compact boundaries and pair them with their summary messages
+  // Pre-pass: identify compact boundaries, memory recalls, and pair them with their summary messages
   const compactBoundaries = new Map<number, { boundary: JsonlSystemEntry; summaryContent: string }>()
+  const memoryRecalls = new Map<number, JsonlSystemEntry>()
   const skipIndices = new Set<number>()
 
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i]
-    if (entry.type === 'system' && (entry as JsonlSystemEntry).subtype === 'compact_boundary') {
+    if (entry.type === 'system' && (entry as JsonlSystemEntry).subtype === 'memory_recall') {
+      memoryRecalls.set(i, entry as JsonlSystemEntry)
+      skipIndices.add(i)
+    } else if (entry.type === 'system' && (entry as JsonlSystemEntry).subtype === 'compact_boundary') {
       const sysEntry = entry as JsonlSystemEntry
       let summaryContent = ''
 
@@ -236,11 +247,13 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
     }
   }
 
-  // Build a map of message UUID -> compact boundary that precedes it
-  // This allows us to insert boundaries at the correct position in the output
+  // Build a map of message UUID -> system items that precede it
+  // This allows us to insert boundaries/recalls at the correct position in the output
   const boundaryBeforeUuid = new Map<string, TransformedCompactBoundary>()
-  // Also track boundaries that appear at the very end (no following message)
+  const recallBeforeUuid = new Map<string, TransformedMemoryRecall[]>()
+  // Also track items that appear at the very end (no following message)
   const trailingBoundaries: TransformedCompactBoundary[] = []
+  const trailingRecalls: TransformedMemoryRecall[] = []
 
   for (const [idx, { boundary, summaryContent }] of compactBoundaries) {
     const item: TransformedCompactBoundary = {
@@ -270,10 +283,43 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
     }
   }
 
+  for (const [idx, sysEntry] of memoryRecalls) {
+    const item: TransformedMemoryRecall = {
+      id: sysEntry.uuid,
+      type: 'memory_recall',
+      memoryPaths: sysEntry.memory_paths || [],
+      createdAt: new Date(sysEntry.timestamp),
+    }
+
+    let nextUuid: string | null = null
+    for (let j = idx + 1; j < entries.length; j++) {
+      if (skipIndices.has(j)) continue
+      const nextEntry = entries[j]
+      if (nextEntry.type === 'user' || nextEntry.type === 'assistant') {
+        nextUuid = (nextEntry as JsonlMessageEntry).uuid
+        break
+      }
+    }
+
+    if (nextUuid) {
+      const existing = recallBeforeUuid.get(nextUuid) || []
+      existing.push(item)
+      recallBeforeUuid.set(nextUuid, existing)
+    } else {
+      trailingRecalls.push(item)
+    }
+  }
+
   // Transform merged message entries, inserting boundaries at correct positions
   const result: TransformedItem[] = []
 
   for (const entry of mergedEntries) {
+    // Insert any memory recalls that precede this message
+    const recalls = recallBeforeUuid.get(entry.uuid)
+    if (recalls) {
+      result.push(...recalls)
+    }
+
     // Insert any compact boundary that precedes this message
     const boundary = boundaryBeforeUuid.get(entry.uuid)
     if (boundary) {
@@ -350,7 +396,8 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
     })
   }
 
-  // Append any boundaries that appear after all messages
+  // Append any system items that appear after all messages
+  result.push(...trailingRecalls)
   result.push(...trailingBoundaries)
 
   return result

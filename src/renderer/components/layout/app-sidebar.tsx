@@ -1,5 +1,5 @@
 
-import { ChevronDown, ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard, Loader2, WifiOff, LogOut, User, Users, CircleHelp, Ban, Zap } from 'lucide-react'
+import { ChevronDown, ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard, Loader2, WifiOff, LogOut, User, Users, CircleHelp, Ban, Zap, MessageCircle } from 'lucide-react'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
@@ -48,6 +48,9 @@ import { useSelection } from '@renderer/context/selection-context'
 import { useScheduledTasks, type ApiScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { useWebhookTriggers } from '@renderer/hooks/use-webhook-triggers'
 import { useArtifacts, type ArtifactInfo } from '@renderer/hooks/use-artifacts'
+import { useChatIntegrations, useChatIntegrationSessions, type ChatIntegration } from '@renderer/hooks/use-chat-integrations'
+import { formatProviderName } from '@shared/lib/chat-integrations/utils'
+import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { GlobalSettingsDialog } from '@renderer/components/settings/global-settings-dialog'
 import { ContainerSetupDialog } from '@renderer/components/settings/container-setup-dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
@@ -340,6 +343,157 @@ function WebhookTriggersGroup({
   )
 }
 
+// Chat integration sub-item (with expandable chat sessions)
+function ChatIntegrationSubItem({
+  integration,
+  agentSlug,
+}: {
+  integration: ChatIntegration
+  agentSlug: string
+}) {
+  const { selectedChatIntegrationId, selectedChatSessionId, selectAgent, selectChatIntegration, selectChatSession } = useSelection()
+  const { data: sessions } = useChatIntegrationSessions(integration.id)
+  const isSelected = integration.id === selectedChatIntegrationId && !selectedChatSessionId
+  const hasSelectedSession = selectedChatIntegrationId === integration.id && selectedChatSessionId != null
+  const [isOpen, setIsOpen] = useState(selectedChatIntegrationId === integration.id || hasSelectedSession)
+
+  const handleClick = () => {
+    selectAgent(agentSlug)
+    selectChatIntegration(integration.id)
+  }
+
+  const handleSessionClick = (sessionId: string) => {
+    selectAgent(agentSlug)
+    selectChatSession(integration.id, sessionId)
+  }
+
+  const statusDot = integration.status === 'active' ? 'bg-green-500' :
+    integration.status === 'paused' ? 'bg-yellow-500' :
+    integration.status === 'error' ? 'bg-red-500' : 'bg-gray-400'
+
+  const tooltip = `${integration.provider}: ${integration.status}`
+  const hasSessions = sessions && sessions.length > 0
+
+  return (
+    <SidebarMenuSubItem>
+      {hasSessions ? (
+        <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+          <div className="flex items-center">
+            <SidebarMenuSubButton
+              asChild
+              isActive={isSelected}
+              title={tooltip}
+              className="flex-1"
+            >
+              <button
+                onClick={handleClick}
+                className={`flex items-center gap-2 w-full text-muted-foreground ${integration.status === 'paused' ? 'opacity-50' : 'opacity-70'}`}
+              >
+                <ServiceIcon slug={integration.provider} fallback="mcp" className="h-3 w-3 shrink-0" />
+                <span className="truncate">
+                  {integration.name || formatProviderName(integration.provider)}
+                </span>
+                <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${statusDot}`} />
+                <CollapsibleTrigger asChild>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setIsOpen(!isOpen) }}
+                    className="ml-auto p-0.5"
+                  >
+                    <ChevronRight className="h-3 w-3 shrink-0 transition-transform duration-200" style={{ transform: isOpen ? 'rotate(90deg)' : 'none' }} />
+                  </button>
+                </CollapsibleTrigger>
+              </button>
+            </SidebarMenuSubButton>
+          </div>
+          <CollapsibleContent>
+            <SidebarMenuSub>
+              {sessions.map((session) => {
+                const isArchived = session.archivedAt != null
+                return (
+                  <SidebarMenuSubItem key={session.id}>
+                    <SidebarMenuSubButton
+                      asChild
+                      isActive={selectedChatSessionId === session.sessionId}
+                    >
+                      <button
+                        onClick={() => handleSessionClick(session.sessionId)}
+                        className={`flex items-center gap-2 w-full text-muted-foreground ${isArchived ? 'opacity-40' : 'opacity-70'}`}
+                      >
+                        <MessageCircle className="h-3 w-3 shrink-0" />
+                        <span className="truncate text-xs">
+                          {session.displayName || `Chat ${session.externalChatId.slice(-6)}`}
+                        </span>
+                        {isArchived && (
+                          <span className="ml-auto text-[10px] text-muted-foreground/50 shrink-0">archived</span>
+                        )}
+                      </button>
+                    </SidebarMenuSubButton>
+                  </SidebarMenuSubItem>
+                )
+              })}
+            </SidebarMenuSub>
+          </CollapsibleContent>
+        </Collapsible>
+      ) : (
+        <SidebarMenuSubButton
+          asChild
+          isActive={isSelected}
+          title={tooltip}
+        >
+          <button
+            onClick={handleClick}
+            className={`flex items-center gap-2 w-full text-muted-foreground ${integration.status === 'paused' ? 'opacity-50' : 'opacity-70'}`}
+          >
+            <ServiceIcon slug={integration.provider} fallback="mcp" className="h-3 w-3 shrink-0" />
+            <span className="truncate">
+              {integration.name || formatProviderName(integration.provider)}
+            </span>
+            <span className={`ml-auto h-1.5 w-1.5 rounded-full shrink-0 ${statusDot}`} />
+          </button>
+        </SidebarMenuSubButton>
+      )}
+    </SidebarMenuSubItem>
+  )
+}
+
+// Collapsible group for multiple chat integrations
+function ChatIntegrationsGroup({
+  integrations,
+  agentSlug,
+}: {
+  integrations: ChatIntegration[]
+  agentSlug: string
+}) {
+  const [isOpen, setIsOpen] = useState(false)
+
+  return (
+    <SidebarMenuSubItem>
+      <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+        <CollapsibleTrigger asChild>
+          <SidebarMenuSubButton asChild>
+            <button className="flex items-center gap-2 w-full text-muted-foreground opacity-70">
+              <MessageCircle className="h-3 w-3 shrink-0" />
+              <span className="truncate">Chat Integrations ({integrations.length})</span>
+              <ChevronRight className="ml-auto h-3 w-3 shrink-0 transition-transform duration-200 data-[state=open]:rotate-90" data-state={isOpen ? 'open' : 'closed'} />
+            </button>
+          </SidebarMenuSubButton>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <SidebarMenuSub>
+            {integrations.map((integration) => (
+              <ChatIntegrationSubItem
+                key={integration.id}
+                integration={integration}
+                agentSlug={agentSlug}
+              />
+            ))}
+          </SidebarMenuSub>
+        </CollapsibleContent>
+      </Collapsible>
+    </SidebarMenuSubItem>
+  )
+}
+
 // Dashboard sub-item
 function DashboardSubItem({
   artifact,
@@ -500,6 +654,7 @@ export const AgentMenuItem = React.forwardRef<
   const { data: webhookTriggersData } = useWebhookTriggers(isOpen ? agent.slug : null, 'active')
   const { data: cancelledWebhookTriggersData } = useWebhookTriggers(isOpen ? agent.slug : null, 'cancelled')
   const { data: artifacts } = useArtifacts(isOpen ? agent.slug : null)
+  const { data: chatIntegrationsData } = useChatIntegrations(isOpen ? agent.slug : null, 'active')
 
   const visibleSessions = showAll ? sessions : sessions?.slice(0, 5)
   const hasMore = (sessions?.length ?? 0) > 5
@@ -510,6 +665,7 @@ export const AgentMenuItem = React.forwardRef<
   const cancelledWebhookTriggers = cancelledWebhookTriggersData || []
   const allWebhookTriggers = activeWebhookTriggers.length + cancelledWebhookTriggers.length
   const dashboards = Array.isArray(artifacts) ? artifacts : []
+  const chatIntegrations = chatIntegrationsData || []
 
   // Use pre-aggregated counts to determine if the chevron should show.
   // Also show when isOpen (agent selected) since sessions may have been
@@ -518,6 +674,7 @@ export const AgentMenuItem = React.forwardRef<
     isOpen ||
     (agent.sessionCount ?? 0) > 0 ||
     (agent.scheduledTaskCount ?? 0) > 0 ||
+    (agent.chatIntegrationCount ?? 0) > 0 ||
     (agent.dashboardCount ?? 0) > 0 ||
     activeWebhookTriggers.length > 0
 
@@ -567,8 +724,8 @@ export const AgentMenuItem = React.forwardRef<
             </span>
             <AgentStatus
               status={agent.status}
-              hasActiveSessions={sessions ? sessions.some((s) => s.isActive) : (agent.hasActiveSessions ?? false)}
-              hasSessionsAwaitingInput={sessions ? sessions.some((s) => s.isAwaitingInput) : (agent.hasSessionsAwaitingInput ?? false)}
+              hasActiveSessions={sessions?.some((s) => s.isActive) || (agent.hasActiveSessions ?? false)}
+              hasSessionsAwaitingInput={sessions?.some((s) => s.isAwaitingInput) || (agent.hasSessionsAwaitingInput ?? false)}
             />
           </SidebarMenuButton>
         </AgentContextMenu>
@@ -617,6 +774,18 @@ export const AgentMenuItem = React.forwardRef<
                     ) : activeWebhookTriggers.length === 1 ? (
                       <WebhookTriggerSubItem
                         trigger={activeWebhookTriggers[0]}
+                        agentSlug={agent.slug}
+                      />
+                    ) : null}
+                    {/* Chat integrations */}
+                    {chatIntegrations.length > 1 ? (
+                      <ChatIntegrationsGroup
+                        integrations={chatIntegrations}
+                        agentSlug={agent.slug}
+                      />
+                    ) : chatIntegrations.length === 1 ? (
+                      <ChatIntegrationSubItem
+                        integration={chatIntegrations[0]}
                         agentSlug={agent.slug}
                       />
                     ) : null}

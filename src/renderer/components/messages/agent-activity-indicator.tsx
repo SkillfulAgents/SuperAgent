@@ -74,7 +74,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     const activeMap = new Map(activeSubagents.map(s => [s.parentToolId, s]))
     const items: { id: string; name: string; description: string; status: 'running' | 'completed'; progressSummary: string | null }[] = []
     for (const msg of messages) {
-      if (msg.type === 'compact_boundary') continue
+      if (msg.type === 'compact_boundary' || msg.type === 'memory_recall') continue
       for (const tc of msg.toolCalls || []) {
         if ((tc.name === 'Agent' || tc.name === 'Task') && activeMap.has(tc.id)) {
           if (tc.isError) continue
@@ -130,7 +130,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     // Iterate through messages in reverse to find the most recent TodoWrite
     for (let i = messages.length - 1; i >= 0; i--) {
       const message = messages[i]
-      if (message.type === 'compact_boundary') continue
+      if (message.type === 'compact_boundary' || message.type === 'memory_recall') continue
       // Use the toolCalls array from the API message
       const toolCalls = message.toolCalls || []
       for (let j = toolCalls.length - 1; j >= 0; j--) {

@@ -188,6 +188,46 @@ class NotificationManager {
   }
 
   /**
+   * Trigger notification for chat integration events (connected, disconnected, error)
+   */
+  async triggerChatIntegrationEvent(
+    sessionId: string,
+    agentSlug: string,
+    integrationName: string,
+    event: 'connected' | 'disconnected' | 'error',
+    detail?: string,
+  ): Promise<void> {
+    const displayName = await this.getAgentDisplayName(agentSlug)
+    let title: string
+    let body: string
+
+    switch (event) {
+      case 'connected':
+        title = 'Chat Integration Connected'
+        body = `${integrationName} connected for ${displayName}`
+        break
+      case 'disconnected':
+        title = 'Chat Integration Disconnected'
+        body = `${integrationName} disconnected from ${displayName}`
+        break
+      case 'error':
+        title = 'Chat Integration Error'
+        body = detail
+          ? `${integrationName} error on ${displayName}: ${detail}`
+          : `${integrationName} encountered an error on ${displayName}`
+        break
+    }
+
+    await this.triggerNotification({
+      type: 'session_chat_integration',
+      sessionId,
+      agentSlug,
+      title,
+      body,
+    })
+  }
+
+  /**
    * Trigger notification when a webhook event starts a session
    */
   async triggerWebhookSessionStarted(

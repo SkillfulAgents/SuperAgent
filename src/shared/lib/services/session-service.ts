@@ -238,7 +238,7 @@ export async function listSessions(
 
   const isAutomated = (sessionId: string) => {
     const meta = metadata[sessionId]
-    return meta?.isScheduledExecution || meta?.isWebhookExecution
+    return meta?.isScheduledExecution || meta?.isWebhookExecution || meta?.isChatIntegrationSession
   }
 
   // Track which sessions we've processed
@@ -358,14 +358,15 @@ export async function getSessionMessages(
 /**
  * Check if a JSONL entry is a message or compact boundary (for display)
  */
-function isMessageOrCompactEntry(
+function isMessageOrSystemDisplayEntry(
   entry: JsonlEntry
 ): entry is JsonlMessageEntry | JsonlSystemEntry {
-  return (
-    entry.type === 'user' ||
-    entry.type === 'assistant' ||
-    (entry.type === 'system' && (entry as JsonlSystemEntry).subtype === 'compact_boundary')
-  )
+  if (entry.type === 'user' || entry.type === 'assistant') return true
+  if (entry.type === 'system') {
+    const subtype = (entry as JsonlSystemEntry).subtype
+    return subtype === 'compact_boundary' || subtype === 'memory_recall'
+  }
+  return false
 }
 
 /**
@@ -382,7 +383,7 @@ export async function getSessionMessagesWithCompact(
   }
 
   const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
-  return entries.filter(isMessageOrCompactEntry)
+  return entries.filter(isMessageOrSystemDisplayEntry)
 }
 
 /**

@@ -8,6 +8,7 @@ import { AgentLanding } from '@renderer/components/agents/agent-landing'
 import { HomePage } from '@renderer/components/home/home-page'
 import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/scheduled-task-view'
 import { WebhookTriggerView } from '@renderer/components/webhook-triggers/webhook-trigger-view'
+import { ChatIntegrationView } from '@renderer/components/chat-integrations/chat-integration-view'
 import { BrowserDrawerPanel } from '@renderer/components/browser/browser-drawer-panel'
 import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
 import { Button } from '@renderer/components/ui/button'
@@ -40,6 +41,7 @@ export function MainContent() {
     selectedSessionId: sessionId,
     selectedScheduledTaskId: scheduledTaskId,
     selectedWebhookTriggerId: webhookTriggerId,
+    selectedChatIntegrationId: chatIntegrationId,
     selectedDashboardSlug: dashboardSlug,
     selectSession,
     selectScheduledTask,
@@ -58,8 +60,8 @@ export function MainContent() {
   const { data: scheduledTask } = useScheduledTask(scheduledTaskId)
   const startAgent = useStartAgent()
   const stopAgent = useStopAgent()
-  const hasActiveSessions = sessions?.some((s) => s.isActive) ?? false
-  const hasSessionsAwaitingInput = sessions?.some((s) => s.isAwaitingInput) ?? false
+  const hasActiveSessions = sessions?.some((s) => s.isActive) || (agent?.hasActiveSessions ?? false)
+  const hasSessionsAwaitingInput = sessions?.some((s) => s.isAwaitingInput) || (agent?.hasSessionsAwaitingInput ?? false)
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
   const markSessionNotificationsRead = useMarkSessionNotificationsRead()
@@ -430,6 +432,9 @@ export function MainContent() {
         ) : /* Show webhook trigger view when a webhook trigger is selected */
         webhookTriggerId ? (
           <WebhookTriggerView triggerId={webhookTriggerId} agentSlug={agentSlug} />
+        ) : /* Show chat integration view when a chat integration is selected */
+        chatIntegrationId ? (
+          <ChatIntegrationView integrationId={chatIntegrationId} agentSlug={agentSlug} />
         ) : sessionId ? (
           /* Show messages when a session is selected */
           <div className="relative flex-1 flex min-h-0">
