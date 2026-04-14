@@ -4,7 +4,7 @@ import { MessageInput } from '@renderer/components/messages/message-input'
 import { AgentActivityIndicator } from '@renderer/components/messages/agent-activity-indicator'
 import { AgentSettingsDialog } from '@renderer/components/agents/agent-settings-dialog'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
-import { AgentLanding } from '@renderer/components/agents/agent-landing'
+import { AgentHome } from '@renderer/components/agents/agent-home/agent-home'
 import { HomePage } from '@renderer/components/home/home-page'
 import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/scheduled-task-view'
 import { WebhookTriggerView } from '@renderer/components/webhook-triggers/webhook-trigger-view'
@@ -137,7 +137,7 @@ export function MainContent() {
     }
   }, [sessionId])
 
-  // Callback for AgentLanding when a new session is created with initial message
+  // Callback for AgentHome when a new session is created with initial message
   const handleSessionCreated = useCallback((newSessionId: string, initialMessage: string) => {
     pendingMessagesRef.current.set(newSessionId, {
       text: initialMessage,
@@ -162,7 +162,13 @@ export function MainContent() {
         />
         <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-2 min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="text-sm md:text-base font-semibold truncate">{agent?.name || 'Loading...'}</span>
+            <button
+              type="button"
+              className="text-sm md:text-base font-semibold truncate hover:text-muted-foreground transition-colors app-no-drag"
+              onClick={() => selectSession(null)}
+            >
+              {agent?.name || 'Loading...'}
+            </button>
             {agent && <AgentStatus status={agent.status} hasActiveSessions={hasActiveSessions} hasSessionsAwaitingInput={hasSessionsAwaitingInput} />}
           </div>
           {sessionId && session?.agentSlug === agentSlug && (
@@ -446,7 +452,7 @@ export function MainContent() {
                 pendingUserMessage={pendingUserMessage}
                 onPendingMessageAppeared={handlePendingMessageAppeared}
               />
-              <div className="bg-background">
+              <div className="bg-background max-w-[740px] mx-auto w-full">
                 <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
                 <MessageInput
                   key={sessionId}
@@ -462,11 +468,12 @@ export function MainContent() {
             <BrowserDrawerPanel agentSlug={agentSlug} sessionId={sessionId} browserActive={browserActive} isActive={isActive} />
           </div>
         ) : (
-          /* Show landing page with large input when no session is selected */
+          /* Show home page with large input when no session is selected */
           agent && (
-            <AgentLanding
+            <AgentHome
               agent={agent}
               onSessionCreated={handleSessionCreated}
+              onOpenSettings={() => setSettingsOpen(true)}
             />
           )
         )}

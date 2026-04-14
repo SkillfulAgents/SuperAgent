@@ -47,7 +47,7 @@ export function ChatComposerBox({
 }: ChatComposerBoxProps) {
   return (
     <div className={cn(
-      'mx-auto w-full max-w-[740px] rounded-2xl border border-border/60 bg-background/95 px-3 py-3 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-background/80',
+      'mx-auto w-full rounded-2xl border border-border/60 bg-background/95 px-3 py-3 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-background/80',
       className
     )}>
       <AttachmentPreview attachments={attachments} onRemove={onRemoveAttachment} />

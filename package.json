@@ -80,6 +80,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cron-parser": "^5.5.0",
+    "cronstrue": "^3.14.0",
     "date-fns": "^4.1.0",
     "drizzle-orm": "^0.45.1",
     "electron-updater": "^6.7.3",

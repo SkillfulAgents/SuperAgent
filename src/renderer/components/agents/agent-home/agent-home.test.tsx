@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { AgentLanding } from './agent-landing'
+import { AgentHome } from './agent-home'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 
@@ -26,6 +26,20 @@ const mockCreateSession = {
 
 vi.mock('@renderer/hooks/use-sessions', () => ({
   useCreateSession: () => mockCreateSession,
+  useSessions: () => ({ data: [] }),
+}))
+
+vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
+  useScheduledTasks: () => ({ data: [] }),
+  useRunScheduledTaskNow: () => ({ mutate: vi.fn(), isPending: false }),
+  useCancelScheduledTask: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+}))
+
+vi.mock('@renderer/context/selection-context', () => ({
+  useSelection: () => ({
+    selectScheduledTask: vi.fn(),
+    selectSession: vi.fn(),
+  }),
 }))
 
 const mockComposer = {
@@ -72,6 +86,10 @@ vi.mock('@renderer/hooks/use-message-composer', () => ({
   },
 }))
 
+vi.mock('@renderer/hooks/use-humanized-cron', () => ({
+  useHumanizedCron: () => null,
+}))
+
 vi.mock('@renderer/hooks/use-agent-skills', () => ({
   useAgentSkills: () => ({ data: [] }),
   useDiscoverableSkills: () => ({ data: [] }),
@@ -103,7 +121,7 @@ vi.mock('@renderer/context/user-context', () => ({
   UserProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
-describe('AgentLanding', () => {
+describe('AgentHome', () => {
   const onSessionCreated = vi.fn()
 
   beforeEach(() => {
@@ -127,32 +145,24 @@ describe('AgentLanding', () => {
 
   it('renders landing page with agent name', () => {
     renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
-    expect(screen.getByText('Start a conversation with Test Agent')).toBeInTheDocument()
-    expect(screen.getByText('Send a message to begin a new session')).toBeInTheDocument()
+    expect(screen.getByText('Test Agent')).toBeInTheDocument()
   })
 
   it('renders textarea with placeholder', () => {
     renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
-    expect(screen.getByTestId('landing-message-input')).toBeInTheDocument()
-    expect(screen.getByPlaceholderText('Type a message...')).toBeInTheDocument()
+    expect(screen.getByTestId('home-message-input')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('How can I help? Press cmd+enter to send')).toBeInTheDocument()
   })
 
   it('renders send button', () => {
     renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
-    expect(screen.getByTestId('landing-send-button')).toBeInTheDocument()
-  })
-
-  it('renders Cmd+Enter hint', () => {
-    renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
-    )
-    expect(screen.getByText('Press Cmd+Enter to send')).toBeInTheDocument()
+    expect(screen.getByTestId('home-send-button')).toBeInTheDocument()
   })
 
   // --- Send button disabled state ---
@@ -160,17 +170,17 @@ describe('AgentLanding', () => {
   it('send button is disabled when canSubmit is false', () => {
     mockComposer.canSubmit = false
     renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
-    expect(screen.getByTestId('landing-send-button')).toBeDisabled()
+    expect(screen.getByTestId('home-send-button')).toBeDisabled()
   })
 
   it('send button is enabled when canSubmit is true', () => {
     mockComposer.canSubmit = true
     renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
-    expect(screen.getByTestId('landing-send-button')).not.toBeDisabled()
+    expect(screen.getByTestId('home-send-button')).not.toBeDisabled()
   })
 
   // --- Cmd+Enter submission ---
@@ -179,10 +189,10 @@ describe('AgentLanding', () => {
     const user = userEvent.setup()
     mockComposer.canSubmit = true
     renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
 
-    const input = screen.getByTestId('landing-message-input')
+    const input = screen.getByTestId('home-message-input')
     await user.click(input)
     await user.keyboard('{Meta>}{Enter}{/Meta}')
 
@@ -193,10 +203,10 @@ describe('AgentLanding', () => {
     const user = userEvent.setup()
     mockComposer.canSubmit = true
     renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
 
-    const input = screen.getByTestId('landing-message-input')
+    const input = screen.getByTestId('home-message-input')
     await user.click(input)
     await user.keyboard('{Control>}{Enter}{/Control}')
 
@@ -206,10 +216,10 @@ describe('AgentLanding', () => {
   it('does not submit on plain Enter', async () => {
     const user = userEvent.setup()
     renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
 
-    const input = screen.getByTestId('landing-message-input')
+    const input = screen.getByTestId('home-message-input')
     await user.click(input)
     await user.keyboard('{Enter}')
 
@@ -222,25 +232,25 @@ describe('AgentLanding', () => {
     mockRuntimeStatus.data.runtimeReadiness.status = 'PULLING_IMAGE'
     mockRuntimeStatus.isPending = false
     renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
-    expect(screen.getByTestId('landing-message-input')).toBeDisabled()
+    expect(screen.getByTestId('home-message-input')).toBeDisabled()
   })
 
   it('disables input when createSession is pending', () => {
     mockCreateSession.isPending = true
     renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
-    expect(screen.getByTestId('landing-message-input')).toBeDisabled()
+    expect(screen.getByTestId('home-message-input')).toBeDisabled()
   })
 
   it('disables input when uploading', () => {
     mockComposer.isUploading = true
     renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
-    expect(screen.getByTestId('landing-message-input')).toBeDisabled()
+    expect(screen.getByTestId('home-message-input')).toBeDisabled()
   })
 
   // --- Auto-expand ---
@@ -248,10 +258,10 @@ describe('AgentLanding', () => {
   it('auto-expands when the message is very long', () => {
     mockComposer.message = 'one\ntwo\nthree\nfour\nfive'
     renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
 
-    expect(screen.getByTestId('landing-message-input').className).toContain('min-h-[50vh]')
+    expect(screen.getByTestId('home-message-input').className).toContain('min-h-[50vh]')
   })
 
   // --- View-only mode ---
@@ -260,22 +270,21 @@ describe('AgentLanding', () => {
     mockCanUseAgent = false
 
     renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
 
     expect(screen.getByTestId('view-only-banner')).toBeInTheDocument()
-    expect(screen.queryByTestId('landing-message-input')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('home-message-input')).not.toBeInTheDocument()
   })
 
-  it('shows agent name without "Start a conversation" prefix in view-only mode', () => {
+  it('shows agent name in view-only mode', () => {
     mockCanUseAgent = false
 
     renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
 
     expect(screen.getByText('Test Agent')).toBeInTheDocument()
-    expect(screen.queryByText(/Start a conversation/)).not.toBeInTheDocument()
   })
 
   // --- API key warning ---
@@ -283,7 +292,7 @@ describe('AgentLanding', () => {
   it('shows API key warning when not configured', () => {
     mockRuntimeStatus.data.apiKeyConfigured = false
     renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     expect(screen.getByText('No API key configured. An administrator needs to set up the LLM API key.')).toBeInTheDocument()
   })
@@ -295,7 +304,7 @@ describe('AgentLanding', () => {
     mockRuntimeStatus.data.runtimeReadiness.message = 'Pulling container image...'
     mockRuntimeStatus.isPending = false
     renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     expect(screen.getByText('Pulling container image...')).toBeInTheDocument()
   })
@@ -305,7 +314,7 @@ describe('AgentLanding', () => {
   it('shows ring when dragging over', () => {
     mockComposer.isDragOver = true
     const { container } = renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     const form = container.querySelector('form')!
     expect(form.className).toContain('ring-2')
@@ -314,7 +323,7 @@ describe('AgentLanding', () => {
   it('no ring when not dragging', () => {
     mockComposer.isDragOver = false
     const { container } = renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     const form = container.querySelector('form')!
     expect(form.className).not.toContain('ring-2')
@@ -324,7 +333,7 @@ describe('AgentLanding', () => {
 
   it('passes correct agentSlug to useMessageComposer', () => {
     renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     expect(capturedComposerOptions.agentSlug).toBe('test-agent')
   })
@@ -333,7 +342,7 @@ describe('AgentLanding', () => {
     mockCreateSession.isPending = false
     mockRuntimeStatus.data.runtimeReadiness.status = 'READY'
     renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     expect(capturedComposerOptions.submitDisabled).toBe(false)
   })
@@ -341,14 +350,14 @@ describe('AgentLanding', () => {
   it('passes submitDisabled=true when createSession is pending', () => {
     mockCreateSession.isPending = true
     renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     expect(capturedComposerOptions.submitDisabled).toBe(true)
   })
 
   it('onSubmit creates session and calls onSessionCreated', async () => {
     renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
 
     // Call the onSubmit that was passed to useMessageComposer
@@ -367,7 +376,7 @@ describe('AgentLanding', () => {
 
   it('renders attachment picker', () => {
     renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     expect(screen.getByTitle('Add files')).toBeInTheDocument()
   })
@@ -375,7 +384,7 @@ describe('AgentLanding', () => {
   it('disables attachment picker when disabled', () => {
     mockCreateSession.isPending = true
     renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     expect(screen.getByTitle('Add files')).toBeDisabled()
   })
