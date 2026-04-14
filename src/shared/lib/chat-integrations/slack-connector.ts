@@ -40,7 +40,9 @@ export function markdownToSlackMrkdwn(md: string): string {
   result = result.replace(/```[\w]*\n([\s\S]*?)```/g, '```$1```')
 
   // Headings → bold text (use placeholder to avoid italic re-matching)
-  result = result.replace(/^#{1,6}\s+(.+)$/gm, '\x01BOLD_START\x01$1\x01BOLD_END\x01')
+  const BOLD_START = '%%BOLD_S%%'
+  const BOLD_END = '%%BOLD_E%%'
+  result = result.replace(/^#{1,6}\s+(.+)$/gm, `${BOLD_START}$1${BOLD_END}`)
 
   // Italic first (single * or _): *text* → _text_ (must happen BEFORE bold conversion)
   // Only match single *, not **
@@ -51,8 +53,8 @@ export function markdownToSlackMrkdwn(md: string): string {
   result = result.replace(/__(.+?)__/g, '*$1*')
 
   // Restore heading bold markers
-  result = result.replace(/\x01BOLD_START\x01/g, '*')
-  result = result.replace(/\x01BOLD_END\x01/g, '*')
+  result = result.replace(new RegExp(BOLD_START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), '*')
+  result = result.replace(new RegExp(BOLD_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), '*')
 
   // Strikethrough: ~~text~~ → ~text~
   result = result.replace(/~~(.+?)~~/g, '~$1~')
@@ -150,12 +152,12 @@ export class SlackConnector extends ChatClientConnector {
     })
 
     // Catch-all for events we don't explicitly handle (Bolt requires ack for all events)
-    this.app.event(/.*/, async ({ event }) => {
+    this.app.event(/.*/, async (_ctx: any) => {
       // No-op — just acknowledge so Slack doesn't retry/disconnect
     })
 
     // Handle incoming messages
-    this.app.message(async ({ message, say }) => {
+    this.app.message(async ({ message, say: _say }: { message: any; say: any }) => {
       // Skip bot messages, edits, etc.
       // Skip bot messages, edits, etc. — but allow file_share (user sent an image/file)
       const subtype = (message as any).subtype
@@ -194,7 +196,7 @@ export class SlackConnector extends ChatClientConnector {
     })
 
     // Handle button clicks (interactive actions)
-    this.app.action(/^cb_\d+$/, async ({ ack, action, body }) => {
+    this.app.action(/^cb_\d+$/, async ({ ack, action, body }: { ack: any; action: any; body: any }) => {
       await ack()
 
       const actionId = (action as any).action_id

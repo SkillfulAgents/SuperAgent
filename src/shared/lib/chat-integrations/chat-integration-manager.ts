@@ -19,7 +19,6 @@ import { formatProviderName } from './utils'
 import {
   listStartupChatIntegrations,
   getChatIntegration,
-  updateChatIntegration,
   updateChatIntegrationStatus,
 } from '@shared/lib/services/chat-integration-service'
 import {
@@ -900,7 +899,6 @@ class ChatIntegrationManager {
     if (toolUseId.startsWith('review:')) {
       const parts = toolUseId.split(':')
       const reviewId = parts[1]
-      const agentSlug = parts.slice(2).join(':')
       const responseObj = response as Record<string, unknown>
       const answer = (responseObj?.answer as string)?.toLowerCase() || ''
       const decision = answer.includes('allow') ? 'allow' : 'deny'

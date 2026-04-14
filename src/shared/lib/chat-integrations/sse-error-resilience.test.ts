@@ -6,7 +6,7 @@
  * These test the try/catch guards added for stability.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { processSSEEvent, finalizeStreaming, resolvePendingToolMessages, type ManagedConnector } from './chat-integration-manager'
 import { MockChatClientConnector } from './mock-connector'
 import type { ChatIntegration } from '@shared/lib/db/schema'
@@ -81,7 +81,7 @@ describe('stream_delta error resilience', () => {
     const mock = getMock(managed)
 
     let callCount = 0
-    mock.sendStreamingUpdate = async (_chatId: string, text: string) => {
+    mock.sendStreamingUpdate = async (_chatId: string, _text: string) => {
       callCount++
       if (callCount === 1) throw new Error('first call fails')
       return 'msg-1'
@@ -334,7 +334,7 @@ describe('pipeline isolation', () => {
 
     // Make sendUserRequestCard throw
     const origSendCard = mock.sendUserRequestCard.bind(mock)
-    mock.sendUserRequestCard = async (...args) => {
+    mock.sendUserRequestCard = async () => {
       mock.sendUserRequestCard = origSendCard // restore after first call
       throw new Error('one-time card failure')
     }
