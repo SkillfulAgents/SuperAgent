@@ -65,7 +65,7 @@ import {
   publishSkillToSkillset,
   refreshAgentSkills,
 } from '@shared/lib/services/skillset-service'
-import { listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
+import { type ArtifactInfo, listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
 import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
@@ -3730,7 +3730,10 @@ agents.get('/:id/artifacts', AgentRead(), async (c) => {
     const slug = c.req.param('id')
 
 
-    // Try to get from running container first
+    // Always read name/description from host filesystem (source of truth for metadata)
+    const fsDashboards = await listArtifactsFromFilesystem(slug)
+
+    // Try to merge with running container data (provides live status + port)
     try {
       const client = containerManager.getClient(slug)
       // Use cached status to avoid spawning docker process
@@ -3739,16 +3742,30 @@ agents.get('/:id/artifacts', AgentRead(), async (c) => {
       if (info.status === 'running') {
         const response = await client.fetch('/artifacts')
         if (response.ok) {
-          return c.json(await response.json())
+          const containerDashboards = await response.json() as ArtifactInfo[]
+          const fsMap = new Map(fsDashboards.map(d => [d.slug, d]))
+
+          // Use container status/port but filesystem name/description
+          const merged = containerDashboards.map(cd => {
+            const fs = fsMap.get(cd.slug)
+            return fs
+              ? { ...cd, name: fs.name, description: fs.description }
+              : cd
+          })
+          // Include any filesystem-only dashboards (not yet tracked by container)
+          for (const fsd of fsDashboards) {
+            if (!containerDashboards.some(cd => cd.slug === fsd.slug)) {
+              merged.push(fsd)
+            }
+          }
+          return c.json(merged)
         }
       }
     } catch {
-      // Container not running, fall through to filesystem
+      // Container not running, fall through to filesystem-only data
     }
 
-    // Read from host filesystem when container is off
-    const dashboards = await listArtifactsFromFilesystem(slug)
-    return c.json(dashboards)
+    return c.json(fsDashboards)
   } catch (error) {
     console.error('Failed to fetch artifacts:', error)
     return c.json({ error: 'Failed to fetch artifacts' }, 500)

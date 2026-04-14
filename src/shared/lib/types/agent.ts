@@ -171,6 +171,7 @@ export interface JsonlSystemEntry {
     trigger: string
     preTokens: number
   }
+  memory_paths?: string[]
 }
 
 /**

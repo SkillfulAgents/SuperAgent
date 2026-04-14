@@ -573,6 +573,12 @@ class MessagePersister {
             parentToolId: content.parent_tool_use_id,
             summary: content.summary,
           })
+        } else if (content.subtype === 'memory_recall') {
+          // Memory recall — agent is reading memory files
+          this.broadcastToSSE(sessionId, {
+            type: 'memory_recall',
+            memoryPaths: content.memory_paths || [],
+          })
         }
         break
 
