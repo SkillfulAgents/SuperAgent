@@ -1,17 +1,24 @@
 {
   "storyId": "browser-test",
-  "passed": false,
-  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: ew panel on the right also displays the actual Example Domain page with proper rendering visible. The Activity section shows both \"Open Browser https://example.com\" and \"Page Snapshot\" were executed successfully.\n\nAll test steps passed successfully. The browser-use feature is functioning correctly.\n",
-  "steps": [],
+  "passed": true,
+  "reason": "Browser use feature allows agent to open browser, navigate to URLs, capture page information, and report back with accurate page titles",
+  "steps": [
+    "Navigated to http://localhost:47891 — page loaded successfully with agent list visible",
+    "Clicked on \"QA-20260414-202013-7frh\" agent in sidebar — agent chat interface opened",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — message entered in input field",
+    "Clicked Send message button — message sent successfully, agent status changed to \"working\"",
+    "Waited up to 3 minutes for response — agent completed in 9 seconds",
+    "Verified response mentions \"Example Domain\" — response clearly states: \"The page title is \"Example Domain\". It's a simple page with a heading and a \"Learn more\" link.\""
+  ],
   "bugs": [],
-  "durationMs": 95490,
-  "sessionId": "cdb4a162-424f-4a04-8bf8-ecb41c71149b",
+  "durationMs": 96606,
+  "sessionId": "dbec17dd-b457-4e42-a7ff-897615201bdb",
   "cost": {
-    "inputTokens": 261,
-    "outputTokens": 7508,
-    "cacheCreationTokens": 39319,
-    "cacheReadTokens": 921042,
+    "inputTokens": 315,
+    "outputTokens": 9037,
+    "cacheCreationTokens": 118781,
+    "cacheReadTokens": 1039745,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.179054
+    "totalCostUsd": 0.297951
   }
 }
