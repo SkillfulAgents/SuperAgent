@@ -160,9 +160,19 @@ export interface ApiCompactBoundary {
 }
 
 /**
+ * Memory recall marker in API response
+ */
+export interface ApiMemoryRecall {
+  id: string
+  type: 'memory_recall'
+  memoryPaths: string[]
+  createdAt: Date
+}
+
+/**
  * Union type for all message-like items in the API response
  */
-export type ApiMessageOrBoundary = ApiMessage | ApiCompactBoundary
+export type ApiMessageOrBoundary = ApiMessage | ApiCompactBoundary | ApiMemoryRecall
 
 // ============================================================================
 // Secret API Types
