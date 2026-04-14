@@ -180,7 +180,7 @@ function getOrCreateEventSource(
           browserActive: current?.browserActive ?? false,
           computerUseApp: current?.computerUseApp ?? null,
           computerUseAppIcon: current?.computerUseAppIcon ?? null,
-          activeStartTime: current?.activeStartTime ?? null,
+          activeStartTime: current?.activeStartTime ?? (data.isActive ? Date.now() : null),
           isCompacting: current?.isCompacting ?? false,
           contextUsage: current?.contextUsage ?? null,
           activeSubagents: current?.activeSubagents ?? [],
