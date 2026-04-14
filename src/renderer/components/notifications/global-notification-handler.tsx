@@ -112,8 +112,11 @@ export function GlobalNotificationHandler() {
             } else {
               queryClient.invalidateQueries({ queryKey: ['sessions'] })
             }
-            // Agent list includes pre-aggregated session status (hasActiveSessions, etc.)
+            // Agent list + detail includes pre-aggregated session status (hasActiveSessions, etc.)
             queryClient.invalidateQueries({ queryKey: ['agents'] })
+            if (eventAgentSlug) {
+              queryClient.invalidateQueries({ queryKey: ['agents', eventAgentSlug] })
+            }
             // Artifacts may have been created/modified during the session
             queryClient.invalidateQueries({ queryKey: ['artifacts'] })
 

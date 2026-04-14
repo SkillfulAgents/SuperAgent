@@ -33,6 +33,7 @@ export interface ApiAgent {
   lastActivityAt?: Date | null
   scheduledTaskCount?: number
   nextScheduledTaskAt?: Date | null
+  chatIntegrationCount?: number
   dashboardCount?: number
   dashboardNames?: string[]
   dashboardSlugs?: string[]

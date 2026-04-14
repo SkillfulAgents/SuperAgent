@@ -14,6 +14,7 @@ import {
 } from '@shared/lib/services/agent-service'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
+import { listChatIntegrations, listChatIntegrationsByAgents } from '@shared/lib/services/chat-integration-service'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import {
@@ -109,9 +110,10 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
   const slugs = agents.map(a => a.slug)
 
   // Batch DB queries: 2 queries instead of 2*N individual queries
-  const [unreadByAgent, tasksByAgent] = await Promise.all([
+  const [unreadByAgent, tasksByAgent, chatIntegrationsByAgent] = await Promise.all([
     getUnreadNotificationsByAgents(slugs),
     listPendingScheduledTasksByAgents(slugs),
+    Promise.resolve(listChatIntegrationsByAgents(slugs)),
   ])
 
   const limit = pLimit(5)
@@ -175,6 +177,7 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
         lastActivityAt: sessionSummary.lastActivityAt,
         scheduledTaskCount,
         nextScheduledTaskAt,
+        chatIntegrationCount: (chatIntegrationsByAgent.get(agent.slug) ?? []).length,
         dashboardCount: artifacts.length,
         dashboardNames: artifacts.map((a) => a.name || a.slug),
         dashboardSlugs: artifacts.map((a) => a.slug),
@@ -2364,6 +2367,20 @@ agents.get('/:id/webhook-triggers', AgentRead(), async (c) => {
   } catch (error) {
     console.error('Failed to fetch webhook triggers:', error)
     return c.json({ error: 'Failed to fetch webhook triggers' }, 500)
+  }
+})
+
+// GET /api/agents/:id/chat-integrations - List chat integrations for an agent
+agents.get('/:id/chat-integrations', AgentRead(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const status = c.req.query('status')
+
+    const integrations = listChatIntegrations(slug, status || undefined)
+    return c.json(integrations)
+  } catch (error) {
+    console.error('Failed to fetch chat integrations:', error)
+    return c.json({ error: 'Failed to fetch chat integrations' }, 500)
   }
 })
 

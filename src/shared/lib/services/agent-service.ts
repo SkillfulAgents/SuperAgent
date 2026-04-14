@@ -29,6 +29,8 @@ import {
 } from '@shared/lib/types/agent'
 import type { ApiAgent } from '@shared/lib/types/api'
 import { containerManager } from '@shared/lib/container/container-manager'
+import { messagePersister } from '@shared/lib/container/message-persister'
+import { getSessionSummary } from './session-service'
 
 // ============================================================================
 // Internal to API Type Conversion
@@ -116,8 +118,30 @@ export async function getAgentWithStatus(slug: string): Promise<ApiAgent | null>
 
   // Use cached status to avoid spawning docker processes
   const info = containerManager.getCachedInfo(slug)
+  const base = toApiAgent(agent, info.status, info.port)
 
-  return toApiAgent(agent, info.status, info.port)
+  // Compute session activity flags (same logic as the list endpoint)
+  const sessionSummary = await getSessionSummary(slug)
+  let hasActiveSessions = false
+  let hasSessionsAwaitingInput = false
+  for (const sessionId of sessionSummary.sessionIds) {
+    if (messagePersister.isSessionActive(sessionId)) hasActiveSessions = true
+    if (messagePersister.isSessionAwaitingInput(sessionId)) hasSessionsAwaitingInput = true
+  }
+  if (!hasActiveSessions) {
+    hasActiveSessions = messagePersister.hasActiveSessionsForAgent(slug)
+  }
+  if (!hasSessionsAwaitingInput) {
+    hasSessionsAwaitingInput = messagePersister.hasSessionsAwaitingInputForAgent(slug)
+  }
+
+  return {
+    ...base,
+    hasActiveSessions,
+    hasSessionsAwaitingInput,
+    sessionCount: sessionSummary.sessionCount,
+    lastActivityAt: sessionSummary.lastActivityAt,
+  }
 }
 
 /**
