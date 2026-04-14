@@ -8,6 +8,7 @@
 import { useState } from 'react'
 import { Clock, Calendar, Repeat, Trash2, Globe, Play, Pencil, Loader2 } from 'lucide-react'
 import { RelatedSessions } from '@renderer/components/sessions/related-sessions'
+import { useHumanizedCron } from '@renderer/hooks/use-humanized-cron'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
@@ -60,6 +61,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const { handleScheduledTaskDeleted, selectSession } = useSelection()
   const { canUseAgent } = useUser()
   const canCancel = canUseAgent(agentSlug)
+  const humanizedCron = useHumanizedCron(task?.isRecurring ? task.scheduleExpression : null)
 
   // Edit schedule modal state
   const [editScheduleOpen, setEditScheduleOpen] = useState(false)
@@ -179,7 +181,10 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
               </div>
               <div className="flex items-center gap-1">
                 <Calendar className="h-4 w-4" />
-                <span>{task.scheduleExpression}</span>
+                <span>{humanizedCron ?? task.scheduleExpression}</span>
+                {humanizedCron && humanizedCron !== task.scheduleExpression && (
+                  <span className="text-xs text-muted-foreground/60">({task.scheduleExpression})</span>
+                )}
               </div>
               <div className="flex items-center gap-1">
                 <Globe className="h-4 w-4" />
@@ -217,29 +222,29 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
                 </Button>
               )}
 
-              {/* Cancel Task button */}
+              {/* Delete Cron button */}
               <AlertDialog>
                 <AlertDialogTrigger asChild>
                   <Button variant="destructive" size="sm">
                     <Trash2 className="h-4 w-4 mr-2" />
-                    Cancel Task
+                    Delete Cron
                   </Button>
                 </AlertDialogTrigger>
                 <AlertDialogContent>
                   <AlertDialogHeader>
-                    <AlertDialogTitle>Cancel Scheduled Task</AlertDialogTitle>
+                    <AlertDialogTitle>Delete Cron</AlertDialogTitle>
                     <AlertDialogDescription>
-                      Are you sure you want to cancel this scheduled task? This action cannot be undone.
+                      Are you sure you want to delete this cron? This action cannot be undone.
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>
-                    <AlertDialogCancel>Keep Task</AlertDialogCancel>
+                    <AlertDialogCancel>Keep Cron</AlertDialogCancel>
                     <AlertDialogAction
                       onClick={handleCancel}
                       disabled={cancelTask.isPending}
                       className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                     >
-                      {cancelTask.isPending ? 'Cancelling...' : 'Cancel Task'}
+                      {cancelTask.isPending ? 'Deleting...' : 'Delete Cron'}
                     </AlertDialogAction>
                   </AlertDialogFooter>
                 </AlertDialogContent>
@@ -294,7 +299,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
           </div>
         </div>
 
-        <RelatedSessions sessions={sessions} formatDate={formatInTaskTz} className="mt-6" />
+        <RelatedSessions sessions={sessions} formatDate={formatInTaskTz} className="mt-6" agentSlug={agentSlug} />
 
         {/* Last execution info */}
         {task.lastExecutedAt && sessions.length === 0 && (

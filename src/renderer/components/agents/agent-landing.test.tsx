@@ -26,6 +26,20 @@ const mockCreateSession = {
 
 vi.mock('@renderer/hooks/use-sessions', () => ({
   useCreateSession: () => mockCreateSession,
+  useSessions: () => ({ data: [] }),
+}))
+
+vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
+  useScheduledTasks: () => ({ data: [] }),
+  useRunScheduledTaskNow: () => ({ mutate: vi.fn(), isPending: false }),
+  useCancelScheduledTask: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+}))
+
+vi.mock('@renderer/context/selection-context', () => ({
+  useSelection: () => ({
+    selectScheduledTask: vi.fn(),
+    selectSession: vi.fn(),
+  }),
 }))
 
 const mockComposer = {
@@ -70,6 +84,10 @@ vi.mock('@renderer/hooks/use-message-composer', () => ({
     capturedComposerOptions = opts
     return mockComposer
   },
+}))
+
+vi.mock('@renderer/hooks/use-humanized-cron', () => ({
+  useHumanizedCron: () => null,
 }))
 
 vi.mock('@renderer/hooks/use-agent-skills', () => ({
@@ -129,8 +147,7 @@ describe('AgentLanding', () => {
     renderWithProviders(
       <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
     )
-    expect(screen.getByText('Start a conversation with Test Agent')).toBeInTheDocument()
-    expect(screen.getByText('Send a message to begin a new session')).toBeInTheDocument()
+    expect(screen.getByText('Test Agent')).toBeInTheDocument()
   })
 
   it('renders textarea with placeholder', () => {
@@ -138,7 +155,7 @@ describe('AgentLanding', () => {
       <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     expect(screen.getByTestId('landing-message-input')).toBeInTheDocument()
-    expect(screen.getByPlaceholderText('Type a message...')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('How can I help? Press cmd+enter to send')).toBeInTheDocument()
   })
 
   it('renders send button', () => {
@@ -146,13 +163,6 @@ describe('AgentLanding', () => {
       <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     expect(screen.getByTestId('landing-send-button')).toBeInTheDocument()
-  })
-
-  it('renders Cmd+Enter hint', () => {
-    renderWithProviders(
-      <AgentLanding agent={testAgent} onSessionCreated={onSessionCreated} />
-    )
-    expect(screen.getByText('Press Cmd+Enter to send')).toBeInTheDocument()
   })
 
   // --- Send button disabled state ---
@@ -267,7 +277,7 @@ describe('AgentLanding', () => {
     expect(screen.queryByTestId('landing-message-input')).not.toBeInTheDocument()
   })
 
-  it('shows agent name without "Start a conversation" prefix in view-only mode', () => {
+  it('shows agent name in view-only mode', () => {
     mockCanUseAgent = false
 
     renderWithProviders(
@@ -275,7 +285,6 @@ describe('AgentLanding', () => {
     )
 
     expect(screen.getByText('Test Agent')).toBeInTheDocument()
-    expect(screen.queryByText(/Start a conversation/)).not.toBeInTheDocument()
   })
 
   // --- API key warning ---

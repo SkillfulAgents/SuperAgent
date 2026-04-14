@@ -20,7 +20,6 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { useAgent, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
 import { useSessions, useSession } from '@renderer/hooks/use-sessions'
 import { useScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
-import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { useSelection } from '@renderer/context/selection-context'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { isElectron, getPlatform } from '@renderer/lib/env'
@@ -41,6 +40,7 @@ export function MainContent() {
     selectedScheduledTaskId: scheduledTaskId,
     selectedWebhookTriggerId: webhookTriggerId,
     selectedDashboardSlug: dashboardSlug,
+    selectAgent,
     selectSession,
     selectScheduledTask,
     selectWebhookTrigger,
@@ -58,8 +58,6 @@ export function MainContent() {
   const { data: scheduledTask } = useScheduledTask(scheduledTaskId)
   const startAgent = useStartAgent()
   const stopAgent = useStopAgent()
-  const hasActiveSessions = sessions?.some((s) => s.isActive) ?? false
-  const hasSessionsAwaitingInput = sessions?.some((s) => s.isAwaitingInput) ?? false
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
   const markSessionNotificationsRead = useMarkSessionNotificationsRead()
@@ -160,8 +158,19 @@ export function MainContent() {
         />
         <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-2 min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="text-sm md:text-base font-semibold truncate">{agent?.name || 'Loading...'}</span>
-            {agent && <AgentStatus status={agent.status} hasActiveSessions={hasActiveSessions} hasSessionsAwaitingInput={hasSessionsAwaitingInput} />}
+            <button
+              onClick={() => selectAgent(null)}
+              className="text-xs md:text-sm text-muted-foreground truncate app-no-drag hover:text-foreground transition-colors"
+            >
+              Home
+            </button>
+            <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0 hidden md:block" />
+            <button
+              onClick={() => { selectSession(null); selectScheduledTask(null); selectWebhookTrigger(null) }}
+              className="text-xs md:text-sm text-muted-foreground truncate app-no-drag hover:text-foreground transition-colors"
+            >
+              {agent?.name || 'Loading...'}
+            </button>
           </div>
           {sessionId && session?.agentSlug === agentSlug && (
             <div className="flex items-center gap-2 min-w-0">
@@ -462,6 +471,7 @@ export function MainContent() {
             <AgentLanding
               agent={agent}
               onSessionCreated={handleSessionCreated}
+              onOpenSettings={() => setSettingsOpen(true)}
             />
           )
         )}
