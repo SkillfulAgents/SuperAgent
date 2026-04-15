@@ -1,17 +1,27 @@
 {
   "storyId": "agent-chat",
-  "passed": false,
-  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: mately 2 seconds and returned to idle status\n\n**[STEP]** Verified response mentions \"4\" — Agent responded with \"4.\" which correctly answers the mathematical question 2+2=4\n\n**[STEP]** Took final screenshot — Screenshot captured showing complete conversation with user message and agent response \"4.\"\n",
-  "steps": [],
+  "passed": true,
+  "reason": "Successfully navigated to the SuperAgent application, found and clicked the \"QA-20260415-220626-3ftg\" agent, verified its status, sent a math question, received the correct response, and verified the response contains \"4\".",
+  "steps": [
+    "Navigated to http://localhost:47891 - Page loaded successfully with sidebar showing 3 agents including \"QA-20260415-220626-3ftg\" with status \"idle\"",
+    "Clicked on the \"QA-20260415-220626-3ftg\" agent in the sidebar - Agent detail page opened, showing the agent name and status indicator displaying \"idle\"",
+    "Verified agent status is \"running\" or \"idle\" - Agent status confirmed as \"idle\" ✓",
+    "Clicked on message input field - Input field became active and focused",
+    "Typed message \"Hello! What is 2+2?\" - Message successfully entered into the text input field",
+    "Clicked Send message button - Message was sent, agent status changed to \"working\", a new session \"Math Basics Question Session\" was created, and activity indicator showed \"Working...\"",
+    "Waited for response - Response received within 2 seconds as shown by \"Worked for 2s\" indicator",
+    "Verified response mentions \"4\" - Agent response shows exactly \"4\" ✓",
+    "Took screenshot showing final state - Screenshot 03-final-response-received.png captures the complete conversation with user message \"Hello! What is 2+2?\" and agent response \"4\""
+  ],
   "bugs": [],
-  "durationMs": 77204,
-  "sessionId": "4eef4045-b1a8-4e0a-823d-0dad4fb571b8",
+  "durationMs": 54297,
+  "sessionId": "e512dc44-199f-4c34-9a65-5051f3c58522",
   "cost": {
-    "inputTokens": 207,
-    "outputTokens": 7386,
-    "cacheCreationTokens": 107065,
-    "cacheReadTokens": 621676,
+    "inputTokens": 288,
+    "outputTokens": 8533,
+    "cacheCreationTokens": 120318,
+    "cacheReadTokens": 950405,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.233136
+    "totalCostUsd": 0.288391
   }
 }
