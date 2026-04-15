@@ -129,7 +129,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
           <div className="flex items-center justify-between">
             <h1 className="text-xl font-semibold">{agent.name}</h1>
-            <Button type="button" size="icon" variant="ghost" className="h-8 w-8" onClick={onOpenSettings}>
+            <Button type="button" size="icon" variant="ghost" className="h-8 w-8" onClick={onOpenSettings} aria-label="Agent settings">
               <MoreVertical className="h-4 w-4" />
             </Button>
           </div>
