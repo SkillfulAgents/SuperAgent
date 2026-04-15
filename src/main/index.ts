@@ -358,6 +358,12 @@ ipcMain.handle('open-directory', async () => {
   return result.canceled ? null : result.filePaths[0]
 })
 
+// IPC handler for revealing a path in the OS file manager
+ipcMain.handle('show-in-folder', async (_event, hostPath: string) => {
+  const errorMessage = await shell.openPath(hostPath)
+  return errorMessage === '' ? null : errorMessage
+})
+
 // --- Recent files infrastructure ---
 
 const MIME_TYPES: Record<string, string> = {

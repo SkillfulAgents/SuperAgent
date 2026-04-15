@@ -18,6 +18,7 @@ import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
 import { HomeCrons } from './home-crons'
 import { HomeSkills } from './home-skills'
+import { HomeVolumes } from './home-volumes'
 import { HomeBookmarks } from './home-bookmarks'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 import { useRenderTracker } from '@renderer/lib/perf'
@@ -295,7 +296,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
           )}
         </div>
 
-        {/* Right Column — Crons + Skills */}
+        {/* Right Column — Crons + Skills + Volumes */}
         {showRightColumn && (
           <div className="space-y-3">
             <HomeCrons
@@ -305,6 +306,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
               onSelectTask={selectScheduledTask}
             />
             <HomeSkills agentSlug={agent.slug} />
+            <HomeVolumes agentSlug={agent.slug} />
           </div>
         )}
       </div>
