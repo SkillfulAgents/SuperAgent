@@ -186,18 +186,20 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                       disabled={isDisabled}
                     />
                   )}
+                  topRightActions={(
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      className="h-6 w-6 mt-2 mr-2 text-muted-foreground/50 hover:text-foreground"
+                      onClick={() => setIsExpanded((v) => !v)}
+                      aria-label={isExpanded ? 'Shrink input' : 'Expand input'}
+                    >
+                      {isExpanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+                    </Button>
+                  )}
                   rightActions={(
                     <>
-                      <Button
-                        type="button"
-                        size="icon"
-                        variant="ghost"
-                        className="h-[34px] w-[34px]"
-                        onClick={() => setIsExpanded((v) => !v)}
-                        aria-label={isExpanded ? 'Shrink input' : 'Expand input'}
-                      >
-                        {isExpanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-                      </Button>
                       <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} />
                       <Button
                         type="submit"

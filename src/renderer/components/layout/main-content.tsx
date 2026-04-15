@@ -49,7 +49,6 @@ export function MainContent() {
     selectWebhookTrigger,
   } = useSelection()
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [contextBarExpanded, setContextBarExpanded] = useState(false)
   // Pending user messages per session — survives navigation between sessions
   const pendingMessagesRef = useRef(new Map<string, { text: string; sentAt: number; sender?: { id: string; name: string; email: string } }>())
   // Draft input text per session — survives navigation between sessions
@@ -342,49 +341,6 @@ export function MainContent() {
         </div>
       )}
 
-      {/* Context window usage bar (expanded) */}
-      {sessionId && contextPercent != null && contextBarExpanded && (
-        <div className="shrink-0 border-b px-4 py-1.5 flex items-center gap-2">
-          <span className="text-xs text-muted-foreground whitespace-nowrap">Context</span>
-          <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
-            <div
-              className={`h-full rounded-full transition-all duration-500 relative overflow-hidden ${
-                contextPercent >= 70
-                  ? 'bg-destructive'
-                  : contextPercent >= 50
-                    ? 'bg-yellow-500'
-                    : 'bg-primary'
-              }`}
-              style={{ width: `${Math.min(contextPercent, 100)}%` }}
-            >
-              {isActive && (
-                <div
-                  className="absolute inset-0 animate-shimmer"
-                  style={{
-                    backgroundImage: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.3) 50%, transparent 100%)',
-                    backgroundSize: '200% 100%',
-                  }}
-                />
-              )}
-            </div>
-          </div>
-          <span className={`text-xs tabular-nums whitespace-nowrap ${
-            contextPercent >= 70
-              ? 'text-destructive'
-              : contextPercent >= 50
-                ? 'text-yellow-600 dark:text-yellow-400'
-                : 'text-muted-foreground'
-          }`}>
-            {contextPercent}%
-          </span>
-          <button
-            onClick={() => setContextBarExpanded(false)}
-            className="text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      )}
 
       {/* Automated session indicator — links back to the parent trigger/schedule */}
       {sessionId && session?.scheduledTaskId && (
@@ -458,17 +414,37 @@ export function MainContent() {
                   initialDraft={currentDraft}
                   onDraftChange={handleDraftChange}
                 />
-                {contextPercent != null && (
-                  <div className="flex justify-end items-center gap-1.5 px-3 py-1.5">
-                    <span className="text-xs text-muted-foreground">Context</span>
-                    <DonutChart
-                      percent={contextPercent}
-                      tooltip={`Context window: ${contextPercent}%`}
-                      animated={isActive}
-                      onClick={() => setContextBarExpanded(v => !v)}
-                    />
-                  </div>
-                )}
+                <div className="flex justify-between items-center gap-1.5 px-6 py-3">
+                  {contextPercent != null ? (
+                    <TooltipProvider delayDuration={0}>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <div className="flex items-center gap-1.5 cursor-default">
+                            <span className="text-xs text-muted-foreground">Context Usage</span>
+                            <DonutChart
+                              percent={contextPercent}
+                              animated={isActive}
+                              size="sm"
+                              showLabel={false}
+                            />
+                          </div>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p>{contextPercent}%</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  ) : (
+                    <span />
+                  )}
+                  <span className="text-xs text-muted-foreground flex items-center gap-1">
+                    <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-[11px] font-sans leading-none">↵</kbd>
+                    <span>Send</span>
+                    <span className="mx-1">·</span>
+                    <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-[11px] font-sans leading-none">⇧↵</kbd>
+                    <span>New line</span>
+                  </span>
+                </div>
               </div>
             </div>
             {/* Browser drawer panel */}
