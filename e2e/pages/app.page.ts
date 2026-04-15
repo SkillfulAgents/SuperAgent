@@ -14,21 +14,23 @@ export class AppPage {
   }
 
   /**
-   * Wait for the sidebar to be visible (indicates app is loaded)
+   * Wait for the app to be loaded (sidebar visible or wizard visible)
    */
   async waitForAppLoaded() {
-    await expect(this.page.locator('[data-testid="app-sidebar"]')).toBeVisible()
+    await expect(
+      this.page.locator('[data-testid="app-sidebar"], [data-testid="wizard-container"]').first()
+    ).toBeVisible()
   }
 
   /**
    * Dismiss the getting started wizard if it's open.
-   * Clicks through all steps using Next/Skip/Finish to close it.
+   * Navigates through all steps using Next/Skip to close it.
+   * Requires E2E mock mode (mock API key configured, runtime available).
    */
   async dismissWizardIfVisible() {
-    const wizard = this.page.locator('[data-testid="wizard-dialog"]')
+    const wizard = this.page.locator('[data-testid="wizard-container"]')
     if (await wizard.isVisible({ timeout: 1000 }).catch(() => false)) {
       const stepContent = this.page.locator('[data-testid="wizard-step-content"]')
-      // The welcome screen now branches into Platform or manual setup.
       // Use the manual path so generic app tests can dismiss the wizard
       // without relying on platform auth state.
       await this.page.locator('[data-testid="wizard-manual-setup"]').click()
@@ -39,19 +41,23 @@ export class AppPage {
       await expect(stepContent).toHaveAttribute('data-step', '1')
 
       // Browser -> Composio
-      await this.page.locator('[data-testid="wizard-skip"]').click()
+      await this.page.locator('[data-testid="wizard-next"]').click()
       await expect(stepContent).toHaveAttribute('data-step', '2')
 
       // Composio -> Runtime
       await this.page.locator('[data-testid="wizard-skip"]').click()
       await expect(stepContent).toHaveAttribute('data-step', '3')
 
-      // Runtime -> Agent
-      await this.page.locator('[data-testid="wizard-skip"]').click()
+      // Runtime -> Privacy
+      await this.page.locator('[data-testid="wizard-next"]').click()
       await expect(stepContent).toHaveAttribute('data-step', '4')
 
-      // Finish on the Agent step
-      await this.page.locator('[data-testid="wizard-finish"]').click()
+      // Privacy -> Agent
+      await this.page.locator('[data-testid="wizard-next"]').click()
+      await expect(stepContent).toHaveAttribute('data-step', '5')
+
+      // Skip on Agent step finishes the wizard
+      await this.page.locator('[data-testid="wizard-skip"]').click()
       await expect(wizard).not.toBeVisible()
     }
   }

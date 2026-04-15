@@ -4,9 +4,10 @@ import { Label } from '@renderer/components/ui/label'
 import { Button } from '@renderer/components/ui/button'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { PasswordInput } from '@renderer/components/ui/password-input'
+import { RequestError } from '@renderer/components/messages/request-error'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { apiFetch } from '@renderer/lib/api'
-import { AlertTriangle, Check, Loader2, ChevronRight } from 'lucide-react'
+import { AlertTriangle, Check, Loader2 } from 'lucide-react'
 import type { ApiKeyStatus } from '@shared/lib/config/settings'
 
 interface BedrockCredentialsInputProps {
@@ -122,10 +123,9 @@ export function BedrockCredentialsInput({
 
   return (
     <div className="space-y-3">
-      <Label>AWS Bedrock Credentials</Label>
-
-      {apiKeyStatus?.isConfigured && (
-        <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2">
+        <Label>AWS Bedrock Credentials</Label>
+        {apiKeyStatus?.isConfigured && (
           <span
             className={`text-xs px-2 py-0.5 rounded-full ${
               apiKeyStatus.source === 'settings'
@@ -137,8 +137,8 @@ export function BedrockCredentialsInput({
               ? 'Using saved setting'
               : 'Using environment variable'}
           </span>
-        </div>
-      )}
+        )}
+      </div>
 
       {showNotConfiguredAlert && !apiKeyStatus?.isConfigured && (
         <Alert variant="destructive">
@@ -149,120 +149,124 @@ export function BedrockCredentialsInput({
         </Alert>
       )}
 
-      {/* Region (always shown) */}
-      <div className="space-y-1">
-        <Label htmlFor="bedrock-region" className="text-xs">AWS Region</Label>
-        <Input
-          id="bedrock-region"
-          value={region}
-          onChange={(e) => setRegion(e.target.value)}
-          placeholder="us-east-1"
-          disabled={disabled || isBusy}
-        />
+      {/* Tab bar */}
+      <div className="flex gap-4 border-b mt-2">
+        <button
+          type="button"
+          onClick={() => setShowAdvanced(false)}
+          className={`pb-1.5 text-xs transition-colors ${!showAdvanced ? 'border-b-2 border-primary text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+        >
+          API key
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowAdvanced(true)}
+          className={`pb-1.5 text-xs transition-colors ${showAdvanced ? 'border-b-2 border-primary text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+        >
+          Access key
+        </button>
       </div>
 
-      {!showAdvanced ? (
-        <>
-          {/* Simple: Bedrock API Key */}
-          <div className="space-y-1">
-            <Label htmlFor="bedrock-api-key" className="text-xs">Bedrock API Key</Label>
-            <PasswordInput
-              id="bedrock-api-key"
-              value={apiKeyInput}
-              onChange={(e) => { setApiKeyInput(e.target.value); setValidationResult(null) }}
-              placeholder={apiKeyStatus?.isConfigured ? '••••••••••••••••' : 'Enter Bedrock API key...'}
-              disabled={disabled || isBusy}
-            />
-          </div>
+      {/* Fields container — no space-y so collapsed tab panels don't add gaps */}
+      <div className="mt-3">
+        {/* Region (shared) */}
+        <div className="space-y-1 mb-3">
+          <Label htmlFor="bedrock-region" className="font-normal text-muted-foreground">AWS Region</Label>
+          <Input
+            id="bedrock-region"
+            value={region}
+            onChange={(e) => setRegion(e.target.value)}
+            placeholder="us-east-1"
+            disabled={disabled || isBusy}
+            className="bg-background"
+          />
+        </div>
 
-          <button
-            type="button"
-            onClick={() => setShowAdvanced(true)}
-            className="text-xs text-primary hover:underline flex items-center gap-1"
-          >
-            <ChevronRight className="h-3 w-3" />
-            Use AWS Access Key credentials instead
-          </button>
+        {/* API key tab panel */}
+      <div className={`grid transition-all duration-200 ease-in-out ${!showAdvanced ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+        <div className="overflow-hidden">
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <Label htmlFor="bedrock-api-key" className="font-normal text-muted-foreground">Bedrock API Key</Label>
+              <PasswordInput
+                id="bedrock-api-key"
+                value={apiKeyInput}
+                onChange={(e) => { setApiKeyInput(e.target.value); setValidationResult(null) }}
+                placeholder={apiKeyStatus?.isConfigured ? '••••••••••••••••' : 'br-api-...'}
+                disabled={disabled || isBusy}
+                className="bg-background"
+              />
+            </div>
 
-          <div className="flex gap-2">
-            {apiKeyInput.trim() && (
-              <Button size="sm" onClick={handleValidateSimple} disabled={isBusy}>
-                {isValidating ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Validating...</> : 'Validate & Save'}
-              </Button>
-            )}
-            {apiKeyStatus?.source === 'settings' && (
-              <Button size="sm" variant="outline" onClick={handleRemove} disabled={isBusy}>
-                {isRemoving ? 'Removing...' : 'Remove Saved Credentials'}
-              </Button>
-            )}
+            <div className="flex gap-2">
+              {apiKeyInput.trim() && (
+                <Button size="sm" onClick={handleValidateSimple} disabled={isBusy}>
+                  {isValidating ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Validating...</> : 'Validate & Save'}
+                </Button>
+              )}
+              {apiKeyStatus?.source === 'settings' && (
+                <Button size="sm" variant="outline" onClick={handleRemove} disabled={isBusy}>
+                  {isRemoving ? 'Removing...' : 'Remove Saved Credentials'}
+                </Button>
+              )}
+            </div>
           </div>
-        </>
-      ) : (
-        <>
-          {/* Advanced: AWS Access Key + Secret */}
-          <div className="space-y-1">
-            <Label htmlFor="bedrock-access-key" className="text-xs">AWS Access Key ID</Label>
-            <Input
-              id="bedrock-access-key"
-              value={accessKeyId}
-              onChange={(e) => { setAccessKeyId(e.target.value); setValidationResult(null) }}
-              placeholder={apiKeyStatus?.isConfigured ? '••••••••••••••••' : 'AKIA...'}
-              disabled={disabled || isBusy}
-            />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="bedrock-secret-key" className="text-xs">AWS Secret Access Key</Label>
-            <PasswordInput
-              id="bedrock-secret-key"
-              value={secretAccessKey}
-              onChange={(e) => { setSecretAccessKey(e.target.value); setValidationResult(null) }}
-              placeholder={apiKeyStatus?.isConfigured ? '••••••••••••••••' : 'Enter secret key...'}
-              disabled={disabled || isBusy}
-            />
-          </div>
+        </div>
+      </div>
 
-          <button
-            type="button"
-            onClick={() => setShowAdvanced(false)}
-            className="text-xs text-primary hover:underline flex items-center gap-1"
-          >
-            <ChevronRight className="h-3 w-3 rotate-180" />
-            Use Bedrock API Key instead
-          </button>
+      {/* Access key tab panel */}
+      <div className={`grid transition-all duration-200 ease-in-out ${showAdvanced ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+        <div className="overflow-hidden">
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <Label htmlFor="bedrock-access-key" className="font-normal text-muted-foreground">AWS Access Key ID</Label>
+              <Input
+                id="bedrock-access-key"
+                value={accessKeyId}
+                onChange={(e) => { setAccessKeyId(e.target.value); setValidationResult(null) }}
+                placeholder={apiKeyStatus?.isConfigured ? '••••••••••••••••' : 'AKIA...'}
+                disabled={disabled || isBusy}
+                className="bg-background"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="bedrock-secret-key" className="font-normal text-muted-foreground">AWS Secret Access Key</Label>
+              <PasswordInput
+                id="bedrock-secret-key"
+                value={secretAccessKey}
+                onChange={(e) => { setSecretAccessKey(e.target.value); setValidationResult(null) }}
+                placeholder={apiKeyStatus?.isConfigured ? '••••••••••••••••' : 'wJalr...'}
+                disabled={disabled || isBusy}
+                className="bg-background"
+              />
+            </div>
 
-          <div className="flex gap-2">
-            {accessKeyId.trim() && secretAccessKey.trim() && (
-              <Button size="sm" onClick={handleValidateAdvanced} disabled={isBusy}>
-                {isValidating ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Validating...</> : 'Validate & Save'}
-              </Button>
-            )}
-            {apiKeyStatus?.source === 'settings' && (
-              <Button size="sm" variant="outline" onClick={handleRemove} disabled={isBusy}>
-                {isRemoving ? 'Removing...' : 'Remove Saved Credentials'}
-              </Button>
-            )}
+            <div className="flex gap-2">
+              {accessKeyId.trim() && secretAccessKey.trim() && (
+                <Button size="sm" onClick={handleValidateAdvanced} disabled={isBusy}>
+                  {isValidating ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Validating...</> : 'Validate & Save'}
+                </Button>
+              )}
+              {apiKeyStatus?.source === 'settings' && (
+                <Button size="sm" variant="outline" onClick={handleRemove} disabled={isBusy}>
+                  {isRemoving ? 'Removing...' : 'Remove Saved Credentials'}
+                </Button>
+              )}
+            </div>
           </div>
-        </>
+        </div>
+      </div>
+      </div>
+
+      {validationResult && !validationResult.valid && (
+        <RequestError message={validationResult.error || 'Invalid credentials'} />
       )}
-
-      {validationResult && (
-        <Alert variant={validationResult.valid ? 'default' : 'destructive'}>
-          {validationResult.valid ? <Check className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
-          <AlertDescription>
-            {validationResult.valid
-              ? 'Credentials are valid and have been saved.'
-              : validationResult.error || 'Invalid credentials'}
-          </AlertDescription>
-        </Alert>
+      {validationResult?.valid && (
+        <p className="text-xs text-green-600 dark:text-green-400 flex items-center gap-1">
+          <Check className="h-3 w-3" />
+          Credentials are valid and have been saved.
+        </p>
       )}
-
-      <p className="text-xs text-muted-foreground">
-        {apiKeyStatus?.source === 'settings'
-          ? 'Your credentials are saved locally. Enter new ones to replace them.'
-          : apiKeyStatus?.source === 'env'
-            ? 'Save credentials here to override the environment variables.'
-            : 'Credentials will be saved locally in ~/.superagent/settings.json'}
-      </p>
     </div>
   )
 }

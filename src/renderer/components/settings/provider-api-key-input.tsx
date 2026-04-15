@@ -13,6 +13,7 @@ import {
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
 import { PasswordInput } from '@renderer/components/ui/password-input'
+import { RequestError } from '@renderer/components/messages/request-error'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { apiFetch } from '@renderer/lib/api'
 import { AlertTriangle, Check, Loader2 } from 'lucide-react'
@@ -38,6 +39,8 @@ interface ProviderApiKeyInputProps {
   showRemoveConfirm?: boolean
   /** Custom help text node. When provided, replaces the default help text. */
   helpText?: ReactNode
+  /** Custom label for the validate button. Defaults to "Validate & Save". */
+  validateButtonLabel?: string
   disabled?: boolean
 }
 
@@ -56,6 +59,7 @@ export function ProviderApiKeyInput({
   showRemoveButton = true,
   showRemoveConfirm = true,
   helpText,
+  validateButtonLabel = 'Validate & Save',
   disabled = false,
 }: ProviderApiKeyInputProps) {
   const { data: settings } = useSettings()
@@ -126,10 +130,9 @@ export function ProviderApiKeyInput({
 
   return (
     <div className="space-y-2">
-      <Label htmlFor={idPrefix}>{label}</Label>
-
-      {showSourceIndicator && apiKeyStatus?.isConfigured && (
-        <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2">
+        <Label htmlFor={idPrefix} className="font-normal text-muted-foreground">{label}</Label>
+        {showSourceIndicator && apiKeyStatus?.isConfigured && (
           <span
             className={`text-xs px-2 py-0.5 rounded-full ${
               apiKeyStatus.source === 'settings'
@@ -141,8 +144,8 @@ export function ProviderApiKeyInput({
               ? 'Using saved setting'
               : 'Using environment variable'}
           </span>
-        </div>
-      )}
+        )}
+      </div>
 
       {showNotConfiguredAlert && !apiKeyStatus?.isConfigured && (
         <Alert variant="destructive">
@@ -162,21 +165,17 @@ export function ProviderApiKeyInput({
         }}
         placeholder={apiKeyStatus?.isConfigured ? '••••••••••••••••' : placeholder}
         disabled={disabled || isBusy}
+        className="bg-background"
       />
 
-      {validationResult && (
-        <Alert variant={validationResult.valid ? 'default' : 'destructive'}>
-          {validationResult.valid ? (
-            <Check className="h-4 w-4" />
-          ) : (
-            <AlertTriangle className="h-4 w-4" />
-          )}
-          <AlertDescription>
-            {validationResult.valid
-              ? 'API key is valid and has been saved.'
-              : validationResult.error || 'Invalid API key'}
-          </AlertDescription>
-        </Alert>
+      {validationResult && !validationResult.valid && (
+        <RequestError message={validationResult.error || 'Invalid API key'} />
+      )}
+      {validationResult?.valid && (
+        <p className="text-xs text-green-600 dark:text-green-400 flex items-center gap-1">
+          <Check className="h-3 w-3" />
+          API key is valid and has been saved.
+        </p>
       )}
 
       {showHelpText && (
@@ -185,7 +184,7 @@ export function ProviderApiKeyInput({
         </p>
       )}
 
-      <div className="flex gap-2">
+      <div className="flex justify-end gap-2">
         {apiKeyInput.trim() && (
           <Button size="sm" onClick={handleValidateAndSave} disabled={isBusy}>
             {isValidating ? (
@@ -194,7 +193,7 @@ export function ProviderApiKeyInput({
                 Validating...
               </>
             ) : (
-              'Validate & Save'
+              validateButtonLabel
             )}
           </Button>
         )}

@@ -1,7 +1,10 @@
-import { ChevronRight, Loader2 } from 'lucide-react'
+import { Loader2 } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
+import { RequestError } from '@renderer/components/messages/request-error'
+import { ManualAccessKeyInput } from '@renderer/components/settings/manual-access-key-input'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
+import { usePlatformConnect } from '@renderer/hooks/use-platform-auth'
 
 interface WelcomeStepProps {
   onChoosePlatform?: () => void
@@ -11,6 +14,16 @@ interface WelcomeStepProps {
 export function WelcomeStep({ onChoosePlatform, onContinueToManualSetup }: WelcomeStepProps) {
   const { data: settings } = useSettings()
   const updateSettings = useUpdateSettings()
+  const {
+    handleConnect,
+    isLaunching,
+    error: platformError,
+  } = usePlatformConnect({
+    successMessage: null,
+    onSuccess: () => {
+      onChoosePlatform?.()
+    },
+  })
 
   async function handleManualSetup() {
     try {
@@ -24,81 +37,54 @@ export function WelcomeStep({ onChoosePlatform, onContinueToManualSetup }: Welco
     }
   }
 
-  async function handlePlatformPath() {
-    try {
-      onChoosePlatform?.()
-    } catch {
-      // Keep the welcome page lightweight. Subsequent steps handle recovery.
-    }
-  }
-
   return (
-    <div className="space-y-5">
-      <div className="space-y-2">
-        <h2 className="text-2xl font-bold">Welcome to Superagent</h2>
-        <p className="text-muted-foreground">
-          Superagent lets you create and manage AI agents that run in isolated containers.
-          Each agent has its own environment, tools, and can connect to external services.
+    <div className="space-y-8">
+      <div className="space-y-4">
+        <h2 className="text-4xl font-normal">Build your<br />agent workforce</h2>
+        <p className="text-sm text-muted-foreground mt-1 max-w-sm">
+          Superagent is the most powerful and secure way to build and manage AI teammates that actually get the job done.
         </p>
       </div>
 
-      <div className="grid gap-4">
-        <div className="rounded-lg border bg-muted/30 p-4 space-y-3">
-          <div className="flex items-center justify-between gap-4">
-            <div className="space-y-1">
-              <h3 className="text-sm font-medium">Connect to Platform</h3>
-              <p className="text-sm text-muted-foreground">
-                Use your Platform subscription and hosted proxy.
-              </p>
-            </div>
-
+      <div className="flex flex-col gap-8">
+        <div className="space-y-3">
+          <div className="flex items-center gap-3">
             <Button
               type="button"
               variant="default"
-              onClick={() => {
-                void handlePlatformPath()
-              }}
+              size="lg"
+              onClick={() => void handleConnect()}
               data-testid="wizard-platform-login"
-              className="shrink-0"
+              disabled={isLaunching}
+              className="w-full max-w-[380px]"
             >
-              Next
-              <ChevronRight className="ml-2 h-4 w-4" />
-            </Button>
-          </div>
-        </div>
-
-        <div className="rounded-lg border bg-muted/30 p-4">
-          <div className="flex items-center justify-between gap-4">
-            <div className="space-y-1">
-              <h3 className="text-sm font-medium">Bring your own keys</h3>
-              <p className="text-sm text-muted-foreground">
-                Bring your own keys for providers like Anthropic, Deepgram, and Composio.
-              </p>
-            </div>
-
-            <Button
-              type="button"
-              variant="default"
-              onClick={() => {
-                void handleManualSetup()
-              }}
-              data-testid="wizard-manual-setup"
-              className="shrink-0"
-              disabled={updateSettings.isPending}
-            >
-              {updateSettings.isPending ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              {isLaunching ? (
+                <><Loader2 className="h-4 w-4 animate-spin mr-2" />Logging in...</>
               ) : (
-                <>
-                  Next
-                  <ChevronRight className="ml-2 h-4 w-4" />
-                </>
+                'Get Started'
               )}
-              {updateSettings.isPending ? 'Next' : null}
             </Button>
           </div>
+          {isLaunching && (
+            <ManualAccessKeyInput prefixText="Log in issues?" className="text-sm text-muted-foreground" />
+          )}
         </div>
+        <RequestError message={platformError ?? null} />
+        <p className="text-sm text-muted-foreground">
+          Need to bring your own keys?{' '}
+          <button
+            type="button"
+            onClick={() => void handleManualSetup()}
+            data-testid="wizard-manual-setup"
+            disabled={updateSettings.isPending}
+            className="underline underline-offset-2 hover:text-foreground transition-colors disabled:opacity-50"
+          >
+            {updateSettings.isPending ? <Loader2 className="inline h-3 w-3 animate-spin mr-1" /> : null}
+            Start BYOK setup
+          </button>
+        </p>
       </div>
+
     </div>
   )
 }
