@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItem, nativeTheme, session, shell, Notification } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItem, nativeImage, nativeTheme, session, shell, Notification } from 'electron'
 import { execFileSync, exec } from 'child_process'
 import path from 'path'
 import fs from 'fs'
@@ -356,6 +356,151 @@ ipcMain.handle('detect-host-browser', () => {
 ipcMain.handle('open-directory', async () => {
   const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
   return result.canceled ? null : result.filePaths[0]
+})
+
+// --- Recent files infrastructure ---
+
+const MIME_TYPES: Record<string, string> = {
+  '.pdf': 'application/pdf', '.csv': 'text/csv', '.txt': 'text/plain',
+  '.json': 'application/json', '.html': 'text/html', '.xml': 'text/xml',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.svg': 'image/svg+xml', '.webp': 'image/webp',
+  '.zip': 'application/zip', '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+}
+
+const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'])
+
+// Track paths returned by get-recent-files so read-local-file can validate (#1 security)
+const allowedRecentPaths = new Set<string>()
+
+function sanitizeLimit(raw: unknown): number {
+  const n = Math.floor(Number(raw) || 5)
+  return Math.min(Math.max(n, 1), 20)
+}
+
+// IPC handler for getting recent files from the OS
+ipcMain.handle('get-recent-files', async (_event, rawLimit: unknown): Promise<{ name: string; path: string; thumbnail?: string }[]> => {
+  const limit = sanitizeLimit(rawLimit)
+  try {
+    let files: { name: string; path: string }[]
+    if (process.platform === 'win32') {
+      files = await getRecentFilesWindows(limit)
+    } else if (process.platform === 'darwin') {
+      files = await getRecentFilesMac(limit)
+    } else {
+      return []
+    }
+
+    // Update the allowlist for read-local-file
+    allowedRecentPaths.clear()
+    for (const f of files) allowedRecentPaths.add(f.path)
+
+    // Generate small thumbnails for image files using Electron's nativeImage
+    return files.map((f) => {
+      const ext = path.extname(f.name).toLowerCase()
+      if (!IMAGE_EXTS.has(ext)) return f
+      try {
+        const img = nativeImage.createFromPath(f.path)
+        if (img.isEmpty()) return f
+        // Only constrain width — let height scale to preserve aspect ratio (#4)
+        const resized = img.resize({ width: 32, quality: 'good' })
+        const png = resized.toPNG()
+        return { ...f, thumbnail: `data:image/png;base64,${png.toString('base64')}` }
+      } catch {
+        return f
+      }
+    })
+  } catch (err) {
+    console.error('Failed to get recent files:', err)
+    return []
+  }
+})
+
+function getRecentFilesWindows(limit: number): Promise<{ name: string; path: string }[]> {
+  return new Promise((resolve) => {
+    const safeLimit = limit // already sanitized by caller
+    const script = [
+      '$shell = New-Object -ComObject WScript.Shell',
+      '$recent = [Environment]::GetFolderPath("Recent")',
+      '$results = @()',
+      `foreach ($f in (Get-ChildItem $recent -Filter '*.lnk' | Sort-Object LastWriteTime -Descending | Select-Object -First 50)) {`,
+      '  try {',
+      '    $sc = $shell.CreateShortcut($f.FullName)',
+      '    $target = $sc.TargetPath',
+      '    if ($target -and (Test-Path $target -PathType Leaf -ErrorAction SilentlyContinue)) {',
+      '      $results += @{ name = [System.IO.Path]::GetFileName($target); path = $target }',
+      '    }',
+      '  } catch {}',
+      `  if ($results.Count -ge ${safeLimit}) { break }`,
+      '}',
+      '$results | ConvertTo-Json -Compress',
+    ].join('\r\n')
+
+    const encoded = Buffer.from(script, 'utf16le').toString('base64')
+    exec(`powershell -NoProfile -EncodedCommand ${encoded}`, { timeout: 10000 }, (err, stdout) => {
+      if (err || !stdout.trim()) return resolve([])
+      try {
+        const parsed = JSON.parse(stdout.trim())
+        resolve(Array.isArray(parsed) ? parsed : [parsed])
+      } catch {
+        resolve([])
+      }
+    })
+  })
+}
+
+function getRecentFilesMac(limit: number): Promise<{ name: string; path: string }[]> {
+  return new Promise((resolve) => {
+    // Use mdfind with sort by last used date (#2 — sort by recency)
+    const safeLimit = limit * 3 // fetch more than needed since some may be dirs/inaccessible
+    exec(
+      `mdfind -onlyin "$HOME" 'kMDItemLastUsedDate > $time.now(-7d) && kMDItemContentTypeTree == "public.content"' | head -${safeLimit}`,
+      { timeout: 5000 },
+      async (err, stdout) => {
+        if (err || !stdout.trim()) return resolve([])
+        const lines = stdout.trim().split('\n').filter(Boolean)
+
+        // Get last-used dates via mdls and sort by recency (#2)
+        const withDates: { filePath: string; mtime: number }[] = []
+        await Promise.all(lines.map((filePath) =>
+          fs.promises.stat(filePath).then((stat) => {
+            if (stat.isFile()) {
+              withDates.push({ filePath, mtime: stat.mtimeMs })
+            }
+          }).catch(() => {})
+        ))
+        withDates.sort((a, b) => b.mtime - a.mtime)
+
+        resolve(withDates.slice(0, limit).map((f) => ({
+          name: path.basename(f.filePath),
+          path: f.filePath,
+        })))
+      },
+    )
+  })
+}
+
+// IPC handler for reading a local file as a buffer (used by recent files picker)
+ipcMain.handle('read-local-file', async (_event, filePath: string): Promise<{ buffer: ArrayBuffer; name: string; type: string } | null> => {
+  // Security: only allow reading files that were returned by get-recent-files (#1)
+  if (!allowedRecentPaths.has(filePath)) {
+    console.warn('read-local-file: path not in allowed recent files:', filePath)
+    return null
+  }
+  try {
+    const stat = await fs.promises.stat(filePath)
+    if (!stat.isFile()) return null
+    const buffer = await fs.promises.readFile(filePath)
+    const name = path.basename(filePath)
+    const ext = path.extname(name).toLowerCase()
+    return { buffer: buffer.buffer, name, type: MIME_TYPES[ext] || 'application/octet-stream' }
+  } catch {
+    return null
+  }
 })
 
 // IPC handler for showing the native emoji picker (macOS/Windows)
