@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const mockStopLimaVm = vi.fn()
 const mockEnsureLimaReady = vi.fn()
-const mockReconcileLimaState = vi.fn()
+const mockReconcileLimaState = vi.fn().mockResolvedValue(false)
 
 vi.mock('./lima-container-client', () => ({
   LimaContainerClient: {
@@ -89,8 +89,8 @@ vi.mock('os', () => ({
 // ============================================================================
 
 import {
-  checkAllRunnersAvailability,
   clearRunnerAvailabilityCache,
+  reconcileRunnerState,
   restartRunner,
   shutdownActiveRunner,
 } from './client-factory'
@@ -226,18 +226,26 @@ describe('restartRunner', () => {
   })
 })
 
-describe('checkAllRunnersAvailability', () => {
+describe('reconcileRunnerState', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     clearRunnerAvailabilityCache()
   })
 
-  it('runs the Lima preflight hook before checking running state', async () => {
-    mockReconcileLimaState.mockResolvedValue(undefined)
+  it('calls reconcileRuntimeState for lima runner', async () => {
+    mockReconcileLimaState.mockResolvedValue(true)
 
-    await checkAllRunnersAvailability()
+    const rebuilt = await reconcileRunnerState('lima')
 
     expect(mockReconcileLimaState).toHaveBeenCalledOnce()
+    expect(rebuilt).toBe(true)
+  })
+
+  it('returns false for runners without reconcileRuntimeState', async () => {
+    const rebuilt = await reconcileRunnerState('docker')
+
+    expect(rebuilt).toBe(false)
+    expect(mockReconcileLimaState).not.toHaveBeenCalled()
   })
 })
 

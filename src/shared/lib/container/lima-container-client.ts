@@ -379,25 +379,21 @@ export class LimaContainerClient extends BaseContainerClient {
   }
 
   /**
-   * One-time preflight check for Lima-specific runtime reconciliation.
+   * One-time check for Lima-specific runtime reconciliation.
    *
-   * If the current configured runner is Lima and the VM was created with an
-   * older bundled Lima that lacks time sync support, rebuild it before the
-   * generic availability check continues.
+   * If the VM was created with an older bundled Lima that lacks time sync
+   * support, rebuild it. Returns true if the VM was rebuilt.
    */
-  static async reconcileRuntimeState(): Promise<void> {
-    if (limaRuntimeReconciled) return
-
-    const configuredRunner = getSettings().container.containerRunner
-    if (configuredRunner !== 'lima') return
+  static async reconcileRuntimeState(): Promise<boolean> {
+    if (limaRuntimeReconciled) return false
 
     const staleVersion = getLimaVmStaleVersion()
     if (!staleVersion) {
       limaRuntimeReconciled = true
-      return
+      return false
     }
 
-    captureMessage(`Stale Lima VM detected (${staleVersion}), rebuilding`, {
+    captureMessage(`Stale Lima VM detected (${staleVersion}) already running, rebuilding`, {
       level: 'warning',
       tags: { component: 'lima', operation: 'stale-vm-rebuild' },
       extra: { staleVersion },
@@ -405,6 +401,7 @@ export class LimaContainerClient extends BaseContainerClient {
 
     await ensureLimaReady()
     limaRuntimeReconciled = true
+    return true
   }
 }
 

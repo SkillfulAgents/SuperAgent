@@ -34,8 +34,8 @@ const ALL_RUNNERS: {
   cliCommand: string | (() => string)
   isEligible: () => boolean
   isAvailable: () => Promise<boolean>
-  /** Optional hook to reconcile runtime state before checking availability. */
-  reconcileRuntimeState?: () => Promise<void>
+  /** Optional hook to reconcile stale runtime state. Returns true if runtime was rebuilt. */
+  reconcileRuntimeState?: () => Promise<boolean>
   isRunning: () => Promise<boolean>
   /** Optional cleanup when the app is shutting down (e.g., stop a VM). */
   shutdownRuntime?: () => Promise<void>
@@ -273,7 +273,6 @@ async function checkRunnerDetailedAvailability(runner: ContainerRunner): Promise
     }
   }
 
-  await entry.reconcileRuntimeState?.()
   const running = await entry.isRunning()
 
   return {
@@ -330,6 +329,16 @@ export async function refreshRunnerAvailability(): Promise<RunnerAvailability[]>
 export function clearRunnerAvailabilityCache(): void {
   cachedRunnerAvailability = null
   runnerAvailabilityCachedAt = 0
+}
+
+/**
+ * Reconcile stale runtime state for a specific runner.
+ * Returns true if the runtime was rebuilt (caller should refresh availability).
+ */
+export async function reconcileRunnerState(runner: ContainerRunner): Promise<boolean> {
+  const entry = ALL_RUNNERS.find((r) => r.name === runner)
+  if (!entry?.reconcileRuntimeState) return false
+  return entry.reconcileRuntimeState()
 }
 
 /**
