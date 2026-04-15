@@ -2,6 +2,13 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 
+export interface ChromeProfile {
+  id: string
+  name: string
+  avatarUrl?: string
+  email?: string
+}
+
 const PROFILE_FILES = ['Cookies', 'Cookies-journal', 'Login Data', 'Login Data-journal', 'Web Data', 'Web Data-journal']
 const PROFILE_DIRS = ['Local Storage', 'Session Storage']
 
@@ -26,7 +33,7 @@ export function getChromeUserDataDir(): string | null {
 /**
  * Lists Chrome profiles by reading Local State JSON.
  */
-export function listChromeProfiles(): Array<{ id: string; name: string; avatarUrl?: string }> {
+export function listChromeProfiles(): ChromeProfile[] {
   const dataDir = getChromeUserDataDir()
   if (!dataDir) return []
 
@@ -38,11 +45,15 @@ export function listChromeProfiles(): Array<{ id: string; name: string; avatarUr
     const infoCache = localState?.profile?.info_cache
     if (!infoCache || typeof infoCache !== 'object') return []
 
-    return Object.entries(infoCache).map(([id, info]) => ({
-      id,
-      name: (info as { name?: string }).name || id,
-      avatarUrl: (info as { last_downloaded_gaia_picture_url_with_size?: string }).last_downloaded_gaia_picture_url_with_size || undefined,
-    }))
+    return Object.entries(infoCache).map(([id, info]) => {
+      const typed = info as { name?: string; user_name?: string; last_downloaded_gaia_picture_url_with_size?: string }
+      return {
+        id,
+        name: typed.name || id,
+        avatarUrl: typed.last_downloaded_gaia_picture_url_with_size || undefined,
+        email: typed.user_name || undefined,
+      }
+    })
   } catch {
     return []
   }
