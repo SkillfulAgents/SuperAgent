@@ -75,7 +75,7 @@ export function HomeVolumes({ agentSlug }: HomeVolumesProps) {
       ) : (
         <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
           <p className="text-xs font-medium text-foreground">No volumes yet</p>
-          <p className="text-xs mt-1">Mount a folder to give your agent direct access to files on your machine.</p>
+          <p className="text-xs mt-1">Mount a folder from your computer to give your agents direct read/write access to the files in it.</p>
         </div>
       )}
 
@@ -87,7 +87,8 @@ export function HomeVolumes({ agentSlug }: HomeVolumesProps) {
             </span>
             <Button
               size="sm"
-              className="bg-orange-600 text-white hover:bg-orange-700"
+              variant="ghost"
+              className="text-orange-600 dark:text-orange-400 hover:bg-orange-100 dark:hover:bg-orange-900/40 hover:text-orange-700 dark:hover:text-orange-300"
               onClick={handleRestart}
               disabled={isRestarting}
             >
@@ -98,7 +99,7 @@ export function HomeVolumes({ agentSlug }: HomeVolumesProps) {
         ) : (
           <div className="flex justify-end">
             <Button
-              variant="outline"
+              variant="ghost"
               size="sm"
               onClick={handleAddMount}
               disabled={addMount.isPending}
