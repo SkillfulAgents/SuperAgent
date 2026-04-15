@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Agent successfully opened browser, navigated to https://example.com, and reported the page title \"Example Domain\"",
+  "steps": [
+    "Step 1 - Navigated to http://localhost:47891 - Successfully loaded the Super Agent application with sidebar showing three agents.",
+    "Step 2 - Found and clicked the \"QA-20260415-183458-7inv\" agent in the sidebar - Successfully opened the agent chat interface.",
+    "Step 3 - Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Successfully typed and sent the message via the send button.",
+    "Step 4 - Waited for a response (agent status changed to \"working\") - Agent created a session \"Browser Page Title Verification\" and began processing the request.",
+    "Step 5 - After ~10 seconds, agent completed the task and returned response - Agent status changed back to \"idle\" and displayed the response: \"The page title is \\\"Example Domain\\\". It's a simple page with a heading and a \\\"Learn more\\\" link.\"",
+    "Step 5 (verification) - Verified response mentions \"Example Domain\" - Confirmed the response contains \"Example Domain\" as the page title. Screenshot captured showing the complete interaction with agent response visible."
+  ],
+  "bugs": [],
+  "durationMs": 57717,
+  "sessionId": "824b6eda-7573-477b-a97a-d4a9c29d77d5",
+  "cost": {
+    "inputTokens": 315,
+    "outputTokens": 7625,
+    "cacheCreationTokens": 46695,
+    "cacheReadTokens": 1114981,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.208307
+  }
+}
