@@ -2,7 +2,7 @@
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { ArrowUp, Loader2, Eye, MoreVertical, Maximize2, Minimize2, Search, ArrowUpDown } from 'lucide-react'
+import { ArrowUp, Loader2, Eye, Settings2, Maximize2, Minimize2, Search, ArrowUpDown } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { useCreateSession, useSessions } from '@renderer/hooks/use-sessions'
 import { useScheduledTasks } from '@renderer/hooks/use-scheduled-tasks'
@@ -129,8 +129,8 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
           <div className="flex items-center justify-between">
             <h1 className="text-xl font-semibold">{agent.name}</h1>
-            <Button type="button" size="icon" variant="ghost" className="h-8 w-8" onClick={onOpenSettings} aria-label="Agent settings">
-              <MoreVertical className="h-4 w-4" />
+            <Button type="button" size="icon" variant="ghost" className="h-8 w-8" onClick={onOpenSettings} aria-label="Agent settings" data-testid="agent-settings-button">
+              <Settings2 className="h-4 w-4" />
             </Button>
           </div>
           {isViewOnly ? (
