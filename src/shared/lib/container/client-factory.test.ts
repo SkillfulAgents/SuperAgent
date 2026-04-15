@@ -6,11 +6,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const mockStopLimaVm = vi.fn()
 const mockEnsureLimaReady = vi.fn()
+const mockReconcileLimaState = vi.fn()
 
 vi.mock('./lima-container-client', () => ({
   LimaContainerClient: {
     isEligible: vi.fn(() => true),
     isAvailable: vi.fn(() => Promise.resolve(true)),
+    reconcileRuntimeState: (...args: unknown[]) => mockReconcileLimaState(...args),
     isRunning: vi.fn(() => Promise.resolve(true)),
   },
   getNerdctlWrapperPath: vi.fn(() => '/mock/nerdctl'),
@@ -87,6 +89,8 @@ vi.mock('os', () => ({
 // ============================================================================
 
 import {
+  checkAllRunnersAvailability,
+  clearRunnerAvailabilityCache,
   restartRunner,
   shutdownActiveRunner,
 } from './client-factory'
@@ -219,6 +223,21 @@ describe('restartRunner', () => {
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('containerd failed')
+  })
+})
+
+describe('checkAllRunnersAvailability', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    clearRunnerAvailabilityCache()
+  })
+
+  it('runs the Lima preflight hook before checking running state', async () => {
+    mockReconcileLimaState.mockResolvedValue(undefined)
+
+    await checkAllRunnersAvailability()
+
+    expect(mockReconcileLimaState).toHaveBeenCalledOnce()
   })
 })
 

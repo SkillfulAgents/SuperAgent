@@ -34,6 +34,8 @@ const ALL_RUNNERS: {
   cliCommand: string | (() => string)
   isEligible: () => boolean
   isAvailable: () => Promise<boolean>
+  /** Optional hook to reconcile runtime state before checking availability. */
+  reconcileRuntimeState?: () => Promise<void>
   isRunning: () => Promise<boolean>
   /** Optional cleanup when the app is shutting down (e.g., stop a VM). */
   shutdownRuntime?: () => Promise<void>
@@ -41,7 +43,7 @@ const ALL_RUNNERS: {
   { name: 'apple-container', cliCommand: 'container', isEligible: () => AppleContainerClient.isEligible(), isAvailable: () => AppleContainerClient.isAvailable(), isRunning: () => AppleContainerClient.isRunning(), shutdownRuntime: () => execWithPath('container system stop').then(() => {}) },
   { name: 'docker', cliCommand: 'docker', isEligible: () => DockerContainerClient.isEligible(), isAvailable: () => DockerContainerClient.isAvailable(), isRunning: () => DockerContainerClient.isRunning() },
   { name: 'podman', cliCommand: 'podman', isEligible: () => PodmanContainerClient.isEligible(), isAvailable: () => PodmanContainerClient.isAvailable(), isRunning: () => PodmanContainerClient.isRunning() },
-  { name: 'lima', cliCommand: () => getNerdctlWrapperPath(), isEligible: () => LimaContainerClient.isEligible(), isAvailable: () => LimaContainerClient.isAvailable(), isRunning: () => LimaContainerClient.isRunning(), shutdownRuntime: () => stopLimaVm() },
+  { name: 'lima', cliCommand: () => getNerdctlWrapperPath(), isEligible: () => LimaContainerClient.isEligible(), isAvailable: () => LimaContainerClient.isAvailable(), reconcileRuntimeState: () => LimaContainerClient.reconcileRuntimeState(), isRunning: () => LimaContainerClient.isRunning(), shutdownRuntime: () => stopLimaVm() },
   { name: 'wsl2', cliCommand: () => getWSL2NerdctlWrapperPath(), isEligible: () => WSL2ContainerClient.isEligible(), isAvailable: () => WSL2ContainerClient.isAvailable(), isRunning: () => WSL2ContainerClient.isRunning(), shutdownRuntime: () => stopWSL2Distro() },
 ]
 
@@ -271,6 +273,7 @@ async function checkRunnerDetailedAvailability(runner: ContainerRunner): Promise
     }
   }
 
+  await entry.reconcileRuntimeState?.()
   const running = await entry.isRunning()
 
   return {
