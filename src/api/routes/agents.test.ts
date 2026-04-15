@@ -250,6 +250,11 @@ vi.mock('@shared/lib/services/artifact-service', () => ({
   listArtifactsFromFilesystem: vi.fn(),
 }))
 
+vi.mock('@shared/lib/services/chat-integration-service', () => ({
+  listChatIntegrations: vi.fn(() => []),
+  listChatIntegrationsByAgents: vi.fn(() => new Map()),
+}))
+
 vi.mock('@shared/lib/services/notification-service', () => ({
   getSessionIdsWithUnreadNotifications: vi.fn(() => Promise.resolve(new Set())),
   getUnreadNotificationsByAgents: vi.fn(() => Promise.resolve(new Map())),
