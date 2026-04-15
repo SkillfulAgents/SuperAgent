@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser use feature: Agent successfully opened a browser, navigated to https://example.com, retrieved the page title, and reported it back correctly",
+  "reason": "Verified that the agent can open a browser, navigate to a URL, and retrieve the page title",
   "steps": [
-    "Step 1: Navigated to http://localhost:47891 — Page loaded successfully showing Super Agent interface with three agents listed",
-    "Step 2: Found and clicked \"QA-20260415-185925-4wey\" agent in the sidebar — Agent page opened, showing chat interface with message input field and \"No sessions yet\" message",
-    "Step 3: Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully sent, agent status changed to \"working\", and a new session \"Browser Page Title Check\" was created",
-    "Step 4: Waited up to 3 minutes for response — Agent completed work in 10 seconds and provided a text response",
-    "Step 5: Verified response mentions \"Example Domain\" — Response clearly states: \"The page title is \\\"Example Domain\\\". It's a simple page with a heading and a \\\"Learn more\\\" link.\" The agent also successfully executed three browser tool calls: \"Open Browser\", \"Page Snapshot\", and \"Close Browser\" (all marked complete with checkmarks)"
+    "Navigated to http://localhost:47891 — page loaded successfully showing the Super Agent interface with three agents listed in the sidebar",
+    "Found the \"QA-20260415-203412-oi3a\" agent in the sidebar and clicked it — agent view opened successfully with message input field ready",
+    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" using Ctrl+Enter — message was submitted successfully",
+    "Waited 5 seconds for agent response — agent completed the task in 9 seconds and returned response with page title information",
+    "Verified the response mentions \"Example Domain\" — response clearly states: \"The page title is 'Example Domain'. It's a simple page with a heading and a 'Learn more' link.\" and screenshot confirms the complete response with tool call cards showing successful browser operations"
   ],
   "bugs": [],
-  "durationMs": 97643,
-  "sessionId": "dc210677-7f3f-472d-aefb-b4d4f495222b",
+  "durationMs": 61620,
+  "sessionId": "8df8e960-c5fe-45d6-b79c-c87547e2b8ac",
   "cost": {
-    "inputTokens": 315,
-    "outputTokens": 10208,
-    "cacheCreationTokens": 49290,
-    "cacheReadTokens": 1136247,
+    "inputTokens": 270,
+    "outputTokens": 8729,
+    "cacheCreationTokens": 114960,
+    "cacheReadTokens": 890194,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.226592
+    "totalCostUsd": 0.276634
   }
 }
