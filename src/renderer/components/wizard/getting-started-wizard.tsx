@@ -147,40 +147,6 @@ export function GettingStartedWizard({ onClose }: GettingStartedWizardProps) {
       <div className={`relative flex flex-col h-svh transition-[width] duration-500 ease-in-out ${isAgentStep ? 'w-full' : 'w-full lg:w-1/2'}`}>
         <h1 className="sr-only">Getting Started</h1>
 
-        {/* TEMP: debug step controller — remove before merging */}
-        <div className="absolute top-2 right-2 z-20 flex gap-1 items-center opacity-30 hover:opacity-100 transition-opacity app-no-drag">
-          {(['manual', 'platform'] as const).map(flow => {
-            const flowSteps = flow === 'platform' ? PLATFORM_STEPS : MANUAL_STEPS
-            const isActive = welcomePath === flow
-            return (
-              <div key={flow} className="flex items-center gap-0.5">
-                <button
-                  className="px-1.5 py-0.5 rounded text-xs hover:bg-black/10"
-                  onClick={() => {
-                    if (isActive && currentStep === 0) { setWelcomePath(null) }
-                    else if (isActive) { setCurrentStep(s => s - 1) }
-                    else { setWelcomePath(flow); setCurrentStep(0) }
-                  }}
-                >
-                  ‹
-                </button>
-                <span className="text-[10px] tabular-nums w-20 text-center select-none">
-                  {isActive ? `${flow} ${currentStep + 1}/${flowSteps.length}` : flow}
-                </span>
-                <button
-                  className="px-1.5 py-0.5 rounded text-xs hover:bg-black/10"
-                  onClick={() => {
-                    if (!isActive) { setWelcomePath(flow); setCurrentStep(0) }
-                    else { setCurrentStep(s => Math.min(s + 1, flowSteps.length - 1)) }
-                  }}
-                >
-                  ›
-                </button>
-              </div>
-            )
-          })}
-        </div>
-
         <div className={`flex flex-1 flex-col justify-center py-10 w-full mx-auto transition-[max-width] duration-500 ${isAgentStep ? 'max-w-[560px]' : 'max-w-[480px]'}`}>
           <div className="w-full">
 

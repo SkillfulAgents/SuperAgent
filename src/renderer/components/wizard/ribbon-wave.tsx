@@ -21,8 +21,8 @@ const CFG = {
   waveFrequency: 4,
   ribbonWidth: 343,
   cornerRadius: 80,
-  waveSpeed: 2.49,
-  scrollSpeed: 5,
+  waveSpeed: 1.49,
+  scrollSpeed: 3,
   morphSpeed: 0,
   mouseInfluence: 200,
   bgColor: '#000000',
@@ -113,6 +113,7 @@ export function RibbonWave({ className }: RibbonWaveProps) {
       canvas!.width = W * dpr
       canvas!.height = H * dpr
       ctx!.setTransform(dpr, 0, 0, dpr, 0, 0)
+      draw()
     }
 
     function getWaveX(y: number, time: number) {
