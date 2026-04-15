@@ -4180,4 +4180,40 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   return c.json({ ok: true })
 })
 
+// GET /api/agents/:id/bookmarks - Read bookmarks from agent workspace
+agents.get('/:id/bookmarks', AgentRead(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const bookmarksPath = path.join(getAgentWorkspaceDir(agentSlug), 'bookmarks.json')
+    const content = await fs.promises.readFile(bookmarksPath, 'utf-8').catch(() => null)
+    if (!content) {
+      return c.json([])
+    }
+    const parsed = JSON.parse(content)
+    if (!Array.isArray(parsed)) {
+      return c.json([])
+    }
+    return c.json(parsed)
+  } catch {
+    return c.json([])
+  }
+})
+
+// PUT /api/agents/:id/bookmarks - Write bookmarks to agent workspace
+agents.put('/:id/bookmarks', AgentAdmin(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const bookmarks = await c.req.json()
+    if (!Array.isArray(bookmarks)) {
+      return c.json({ error: 'Bookmarks must be an array' }, 400)
+    }
+    const bookmarksPath = path.join(getAgentWorkspaceDir(agentSlug), 'bookmarks.json')
+    await fs.promises.writeFile(bookmarksPath, JSON.stringify(bookmarks, null, 2), 'utf-8')
+    return c.json(bookmarks)
+  } catch (error) {
+    console.error('Failed to update bookmarks:', error)
+    return c.json({ error: 'Failed to update bookmarks' }, 500)
+  }
+})
+
 export default agents

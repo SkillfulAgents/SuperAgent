@@ -18,6 +18,7 @@ import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
 import { HomeCrons } from './home-crons'
 import { HomeSkills } from './home-skills'
+import { HomeBookmarks } from './home-bookmarks'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { formatDistanceToNow } from 'date-fns'
@@ -218,6 +219,9 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                   )}
                 />
               </form>
+
+              {/* Bookmarks */}
+              <HomeBookmarks agentSlug={agent.slug} isOwner={isOwner} />
 
               {/* Sessions list */}
               <div className="pt-2">

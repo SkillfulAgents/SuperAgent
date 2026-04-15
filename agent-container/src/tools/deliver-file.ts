@@ -54,7 +54,7 @@ Example usage:
         content: [
           {
             type: 'text' as const,
-            text: `File "${relativePath}" (${stats.size} bytes) has been delivered to the user. They can now download it from the chat.`,
+            text: `File "${relativePath}" (${stats.size} bytes) has been delivered to the user. They can now download it from the chat.\n\nHint: If this is a file the user will access frequently (e.g. a report, dashboard, or reference doc), consider adding it to /workspace/bookmarks.json so it appears on their agent homepage.`,
           },
         ],
       }
