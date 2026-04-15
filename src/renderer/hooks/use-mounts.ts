@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { AgentMount, AgentMountWithHealth } from '@shared/lib/types/mount'
@@ -55,4 +56,55 @@ export function useRemoveMount() {
       queryClient.invalidateQueries({ queryKey: ['mounts', agentSlug] })
     },
   })
+}
+
+export function useVolumesManager(agentSlug: string) {
+  const { data: mountsData, isLoading, refetch } = useAgentMounts(agentSlug)
+  const mounts = Array.isArray(mountsData) ? mountsData : []
+  const addMount = useAddMount()
+  const removeMount = useRemoveMount()
+  const [pendingRestart, setPendingRestart] = useState(false)
+  const [isRestarting, setIsRestarting] = useState(false)
+
+  const handleAddMount = async () => {
+    const dirPath = await window.electronAPI?.openDirectory()
+    if (!dirPath) return
+    await addMount.mutateAsync({ agentSlug, hostPath: dirPath })
+    setPendingRestart(true)
+  }
+
+  const handleRemove = async (mountId: string) => {
+    try {
+      await removeMount.mutateAsync({ agentSlug, mountId })
+      setPendingRestart(true)
+    } catch (error) {
+      console.error('Failed to remove mount:', error)
+    }
+  }
+
+  const handleRestart = async () => {
+    setIsRestarting(true)
+    try {
+      await apiFetch(`/api/agents/${agentSlug}/stop`, { method: 'POST' })
+      await apiFetch(`/api/agents/${agentSlug}/start`, { method: 'POST' })
+      setPendingRestart(false)
+      refetch()
+    } catch (error) {
+      console.error('Failed to restart agent:', error)
+    } finally {
+      setIsRestarting(false)
+    }
+  }
+
+  return {
+    mounts,
+    isLoading,
+    pendingRestart,
+    isRestarting,
+    isAddingMount: addMount.isPending,
+    isRemovingMount: removeMount.isPending,
+    handleAddMount,
+    handleRemove,
+    handleRestart,
+  }
 }
