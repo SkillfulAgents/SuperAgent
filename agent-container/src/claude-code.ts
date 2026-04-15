@@ -6,6 +6,7 @@ import * as path from 'path';
 import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer } from './mcp-server';
 import { browserTools } from './tools/browser';
 import { computerUseTools } from './tools/computer-use';
+import { fileHooks, resolveToolFilePath } from './file-hooks';
 
 /** Generate prefixed MCP tool names from a tools array, optionally excluding some by name. */
 function mcpToolNames(
@@ -520,6 +521,73 @@ export class ClaudeCodeProcess extends EventEmitter {
                 async (_input, toolUseId) => {
                   if (toolUseId) {
                     inputManager.setCurrentToolUseId(toolUseId);
+                  }
+                  return {};
+                },
+              ],
+            },
+            {
+              matcher: 'Write',
+              hooks: [
+                async (input) => {
+                  const toolInput = (input as any).tool_input as Record<string, unknown>;
+                  const filePath = resolveToolFilePath(toolInput, this.workingDirectory);
+                  if (!filePath) return {};
+                  for (const hook of fileHooks) {
+                    if (!hook.matches(filePath)) continue;
+                    const result = hook.onWrite(filePath, toolInput.content as string);
+                    if (result.error) {
+                      return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: result.error } };
+                    }
+                    if (result.warning) {
+                      return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, additionalContext: result.warning } };
+                    }
+                  }
+                  return {};
+                },
+              ],
+            },
+          ],
+          PostToolUse: [
+            {
+              matcher: 'Read',
+              hooks: [
+                async (input) => {
+                  const toolInput = (input as any).tool_input as Record<string, unknown>;
+                  const filePath = resolveToolFilePath(toolInput, this.workingDirectory);
+                  if (!filePath) return {};
+                  for (const hook of fileHooks) {
+                    if (!hook.matches(filePath)) continue;
+                    const result = hook.onRead(filePath);
+                    if (result.additionalContext) {
+                      return { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: result.additionalContext } };
+                    }
+                  }
+                  return {};
+                },
+              ],
+            },
+            {
+              matcher: 'Edit',
+              hooks: [
+                async (input) => {
+                  const toolInput = (input as any).tool_input as Record<string, unknown>;
+                  const filePath = resolveToolFilePath(toolInput, this.workingDirectory);
+                  if (!filePath) return {};
+                  for (const hook of fileHooks) {
+                    if (!hook.matches(filePath)) continue;
+                    try {
+                      const content = await fs.promises.readFile(filePath, 'utf-8');
+                      const result = hook.onEdit(filePath, content);
+                      if (result.error) {
+                        return { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: `Warning: ${result.error}` } };
+                      }
+                      if (result.warning) {
+                        return { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: result.warning } };
+                      }
+                    } catch {
+                      // File may not exist yet after edit — skip
+                    }
                   }
                   return {};
                 },

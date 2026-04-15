@@ -1,26 +1,10 @@
 
 import { FolderSearch } from 'lucide-react'
+import { globDef } from '@shared/lib/tool-definitions/glob'
 import type { ToolRenderer, ToolRendererProps } from './types'
 
-interface GlobInput {
-  pattern?: string
-  path?: string
-}
-
-function parseGlobInput(input: unknown): GlobInput {
-  if (typeof input === 'object' && input !== null) {
-    return input as GlobInput
-  }
-  return {}
-}
-
-function getSummary(input: unknown): string | null {
-  const { pattern } = parseGlobInput(input)
-  return pattern ?? null
-}
-
 function ExpandedView({ input, result, isError }: ToolRendererProps) {
-  const { pattern, path } = parseGlobInput(input)
+  const { pattern, path } = globDef.parseInput(input)
 
   const files = result ? result.split('\n').filter(Boolean) : []
 
@@ -62,8 +46,8 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
 }
 
 export const globRenderer: ToolRenderer = {
-  displayName: 'Glob',
+  displayName: globDef.displayName,
   icon: FolderSearch,
-  getSummary,
+  getSummary: globDef.getSummary,
   ExpandedView,
 }

@@ -683,6 +683,10 @@ function getOrCreateEventSource(
         }
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
       }
+      else if (data.type === 'memory_recall') {
+        // Agent recalled memory files — refetch messages so the persisted entry appears
+        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+      }
       else if (data.type === 'api_retry') {
         // API is retrying a transient error — show retry state in activity indicator
         if (current) {

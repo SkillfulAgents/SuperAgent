@@ -14,6 +14,7 @@ import {
 } from '@shared/lib/services/agent-service'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
+import { listChatIntegrations, listChatIntegrationsByAgents } from '@shared/lib/services/chat-integration-service'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import {
@@ -46,7 +47,7 @@ import {
   listCancelledScheduledTasks,
 } from '@shared/lib/services/scheduled-task-service'
 import { db } from '@shared/lib/db'
-import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, user as userTable, messageAuthor, apiScopePolicies } from '@shared/lib/db/schema'
+import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, user as userTable, messageAuthor, apiScopePolicies, mcpToolPolicies } from '@shared/lib/db/schema'
 import { eq, and, inArray, desc, count, like, or } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
@@ -64,7 +65,7 @@ import {
   publishSkillToSkillset,
   refreshAgentSkills,
 } from '@shared/lib/services/skillset-service'
-import { listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
+import { type ArtifactInfo, listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
 import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
@@ -125,9 +126,10 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
   const slugs = agents.map(a => a.slug)
 
   // Batch DB queries: 2 queries instead of 2*N individual queries
-  const [unreadByAgent, tasksByAgent] = await Promise.all([
+  const [unreadByAgent, tasksByAgent, chatIntegrationsByAgent] = await Promise.all([
     getUnreadNotificationsByAgents(slugs),
     listPendingScheduledTasksByAgents(slugs),
+    Promise.resolve(listChatIntegrationsByAgents(slugs)),
   ])
 
   const limit = pLimit(5)
@@ -191,6 +193,7 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
         lastActivityAt: sessionSummary.lastActivityAt,
         scheduledTaskCount,
         nextScheduledTaskAt,
+        chatIntegrationCount: (chatIntegrationsByAgent.get(agent.slug) ?? []).length,
         dashboardCount: artifacts.length,
         dashboardNames: artifacts.map((a) => a.name || a.slug),
         dashboardSlugs: artifacts.map((a) => a.slug),
@@ -2380,6 +2383,20 @@ agents.get('/:id/webhook-triggers', AgentRead(), async (c) => {
   }
 })
 
+// GET /api/agents/:id/chat-integrations - List chat integrations for an agent
+agents.get('/:id/chat-integrations', AgentRead(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const status = c.req.query('status')
+
+    const integrations = listChatIntegrations(slug, status || undefined)
+    return c.json(integrations)
+  } catch (error) {
+    console.error('Failed to fetch chat integrations:', error)
+    return c.json({ error: 'Failed to fetch chat integrations' }, 500)
+  }
+})
+
 // GET /api/agents/:id/secrets - List secrets for an agent
 agents.get('/:id/secrets', AgentRead(), async (c) => {
   try {
@@ -3714,7 +3731,10 @@ agents.get('/:id/artifacts', AgentRead(), async (c) => {
     const slug = c.req.param('id')
 
 
-    // Try to get from running container first
+    // Always read name/description from host filesystem (source of truth for metadata)
+    const fsDashboards = await listArtifactsFromFilesystem(slug)
+
+    // Try to merge with running container data (provides live status + port)
     try {
       const client = containerManager.getClient(slug)
       // Use cached status to avoid spawning docker process
@@ -3723,16 +3743,30 @@ agents.get('/:id/artifacts', AgentRead(), async (c) => {
       if (info.status === 'running') {
         const response = await client.fetch('/artifacts')
         if (response.ok) {
-          return c.json(await response.json())
+          const containerDashboards = await response.json() as ArtifactInfo[]
+          const fsMap = new Map(fsDashboards.map(d => [d.slug, d]))
+
+          // Use container status/port but filesystem name/description
+          const merged = containerDashboards.map(cd => {
+            const fs = fsMap.get(cd.slug)
+            return fs
+              ? { ...cd, name: fs.name, description: fs.description }
+              : cd
+          })
+          // Include any filesystem-only dashboards (not yet tracked by container)
+          for (const fsd of fsDashboards) {
+            if (!containerDashboards.some(cd => cd.slug === fsd.slug)) {
+              merged.push(fsd)
+            }
+          }
+          return c.json(merged)
         }
       }
     } catch {
-      // Container not running, fall through to filesystem
+      // Container not running, fall through to filesystem-only data
     }
 
-    // Read from host filesystem when container is off
-    const dashboards = await listArtifactsFromFilesystem(slug)
-    return c.json(dashboards)
+    return c.json(fsDashboards)
   } catch (error) {
     console.error('Failed to fetch artifacts:', error)
     return c.json({ error: 'Failed to fetch artifacts' }, 500)
@@ -4078,42 +4112,64 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
     decision: 'allow' | 'deny'
     scope: string
     accountId: string
+    reviewType?: 'mcp' | 'api'
   }>()
 
   if (!body.decision || !['allow', 'deny'].includes(body.decision)) {
     return c.json({ error: 'Invalid decision' }, 400)
   }
 
-  // Verify account ownership before saving policy
-  if (body.accountId && isAuthMode()) {
-    const userId = getCurrentUserId(c)
-    const [acct] = await db
-      .select({ userId: connectedAccounts.userId })
-      .from(connectedAccounts)
-      .where(eq(connectedAccounts.id, body.accountId))
-      .limit(1)
-    if (acct && acct.userId !== userId) {
-      return c.json({ error: 'Forbidden: you do not own this account' }, 403)
-    }
-  }
-
-  // Save the scope policy (may fail if account doesn't exist, e.g. in mock/E2E)
   const policyDecision = body.decision === 'allow' ? 'allow' : 'block'
   const now = new Date()
-  try {
-    await db.insert(apiScopePolicies).values({
-      id: randomUUID(),
-      accountId: body.accountId,
-      scope: body.scope,
-      decision: policyDecision,
-      createdAt: now,
-      updatedAt: now,
-    }).onConflictDoUpdate({
-      target: [apiScopePolicies.accountId, apiScopePolicies.scope],
-      set: { decision: policyDecision, updatedAt: now },
-    })
-  } catch (err) {
-    console.warn('Failed to save scope policy (account may not exist):', err)
+
+  if (body.reviewType === 'mcp') {
+    // MCP tool review — save to mcpToolPolicies
+    // accountId is actually the mcpId for MCP reviews
+    try {
+      await db.insert(mcpToolPolicies).values({
+        id: randomUUID(),
+        mcpId: body.accountId,
+        toolName: body.scope,
+        decision: policyDecision,
+        createdAt: now,
+        updatedAt: now,
+      }).onConflictDoUpdate({
+        target: [mcpToolPolicies.mcpId, mcpToolPolicies.toolName],
+        set: { decision: policyDecision, updatedAt: now },
+      })
+    } catch (err) {
+      console.warn('Failed to save MCP tool policy:', err)
+    }
+  } else {
+    // API scope review — save to apiScopePolicies
+    // Verify account ownership before saving policy
+    if (body.accountId && isAuthMode()) {
+      const userId = getCurrentUserId(c)
+      const [acct] = await db
+        .select({ userId: connectedAccounts.userId })
+        .from(connectedAccounts)
+        .where(eq(connectedAccounts.id, body.accountId))
+        .limit(1)
+      if (acct && acct.userId !== userId) {
+        return c.json({ error: 'Forbidden: you do not own this account' }, 403)
+      }
+    }
+
+    try {
+      await db.insert(apiScopePolicies).values({
+        id: randomUUID(),
+        accountId: body.accountId,
+        scope: body.scope,
+        decision: policyDecision,
+        createdAt: now,
+        updatedAt: now,
+      }).onConflictDoUpdate({
+        target: [apiScopePolicies.accountId, apiScopePolicies.scope],
+        set: { decision: policyDecision, updatedAt: now },
+      })
+    } catch (err) {
+      console.warn('Failed to save scope policy (account may not exist):', err)
+    }
   }
 
   // Submit decision for this review
@@ -4123,6 +4179,42 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   reviewManager.resolveMatchingPending(slug, body.scope, body.decision)
 
   return c.json({ ok: true })
+})
+
+// GET /api/agents/:id/bookmarks - Read bookmarks from agent workspace
+agents.get('/:id/bookmarks', AgentRead(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const bookmarksPath = path.join(getAgentWorkspaceDir(agentSlug), 'bookmarks.json')
+    const content = await fs.promises.readFile(bookmarksPath, 'utf-8').catch(() => null)
+    if (!content) {
+      return c.json([])
+    }
+    const parsed = JSON.parse(content)
+    if (!Array.isArray(parsed)) {
+      return c.json([])
+    }
+    return c.json(parsed)
+  } catch {
+    return c.json([])
+  }
+})
+
+// PUT /api/agents/:id/bookmarks - Write bookmarks to agent workspace
+agents.put('/:id/bookmarks', AgentAdmin(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const bookmarks = await c.req.json()
+    if (!Array.isArray(bookmarks)) {
+      return c.json({ error: 'Bookmarks must be an array' }, 400)
+    }
+    const bookmarksPath = path.join(getAgentWorkspaceDir(agentSlug), 'bookmarks.json')
+    await fs.promises.writeFile(bookmarksPath, JSON.stringify(bookmarks, null, 2), 'utf-8')
+    return c.json(bookmarks)
+  } catch (error) {
+    console.error('Failed to update bookmarks:', error)
+    return c.json({ error: 'Failed to update bookmarks' }, 500)
+  }
 })
 
 export default agents

@@ -92,7 +92,12 @@ export function ProxyReviewRequestItem({
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ decision, scope, accountId }),
+          body: JSON.stringify({
+            decision,
+            scope,
+            accountId,
+            reviewType: targetPath.startsWith('tools/call') ? 'mcp' : 'api',
+          }),
         }
       )
       if (!response.ok) {
@@ -399,10 +404,7 @@ export function ProxyReviewRequestItem({
               >
                 <span className="flex min-w-0 w-full flex-col items-start text-left">
                   <span className="flex w-full min-w-0 items-center gap-1 overflow-hidden">
-                    <span className="shrink-0">Always allow</span>
-                    <span className="inline-flex min-w-0 max-w-full items-center truncate rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground/70">
-                      all {toolkit} requests
-                    </span>
+                    <span className="shrink-0">Always allow all {toolkit} requests</span>
                   </span>
                   <span className="block w-full truncate text-[11px] font-normal text-muted-foreground/80">
                     Allow full read/edit access to {toolkit}

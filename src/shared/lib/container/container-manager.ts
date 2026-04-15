@@ -1,6 +1,7 @@
 import path from 'path'
 import { createContainerClient, checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, startRunner, refreshRunnerAvailability, clearRunnerAvailabilityCache, getRunnerDisplayName, getContainerClientClass, getCliCommand, type ContainerRunner } from './client-factory'
-import type { ContainerClient, ContainerConfig, ContainerInfo, HealthCheckResult, RuntimeReadiness } from './types'
+import { ensureLimaReady } from './lima-container-client'
+import type { ContainerClient, ContainerConfig, ContainerInfo, HealthCheckResult, ImagePullProgress, RuntimeReadiness } from './types'
 import { healthMonitor } from './health-monitor'
 import { db } from '@shared/lib/db'
 import { agentConnectedAccounts, connectedAccounts, agentRemoteMcps, remoteMcpServers } from '@shared/lib/db/schema'
@@ -819,48 +820,93 @@ class ContainerManager {
     let lastBroadcastTime = 0
     const THROTTLE_MS = 500
 
-    try {
+    const MAX_PULL_RETRIES = 2
+    const RETRY_DELAY_MS = 3000
+
+    const isTransientSshError = (error: unknown): boolean => {
+      const msg = error instanceof Error ? error.message : String(error)
+      return msg.includes('exit code 255') || msg.includes('kex_exchange_identification') || msg.includes('Connection reset by peer')
+    }
+
+    const doImageAction = (onProgress: (progress: ImagePullProgress) => void) => {
       const imageAction = shouldBuild ? buildImage : pullImage
-      await imageAction(effectiveRunner, image, (progress) => {
-        const now = Date.now()
-        if (now - lastBroadcastTime >= THROTTLE_MS) {
+      return imageAction(effectiveRunner, image, onProgress)
+    }
+
+    const progressCallback = (progress: ImagePullProgress) => {
+      const now = Date.now()
+      if (now - lastBroadcastTime >= THROTTLE_MS) {
+        this.setReadiness({
+          status: 'PULLING_IMAGE',
+          message: `${actionLabel} image ${image}...`,
+          pullProgress: progress,
+        })
+        lastBroadcastTime = now
+      }
+    }
+
+    for (let attempt = 0; attempt <= MAX_PULL_RETRIES; attempt++) {
+      try {
+        await doImageAction(progressCallback)
+
+        this.setReadiness({
+          status: 'READY',
+          message: 'Ready',
+          pullProgress: null,
+        })
+
+        // Clean up old images after a successful pull (fire-and-forget)
+        const lastColon = image.lastIndexOf(':')
+        if (lastColon > 0 && !shouldBuild) {
+          const registry = image.substring(0, lastColon)
+          const currentTag = image.substring(lastColon + 1)
+          const ClientClass = getContainerClientClass(effectiveRunner)
+          ClientClass.removeOldImages(getCliCommand(effectiveRunner), registry, currentTag).catch((error: unknown) => {
+            console.warn('[ContainerManager] Image cleanup failed:', error)
+          })
+        }
+        return
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error)
+
+        // Only retry transient SSH errors for pull operations (not builds)
+        if (!shouldBuild && attempt < MAX_PULL_RETRIES && isTransientSshError(error)) {
+          console.warn(`[ContainerManager] Image pull failed (attempt ${attempt + 1}/${MAX_PULL_RETRIES + 1}), retrying in ${RETRY_DELAY_MS}ms:`, errMsg)
+          addErrorBreadcrumb({ category: 'container', message: 'Image pull transient failure, will retry', data: { attempt, errMsg, runner: effectiveRunner } })
+
+          // For Lima runner, attempt VM recovery before retrying
+          if (effectiveRunner === 'lima') {
+            try {
+              await ensureLimaReady()
+            } catch (limaErr) {
+              console.warn('[ContainerManager] Lima recovery attempt failed:', limaErr)
+            }
+          }
+
+          await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS))
+          lastBroadcastTime = 0
+
           this.setReadiness({
             status: 'PULLING_IMAGE',
-            message: `${actionLabel} image ${image}...`,
-            pullProgress: progress,
+            message: `${actionLabel} image ${image} (retry ${attempt + 1})...`,
+            pullProgress: { status: 'Retrying...', percent: null, completedLayers: 0, totalLayers: 0 },
           })
-          lastBroadcastTime = now
+          continue
         }
-      })
 
-      this.setReadiness({
-        status: 'READY',
-        message: 'Ready',
-        pullProgress: null,
-      })
-
-      // Clean up old images after a successful pull (fire-and-forget)
-      const lastColon = image.lastIndexOf(':')
-      if (lastColon > 0 && !shouldBuild) {
-        const registry = image.substring(0, lastColon)
-        const currentTag = image.substring(lastColon + 1)
-        const ClientClass = getContainerClientClass(effectiveRunner)
-        ClientClass.removeOldImages(getCliCommand(effectiveRunner), registry, currentTag).catch((error: unknown) => {
-          console.warn('[ContainerManager] Image cleanup failed:', error)
+        // Non-retryable or exhausted retries
+        console.error(`[ContainerManager] Failed to ${actionLabel.toLowerCase()} image ${image}:`, errMsg)
+        captureException(error, {
+          tags: { component: 'runtime', operation: shouldBuild ? 'image-build' : 'image-pull' },
+          extra: { image, runner: effectiveRunner, attempt },
         })
+        this.setReadiness({
+          status: 'ERROR',
+          message: `Failed to ${actionLabel.toLowerCase()} image: ${errMsg}`,
+          pullProgress: null,
+        })
+        return
       }
-    } catch (error) {
-      const errMsg = error instanceof Error ? error.message : String(error)
-      console.error(`[ContainerManager] Failed to ${actionLabel.toLowerCase()} image ${image}:`, errMsg)
-      captureException(error, {
-        tags: { component: 'runtime', operation: shouldBuild ? 'image-build' : 'image-pull' },
-        extra: { image, runner: effectiveRunner },
-      })
-      this.setReadiness({
-        status: 'ERROR',
-        message: `Failed to ${actionLabel.toLowerCase()} image: ${errMsg}`,
-        pullProgress: null,
-      })
     }
   }
 }
@@ -881,3 +927,4 @@ if (process.env.NODE_ENV !== 'production') {
 // Note: Graceful shutdown handlers are registered in the application entry point
 // (src/main/index.ts for Electron, src/web/server.ts for web)
 // This avoids side effects at module import time and allows proper cleanup coordination
+

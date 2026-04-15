@@ -1,28 +1,10 @@
 
 import { Link2 } from 'lucide-react'
 import type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps } from './types'
+import { requestConnectedAccountDef, type RequestConnectedAccountInput } from '@shared/lib/tool-definitions/request-connected-account'
 import { getProvider } from '@shared/lib/composio/providers'
 
-interface RequestConnectedAccountInput {
-  toolkit?: string
-  reason?: string
-}
-
-function parseRequestConnectedAccountInput(input: unknown): RequestConnectedAccountInput {
-  if (typeof input === 'object' && input !== null) {
-    return input as RequestConnectedAccountInput
-  }
-  return {}
-}
-
-function getSummary(input: unknown): string | null {
-  const { toolkit } = parseRequestConnectedAccountInput(input)
-  if (toolkit) {
-    const provider = getProvider(toolkit.toLowerCase())
-    return provider?.displayName || toolkit
-  }
-  return null
-}
+const parseRequestConnectedAccountInput = requestConnectedAccountDef.parseInput
 
 function parseResult(result: unknown): string | null {
   if (!result) return null
@@ -137,7 +119,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
 export const requestConnectedAccountRenderer: ToolRenderer = {
   displayName: 'Request Connected Account',
   icon: Link2,
-  getSummary,
+  getSummary: requestConnectedAccountDef.getSummary,
   ExpandedView,
   StreamingView,
 }

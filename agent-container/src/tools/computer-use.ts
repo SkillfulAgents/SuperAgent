@@ -7,6 +7,7 @@
 
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
+import { resizeBase64Screenshot } from '../image-utils'
 import { inputManager } from '../input-manager'
 
 /**
@@ -42,15 +43,24 @@ async function computerUseRequest(
       try {
         const parsed = JSON.parse(output)
         if (parsed.type === 'screenshot' && parsed.base64) {
-          return {
-            content: [
-              {
-                type: 'image' as const,
-                data: parsed.base64,
-                mimeType: (parsed.media_type || 'image/png') as `image/${string}`,
-              },
-            ],
+          const mediaMime = (parsed.media_type || 'image/png') as string
+          const resized = await resizeBase64Screenshot(parsed.base64, mediaMime)
+          const origW = parsed.width
+          const origH = parsed.height
+          const content: Array<{ type: 'image'; data: string; mimeType: `image/${string}` } | { type: 'text'; text: string }> = [
+            {
+              type: 'image' as const,
+              data: resized.base64,
+              mimeType: resized.mimeType as `image/${string}`,
+            },
+          ]
+          if (resized.resized && origW && origH) {
+            content.push({
+              type: 'text' as const,
+              text: `Note: This screenshot was resized for the API. The actual screen resolution is ${origW}x${origH}. If using clickAt with x/y coordinates, use the original resolution coordinates, not the image pixel positions.`,
+            })
           }
+          return { content }
         }
       } catch {
         // Fall through to text response

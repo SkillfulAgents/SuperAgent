@@ -25,8 +25,8 @@ import {
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state"
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
-const SIDEBAR_WIDTH_DEFAULT = 256 // 16rem in px
-const SIDEBAR_WIDTH_MIN = 224 // 14rem
+const SIDEBAR_WIDTH_DEFAULT = 288 // 18rem in px
+const SIDEBAR_WIDTH_MIN = 288 // 18rem
 const SIDEBAR_WIDTH_MAX = 480 // 30rem
 const SIDEBAR_WIDTH_MOBILE = "18rem"
 const SIDEBAR_WIDTH_ICON = "3rem"

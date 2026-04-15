@@ -4,10 +4,11 @@ import { MessageInput } from '@renderer/components/messages/message-input'
 import { AgentActivityIndicator } from '@renderer/components/messages/agent-activity-indicator'
 import { AgentSettingsDialog } from '@renderer/components/agents/agent-settings-dialog'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
-import { AgentLanding } from '@renderer/components/agents/agent-landing'
+import { AgentHome } from '@renderer/components/agents/agent-home/agent-home'
 import { HomePage } from '@renderer/components/home/home-page'
 import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/scheduled-task-view'
 import { WebhookTriggerView } from '@renderer/components/webhook-triggers/webhook-trigger-view'
+import { ChatIntegrationView } from '@renderer/components/chat-integrations/chat-integration-view'
 import { BrowserDrawerPanel } from '@renderer/components/browser/browser-drawer-panel'
 import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
 import { Button } from '@renderer/components/ui/button'
@@ -40,6 +41,7 @@ export function MainContent() {
     selectedSessionId: sessionId,
     selectedScheduledTaskId: scheduledTaskId,
     selectedWebhookTriggerId: webhookTriggerId,
+    selectedChatIntegrationId: chatIntegrationId,
     selectedDashboardSlug: dashboardSlug,
     selectSession,
     selectScheduledTask,
@@ -58,8 +60,8 @@ export function MainContent() {
   const { data: scheduledTask } = useScheduledTask(scheduledTaskId)
   const startAgent = useStartAgent()
   const stopAgent = useStopAgent()
-  const hasActiveSessions = sessions?.some((s) => s.isActive) ?? false
-  const hasSessionsAwaitingInput = sessions?.some((s) => s.isAwaitingInput) ?? false
+  const hasActiveSessions = sessions?.some((s) => s.isActive) || (agent?.hasActiveSessions ?? false)
+  const hasSessionsAwaitingInput = sessions?.some((s) => s.isAwaitingInput) || (agent?.hasSessionsAwaitingInput ?? false)
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
   const markSessionNotificationsRead = useMarkSessionNotificationsRead()
@@ -135,7 +137,7 @@ export function MainContent() {
     }
   }, [sessionId])
 
-  // Callback for AgentLanding when a new session is created with initial message
+  // Callback for AgentHome when a new session is created with initial message
   const handleSessionCreated = useCallback((newSessionId: string, initialMessage: string) => {
     pendingMessagesRef.current.set(newSessionId, {
       text: initialMessage,
@@ -160,7 +162,13 @@ export function MainContent() {
         />
         <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-2 min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="text-sm md:text-base font-semibold truncate">{agent?.name || 'Loading...'}</span>
+            <button
+              type="button"
+              className="text-sm md:text-base font-semibold truncate hover:text-muted-foreground transition-colors app-no-drag"
+              onClick={() => selectSession(null)}
+            >
+              {agent?.name || 'Loading...'}
+            </button>
             {agent && <AgentStatus status={agent.status} hasActiveSessions={hasActiveSessions} hasSessionsAwaitingInput={hasSessionsAwaitingInput} />}
           </div>
           {sessionId && session?.agentSlug === agentSlug && (
@@ -430,6 +438,9 @@ export function MainContent() {
         ) : /* Show webhook trigger view when a webhook trigger is selected */
         webhookTriggerId ? (
           <WebhookTriggerView triggerId={webhookTriggerId} agentSlug={agentSlug} />
+        ) : /* Show chat integration view when a chat integration is selected */
+        chatIntegrationId ? (
+          <ChatIntegrationView integrationId={chatIntegrationId} agentSlug={agentSlug} />
         ) : sessionId ? (
           /* Show messages when a session is selected */
           <div className="relative flex-1 flex min-h-0">
@@ -441,7 +452,7 @@ export function MainContent() {
                 pendingUserMessage={pendingUserMessage}
                 onPendingMessageAppeared={handlePendingMessageAppeared}
               />
-              <div className="bg-background">
+              <div className="bg-background max-w-[740px] mx-auto w-full">
                 <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
                 <MessageInput
                   key={sessionId}
@@ -457,11 +468,12 @@ export function MainContent() {
             <BrowserDrawerPanel agentSlug={agentSlug} sessionId={sessionId} browserActive={browserActive} isActive={isActive} />
           </div>
         ) : (
-          /* Show landing page with large input when no session is selected */
+          /* Show home page with large input when no session is selected */
           agent && (
-            <AgentLanding
+            <AgentHome
               agent={agent}
               onSessionCreated={handleSessionCreated}
+              onOpenSettings={() => setSettingsOpen(true)}
             />
           )
         )}

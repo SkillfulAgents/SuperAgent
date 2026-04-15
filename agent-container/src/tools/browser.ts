@@ -9,6 +9,7 @@
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { readFile } from 'fs/promises'
 import { z } from 'zod'
+import { resizeScreenshot } from '../image-utils'
 import { tabManager } from '../tab-manager'
 
 const CONTAINER_URL = `http://localhost:${process.env.PORT || '3000'}`
@@ -68,11 +69,11 @@ export function extractScreenshotPath(output: string): string {
 async function readScreenshotAsBase64(filePath: string): Promise<{ data: string; mimeType: string } | null> {
   try {
     const buffer = await readFile(filePath.trim())
-    const data = buffer.toString('base64')
     const mimeType = filePath.endsWith('.jpg') || filePath.endsWith('.jpeg')
       ? 'image/jpeg'
       : 'image/png'
-    return { data, mimeType }
+    const resized = await resizeScreenshot(buffer, mimeType)
+    return { data: resized.data.toString('base64'), mimeType: resized.mimeType }
   } catch {
     return null
   }

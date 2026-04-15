@@ -132,7 +132,8 @@ export async function resolveMcpPolicy(
     policyMap.set(row.policy.toolName, row.policy.decision as PolicyDecision)
   }
 
-  const globalDefault = getUserSettings(userId).defaultApiPolicy as PolicyDecision
+  const settings = getUserSettings(userId)
+  const globalDefault = (settings.defaultMcpPolicy ?? settings.defaultApiPolicy) as PolicyDecision
   const mcpDefault = policyMap.get('*')
 
   // If toolName provided, check explicit → MCP default → global

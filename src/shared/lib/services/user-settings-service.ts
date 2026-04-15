@@ -27,6 +27,7 @@ export const userSettingsSchema = z.object({
   timezone: z.string().optional(),
   agentOrder: z.array(z.string()).optional(),
   defaultApiPolicy: z.enum(['allow', 'review', 'block']).default('review'),
+  defaultMcpPolicy: z.enum(['allow', 'review', 'block']).default('review'),
   onboardingProgress: z.object({
     path: z.enum(['manual', 'platform']),
     stepId: z.string(),

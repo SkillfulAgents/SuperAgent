@@ -322,6 +322,12 @@ The user can also decline the request, optionally providing a reason.
 2. Wait for the tool result - it will contain the file path if uploaded, or an error if declined
 3. Process the uploaded file from the returned path
 
+### Bookmarks
+
+You can save bookmarks to important resources (web links or workspace files) by editing `/workspace/bookmarks.json`. Bookmarks are displayed on the user's agent homepage for quick access. When the user sends you a link/file or you generate one that seems important and often-visited -- bookmark it!
+
+The file is a JSON array — each item has a `name` and either a `link` (https:// URL) or `file` (workspace path). When you create or deliver a file the user will access regularly, consider adding a bookmark for it.
+
 ## Web Browsing
 
 You have a web browser for interacting with websites. The user can see the browser live and interact with it directly.

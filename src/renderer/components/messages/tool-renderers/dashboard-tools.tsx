@@ -1,20 +1,10 @@
 
 import { LayoutDashboard, Play, List, ScrollText } from 'lucide-react'
 import type { ToolRenderer, ToolRendererProps } from './types'
-
-// ── Types ─────────────────────────────────────────────────────
-
-interface CreateDashboardInput {
-  slug?: string
-  name?: string
-  description?: string
-  framework?: 'plain' | 'react'
-}
-
-interface DashboardSlugInput {
-  slug?: string
-  clear?: boolean
-}
+import {
+  createDashboardDef, startDashboardDef, listDashboardsDef, getDashboardLogsDef,
+  type CreateDashboardInput, type DashboardSlugInput,
+} from '@shared/lib/tool-definitions/dashboard-tools'
 
 // ── create_dashboard ──────────────────────────────────────────
 
@@ -58,31 +48,24 @@ function CreateDashboardExpandedView({ input, result, isError }: ToolRendererPro
 }
 
 export const createDashboardRenderer: ToolRenderer = {
-  displayName: 'Create Dashboard',
+  displayName: createDashboardDef.displayName,
   icon: LayoutDashboard,
-  getSummary: (input) => {
-    const { name, framework } = input as CreateDashboardInput
-    if (!name) return null
-    return framework ? `${name} (${framework})` : name
-  },
+  getSummary: createDashboardDef.getSummary,
   ExpandedView: CreateDashboardExpandedView,
 }
 
 // ── start_dashboard ───────────────────────────────────────────
 
 export const startDashboardRenderer: ToolRenderer = {
-  displayName: 'Start Dashboard',
+  displayName: startDashboardDef.displayName,
   icon: Play,
-  getSummary: (input) => {
-    const { slug } = input as DashboardSlugInput
-    return slug ?? null
-  },
+  getSummary: startDashboardDef.getSummary,
 }
 
 // ── list_dashboards ───────────────────────────────────────────
 
 export const listDashboardsRenderer: ToolRenderer = {
-  displayName: 'List Dashboards',
+  displayName: listDashboardsDef.displayName,
   icon: List,
 }
 
@@ -123,11 +106,8 @@ function DashboardLogsExpandedView({ input, result, isError }: ToolRendererProps
 }
 
 export const getDashboardLogsRenderer: ToolRenderer = {
-  displayName: 'Dashboard Logs',
+  displayName: getDashboardLogsDef.displayName,
   icon: ScrollText,
-  getSummary: (input) => {
-    const { slug } = input as DashboardSlugInput
-    return slug ?? null
-  },
+  getSummary: getDashboardLogsDef.getSummary,
   ExpandedView: DashboardLogsExpandedView,
 }

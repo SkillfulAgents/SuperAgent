@@ -1,27 +1,7 @@
 
 import { Bot } from 'lucide-react'
+import { taskDef, type TaskInput } from '@shared/lib/tool-definitions/task'
 import type { ToolRenderer, StreamingToolRendererProps } from './types'
-
-interface TaskInput {
-  subagent_type?: string
-  description?: string
-  prompt?: string
-}
-
-function parseTaskInput(input: unknown): TaskInput {
-  if (typeof input === 'object' && input !== null) {
-    return input as TaskInput
-  }
-  return {}
-}
-
-function getSummary(input: unknown): string | null {
-  const { subagent_type, description } = parseTaskInput(input)
-  const parts: string[] = []
-  if (subagent_type) parts.push(`[${subagent_type}]`)
-  if (description) parts.push(description)
-  return parts.length > 0 ? parts.join(' ') : null
-}
 
 function StreamingView({ partialInput }: StreamingToolRendererProps) {
   let parsed: TaskInput = {}
@@ -52,8 +32,8 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
 }
 
 export const taskRenderer: ToolRenderer = {
-  displayName: 'Sub Agent',
+  displayName: taskDef.displayName,
   icon: Bot,
-  getSummary,
+  getSummary: taskDef.getSummary,
   StreamingView,
 }

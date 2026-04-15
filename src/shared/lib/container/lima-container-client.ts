@@ -280,27 +280,44 @@ export class LimaContainerClient extends BaseContainerClient {
   protected async handleRunError(error: any): Promise<boolean> {
     const msg = error.message || error.stderr || String(error)
     addErrorBreadcrumb({ category: 'lima', message: 'Container run error', data: { error: msg, agentId: this.config.agentId } })
-    if (
+
+    const isKnownVmIssue =
       msg.includes('ENOENT') ||
       msg.includes('not found') ||
       msg.includes('does not exist') ||
       msg.includes('not running') ||
       msg.includes('No such file') ||
       msg.includes('EACCES')
-    ) {
-      console.log('Lima VM not ready, attempting to provision...')
+
+    // Check if the VM is in a broken/non-running state — if so, recovery is
+    // worth attempting even for unexpected error messages (e.g. "Bad port '0'").
+    let vmUnhealthy = false
+    if (!isKnownVmIssue) {
+      try {
+        const { stdout } = await execLimactl('list --json')
+        const vms = parseLimaList(stdout)
+        const vm = vms.find((v: any) => v.name === LIMA_VM_NAME)
+        vmUnhealthy = !vm || vm.status !== 'Running'
+      } catch {
+        vmUnhealthy = true
+      }
+    }
+
+    if (isKnownVmIssue || vmUnhealthy) {
+      console.log(`Lima VM not ready (${vmUnhealthy ? 'unhealthy VM' : 'known issue'}), attempting to provision...`)
       try {
         await ensureLimaReady()
         return true
       } catch (err) {
         captureException(err, {
           tags: { component: 'lima', operation: 'provision' },
-          extra: { originalError: msg, agentId: this.config.agentId, ...collectLimaDiagnostics() },
+          extra: { originalError: msg, agentId: this.config.agentId, vmUnhealthy, ...collectLimaDiagnostics() },
         })
         console.error('Failed to provision Lima VM:', err)
         return false
       }
     }
+
     captureException(error, {
       tags: { component: 'lima', operation: 'container-run' },
       extra: { agentId: this.config.agentId, ...collectLimaDiagnostics() },
@@ -394,6 +411,7 @@ async function ensureLimaReadyImpl(): Promise<void> {
   // Check if VM exists and whether its config matches
   let vmExists = false
   let vmMemory: string | null = null
+  let vmBroken = false
   try {
     const { stdout } = await execLimactl('list --json')
     const vms = parseLimaList(stdout)
@@ -401,6 +419,7 @@ async function ensureLimaReadyImpl(): Promise<void> {
     if (vm) {
       vmExists = true
       vmMemory = vm.memory ? `${Math.round(vm.memory / (1024 * 1024 * 1024))}GiB` : null
+      vmBroken = vm.status === 'Broken'
     }
   } catch (err) {
     addErrorBreadcrumb({ category: 'lima', message: 'limactl list failed', level: 'warning', data: { error: String(err) } })
@@ -421,6 +440,13 @@ async function ensureLimaReadyImpl(): Promise<void> {
       console.log('Lima VM missing version file, recreating...')
       needsRecreate = true
     }
+  }
+
+  // Recreate VM if it's in a broken state (e.g. host ran out of memory)
+  if (vmExists && !needsRecreate && vmBroken) {
+    console.log('Lima VM is in Broken state, recreating...')
+    addErrorBreadcrumb({ category: 'lima', message: 'VM is Broken, will recreate', data: { vmMemory } })
+    needsRecreate = true
   }
 
   // Recreate VM if the user has explicitly set a memory preference and it differs

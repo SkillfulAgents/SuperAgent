@@ -6,17 +6,22 @@ interface SelectionContextType {
   selectedSessionId: string | null
   selectedScheduledTaskId: string | null
   selectedWebhookTriggerId: string | null
+  selectedChatIntegrationId: string | null
+  selectedChatSessionId: string | null // session within a chat integration
   selectedDashboardSlug: string | null
   selectAgent: (agentSlug: string | null) => void
   selectSession: (sessionId: string | null) => void
   selectScheduledTask: (taskId: string | null) => void
   selectWebhookTrigger: (triggerId: string | null) => void
+  selectChatIntegration: (integrationId: string | null) => void
+  selectChatSession: (integrationId: string, sessionId: string) => void
   selectDashboard: (slug: string | null) => void
   clearSelection: () => void
   handleAgentDeleted: (agentSlug: string) => void
   handleSessionDeleted: (sessionId: string) => void
   handleScheduledTaskDeleted: (taskId: string) => void
   handleWebhookTriggerDeleted: (triggerId: string) => void
+  handleChatIntegrationDeleted: (integrationId: string) => void
   handleDashboardDeleted: (slug: string) => void
 }
 
@@ -27,6 +32,8 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const [selectedScheduledTaskId, setSelectedScheduledTaskId] = useState<string | null>(null)
   const [selectedWebhookTriggerId, setSelectedWebhookTriggerId] = useState<string | null>(null)
+  const [selectedChatIntegrationId, setSelectedChatIntegrationId] = useState<string | null>(null)
+  const [selectedChatSessionId, setSelectedChatSessionId] = useState<string | null>(null)
   const [selectedDashboardSlug, setSelectedDashboardSlug] = useState<string | null>(null)
 
   const selectAgent = useCallback((agentSlug: string | null) => {
@@ -34,6 +41,8 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedSessionId(null)
     setSelectedScheduledTaskId(null)
     setSelectedWebhookTriggerId(null)
+    setSelectedChatIntegrationId(null)
+    setSelectedChatSessionId(null)
     setSelectedDashboardSlug(null)
   }, [])
 
@@ -41,6 +50,8 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedSessionId(sessionId)
     setSelectedScheduledTaskId(null)
     setSelectedWebhookTriggerId(null)
+    setSelectedChatIntegrationId(null)
+    setSelectedChatSessionId(null)
     setSelectedDashboardSlug(null)
   }, [])
 
@@ -48,6 +59,8 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedScheduledTaskId(taskId)
     setSelectedSessionId(null)
     setSelectedWebhookTriggerId(null)
+    setSelectedChatIntegrationId(null)
+    setSelectedChatSessionId(null)
     setSelectedDashboardSlug(null)
   }, [])
 
@@ -55,6 +68,26 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedWebhookTriggerId(triggerId)
     setSelectedSessionId(null)
     setSelectedScheduledTaskId(null)
+    setSelectedChatIntegrationId(null)
+    setSelectedChatSessionId(null)
+    setSelectedDashboardSlug(null)
+  }, [])
+
+  const selectChatIntegration = useCallback((integrationId: string | null) => {
+    setSelectedChatIntegrationId(integrationId)
+    setSelectedChatSessionId(null)
+    setSelectedSessionId(null)
+    setSelectedScheduledTaskId(null)
+    setSelectedWebhookTriggerId(null)
+    setSelectedDashboardSlug(null)
+  }, [])
+
+  const selectChatSession = useCallback((integrationId: string, sessionId: string) => {
+    setSelectedChatIntegrationId(integrationId)
+    setSelectedChatSessionId(sessionId)
+    setSelectedSessionId(null)
+    setSelectedScheduledTaskId(null)
+    setSelectedWebhookTriggerId(null)
     setSelectedDashboardSlug(null)
   }, [])
 
@@ -63,6 +96,8 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedSessionId(null)
     setSelectedScheduledTaskId(null)
     setSelectedWebhookTriggerId(null)
+    setSelectedChatIntegrationId(null)
+    setSelectedChatSessionId(null)
   }, [])
 
   const clearSelection = useCallback(() => {
@@ -70,6 +105,8 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedSessionId(null)
     setSelectedScheduledTaskId(null)
     setSelectedWebhookTriggerId(null)
+    setSelectedChatIntegrationId(null)
+    setSelectedChatSessionId(null)
     setSelectedDashboardSlug(null)
   }, [])
 
@@ -79,6 +116,8 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
       setSelectedSessionId(null)
       setSelectedScheduledTaskId(null)
       setSelectedWebhookTriggerId(null)
+      setSelectedChatIntegrationId(null)
+      setSelectedChatSessionId(null)
       setSelectedDashboardSlug(null)
     }
   }, [selectedAgentSlug])
@@ -101,6 +140,13 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     }
   }, [selectedWebhookTriggerId])
 
+  const handleChatIntegrationDeleted = useCallback((integrationId: string) => {
+    if (selectedChatIntegrationId === integrationId) {
+      setSelectedChatIntegrationId(null)
+      setSelectedChatSessionId(null)
+    }
+  }, [selectedChatIntegrationId])
+
   const handleDashboardDeleted = useCallback((slug: string) => {
     if (selectedDashboardSlug === slug) {
       setSelectedDashboardSlug(null)
@@ -114,17 +160,22 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
         selectedSessionId,
         selectedScheduledTaskId,
         selectedWebhookTriggerId,
+        selectedChatIntegrationId,
+        selectedChatSessionId,
         selectedDashboardSlug,
         selectAgent,
         selectSession,
         selectScheduledTask,
         selectWebhookTrigger,
+        selectChatIntegration,
+        selectChatSession,
         selectDashboard,
         clearSelection,
         handleAgentDeleted,
         handleSessionDeleted,
         handleScheduledTaskDeleted,
         handleWebhookTriggerDeleted,
+        handleChatIntegrationDeleted,
         handleDashboardDeleted,
       }}
     >

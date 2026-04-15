@@ -4,11 +4,7 @@ import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps, CollapsedContentProps } from './types'
-
-interface DeliverFileInput {
-  filePath?: string
-  description?: string
-}
+import { deliverFileDef, type DeliverFileInput } from '@shared/lib/tool-definitions/deliver-file'
 
 function getRelativePath(filePath: string): string {
   // Strip /workspace/ prefix if present
@@ -96,10 +92,7 @@ function CollapsedContent({ input, isError, agentSlug }: CollapsedContentProps) 
 export const deliverFileRenderer: ToolRenderer = {
   displayName: 'Deliver File',
   icon: Download,
-  getSummary: (input: unknown) => {
-    const { filePath } = input as DeliverFileInput
-    return filePath ? getFilename(filePath) : null
-  },
+  getSummary: (input: unknown) => deliverFileDef.getSummary(input),
   ExpandedView,
   StreamingView,
   CollapsedContent,
