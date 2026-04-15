@@ -214,6 +214,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialDraft
           <AttachmentPicker
             onFileSelect={composer.handleFileSelect}
             onFolderSelect={composer.handleFolderSelect}
+            onRecentFileAttach={(file) => composer.addFiles([{ file }])}
             disabled={isDisabled}
           />
         )}

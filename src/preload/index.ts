@@ -161,6 +161,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('open-directory')
   },
 
+  // Get recently opened files from the OS
+  getRecentFiles: (limit?: number): Promise<{ name: string; path: string; thumbnail?: string }[]> => {
+    return ipcRenderer.invoke('get-recent-files', limit)
+  },
+
+  // Read a local file as a buffer (for recent files attachment)
+  readLocalFile: (filePath: string): Promise<{ buffer: ArrayBuffer; name: string; type: string } | null> => {
+    return ipcRenderer.invoke('read-local-file', filePath)
+  },
+
   // Auto-update
   checkForUpdates: (): Promise<void> => {
     return ipcRenderer.invoke('check-for-updates')
@@ -229,6 +239,8 @@ declare global {
       createDockShortcut: (agentSlug: string, dashboardSlug: string, dashboardName: string, iconPng: Uint8Array) => Promise<void>
       getPathForFile: (file: File) => string
       openDirectory: () => Promise<string | null>
+      getRecentFiles: (limit?: number) => Promise<{ name: string; path: string; thumbnail?: string }[]>
+      readLocalFile: (filePath: string) => Promise<{ buffer: ArrayBuffer; name: string; type: string } | null>
       checkForUpdates: () => Promise<void>
       downloadUpdate: () => Promise<void>
       installUpdate: () => Promise<void>

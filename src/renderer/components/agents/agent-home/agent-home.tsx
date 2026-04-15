@@ -182,6 +182,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                     <AttachmentPicker
                       onFileSelect={composer.handleFileSelect}
                       onFolderSelect={composer.handleFolderSelect}
+                      onRecentFileAttach={(file) => composer.addFiles([{ file }])}
                       disabled={isDisabled}
                     />
                   )}
