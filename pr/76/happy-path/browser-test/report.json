@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the Super Agent can execute browser tools to navigate to a URL, retrieve page title, and return results containing \"Example Domain\"",
+  "reason": "Verified that the QA-20260415-215650-oluj agent can successfully execute browser automation tasks, navigating to https://example.com and reporting the page title.",
   "steps": [
-    "Navigated to http://localhost:47891 - Successfully loaded Super Agent application with agent list visible",
-    "Clicked on \"QA-20260415-211445-6t6h\" agent in sidebar - Agent chat interface opened successfully",
-    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message was entered and sent successfully",
-    "Waited up to 3 minutes for response - Agent completed task within ~9 seconds",
-    "Verified response mentions \"Example Domain\" - Response correctly states \"The page title is 'Example Domain'. It's a simple page with a heading and a 'Learn more' link.\" Tool call cards for Open Browser, Page Snapshot, and Close Browser are visible with completion checkmarks"
+    "Step 1 - Navigated to http://localhost:47891 - SUCCESS: Page loaded showing the Super Agent interface with three agents listed in the sidebar.",
+    "Step 2 - Found and clicked the \"QA-20260415-215650-oluj\" agent in the sidebar - SUCCESS: The agent chat interface opened, showing the agent name and message input field.",
+    "Step 3 - Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" using Cmd+Enter - SUCCESS: Message was submitted and a new session \"Browser Navigation and Page Title\" was created.",
+    "Step 4 - Waited for agent response (up to 3 minutes) - SUCCESS: Agent completed the task in 8 seconds with the following actions:",
+    "Step 5 - Verified the response mentions \"Example Domain\" - SUCCESS: The agent's response clearly states: \"The page title is 'Example Domain'. It's a simple page with a heading and a 'Learn more' link.\""
   ],
   "bugs": [],
-  "durationMs": 89249,
-  "sessionId": "0da9b26d-53a1-42d5-8758-a98553eb1126",
+  "durationMs": 63888,
+  "sessionId": "0956d41b-9576-4823-8294-f11075903dfa",
   "cost": {
-    "inputTokens": 315,
-    "outputTokens": 8715,
-    "cacheCreationTokens": 121271,
-    "cacheReadTokens": 1063751,
+    "inputTokens": 279,
+    "outputTokens": 7254,
+    "cacheCreationTokens": 111053,
+    "cacheReadTokens": 915861,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.301854
+    "totalCostUsd": 0.266951
   }
 }
