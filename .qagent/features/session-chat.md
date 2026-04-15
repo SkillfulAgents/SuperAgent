@@ -9,8 +9,8 @@ This feature covers new session creation, ongoing chat behavior, and sidebar-bas
 ## Agent Landing Page
 
 ### Components
-- **Message input** (`data-testid='landing-message-input'`) - compose first message.
-- **Send button** (`data-testid='landing-send-button'`) - submits first message.
+- **Message input** (`data-testid='home-message-input'`) - compose first message.
+- **Send button** (`data-testid='home-send-button'`) - submits first message.
 
 ### Interactions
 - Submit first message from landing page.
