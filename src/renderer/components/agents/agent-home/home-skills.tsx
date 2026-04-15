@@ -191,7 +191,7 @@ function SkillRow({ skill, agentSlug }: { skill: ApiSkillWithStatus; agentSlug: 
 
   return (
     <>
-      <div className="group relative py-3 px-4 hover:bg-muted/50 transition-colors cursor-pointer" onClick={() => setFilesOpen(true)}>
+      <div role="button" tabIndex={0} className="group relative py-3 px-4 hover:bg-muted/50 transition-colors cursor-pointer" onClick={() => setFilesOpen(true)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setFilesOpen(true) } }}>
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium truncate">{skill.name ?? skill.path}</span>
           <StatusBadge status={skill.status} />

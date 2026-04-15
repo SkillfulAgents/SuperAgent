@@ -90,7 +90,7 @@ const PROVIDER_INFO = {
     label: 'Slack',
     slug: 'slack',
     steps: [
-      <>Go to <a href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer" className="underline text-primary hover:text-primary/80">api.slack.com/apps</a> → "Create New App" → "From scratch"</>,
+      <>Go to <a href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer" className="underline text-primary hover:text-primary/80">api.slack.com/apps</a> &rarr; &ldquo;Create New App&rdquo; &rarr; &ldquo;From scratch&rdquo;</>,
       'Enable Socket Mode (Settings → Socket Mode → toggle ON)',
       'Generate App-Level Token (Basic Information → App-Level Tokens → Generate Token with connections:write scope)',
       'Add Bot Token Scopes (OAuth & Permissions → Scopes → Bot Token Scopes): chat:write, im:history, im:read, im:write, users:read, files:read, files:write, reactions:write',

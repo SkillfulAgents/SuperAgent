@@ -7,23 +7,23 @@ export class SessionPage {
   constructor(private page: Page) {}
 
   /**
-   * Get the message input textarea (handles both landing page and chat page)
+   * Get the message input textarea (handles both home page and chat page)
    */
   getMessageInput() {
-    // Try regular message input first, then landing page input
+    // Try regular message input first, then home page input
     const regular = this.page.locator('[data-testid="message-input"]')
-    const landing = this.page.locator('[data-testid="landing-message-input"]')
-    return regular.or(landing)
+    const home = this.page.locator('[data-testid="home-message-input"]')
+    return regular.or(home)
   }
 
   /**
-   * Get the send button (handles both landing page and chat page)
+   * Get the send button (handles both home page and chat page)
    */
   getSendButton() {
-    // Try regular send button first, then landing page button
+    // Try regular send button first, then home page button
     const regular = this.page.locator('[data-testid="send-button"]')
-    const landing = this.page.locator('[data-testid="landing-send-button"]')
-    return regular.or(landing)
+    const home = this.page.locator('[data-testid="home-send-button"]')
+    return regular.or(home)
   }
 
   /**

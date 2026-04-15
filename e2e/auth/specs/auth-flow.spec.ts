@@ -282,7 +282,7 @@ test.describe('Auth Flow', () => {
     await expect(user3Page.locator('[data-testid="view-only-banner"]')).toBeVisible()
 
     // Message input should NOT be visible (viewers can't send messages)
-    await expect(user3Page.locator('[data-testid="landing-message-input"]')).not.toBeVisible()
+    await expect(user3Page.locator('[data-testid="home-message-input"]')).not.toBeVisible()
   })
 
   test('user3 can view existing session history', async ({ user3Page }) => {
