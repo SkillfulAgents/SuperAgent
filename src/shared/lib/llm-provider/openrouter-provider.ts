@@ -27,6 +27,7 @@ export class OpenRouterLlmProvider extends BaseLlmProvider {
       { value: 'claude-haiku-4-5', label: 'Claude 4.5 Haiku' },
       { value: 'claude-sonnet-4-6', label: 'Claude 4.6 Sonnet' },
       { value: 'claude-opus-4-6', label: 'Claude 4.6 Opus' },
+      { value: 'claude-opus-4-7', label: 'Claude 4.7 Opus' },
     ]
   }
 

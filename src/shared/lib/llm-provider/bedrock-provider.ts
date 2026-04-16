@@ -75,6 +75,7 @@ export class BedrockLlmProvider extends BaseLlmProvider {
       { value: 'us.anthropic.claude-haiku-4-5-20251001-v1:0', label: 'Claude 4.5 Haiku' },
       { value: 'us.anthropic.claude-sonnet-4-6', label: 'Claude 4.6 Sonnet' },
       { value: 'us.anthropic.claude-opus-4-6-v1', label: 'Claude 4.6 Opus' },
+      { value: 'us.anthropic.claude-opus-4-7', label: 'Claude 4.7 Opus' },
     ]
   }
 
