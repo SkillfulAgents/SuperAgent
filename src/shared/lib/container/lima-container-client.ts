@@ -7,7 +7,7 @@ import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import { DEFAULT_LIMA_VM_MEMORY } from './types'
 import type { ContainerConfig } from './types'
 import os from 'os'
-import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 
 /**
  * Collect diagnostic data about the Lima environment at the moment of failure.
@@ -377,7 +377,45 @@ export class LimaContainerClient extends BaseContainerClient {
       return false
     }
   }
+
+  /**
+   * One-time check for Lima-specific runtime reconciliation.
+   *
+   * If the VM was created with an older bundled Lima that lacks time sync
+   * support, rebuild it. Returns true if the VM was rebuilt.
+   */
+  static async reconcileRuntimeState(): Promise<boolean> {
+    if (limaRuntimeReconciled) return false
+
+    const staleVersion = getLimaVmStaleVersion()
+    if (!staleVersion) {
+      limaRuntimeReconciled = true
+      return false
+    }
+
+    captureMessage(`Stale Lima VM detected (${staleVersion}) already running, rebuilding`, {
+      level: 'warning',
+      tags: { component: 'lima', operation: 'stale-vm-rebuild' },
+      extra: { staleVersion },
+    })
+
+    await ensureLimaReady()
+    limaRuntimeReconciled = true
+    return true
+  }
 }
+
+function getLimaVmStaleVersion(): string | null {
+  try {
+    const versionFile = path.join(getLimaHome(), LIMA_VM_NAME, 'lima-version')
+    const vmVersion = fs.readFileSync(versionFile, 'utf-8').trim()
+    return vmVersion < MIN_LIMA_VM_VERSION ? vmVersion : null
+  } catch {
+    return 'unknown'
+  }
+}
+
+let limaRuntimeReconciled = false
 
 /** Mutex: if ensureLimaReady is already in progress, concurrent callers await the same promise. */
 let limaReadyPromise: Promise<void> | null = null

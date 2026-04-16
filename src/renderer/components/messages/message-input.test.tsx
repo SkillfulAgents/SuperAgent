@@ -131,6 +131,7 @@ describe('MessageInput', () => {
         sessionId: 's-1',
         agentSlug: 'agent-1',
         content: 'Hello world',
+        effort: 'high',
       })
     })
   })
@@ -190,6 +191,7 @@ describe('MessageInput', () => {
         sessionId: 's-1',
         agentSlug: 'agent-1',
         content: 'Hello by button',
+        effort: 'high',
       })
     })
   })
@@ -513,6 +515,7 @@ describe('MessageInput', () => {
         sessionId: 's-1',
         agentSlug: 'agent-1',
         content: 'Hello',
+        effort: 'high',
       })
     })
   })
@@ -531,6 +534,39 @@ describe('MessageInput', () => {
     await user.keyboard('{Enter}')
 
     expect(mockSendMessage.mutateAsync).not.toHaveBeenCalled()
+  })
+
+  // ---- Effort selector ----
+
+  it('seeds the effort selector from initialEffort prop', () => {
+    renderWithProviders(
+      <MessageInput sessionId="s-1" agentSlug="agent-1" initialEffort="low" />
+    )
+    expect(screen.getByTestId('effort-selector-trigger')).toHaveAccessibleName(/Effort: Low/)
+  })
+
+  it('sends the newly-picked effort on submit', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(
+      <MessageInput sessionId="s-1" agentSlug="agent-1" />
+    )
+
+    // Open the effort popover and pick Medium.
+    await user.click(screen.getByTestId('effort-selector-trigger'))
+    await user.click(await screen.findByTestId('effort-option-medium'))
+
+    const input = screen.getByTestId('message-input')
+    await user.type(input, 'Run with medium effort')
+    await user.keyboard('{Enter}')
+
+    await waitFor(() => {
+      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith({
+        sessionId: 's-1',
+        agentSlug: 'agent-1',
+        content: 'Run with medium effort',
+        effort: 'medium',
+      })
+    })
   })
 
   // ---- Interrupt prevents double-click ----

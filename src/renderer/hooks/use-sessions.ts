@@ -2,6 +2,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import type { ApiSession } from '@shared/lib/types/api'
+import type { EffortLevel } from '@shared/lib/container/types'
 
 // Re-export for convenience
 export type { ApiSession }
@@ -36,11 +37,11 @@ export function useCreateSession() {
   const { track } = useAnalyticsTracking()
 
   return useMutation({
-    mutationFn: async (data: { agentSlug: string; message: string }) => {
+    mutationFn: async (data: { agentSlug: string; message: string; effort?: EffortLevel }) => {
       const res = await apiFetch(`/api/agents/${data.agentSlug}/sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: data.message }),
+        body: JSON.stringify({ message: data.message, ...(data.effort ? { effort: data.effort } : {}) }),
       })
       if (!res.ok) throw new Error('Failed to create session')
       return res.json() as Promise<ApiSession>

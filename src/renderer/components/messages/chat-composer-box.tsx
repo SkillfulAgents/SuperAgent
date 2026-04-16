@@ -19,6 +19,7 @@ interface ChatComposerBoxProps {
   dataTestId?: string
   leftActions?: ReactNode
   rightActions?: ReactNode
+  topRightActions?: ReactNode
   footer?: ReactNode
   className?: string
   textareaClassName?: string
@@ -41,15 +42,19 @@ export function ChatComposerBox({
   dataTestId,
   leftActions,
   rightActions,
+  topRightActions,
   footer,
   className,
   textareaClassName,
 }: ChatComposerBoxProps) {
   return (
     <div className={cn(
-      'mx-auto w-full rounded-2xl border border-border/60 bg-background/95 px-3 py-3 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-background/80',
+      'relative mx-auto w-full rounded-2xl border border-border/60 bg-background/95 px-3 py-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/80',
       className
     )}>
+      {topRightActions && (
+        <div className="absolute top-2 right-2 z-10">{topRightActions}</div>
+      )}
       <AttachmentPreview attachments={attachments} onRemove={onRemoveAttachment} />
       <div className={attachments.length > 0 ? 'mt-2' : ''}>
         <textarea

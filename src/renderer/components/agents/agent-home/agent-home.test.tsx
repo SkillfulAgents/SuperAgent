@@ -368,6 +368,7 @@ describe('AgentHome', () => {
     expect(mockCreateSession.mutateAsync).toHaveBeenCalledWith({
       agentSlug: 'test-agent',
       message: 'Hello agent',
+      effort: 'high',
     })
     expect(onSessionCreated).toHaveBeenCalledWith('session-123', 'Hello agent')
   })

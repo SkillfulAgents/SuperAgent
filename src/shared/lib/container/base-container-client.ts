@@ -13,6 +13,7 @@ import type {
   ContainerSession,
   ContainerStats,
   CreateSessionOptions,
+  EffortLevel,
   StartOptions,
   StreamMessage,
 } from './types'
@@ -724,6 +725,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           maxBudgetUsd: options.maxBudgetUsd,
           customEnvVars: options.customEnvVars,
           maxBrowserTabs: options.maxBrowserTabs,
+          effort: options.effort,
         }),
         signal: controller.signal,
       })
@@ -815,7 +817,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return response.ok
   }
 
-  async sendMessage(sessionId: string, content: string, uuid?: string): Promise<void> {
+  async sendMessage(sessionId: string, content: string, uuid?: string, effort?: EffortLevel): Promise<void> {
     const port = await this.getPortOrThrow()
     const timeoutMs = 30000 // 30 second timeout
 
@@ -828,7 +830,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content, ...(uuid ? { uuid } : {}) }),
+          body: JSON.stringify({ content, ...(uuid ? { uuid } : {}), ...(effort ? { effort } : {}) }),
           signal: controller.signal,
         }
       )

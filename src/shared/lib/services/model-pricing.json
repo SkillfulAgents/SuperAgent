@@ -83,6 +83,12 @@
     "cacheCreation": 6.25,
     "cacheRead": 0.5
   },
+  "claude-opus-4-7": {
+    "input": 5,
+    "output": 25,
+    "cacheCreation": 6.25,
+    "cacheRead": 0.5
+  },
   "claude-sonnet-4-20250514": {
     "input": 3,
     "output": 15,

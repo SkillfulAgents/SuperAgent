@@ -1,5 +1,10 @@
 export type ContainerStatus = 'stopped' | 'running'
 
+// Effort levels supported by Claude Agent SDK v0.2.111+.
+// 'xhigh' is Opus 4.7 only; 'max' is Opus 4.6/4.7 only.
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+export type EffortLevel = typeof EFFORT_LEVELS[number]
+
 // Info returned from Docker
 export interface ContainerInfo {
   status: ContainerStatus
@@ -48,6 +53,7 @@ export interface CreateSessionOptions {
   maxBudgetUsd?: number // Max cost in USD per session
   customEnvVars?: Record<string, string> // User-defined env vars for the agent process
   maxBrowserTabs?: number // Max browser tabs allowed (default 10)
+  effort?: EffortLevel // Initial thinking effort level
 }
 
 export interface StartOptions {
@@ -104,7 +110,7 @@ export interface ContainerClient {
   deleteSession(sessionId: string): Promise<boolean>
 
   // Message operations
-  sendMessage(sessionId: string, content: string, uuid?: string): Promise<void>
+  sendMessage(sessionId: string, content: string, uuid?: string, effort?: EffortLevel): Promise<void>
   getMessages(sessionId: string): Promise<any[]>
   interruptSession(sessionId: string): Promise<boolean>
 

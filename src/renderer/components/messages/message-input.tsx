@@ -15,7 +15,9 @@ import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from './chat-composer-box'
+import { EffortSelector } from './effort-selector'
 import { useRenderTracker } from '@renderer/lib/perf'
+import type { EffortLevel } from '@shared/lib/container/types'
 
 interface MessageInputProps {
   sessionId: string
@@ -26,15 +28,27 @@ interface MessageInputProps {
   /** Draft text injected from outside (e.g., voice feedback). Consumed on receipt. */
   externalDraft?: string | null
   onExternalDraftConsumed?: () => void
+  /** Effort level last used on this session; seeds the composer selector. Defaults to 'high' when absent. */
+  initialEffort?: EffortLevel
 }
 
-export function MessageInput({ sessionId, agentSlug, onMessageSent, initialDraft, onDraftChange, externalDraft, onExternalDraftConsumed }: MessageInputProps) {
+export function MessageInput({ sessionId, agentSlug, onMessageSent, initialDraft, onDraftChange, externalDraft, onExternalDraftConsumed, initialEffort }: MessageInputProps) {
   useRenderTracker('MessageInput')
   const { canUseAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
   const lastTypingNotification = useRef(0)
   const [slashMenuOpen, setSlashMenuOpen] = useState(false)
   const [slashMenuIndex, setSlashMenuIndex] = useState(0)
+  const [effort, setEffort] = useState<EffortLevel>(initialEffort ?? 'high')
+  // If session data loads after this component mounts, seed effort from it once.
+  // After the first seed, user edits via setEffort take precedence.
+  const effortSeededRef = useRef(initialEffort !== undefined)
+  useEffect(() => {
+    if (!effortSeededRef.current && initialEffort !== undefined) {
+      setEffort(initialEffort)
+      effortSeededRef.current = true
+    }
+  }, [initialEffort])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const sendMessage = useSendMessage()
   const uploadFile = useUploadFile()
@@ -58,9 +72,9 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialDraft
     onSubmit: useCallback(async (content: string) => {
       onDraftChange?.('')
       onMessageSent?.(content)
-      await sendMessage.mutateAsync({ sessionId, agentSlug, content })
+      await sendMessage.mutateAsync({ sessionId, agentSlug, content, effort })
       track('message_sent')
-    }, [onDraftChange, onMessageSent, sendMessage, sessionId, agentSlug, track]),
+    }, [onDraftChange, onMessageSent, sendMessage, sessionId, agentSlug, track, effort]),
     submitDisabled: sendMessage.isPending || isActive || isOffline,
     initialMessage: initialDraft,
   })
@@ -186,7 +200,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialDraft
   return (
     <form
       onSubmit={composer.handleSubmit}
-      className={`relative px-4 pb-10 pt-3 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
+      className={`relative px-4 pt-3 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
       {...composer.dragHandlers}
     >
       <MountChoiceDialog
@@ -222,12 +236,19 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialDraft
         rows={2}
         dataTestId="message-input"
         leftActions={(
-          <AttachmentPicker
-            onFileSelect={composer.handleFileSelect}
-            onFolderSelect={composer.handleFolderSelect}
-            onRecentFileAttach={(file) => composer.addFiles([{ file }])}
-            disabled={isDisabled}
-          />
+          <>
+            <AttachmentPicker
+              onFileSelect={composer.handleFileSelect}
+              onFolderSelect={composer.handleFolderSelect}
+              onRecentFileAttach={(file) => composer.addFiles([{ file }])}
+              disabled={isDisabled}
+            />
+            <EffortSelector
+              value={effort}
+              onChange={setEffort}
+              disabled={isDisabled}
+            />
+          </>
         )}
         rightActions={(
           <>

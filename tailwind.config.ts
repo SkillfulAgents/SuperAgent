@@ -66,10 +66,6 @@ const config: Config = {
 			sm: 'calc(var(--radius) - 4px)'
 		},
 		keyframes: {
-			shimmer: {
-				'0%': { backgroundPosition: '-200% 0' },
-				'100%': { backgroundPosition: '200% 0' },
-			},
 			'cobalt-glow': {
 				'0%, 100%': {
 					boxShadow: '0 0 8px 2px rgba(30, 64, 175, 0.3), 0 0 20px 4px rgba(37, 99, 235, 0.15), 0 0 40px 8px rgba(59, 130, 246, 0.08)',
@@ -83,7 +79,6 @@ const config: Config = {
 			},
 		},
 		animation: {
-			shimmer: 'shimmer 3s ease-in-out infinite',
 			'cobalt-glow': 'cobalt-glow 4s ease-in-out infinite',
 		}
 	}

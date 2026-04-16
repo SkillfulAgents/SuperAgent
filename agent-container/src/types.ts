@@ -1,4 +1,5 @@
 import type { UUID } from 'crypto';
+import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 
 // Re-export types from Claude Agent SDK
 export type {
@@ -12,6 +13,7 @@ export type {
   SDKCompactBoundaryMessage,
   Query,
   Options,
+  EffortLevel,
 } from '@anthropic-ai/claude-agent-sdk';
 
 export interface SlashCommandInfo {
@@ -64,10 +66,12 @@ export interface CreateSessionRequest {
   maxBudgetUsd?: number; // Max cost in USD per session
   customEnvVars?: Record<string, string>; // User-defined env vars for the agent process
   maxBrowserTabs?: number; // Max browser tabs allowed (default 10)
+  effort?: EffortLevel; // Initial thinking effort level
 }
 
 export interface SendMessageRequest {
   content: any;
   type?: 'user' | 'system';
   uuid?: UUID;
+  effort?: EffortLevel; // If set and different from current session effort, triggers interrupt+restart with new effort
 }

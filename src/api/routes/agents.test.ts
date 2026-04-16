@@ -1908,8 +1908,8 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     const res = await postJson(app, URL, { content: 'hello' })
     expect(res.status).toBe(201)
 
-    // sendMessage called with only sessionId and content (no uuid)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', undefined)
+    // sendMessage called with only sessionId and content (no uuid, no effort)
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', undefined, undefined)
 
     // No DB insert for message author
     expect(mockDbInsertValues).not.toHaveBeenCalled()
@@ -1932,8 +1932,8 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(insertedValues.id).toBeDefined()
     expect(typeof insertedValues.id).toBe('string')
 
-    // sendMessage should receive the same UUID
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello from user', insertedValues.id)
+    // sendMessage should receive the same UUID and no effort (not provided in test payload)
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello from user', insertedValues.id, undefined)
   })
 })
 

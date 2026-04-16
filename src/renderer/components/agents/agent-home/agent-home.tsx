@@ -2,7 +2,7 @@
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { ArrowUp, Loader2, Eye, MoreVertical, Maximize2, Minimize2, Search, ArrowUpDown } from 'lucide-react'
+import { ArrowUp, Loader2, Eye, Settings2, Maximize2, Minimize2, Search, ArrowUpDown } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { useCreateSession, useSessions } from '@renderer/hooks/use-sessions'
 import { useScheduledTasks } from '@renderer/hooks/use-scheduled-tasks'
@@ -16,8 +16,13 @@ import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
+import { EffortSelector } from '@renderer/components/messages/effort-selector'
+import type { EffortLevel } from '@shared/lib/container/types'
 import { HomeCrons } from './home-crons'
 import { HomeSkills } from './home-skills'
+import { HomeExtras } from './home-extras'
+import { HomeConnections } from './home-connections'
+import { HomeVolumes } from './home-volumes'
 import { HomeBookmarks } from './home-bookmarks'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 import { useRenderTracker } from '@renderer/lib/perf'
@@ -26,7 +31,7 @@ import { formatDistanceToNow } from 'date-fns'
 interface AgentHomeProps {
   agent: ApiAgent
   onSessionCreated: (sessionId: string, initialMessage: string) => void
-  onOpenSettings?: () => void
+  onOpenSettings?: (tab?: string) => void
 }
 
 export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHomeProps) {
@@ -40,6 +45,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const [sessionSearch, setSessionSearch] = useState('')
   const [sessionSort, setSessionSort] = useState<SortOrder>('newest')
   const [sortPopoverOpen, setSortPopoverOpen] = useState(false)
+  const [effort, setEffort] = useState<EffortLevel>('high')
   const sessionSearchRef = useRef<HTMLInputElement>(null)
   const createSession = useCreateSession()
 
@@ -91,9 +97,10 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
       const session = await createSession.mutateAsync({
         agentSlug: agent.slug,
         message: content,
+        effort,
       })
       onSessionCreated(session.id, content)
-    }, [createSession, agent.slug, onSessionCreated]),
+    }, [createSession, agent.slug, onSessionCreated, effort]),
     submitDisabled: createSession.isPending || !isRuntimeReady,
     keepMessageUntilComplete: true,
   })
@@ -138,8 +145,8 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
           <div className="flex items-center justify-between">
             <h1 className="text-xl font-semibold">{agent.name}</h1>
-            <Button type="button" size="icon" variant="ghost" className="h-8 w-8" onClick={onOpenSettings} aria-label="Agent settings">
-              <MoreVertical className="h-4 w-4" />
+            <Button type="button" size="icon" variant="ghost" className="h-8 w-8" onClick={() => onOpenSettings?.()} aria-label="Agent settings" data-testid="agent-settings-button">
+              <Settings2 className="h-4 w-4" />
             </Button>
           </div>
           {isViewOnly ? (
@@ -188,25 +195,34 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                   dataTestId="home-message-input"
                   textareaClassName={`transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh]' : 'min-h-[60px]'}`}
                   leftActions={(
-                    <AttachmentPicker
-                      onFileSelect={composer.handleFileSelect}
-                      onFolderSelect={composer.handleFolderSelect}
-                      onRecentFileAttach={(file) => composer.addFiles([{ file }])}
-                      disabled={isDisabled}
-                    />
+                    <>
+                      <AttachmentPicker
+                        onFileSelect={composer.handleFileSelect}
+                        onFolderSelect={composer.handleFolderSelect}
+                        onRecentFileAttach={(file) => composer.addFiles([{ file }])}
+                        disabled={isDisabled}
+                      />
+                      <EffortSelector
+                        value={effort}
+                        onChange={setEffort}
+                        disabled={isDisabled}
+                      />
+                    </>
+                  )}
+                  topRightActions={(
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      className="h-6 w-6 text-muted-foreground/50 hover:text-foreground"
+                      onClick={() => setIsExpanded((v) => !v)}
+                      aria-label={isExpanded ? 'Shrink input' : 'Expand input'}
+                    >
+                      {isExpanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+                    </Button>
                   )}
                   rightActions={(
                     <>
-                      <Button
-                        type="button"
-                        size="icon"
-                        variant="ghost"
-                        className="h-[34px] w-[34px]"
-                        onClick={() => setIsExpanded((v) => !v)}
-                        aria-label={isExpanded ? 'Shrink input' : 'Expand input'}
-                      >
-                        {isExpanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-                      </Button>
                       <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} />
                       <Button
                         type="submit"
@@ -304,7 +320,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
           )}
         </div>
 
-        {/* Right Column — Crons + Skills */}
+        {/* Right Column — Crons + Skills + Volumes */}
         {showRightColumn && (
           <div className="space-y-3">
             <HomeCrons
@@ -314,6 +330,9 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
               onSelectTask={selectScheduledTask}
             />
             <HomeSkills agentSlug={agent.slug} />
+            <HomeVolumes agentSlug={agent.slug} />
+            <HomeConnections agentSlug={agent.slug} onOpenSettings={onOpenSettings} />
+            <HomeExtras agentSlug={agent.slug} onOpenSettings={onOpenSettings} />
           </div>
         )}
       </div>

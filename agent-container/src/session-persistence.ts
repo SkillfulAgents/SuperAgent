@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import * as path from 'path';
+import type { EffortLevel } from './types';
 
 interface SessionMetadata {
   sessionId: string;
@@ -16,6 +16,7 @@ interface SessionMetadata {
   maxTurns?: number;
   maxBudgetUsd?: number;
   customEnvVars?: Record<string, string>;
+  effort?: EffortLevel;
 }
 
 const SESSIONS_FILE = '/workspace/.superagent-sessions.json';
@@ -68,6 +69,14 @@ export class SessionPersistence {
     const session = this.sessions.get(sessionId);
     if (session) {
       session.lastActivity = new Date().toISOString();
+      this.save();
+    }
+  }
+
+  updateEffort(sessionId: string, effort: EffortLevel | undefined): void {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.effort = effort;
       this.save();
     }
   }
