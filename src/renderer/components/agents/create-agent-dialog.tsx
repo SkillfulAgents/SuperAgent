@@ -25,6 +25,7 @@ import {
 } from '@renderer/hooks/use-agent-templates'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useIsVoiceConfigured } from '@renderer/hooks/use-voice-input'
+import { useUser } from '@renderer/context/user-context'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronDown, ChevronRight, Loader2, Mic, Upload, FileArchive } from 'lucide-react'
@@ -90,6 +91,7 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
   const { selectAgent, selectAgentWithDraft, selectSession } = useSelection()
   const { track } = useAnalyticsTracking()
   const hasVoiceConfigured = useIsVoiceConfigured()
+  const { user } = useUser()
   const { data: skillsetSkills } = useAllSkillsetSkills()
   const installSkill = useInstallSkill()
 
@@ -108,8 +110,10 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
       const res = await apiFetch('/api/stt/voice-agent-prompt?name=create-agent')
       if (!res.ok) throw new Error('Failed to load voice agent prompt')
       const { prompt } = await res.json() as { prompt: string }
+      const firstName = user?.name?.split(' ')[0] || 'there'
+      const personalizedPrompt = prompt.replaceAll('{{firstName}}', firstName)
       setVoiceAgentConfig({
-        systemPrompt: prompt,
+        systemPrompt: personalizedPrompt,
         tools: [{
           name: 'submit_agent',
           description: 'Submit the agent name and system prompt after the interview is complete',
@@ -122,7 +126,6 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
             required: ['name', 'prompt'],
           },
         }],
-        greeting: 'Hey! Tell me about the agent you want to create. What should it do?',
       })
       setShowVoiceAgent(true)
     } catch (error) {

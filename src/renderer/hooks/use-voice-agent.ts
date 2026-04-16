@@ -46,6 +46,8 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
   const analyserRef = useRef<AnalyserNode | null>(null)
   const stateRef = useRef<VoiceAgentState>('idle')
   const mutedRef = useRef(false)
+  const pendingFunctionCallRef = useRef<{ name: string; arguments: string } | null>(null)
+  const audioDrainedRef = useRef(true) // true when no audio is in flight
 
   // Keep refs in sync
   stateRef.current = state
@@ -81,6 +83,8 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
     cleanupAudio()
     adapterRef.current?.close()
     adapterRef.current = null
+    pendingFunctionCallRef.current = null
+    audioDrainedRef.current = true
   }, [cleanupAudio])
 
   const handleEvent = useCallback((event: VoiceAgentEvent) => {
@@ -125,6 +129,7 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
           clearTimeout(speakingDoneTimerRef.current)
           speakingDoneTimerRef.current = null
         }
+        audioDrainedRef.current = false
         setSpeakingState('agent')
         // Play audio through the playback context, scheduling chunks sequentially
         const ctx = playbackContextRef.current
@@ -158,9 +163,17 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
           : 0
         nextPlaybackTimeRef.current = 0
         if (speakingDoneTimerRef.current) clearTimeout(speakingDoneTimerRef.current)
+        const drainMs = remainingMs + 100 // small buffer for safety
         speakingDoneTimerRef.current = setTimeout(() => {
           setSpeakingState((prev) => prev === 'agent' ? 'none' : prev)
-        }, remainingMs + 100) // small buffer for safety
+          audioDrainedRef.current = true
+          // Flush any pending function call now that audio has finished
+          const pending = pendingFunctionCallRef.current
+          if (pending) {
+            pendingFunctionCallRef.current = null
+            onFunctionCallRef.current?.(pending.name, pending.arguments)
+          }
+        }, drainMs)
         break
       }
 
@@ -171,7 +184,15 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
         break
 
       case 'function_call':
-        onFunctionCallRef.current?.(event.name, event.arguments)
+        // Defer the callback until audio playback finishes so the agent's
+        // final spoken phrase isn't cut off when the consumer unmounts us.
+        if (audioDrainedRef.current) {
+          // No audio in flight — fire after a short grace period
+          onFunctionCallRef.current?.(event.name, event.arguments)
+        } else {
+          // Audio still playing — stash and let agent_audio_done flush it
+          pendingFunctionCallRef.current = { name: event.name, arguments: event.arguments }
+        }
         break
 
       case 'error':

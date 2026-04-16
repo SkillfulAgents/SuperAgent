@@ -110,6 +110,7 @@ export class DeepgramVoiceAgentAdapter implements VoiceAgentAdapter {
           provider: {
             type: 'deepgram',
             model: 'aura-2-thalia-en',
+            speed: 1.2,
           },
         },
       },
