@@ -11,12 +11,13 @@ import { WebhookTriggerView } from '@renderer/components/webhook-triggers/webhoo
 import { ChatIntegrationView } from '@renderer/components/chat-integrations/chat-integration-view'
 import { BrowserDrawerPanel } from '@renderer/components/browser/browser-drawer-panel'
 import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
-import { Button } from '@renderer/components/ui/button'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
+import { Separator } from '@renderer/components/ui/separator'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { DonutChart } from '@renderer/components/ui/donut-chart'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
-import { Plus, Play, Square, ChevronRight, ChevronLeft, Settings, Clock, Loader2, AlertCircle, AlertTriangle, X, CalendarClock, Webhook } from 'lucide-react'
+import { Power, Square, ChevronLeft, Clock, Loader2, AlertCircle, AlertTriangle, X, CalendarClock, Webhook } from 'lucide-react'
+import { Button } from '@renderer/components/ui/button'
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useAgent, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
 import { useSessions, useSession } from '@renderer/hooks/use-sessions'
@@ -49,7 +50,6 @@ export function MainContent() {
   } = useSelection()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined)
-  const [contextBarExpanded, setContextBarExpanded] = useState(false)
   // Pending user messages per session — survives navigation between sessions
   const pendingMessagesRef = useRef(new Map<string, { text: string; sentAt: number; sender?: { id: string; name: string; email: string } }>())
   // Draft input text per session — survives navigation between sessions
@@ -152,6 +152,10 @@ export function MainContent() {
     return <HomePage />
   }
 
+  const showSessionCrumb = !!(sessionId && session?.agentSlug === agentSlug)
+  const showTaskCrumb = !!(scheduledTaskId && scheduledTask)
+  const isAgentLeaf = !showSessionCrumb && !showTaskCrumb
+
   return (
     <div className="h-full flex flex-col" data-testid="main-content">
       {/* Fixed header - draggable region for Electron */}
@@ -161,37 +165,37 @@ export function MainContent() {
         <SidebarTrigger
           className={`app-no-drag ${needsTrafficLightPadding ? 'ml-16' : '-ml-1'}`}
         />
-        <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-2 min-w-0 flex-1">
-          <div className="flex items-center gap-2">
+        <Separator orientation="vertical" className="h-5 hidden md:block" />
+        <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-1.5 min-w-0 flex-1">
+          <div className="flex items-center gap-2 min-w-0">
             <button
               type="button"
-              className="text-sm md:text-base font-semibold truncate hover:text-muted-foreground transition-colors app-no-drag"
+              className={`text-[13px] font-light truncate transition-colors app-no-drag ${isAgentLeaf ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
               onClick={() => selectSession(null)}
             >
               {agent?.name || 'Loading...'}
             </button>
-            {agent && <AgentStatus status={agent.status} hasActiveSessions={hasActiveSessions} hasSessionsAwaitingInput={hasSessionsAwaitingInput} />}
           </div>
           {sessionId && session?.agentSlug === agentSlug && (
-            <div className="flex items-center gap-2 min-w-0">
-              <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0 hidden md:block" />
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span aria-hidden="true" className="text-[13px] font-light text-muted-foreground shrink-0 hidden md:block">/</span>
               <SessionContextMenu
                 sessionId={sessionId}
                 sessionName={session?.name || 'Session'}
                 agentSlug={agentSlug}
               >
-                <span className="text-xs md:text-sm text-muted-foreground truncate cursor-context-menu app-no-drag">
+                <span className="text-[13px] font-light text-foreground truncate cursor-context-menu app-no-drag">
                   {session?.name || 'Loading...'}
                 </span>
               </SessionContextMenu>
             </div>
           )}
           {scheduledTaskId && scheduledTask && (
-            <div className="flex items-center gap-2 min-w-0">
-              <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0 hidden md:block" />
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span aria-hidden="true" className="text-[13px] font-light text-muted-foreground shrink-0 hidden md:block">/</span>
               <div className="flex items-center gap-1 text-muted-foreground">
                 <Clock className="h-4 w-4" />
-                <span className="truncate text-xs md:text-sm">
+                <span className="truncate text-[13px] font-light text-foreground">
                   {scheduledTask.name || 'Scheduled Task'}
                 </span>
               </div>
@@ -199,81 +203,72 @@ export function MainContent() {
           )}
         </div>
         <div className="flex items-center gap-0 md:gap-2 shrink-0 app-no-drag">
-          {sessionId && contextPercent != null && (
-            <DonutChart
-              percent={contextPercent}
-              tooltip={`Context window: ${contextPercent}%`}
-              animated={isActive}
-              onClick={() => setContextBarExpanded(v => !v)}
-            />
-          )}
+          {agent && <AgentStatus status={agent.status} hasActiveSessions={hasActiveSessions} hasSessionsAwaitingInput={hasSessionsAwaitingInput} />}
           {!isViewOnly && (
-            <div className="hidden md:flex items-center gap-2">
-              {agent?.status === 'running' ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => stopAgent.mutate(agentSlug)}
-                  disabled={stopAgent.isPending}
-                >
-                  <Square className="mr-2 h-4 w-4" />
-                  Stop
-                </Button>
-              ) : (
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span>
+            <>
+              <Separator orientation="vertical" className="h-5 hidden md:block ml-2" />
+              <div className="hidden md:flex items-center gap-2">
+                {agent?.status === 'running' ? (
+                  <TooltipProvider delayDuration={0}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
                         <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => startAgent.mutate(agentSlug)}
-                          disabled={startAgent.isPending || !isRuntimeReady}
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => stopAgent.mutate(agentSlug)}
+                          disabled={stopAgent.isPending}
+                          aria-label="Stop Agent"
                         >
-                          {isPulling ? (
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          ) : (
-                            <Play className="mr-2 h-4 w-4" />
-                          )}
-                          Start
+                          <Square className="h-4 w-4 fill-current" />
                         </Button>
-                      </span>
-                    </TooltipTrigger>
-                    {!apiKeyConfigured && (
+                      </TooltipTrigger>
                       <TooltipContent>
-                        <p>No API key configured. An administrator needs to set up the LLM API key.</p>
+                        <p>Stop Agent</p>
                       </TooltipContent>
-                    )}
-                    {apiKeyConfigured && !isRuntimeReady && readiness && (
-                      <TooltipContent>
-                        <p>{readiness.message}</p>
-                        {readiness.pullProgress && readiness.pullProgress.percent != null && (
-                          <p className="text-xs opacity-80">{readiness.pullProgress.status} ({readiness.pullProgress.percent}%)</p>
-                        )}
-                      </TooltipContent>
-                    )}
-                  </Tooltip>
-                </TooltipProvider>
-              )}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => selectSession(null)}
-              >
-                <Plus className="mr-2 h-4 w-4" />
-                New Session
-              </Button>
-            </div>
+                    </Tooltip>
+                  </TooltipProvider>
+                ) : (
+                  <TooltipProvider delayDuration={0}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => startAgent.mutate(agentSlug)}
+                            disabled={startAgent.isPending || !isRuntimeReady}
+                            aria-label="Start Agent"
+                          >
+                            {isPulling || startAgent.isPending ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Power className="h-4 w-4" />
+                            )}
+                          </Button>
+                        </span>
+                      </TooltipTrigger>
+                      {!apiKeyConfigured ? (
+                        <TooltipContent>
+                          <p>No API key configured. An administrator needs to set up the LLM API key.</p>
+                        </TooltipContent>
+                      ) : !isRuntimeReady && readiness ? (
+                        <TooltipContent>
+                          <p>{readiness.message}</p>
+                          {readiness.pullProgress && readiness.pullProgress.percent != null && (
+                            <p className="text-xs opacity-80">{readiness.pullProgress.status} ({readiness.pullProgress.percent}%)</p>
+                          )}
+                        </TooltipContent>
+                      ) : (
+                        <TooltipContent>
+                          <p>Wake up agent</p>
+                        </TooltipContent>
+                      )}
+                    </Tooltip>
+                  </TooltipProvider>
+                )}
+              </div>
+            </>
           )}
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => setSettingsOpen(true)}
-            data-testid="agent-settings-button"
-          >
-            <Settings className="h-4 w-4" />
-            <span className="sr-only">Agent Settings</span>
-          </Button>
         </div>
       </header>
 
@@ -344,50 +339,6 @@ export function MainContent() {
               <X className="h-3.5 w-3.5" />
             </button>
           </div>
-        </div>
-      )}
-
-      {/* Context window usage bar (expanded) */}
-      {sessionId && contextPercent != null && contextBarExpanded && (
-        <div className="shrink-0 border-b px-4 py-1.5 flex items-center gap-2">
-          <span className="text-xs text-muted-foreground whitespace-nowrap">Context</span>
-          <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
-            <div
-              className={`h-full rounded-full transition-all duration-500 relative overflow-hidden ${
-                contextPercent >= 70
-                  ? 'bg-destructive'
-                  : contextPercent >= 50
-                    ? 'bg-yellow-500'
-                    : 'bg-primary'
-              }`}
-              style={{ width: `${Math.min(contextPercent, 100)}%` }}
-            >
-              {isActive && (
-                <div
-                  className="absolute inset-0 animate-shimmer"
-                  style={{
-                    backgroundImage: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.3) 50%, transparent 100%)',
-                    backgroundSize: '200% 100%',
-                  }}
-                />
-              )}
-            </div>
-          </div>
-          <span className={`text-xs tabular-nums whitespace-nowrap ${
-            contextPercent >= 70
-              ? 'text-destructive'
-              : contextPercent >= 50
-                ? 'text-yellow-600 dark:text-yellow-400'
-                : 'text-muted-foreground'
-          }`}>
-            {contextPercent}%
-          </span>
-          <button
-            onClick={() => setContextBarExpanded(false)}
-            className="text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
         </div>
       )}
 
@@ -463,6 +414,37 @@ export function MainContent() {
                   initialDraft={currentDraft}
                   onDraftChange={handleDraftChange}
                 />
+                <div className="flex justify-between items-center gap-1.5 px-6 py-3">
+                  {contextPercent != null ? (
+                    <TooltipProvider delayDuration={0}>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <div className="flex items-center gap-1.5 cursor-default">
+                            <span className="text-xs text-muted-foreground">Context Usage</span>
+                            <DonutChart
+                              percent={contextPercent}
+                              animated={isActive}
+                              size="sm"
+                              showLabel={false}
+                            />
+                          </div>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p>{contextPercent}%</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  ) : (
+                    <span />
+                  )}
+                  <span className="text-xs text-muted-foreground flex items-center gap-1">
+                    <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-[11px] font-sans leading-none">↵</kbd>
+                    <span>Send</span>
+                    <span className="mx-1">·</span>
+                    <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-[11px] font-sans leading-none">⇧↵</kbd>
+                    <span>New line</span>
+                  </span>
+                </div>
               </div>
             </div>
             {/* Browser drawer panel */}
