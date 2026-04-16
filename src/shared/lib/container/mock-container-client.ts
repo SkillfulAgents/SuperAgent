@@ -8,6 +8,7 @@ import type {
   ContainerSession,
   ContainerStats,
   CreateSessionOptions,
+  EffortLevel,
   StartOptions,
   StreamMessage,
 } from './types'
@@ -1025,7 +1026,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   // Message operations
 
-  async sendMessage(sessionId: string, content: string, _uuid?: string): Promise<void> {
+  async sendMessage(sessionId: string, content: string, _uuid?: string, _effort?: EffortLevel): Promise<void> {
     const session = this.sessions.get(sessionId)
     if (!session) {
       throw new Error(`Session ${sessionId} not found`)

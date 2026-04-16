@@ -16,6 +16,8 @@ import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
+import { EffortSelector } from '@renderer/components/messages/effort-selector'
+import type { EffortLevel } from '@shared/lib/container/types'
 import { HomeCrons } from './home-crons'
 import { HomeSkills } from './home-skills'
 import { HomeExtras } from './home-extras'
@@ -43,6 +45,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const [sessionSearch, setSessionSearch] = useState('')
   const [sessionSort, setSessionSort] = useState<SortOrder>('newest')
   const [sortPopoverOpen, setSortPopoverOpen] = useState(false)
+  const [effort, setEffort] = useState<EffortLevel>('high')
   const sessionSearchRef = useRef<HTMLInputElement>(null)
   const createSession = useCreateSession()
 
@@ -94,9 +97,10 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
       const session = await createSession.mutateAsync({
         agentSlug: agent.slug,
         message: content,
+        effort,
       })
       onSessionCreated(session.id, content)
-    }, [createSession, agent.slug, onSessionCreated]),
+    }, [createSession, agent.slug, onSessionCreated, effort]),
     submitDisabled: createSession.isPending || !isRuntimeReady,
     keepMessageUntilComplete: true,
   })
@@ -182,12 +186,19 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                   dataTestId="home-message-input"
                   textareaClassName={`transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh]' : 'min-h-[60px]'}`}
                   leftActions={(
-                    <AttachmentPicker
-                      onFileSelect={composer.handleFileSelect}
-                      onFolderSelect={composer.handleFolderSelect}
-                      onRecentFileAttach={(file) => composer.addFiles([{ file }])}
-                      disabled={isDisabled}
-                    />
+                    <>
+                      <AttachmentPicker
+                        onFileSelect={composer.handleFileSelect}
+                        onFolderSelect={composer.handleFolderSelect}
+                        onRecentFileAttach={(file) => composer.addFiles([{ file }])}
+                        disabled={isDisabled}
+                      />
+                      <EffortSelector
+                        value={effort}
+                        onChange={setEffort}
+                        disabled={isDisabled}
+                      />
+                    </>
                   )}
                   topRightActions={(
                     <Button

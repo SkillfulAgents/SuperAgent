@@ -4,7 +4,7 @@
  * Type definitions for file-based agent storage
  */
 
-import type { SlashCommandInfo } from '../container/types'
+import type { EffortLevel, SlashCommandInfo } from '../container/types'
 
 // ============================================================================
 // Agent Roles
@@ -94,6 +94,8 @@ export interface SessionMetadata {
   lastUsage?: SessionUsage
   // Available slash commands from the agent SDK
   slashCommands?: SlashCommandInfo[]
+  // Last effort level used by the user on this session (seeds the composer on reload)
+  effort?: EffortLevel
 }
 
 /**

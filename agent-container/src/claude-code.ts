@@ -3,6 +3,7 @@ import type { UUID } from 'crypto';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
+import type { EffortLevel } from './types';
 import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer } from './mcp-server';
 import { browserTools } from './tools/browser';
 import { computerUseTools } from './tools/computer-use';
@@ -287,6 +288,7 @@ export interface ClaudeCodeProcessOptions {
   maxTurns?: number;
   maxBudgetUsd?: number;
   customEnvVars?: Record<string, string>;
+  effort?: EffortLevel;
 }
 
 export class ClaudeCodeProcess extends EventEmitter {
@@ -304,6 +306,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private maxTurns: number | undefined;
   private maxBudgetUsd: number | undefined;
   private customEnvVars: Record<string, string> | undefined;
+  private effort: EffortLevel | undefined;
   private isReady: boolean = false;
   private isProcessing: boolean = false;
   public slashCommands: { name: string; description: string; argumentHint: string }[] = [];
@@ -320,6 +323,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.maxTurns = options.maxTurns;
     this.maxBudgetUsd = options.maxBudgetUsd;
     this.customEnvVars = options.customEnvVars;
+    this.effort = options.effort;
     this.systemPromptAppend = generateSystemPromptAppend(
       options.availableEnvVars,
       options.userSystemPrompt
@@ -388,6 +392,8 @@ export class ClaudeCodeProcess extends EventEmitter {
     const remoteMcpConfigs = this.buildRemoteMcpServers();
     const remoteMcpToolPatterns = Object.keys(remoteMcpConfigs).map(name => `mcp__${name}__*`);
 
+    console.log(`[Session ${this.sessionId}] createQuery: model=${this.model ?? '(default)'}, effort=${this.effort ?? '(default)'}`);
+
     return query({
       prompt: this.messageQueue!,
       options: {
@@ -403,6 +409,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         ...(this.maxThinkingTokens && { maxThinkingTokens: this.maxThinkingTokens }),
         ...(this.maxTurns && { maxTurns: this.maxTurns }),
         ...(this.maxBudgetUsd && { maxBudgetUsd: this.maxBudgetUsd }),
+        ...(this.effort && { effort: this.effort }),
         ...((this.customEnvVars || this.maxOutputTokens) && {
           env: {
             ...this.customEnvVars,
@@ -460,7 +467,7 @@ export class ClaudeCodeProcess extends EventEmitter {
               return { behavior: 'allow' as const, updatedInput: toolInput };
             }
 
-            const requestId = options.toolUseID || `ask-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            const requestId = options.toolUseID || `ask-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
             console.log('[canUseTool] Creating pending request:', requestId);
 
             try {
@@ -730,11 +737,25 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
   }
 
-  async sendMessage(content: string, uuid?: UUID): Promise<void> {
-    // Auto-restart session if not running
+  async sendMessage(content: string, uuid?: UUID, effort?: EffortLevel): Promise<void> {
+    // Treat undefined stored effort as 'high' so pre-existing sessions (created before
+    // this feature) don't trigger a spurious restart on their first post-upgrade message.
+    const currentEffort: EffortLevel = this.effort ?? 'high';
+    const effortChanged = effort !== undefined && effort !== currentEffort;
+
+    if (effortChanged) {
+      this.effort = effort;
+    }
+
     if (!this.messageQueue || !this.isReady) {
+      // Cold session — first init will pick up the (possibly new) effort value.
       console.log(`[Session ${this.sessionId}] Session not running, restarting...`);
       await this.restart();
+    } else if (effortChanged) {
+      // Warm session with a changed effort — interrupt so createQuery() re-runs with the new level.
+      // Context is preserved via resume (claudeSessionId).
+      console.log(`[Session ${this.sessionId}] Effort change: ${currentEffort} -> ${effort}, restarting query`);
+      await this.interrupt();
     }
 
     // Create SDK user message format

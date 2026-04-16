@@ -413,6 +413,7 @@ export function MainContent() {
                   onMessageSent={handleMessageSent}
                   initialDraft={currentDraft}
                   onDraftChange={handleDraftChange}
+                  initialEffort={session?.effort}
                 />
                 <div className="flex justify-between items-center gap-1.5 px-6 py-3">
                   {contextPercent != null ? (

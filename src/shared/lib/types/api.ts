@@ -5,7 +5,7 @@
  * These types represent the "flattened" format returned by API routes.
  */
 
-import type { HealthCheckResult } from '@shared/lib/container/types'
+import type { EffortLevel, HealthCheckResult } from '@shared/lib/container/types'
 import type { SessionUsage } from '@shared/lib/types/agent'
 
 // ============================================================================
@@ -85,6 +85,8 @@ export interface ApiSession {
   scheduledTaskName?: string
   webhookTriggerId?: string
   webhookTriggerName?: string
+  // Last effort level used on this session (seeds the composer selector)
+  effort?: EffortLevel
 }
 
 // ============================================================================

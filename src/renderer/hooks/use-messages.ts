@@ -1,6 +1,7 @@
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
+import type { EffortLevel } from '@shared/lib/container/types'
 
 // Re-export for convenience
 export type { ApiMessage, ApiMessageOrBoundary }
@@ -21,11 +22,11 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
 
 export function useSendMessage() {
   return useMutation({
-    mutationFn: async (data: { sessionId: string; agentSlug: string; content: string }) => {
+    mutationFn: async (data: { sessionId: string; agentSlug: string; content: string; effort?: EffortLevel }) => {
       const res = await apiFetch(`/api/agents/${data.agentSlug}/sessions/${data.sessionId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: data.content }),
+        body: JSON.stringify({ content: data.content, ...(data.effort ? { effort: data.effort } : {}) }),
       })
       if (!res.ok) throw new Error('Failed to send message')
       return res.json()

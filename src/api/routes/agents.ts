@@ -15,6 +15,13 @@ import {
   agentExists,
 } from '@shared/lib/services/agent-service'
 import { containerManager } from '@shared/lib/container/container-manager'
+import { EFFORT_LEVELS, type EffortLevel } from '@shared/lib/container/types'
+
+const effortSchema = z.enum(EFFORT_LEVELS).optional()
+
+function parseEffort(raw: unknown): EffortLevel | undefined {
+  return effortSchema.safeParse(raw).data
+}
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { listChatIntegrations, listChatIntegrationsByAgents } from '@shared/lib/services/chat-integration-service'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
@@ -1070,11 +1077,13 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
   try {
     const slug = c.req.param('id')
     const body = await c.req.json()
-    const { message } = body
+    const { message, effort } = body
 
     if (!message?.trim()) {
       return c.json({ error: 'Message is required' }, 400)
     }
+
+    const parsedEffort = parseEffort(effort)
 
     const agent = await getAgent(slug)
     if (!agent) {
@@ -1105,6 +1114,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       maxBudgetUsd: agentLimits.maxBudgetUsd,
       customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
       maxBrowserTabs: getSettings().app?.maxBrowserTabs,
+      effort: parsedEffort,
     })
     const sessionId = containerSession.id
 
@@ -1120,6 +1130,9 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     }
 
     await registerSession(slug, sessionId, 'New Session')
+    if (parsedEffort) {
+      updateSessionMetadata(slug, sessionId, { effort: parsedEffort }).catch(console.error)
+    }
     await messagePersister.subscribeToSession(sessionId, client, sessionId, slug)
     // Store slash commands from container's init event (captured during session creation)
     if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
@@ -1297,11 +1310,13 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     const agentSlug = c.req.param('id')
     const sessionId = c.req.param('sessionId')
     const body = await c.req.json()
-    const { content } = body
+    const { content, effort } = body
 
     if (!content?.trim()) {
       return c.json({ error: 'Content is required' }, 400)
     }
+
+    const parsedEffort = parseEffort(effort)
 
     const agent = await getAgent(agentSlug)
     if (!agent) {
@@ -1347,7 +1362,10 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       })
     }
 
-    await client.sendMessage(sessionId, content.trim(), messageUuid)
+    await client.sendMessage(sessionId, content.trim(), messageUuid, parsedEffort)
+    if (parsedEffort) {
+      updateSessionMetadata(agentSlug, sessionId, { effort: parsedEffort }).catch(console.error)
+    }
 
     return c.json({ success: true }, 201)
   } catch (error) {
@@ -1400,6 +1418,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       scheduledTaskName: metadata?.scheduledTaskName,
       webhookTriggerId: metadata?.webhookTriggerId,
       webhookTriggerName: metadata?.webhookTriggerName,
+      effort: metadata?.effort,
     })
   } catch (error) {
     console.error('Failed to fetch session:', error)

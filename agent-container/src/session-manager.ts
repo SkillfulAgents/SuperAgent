@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { UUID } from 'crypto';
-import { Session, SDKMessage, CreateSessionRequest } from './types';
+import { Session, SDKMessage, CreateSessionRequest, EffortLevel } from './types';
 import { ClaudeCodeProcess } from './claude-code';
 import { SessionPersistence } from './session-persistence';
 import { EventEmitter } from 'events';
@@ -71,6 +71,7 @@ export class SessionManager extends EventEmitter {
       maxTurns: request.maxTurns,
       maxBudgetUsd: request.maxBudgetUsd,
       customEnvVars: request.customEnvVars,
+      effort: request.effort,
     });
 
     // Promise to capture Claude's session ID and slash commands (emitted after first message is sent)
@@ -158,6 +159,7 @@ export class SessionManager extends EventEmitter {
       maxTurns: request.maxTurns,
       maxBudgetUsd: request.maxBudgetUsd,
       customEnvVars: request.customEnvVars,
+      effort: request.effort,
     });
 
     this.sessions.set(sessionId, sessionData);
@@ -190,6 +192,7 @@ export class SessionManager extends EventEmitter {
         maxTurns: persisted.maxTurns,
         maxBudgetUsd: persisted.maxBudgetUsd,
         customEnvVars: persisted.customEnvVars,
+        effort: persisted.effort,
       });
 
       const session: Session = {
@@ -270,7 +273,7 @@ export class SessionManager extends EventEmitter {
     return true;
   }
 
-  async sendMessage(sessionId: string, content: string, uuid?: UUID): Promise<void> {
+  async sendMessage(sessionId: string, content: string, uuid?: UUID, effort?: EffortLevel): Promise<void> {
     let sessionData = this.sessions.get(sessionId);
 
     // Try to resume if not in memory
@@ -285,8 +288,13 @@ export class SessionManager extends EventEmitter {
     sessionData.session.lastActivity = new Date();
     this.persistence.updateLastActivity(sessionId);
 
+    // Persist effort change so resume after eviction uses the latest level
+    if (effort !== undefined) {
+      this.persistence.updateEffort(sessionId, effort);
+    }
+
     // Send to Claude Code process (messages are stored via handleMessage)
-    await sessionData.process.sendMessage(content, uuid);
+    await sessionData.process.sendMessage(content, uuid, effort);
   }
 
   getMessages(sessionId: string): SDKMessage[] {
