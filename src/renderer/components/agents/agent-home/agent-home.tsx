@@ -2,7 +2,7 @@
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { ArrowUp, Loader2, Eye, MoreVertical, Maximize2, Minimize2, Search, ArrowUpDown } from 'lucide-react'
+import { ArrowUp, Loader2, Eye, Settings2, Maximize2, Minimize2, Search, ArrowUpDown } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { useCreateSession, useSessions } from '@renderer/hooks/use-sessions'
 import { useScheduledTasks } from '@renderer/hooks/use-scheduled-tasks'
@@ -19,6 +19,7 @@ import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box
 import { HomeCrons } from './home-crons'
 import { HomeSkills } from './home-skills'
 import { HomeConnections } from './home-connections'
+import { HomeVolumes } from './home-volumes'
 import { HomeBookmarks } from './home-bookmarks'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 import { useRenderTracker } from '@renderer/lib/perf'
@@ -130,8 +131,8 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
           <div className="flex items-center justify-between">
             <h1 className="text-xl font-semibold">{agent.name}</h1>
-            <Button type="button" size="icon" variant="ghost" className="h-8 w-8" onClick={() => onOpenSettings?.()} aria-label="Agent settings">
-              <MoreVertical className="h-4 w-4" />
+            <Button type="button" size="icon" variant="ghost" className="h-8 w-8" onClick={() => onOpenSettings?.()} aria-label="Agent settings" data-testid="agent-settings-button">
+              <Settings2 className="h-4 w-4" />
             </Button>
           </div>
           {isViewOnly ? (
@@ -187,18 +188,20 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                       disabled={isDisabled}
                     />
                   )}
+                  topRightActions={(
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      className="h-6 w-6 text-muted-foreground/50 hover:text-foreground"
+                      onClick={() => setIsExpanded((v) => !v)}
+                      aria-label={isExpanded ? 'Shrink input' : 'Expand input'}
+                    >
+                      {isExpanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+                    </Button>
+                  )}
                   rightActions={(
                     <>
-                      <Button
-                        type="button"
-                        size="icon"
-                        variant="ghost"
-                        className="h-[34px] w-[34px]"
-                        onClick={() => setIsExpanded((v) => !v)}
-                        aria-label={isExpanded ? 'Shrink input' : 'Expand input'}
-                      >
-                        {isExpanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-                      </Button>
                       <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} />
                       <Button
                         type="submit"
@@ -296,7 +299,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
           )}
         </div>
 
-        {/* Right Column — Crons + Skills */}
+        {/* Right Column — Crons + Skills + Volumes */}
         {showRightColumn && (
           <div className="space-y-3">
             <HomeCrons
@@ -306,6 +309,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
               onSelectTask={selectScheduledTask}
             />
             <HomeSkills agentSlug={agent.slug} />
+            <HomeVolumes agentSlug={agent.slug} />
             <HomeConnections agentSlug={agent.slug} onOpenSettings={onOpenSettings} />
           </div>
         )}

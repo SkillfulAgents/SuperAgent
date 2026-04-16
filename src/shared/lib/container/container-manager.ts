@@ -1,5 +1,5 @@
 import path from 'path'
-import { createContainerClient, checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, startRunner, refreshRunnerAvailability, clearRunnerAvailabilityCache, getRunnerDisplayName, getContainerClientClass, getCliCommand, type ContainerRunner } from './client-factory'
+import { createContainerClient, checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, startRunner, refreshRunnerAvailability, clearRunnerAvailabilityCache, reconcileRunnerState, getRunnerDisplayName, getContainerClientClass, getCliCommand, type ContainerRunner } from './client-factory'
 import { ensureLimaReady } from './lima-container-client'
 import type { ContainerClient, ContainerConfig, ContainerInfo, HealthCheckResult, ImagePullProgress, RuntimeReadiness } from './types'
 import { healthMonitor } from './health-monitor'
@@ -711,11 +711,24 @@ class ContainerManager {
       pullProgress: null,
     })
 
-    const allAvailability = await checkAllRunnersAvailability()
-    const runnerStatus = allAvailability.find((r) => r.runner === configuredRunner)
+    let allAvailability = await checkAllRunnersAvailability()
+    let runnerStatus = allAvailability.find((r) => r.runner === configuredRunner)
+
+    // If the runner is already running, check for stale runtime state (e.g. old Lima VM).
+    // This is the only path that catches a stale-but-running VM, since startRunner()
+    // (which normally handles version checks) is skipped when the VM is already up.
+    if (runnerStatus?.running) {
+      const rebuilt = await reconcileRunnerState(configuredRunner)
+      if (rebuilt) {
+        clearRunnerAvailabilityCache()
+        allAvailability = await checkAllRunnersAvailability()
+        runnerStatus = allAvailability.find((r) => r.runner === configuredRunner)
+      }
+    }
 
     if (!runnerStatus?.available) {
       // Auto-start runtimes that support it (Apple Container, Lima, WSL2)
+      // TODO the "isAutoStartable" property should live in runtime implementation, not here!
       if ((configuredRunner === 'apple-container' || configuredRunner === 'lima' || configuredRunner === 'wsl2') && runnerStatus?.installed && !runnerStatus?.running) {
         this.setReadiness({
           status: 'CHECKING',

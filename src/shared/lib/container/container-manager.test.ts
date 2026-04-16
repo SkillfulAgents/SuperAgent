@@ -33,6 +33,7 @@ vi.mock('./client-factory', () => ({
   refreshRunnerAvailability: vi.fn(),
   clearRunnerAvailabilityCache: (...args: unknown[]) => mockClearRunnerAvailabilityCache(...args),
   getRunnerDisplayName: (runner: string) => runner,
+  reconcileRunnerState: vi.fn().mockResolvedValue(false),
 }))
 
 const mockGetOrCreateProxyToken = vi.fn()
