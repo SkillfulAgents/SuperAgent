@@ -40,6 +40,15 @@ export class PlatformSttProvider extends BaseSttProvider {
     }
   }
 
+  override supportsVoiceAgent(): boolean {
+    return true
+  }
+
+  override async mintVoiceAgentToken(platformToken: string): Promise<string> {
+    // Same Deepgram token works for both STT and Voice Agent endpoints
+    return this.mintEphemeralToken(platformToken)
+  }
+
   async mintEphemeralToken(platformToken: string): Promise<string> {
     const base = getPlatformProxyBaseUrl()
     const res = await fetch(`${base}/v1/deepgram/auth/grant`, {

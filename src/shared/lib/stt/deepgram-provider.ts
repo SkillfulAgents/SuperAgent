@@ -44,6 +44,15 @@ export class DeepgramSttProvider extends BaseSttProvider {
     }
   }
 
+  override supportsVoiceAgent(): boolean {
+    return true
+  }
+
+  override async mintVoiceAgentToken(apiKey: string): Promise<string> {
+    // Same Deepgram token works for both STT and Voice Agent endpoints
+    return this.mintEphemeralToken(apiKey)
+  }
+
   async mintEphemeralToken(apiKey: string): Promise<string> {
     const res = await fetch('https://api.deepgram.com/v1/auth/grant', {
       method: 'POST',

@@ -11,7 +11,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Checkbox } from '@renderer/components/ui/checkbox'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@renderer/components/ui/tabs'
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { useCreateAgent, useDeleteAgent } from '@renderer/hooks/use-agents'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
 import { useSelection } from '@renderer/context/selection-context'
@@ -24,10 +24,13 @@ import {
   type ImportProgress,
 } from '@renderer/hooks/use-agent-templates'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
+import { useIsVoiceConfigured } from '@renderer/hooks/use-voice-input'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight, Loader2, Upload, FileArchive } from 'lucide-react'
+import { ChevronDown, ChevronRight, Loader2, Mic, Upload, FileArchive } from 'lucide-react'
 import { SkillInstallDialog } from './skill-install-dialog'
+import { VoiceAgent } from '@renderer/components/ui/voice-agent'
+import type { VoiceAgentConfig } from '@renderer/lib/voice-agent'
 import type { SkillsetIndexSkill } from '@shared/lib/types/skillset'
 
 const ONBOARDING_MESSAGE = 'This agent was just set up from a template. Please run the agent-onboarding skill to help me configure it.'
@@ -84,10 +87,80 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
   const createAgent = useCreateAgent()
   const deleteAgent = useDeleteAgent()
   const createSession = useCreateSession()
-  const { selectAgent, selectSession } = useSelection()
+  const { selectAgent, selectAgentWithDraft, selectSession } = useSelection()
   const { track } = useAnalyticsTracking()
+  const hasVoiceConfigured = useIsVoiceConfigured()
   const { data: skillsetSkills } = useAllSkillsetSkills()
   const installSkill = useInstallSkill()
+
+  // Voice Agent state for "Talk to me" flow
+  const [showVoiceAgent, setShowVoiceAgent] = useState(false)
+  const [voiceAgentConfig, setVoiceAgentConfig] = useState<VoiceAgentConfig | null>(null)
+  const [isDraftingAgent, setIsDraftingAgent] = useState(false)
+  const voiceAgentMountedRef = useRef(true)
+  useEffect(() => {
+    voiceAgentMountedRef.current = true
+    return () => { voiceAgentMountedRef.current = false }
+  }, [])
+
+  const startVoiceAgent = useCallback(async () => {
+    try {
+      const res = await apiFetch('/api/stt/voice-agent-prompt?name=create-agent')
+      if (!res.ok) throw new Error('Failed to load voice agent prompt')
+      const { prompt } = await res.json() as { prompt: string }
+      setVoiceAgentConfig({
+        systemPrompt: prompt,
+        tools: [{
+          name: 'submit_agent',
+          description: 'Submit the agent name and system prompt after the interview is complete',
+          parameters: {
+            type: 'object',
+            properties: {
+              name: { type: 'string', description: 'Short descriptive name for the agent (2-4 words)' },
+              prompt: { type: 'string', description: 'Detailed system prompt for the agent' },
+            },
+            required: ['name', 'prompt'],
+          },
+        }],
+        greeting: 'Hey! Tell me about the agent you want to create. What should it do?',
+      })
+      setShowVoiceAgent(true)
+    } catch (error) {
+      console.error('Failed to start Voice Agent:', error)
+    }
+  }, [])
+
+  const handleVoiceAgentResult = useCallback(async (_name: string, argsJson: string) => {
+    try {
+      const args = JSON.parse(argsJson) as { name: string; prompt: string }
+
+      // Show drafting transition
+      setShowVoiceAgent(false)
+      setVoiceAgentConfig(null)
+      setIsDraftingAgent(true)
+
+      // Create agent with the name, then pre-fill the prompt in the composer
+      const newAgent = await createAgent.mutateAsync({ name: args.name })
+      track('agent_created', { source: 'voice_agent', num_skills_added_at_creation: 0 })
+
+      // Brief pause so the user sees the "drafting" state
+      await new Promise((r) => setTimeout(r, 3000))
+      if (!voiceAgentMountedRef.current) return
+
+      setIsDraftingAgent(false)
+      onOpenChange(false)
+
+      // Navigate to agent home with the prompt pre-filled in the input
+      if (args.prompt) {
+        selectAgentWithDraft(newAgent.slug, args.prompt)
+      } else {
+        selectAgent(newAgent.slug)
+      }
+    } catch (error) {
+      console.error('Failed to create agent from Voice Agent:', error)
+      setIsDraftingAgent(false)
+    }
+  }, [createAgent, track, selectAgent, selectAgentWithDraft, onOpenChange])
 
   // Secrets prompt state for skill installation
   const [secretsPrompt, setSecretsPrompt] = useState<{
@@ -367,6 +440,9 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
       setSkillsetAgentName('')
       setSecretsPrompt(null)
       setTemplateSecretsPrompt(null)
+      setShowVoiceAgent(false)
+      setVoiceAgentConfig(null)
+      setIsDraftingAgent(false)
       importTemplate.reset()
     }
     onOpenChange(nextOpen)
@@ -403,6 +479,20 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
 
           {/* Tab: New Agent */}
           <TabsContent value="new">
+            {isDraftingAgent ? (
+              <div className="flex flex-col items-center gap-3 py-12">
+                <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                <p className="text-sm text-muted-foreground">Drafting your agent...</p>
+              </div>
+            ) : showVoiceAgent && voiceAgentConfig ? (
+              <div className="py-4">
+                <VoiceAgent
+                  config={voiceAgentConfig}
+                  onResult={handleVoiceAgentResult}
+                  onClose={() => { setShowVoiceAgent(false); setVoiceAgentConfig(null) }}
+                />
+              </div>
+            ) : (
             <form onSubmit={handleSubmit}>
               <div className="py-4 space-y-4">
                 <Input
@@ -412,6 +502,19 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
                   autoFocus
                   data-testid="agent-name-input"
                 />
+
+                {hasVoiceConfigured && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="gap-2 w-full"
+                    onClick={startVoiceAgent}
+                  >
+                    <Mic className="h-4 w-4" />
+                    Talk to me instead
+                  </Button>
+                )}
 
                 {hasSkillsets && (
                   <div>
@@ -493,6 +596,7 @@ export function CreateAgentDialog({ open, onOpenChange, initialTemplate }: Creat
                 </Button>
               </DialogFooter>
             </form>
+            )}
           </TabsContent>
 
           {/* Tab: Import File */}

@@ -27,17 +27,25 @@ export class OpenaiSttProvider extends BaseSttProvider {
   }
 
   async mintEphemeralToken(apiKey: string): Promise<string> {
+    return this.mintClientSecret(apiKey, { session: { type: 'transcription' } })
+  }
+
+  override supportsVoiceAgent(): boolean {
+    return true
+  }
+
+  override async mintVoiceAgentToken(apiKey: string): Promise<string> {
+    return this.mintClientSecret(apiKey, { session: { type: 'realtime' } })
+  }
+
+  private async mintClientSecret(apiKey: string, body: Record<string, unknown>): Promise<string> {
     const res = await fetch('https://api.openai.com/v1/realtime/client_secrets', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        session: {
-          type: 'transcription',
-        },
-      }),
+      body: JSON.stringify(body),
     })
     if (!res.ok) {
       if (res.status === 401 || res.status === 403) {
