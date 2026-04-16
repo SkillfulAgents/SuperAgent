@@ -1007,6 +1007,8 @@ agents.post('/:id/stop', AgentUser(), async (c) => {
 })
 
 // POST /api/agents/:id/open-directory - Get workspace path, optionally open in system file manager
+const OpenDirectoryBody = z.object({ open: z.boolean().optional() })
+
 agents.post('/:id/open-directory', AgentAdmin(), async (c) => {
   try {
     const slug = c.req.param('id')
@@ -1015,16 +1017,19 @@ agents.post('/:id/open-directory', AgentAdmin(), async (c) => {
     // Ensure directory exists
     await fs.promises.mkdir(workspaceDir, { recursive: true })
 
-    const body = await c.req.json().catch(() => ({}))
-    if (body.open) {
-      const { exec } = await import('child_process')
+    const raw = await c.req.json().catch(() => ({}))
+    const { open } = OpenDirectoryBody.parse(raw)
+    if (open) {
+      const { execFile } = await import('child_process')
       const platform = process.platform
       const command =
         platform === 'darwin' ? 'open' :
         platform === 'win32' ? 'explorer' :
         'xdg-open'
 
-      exec(`${command} "${workspaceDir}"`)
+      // Use execFile with an argv array so the path is passed as a single
+      // argument — avoids shell-injection if workspaceDir contains quotes/$.
+      execFile(command, [workspaceDir])
     }
 
     return c.json({ success: true, path: workspaceDir })
