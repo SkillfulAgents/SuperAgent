@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { MiniWaveform } from '@renderer/components/ui/mini-waveform'
-import { Loader2, Mic, MicOff, Pause, Phone, PhoneOff, Play, RotateCcw } from 'lucide-react'
+import { Loader2, MicOff, Pause, Phone, PhoneOff, Play, RotateCcw } from 'lucide-react'
 import { useVoiceAgent, type VoiceAgentTranscriptEntry } from '@renderer/hooks/use-voice-agent'
 import type { VoiceAgentConfig } from '@renderer/lib/voice-agent'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { cn } from '@shared/lib/utils'
 
 interface VoiceAgentProps {
@@ -12,6 +13,12 @@ interface VoiceAgentProps {
   onResult?: (name: string, args: string) => void
   /** Called when the user explicitly closes the voice agent */
   onClose?: () => void
+  /**
+   * Visual layout:
+   * - 'vertical' (default): indicator + status + transcript + controls stacked
+   * - 'split': left column has indicator/status/controls; right column has transcript
+   */
+  layout?: 'vertical' | 'split'
   /** Additional CSS class name */
   className?: string
 }
@@ -23,7 +30,7 @@ interface VoiceAgentProps {
  * - Running transcript
  * - Controls: mute, stop, restart
  */
-export function VoiceAgent({ config, onResult, onClose, className }: VoiceAgentProps) {
+export function VoiceAgent({ config, onResult, onClose, layout = 'vertical', className }: VoiceAgentProps) {
   const handleFunctionCall = useCallback((name: string, args: string) => {
     onResult?.(name, args)
   }, [onResult])
@@ -41,6 +48,7 @@ export function VoiceAgent({ config, onResult, onClose, className }: VoiceAgentP
     transcript,
     error,
     analyserRef,
+    playbackAnalyserRef,
     start,
     stop,
     pause,
@@ -71,137 +79,205 @@ export function VoiceAgent({ config, onResult, onClose, className }: VoiceAgentP
     }
   }, [start])
 
-  return (
-    <div className={cn('flex flex-col items-center gap-4 p-6', className)}>
-      {/* Speaking indicator */}
-      <SpeakingIndicator
-        speakingState={speakingState}
-        isConnecting={isConnecting}
-        isActive={isActive}
-        analyserRef={analyserRef}
-      />
+  // Auto-scroll the split-layout transcript to the bottom as new entries arrive
+  const splitTranscriptRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = splitTranscriptRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [transcript.length])
 
-      {/* Status label */}
-      <div className="text-sm text-muted-foreground">
-        {isConnecting && 'Connecting...'}
-        {isActive && speakingState === 'user' && 'Listening...'}
-        {isActive && speakingState === 'agent' && 'Speaking...'}
-        {isActive && speakingState === 'none' && 'Ready'}
-        {state === 'idle' && !error && 'Idle'}
-      </div>
+  const indicator = (
+    <SpeakingIndicator
+      speakingState={speakingState}
+      isConnecting={isConnecting}
+      analyserRef={analyserRef}
+      playbackAnalyserRef={playbackAnalyserRef}
+    />
+  )
 
-      {/* Error display */}
-      {error && (
-        <div className="flex items-center gap-1.5 text-xs text-destructive">
-          <MicOff className="h-3 w-3 shrink-0" />
-          <span>{error}</span>
-        </div>
-      )}
+  const statusLabel = state !== 'idle' ? (
+    <div className="text-xs text-blue-300 mt-3">
+      {isConnecting && 'connecting...'}
+      {isActive && speakingState === 'user' && 'listening...'}
+      {isActive && speakingState === 'agent' && 'speaking...'}
+      {isActive && speakingState === 'none' && 'listening...'}
+    </div>
+  ) : null
 
-      {/* Transcript */}
-      {transcript.length > 0 && (
-        <TranscriptDisplay entries={transcript} />
-      )}
+  const errorDisplay = error ? (
+    <div className="flex items-center gap-1.5 text-xs text-destructive">
+      <MicOff className="h-3 w-3 shrink-0" />
+      <span>{error}</span>
+    </div>
+  ) : null
 
-      {/* Controls */}
+  const controls = (
+    <TooltipProvider delayDuration={0}>
       <div className="flex items-center gap-2">
         {state === 'idle' ? (
           <Button onClick={start} size="sm" variant="default" className="gap-2">
             <Phone className="h-4 w-4" />
-            Start
+            Start call
           </Button>
         ) : (
           <>
             <PauseButton key={state} onPause={pause} onResume={resume} disabled={!isActive} />
-            <Button onClick={handleRestart} size="sm" variant="outline" className="gap-2" disabled={isConnecting}>
-              <RotateCcw className="h-4 w-4" />
-              Restart
-            </Button>
-            <Button onClick={handleStop} size="sm" variant="destructive" className="gap-2">
-              <PhoneOff className="h-4 w-4" />
-              End
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  onClick={handleStop}
+                  size="icon"
+                  variant="outline"
+                  className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                  aria-label="End"
+                >
+                  <PhoneOff className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>End call</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  onClick={handleRestart}
+                  size="icon"
+                  variant="outline"
+                  disabled={isConnecting}
+                  aria-label="Restart"
+                >
+                  <RotateCcw className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Issues? Try restarting.</TooltipContent>
+            </Tooltip>
           </>
         )}
       </div>
+    </TooltipProvider>
+  )
+
+  if (layout === 'split') {
+    const fadeMask = 'linear-gradient(to bottom, transparent 0, black 72px, black calc(100% - 72px), transparent 100%)'
+    const showTranscript = transcript.length > 0
+    return (
+      <div className={cn('flex flex-col h-[420px]', className)}>
+        {/* Top: two-column content. Right column collapses to 0 until first message arrives. */}
+        <div
+          className="grid flex-1 min-h-0 transition-[grid-template-columns] duration-500 ease-in-out"
+          style={{ gridTemplateColumns: showTranscript ? '1fr 1fr' : '1fr 0fr' }}
+        >
+          {/* Left column: indicator, status — centered vertically */}
+          <div className="flex flex-col items-center justify-center gap-4 p-6 min-w-0">
+            {indicator}
+            {errorDisplay}
+            {statusLabel}
+          </div>
+
+          {/* Right column: full-bleed transcript with top/bottom fade */}
+          <div
+            className="overflow-hidden min-w-0"
+            style={{ maskImage: fadeMask, WebkitMaskImage: fadeMask }}
+          >
+            <div
+              ref={splitTranscriptRef}
+              className="h-full overflow-y-auto pt-[100px] pb-[72px] pr-6 text-sm"
+            >
+              {transcript.map((entry, i) => (
+                <div
+                  key={i}
+                  className={cn(
+                    'mb-1.5 last:mb-0',
+                    entry.role === 'assistant' ? 'text-muted-foreground' : ''
+                  )}
+                >
+                  {entry.text}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Bottom: centered control bar */}
+        <div className="flex items-center justify-center pb-6">
+          {controls}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className={cn('flex flex-col items-center gap-4 p-6', className)}>
+      {indicator}
+      {statusLabel}
+      {errorDisplay}
+      {transcript.length > 0 && <TranscriptDisplay entries={transcript} />}
+      {controls}
     </div>
   )
 }
+
+const ORB_BASE = 'flex h-[150px] w-[150px] items-center justify-center rounded-full bg-blue-100 dark:bg-blue-900/30'
 
 /** Pulsing / waveform indicator showing who is speaking */
 function SpeakingIndicator({
   speakingState,
   isConnecting,
-  isActive,
   analyserRef,
+  playbackAnalyserRef,
 }: {
   speakingState: 'none' | 'user' | 'agent'
   isConnecting: boolean
-  isActive: boolean
   analyserRef: React.RefObject<AnalyserNode | null>
+  playbackAnalyserRef: React.RefObject<AnalyserNode | null>
 }) {
   if (isConnecting) {
     return (
-      <div className="flex h-20 w-20 items-center justify-center rounded-full bg-muted">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      <div className={cn(ORB_BASE, 'shadow-[0_0_28px_rgba(59,130,246,0.28)]')}>
+        <Loader2 className="h-5 w-5 animate-spin text-blue-500/50" />
       </div>
     )
   }
 
-  if (!isActive) {
-    return (
-      <div className="flex h-20 w-20 items-center justify-center rounded-full bg-muted">
-        <Mic className="h-8 w-8 text-muted-foreground" />
-      </div>
-    )
-  }
+  const speakingAnalyser =
+    speakingState === 'user' ? analyserRef :
+    speakingState === 'agent' ? playbackAnalyserRef : null
 
   return (
-    <div
-      className={cn(
-        'flex h-20 w-20 items-center justify-center rounded-full transition-colors duration-300',
-        speakingState === 'user' && 'bg-blue-100 dark:bg-blue-900/30',
-        speakingState === 'agent' && 'bg-green-100 dark:bg-green-900/30',
-        speakingState === 'none' && 'bg-muted',
-      )}
-    >
-      {speakingState === 'user' ? (
-        <MiniWaveform analyserRef={analyserRef} bars={12} width={48} height={32} color="rgb(59,130,246)" />
-      ) : speakingState === 'agent' ? (
-        <PulsingDots />
+    <div className={cn(ORB_BASE, 'voice-agent-breathe')}>
+      {speakingAnalyser ? (
+        <MiniWaveform analyserRef={speakingAnalyser} bars={12} width={45} height={30} color="rgb(59,130,246)" />
       ) : (
-        <Mic className="h-8 w-8 text-muted-foreground" />
+        <StaticDots count={9} size={2} dotClassName="bg-blue-500/50" />
       )}
     </div>
   )
 }
 
-/** Animated dots shown when the agent is speaking */
-function PulsingDots() {
+/** Row of small static dots — used for the Ready state */
+function StaticDots({
+  count = 12,
+  size = 4,
+  dotClassName = 'bg-muted-foreground/40',
+}: {
+  count?: number
+  size?: number
+  dotClassName?: string
+}) {
   return (
-    <div className="flex items-center gap-1.5">
-      {[0, 1, 2].map((i) => (
+    <div className="flex items-center gap-[3px]">
+      {Array.from({ length: count }).map((_, i) => (
         <span
           key={i}
-          className="h-2.5 w-2.5 rounded-full bg-green-500 dark:bg-green-400"
-          style={{
-            animation: 'voice-agent-pulse 1.2s ease-in-out infinite',
-            animationDelay: `${i * 0.2}s`,
-          }}
+          className={cn('rounded-full', dotClassName)}
+          style={{ width: size, height: size }}
         />
       ))}
-      <style>{`
-        @keyframes voice-agent-pulse {
-          0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
-          40% { transform: scale(1); opacity: 1; }
-        }
-      `}</style>
     </div>
   )
 }
 
 /** Scrollable transcript display — auto-scrolls to bottom on new entries */
-function TranscriptDisplay({ entries }: { entries: VoiceAgentTranscriptEntry[] }) {
+function TranscriptDisplay({ entries, fullHeight = false }: { entries: VoiceAgentTranscriptEntry[]; fullHeight?: boolean }) {
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -212,10 +288,15 @@ function TranscriptDisplay({ entries }: { entries: VoiceAgentTranscriptEntry[] }
   }, [entries.length])
 
   return (
-    <div ref={scrollRef} className="w-full max-h-48 overflow-y-auto rounded-md border bg-muted/30 p-3 text-sm">
+    <div
+      ref={scrollRef}
+      className={cn(
+        'w-full overflow-y-auto rounded-md border bg-muted/30 p-3 text-sm',
+        fullHeight ? 'h-full min-h-[240px]' : 'max-h-48'
+      )}
+    >
       {entries.map((entry, i) => (
         <div key={i} className={cn('mb-1.5 last:mb-0', entry.role === 'assistant' ? 'text-muted-foreground' : '')}>
-          <span className="font-medium">{entry.role === 'user' ? 'You' : 'Agent'}:</span>{' '}
           {entry.text}
         </div>
       ))}
@@ -238,9 +319,19 @@ function PauseButton({ onPause, onResume, disabled }: { onPause: () => void; onR
   }, [paused, onPause, onResume])
 
   return (
-    <Button onClick={toggle} size="sm" variant="outline" className="gap-2" disabled={disabled}>
-      {paused ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
-      {paused ? 'Resume' : 'Pause'}
-    </Button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          onClick={toggle}
+          size="icon"
+          variant="outline"
+          disabled={disabled}
+          aria-label={paused ? 'Resume' : 'Pause'}
+        >
+          {paused ? <Play className="h-4 w-4 fill-current" /> : <Pause className="h-4 w-4 fill-current" />}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{paused ? 'Resume' : 'Pause'}</TooltipContent>
+    </Tooltip>
   )
 }

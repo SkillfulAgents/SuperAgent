@@ -41,6 +41,7 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
   const audioContextRef = useRef<AudioContext | null>(null)
   const processorRef = useRef<ScriptProcessorNode | null>(null)
   const playbackContextRef = useRef<AudioContext | null>(null)
+  const playbackAnalyserRef = useRef<AnalyserNode | null>(null)
   const nextPlaybackTimeRef = useRef(0)
   const speakingDoneTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
@@ -70,6 +71,7 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
 
     analyserRef.current = null
 
+    playbackAnalyserRef.current = null
     playbackContextRef.current?.close()
     playbackContextRef.current = null
 
@@ -100,7 +102,9 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
         if (oldCtx) {
           const rate = adapterRef.current?.outputSampleRate ?? 24000
           void oldCtx.close()
-          playbackContextRef.current = new AudioContext({ sampleRate: rate })
+          const newCtx = new AudioContext({ sampleRate: rate })
+          playbackContextRef.current = newCtx
+          playbackAnalyserRef.current = createPlaybackAnalyser(newCtx)
           nextPlaybackTimeRef.current = 0
         }
         setSpeakingState('user')
@@ -141,7 +145,10 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
           buffer.copyToChannel(float32 as Float32Array<ArrayBuffer>, 0)
           const source = ctx.createBufferSource()
           source.buffer = buffer
-          source.connect(ctx.destination)
+          // Route through the playback analyser (which is connected to destination)
+          // so the UI can visualize the agent's audio output.
+          const destination = playbackAnalyserRef.current ?? ctx.destination
+          source.connect(destination)
 
           // Schedule this chunk to play after the previous one finishes
           const now = ctx.currentTime
@@ -270,8 +277,10 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
       source.connect(processor)
       processor.connect(audioContext.destination)
 
-      // 5. Set up audio playback context
-      playbackContextRef.current = new AudioContext({ sampleRate: adapter.outputSampleRate })
+      // 5. Set up audio playback context with an analyser for visualization
+      const playbackCtx = new AudioContext({ sampleRate: adapter.outputSampleRate })
+      playbackContextRef.current = playbackCtx
+      playbackAnalyserRef.current = createPlaybackAnalyser(playbackCtx)
 
       // Guard against race condition: if stop() was called while we were
       // awaiting, clean up everything we just created to avoid leaked resources
@@ -281,6 +290,7 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
         stream.getTracks().forEach(t => t.stop())
         playbackContextRef.current?.close()
         playbackContextRef.current = null
+        playbackAnalyserRef.current = null
         adapter.close()
         adapterRef.current = null
         return
@@ -326,6 +336,7 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
     transcript,
     error,
     analyserRef,
+    playbackAnalyserRef,
     start,
     stop,
     pause,
@@ -343,4 +354,13 @@ function pcm16ToFloat32(buffer: ArrayBuffer): Float32Array {
     float32[i] = int16[i] / 0x8000
   }
   return float32
+}
+
+/** Build an AnalyserNode for visualizing agent audio playback and wire it to the context destination. */
+function createPlaybackAnalyser(ctx: AudioContext): AnalyserNode {
+  const analyser = ctx.createAnalyser()
+  analyser.fftSize = 256
+  analyser.smoothingTimeConstant = 0.6
+  analyser.connect(ctx.destination)
+  return analyser
 }
