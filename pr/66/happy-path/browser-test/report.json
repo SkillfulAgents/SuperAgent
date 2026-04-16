@@ -1,25 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the Super Agent can execute browser commands to navigate to a URL and return page title information, confirming the browser-use feature is working correctly.",
+  "reason": "Browser use feature successfully executes browser commands via agent chat and returns expected page title",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully with Super Agent interface showing multiple agents in sidebar including QA-20260415-164455-a9d0.",
-    "Clicked on \"QA-20260415-164455-a9d0\" agent in sidebar — Agent selected successfully and chat interface opened with message input box ready.",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into input field — Message entered successfully, send button became enabled.",
-    "Clicked \"Send message\" button — Message sent successfully, agent status changed to \"working\" and a new session \"Browser Navigation Test Session\" was created.",
-    "Waited up to 3 minutes (180 seconds) for response — Agent completed the task in 10 seconds, response appeared with \"Example Domain\" text as expected.",
-    "Verified response mentions \"Example Domain\" — Response confirms \"The page title is \"Example Domain\". It's a simple page with a heading and a \"Learn more\" link.\"",
-    "Took full-page screenshot to document result — Screenshot successfully captured showing the agent's response with the page title information visible."
+    "Navigated to http://localhost:47891 — Page loaded successfully showing Super Agent interface with sidebar containing three agents",
+    "Found and clicked \"QA-20260416-024302-xnfy\" agent in sidebar — Agent opened successfully, displaying chat interface with empty sessions and input field",
+    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message sent successfully, agent status changed to \"working\", session created named \"Browser Page Title Verification\"",
+    "Waited up to 3 minutes for response — Agent completed task in 14 seconds, response appeared in chat",
+    "Verified response mentions \"Example Domain\" — Response clearly states: \"The page title is \"Example Domain\". It's a simple page with a heading and a \"Learn more\" link.\" with green checkmarks on all tool actions (Open Browser, Page Snapshot, Close Browser)",
+    "Took screenshot — Screenshot captured showing complete response with \"Example Domain\" visible in agent's message"
   ],
   "bugs": [],
-  "durationMs": 82341,
-  "sessionId": "0915e9c7-4894-4d85-ba12-23ba3fcb0945",
+  "durationMs": 97169,
+  "sessionId": "bd05265f-1eb2-4b08-b24d-3e3328f04a34",
   "cost": {
-    "inputTokens": 234,
-    "outputTokens": 6105,
-    "cacheCreationTokens": 105676,
-    "cacheReadTokens": 698967,
+    "inputTokens": 336,
+    "outputTokens": 9356,
+    "cacheCreationTokens": 46300,
+    "cacheReadTokens": 1228485,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.232751
+    "totalCostUsd": 0.22784
   }
 }
