@@ -21,8 +21,7 @@ import { useImportAgentTemplate, type ImportProgress } from '@renderer/hooks/use
 import { useSelection } from '@renderer/context/selection-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
-import { useIsVoiceConfigured } from '@renderer/hooks/use-voice-input'
-import { useUser } from '@renderer/context/user-context'
+import { useIsVoiceAgentConfigured } from '@renderer/hooks/use-voice-input'
 import { apiFetch } from '@renderer/lib/api'
 import { FileArchive, Loader2, Phone, Upload } from 'lucide-react'
 import type { VoiceAgentConfig } from '@renderer/lib/voice-agent'
@@ -168,8 +167,7 @@ export function CreateAgentStep({ onAgentCreated }: CreateAgentStepProps) {
   }, [composer.message])
 
   // Voice Agent — "Start conversation" flow
-  const hasVoiceConfigured = useIsVoiceConfigured()
-  const { user } = useUser()
+  const hasVoiceConfigured = useIsVoiceAgentConfigured()
   const [showVoiceAgent, setShowVoiceAgent] = useState(false)
   const [voiceAgentConfig, setVoiceAgentConfig] = useState<VoiceAgentConfig | null>(null)
 
@@ -178,10 +176,8 @@ export function CreateAgentStep({ onAgentCreated }: CreateAgentStepProps) {
       const res = await apiFetch('/api/stt/voice-agent-prompt?name=create-agent')
       if (!res.ok) throw new Error('Failed to load voice agent prompt')
       const { prompt } = await res.json() as { prompt: string }
-      const firstName = user?.name?.split(' ')[0] || 'there'
-      const personalizedPrompt = prompt.replaceAll('{{firstName}}', firstName)
       setVoiceAgentConfig({
-        systemPrompt: personalizedPrompt,
+        systemPrompt: prompt,
         tools: [{
           name: 'submit_agent',
           description: 'Submit the agent name and system prompt after the interview is complete',
@@ -199,7 +195,7 @@ export function CreateAgentStep({ onAgentCreated }: CreateAgentStepProps) {
     } catch (error) {
       console.error('Failed to start Voice Agent:', error)
     }
-  }, [user?.name])
+  }, [])
 
   const handleVoiceAgentResult = useCallback((_name: string, argsJson: string) => {
     try {
@@ -437,7 +433,7 @@ export function CreateAgentStep({ onAgentCreated }: CreateAgentStepProps) {
 
       {/* Voice Agent Dialog */}
       <Dialog open={showVoiceAgent} onOpenChange={(open) => { if (!open) closeVoiceAgent() }}>
-        <DialogContent className="max-w-2xl p-0 overflow-hidden">
+        <DialogContent className="max-w-2xl p-0 overflow-hidden h-[420px]">
           <DialogHeader className="sr-only">
             <DialogTitle>Let&apos;s talk about your first agent</DialogTitle>
             <DialogDescription>
@@ -621,7 +617,7 @@ export function CreateAgentStep({ onAgentCreated }: CreateAgentStepProps) {
   )
 }
 
-/** Stacked option card — low-emphasis by default, full opacity on hover. */
+/** Stacked option card — low-emphasis by default, full opacity on hover/focus. */
 function OptionCard({
   title,
   description,
@@ -636,31 +632,20 @@ function OptionCard({
   onClick: () => void
 }) {
   return (
-    <div
-      role="button"
-      tabIndex={0}
+    <button
+      type="button"
       onClick={onClick}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          onClick()
-        }
-      }}
-      className="rounded-lg border p-5 flex items-center justify-between gap-4 cursor-pointer opacity-60 hover:opacity-100 hover:bg-muted/50 transition-all"
+      aria-label={`${title} — ${buttonLabel}`}
+      className="w-full text-left rounded-lg border p-5 flex items-center justify-between gap-4 cursor-pointer opacity-60 hover:opacity-100 focus-visible:opacity-100 hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring transition-all"
     >
       <div className="space-y-1">
         <p className="text-sm font-medium">{title}</p>
         <p className="text-sm text-muted-foreground">{description}</p>
       </div>
-      <Button
-        type="button"
-        variant="ghost"
-        tabIndex={-1}
-        className="gap-2 shrink-0 pointer-events-none"
-      >
+      <span className="inline-flex items-center gap-2 shrink-0 text-sm text-muted-foreground">
         {icon}
         {buttonLabel}
-      </Button>
-    </div>
+      </span>
+    </button>
   )
 }

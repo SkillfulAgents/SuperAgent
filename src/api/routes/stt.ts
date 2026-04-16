@@ -12,9 +12,14 @@ stt.use('*', Authenticated())
 stt.get('/configured', (c) => {
   const voiceSettings = getVoiceSettings()
   const provider = voiceSettings.sttProvider
-  if (!provider) return c.json({ configured: false })
-  const status = getSttProvider(provider).getApiKeyStatus()
-  return c.json({ configured: status.isConfigured })
+  if (!provider) return c.json({ configured: false, supportsVoiceAgent: false })
+  const sttProvider = getSttProvider(provider)
+  const status = sttProvider.getApiKeyStatus()
+  const configured = status.isConfigured
+  return c.json({
+    configured,
+    supportsVoiceAgent: configured && sttProvider.supportsVoiceAgent(),
+  })
 })
 
 stt.get('/token', async (c) => {

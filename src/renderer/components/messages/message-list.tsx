@@ -1,7 +1,7 @@
 
 import { useMessages, useDeleteMessage, useDeleteToolCall } from '@renderer/hooks/use-messages'
 import { useAgent } from '@renderer/hooks/use-agents'
-import { useIsVoiceConfigured } from '@renderer/hooks/use-voice-input'
+import { useIsVoiceAgentConfigured } from '@renderer/hooks/use-voice-input'
 import { VoiceAgentFeedbackDialog } from './voice-agent-feedback-dialog'
 import {
   useMessageStream,
@@ -96,7 +96,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
 
   // Voice Agent feedback dialog state
   const { data: agentData } = useAgent(agentSlug)
-  const hasVoiceConfigured = useIsVoiceConfigured()
+  const hasVoiceConfigured = useIsVoiceAgentConfigured()
   const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false)
 
   const handleProvideFeedback = useCallback(() => {

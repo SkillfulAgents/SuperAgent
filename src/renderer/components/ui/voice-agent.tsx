@@ -84,7 +84,7 @@ export function VoiceAgent({ config, onResult, onClose, layout = 'vertical', cla
   useEffect(() => {
     const el = splitTranscriptRef.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [transcript.length])
+  }, [transcript])
 
   const indicator = (
     <SpeakingIndicator
@@ -160,7 +160,7 @@ export function VoiceAgent({ config, onResult, onClose, layout = 'vertical', cla
     const fadeMask = 'linear-gradient(to bottom, transparent 0, black 72px, black calc(100% - 72px), transparent 100%)'
     const showTranscript = transcript.length > 0
     return (
-      <div className={cn('flex flex-col h-[420px]', className)}>
+      <div className={cn('flex flex-col h-full', className)}>
         {/* Top: two-column content. Right column collapses to 0 until first message arrives. */}
         <div
           className="grid flex-1 min-h-0 transition-[grid-template-columns] duration-500 ease-in-out"
@@ -181,10 +181,14 @@ export function VoiceAgent({ config, onResult, onClose, layout = 'vertical', cla
             <div
               ref={splitTranscriptRef}
               className="h-full overflow-y-auto pt-[100px] pb-[72px] pr-6 text-sm"
+              role="log"
+              aria-live="polite"
+              aria-label="Voice agent transcript"
             >
               {transcript.map((entry, i) => (
                 <div
                   key={i}
+                  aria-label={entry.role === 'assistant' ? `Agent: ${entry.text}` : `You: ${entry.text}`}
                   className={cn(
                     'mb-1.5 last:mb-0',
                     entry.role === 'assistant' ? 'text-muted-foreground' : ''
@@ -277,7 +281,7 @@ function StaticDots({
 }
 
 /** Scrollable transcript display — auto-scrolls to bottom on new entries */
-function TranscriptDisplay({ entries, fullHeight = false }: { entries: VoiceAgentTranscriptEntry[]; fullHeight?: boolean }) {
+function TranscriptDisplay({ entries }: { entries: VoiceAgentTranscriptEntry[] }) {
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -285,18 +289,22 @@ function TranscriptDisplay({ entries, fullHeight = false }: { entries: VoiceAgen
     if (el) {
       el.scrollTop = el.scrollHeight
     }
-  }, [entries.length])
+  }, [entries])
 
   return (
     <div
       ref={scrollRef}
-      className={cn(
-        'w-full overflow-y-auto rounded-md border bg-muted/30 p-3 text-sm',
-        fullHeight ? 'h-full min-h-[240px]' : 'max-h-48'
-      )}
+      className="w-full max-h-48 overflow-y-auto rounded-md border bg-muted/30 p-3 text-sm"
+      role="log"
+      aria-live="polite"
+      aria-label="Voice agent transcript"
     >
       {entries.map((entry, i) => (
-        <div key={i} className={cn('mb-1.5 last:mb-0', entry.role === 'assistant' ? 'text-muted-foreground' : '')}>
+        <div
+          key={i}
+          aria-label={entry.role === 'assistant' ? `Agent: ${entry.text}` : `You: ${entry.text}`}
+          className={cn('mb-1.5 last:mb-0', entry.role === 'assistant' ? 'text-muted-foreground' : '')}
+        >
           {entry.text}
         </div>
       ))}
