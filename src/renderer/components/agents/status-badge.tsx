@@ -1,4 +1,4 @@
-import { ExternalLink, Check } from 'lucide-react'
+import { ExternalLink } from 'lucide-react'
 import type { ApiItemStatus } from '@shared/lib/types/api'
 
 interface StatusBadgeProps {
