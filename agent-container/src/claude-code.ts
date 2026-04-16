@@ -27,8 +27,8 @@ import { sanitizeMcpName } from './sanitize-mcp-name';
 const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] ';
 
 // Load the full system prompt (replaces claude_code preset + old append layer)
-const GAMUT_SYSTEM_PROMPT = fs.readFileSync(
-  path.join(__dirname, 'gamut-system-prompt.md'),
+const SYSTEM_PROMPT_V2 = fs.readFileSync(
+  path.join(__dirname, 'system-prompt-v2.md'),
   'utf-8'
 );
 
@@ -97,7 +97,7 @@ function generateSystemPrompt(
 ): string {
   const sections: string[] = [];
 
-  sections.push(GAMUT_SYSTEM_PROMPT);
+  sections.push(SYSTEM_PROMPT_V2);
 
   // Parse connected accounts metadata
   const connectedAccounts = parseConnectedAccounts();
