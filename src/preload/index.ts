@@ -161,6 +161,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('open-directory')
   },
 
+  // Reveal a path in the OS file manager (Finder / Explorer / Files)
+  showInFolder: (hostPath: string): Promise<string | null> => {
+    return ipcRenderer.invoke('show-in-folder', hostPath)
+  },
+
   // Get recently opened files from the OS
   getRecentFiles: (limit?: number): Promise<{ name: string; path: string; thumbnail?: string }[]> => {
     return ipcRenderer.invoke('get-recent-files', limit)
@@ -239,6 +244,7 @@ declare global {
       createDockShortcut: (agentSlug: string, dashboardSlug: string, dashboardName: string, iconPng: Uint8Array) => Promise<void>
       getPathForFile: (file: File) => string
       openDirectory: () => Promise<string | null>
+      showInFolder: (hostPath: string) => Promise<string | null>
       getRecentFiles: (limit?: number) => Promise<{ name: string; path: string; thumbnail?: string }[]>
       readLocalFile: (filePath: string) => Promise<{ buffer: ArrayBuffer; name: string; type: string } | null>
       checkForUpdates: () => Promise<void>
