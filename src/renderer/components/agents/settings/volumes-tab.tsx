@@ -25,14 +25,21 @@ export function VolumesTab({ agentSlug }: VolumesTabProps) {
       </p>
 
       {vm.pendingRestart && (
-        <div className="flex items-center gap-2 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 p-3">
-          <RefreshCw className={`h-4 w-4 text-amber-600 shrink-0 ${vm.isRestarting ? 'animate-spin' : ''}`} />
-          <span className="text-sm text-amber-800 dark:text-amber-200 flex-1">
-            Restart required for mount changes to take effect.
-          </span>
-          <Button size="sm" variant="outline" onClick={vm.handleRestart} disabled={vm.isRestarting}>
-            {vm.isRestarting ? 'Restarting...' : 'Restart'}
-          </Button>
+        <div className="flex flex-col gap-1 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 p-3">
+          <div className="flex items-center gap-2">
+            <RefreshCw className={`h-4 w-4 text-amber-600 shrink-0 ${vm.isRestarting ? 'animate-spin' : ''}`} />
+            <span className="text-sm text-amber-800 dark:text-amber-200 flex-1">
+              Restart required for mount changes to take effect.
+            </span>
+            <Button size="sm" variant="outline" onClick={vm.handleRestart} disabled={vm.isRestarting}>
+              {vm.isRestarting ? 'Restarting...' : 'Restart'}
+            </Button>
+          </div>
+          {vm.restartError && (
+            <span className="text-xs text-destructive pl-6" role="alert">
+              {vm.restartError}
+            </span>
+          )}
         </div>
       )}
 

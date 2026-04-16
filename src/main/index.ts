@@ -3,6 +3,9 @@ import { execFileSync, exec } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
+import { z } from 'zod'
+
+const ShowInFolderPath = z.string().min(1)
 
 // todo huge file - need to break up into multiple modules (tray, menu, auto-updater, host-browser provider, etc.)
 
@@ -358,8 +361,20 @@ ipcMain.handle('open-directory', async () => {
   return result.canceled ? null : result.filePaths[0]
 })
 
-// IPC handler for revealing a path in the OS file manager
-ipcMain.handle('show-in-folder', async (_event, hostPath: string) => {
+// IPC handler for revealing a path in the OS file manager.
+// Only directories are allowed — `shell.openPath` would otherwise launch files
+// with their default app (e.g. .app bundles, .command scripts, .exe).
+ipcMain.handle('show-in-folder', async (_event, rawPath: unknown) => {
+  const hostPath = ShowInFolderPath.parse(rawPath)
+  let stat: fs.Stats
+  try {
+    stat = await fs.promises.stat(hostPath)
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).message
+  }
+  if (!stat.isDirectory()) {
+    return `Not a directory: ${hostPath}`
+  }
   const errorMessage = await shell.openPath(hostPath)
   return errorMessage === '' ? null : errorMessage
 })

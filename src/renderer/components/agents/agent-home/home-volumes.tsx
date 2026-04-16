@@ -31,18 +31,18 @@ interface HomeVolumesProps {
 }
 
 export function HomeVolumes({ agentSlug }: HomeVolumesProps) {
-  const vm = useVolumesManager(agentSlug)
+  const volumes = useVolumesManager(agentSlug)
 
   return (
     <HomeCollapsible title="Volumes">
-      {vm.mounts.length > 0 ? (
+      {volumes.mounts.length > 0 ? (
         <div className="mt-2 divide-y divide-border/50">
-          {vm.mounts.map((mount) => (
+          {volumes.mounts.map((mount) => (
             <VolumeRow
               key={mount.id}
               mount={mount}
-              onRemove={() => vm.handleRemove(mount.id)}
-              isRemovingMount={vm.isRemovingMount}
+              onRemove={() => volumes.handleRemove(mount.id)}
+              isRemovingMount={volumes.isRemovingMount}
             />
           ))}
         </div>
@@ -54,31 +54,38 @@ export function HomeVolumes({ agentSlug }: HomeVolumesProps) {
       )}
 
       <div className="mt-3 px-4">
-        {vm.pendingRestart ? (
-          <div className="flex items-center gap-2 rounded-lg bg-orange-50 dark:bg-orange-950/30 p-2.5">
-            <span className="text-[11px] text-orange-600 dark:text-orange-400 flex-1">
-              Restart your agent for mount changes to take effect.
-            </span>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="text-orange-600 dark:text-orange-400 hover:bg-orange-100 dark:hover:bg-orange-900/40 hover:text-orange-700 dark:hover:text-orange-300"
-              onClick={vm.handleRestart}
-              disabled={vm.isRestarting}
-            >
-              <RefreshCw className={`${vm.isRestarting ? 'animate-spin' : ''}`} />
-              {vm.isRestarting ? 'Restarting...' : 'Restart'}
-            </Button>
+        {volumes.pendingRestart ? (
+          <div className="flex flex-col gap-1 rounded-lg bg-orange-50 dark:bg-orange-950/30 p-2.5">
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-orange-600 dark:text-orange-400 flex-1">
+                Restart your agent for mount changes to take effect.
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-orange-600 dark:text-orange-400 hover:bg-orange-100 dark:hover:bg-orange-900/40 hover:text-orange-700 dark:hover:text-orange-300"
+                onClick={volumes.handleRestart}
+                disabled={volumes.isRestarting}
+              >
+                <RefreshCw className={`${volumes.isRestarting ? 'animate-spin' : ''}`} />
+                {volumes.isRestarting ? 'Restarting...' : 'Restart'}
+              </Button>
+            </div>
+            {volumes.restartError && (
+              <span className="text-[11px] text-destructive" role="alert">
+                {volumes.restartError}
+              </span>
+            )}
           </div>
         ) : (
           <div className="flex justify-end">
             <Button
               variant="ghost"
               size="sm"
-              onClick={vm.handleAddMount}
-              disabled={vm.isAddingMount}
+              onClick={volumes.handleAddMount}
+              disabled={volumes.isAddingMount}
             >
-              {vm.isAddingMount ? (
+              {volumes.isAddingMount ? (
                 <Loader2 className="animate-spin" />
               ) : (
                 <Plus />
@@ -92,19 +99,23 @@ export function HomeVolumes({ agentSlug }: HomeVolumesProps) {
   )
 }
 
+function getFileManagerLabel(): string {
+  const platform = window.electronAPI?.platform
+  if (platform === 'win32') return 'Explorer'
+  if (platform === 'darwin') return 'Finder'
+  return 'Files'
+}
+
 interface VolumeRowProps {
   mount: AgentMountWithHealth
   onRemove: () => void
   isRemovingMount: boolean
 }
 
-const FILE_MANAGER_LABEL =
-  window.electronAPI?.platform === 'win32' ? 'Explorer' :
-  window.electronAPI?.platform === 'darwin' ? 'Finder' : 'Files'
-
 function VolumeRow({ mount, onRemove, isRemovingMount }: VolumeRowProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const fileManagerLabel = getFileManagerLabel()
 
   const handleOpenInFinder = () => {
     void window.electronAPI?.showInFolder(mount.hostPath)
@@ -127,6 +138,7 @@ function VolumeRow({ mount, onRemove, isRemovingMount }: VolumeRowProps) {
         className="group relative py-3 px-4 hover:bg-muted/50 transition-colors cursor-pointer"
         onClick={handleOpenInFinder}
         onKeyDown={(e) => {
+          if (e.target !== e.currentTarget) return
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault()
             handleOpenInFinder()
@@ -141,7 +153,7 @@ function VolumeRow({ mount, onRemove, isRemovingMount }: VolumeRowProps) {
         <div className="text-[11px] text-muted-foreground mt-0.5 line-clamp-1 font-mono" title={mount.hostPath}>
           {mount.hostPath}
         </div>
-        <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
           <Popover open={menuOpen} onOpenChange={setMenuOpen}>
             <PopoverTrigger asChild>
               <Button
@@ -149,6 +161,7 @@ function VolumeRow({ mount, onRemove, isRemovingMount }: VolumeRowProps) {
                 size="icon"
                 variant="outline"
                 className="h-6 w-6"
+                aria-label="Mount actions"
                 onClick={(e) => e.stopPropagation()}
               >
                 <MoreVertical className="h-3.5 w-3.5" />
@@ -164,7 +177,7 @@ function VolumeRow({ mount, onRemove, isRemovingMount }: VolumeRowProps) {
                 }}
               >
                 <FolderOpen className="h-3.5 w-3.5" />
-                Open in {FILE_MANAGER_LABEL}
+                Open in {fileManagerLabel}
               </button>
               <button
                 className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
