@@ -26,7 +26,6 @@ vi.mock('./client-factory', () => ({
   }),
   checkAllRunnersAvailability: vi.fn().mockResolvedValue([]),
   checkImageExists: vi.fn().mockResolvedValue(true),
-  validateImage: vi.fn(),
   pullImage: vi.fn(),
   canBuildImage: vi.fn().mockReturnValue(false),
   buildImage: vi.fn(),
@@ -34,6 +33,7 @@ vi.mock('./client-factory', () => ({
   refreshRunnerAvailability: vi.fn(),
   clearRunnerAvailabilityCache: (...args: unknown[]) => mockClearRunnerAvailabilityCache(...args),
   getRunnerDisplayName: (runner: string) => runner,
+  reconcileRunnerState: vi.fn().mockResolvedValue(false),
 }))
 
 const mockGetOrCreateProxyToken = vi.fn()
@@ -525,7 +525,7 @@ describe('containerManager — health warnings', () => {
 // ensureImageReady — state machine (CHECKING -> READY / ERROR / RUNTIME_UNAVAILABLE)
 // ============================================================================
 
-import { checkAllRunnersAvailability, checkImageExists, validateImage, pullImage, canBuildImage, buildImage } from './client-factory'
+import { checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage } from './client-factory'
 
 describe('containerManager.ensureImageReady — state machine', () => {
   const originalE2eMock = process.env.E2E_MOCK
@@ -563,14 +563,12 @@ describe('containerManager.ensureImageReady — state machine', () => {
       { runner: 'docker', installed: true, running: true, available: true, canStart: false },
     ])
     vi.mocked(checkImageExists).mockResolvedValue(true)
-    vi.mocked(validateImage).mockResolvedValue()
 
     await containerManager.ensureImageReady()
 
     const readiness = containerManager.getReadiness()
     expect(readiness.status).toBe('READY')
     expect(readiness.pullProgress).toBeNull()
-    expect(validateImage).toHaveBeenCalledWith('docker', 'test-image')
   })
 
   it('transitions to RUNTIME_UNAVAILABLE when configured runner is not available', async () => {
@@ -655,7 +653,6 @@ describe('containerManager.ensureImageReady — state machine', () => {
       { runner: 'docker', installed: true, running: true, available: true, canStart: false },
     ])
     vi.mocked(checkImageExists).mockResolvedValue(true)
-    vi.mocked(validateImage).mockResolvedValue()
 
     await containerManager.ensureImageReady()
 
@@ -675,7 +672,6 @@ describe('containerManager.ensureImageReady — state machine', () => {
       { runner: 'podman', installed: true, running: true, available: true, canStart: false },
     ])
     vi.mocked(checkImageExists).mockResolvedValue(true)
-    vi.mocked(validateImage).mockResolvedValue()
 
     await containerManager.ensureImageReady()
 
@@ -684,24 +680,6 @@ describe('containerManager.ensureImageReady — state machine', () => {
 
     // Should have called checkImageExists with the alternative runner
     expect(checkImageExists).toHaveBeenCalledWith('podman', 'test-image')
-  })
-
-  it('pulls image after validation rebuild removes Lima image', async () => {
-    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
-      { runner: 'lima', installed: true, running: true, available: true, canStart: true },
-    ])
-    vi.mocked(checkImageExists)
-      .mockResolvedValueOnce(true)
-      .mockResolvedValueOnce(false)
-    vi.mocked(validateImage).mockResolvedValue()
-    vi.mocked(canBuildImage).mockReturnValue(false)
-    vi.mocked(pullImage).mockResolvedValue()
-
-    await containerManager.ensureImageReady()
-
-    expect(validateImage).toHaveBeenCalledWith('lima', 'test-image')
-    expect(pullImage).toHaveBeenCalledWith('lima', 'test-image', expect.any(Function))
-    expect(containerManager.getReadiness().status).toBe('READY')
   })
 
   it('reports RUNTIME_UNAVAILABLE when runner installed but not running and no alternative', async () => {

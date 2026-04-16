@@ -206,15 +206,6 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     throw new Error('Subclass must implement static isRunning()')
   }
 
-  /**
-   * Validate that a locally-present image is actually runnable.
-   * Runtimes with extra integrity concerns can override this to do a stronger
-   * startup-time check than `image inspect`.
-   */
-  static async validateImage(_image: string): Promise<void> {
-    // Most runtimes only need metadata existence checks.
-  }
-
   constructor(config: ContainerConfig) {
     super()
     this.config = config
