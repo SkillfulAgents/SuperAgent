@@ -1,18 +1,19 @@
 import { useState } from 'react'
-import { ExternalLink, Plug, Link2, type LucideIcon } from 'lucide-react'
+import { ExternalLink, Plug, Link2, Blocks, type LucideIcon } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 
-type FallbackType = 'oauth' | 'mcp' | 'request'
+type FallbackType = 'oauth' | 'mcp' | 'blocks' | 'request'
 
 const FALLBACK_ICONS: Record<FallbackType, LucideIcon> = {
   oauth: ExternalLink,
   mcp: Plug,
+  blocks: Blocks,
   request: Link2,
 }
 
 interface ServiceIconProps {
-  /** The service slug (e.g., 'gmail', 'slack', 'github') */
-  slug: string
+  /** The service slug (e.g., 'gmail', 'slack', 'github'). Omit/empty to render the fallback. */
+  slug?: string
   /** Which generic icon to show when no service icon is found */
   fallback?: FallbackType
   /** CSS classes applied to the icon element */
