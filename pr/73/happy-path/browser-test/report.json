@@ -1,24 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser use feature allows agent to open browser, navigate to URLs, capture page information, and report back with accurate page titles",
+  "reason": "Verified that agent can successfully open a browser, navigate to https://example.com, capture the page title \"Example Domain\", and report it back in the response.",
   "steps": [
-    "Navigated to http://localhost:47891 — page loaded successfully with agent list visible",
-    "Clicked on \"QA-20260414-202013-7frh\" agent in sidebar — agent chat interface opened",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — message entered in input field",
-    "Clicked Send message button — message sent successfully, agent status changed to \"working\"",
-    "Waited up to 3 minutes for response — agent completed in 9 seconds",
-    "Verified response mentions \"Example Domain\" — response clearly states: \"The page title is \"Example Domain\". It's a simple page with a heading and a \"Learn more\" link.\""
+    "Step 1 - Navigated to http://localhost:47891 - Successfully loaded the Super Agent application with agent list visible",
+    "Step 2 - Found and clicked the \"QA-20260416-182625-k1db\" agent in sidebar - Agent chat interface loaded with \"Browser Page Title Verification\" session created",
+    "Step 3 - Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message displayed in chat and sent successfully",
+    "Step 4 - Waited up to 3 minutes for response - Response received within 10 seconds",
+    "Step 5 - Verified response mentions \"Example Domain\" - Response confirmed: \"The page title is \\\"Example Domain\\\". It's the standard IANA example page with a heading and a \\\"Learn more\\\" link.\" Also visible in live browser preview on right panel"
   ],
   "bugs": [],
-  "durationMs": 96606,
-  "sessionId": "dbec17dd-b457-4e42-a7ff-897615201bdb",
+  "durationMs": 91387,
+  "sessionId": "5984f372-e3a4-4bff-afc0-b63e0bcd32ab",
   "cost": {
-    "inputTokens": 315,
-    "outputTokens": 9037,
-    "cacheCreationTokens": 118781,
-    "cacheReadTokens": 1039745,
+    "inputTokens": 270,
+    "outputTokens": 7751,
+    "cacheCreationTokens": 44405,
+    "cacheReadTokens": 988285,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.297951
+    "totalCostUsd": 0.19336
   }
 }
