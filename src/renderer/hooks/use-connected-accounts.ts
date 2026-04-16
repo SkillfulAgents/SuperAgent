@@ -15,6 +15,11 @@ export interface ConnectedAccount {
   provider?: Provider
 }
 
+export interface AgentConnectedAccount extends ConnectedAccount {
+  mappingId: string
+  mappedAt: string
+}
+
 interface ConnectedAccountsResponse {
   accounts: ConnectedAccount[]
 }
@@ -36,6 +41,21 @@ export function useConnectedAccounts() {
       if (!res.ok) throw new Error('Failed to fetch connected accounts')
       return res.json()
     },
+  })
+}
+
+/**
+ * Hook to fetch connected accounts assigned to a specific agent
+ */
+export function useAgentConnectedAccounts(agentSlug: string) {
+  return useQuery<{ accounts: AgentConnectedAccount[] }>({
+    queryKey: ['agent-connected-accounts', agentSlug],
+    queryFn: async () => {
+      const res = await apiFetch(`/api/agents/${agentSlug}/connected-accounts`)
+      if (!res.ok) throw new Error('Failed to fetch agent connected accounts')
+      return res.json()
+    },
+    enabled: !!agentSlug,
   })
 }
 
@@ -128,6 +148,25 @@ export function useRenameConnectedAccount() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['connected-accounts'] })
       queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts'] })
+    },
+  })
+}
+
+/**
+ * Hook to remove a connected account from an agent
+ */
+export function useRemoveAgentConnectedAccount() {
+  const queryClient = useQueryClient()
+
+  return useMutation<void, Error, { agentSlug: string; accountId: string }>({
+    mutationFn: async ({ agentSlug, accountId }) => {
+      const res = await apiFetch(`/api/agents/${agentSlug}/connected-accounts/${accountId}`, {
+        method: 'DELETE',
+      })
+      if (!res.ok) throw new Error('Failed to remove account from agent')
+    },
+    onSuccess: (_, { agentSlug }) => {
+      queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts', agentSlug] })
     },
   })
 }

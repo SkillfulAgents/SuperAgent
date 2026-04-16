@@ -48,6 +48,7 @@ export function MainContent() {
     selectWebhookTrigger,
   } = useSelection()
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined)
   const [contextBarExpanded, setContextBarExpanded] = useState(false)
   // Pending user messages per session — survives navigation between sessions
   const pendingMessagesRef = useRef(new Map<string, { text: string; sentAt: number; sender?: { id: string; name: string; email: string } }>())
@@ -473,7 +474,7 @@ export function MainContent() {
             <AgentHome
               agent={agent}
               onSessionCreated={handleSessionCreated}
-              onOpenSettings={() => setSettingsOpen(true)}
+              onOpenSettings={(tab?: string) => { setSettingsTab(tab); setSettingsOpen(true) }}
             />
           )
         )}
@@ -483,7 +484,8 @@ export function MainContent() {
         <AgentSettingsDialog
           agent={agent}
           open={settingsOpen}
-          onOpenChange={setSettingsOpen}
+          onOpenChange={(open) => { setSettingsOpen(open); if (!open) setSettingsTab(undefined) }}
+          initialTab={settingsTab}
         />
       )}
     </div>
