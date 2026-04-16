@@ -1,5 +1,8 @@
 
 import { useMessages, useDeleteMessage, useDeleteToolCall } from '@renderer/hooks/use-messages'
+import { useAgent } from '@renderer/hooks/use-agents'
+import { useIsVoiceAgentConfigured } from '@renderer/hooks/use-voice-input'
+import { VoiceAgentFeedbackDialog } from './voice-agent-feedback-dialog'
 import {
   useMessageStream,
   removeSecretRequest,
@@ -26,7 +29,7 @@ import { ScriptRunRequestItem } from './script-run-request-item'
 import { ComputerUseRequestItem } from './computer-use-request-item'
 import { ProxyReviewRequestItem } from './proxy-review-request-item'
 import { PendingRequestStack } from './pending-request-stack'
-import { ArrowDown, Loader2, WifiOff } from 'lucide-react'
+import { ArrowDown, Loader2, MessageSquarePlus, WifiOff } from 'lucide-react'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { usePendingProxyReviews } from '@renderer/hooks/use-proxy-reviews'
 import { useIsOnline } from '@renderer/context/connectivity-context'
@@ -61,9 +64,11 @@ interface MessageListProps {
   agentSlug: string
   pendingUserMessage?: PendingMessage | null
   onPendingMessageAppeared?: () => void
+  /** Set the draft text in the message input (used by voice feedback) */
+  onSetDraft?: (draft: string) => void
 }
 
-export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendingMessageAppeared }: MessageListProps) {
+export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendingMessageAppeared, onSetDraft }: MessageListProps) {
   useRenderTracker('MessageList')
   const { data: messages, isLoading } = useMessages(sessionId, agentSlug)
   const deleteMessage = useDeleteMessage()
@@ -88,6 +93,33 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     },
     [sessionId, agentSlug, deleteToolCall]
   )
+
+  // Voice Agent feedback dialog state
+  const { data: agentData } = useAgent(agentSlug)
+  const hasVoiceConfigured = useIsVoiceAgentConfigured()
+  const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false)
+
+  const handleProvideFeedback = useCallback(() => {
+    setFeedbackDialogOpen(true)
+  }, [])
+
+  // Find the last assistant message that has an elapsed time (for voice feedback button)
+  const lastAssistantElapsedId = useMemo(() => {
+    if (!messages) return null
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]
+      if (m.type === 'assistant') return m.id
+    }
+    return null
+  }, [messages])
+
+  // Collect plain-text messages for the feedback dialog context
+  const plainMessages = useMemo(() => {
+    if (!messages) return []
+    return messages.filter(
+      (m): m is ApiMessage => (m.type === 'user' || m.type === 'assistant')
+    )
+  }, [messages])
 
   // Check if pending message has appeared in real messages.
   // Once the server persists the user message and it shows up in the fetched
@@ -742,6 +774,16 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
                   <div className="flex items-center gap-3 pb-1 -mt-3 text-xs text-muted-foreground tabular-nums italic">
                     <span>Worked for {formatElapsed(turnElapsedTimes.get(item.id)!)}</span>
                     <div className="h-px flex-1 bg-border" />
+                    {hasVoiceConfigured && (item as ApiMessage).type === 'assistant' && item.id === lastAssistantElapsedId && (
+                      <button
+                        type="button"
+                        onClick={handleProvideFeedback}
+                        className="flex items-center gap-1 not-italic text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        <MessageSquarePlus className="h-3 w-3" />
+                        <span>Voice feedback</span>
+                      </button>
+                    )}
                   </div>
                 )}
               </>
@@ -986,6 +1028,15 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
           Scroll to bottom
         </button>
       )}
+
+      {/* Voice Agent feedback dialog */}
+      <VoiceAgentFeedbackDialog
+        open={feedbackDialogOpen}
+        onOpenChange={setFeedbackDialogOpen}
+        agentInstructions={agentData?.instructions ?? ''}
+        messages={plainMessages}
+        onSetDraft={onSetDraft}
+      />
     </div>
   )
 }

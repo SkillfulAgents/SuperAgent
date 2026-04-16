@@ -44,4 +44,28 @@ export abstract class BaseSttProvider {
     const token = await this.mintEphemeralToken(apiKey)
     return { provider: this.id, token }
   }
+
+  /** Whether this provider supports Voice Agent (S2S) sessions. */
+  supportsVoiceAgent(): boolean {
+    return false
+  }
+
+  /** Mint a token for a Voice Agent session. Override in providers that support it. */
+  async mintVoiceAgentToken(apiKey: string): Promise<string> {
+    void apiKey
+    throw new Error(`Voice Agent not supported by ${this.name}`)
+  }
+
+  /** Convenience: resolve the effective key and mint a Voice Agent token. */
+  async getVoiceAgentToken(): Promise<{ provider: SttProvider; token: string }> {
+    if (!this.supportsVoiceAgent()) {
+      throw new Error(`Voice Agent not supported by ${this.name}`)
+    }
+    const apiKey = this.getEffectiveApiKey()
+    if (!apiKey) {
+      throw new Error(`No API key configured for ${this.name}. Add one in Settings > Voice.`)
+    }
+    const token = await this.mintVoiceAgentToken(apiKey)
+    return { provider: this.id, token }
+  }
 }

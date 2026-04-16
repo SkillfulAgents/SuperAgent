@@ -25,11 +25,14 @@ interface MessageInputProps {
   onMessageSent?: (content: string) => void
   initialDraft?: string
   onDraftChange?: (draft: string) => void
+  /** Draft text injected from outside (e.g., voice feedback). Consumed on receipt. */
+  externalDraft?: string | null
+  onExternalDraftConsumed?: () => void
   /** Effort level last used on this session; seeds the composer selector. Defaults to 'high' when absent. */
   initialEffort?: EffortLevel
 }
 
-export function MessageInput({ sessionId, agentSlug, onMessageSent, initialDraft, onDraftChange, initialEffort }: MessageInputProps) {
+export function MessageInput({ sessionId, agentSlug, onMessageSent, initialDraft, onDraftChange, externalDraft, onExternalDraftConsumed, initialEffort }: MessageInputProps) {
   useRenderTracker('MessageInput')
   const { canUseAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
@@ -75,6 +78,14 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialDraft
     submitDisabled: sendMessage.isPending || isActive || isOffline,
     initialMessage: initialDraft,
   })
+
+  // Consume external draft when injected (e.g., from voice feedback)
+  useEffect(() => {
+    if (externalDraft) {
+      composer.setMessage(externalDraft)
+      onExternalDraftConsumed?.()
+    }
+  }, [externalDraft, composer, onExternalDraftConsumed])
 
   // Extract the slash command prefix being typed (e.g. "co" from "/co")
   const slashFilter = useMemo(() => {
