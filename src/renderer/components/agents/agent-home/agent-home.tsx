@@ -18,6 +18,7 @@ import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
 import { HomeCrons } from './home-crons'
 import { HomeSkills } from './home-skills'
+import { HomeExtras } from './home-extras'
 import { HomeBookmarks } from './home-bookmarks'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 import { useRenderTracker } from '@renderer/lib/perf'
@@ -26,7 +27,7 @@ import { formatDistanceToNow } from 'date-fns'
 interface AgentHomeProps {
   agent: ApiAgent
   onSessionCreated: (sessionId: string, initialMessage: string) => void
-  onOpenSettings?: () => void
+  onOpenSettings?: (tab?: string) => void
 }
 
 export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHomeProps) {
@@ -129,7 +130,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
           <div className="flex items-center justify-between">
             <h1 className="text-xl font-semibold">{agent.name}</h1>
-            <Button type="button" size="icon" variant="ghost" className="h-8 w-8" onClick={onOpenSettings} aria-label="Agent settings">
+            <Button type="button" size="icon" variant="ghost" className="h-8 w-8" onClick={() => onOpenSettings?.()} aria-label="Agent settings">
               <MoreVertical className="h-4 w-4" />
             </Button>
           </div>
@@ -305,6 +306,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
               onSelectTask={selectScheduledTask}
             />
             <HomeSkills agentSlug={agent.slug} />
+            <HomeExtras agentSlug={agent.slug} onOpenSettings={onOpenSettings} />
           </div>
         )}
       </div>
