@@ -18,6 +18,7 @@ import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
 import { HomeCrons } from './home-crons'
 import { HomeSkills } from './home-skills'
+import { HomeExtras } from './home-extras'
 import { HomeConnections } from './home-connections'
 import { HomeVolumes } from './home-volumes'
 import { HomeBookmarks } from './home-bookmarks'
@@ -311,6 +312,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
             <HomeSkills agentSlug={agent.slug} />
             <HomeVolumes agentSlug={agent.slug} />
             <HomeConnections agentSlug={agent.slug} onOpenSettings={onOpenSettings} />
+            <HomeExtras agentSlug={agent.slug} onOpenSettings={onOpenSettings} />
           </div>
         )}
       </div>
