@@ -12,8 +12,8 @@ const FALLBACK_ICONS: Record<FallbackType, LucideIcon> = {
 }
 
 interface ServiceIconProps {
-  /** The service slug (e.g., 'gmail', 'slack', 'github') */
-  slug: string
+  /** The service slug (e.g., 'gmail', 'slack', 'github'). Omit/empty to render the fallback. */
+  slug?: string
   /** Which generic icon to show when no service icon is found */
   fallback?: FallbackType
   /** CSS classes applied to the icon element */

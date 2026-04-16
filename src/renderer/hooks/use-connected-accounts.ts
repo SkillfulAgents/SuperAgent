@@ -167,6 +167,7 @@ export function useRemoveAgentConnectedAccount() {
     },
     onSuccess: (_, { agentSlug }) => {
       queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts', agentSlug] })
+      queryClient.invalidateQueries({ queryKey: ['connected-accounts'] })
     },
   })
 }
