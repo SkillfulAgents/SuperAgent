@@ -6,13 +6,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const mockStopLimaVm = vi.fn()
 const mockEnsureLimaReady = vi.fn()
-const mockReconcileLimaState = vi.fn().mockResolvedValue(false)
 
 vi.mock('./lima-container-client', () => ({
   LimaContainerClient: {
     isEligible: vi.fn(() => true),
     isAvailable: vi.fn(() => Promise.resolve(true)),
-    reconcileRuntimeState: (...args: unknown[]) => mockReconcileLimaState(...args),
     isRunning: vi.fn(() => Promise.resolve(true)),
   },
   getNerdctlWrapperPath: vi.fn(() => '/mock/nerdctl'),
@@ -89,8 +87,6 @@ vi.mock('os', () => ({
 // ============================================================================
 
 import {
-  clearRunnerAvailabilityCache,
-  reconcileRunnerState,
   restartRunner,
   shutdownActiveRunner,
 } from './client-factory'
@@ -223,29 +219,6 @@ describe('restartRunner', () => {
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('containerd failed')
-  })
-})
-
-describe('reconcileRunnerState', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    clearRunnerAvailabilityCache()
-  })
-
-  it('calls reconcileRuntimeState for lima runner', async () => {
-    mockReconcileLimaState.mockResolvedValue(true)
-
-    const rebuilt = await reconcileRunnerState('lima')
-
-    expect(mockReconcileLimaState).toHaveBeenCalledOnce()
-    expect(rebuilt).toBe(true)
-  })
-
-  it('returns false for runners without reconcileRuntimeState', async () => {
-    const rebuilt = await reconcileRunnerState('docker')
-
-    expect(rebuilt).toBe(false)
-    expect(mockReconcileLimaState).not.toHaveBeenCalled()
   })
 })
 

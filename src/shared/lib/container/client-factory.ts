@@ -34,8 +34,6 @@ const ALL_RUNNERS: {
   cliCommand: string | (() => string)
   isEligible: () => boolean
   isAvailable: () => Promise<boolean>
-  /** Optional hook to reconcile stale runtime state. Returns true if runtime was rebuilt. */
-  reconcileRuntimeState?: () => Promise<boolean>
   isRunning: () => Promise<boolean>
   /** Optional cleanup when the app is shutting down (e.g., stop a VM). */
   shutdownRuntime?: () => Promise<void>
@@ -43,7 +41,7 @@ const ALL_RUNNERS: {
   { name: 'apple-container', cliCommand: 'container', isEligible: () => AppleContainerClient.isEligible(), isAvailable: () => AppleContainerClient.isAvailable(), isRunning: () => AppleContainerClient.isRunning(), shutdownRuntime: () => execWithPath('container system stop').then(() => {}) },
   { name: 'docker', cliCommand: 'docker', isEligible: () => DockerContainerClient.isEligible(), isAvailable: () => DockerContainerClient.isAvailable(), isRunning: () => DockerContainerClient.isRunning() },
   { name: 'podman', cliCommand: 'podman', isEligible: () => PodmanContainerClient.isEligible(), isAvailable: () => PodmanContainerClient.isAvailable(), isRunning: () => PodmanContainerClient.isRunning() },
-  { name: 'lima', cliCommand: () => getNerdctlWrapperPath(), isEligible: () => LimaContainerClient.isEligible(), isAvailable: () => LimaContainerClient.isAvailable(), reconcileRuntimeState: () => LimaContainerClient.reconcileRuntimeState(), isRunning: () => LimaContainerClient.isRunning(), shutdownRuntime: () => stopLimaVm() },
+  { name: 'lima', cliCommand: () => getNerdctlWrapperPath(), isEligible: () => LimaContainerClient.isEligible(), isAvailable: () => LimaContainerClient.isAvailable(), isRunning: () => LimaContainerClient.isRunning(), shutdownRuntime: () => stopLimaVm() },
   { name: 'wsl2', cliCommand: () => getWSL2NerdctlWrapperPath(), isEligible: () => WSL2ContainerClient.isEligible(), isAvailable: () => WSL2ContainerClient.isAvailable(), isRunning: () => WSL2ContainerClient.isRunning(), shutdownRuntime: () => stopWSL2Distro() },
 ]
 
@@ -332,16 +330,6 @@ export function clearRunnerAvailabilityCache(): void {
 }
 
 /**
- * Reconcile stale runtime state for a specific runner.
- * Returns true if the runtime was rebuilt (caller should refresh availability).
- */
-export async function reconcileRunnerState(runner: ContainerRunner): Promise<boolean> {
-  const entry = ALL_RUNNERS.find((r) => r.name === runner)
-  if (!entry?.reconcileRuntimeState) return false
-  return entry.reconcileRuntimeState()
-}
-
-/**
  * Check if a container image exists locally.
  */
 export async function checkImageExists(runner: ContainerRunner, image: string): Promise<boolean> {
@@ -352,6 +340,15 @@ export async function checkImageExists(runner: ContainerRunner, image: string): 
   } catch {
     return false
   }
+}
+
+/**
+ * Validate that a locally-present image is actually runnable for the selected runner.
+ * Most runners no-op; runtimes like Lima can override with stronger integrity checks.
+ */
+export async function validateImage(runner: ContainerRunner, image: string): Promise<void> {
+  const ClientClass = getContainerClientClass(runner)
+  await ClientClass.validateImage(image)
 }
 
 /**

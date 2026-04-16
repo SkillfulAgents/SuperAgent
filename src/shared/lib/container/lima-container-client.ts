@@ -7,7 +7,7 @@ import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import { DEFAULT_LIMA_VM_MEMORY } from './types'
 import type { ContainerConfig } from './types'
 import os from 'os'
-import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 
 /**
  * Collect diagnostic data about the Lima environment at the moment of failure.
@@ -281,6 +281,18 @@ export class LimaContainerClient extends BaseContainerClient {
     const msg = error.message || error.stderr || String(error)
     addErrorBreadcrumb({ category: 'lima', message: 'Container run error', data: { error: msg, agentId: this.config.agentId } })
 
+    // Treat mount-time user lookup failure as a corrupted image/runtime signal.
+    // Recovery should go through ensureLimaReady's recreate path.
+    if (msg.includes('mount callback failed') && msg.includes('no users found')) {
+      console.log('Corrupted image detected, recreating Lima VM...')
+      try {
+        await ensureLimaReady(true)
+        return true
+      } catch {
+        return false
+      }
+    }
+
     const isKnownVmIssue =
       msg.includes('ENOENT') ||
       msg.includes('not found') ||
@@ -378,58 +390,44 @@ export class LimaContainerClient extends BaseContainerClient {
     }
   }
 
-  /**
-   * One-time check for Lima-specific runtime reconciliation.
-   *
-   * If the VM was created with an older bundled Lima that lacks time sync
-   * support, rebuild it. Returns true if the VM was rebuilt.
-   */
-  static async reconcileRuntimeState(): Promise<boolean> {
-    if (limaRuntimeReconciled) return false
-
-    const staleVersion = getLimaVmStaleVersion()
-    if (!staleVersion) {
-      limaRuntimeReconciled = true
-      return false
+  static async validateImage(image: string): Promise<void> {
+    try {
+      await execLimactl(`shell ${LIMA_VM_NAME} -- sudo nerdctl run --rm ${image} sh -lc 'true'`)
+    } catch (error: any) {
+      const msg = error?.message || error?.stderr || String(error)
+      if (msg.includes('mount callback failed') && msg.includes('no users found')) {
+        console.log('Corrupted image detected during startup validation, recreating Lima VM...')
+        await ensureLimaReady(true)
+        return
+      }
+      throw error
     }
-
-    captureMessage(`Stale Lima VM detected (${staleVersion}) already running, rebuilding`, {
-      level: 'warning',
-      tags: { component: 'lima', operation: 'stale-vm-rebuild' },
-      extra: { staleVersion },
-    })
-
-    await ensureLimaReady()
-    limaRuntimeReconciled = true
-    return true
   }
 }
-
-function getLimaVmStaleVersion(): string | null {
-  try {
-    const versionFile = path.join(getLimaHome(), LIMA_VM_NAME, 'lima-version')
-    const vmVersion = fs.readFileSync(versionFile, 'utf-8').trim()
-    return vmVersion < MIN_LIMA_VM_VERSION ? vmVersion : null
-  } catch {
-    return 'unknown'
-  }
-}
-
-let limaRuntimeReconciled = false
 
 /** Mutex: if ensureLimaReady is already in progress, concurrent callers await the same promise. */
 let limaReadyPromise: Promise<void> | null = null
+let limaForceRecreateRequested = false
 
 /**
  * Ensure the Lima VM is created, running, and the nerdctl wrapper script exists.
  * Called by startRunner('lima') in client-factory.ts and by handleRunError().
  * Serialized: concurrent calls share the same in-flight promise.
  */
-export async function ensureLimaReady(): Promise<void> {
+export async function ensureLimaReady(forceRecreate = false): Promise<void> {
+  if (forceRecreate) {
+    limaForceRecreateRequested = true
+  }
   if (limaReadyPromise) {
     return limaReadyPromise
   }
-  limaReadyPromise = ensureLimaReadyImpl()
+  limaReadyPromise = (async () => {
+    do {
+      const shouldForceRecreate = limaForceRecreateRequested
+      limaForceRecreateRequested = false
+      await ensureLimaReadyImpl(shouldForceRecreate)
+    } while (limaForceRecreateRequested)
+  })()
   try {
     await limaReadyPromise
   } finally {
@@ -437,7 +435,7 @@ export async function ensureLimaReady(): Promise<void> {
   }
 }
 
-async function ensureLimaReadyImpl(): Promise<void> {
+async function ensureLimaReadyImpl(forceRecreate = false): Promise<void> {
   const limaHome = getLimaHome()
   fs.mkdirSync(limaHome, { recursive: true })
 
@@ -464,7 +462,7 @@ async function ensureLimaReadyImpl(): Promise<void> {
   }
 
   // Check if existing VM was created with an older Lima that lacks time sync support
-  let needsRecreate = false
+  let needsRecreate = forceRecreate
   if (vmExists) {
     try {
       const versionFile = path.join(limaHome, LIMA_VM_NAME, 'lima-version')
@@ -491,6 +489,10 @@ async function ensureLimaReadyImpl(): Promise<void> {
   if (vmExists && !needsRecreate && explicitMemory && vmMemory && vmMemory !== explicitMemory) {
     console.log(`Lima VM memory mismatch (current: ${vmMemory}, desired: ${explicitMemory}), recreating...`)
     needsRecreate = true
+  }
+
+  if (vmExists && forceRecreate) {
+    console.log('Lima VM marked for recreate due to corrupted image/runtime state...')
   }
 
   if (vmExists && needsRecreate) {
