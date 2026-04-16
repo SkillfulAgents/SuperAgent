@@ -191,7 +191,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                       type="button"
                       size="icon"
                       variant="ghost"
-                      className="h-6 w-6 mt-2 mr-2 text-muted-foreground/50 hover:text-foreground"
+                      className="h-6 w-6 text-muted-foreground/50 hover:text-foreground"
                       onClick={() => setIsExpanded((v) => !v)}
                       aria-label={isExpanded ? 'Shrink input' : 'Expand input'}
                     >

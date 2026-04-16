@@ -10,8 +10,6 @@ interface DonutChartProps {
   tooltip?: string
   /** Whether to show a pulse animation */
   animated?: boolean
-  /** Click handler */
-  onClick?: () => void
   /** Color thresholds: [warningAt, criticalAt]. Defaults to [50, 70]. */
   thresholds?: [number, number]
   /** Size of the chart. Defaults to 'default'. */
@@ -24,7 +22,6 @@ export function DonutChart({
   percent,
   tooltip,
   animated,
-  onClick,
   thresholds = [50, 70],
   size = 'default',
   showLabel = true,
@@ -47,13 +44,9 @@ export function DonutChart({
   const buttonSize = size === 'sm' ? 'h-6 w-6' : 'h-9 w-9'
   const svgSize = size === 'sm' ? 'h-5 w-5' : 'h-8 w-8'
 
-  const Wrapper = onClick ? 'button' : 'div'
-  const interactiveClasses = onClick ? 'hover:bg-accent rounded-md transition-colors cursor-pointer' : ''
-
   const chart = (
-    <Wrapper
-      onClick={onClick}
-      className={`relative ${buttonSize} flex items-center justify-center ${interactiveClasses} ${animated ? 'animate-pulse' : ''}`}
+    <div
+      className={`relative ${buttonSize} flex items-center justify-center ${animated ? 'animate-pulse' : ''}`}
     >
       <svg className={`${svgSize} -rotate-90`} viewBox="0 0 28 28">
         <circle
@@ -77,7 +70,7 @@ export function DonutChart({
           {percent}
         </span>
       )}
-    </Wrapper>
+    </div>
   )
 
   if (!tooltip) return chart

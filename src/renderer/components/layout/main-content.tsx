@@ -165,7 +165,7 @@ export function MainContent() {
           className={`app-no-drag ${needsTrafficLightPadding ? 'ml-16' : '-ml-1'}`}
         />
         <Separator orientation="vertical" className="h-5 hidden md:block" />
-        <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-1.5 min-w-0 flex-1 md:ml-2">
+        <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-1.5 min-w-0 flex-1">
           <div className="flex items-center gap-2 min-w-0">
             <button
               type="button"
@@ -177,7 +177,7 @@ export function MainContent() {
           </div>
           {sessionId && session?.agentSlug === agentSlug && (
             <div className="flex items-center gap-1.5 min-w-0">
-              <span className="text-[13px] font-light text-muted-foreground shrink-0 hidden md:block">/</span>
+              <span aria-hidden="true" className="text-[13px] font-light text-muted-foreground shrink-0 hidden md:block">/</span>
               <SessionContextMenu
                 sessionId={sessionId}
                 sessionName={session?.name || 'Session'}
@@ -191,7 +191,7 @@ export function MainContent() {
           )}
           {scheduledTaskId && scheduledTask && (
             <div className="flex items-center gap-1.5 min-w-0">
-              <span className="text-[13px] font-light text-muted-foreground shrink-0 hidden md:block">/</span>
+              <span aria-hidden="true" className="text-[13px] font-light text-muted-foreground shrink-0 hidden md:block">/</span>
               <div className="flex items-center gap-1 text-muted-foreground">
                 <Clock className="h-4 w-4" />
                 <span className="truncate text-[13px] font-light text-foreground">
@@ -340,7 +340,6 @@ export function MainContent() {
           </div>
         </div>
       )}
-
 
       {/* Automated session indicator — links back to the parent trigger/schedule */}
       {sessionId && session?.scheduledTaskId && (
