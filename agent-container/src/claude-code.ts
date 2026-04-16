@@ -28,6 +28,15 @@ import { sanitizeMcpName } from './sanitize-mcp-name';
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in src/renderer/components/messages/message-list.tsx
 const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] ';
 
+// Tracking marker appended to Agent/Task subagent prompts via PreToolUse hook.
+// Lets message-persister deterministically map parent tool_use_id → subagent agentId
+// by reading the first message of each subagent jsonl (much more reliable than
+// the previous mtime-based FIFO guessing, especially for parallel subagents).
+// Format: <!-- sa-track:<tool_use_id> -->
+// Keep SA_TRACK_MARKER_REGEX in sync in src/shared/lib/container/message-persister.ts
+const SA_TRACK_MARKER_PREFIX = '<!-- sa-track:';
+const SA_TRACK_MARKER_SUFFIX = ' -->';
+
 // Load platform system prompt from file
 const PLATFORM_SYSTEM_PROMPT = fs.readFileSync(
   path.join(__dirname, 'system-prompt.md'),
@@ -551,6 +560,29 @@ export class ClaudeCodeProcess extends EventEmitter {
                     }
                   }
                   return {};
+                },
+              ],
+            },
+            // Inject a tracking marker into every subagent prompt so the host can
+            // deterministically map parent tool_use_id → subagent agentId when
+            // reading the resulting subagent jsonl transcript. The marker is an
+            // HTML comment, invisible to the subagent's behavior.
+            {
+              matcher: '^(Agent|Task)$',
+              hooks: [
+                async (input, toolUseId) => {
+                  if (!toolUseId) return {};
+                  const toolInput = (input as any).tool_input as Record<string, unknown> | undefined;
+                  if (!toolInput || typeof toolInput !== 'object') return {};
+                  const prompt = typeof toolInput.prompt === 'string' ? toolInput.prompt : '';
+                  const marker = `${SA_TRACK_MARKER_PREFIX}${toolUseId}${SA_TRACK_MARKER_SUFFIX}`;
+                  if (prompt.includes(marker)) return {};
+                  return {
+                    hookSpecificOutput: {
+                      hookEventName: 'PreToolUse' as const,
+                      updatedInput: { ...toolInput, prompt: `${prompt}\n\n${marker}` },
+                    },
+                  };
                 },
               ],
             },

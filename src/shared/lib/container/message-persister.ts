@@ -33,7 +33,8 @@ import { getRequiredPermissionLevel, resolveTargetApp, type ComputerUsePermissio
 import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
 import { SubagentCapture } from './subagent-capture'
 import * as path from 'path'
-import { promises as fsPromises, readdirSync } from 'fs'
+import { createReadStream, promises as fsPromises, readdirSync } from 'fs'
+import { createInterface } from 'readline'
 
 // Seed completedSubagentIds with every agent-*.jsonl already on disk for this
 // session. Called when StreamingState is (re)created so the FIFO live-discovery
@@ -54,6 +55,30 @@ export function seedKnownSubagentIds(agentSlug: string | undefined, sessionId: s
     // Directory missing / unreadable — nothing to seed, which is fine.
   }
   return seeded
+}
+
+// Regex matching the tracking marker injected into subagent prompts by the
+// PreToolUse hook in agent-container/src/claude-code.ts.
+// Keep in sync with SA_TRACK_MARKER_PREFIX/SUFFIX in that file.
+const SA_TRACK_MARKER_REGEX = /<!-- sa-track:([A-Za-z0-9_-]+) -->/
+
+// Read only the first line of a JSONL file without loading the whole file.
+async function readFirstJsonlLine(filePath: string): Promise<string | null> {
+  let stream: ReturnType<typeof createReadStream> | null = null
+  try {
+    stream = createReadStream(filePath, { encoding: 'utf-8' })
+    const rl = createInterface({ input: stream, crlfDelay: Infinity })
+    for await (const line of rl) {
+      rl.close()
+      stream.destroy()
+      return line
+    }
+  } catch {
+    // file may be missing or unreadable
+  } finally {
+    stream?.destroy()
+  }
+  return null
 }
 
 // Per-subagent streaming state (supports multiple concurrent background agents)
@@ -891,15 +916,47 @@ class MessagePersister {
           }
         }
       }
-      unclaimed.sort((a, b) => a.mtimeMs - b.mtimeMs)
 
-      // FIFO: match oldest unclaimed file → first registered parentToolId, etc.
-      const count = Math.min(needingIds.length, unclaimed.length)
+      // Marker-based matching: read the first line of each unclaimed file and
+      // look for a sa-track marker that encodes the parent tool_use_id.
+      const matchedIds = new Set<string>()
+      await Promise.all(
+        unclaimed.map(async ({ id }) => {
+          const filePath = path.join(subagentsDir, `agent-${id}.jsonl`)
+          const firstLine = await readFirstJsonlLine(filePath)
+          if (!firstLine) return
+          const match = firstLine.match(SA_TRACK_MARKER_REGEX)
+          if (!match) return
+          const trackedToolId = match[1]
+          const sub = state.activeSubagents.get(trackedToolId)
+          if (!sub || sub.agentId) return
+          sub.agentId = id
+          matchedIds.add(id)
+          this.broadcastToSSE(sessionId, {
+            type: 'subagent_updated',
+            parentToolId: trackedToolId,
+            agentId: id,
+          })
+        })
+      )
+
+      // Rebuild needingIds after marker pass; skip FIFO if all matched.
+      const stillNeeding: string[] = []
+      for (const [parentToolId, sub] of state.activeSubagents) {
+        if (!sub.agentId) stillNeeding.push(parentToolId)
+      }
+      if (stillNeeding.length === 0) return
+
+      // FIFO fallback: match oldest unclaimed file → first registered parentToolId.
+      const unclaimedLeft = unclaimed
+        .filter(u => !matchedIds.has(u.id))
+        .sort((a, b) => a.mtimeMs - b.mtimeMs)
+      const count = Math.min(stillNeeding.length, unclaimedLeft.length)
       for (let i = 0; i < count; i++) {
-        const parentToolId = needingIds[i]
+        const parentToolId = stillNeeding[i]
         const sub = state.activeSubagents.get(parentToolId)
         if (sub && !sub.agentId) {
-          sub.agentId = unclaimed[i].id
+          sub.agentId = unclaimedLeft[i].id
           this.broadcastToSSE(sessionId, {
             type: 'subagent_updated',
             parentToolId,
