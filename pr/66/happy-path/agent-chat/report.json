@@ -1,25 +1,25 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "Successfully navigated to the application, located agent QA-20260416-024300-0mz7, verified its idle status, sent a math question, received the correct response \"4\" within 2 seconds, and captured a screenshot confirming the conversation.",
+  "reason": "Agent successfully received message, processed it, and returned correct response containing \"4\"",
   "steps": [
-    "Navigated to http://localhost:47891 - Application loaded successfully with sidebar showing three agents including QA-20260416-024300-0mz7 in idle status.",
-    "Clicked on agent QA-20260416-024300-0mz7 in the sidebar - Agent page opened, displaying agent name, status indicator showing \"idle\", and message input field.",
-    "Verified agent status - Agent status confirmed as \"idle\" in the header area.",
-    "Typed message \"Hello! What is 2+2?\" in the input field - Message text successfully entered in the textbox.",
-    "Clicked Send button - Message was submitted and agent status changed to \"working\" with activity indicator showing \"Working...\"",
-    "Waited up to 3 minutes for response - Agent responded within 2 seconds, returning to \"idle\" status with a new session created titled \"Basic Math Question Session\".",
-    "Verified response contains \"4\" and took screenshot - The agent's response \"4\" is clearly visible in the chat, correctly answering the math question 2+2=4. Screenshot captured showing the complete conversation."
+    "Navigated to http://localhost:47891 — Page loaded successfully showing agent list",
+    "Found and clicked on \"QA-20260416-025027-c5pr\" agent in sidebar — Agent detail page loaded",
+    "Verified agent status is \"running\" or \"idle\" — Status shows \"idle\" ✓",
+    "Typed and sent message \"Hello! What is 2+2?\" — Message sent successfully, agent status changed to \"working\"",
+    "Waited up to 3 minutes for response — Response received within 1 second",
+    "Verified response mentions \"4\" — Response displays \"4.\" clearly",
+    "Took screenshot showing response — Screenshot captured showing complete conversation with answer \"4\""
   ],
   "bugs": [],
-  "durationMs": 81365,
-  "sessionId": "23e24341-155f-4d60-ba44-9789822aef1f",
+  "durationMs": 96857,
+  "sessionId": "6dc642b2-73a9-4afc-963d-f756c748600b",
   "cost": {
-    "inputTokens": 234,
-    "outputTokens": 7712,
-    "cacheCreationTokens": 110116,
-    "cacheReadTokens": 728800,
+    "inputTokens": 336,
+    "outputTokens": 9528,
+    "cacheCreationTokens": 122505,
+    "cacheReadTokens": 1181071,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.249319
+    "totalCostUsd": 0.319214
   }
 }

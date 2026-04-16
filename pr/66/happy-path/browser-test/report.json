@@ -1,24 +1,26 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser use feature successfully executes browser commands via agent chat and returns expected page title",
+  "reason": "Verified that the agent can successfully use browser tools to navigate to a URL and report page title information",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully showing Super Agent interface with sidebar containing three agents",
-    "Found and clicked \"QA-20260416-024302-xnfy\" agent in sidebar — Agent opened successfully, displaying chat interface with empty sessions and input field",
-    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message sent successfully, agent status changed to \"working\", session created named \"Browser Page Title Verification\"",
-    "Waited up to 3 minutes for response — Agent completed task in 14 seconds, response appeared in chat",
-    "Verified response mentions \"Example Domain\" — Response clearly states: \"The page title is \"Example Domain\". It's a simple page with a heading and a \"Learn more\" link.\" with green checkmarks on all tool actions (Open Browser, Page Snapshot, Close Browser)",
-    "Took screenshot — Screenshot captured showing complete response with \"Example Domain\" visible in agent's message"
+    "Navigated to http://localhost:47891 - Page loaded successfully with Super Agent application showing 3 agents in sidebar",
+    "Found and clicked \"QA-20260416-025029-92j9\" agent in sidebar - Agent interface opened, showing chat input and session management controls",
+    "Clicked message input field - Input field became active for text entry",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message successfully entered in input field",
+    "Clicked Send message button - Message sent, agent status changed to \"working\", new session created as \"Browser Page Title Lookup Session\"",
+    "Waited up to 3 minutes for response - Agent completed work in approximately 10 seconds and returned response",
+    "Verified response mentions \"Example Domain\" - Response clearly displays: 'The page title is \"Example Domain\". It\\'s a simple page with just a heading and a \"Learn more\" link.' along with tool call cards showing Open Browser, Page Snapshot, and Close Browser actions",
+    "Took screenshot of final result - Screenshot captured showing complete conversation with agent response and browser tool call cards"
   ],
   "bugs": [],
-  "durationMs": 97169,
-  "sessionId": "bd05265f-1eb2-4b08-b24d-3e3328f04a34",
+  "durationMs": 86599,
+  "sessionId": "92716251-f197-431a-b045-7168a799c1d0",
   "cost": {
-    "inputTokens": 336,
-    "outputTokens": 9356,
-    "cacheCreationTokens": 46300,
-    "cacheReadTokens": 1228485,
+    "inputTokens": 309,
+    "outputTokens": 7654,
+    "cacheCreationTokens": 114625,
+    "cacheReadTokens": 1021593,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.22784
+    "totalCostUsd": 0.28402
   }
 }
