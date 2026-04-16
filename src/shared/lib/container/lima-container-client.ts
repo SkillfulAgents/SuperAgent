@@ -403,18 +403,15 @@ export class LimaContainerClient extends BaseContainerClient {
   static async reconcileRuntimeState(): Promise<boolean> {
     if (limaRuntimeReconciled) return false
 
-    let rebuilt = false
-
     // 1. Stale VM check — if the VM needs rebuilding, skip the image check since
     //    the image will be gone after rebuild anyway (pull path handles it).
     const staleVersion = getLimaVmStaleVersion()
     if (staleVersion) {
-      captureMessage(`Stale Lima VM detected (${staleVersion}) already running, rebuilding`, {
-        level: 'warning',
-        tags: { component: 'lima', operation: 'stale-vm-rebuild' },
+      await recreateLimaRuntime({
+        reason: 'stale-vm',
+        forceRecreate: false,
         extra: { staleVersion },
       })
-      await ensureLimaReady()
       limaRuntimeReconciled = true
       return true
     }
@@ -422,21 +419,18 @@ export class LimaContainerClient extends BaseContainerClient {
     // 2. Image integrity check — run a throwaway container to verify layers.
     //    Only reached if the VM itself is not stale.
     const image = getSettings().container.agentImage
-    try {
-      await execLimactl(`shell ${LIMA_VM_NAME} -- sudo nerdctl run --rm ${image} sh -lc 'true'`)
-    } catch (error: any) {
-      const msg = error?.message || error?.stderr || String(error)
-      if (msg.includes('mount callback failed') && msg.includes('no users found')) {
-        console.log('Corrupted image detected during startup validation, recreating Lima VM...')
-        await ensureLimaReady(true)
-        rebuilt = true
-      }
-      // Non-corruption errors (e.g. image not yet pulled) are ignored —
-      // the normal pull path handles missing images.
+    if (await isLimaImageCorrupted(image)) {
+      await recreateLimaRuntime({
+        reason: 'corrupted-image',
+        forceRecreate: true,
+        extra: { image },
+      })
+      limaRuntimeReconciled = true
+      return true
     }
 
     limaRuntimeReconciled = true
-    return rebuilt
+    return false
   }
 }
 
@@ -448,6 +442,44 @@ function getLimaVmStaleVersion(): string | null {
   } catch {
     return 'unknown'
   }
+}
+
+async function isLimaImageCorrupted(image: string): Promise<boolean> {
+  try {
+    await execLimactl(`shell ${LIMA_VM_NAME} -- sudo nerdctl run --rm ${image} sh -lc 'true'`)
+    return false
+  } catch (error: any) {
+    const msg = error?.message || error?.stderr || String(error)
+    if (msg.includes('mount callback failed') && msg.includes('no users found')) {
+      return true
+    }
+    // Ignore non-corruption errors (e.g. image not yet pulled) —
+    // the normal pull path handles missing images.
+    return false
+  }
+}
+
+async function recreateLimaRuntime({
+  reason,
+  forceRecreate,
+  extra,
+}: {
+  reason: 'stale-vm' | 'corrupted-image'
+  forceRecreate: boolean
+  extra?: Record<string, unknown>
+}): Promise<void> {
+  const operation = reason === 'stale-vm' ? 'stale-vm-rebuild' : 'corrupted-image-rebuild'
+  const message = reason === 'stale-vm'
+    ? `Stale Lima VM detected (${String(extra?.staleVersion ?? 'unknown')}) already running, rebuilding`
+    : 'Corrupted Lima image detected during startup validation, recreating VM'
+
+  captureMessage(message, {
+    level: 'warning',
+    tags: { component: 'lima', operation },
+    extra,
+  })
+
+  await ensureLimaReady(forceRecreate)
 }
 
 let limaRuntimeReconciled = false

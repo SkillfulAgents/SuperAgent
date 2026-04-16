@@ -728,6 +728,7 @@ class ContainerManager {
 
     if (!runnerStatus?.available) {
       // Auto-start runtimes that support it (Apple Container, Lima, WSL2)
+      // TODO the "isAutoStartable" property should live in runtime implementation, not here!
       if ((configuredRunner === 'apple-container' || configuredRunner === 'lima' || configuredRunner === 'wsl2') && runnerStatus?.installed && !runnerStatus?.running) {
         this.setReadiness({
           status: 'CHECKING',
