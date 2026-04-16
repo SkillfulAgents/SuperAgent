@@ -438,6 +438,19 @@ describe('LimaContainerClient.handleRunError', () => {
 
     expect(await (client as any).handleRunError(error)).toBe(false)
   })
+
+  it('provisions Lima VM for known VM issues without force recreate', async () => {
+    const client = new LimaContainerClient({ agentId: 'test-agent' } as any)
+    const error = new Error('ENOENT: limactl not found')
+    const existingVm = JSON.stringify({ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 * 1024 * 1024 })
+    mockedExecWithPath
+      .mockResolvedValueOnce({ stdout: existingVm, stderr: '' })
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ name: LIMA_VM_NAME, status: 'Running' }), stderr: '' })
+
+    expect(await (client as any).handleRunError(error)).toBe(true)
+    expect(mockedExecWithPath.mock.calls.some((c) => (c[0] as string).includes(`stop ${LIMA_VM_NAME} --force`))).toBe(false)
+    expect(mockedExecWithPath.mock.calls.some((c) => (c[0] as string).includes(`delete ${LIMA_VM_NAME} --force`))).toBe(false)
+  })
 })
 
 describe('LimaContainerClient.reconcileRuntimeState', () => {

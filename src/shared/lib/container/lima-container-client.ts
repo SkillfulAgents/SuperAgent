@@ -281,9 +281,9 @@ export class LimaContainerClient extends BaseContainerClient {
     const msg = error.message || error.stderr || String(error)
     addErrorBreadcrumb({ category: 'lima', message: 'Container run error', data: { error: msg, agentId: this.config.agentId } })
 
-    // Treat mount-time user lookup failure as a corrupted image/runtime signal.
-    // Recovery should go through ensureLimaReady's recreate path.
-    if (msg.includes('mount callback failed') && msg.includes('no users found')) {
+    const recoveryAction = classifyLimaRunError(msg)
+
+    if (recoveryAction === 'recreate') {
       console.log('Corrupted image detected, recreating Lima VM...')
       try {
         await ensureLimaReady(true)
@@ -293,18 +293,10 @@ export class LimaContainerClient extends BaseContainerClient {
       }
     }
 
-    const isKnownVmIssue =
-      msg.includes('ENOENT') ||
-      msg.includes('not found') ||
-      msg.includes('does not exist') ||
-      msg.includes('not running') ||
-      msg.includes('No such file') ||
-      msg.includes('EACCES')
-
     // Check if the VM is in a broken/non-running state — if so, recovery is
     // worth attempting even for unexpected error messages (e.g. "Bad port '0'").
     let vmUnhealthy = false
-    if (!isKnownVmIssue) {
+    if (recoveryAction === 'none') {
       try {
         const { stdout } = await execLimactl('list --json')
         const vms = parseLimaList(stdout)
@@ -315,7 +307,7 @@ export class LimaContainerClient extends BaseContainerClient {
       }
     }
 
-    if (isKnownVmIssue || vmUnhealthy) {
+    if (recoveryAction === 'provision' || vmUnhealthy) {
       console.log(`Lima VM not ready (${vmUnhealthy ? 'unhealthy VM' : 'known issue'}), attempting to provision...`)
       try {
         await ensureLimaReady()
@@ -432,6 +424,25 @@ export class LimaContainerClient extends BaseContainerClient {
     limaRuntimeReconciled = true
     return false
   }
+}
+
+function classifyLimaRunError(msg: string): 'recreate' | 'provision' | 'none' {
+  if (msg.includes('mount callback failed') && msg.includes('no users found')) {
+    return 'recreate'
+  }
+
+  if (
+    msg.includes('ENOENT') ||
+    msg.includes('not found') ||
+    msg.includes('does not exist') ||
+    msg.includes('not running') ||
+    msg.includes('No such file') ||
+    msg.includes('EACCES')
+  ) {
+    return 'provision'
+  }
+
+  return 'none'
 }
 
 function getLimaVmStaleVersion(): string | null {
