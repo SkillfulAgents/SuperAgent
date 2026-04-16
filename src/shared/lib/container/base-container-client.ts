@@ -69,11 +69,29 @@ export function shellQuote(value: string): string {
 
 /**
  * Execute a command with enhanced PATH (includes common binary locations).
+ *
+ * On failure, enriches the error message with stderr/stdout so Sentry captures
+ * the actual failure reason rather than just "Command failed: <command>". The
+ * original `.stderr`/`.stdout`/`.code` properties are preserved for callers
+ * that inspect them directly.
  */
 export async function execWithPath(command: string): Promise<{ stdout: string; stderr: string }> {
-  return execAsync(command, {
-    env: { ...process.env, PATH: getEnhancedPath() },
-  })
+  try {
+    return await execAsync(command, {
+      env: { ...process.env, PATH: getEnhancedPath() },
+    })
+  } catch (err) {
+    // WSL emits UTF-16LE with embedded nulls; strip them so the message is readable.
+    const stripNulls = (s: unknown) => String(s ?? '').replace(/\0/g, '').trim()
+    const e = err as NodeJS.ErrnoException & { stderr?: string; stdout?: string }
+    const stderr = stripNulls(e.stderr)
+    const stdout = stripNulls(e.stdout)
+    const parts = [e.message]
+    if (stderr) parts.push(`stderr: ${stderr}`)
+    if (stdout) parts.push(`stdout: ${stdout}`)
+    e.message = parts.join('\n')
+    throw e
+  }
 }
 
 /**

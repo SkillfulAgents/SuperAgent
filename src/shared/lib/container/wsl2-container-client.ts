@@ -33,7 +33,17 @@ function collectWSL2Diagnostics(): Record<string, unknown> {
       const ours = distros.find(d => d.name === WSL2_DISTRO_NAME)
       diag.our_distro_state = ours?.state ?? 'not_found'
       diag.our_distro_wsl_version = ours?.version ?? 'N/A'
-    } catch { diag.all_distros = 'check_failed' }
+    } catch (err) {
+      // Capture the actual failure (stderr + stdout from the failed exec, or the
+      // parse error) instead of the opaque "check_failed" sentinel.
+      const e = err as NodeJS.ErrnoException & { stderr?: Buffer | string; stdout?: Buffer | string }
+      const parts = [e.message]
+      const stderr = String(e.stderr ?? '').replace(/\0/g, '').trim()
+      const stdout = String(e.stdout ?? '').replace(/\0/g, '').trim()
+      if (stderr) parts.push(`stderr: ${stderr}`)
+      if (stdout) parts.push(`stdout: ${stdout}`)
+      diag.all_distros_error = parts.join('\n')
+    }
 
     // WSL2 home directory state
     try {
