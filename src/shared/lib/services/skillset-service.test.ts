@@ -599,6 +599,116 @@ Instructions here`
       const updated = await readMetadata('test-agent', 'test-skill')
       expect(updated.originalContentHash).toBe(originalHash)
     })
+
+    it('platform: merged queue item clears pendingQueueItemId and adopts remote content', async () => {
+      mockGetPlatformAuthStatus.mockReturnValue({ orgId: 'org_A' })
+      const proxyBase = 'https://platform.example'
+      const queueId = 'q-1'
+      const modifiedContent = '# Test Skill\nModified locally'
+      const mergedContent = '# Test Skill\nMerged remote'
+
+      const meta = buildMetadata({
+        provider: 'platform',
+        providerData: { orgId: 'org_A', repoId: 'platform--repo' },
+        openPrUrl: `platform:queue:${queueId}`,
+        pendingQueueItemId: queueId,
+        skillsetId: 'platform--repo--test',
+        originalContentHash: contentHash('# Test Skill\nOriginal content'),
+      })
+      const config = buildSkillsetConfig({
+        id: meta.skillsetId,
+        provider: 'platform',
+        providerData: { orgId: 'org_A', repoId: 'platform--repo' },
+      })
+      const index = buildIndex({
+        skills: [{ name: 'Test Skill', path: meta.skillPath, description: 'desc', version: '1.0.0' }],
+      })
+
+      await createSkillDir('test-agent', 'test-skill', modifiedContent, meta)
+      await createSkillsetCache('platform--repo', index, { [meta.skillPath]: mergedContent })
+
+      // Mock platform env + batched queue endpoint reporting merged.
+      const platformAuthMod = await import('@shared/lib/services/platform-auth-service')
+      vi.mocked(platformAuthMod.getPlatformAccessToken).mockReturnValue('plat_test_xx')
+      const proxyMod = await import('@shared/lib/platform-auth/config')
+      vi.mocked(proxyMod.getPlatformProxyBaseUrl).mockReturnValue(proxyBase)
+
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('/queue/batch')) {
+          return { ok: true, status: 200, json: async () => ({ items: { [queueId]: { status: 'merged' } } }) }
+        }
+        if (url.includes('/git-url')) {
+          return { ok: true, status: 200, json: async () => ({ url: 'https://platform.example/repo.git', defaultBranch: 'main' }) }
+        }
+        return { ok: false, status: 404, json: async () => ({}), text: async () => '' }
+      }))
+
+      await refreshAgentSkills('test-agent', [config])
+      vi.unstubAllGlobals()
+
+      const updated = await readMetadata('test-agent', 'test-skill')
+      expect(updated.pendingQueueItemId).toBeUndefined()
+      expect(updated.openPrUrl).toBeUndefined()
+      const onDiskSkill = await fs.promises.readFile(
+        path.join(testDir, 'agents', 'test-agent', 'workspace', '.claude', 'skills', 'test-skill', 'SKILL.md'),
+        'utf-8',
+      )
+      // Remote content was adopted (lazy / refresh path).
+      expect(onDiskSkill).toBe(mergedContent)
+    })
+
+    it('platform: rejected queue item clears pendingQueueItemId without touching files', async () => {
+      mockGetPlatformAuthStatus.mockReturnValue({ orgId: 'org_A' })
+      const proxyBase = 'https://platform.example'
+      const queueId = 'q-2'
+      const localContent = '# Test Skill\nLocal modifications'
+
+      const meta = buildMetadata({
+        provider: 'platform',
+        providerData: { orgId: 'org_A', repoId: 'platform--repo' },
+        pendingQueueItemId: queueId,
+        skillsetId: 'platform--repo--test',
+        originalContentHash: contentHash('# Test Skill\nOriginal'),
+      })
+      const config = buildSkillsetConfig({
+        id: meta.skillsetId,
+        provider: 'platform',
+        providerData: { orgId: 'org_A', repoId: 'platform--repo' },
+      })
+      const index = buildIndex({
+        skills: [{ name: 'Test Skill', path: meta.skillPath, description: 'desc', version: '1.0.0' }],
+      })
+
+      await createSkillDir('test-agent', 'test-skill', localContent, meta)
+      await createSkillsetCache('platform--repo', index, { [meta.skillPath]: '# Test Skill\nOriginal' })
+
+      const platformAuthMod = await import('@shared/lib/services/platform-auth-service')
+      vi.mocked(platformAuthMod.getPlatformAccessToken).mockReturnValue('plat_test_xx')
+      const proxyMod = await import('@shared/lib/platform-auth/config')
+      vi.mocked(proxyMod.getPlatformProxyBaseUrl).mockReturnValue(proxyBase)
+
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('/queue/batch')) {
+          return { ok: true, status: 200, json: async () => ({ items: { [queueId]: { status: 'rejected' } } }) }
+        }
+        if (url.includes('/git-url')) {
+          return { ok: true, status: 200, json: async () => ({ url: 'https://platform.example/repo.git', defaultBranch: 'main' }) }
+        }
+        return { ok: false, status: 404, json: async () => ({}), text: async () => '' }
+      }))
+
+      await refreshAgentSkills('test-agent', [config])
+      vi.unstubAllGlobals()
+
+      const updated = await readMetadata('test-agent', 'test-skill')
+      expect(updated.pendingQueueItemId).toBeUndefined()
+      // Rejection does not overwrite local content.
+      const onDiskSkill = await fs.promises.readFile(
+        path.join(testDir, 'agents', 'test-agent', 'workspace', '.claude', 'skills', 'test-skill', 'SKILL.md'),
+        'utf-8',
+      )
+      expect(onDiskSkill).toBe(localContent)
+    })
   })
 
   // ============================================================================

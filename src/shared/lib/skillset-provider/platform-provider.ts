@@ -1,10 +1,14 @@
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { getPlatformAccessToken, getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
 import type {
+  InstalledAgentMetadata,
+  InstalledSkillMetadata,
   PlatformSubmitResult,
   SkillsetConfig,
   SkillsetProviderData,
 } from '@shared/lib/types/skillset'
+import { validateSafeCloneUrl } from '@shared/lib/utils/url-safety'
+import { captureException } from '@shared/lib/error-reporting'
 import {
   BaseSkillsetProvider,
   type SkillsetHostedUpdateInput,
@@ -30,8 +34,10 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
   override normalizeProviderData(source?: { providerData?: SkillsetProviderData } | null): SkillsetProviderData | undefined {
     const providerData = source?.providerData
     const record = source as Record<string, unknown> | undefined
-    // Temporary compatibility bridge while older persisted settings/metadata
-    // still use top-level platform* fields.
+    // TODO(skillset-platform, remove by 2026-06-30): compat bridge for older
+    // persisted settings/metadata that used top-level platform* fields. All
+    // writes now go through providerData; this branch can go once the
+    // earliest supported client has rolled the fields forward at least once.
     const repoId = this.readString(providerData?.repoId) ?? this.readString(record?.platformRepoId)
     const orgId = this.readString(providerData?.orgId) ?? this.readString(record?.platformOrgId)
     const orgName = this.readString(providerData?.orgName) ?? this.readString(record?.platformOrgName)
@@ -103,19 +109,19 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
     }
 
     const data = await res.json() as { url: string; defaultBranch: string }
-    try {
-      const parsed = new URL(data.url)
-      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-        throw new Error(`Unsafe clone URL protocol: ${parsed.protocol}`)
-      }
-    } catch (error) {
-      if (error instanceof Error && error.message.startsWith('Unsafe clone URL')) {
-        throw error
-      }
-      throw new Error(`Invalid clone URL returned by platform: ${data.url}`)
+    if (!data.url) {
+      throw new Error('Platform did not return a clone URL')
     }
+    // Validate: http(s) only, and not a private/loopback/link-local host, and
+    // on the same origin as the platform proxy we authenticated with.
+    const proxyOrigin = (() => {
+      try { return new URL(proxyBase).origin } catch { return undefined }
+    })()
+    validateSafeCloneUrl(data.url, {
+      allowedHostPrefixes: proxyOrigin ? [proxyOrigin] : undefined,
+    })
 
-    return data.url || url
+    return data.url
   }
 
   override async publishUpdate(input: SkillsetPublishInput): Promise<SkillsetPublishResult> {
@@ -163,21 +169,61 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
   }
 
   override async getQueueItemStatus(queueItemId: string): Promise<string | null> {
+    const map = await this.getQueueItemStatuses([queueItemId])
+    return map.get(queueItemId) ?? null
+  }
+
+  override async getQueueItemStatuses(ids: string[]): Promise<Map<string, string | null>> {
+    const result = new Map<string, string | null>()
+    if (ids.length === 0) return result
+
     const proxyBase = getPlatformProxyBaseUrl()
     const token = getPlatformAccessToken()
-    if (!proxyBase || !token) return null
+    if (!proxyBase || !token) {
+      for (const id of ids) result.set(id, null)
+      return result
+    }
 
     try {
-      const res = await fetch(`${proxyBase}/v1/skills/queue/${encodeURIComponent(queueItemId)}`, {
-        headers: { Authorization: `Bearer ${token}` },
+      const res = await fetch(`${proxyBase}/v1/skills/queue/batch`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ ids }),
       })
-      if (!res.ok) return null
-
-      const data = await res.json() as { item: { status: string } }
-      return data.item?.status ?? null
-    } catch {
-      return null
+      if (res.ok) {
+        const data = await res.json() as { items?: Record<string, { status?: string } | null> }
+        const items = data.items ?? {}
+        for (const id of ids) {
+          const item = items[id]
+          result.set(id, item?.status ?? null)
+        }
+        return result
+      }
+      // Server doesn't support batch (older proxy) — fall through to per-id.
+    } catch (error) {
+      captureException(error, { tags: { area: 'skillset-platform', op: 'queue-batch' } })
     }
+
+    await Promise.all(ids.map(async (id) => {
+      try {
+        const res = await fetch(`${proxyBase}/v1/skills/queue/${encodeURIComponent(id)}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (!res.ok) {
+          result.set(id, null)
+          return
+        }
+        const data = await res.json() as { item?: { status?: string } }
+        result.set(id, data.item?.status ?? null)
+      } catch (error) {
+        captureException(error, { tags: { area: 'skillset-platform', op: 'queue-item' } })
+        result.set(id, null)
+      }
+    }))
+    return result
   }
 
   override async listRemoteSkillsets(): Promise<SkillsetRemoteDescriptor[]> {
@@ -236,20 +282,46 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
     let changed = super.updateSkillsetConfig(existing, remote)
     const auth = getPlatformAuthStatus()
     const current = this.getPlatformData(existing)
-    const next: PlatformProviderData = {
+    const nextFields: PlatformProviderData = {
       repoId: remote.repoId,
       ...(auth.orgId ? { orgId: auth.orgId } : {}),
       ...(auth.orgName ? { orgName: auth.orgName } : {}),
     }
     if (
-      current.repoId !== next.repoId
-      || current.orgId !== next.orgId
-      || current.orgName !== next.orgName
+      current.repoId !== nextFields.repoId
+      || current.orgId !== nextFields.orgId
+      || current.orgName !== nextFields.orgName
     ) {
-      existing.providerData = next
+      // Merge, don't replace — preserve any unrelated fields a newer platform
+      // version may have added that this client doesn't know about.
+      existing.providerData = {
+        ...(existing.providerData ?? {}),
+        ...nextFields,
+      }
       changed = true
     }
     return changed
+  }
+
+  override isConfigValid(config: SkillsetConfig): boolean {
+    if (config.provider !== 'platform') return true
+    const auth = getPlatformAuthStatus()
+    const currentOrgId = auth.orgId ?? null
+    const configOrgId = this.getPlatformData(config).orgId ?? null
+    // If the user isn't signed in, no platform configs are valid.
+    if (!currentOrgId) return false
+    return configOrgId === currentOrgId
+  }
+
+  override isInstalledValid(
+    meta: Pick<InstalledSkillMetadata | InstalledAgentMetadata, 'provider' | 'providerData'>,
+  ): boolean {
+    if (meta.provider !== 'platform') return true
+    const auth = getPlatformAuthStatus()
+    const currentOrgId = auth.orgId ?? null
+    const metaOrgId = this.getPlatformData(meta).orgId ?? null
+    if (!currentOrgId) return false
+    return metaOrgId === currentOrgId
   }
 
   private getPlatformData(source?: { providerData?: SkillsetProviderData } | null): PlatformProviderData {

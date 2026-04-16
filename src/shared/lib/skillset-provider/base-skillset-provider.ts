@@ -1,4 +1,6 @@
 import type {
+  InstalledAgentMetadata,
+  InstalledSkillMetadata,
   SkillProvider,
   SkillsetConfig,
   SkillsetProviderData,
@@ -112,6 +114,41 @@ export abstract class BaseSkillsetProvider {
 
   async getQueueItemStatus(_queueItemId: string): Promise<string | null> {
     return null
+  }
+
+  /**
+   * Batch variant of getQueueItemStatus. Default loops serially so existing
+   * providers work untouched; platform overrides with a single batched fetch.
+   *
+   * Returns a Map keyed by queueItemId. Missing entries = status unknown /
+   * still pending; non-null means the server returned a concrete status.
+   */
+  async getQueueItemStatuses(ids: string[]): Promise<Map<string, string | null>> {
+    const out = new Map<string, string | null>()
+    for (const id of ids) {
+      out.set(id, await this.getQueueItemStatus(id))
+    }
+    return out
+  }
+
+  /**
+   * Whether a persisted SkillsetConfig is still valid for the current auth
+   * state. Providers with no scoping (github) return true; platform checks
+   * orgId match. Callers use this to reconcile settings after auth changes.
+   */
+  isConfigValid(_config: SkillsetConfig): boolean {
+    return true
+  }
+
+  /**
+   * Whether an installed skill/agent-template metadata record is still valid
+   * for the current auth state. Used for lazy cleanup on read.
+   */
+  isInstalledValid(
+    _meta: Pick<InstalledSkillMetadata | InstalledAgentMetadata,
+      'provider' | 'providerData'>,
+  ): boolean {
+    return true
   }
 
   async ensureSyncPreconditions(): Promise<void> {

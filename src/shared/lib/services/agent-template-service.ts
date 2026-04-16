@@ -47,6 +47,9 @@ import {
   copyDirectoryFiltered,
   writeJsonFile,
 } from '@shared/lib/utils/file-storage'
+import { InstalledAgentMetadataSchema } from '@shared/lib/types/skillset-schema'
+import { captureException } from '@shared/lib/error-reporting'
+import { pruneInstalledTemplateIfInvalid } from './skillset-reconcile'
 
 // ============================================================================
 // Constants
@@ -656,6 +659,11 @@ async function copyTemplateFiles(src: string, dest: string): Promise<void> {
 
 /**
  * Read installed agent metadata from .skillset-agent-metadata.json.
+ *
+ * Lazy-cleanup backstop: if the provider reports this template is no longer
+ * valid for the current auth (e.g. a platform template from a previous org),
+ * the metadata file is removed and we return null so the agent reverts to
+ * looking "local".
  */
 export async function getInstalledAgentMetadata(
   agentSlug: string,
@@ -664,11 +672,24 @@ export async function getInstalledAgentMetadata(
   const content = await readFileOrNull(metadataPath)
   if (!content) return null
 
+  let raw: unknown
   try {
-    return JSON.parse(content) as InstalledAgentMetadata
-  } catch {
+    raw = JSON.parse(content)
+  } catch (error) {
+    captureException(error, { tags: { area: 'agent-template-metadata', op: 'json-parse' }, extra: { agentSlug } })
     return null
   }
+
+  const parsed = InstalledAgentMetadataSchema.safeParse(raw)
+  if (!parsed.success) {
+    captureException(parsed.error, { tags: { area: 'agent-template-metadata', op: 'schema' }, extra: { agentSlug } })
+    return null
+  }
+
+  const pruned = await pruneInstalledTemplateIfInvalid(parsed.data, metadataPath)
+  if (pruned) return null
+
+  return parsed.data as InstalledAgentMetadata
 }
 
 /**
@@ -729,6 +750,11 @@ export async function collectAgentRequiredEnvVars(
 
 /**
  * Get the template status of an agent.
+ *
+ * READ-ONLY: mirrors the skill path — no git ops, no metadata writes, no
+ * file copies. Pending queue items are checked and surfaced optimistically,
+ * but the actual transition to merged/rejected state (with file adoption) is
+ * deferred to `refreshAgentTemplates`.
  */
 export async function getAgentTemplateStatus(
   agentSlug: string,
@@ -751,39 +777,28 @@ export async function getAgentTemplateStatus(
   const sourceLabel = info.sourceLabel
   const workspaceDir = getAgentWorkspaceDir(agentSlug)
 
+  // Queue status — single request, surfaces as optimistic "up_to_date" while
+  // the actual file adoption waits for refreshAgentTemplates.
+  let pendingTerminal = false
   if (meta.pendingQueueItemId) {
-    const queueStatus = await hostingProvider.getQueueItemStatus(meta.pendingQueueItemId)
-    if (queueStatus === 'merged' || queueStatus === 'rejected') {
-      if (queueStatus === 'merged') {
-        try {
-          await refreshSkillset(metaRef)
-        } catch { /* best-effort pull */ }
-
-        const repoDir = getSkillsetRepoDirForRef(configRef ?? metaRef)
-        const agentDirInRepo = path.join(repoDir, meta.agentPath.replace(/\/$/, ''))
-        if (await directoryExists(agentDirInRepo)) {
-          await copyTemplateFiles(agentDirInRepo, workspaceDir)
-          meta.originalContentHash = await computeAgentTemplateHash(workspaceDir)
-        }
-      }
-      meta.pendingQueueItemId = undefined
-      await writeJsonFile(getAgentMetadataPath(agentSlug), meta)
+    try {
+      const s = await hostingProvider.getQueueItemStatus(meta.pendingQueueItemId)
+      pendingTerminal = s === 'merged' || s === 'rejected'
+    } catch (error) {
+      captureException(error, { tags: { area: 'agent-template-status', op: 'queue-lookup' }, extra: { agentSlug } })
     }
   }
 
-  // Determine status: locally modified > open PR > update available > up to date
   const currentHash = await computeAgentTemplateHash(workspaceDir)
 
-  if (currentHash !== meta.originalContentHash || meta.openPrUrl) {
+  if (!pendingTerminal && (currentHash !== meta.originalContentHash || meta.openPrUrl)) {
     return { type: 'locally_modified', skillsetId: meta.skillsetId, skillsetName, sourceLabel, openPrUrl: meta.openPrUrl }
   }
 
-  // Check for updates: version bump in index.json OR file content change in the remote cache
   const index = await getSkillsetIndex(metaRef)
   const agentEntry = index?.agents?.find((a) => a.path === meta.agentPath)
   const versionChanged = !!(agentEntry && agentEntry.version !== meta.installedVersion)
 
-  // Also compare remote cache hash — catches edits where version was not bumped
   const repoDir = getSkillsetRepoDirForRef(configRef ?? metaRef)
   const agentDirInRepo = path.join(repoDir, meta.agentPath.replace(/\/$/, ''))
   let contentChanged = false
@@ -792,7 +807,7 @@ export async function getAgentTemplateStatus(
     contentChanged = remoteCacheHash !== meta.originalContentHash
   }
 
-  if (versionChanged || contentChanged) {
+  if (!pendingTerminal && (versionChanged || contentChanged)) {
     return {
       type: 'update_available',
       skillsetId: meta.skillsetId,
@@ -913,51 +928,96 @@ export async function refreshSkillsetCaches(
 
 /**
  * Refresh all skillset caches and reconcile agent template status.
+ *
+ * This is the only place that mutates template metadata or copies files
+ * back from the cache — the read path (`getAgentTemplateStatus`) is pure.
  */
 export async function refreshAgentTemplates(
   skillsets: SkillsetConfig[],
 ): Promise<void> {
-  // Refresh all skillset caches
   for (const ss of skillsets) {
     try {
       await refreshSkillset(toSkillsetRefFromConfig(ss))
     } catch (error) {
       console.warn(`Failed to refresh skillset ${ss.id}:`, error)
+      captureException(error, { tags: { area: 'template-refresh', op: 'pull' }, extra: { skillsetId: ss.id } })
     }
   }
 
-  // Reconcile installed agents
   const agents = await listAgents()
 
+  // Coalesce queue lookups by provider — one batch per provider instead of
+  // one fetch per installed template.
+  const metaByAgent = new Map<string, InstalledAgentMetadata>()
+  const pendingByProvider = new Map<SkillProvider, string[]>()
   for (const agent of agents) {
     const meta = await getInstalledAgentMetadata(agent.slug)
     if (!meta) continue
+    metaByAgent.set(agent.slug, meta)
+    if (meta.pendingQueueItemId) {
+      const p = (meta.provider ?? 'github') as SkillProvider
+      const list = pendingByProvider.get(p) ?? []
+      list.push(meta.pendingQueueItemId)
+      pendingByProvider.set(p, list)
+    }
+  }
 
-    const workspaceDir = getAgentWorkspaceDir(agent.slug)
-    const currentHash = await computeAgentTemplateHash(workspaceDir)
+  const queueStatuses = new Map<string, string | null>()
+  await Promise.all(Array.from(pendingByProvider.entries()).map(async ([p, ids]) => {
+    try {
+      const statuses = await getSkillsetProvider(p).getQueueItemStatuses(ids)
+      for (const [id, s] of statuses) queueStatuses.set(id, s)
+    } catch (error) {
+      captureException(error, { tags: { area: 'template-refresh', op: 'queue-batch' }, extra: { provider: p } })
+    }
+  }))
 
+  for (const [slug, meta] of metaByAgent) {
+    const workspaceDir = getAgentWorkspaceDir(slug)
     const repoDir = getSkillsetRepoDirForRef(toSkillsetRefFromMeta(meta))
     const agentDirInRepo = path.join(repoDir, meta.agentPath.replace(/\/$/, ''))
+
+    // Step 1: resolve any pending platform submission.
+    if (meta.pendingQueueItemId) {
+      const s = queueStatuses.get(meta.pendingQueueItemId)
+      if (s === 'merged' || s === 'rejected') {
+        if (s === 'merged') {
+          try {
+            await refreshSkillset(toSkillsetRefFromMeta(meta))
+          } catch (error) {
+            captureException(error, { tags: { area: 'template-refresh', op: 'queue-merged-pull' }, extra: { agentSlug: slug } })
+          }
+          if (await directoryExists(agentDirInRepo)) {
+            await copyTemplateFiles(agentDirInRepo, workspaceDir)
+            meta.originalContentHash = await computeAgentTemplateHash(workspaceDir)
+          }
+        }
+        meta.pendingQueueItemId = undefined
+        meta.openPrUrl = undefined
+        await writeJsonFile(getAgentMetadataPath(slug), meta)
+        continue
+      }
+    }
+
     if (!(await directoryExists(agentDirInRepo))) continue
 
+    const currentHash = await computeAgentTemplateHash(workspaceDir)
     const repoHash = await computeAgentTemplateHash(agentDirInRepo)
 
-    // Local matches remote — clear any stale PR link
+    // Local matches remote — clear any stale PR link.
     if (repoHash === currentHash) {
       if (meta.openPrUrl || currentHash !== meta.originalContentHash) {
         meta.originalContentHash = currentHash
         meta.openPrUrl = undefined
-        await writeJsonFile(getAgentMetadataPath(agent.slug), meta)
+        await writeJsonFile(getAgentMetadataPath(slug), meta)
       }
       continue
     }
 
-    // Remote has moved forward (e.g. PR merged, possibly with version bump).
-    // Overwrite local files with the merged remote content so the template
-    // transitions cleanly to up_to_date instead of lingering as locally_modified.
-    // Only trigger when the local content was actually modified (currentHash !== originalContentHash).
-    // If currentHash === originalContentHash, the remote difference just means the PR hasn't merged yet.
-    if (meta.openPrUrl && currentHash !== meta.originalContentHash && repoHash !== meta.originalContentHash) {
+    // Remote has moved forward with a PR open — adopt remote.
+    if (meta.openPrUrl
+        && currentHash !== meta.originalContentHash
+        && repoHash !== meta.originalContentHash) {
       await copyTemplateFiles(agentDirInRepo, workspaceDir)
       meta.originalContentHash = repoHash
       meta.openPrUrl = undefined
@@ -968,9 +1028,11 @@ export async function refreshAgentTemplates(
         if (agentEntry?.version) {
           meta.installedVersion = agentEntry.version
         }
-      } catch { /* best-effort version update */ }
+      } catch (error) {
+        captureException(error, { tags: { area: 'template-refresh', op: 'read-index' }, extra: { agentSlug: slug } })
+      }
 
-      await writeJsonFile(getAgentMetadataPath(agent.slug), meta)
+      await writeJsonFile(getAgentMetadataPath(slug), meta)
     }
   }
 }
