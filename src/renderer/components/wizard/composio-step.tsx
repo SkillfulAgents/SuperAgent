@@ -1,14 +1,10 @@
 import { useState, useEffect } from 'react'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
-import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
-import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { ComposioApiKeyInput } from '@renderer/components/settings/composio-api-key-input'
-import { Check } from 'lucide-react'
-import { ConnectedAccountsSection } from '@renderer/components/connected-accounts-section'
+import { CircleCheckBig, ChevronRight } from 'lucide-react'
 import { useUser } from '@renderer/context/user-context'
-import { PolicyDecisionToggle } from '@renderer/components/ui/policy-decision-toggle'
 
 export interface ComposioStepProps {
   onCanProceedChange: (canProceed: boolean) => void
@@ -22,6 +18,7 @@ export function ComposioStep({ onCanProceedChange, saveRef }: ComposioStepProps)
 
   const [composioUserIdInput, setComposioUserIdInput] = useState('')
   const [isSaving, setIsSaving] = useState(false)
+  const [showInstructions, setShowInstructions] = useState(false)
 
   const composioApiKeyStatus = settings?.apiKeyStatus?.composio
   // In auth mode, user ID is automatic (from the logged-in user)
@@ -47,86 +44,84 @@ export function ComposioStep({ onCanProceedChange, saveRef }: ComposioStepProps)
   // Keep save ref in sync for parent to call on Next
   saveRef.current = (hasUserIdInput && !isComposioConfigured) ? handleSaveUserId : null
 
-  const { data: userSettings } = useUserSettings()
-  const updateUserSettings = useUpdateUserSettings()
-  const currentPolicy = userSettings?.defaultApiPolicy ?? 'review'
-
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <div>
-        <h2 className="text-xl font-bold">Set Up Composio</h2>
+        <h2 className="text-2xl font-normal max-w-sm">Let your agents connect to your apps</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Composio lets your agents connect to external services via OAuth (Gmail, Slack, GitHub, etc.).
-          This step is optional.
+          Composio lets your agents use apps like Gmail, Slack, and GitHub on your behalf by handling authentication securely.
         </p>
       </div>
 
-      {isComposioConfigured && (
-        <Alert>
-          <Check className="h-4 w-4 text-green-600" />
-          <AlertDescription className="text-green-700 dark:text-green-400">
-            Composio is configured. You can connect accounts below or skip to the next step.
-          </AlertDescription>
-        </Alert>
-      )}
+      <div className={`rounded-lg border p-3 transition-colors ${isComposioConfigured ? 'border-green-500 bg-green-50' : 'border-primary'}`}>
+        <div className="flex items-center gap-2">
+          {isComposioConfigured && <CircleCheckBig className="h-4 w-4 text-green-600" />}
+          <span className={`font-medium text-sm ${isComposioConfigured ? 'text-green-700 dark:text-green-400' : ''}`}>
+            {isComposioConfigured ? 'Composio connected' : 'Connect to Composio'}
+          </span>
+        </div>
+        {isComposioConfigured && (
+          <p className="text-xs text-green-700/80 dark:text-green-400/80 mt-2">
+            You&apos;ll be able to connect your apps when you build your agents.<br />You can manage app connections in settings.
+          </p>
+        )}
 
-      {!isComposioConfigured && (
-        <>
-          <ComposioApiKeyInput
-            showRemoveButton={false}
-            showSourceIndicator={false}
-          />
+        <div className={`grid transition-all duration-300 ease-in-out ${!isComposioConfigured ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+          <div className="overflow-hidden">
+            <div className="space-y-3 pt-3">
+              <div className="space-y-1">
+                <Label htmlFor="wizard-composio-userid">Composio User ID</Label>
+                <Input
+                  id="wizard-composio-userid"
+                  type="text"
+                  value={isAuthMode ? (user?.id ?? '') : composioUserIdInput}
+                  onChange={(e) => setComposioUserIdInput(e.target.value)}
+                  placeholder="Enter your Composio user ID (e.g., your email)"
+                  disabled={isAuthMode}
+                />
+              </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="wizard-composio-userid">Composio User ID</Label>
-            <Input
-              id="wizard-composio-userid"
-              type="text"
-              value={isAuthMode ? (user?.id ?? '') : composioUserIdInput}
-              onChange={(e) => setComposioUserIdInput(e.target.value)}
-              placeholder="Enter your Composio user ID (e.g., your email)"
-              disabled={isAuthMode}
-            />
-            <p className="text-xs text-muted-foreground">
-              {isAuthMode
-                ? 'Automatically set from your account.'
-                : 'Your unique identifier in Composio. Can be any string.'}
-            </p>
-          </div>
-        </>
-      )}
-
-      {isComposioConfigured && (
-        <>
-          <div className="rounded-md border p-3 space-y-2">
-            <div>
-              <Label className="text-sm font-medium">Default API Request Policy</Label>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                When agents make API calls or use MCP tools, this policy determines what happens by default.
-                You can override this per-account or per-tool later in Settings.
-              </p>
-            </div>
-            <div className="flex items-center gap-3">
-              <PolicyDecisionToggle
-                value={currentPolicy}
-                onChange={(value) => {
-                  if (value === 'default') return // Global default must be set
-                  updateUserSettings.mutate({ defaultApiPolicy: value })
-                }}
-                size="md"
+              <ComposioApiKeyInput
+                showRemoveButton={false}
+                showSourceIndicator={false}
+                showHelpText={false}
+                validateButtonLabel="Connect"
               />
-              <span className="text-xs text-muted-foreground">
-                {currentPolicy === 'allow' && 'Agents can make API calls without asking.'}
-                {currentPolicy === 'review' && 'You\'ll be prompted to approve each new type of request.'}
-                {currentPolicy === 'block' && 'All API calls are blocked until you add explicit allow rules.'}
-              </span>
+
+              <div className="mt-3">
+                <button
+                  type="button"
+                  onClick={() => setShowInstructions(!showInstructions)}
+                  className="text-sm text-primary hover:underline flex items-center gap-1"
+                >
+                  <ChevronRight className={`h-3 w-3 transition-transform ${showInstructions ? 'rotate-90' : ''}`} />
+                  How to get your API key
+                </button>
+
+                {showInstructions && (
+                  <div className="mt-2 p-2.5 rounded-md border bg-muted/30">
+                    <ol className="list-decimal list-inside space-y-1 text-xs text-muted-foreground">
+                      <li>Go to the{' '}
+                        <a
+                          href="https://app.composio.dev/settings"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-primary underline underline-offset-4"
+                        >
+                          Composio Dashboard
+                        </a>
+                      </li>
+                      <li>Navigate to Settings and copy your API key</li>
+                      <li>Paste it in the field above</li>
+                    </ol>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
-          <div className="pt-2 border-t">
-            <ConnectedAccountsSection />
-          </div>
-        </>
-      )}
+        </div>
+      </div>
+
     </div>
   )
 }

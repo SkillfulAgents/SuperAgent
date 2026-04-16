@@ -196,13 +196,14 @@ export interface ApiKeyStatus {
 // Note: This creates a type-only dependency, avoiding circular imports
 import type { RunnerAvailability } from '@shared/lib/container/client-factory'
 import type { RuntimeReadiness } from '@shared/lib/container/types'
+import type { ChromeProfile } from '@shared/lib/browser/chrome-profile'
 
 export interface HostBrowserProviderInfo {
   id: string
   name: string
   available: boolean
   reason?: string
-  profiles?: Array<{ id: string; name: string; avatarUrl?: string }>
+  profiles?: ChromeProfile[]
 }
 
 export interface HostBrowserStatus {

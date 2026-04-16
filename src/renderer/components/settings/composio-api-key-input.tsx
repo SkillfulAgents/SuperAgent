@@ -4,6 +4,7 @@ interface ComposioApiKeyInputProps {
   showSourceIndicator?: boolean
   showHelpText?: boolean
   showRemoveButton?: boolean
+  validateButtonLabel?: string
   disabled?: boolean
 }
 
@@ -11,6 +12,7 @@ export function ComposioApiKeyInput({
   showSourceIndicator = true,
   showHelpText = true,
   showRemoveButton = true,
+  validateButtonLabel,
   disabled = false,
 }: ComposioApiKeyInputProps) {
   return (
@@ -27,6 +29,7 @@ export function ComposioApiKeyInput({
       showHelpText={showHelpText}
       showRemoveButton={showRemoveButton}
       showRemoveConfirm={false}
+      validateButtonLabel={validateButtonLabel}
       helpText={
         <>
           Get your API key from{' '}
