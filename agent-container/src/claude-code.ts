@@ -27,9 +27,9 @@ import { sanitizeMcpName } from './sanitize-mcp-name';
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in src/renderer/components/messages/message-list.tsx
 const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] ';
 
-// Load platform system prompt from file
-const PLATFORM_SYSTEM_PROMPT = fs.readFileSync(
-  path.join(__dirname, 'system-prompt.md'),
+// Load the full system prompt (replaces claude_code preset + old append layer)
+const SYSTEM_PROMPT_V2 = fs.readFileSync(
+  path.join(__dirname, 'system-prompt-v2.md'),
   'utf-8'
 );
 
@@ -89,17 +89,16 @@ function parseConnectedAccounts(): Map<string, Array<{ name: string; id: string 
 }
 
 /**
- * Generates the system prompt to append to the Claude Code preset.
- * Includes platform-specific instructions and available environment variables.
+ * Generates the full system prompt from the gamut prompt plus dynamic sections
+ * (connected accounts, env vars, user instructions).
  */
-function generateSystemPromptAppend(
+function generateSystemPrompt(
   availableEnvVars?: string[],
   userSystemPrompt?: string
-): string | undefined {
+): string {
   const sections: string[] = [];
 
-  // Platform instructions
-  sections.push(PLATFORM_SYSTEM_PROMPT);
+  sections.push(SYSTEM_PROMPT_V2);
 
   // Parse connected accounts metadata
   const connectedAccounts = parseConnectedAccounts();
@@ -193,10 +192,6 @@ You can access these using standard environment variable methods (e.g., \`proces
     sections.push(`## Agent-Specific Instructions
 
 ${userSystemPrompt.trim()}`);
-  }
-
-  if (sections.length === 0) {
-    return undefined;
   }
 
   return sections.join('\n\n');
@@ -296,7 +291,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private sessionId: string;
   private workingDirectory: string;
   private claudeSessionId: string | null;
-  private systemPromptAppend: string | undefined;
+  private systemPrompt: string;
   private model: string | undefined;
   private browserModel: string | undefined;
   private maxOutputTokens: number | undefined;
@@ -320,7 +315,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.maxTurns = options.maxTurns;
     this.maxBudgetUsd = options.maxBudgetUsd;
     this.customEnvVars = options.customEnvVars;
-    this.systemPromptAppend = generateSystemPromptAppend(
+    this.systemPrompt = generateSystemPrompt(
       options.availableEnvVars,
       options.userSystemPrompt
     );
@@ -399,12 +394,23 @@ export class ClaudeCodeProcess extends EventEmitter {
         includePartialMessages: true,
         agentProgressSummaries: true,
         settingSources: ['user', 'project'],
-        allowedTools: ['Skill', 'Task', 'Agent', ...remoteMcpToolPatterns],
+        allowedTools: ['Skill', 'Agent', ...remoteMcpToolPatterns],
+        disallowedTools: [
+          'Monitor',
+          'CronCreate',
+          'CronDelete',
+          'CronList',
+          'TaskOutput',
+          'EnterWorktree',
+          'ExitWorktree',
+          'Task',
+        ],
         ...(this.maxThinkingTokens && { maxThinkingTokens: this.maxThinkingTokens }),
         ...(this.maxTurns && { maxTurns: this.maxTurns }),
         ...(this.maxBudgetUsd && { maxBudgetUsd: this.maxBudgetUsd }),
         ...((this.customEnvVars || this.maxOutputTokens) && {
           env: {
+            ...process.env,
             ...this.customEnvVars,
             // Explicit maxOutputTokens setting takes precedence over custom env var
             ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
@@ -595,16 +601,7 @@ export class ClaudeCodeProcess extends EventEmitter {
             },
           ],
         },
-        systemPrompt: this.systemPromptAppend
-          ? {
-              type: 'preset',
-              preset: 'claude_code',
-              append: this.systemPromptAppend,
-            }
-          : {
-              type: 'preset',
-              preset: 'claude_code',
-            },
+        systemPrompt: this.systemPrompt,
       },
     });
   }
