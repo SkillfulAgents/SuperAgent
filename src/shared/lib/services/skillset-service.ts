@@ -13,7 +13,7 @@ import path from 'path'
 import fs from 'fs'
 import yaml from 'js-yaml'
 import { getDataDir } from '@shared/lib/config/data-dir'
-import { getEffectiveModels } from '@shared/lib/config/settings'
+import { getEffectiveModels, getSettings, updateSettings } from '@shared/lib/config/settings'
 import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
 import { withRetry } from '@shared/lib/utils/retry'
 import {
@@ -596,6 +596,50 @@ export async function readIndexJson(repoDir: string): Promise<SkillsetIndex> {
 // ============================================================================
 // Public API
 // ============================================================================
+
+export async function syncRemoteSkillsets(providerId: SkillProvider): Promise<{ synced: number; skillsets: string[] }> {
+  const provider = getSkillsetProvider(providerId)
+  if (!provider.supportsRemoteSync) {
+    throw new Error(`Provider '${providerId}' does not support remote sync`)
+  }
+
+  await provider.ensureSyncPreconditions()
+
+  const remoteSkillsets = await provider.listRemoteSkillsets()
+  if (!remoteSkillsets.length) return { synced: 0, skillsets: [] }
+
+  const settings = getSettings()
+  const existing = settings.skillsets || []
+  const added: SkillsetConfig[] = []
+  let updatedExisting = false
+
+  for (const remote of remoteSkillsets) {
+    const skillsetId = `${providerId}--${remote.repoId}--${remote.name}`
+    const existingConfig = existing.find((s) => s.id === skillsetId)
+    if (existingConfig) {
+      if (provider.updateSkillsetConfig(existingConfig, remote)) updatedExisting = true
+      continue
+    }
+    const config = provider.buildSkillsetConfig(remote)
+    existing.push(config)
+    added.push(config)
+  }
+
+  if (added.length > 0 || updatedExisting) {
+    updateSettings({ ...settings, skillsets: existing })
+  }
+
+  const cloned = new Set<string>()
+  for (const config of existing.filter((s) => s.provider === providerId)) {
+    const ref = toSkillsetRefFromConfig(config)
+    const key = provider.getEffectiveRepoId(ref)
+    if (cloned.has(key)) continue
+    cloned.add(key)
+    await ensureSkillsetCached(ref)
+  }
+
+  return { synced: added.length, skillsets: added.map((a) => a.name) }
+}
 
 /**
  * Validate a skillset URL by cloning the repo and reading index.json.
