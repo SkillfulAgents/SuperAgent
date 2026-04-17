@@ -39,6 +39,7 @@ vi.mock('@renderer/context/selection-context', () => ({
   useSelection: () => ({
     selectScheduledTask: vi.fn(),
     selectSession: vi.fn(),
+    consumePendingDraft: vi.fn(() => null),
   }),
 }))
 
