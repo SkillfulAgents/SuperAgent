@@ -1,0 +1,41 @@
+{
+  "startedAt": "2026-04-17T19:46:02.692Z",
+  "finishedAt": "2026-04-17T19:48:42.849Z",
+  "totalDurationSec": 160.16,
+  "totalStories": 3,
+  "passedStories": 3,
+  "failedStories": 0,
+  "totalFeatures": 3,
+  "passedFeatures": 3,
+  "failedFeatures": 0,
+  "totalCostUsd": 0.93,
+  "results": [
+    {
+      "storyId": "agent-chat",
+      "storyName": "Create agent, send message, verify response",
+      "mode": "happy-path",
+      "passed": true,
+      "durationSec": 86.58,
+      "costUsd": 0.28,
+      "reportPath": "happy-path/agent-chat/report.json"
+    },
+    {
+      "storyId": "browser-test",
+      "storyName": "Agent opens browser and visits a page",
+      "mode": "happy-path",
+      "passed": true,
+      "durationSec": 82.13,
+      "costUsd": 0.28,
+      "reportPath": "happy-path/browser-test/report.json"
+    },
+    {
+      "storyId": "github-whoami",
+      "storyName": "Agent requests GitHub account, perform who-am-i",
+      "mode": "happy-path",
+      "passed": true,
+      "durationSec": 155.34,
+      "costUsd": 0.37,
+      "reportPath": "happy-path/github-whoami/report.json"
+    }
+  ]
+}
