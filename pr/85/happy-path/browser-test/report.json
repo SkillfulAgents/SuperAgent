@@ -1,0 +1,25 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified browser-use feature allows agents to execute browser tools, navigate to URLs, retrieve page information, and display live browser previews with tool call cards in the chat interface.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Successfully loaded Super Agent dashboard with three agents listed in sidebar",
+    "Clicked on \"QA-20260417-040701-yf5v\" agent in sidebar — Agent chat interface opened successfully",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in input field — Message accepted in textbox",
+    "Pressed Cmd+Enter to send message — Message sent successfully, agent status changed to \"working\"",
+    "Waited up to 180 seconds for response with \"Example Domain\" text — Agent completed work in ~6 seconds and returned response",
+    "Verified response mentions \"Example Domain\" — Response clearly states: \"The page title is \\\"Example Domain\\\"\"",
+    "Took full page screenshot — Screenshot captured showing chat view with tool cards, response message, and live browser preview panel displaying Example Domain webpage"
+  ],
+  "bugs": [],
+  "durationMs": 82372,
+  "sessionId": "ed2c3ec1-7405-48ca-88c4-8715ab75baeb",
+  "cost": {
+    "inputTokens": 207,
+    "outputTokens": 8482,
+    "cacheCreationTokens": 108890,
+    "cacheReadTokens": 619107,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.24064
+  }
+}
