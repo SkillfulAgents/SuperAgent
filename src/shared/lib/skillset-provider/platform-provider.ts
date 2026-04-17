@@ -114,8 +114,7 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
     }
     // Validate: http(s) only, no private/loopback/link-local hosts, and
     // only on hosts we trust. The clone URL may live on a separate git
-    // storage host (e.g. datawizz.code.storage) rather than the proxy
-    // itself, so we allowlist both.
+    // storage host rather than the proxy itself, so we allowlist both.
     const proxyOrigin = (() => {
       try { return new URL(proxyBase).origin } catch { return undefined }
     })()
