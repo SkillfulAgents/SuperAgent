@@ -74,19 +74,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('launch-powershell-admin', command)
   },
 
-  // Navigation from tray menu
-  onNavigateToAgent: (callback: (agentSlug: string) => void) => {
-    ipcRenderer.on('navigate-to-agent', (_event, agentSlug) => callback(agentSlug))
+  // Navigation from tray menu or deep links.
+  onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void) => {
+    ipcRenderer.on('navigate-to-agent', (_event, agentSlug, sessionId) => callback(agentSlug, sessionId))
   },
 
   removeNavigateToAgent: () => {
     ipcRenderer.removeAllListeners('navigate-to-agent')
-    ipcRenderer.removeAllListeners('navigate-to-agent-session')
-  },
-
-  // Navigation from deep link — agent + optional session
-  onNavigateToAgentSession: (callback: (agentSlug: string, sessionId: string | null) => void) => {
-    ipcRenderer.on('navigate-to-agent-session', (_event, agentSlug, sessionId) => callback(agentSlug, sessionId))
   },
 
   // Menu commands - open settings
@@ -233,8 +227,7 @@ declare global {
       getFullScreenState: () => Promise<boolean>
       openExternal: (url: string) => Promise<void>
       launchPowershellAdmin: (command: string) => Promise<void>
-      onNavigateToAgent: (callback: (agentSlug: string) => void) => void
-      onNavigateToAgentSession: (callback: (agentSlug: string, sessionId: string | null) => void) => void
+      onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void) => void
       removeNavigateToAgent: () => void
       onOpenSettings: (callback: () => void) => void
       removeOpenSettings: () => void

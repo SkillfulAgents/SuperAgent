@@ -703,7 +703,7 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
     return
   }
 
-  // Agent session deep link — navigate to agent's latest session
+  // Agent deep link — navigate to the agent and select its latest session when available.
   if (url.startsWith(`${PROTOCOL_SCHEME}://agent/`)) {
     try {
       const slug = decodeURIComponent(url.replace(`${PROTOCOL_SCHEME}://agent/`, '').split('/')[0])
@@ -715,10 +715,10 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
           .then((sessions: Array<{ id: string; isActive: boolean; updatedAt?: string }>) => {
             const active = sessions.find(s => s.isActive)
             const latest = active ?? sessions[0]
-            mainWindow!.webContents.send('navigate-to-agent-session', slug, latest?.id ?? null)
+            mainWindow!.webContents.send('navigate-to-agent', slug, latest?.id ?? null)
           })
           .catch(() => {
-            mainWindow!.webContents.send('navigate-to-agent-session', slug, null)
+            mainWindow!.webContents.send('navigate-to-agent', slug, null)
           })
       }
     } catch (error) {

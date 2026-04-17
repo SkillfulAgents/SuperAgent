@@ -10,7 +10,7 @@ import {
   refreshSkillset,
   getSkillsetIndex,
   removeSkillsetCache,
-  ensureSkillsetCached,
+  syncRemoteSkillsets,
 } from '@shared/lib/services/skillset-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import type { SkillsetConfig, SkillProvider } from '@shared/lib/types/skillset'
@@ -133,6 +133,7 @@ skillsets.delete('/:id', IsAdmin(), async (c) => {
     const id = c.req.param('id')
     const settings = getSettings()
     const existing = settings.skillsets || []
+    const target = existing.find((s) => s.id === id)
     const filtered = existing.filter((s) => s.id !== id)
 
     if (filtered.length === existing.length) {
@@ -143,7 +144,7 @@ skillsets.delete('/:id', IsAdmin(), async (c) => {
     updateSettings({ ...settings, skillsets: filtered })
 
     // Clean up cache
-    await removeSkillsetCache(toSkillsetRef(existing.find((s) => s.id === id)!))
+    await removeSkillsetCache(toSkillsetRef(target!))
 
     return c.body(null, 204)
   } catch (error) {
@@ -215,56 +216,8 @@ skillsets.post('/sync-remote', IsAdmin(), async (c) => {
   try {
     const body = await c.req.json<{ provider?: SkillProvider }>().catch(() => ({} as { provider?: SkillProvider }))
     const providerId = body.provider ?? 'platform'
-    const provider = getSkillsetProvider(providerId)
-
-    if (!provider.supportsRemoteSync) {
-      return c.json({ error: `Provider '${providerId}' does not support remote sync` }, 400)
-    }
-
-    await provider.ensureSyncPreconditions()
-
-    const remoteSkillsets = await provider.listRemoteSkillsets()
-    if (!remoteSkillsets.length) {
-      return c.json({ synced: 0, skillsets: [] })
-    }
-
-    const settings = getSettings()
-    const existing = settings.skillsets || []
-    const added: SkillsetConfig[] = []
-    let updatedExisting = false
-
-    for (const remote of remoteSkillsets) {
-      const skillsetId = `${providerId}--${remote.repoId}--${remote.name}`
-
-      const existingConfig = existing.find((s) => s.id === skillsetId)
-      if (existingConfig) {
-        if (provider.updateSkillsetConfig(existingConfig, remote)) {
-          updatedExisting = true
-        }
-        continue
-      }
-
-      const config = provider.buildSkillsetConfig(remote)
-      existing.push(config)
-      added.push(config)
-    }
-
-    if (added.length > 0 || updatedExisting) {
-      updateSettings({ ...settings, skillsets: existing })
-    }
-
-    const allForProvider = existing.filter((s) => s.provider === providerId)
-    const cloned = new Set<string>()
-    for (const config of allForProvider) {
-      const configRef = toSkillsetRef(config)
-      const cacheKey = provider.getEffectiveRepoId(configRef)
-      if (!cloned.has(cacheKey)) {
-        cloned.add(cacheKey)
-        await ensureSkillsetCached(configRef)
-      }
-    }
-
-    return c.json({ synced: added.length, skillsets: added.map((a) => a.name) })
+    const result = await syncRemoteSkillsets(providerId)
+    return c.json(result)
   } catch (error) {
     console.error('Failed to sync remote skillsets:', error)
     const message = error instanceof Error ? error.message : 'Failed to sync remote skillsets'

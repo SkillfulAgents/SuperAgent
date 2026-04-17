@@ -12,7 +12,6 @@ interface SelectionContextType {
   /** One-shot draft text to pre-fill the agent home composer. Consumed on read. */
   pendingDraft: string | null
   selectAgent: (agentSlug: string | null) => void
-  selectAgentSession: (agentSlug: string, sessionId: string | null) => void
   selectAgentWithDraft: (agentSlug: string, draft: string) => void
   selectSession: (sessionId: string | null) => void
   consumePendingDraft: () => string | null
@@ -45,16 +44,6 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
   const selectAgent = useCallback((agentSlug: string | null) => {
     setSelectedAgentSlug(agentSlug)
     setSelectedSessionId(null)
-    setSelectedScheduledTaskId(null)
-    setSelectedWebhookTriggerId(null)
-    setSelectedChatIntegrationId(null)
-    setSelectedChatSessionId(null)
-    setSelectedDashboardSlug(null)
-  }, [])
-
-  const selectAgentSession = useCallback((agentSlug: string, sessionId: string | null) => {
-    setSelectedAgentSlug(agentSlug)
-    setSelectedSessionId(sessionId)
     setSelectedScheduledTaskId(null)
     setSelectedWebhookTriggerId(null)
     setSelectedChatIntegrationId(null)
@@ -198,7 +187,6 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
         selectedDashboardSlug,
         pendingDraft,
         selectAgent,
-        selectAgentSession,
         selectAgentWithDraft,
         selectSession,
         consumePendingDraft,
