@@ -112,7 +112,7 @@ export function HomeConnections({ agentSlug, onOpenSettings }: HomeConnectionsPr
       <div className="flex items-center justify-between mt-3 px-4 pb-1">
         {connections.length === 0 && (
           <div className="flex items-center" aria-hidden="true">
-            {['gmail', 'slack', 'notion', 'github', 'linear', 'figma', 'jira', 'salesforce'].map((slug, i) => (
+            {['atlassian', 'slack', 'notion', 'github', 'linear', 'figma', 'gmail'].map((slug, i) => (
               <div
                 key={slug}
                 className="h-8 w-8 rounded-lg border border-border bg-background flex items-center justify-center shadow-sm transition-transform duration-100 ease-out hover:scale-110 hover:z-10"
@@ -125,6 +125,12 @@ export function HomeConnections({ agentSlug, onOpenSettings }: HomeConnectionsPr
                 />
               </div>
             ))}
+            <div
+              className="h-8 w-8 rounded-lg border border-border bg-background flex items-center justify-center shadow-sm transition-transform duration-100 ease-out hover:scale-110 hover:z-10"
+              style={{ marginLeft: -8, zIndex: 8 }}
+            >
+              <span className="text-[10px] font-medium text-muted-foreground/70">70+</span>
+            </div>
           </div>
         )}
         <div className="ml-auto">
