@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Successfully verified that the QA-20260417-180005-goeh agent can open a browser, navigate to https://example.com, retrieve the page title, and report \"Example Domain\" as the result.",
+  "steps": [
+    "Navigated to http://localhost:47891 - Successfully loaded the Super Agent homepage showing three agents in the sidebar, including \"QA-20260417-180005-goeh\" with idle status.",
+    "Clicked on \"QA-20260417-180005-goeh\" agent in the sidebar - Successfully opened the agent's chat interface with the message input field ready.",
+    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" into the text input field - Message was successfully entered and the Send button became enabled.",
+    "Clicked the Send button to transmit the message - Message was sent successfully, agent status changed to \"working\", and a new session \"Browser Navigation to Example.com\" was created.",
+    "Waited up to 3 minutes for response - Agent completed processing in 7 seconds and returned the response \"The page title is 'Example Domain'.\" The browser preview on the right panel displayed the actual Example Domain webpage.",
+    "Verified response mentions \"Example Domain\" - The agent's response clearly states: \"The page title is 'Example Domain'.\" with proper tool call execution showing \"Open Browser https://example.com\" and \"Browser Command $ get title\" both marked as successful."
+  ],
+  "bugs": [],
+  "durationMs": 88389,
+  "sessionId": "fdd4bafa-183c-4efe-962c-ec18ef4d2195",
+  "cost": {
+    "inputTokens": 315,
+    "outputTokens": 9682,
+    "cacheCreationTokens": 52301,
+    "cacheReadTokens": 1168052,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.230906
+  }
+}
