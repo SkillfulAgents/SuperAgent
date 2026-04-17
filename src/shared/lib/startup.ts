@@ -16,6 +16,7 @@ import { setupBrowserStreamProxy } from '../../main/browser-stream-proxy'
 import { setServerAnalyticsVersion } from './analytics/server-analytics'
 import { APP_VERSION } from './config/version'
 import { shutdownAC } from './computer-use/executor'
+import { reconcileSkillsetConfigsForCurrentAuth } from './services/skillset-reconcile'
 import { initErrorReporting, setErrorReportingUser } from './error-reporting'
 import { getSettings } from './config/settings'
 
@@ -49,6 +50,16 @@ export async function initializeServices() {
 
   // Initialize server-side analytics version
   setServerAnalyticsVersion(APP_VERSION)
+
+  // Drop any skillset configs invalid for the current auth state (e.g. a
+  // platform skillset left over from a previous org). Filesystem cleanup of
+  // installed skills happens lazily in the metadata readers, so we don't
+  // walk every agent workspace on startup.
+  try {
+    reconcileSkillsetConfigsForCurrentAuth()
+  } catch (error) {
+    captureException(error, { tags: { component: 'startup', operation: 'skillset-reconcile' } })
+  }
 
   // Validate auth mode startup requirements before anything else
   if (isAuthMode()) {

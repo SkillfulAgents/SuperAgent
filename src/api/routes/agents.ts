@@ -95,6 +95,7 @@ import {
   hasOnboardingSkill,
   collectAgentRequiredEnvVars,
 } from '@shared/lib/services/agent-template-service'
+import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import { withRetry } from '@shared/lib/utils/retry'
 import { transformMessages, type TransformedMessage, type TransformedItem } from '@shared/lib/utils/message-transform'
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
@@ -109,6 +110,21 @@ import { Readable } from 'stream'
 import pLimit from 'p-limit'
 import * as path from 'path'
 import type { ApiAgent } from '@shared/lib/types/api'
+
+function getConfiguredSkillsets() {
+  return getSettings().skillsets || []
+}
+
+function toSkillsetRef(config: { id: string; url: string; name: string; provider?: 'github' | 'platform'; providerData?: Record<string, unknown> }) {
+  const provider = getSkillsetProvider(config.provider)
+  return {
+    skillsetId: config.id,
+    skillsetUrl: config.url,
+    provider: config.provider,
+    skillsetName: config.name,
+    providerData: provider.normalizeProviderData(config),
+  }
+}
 
 /**
  * Enrich an array of ApiAgent objects with summary fields:
@@ -373,15 +389,14 @@ async function processImport(c: Context, zipBuffer: Buffer, formData: FormData) 
 // Uses ?refresh=true to force a cache refresh before reading
 agents.get('/discoverable-agents', async (c) => {
   try {
-    const { skillsets } = getSettings()
-    const ssArray = skillsets || []
+    const skillsets = getConfiguredSkillsets()
     const shouldRefresh = c.req.query('refresh') === 'true'
 
     if (shouldRefresh) {
-      await refreshSkillsetCaches(ssArray)
+      await refreshSkillsetCaches(skillsets)
     }
 
-    const discoverableAgents = await getDiscoverableAgents(ssArray)
+    const discoverableAgents = await getDiscoverableAgents(skillsets)
     return c.json({ agents: discoverableAgents })
   } catch (error) {
     console.error('Failed to fetch discoverable agents:', error)
@@ -398,15 +413,13 @@ agents.post('/install-from-skillset', async (c) => {
       return c.json({ error: 'skillsetId and agentPath are required' }, 400)
     }
 
-    const { skillsets } = getSettings()
-    const config = (skillsets || []).find((s: any) => s.id === skillsetId)
+    const config = getConfiguredSkillsets().find(s => s.id === skillsetId)
     if (!config) {
       return c.json({ error: 'Skillset not found' }, 404)
     }
 
     const agent = await installAgentFromSkillset(
-      skillsetId,
-      config.url,
+      toSkillsetRef(config),
       agentPath,
       agentName || agentPath,
       agentVersion || '0.0.0',
@@ -2937,8 +2950,7 @@ agents.get('/:id/mcp-audit-log', AgentAdmin(), async (c) => {
 agents.get('/:id/skills', AgentRead(), async (c) => {
   try {
     const id = c.req.param('id')
-    const { skillsets } = getSettings()
-    const skills = await getAgentSkillsWithStatus(id, skillsets || [])
+    const skills = await getAgentSkillsWithStatus(id, getConfiguredSkillsets())
     return c.json({ skills })
   } catch (error) {
     console.error('Failed to fetch skills:', error)
@@ -2950,8 +2962,7 @@ agents.get('/:id/skills', AgentRead(), async (c) => {
 agents.get('/:id/discoverable-skills', AgentRead(), async (c) => {
   try {
     const id = c.req.param('id')
-    const { skillsets } = getSettings()
-    const skills = await getDiscoverableSkills(id, skillsets || [])
+    const skills = await getDiscoverableSkills(id, getConfiguredSkillsets())
     return c.json({ skills })
   } catch (error) {
     console.error('Failed to fetch discoverable skills:', error)
@@ -2969,17 +2980,14 @@ agents.post('/:id/skills/install', AgentAdmin(), async (c) => {
       return c.json({ error: 'skillsetId and skillPath are required' }, 400)
     }
 
-    // Find the skillset config
-    const { skillsets } = getSettings()
-    const config = (skillsets || []).find((s) => s.id === skillsetId)
+    const config = getConfiguredSkillsets().find(s => s.id === skillsetId)
     if (!config) {
       return c.json({ error: 'Skillset not found' }, 404)
     }
 
     const result = await installSkillFromSkillset(
       agentSlug,
-      skillsetId,
-      config.url,
+      toSkillsetRef(config),
       skillPath,
       skillName || skillPath,
       skillVersion || '0.0.0',
@@ -3061,8 +3069,7 @@ agents.get('/:id/skills/:dir/publish-info', AgentAdmin(), async (c) => {
       return c.json({ error: 'skillsetId query parameter is required' }, 400)
     }
 
-    const settings = getSettings()
-    const config = (settings.skillsets || []).find((s) => s.id === skillsetId)
+    const config = getConfiguredSkillsets().find(s => s.id === skillsetId)
     if (!config) {
       return c.json({ error: 'Skillset not found' }, 404)
     }
@@ -3087,8 +3094,7 @@ agents.post('/:id/skills/:dir/publish', AgentAdmin(), async (c) => {
       return c.json({ error: 'skillsetId, title, and body are required' }, 400)
     }
 
-    const settings = getSettings()
-    const config = (settings.skillsets || []).find((s) => s.id === skillsetId)
+    const config = getConfiguredSkillsets().find(s => s.id === skillsetId)
     if (!config) {
       return c.json({ error: 'Skillset not found' }, 404)
     }
@@ -3154,8 +3160,7 @@ agents.post('/:id/export-full', AgentAdmin(), async (c) => {
 agents.get('/:id/template-status', AgentRead(), async (c) => {
   try {
     const slug = c.req.param('id')
-    const { skillsets } = getSettings()
-    const status = await getAgentTemplateStatus(slug, skillsets || [])
+    const status = await getAgentTemplateStatus(slug, getConfiguredSkillsets())
     return c.json(status)
   } catch (error) {
     console.error('Failed to get template status:', error)
@@ -3218,8 +3223,7 @@ agents.get('/:id/template-publish-info', AgentRead(), async (c) => {
       return c.json({ error: 'skillsetId query parameter is required' }, 400)
     }
 
-    const settings = getSettings()
-    const config = (settings.skillsets || []).find((s) => s.id === skillsetId)
+    const config = getConfiguredSkillsets().find(s => s.id === skillsetId)
     if (!config) {
       return c.json({ error: 'Skillset not found' }, 404)
     }
@@ -3243,8 +3247,7 @@ agents.post('/:id/template-publish', AgentAdmin(), async (c) => {
       return c.json({ error: 'skillsetId, title, and body are required' }, 400)
     }
 
-    const settings = getSettings()
-    const config = (settings.skillsets || []).find((s) => s.id === skillsetId)
+    const config = getConfiguredSkillsets().find(s => s.id === skillsetId)
     if (!config) {
       return c.json({ error: 'Skillset not found' }, 404)
     }
@@ -3261,8 +3264,7 @@ agents.post('/:id/template-publish', AgentAdmin(), async (c) => {
 // POST /api/agents/:id/template-refresh - Refresh status
 agents.post('/:id/template-refresh', AgentUser(), async (c) => {
   try {
-    const settings = getSettings()
-    const skillsets = settings.skillsets || []
+    const skillsets = getConfiguredSkillsets()
     await refreshAgentTemplates(skillsets)
     const slug = c.req.param('id')
     const status = await getAgentTemplateStatus(slug, skillsets)
@@ -3278,8 +3280,7 @@ agents.post('/:id/template-refresh', AgentUser(), async (c) => {
 agents.post('/:id/skills/refresh', AgentUser(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
-    const settings = getSettings()
-    const skillsets = settings.skillsets || []
+    const skillsets = getConfiguredSkillsets()
     await refreshAgentSkills(agentSlug, skillsets)
     const skills = await getAgentSkillsWithStatus(agentSlug, skillsets)
     return c.json({ skills })

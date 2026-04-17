@@ -10,8 +10,6 @@ import path from 'path'
 import fs from 'fs'
 import archiver from 'archiver'
 import AdmZip from 'adm-zip'
-import { execFile } from 'child_process'
-import { promisify } from 'util'
 import {
   getAgentWorkspaceDir,
   getAgentClaudeMdPath,
@@ -19,21 +17,20 @@ import {
   ensureDirectory,
   directoryExists,
   parseMarkdownWithFrontmatter,
+  serializeMarkdownWithFrontmatter,
 } from '@shared/lib/utils/file-storage'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
 import { withRetry } from '@shared/lib/utils/retry'
 import {
-  ensureSkillsetCached,
-  getSkillsetRepoDir,
-  getSkillsetIndex,
   readIndexJson,
+  ensureSkillsetCached,
+  getSkillsetIndex,
+  getSkillsetRepoDir,
   refreshSkillset,
-  prepareForkBranch,
-  pushAndCreatePR,
-  copyDirectory,
   parseSkillFrontmatter,
 } from '@shared/lib/services/skillset-service'
+import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import { createAgentFromExistingWorkspace, getAgentWithStatus, listAgents } from '@shared/lib/services/agent-service'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import type {
@@ -42,11 +39,17 @@ import type {
   AgentTemplateStatus,
   DiscoverableAgent,
   RequiredEnvVar,
+  SkillProvider,
 } from '@shared/lib/types/skillset'
 import type { ApiAgent } from '@shared/lib/types/api'
 import type { AgentFrontmatter } from '@shared/lib/types/agent'
-
-const execFileAsync = promisify(execFile)
+import {
+  copyDirectoryFiltered,
+  writeJsonFile,
+} from '@shared/lib/utils/file-storage'
+import { InstalledAgentMetadataSchema } from '@shared/lib/types/skillset-schema'
+import { captureException } from '@shared/lib/error-reporting'
+import { pruneInstalledTemplateIfInvalid } from './skillset-reconcile'
 
 // ============================================================================
 // Constants
@@ -96,10 +99,6 @@ const CLAUDE_DIR_ALLOWLIST = new Set([
   'skills',
 ])
 
-const GIT_ENV = {
-  ...process.env,
-  GIT_TERMINAL_PROMPT: '0',
-}
 
 // ============================================================================
 // Metadata Path Helpers
@@ -107,6 +106,43 @@ const GIT_ENV = {
 
 function getAgentMetadataPath(agentSlug: string): string {
   return path.join(getAgentWorkspaceDir(agentSlug), '.skillset-agent-metadata.json')
+}
+
+type SkillsetRef = {
+  skillsetId: string
+  skillsetUrl: string
+  provider?: SkillProvider
+  skillsetName?: string
+  providerData?: SkillsetConfig['providerData']
+}
+
+function toSkillsetRefFromConfig(config: Pick<SkillsetConfig, 'id' | 'url' | 'name' | 'provider' | 'providerData'>): SkillsetRef {
+  const provider = getSkillsetProvider(config.provider)
+  return {
+    skillsetId: config.id,
+    skillsetUrl: config.url,
+    provider: config.provider,
+    skillsetName: config.name,
+    providerData: provider.normalizeProviderData(config),
+  }
+}
+
+function toSkillsetRefFromMeta(
+  meta: Pick<InstalledAgentMetadata, 'skillsetId' | 'skillsetUrl' | 'skillsetName' | 'provider' | 'providerData'>,
+): SkillsetRef {
+  const provider = getSkillsetProvider(meta.provider)
+  return {
+    skillsetId: meta.skillsetId,
+    skillsetUrl: meta.skillsetUrl,
+    provider: meta.provider,
+    skillsetName: meta.skillsetName,
+    providerData: provider.normalizeProviderData(meta),
+  }
+}
+
+function getSkillsetRepoDirForRef(ref: Pick<SkillsetRef, 'skillsetId' | 'provider' | 'providerData'>): string {
+  const provider = getSkillsetProvider(ref.provider)
+  return getSkillsetRepoDir(provider.getEffectiveRepoId(ref))
 }
 
 // ============================================================================
@@ -501,15 +537,14 @@ export async function importAgentFromTemplate(
  * Copies the agent template directory into a new agent workspace.
  */
 export async function installAgentFromSkillset(
-  skillsetId: string,
-  skillsetUrl: string,
+  skillsetRef: SkillsetRef,
   agentPath: string,
   agentName: string,
   agentVersion: string,
 ): Promise<ApiAgent> {
-  const repoDir = getSkillsetRepoDir(skillsetId)
+  const repoDir = getSkillsetRepoDirForRef(skillsetRef)
   if (!(await directoryExists(path.join(repoDir, '.git')))) {
-    await ensureSkillsetCached(skillsetId, skillsetUrl)
+    await ensureSkillsetCached(skillsetRef)
   }
 
   // The agent path in the repo (e.g., "agents/research-assistant/")
@@ -524,20 +559,23 @@ export async function installAgentFromSkillset(
   const workspaceDir = getAgentWorkspaceDir(agent.slug)
 
   // Copy template files from repo to workspace
-  await copyDirectory(agentDirInRepo, workspaceDir)
+  await copyDirectoryFiltered(agentDirInRepo, workspaceDir)
 
   // Compute hash of template files
   const hash = await computeAgentTemplateHash(workspaceDir)
 
   // Write agent metadata
   const metadata: InstalledAgentMetadata = {
-    skillsetId,
-    skillsetUrl,
+    skillsetId: skillsetRef.skillsetId,
+    skillsetUrl: skillsetRef.skillsetUrl,
     agentName,
     agentPath,
     installedVersion: agentVersion,
     installedAt: new Date().toISOString(),
     originalContentHash: hash,
+    provider: skillsetRef.provider,
+    providerData: skillsetRef.providerData,
+    skillsetName: skillsetRef.skillsetName,
   }
 
   await fs.promises.writeFile(
@@ -567,17 +605,18 @@ export async function updateAgentFromSkillset(
     return { updated: false }
   }
 
-  // Refresh the skillset cache
-  await refreshSkillset(meta.skillsetId, meta.skillsetUrl)
+  const skillsetRef = toSkillsetRefFromMeta(meta)
+
+  await refreshSkillset(skillsetRef)
 
   // Re-read the index to get the latest version
-  const index = await getSkillsetIndex(meta.skillsetId)
+  const index = await getSkillsetIndex(skillsetRef)
   if (!index || !index.agents) return { updated: false }
 
   const agentEntry = index.agents.find((a) => a.path === meta.agentPath)
   if (!agentEntry) return { updated: false }
 
-  const repoDir = getSkillsetRepoDir(meta.skillsetId)
+  const repoDir = getSkillsetRepoDirForRef(skillsetRef)
   const agentDirInRepo = path.join(repoDir, meta.agentPath.replace(/\/$/, ''))
 
   if (!(await directoryExists(agentDirInRepo))) {
@@ -610,27 +649,8 @@ export async function updateAgentFromSkillset(
   return { updated: true }
 }
 
-/**
- * Copy template files from source to dest, preserving excluded files in dest.
- */
 async function copyTemplateFiles(src: string, dest: string): Promise<void> {
-  await ensureDirectory(dest)
-  const entries = await fs.promises.readdir(src, { withFileTypes: true })
-
-  const EXCLUDED = new Set(['.git', '.skillset-metadata.json', '.skillset-original.md', '.skillset-agent-metadata.json'])
-
-  for (const entry of entries) {
-    if (EXCLUDED.has(entry.name)) continue
-
-    const srcPath = path.join(src, entry.name)
-    const destPath = path.join(dest, entry.name)
-
-    if (entry.isDirectory()) {
-      await copyTemplateFiles(srcPath, destPath)
-    } else {
-      await fs.promises.copyFile(srcPath, destPath)
-    }
-  }
+  return copyDirectoryFiltered(src, dest, ['.skillset-agent-metadata.json'])
 }
 
 // ============================================================================
@@ -639,6 +659,11 @@ async function copyTemplateFiles(src: string, dest: string): Promise<void> {
 
 /**
  * Read installed agent metadata from .skillset-agent-metadata.json.
+ *
+ * Lazy-cleanup backstop: if the provider reports this template is no longer
+ * valid for the current auth (e.g. a platform template from a previous org),
+ * the metadata file is removed and we return null so the agent reverts to
+ * looking "local".
  */
 export async function getInstalledAgentMetadata(
   agentSlug: string,
@@ -647,11 +672,24 @@ export async function getInstalledAgentMetadata(
   const content = await readFileOrNull(metadataPath)
   if (!content) return null
 
+  let raw: unknown
   try {
-    return JSON.parse(content) as InstalledAgentMetadata
-  } catch {
+    raw = JSON.parse(content)
+  } catch (error) {
+    captureException(error, { tags: { area: 'agent-template-metadata', op: 'json-parse' }, extra: { agentSlug } })
     return null
   }
+
+  const parsed = InstalledAgentMetadataSchema.safeParse(raw)
+  if (!parsed.success) {
+    captureException(parsed.error, { tags: { area: 'agent-template-metadata', op: 'schema' }, extra: { agentSlug } })
+    return null
+  }
+
+  const pruned = await pruneInstalledTemplateIfInvalid(parsed.data, metadataPath)
+  if (pruned) return null
+
+  return parsed.data as InstalledAgentMetadata
 }
 
 /**
@@ -712,6 +750,11 @@ export async function collectAgentRequiredEnvVars(
 
 /**
  * Get the template status of an agent.
+ *
+ * READ-ONLY: mirrors the skill path — no git ops, no metadata writes, no
+ * file copies. Pending queue items are checked and surfaced optimistically,
+ * but the actual transition to merged/rejected state (with file adoption) is
+ * deferred to `refreshAgentTemplates`.
  */
 export async function getAgentTemplateStatus(
   agentSlug: string,
@@ -722,34 +765,59 @@ export async function getAgentTemplateStatus(
     return { type: 'local' }
   }
 
-  const skillsetName = skillsets.find((s) => s.id === meta.skillsetId)?.name || meta.skillsetId
-
-  // Check for local modifications
+  const skillsetConfig = skillsets.find((s) => s.id === meta.skillsetId)
+  if (!skillsetConfig) {
+    return { type: 'local' }
+  }
+  const metaRef = toSkillsetRefFromMeta(meta)
+  const configRef = toSkillsetRefFromConfig(skillsetConfig)
+  const hostingProvider = getSkillsetProvider(meta.provider)
+  const info = hostingProvider.getSourceInfo(metaRef, skillsetConfig)
+  const skillsetName = info.skillsetName
+  const sourceLabel = info.sourceLabel
   const workspaceDir = getAgentWorkspaceDir(agentSlug)
+
+  // Queue status — single request, surfaces as optimistic "up_to_date" while
+  // the actual file adoption waits for refreshAgentTemplates.
+  let pendingTerminal = false
+  if (meta.pendingQueueItemId) {
+    try {
+      const s = await hostingProvider.getQueueItemStatus(meta.pendingQueueItemId)
+      pendingTerminal = s === 'merged' || s === 'rejected'
+    } catch (error) {
+      captureException(error, { tags: { area: 'agent-template-status', op: 'queue-lookup' }, extra: { agentSlug } })
+    }
+  }
+
   const currentHash = await computeAgentTemplateHash(workspaceDir)
 
-  if (currentHash !== meta.originalContentHash) {
-    return { type: 'locally_modified', skillsetId: meta.skillsetId, skillsetName, openPrUrl: meta.openPrUrl }
+  if (!pendingTerminal && (currentHash !== meta.originalContentHash || meta.openPrUrl)) {
+    return { type: 'locally_modified', skillsetId: meta.skillsetId, skillsetName, sourceLabel, openPrUrl: meta.openPrUrl }
   }
 
-  if (meta.openPrUrl) {
-    return { type: 'locally_modified', skillsetId: meta.skillsetId, skillsetName, openPrUrl: meta.openPrUrl }
-  }
-
-  // Check for updates
-  const index = await getSkillsetIndex(meta.skillsetId)
+  const index = await getSkillsetIndex(metaRef)
   const agentEntry = index?.agents?.find((a) => a.path === meta.agentPath)
+  const versionChanged = !!(agentEntry && agentEntry.version !== meta.installedVersion)
 
-  if (agentEntry && agentEntry.version !== meta.installedVersion) {
+  const repoDir = getSkillsetRepoDirForRef(configRef ?? metaRef)
+  const agentDirInRepo = path.join(repoDir, meta.agentPath.replace(/\/$/, ''))
+  let contentChanged = false
+  if (await directoryExists(agentDirInRepo)) {
+    const remoteCacheHash = await computeAgentTemplateHash(agentDirInRepo)
+    contentChanged = remoteCacheHash !== meta.originalContentHash
+  }
+
+  if (!pendingTerminal && (versionChanged || contentChanged)) {
     return {
       type: 'update_available',
       skillsetId: meta.skillsetId,
       skillsetName,
-      latestVersion: agentEntry.version,
+      sourceLabel,
+      latestVersion: versionChanged ? agentEntry!.version : undefined,
     }
   }
 
-  return { type: 'up_to_date', skillsetId: meta.skillsetId, skillsetName }
+  return { type: 'up_to_date', skillsetId: meta.skillsetId, skillsetName, sourceLabel }
 }
 
 /**
@@ -775,6 +843,34 @@ export async function computeAgentTemplateHash(workspaceDir: string): Promise<st
   return hash.digest('hex')
 }
 
+function updateAgentFrontmatterVersion(content: string, newVersion: string): string {
+  const parsed = parseMarkdownWithFrontmatter<Record<string, unknown>>(content)
+  return serializeMarkdownWithFrontmatter(
+    { ...parsed.frontmatter, version: newVersion },
+    parsed.body
+  )
+}
+
+async function collectAgentFilesForPlatform(
+  workspaceDir: string,
+  agentPathInRepo: string,
+  options?: { claudeMdContent?: string },
+): Promise<Array<{ path: string; content: string }>> {
+  const templateFiles = await walkTemplateFiles(workspaceDir)
+  const normalizedRoot = agentPathInRepo.replace(/\/$/, '')
+
+  return await Promise.all(templateFiles.map(async (relativePath) => {
+    const repoPath = `${normalizedRoot}/${relativePath.replace(/\\/g, '/')}`
+    if (relativePath === 'CLAUDE.md' && options?.claudeMdContent !== undefined) {
+      return { path: repoPath, content: options.claudeMdContent }
+    }
+
+    const fullPath = path.join(workspaceDir, relativePath)
+    const content = await fs.promises.readFile(fullPath, 'utf-8')
+    return { path: repoPath, content }
+  }))
+}
+
 // ============================================================================
 // Discoverable Agents
 // ============================================================================
@@ -789,7 +885,7 @@ export async function getDiscoverableAgents(
   const discoverable: DiscoverableAgent[] = []
 
   for (const ss of skillsets) {
-    const index = await getSkillsetIndex(ss.id)
+    const index = await getSkillsetIndex(toSkillsetRefFromConfig(ss))
     if (!index || !index.agents) continue
 
     for (const agent of index.agents) {
@@ -815,9 +911,10 @@ export async function refreshSkillsetCaches(
 ): Promise<void> {
   await Promise.all(
     skillsets.map(async (ss) => {
+      const ssRef = toSkillsetRefFromConfig(ss)
       try {
-        await ensureSkillsetCached(ss.id, ss.url)
-        await refreshSkillset(ss.id, ss.url)
+        await ensureSkillsetCached(ssRef)
+        await refreshSkillset(ssRef)
       } catch {
         // Skip failed skillsets
       }
@@ -831,62 +928,111 @@ export async function refreshSkillsetCaches(
 
 /**
  * Refresh all skillset caches and reconcile agent template status.
+ *
+ * This is the only place that mutates template metadata or copies files
+ * back from the cache — the read path (`getAgentTemplateStatus`) is pure.
  */
 export async function refreshAgentTemplates(
   skillsets: SkillsetConfig[],
 ): Promise<void> {
-  // Refresh all skillset caches
   for (const ss of skillsets) {
     try {
-      await refreshSkillset(ss.id, ss.url)
+      await refreshSkillset(toSkillsetRefFromConfig(ss))
     } catch (error) {
       console.warn(`Failed to refresh skillset ${ss.id}:`, error)
+      captureException(error, { tags: { area: 'template-refresh', op: 'pull' }, extra: { skillsetId: ss.id } })
     }
   }
 
-  // Reconcile installed agents
   const agents = await listAgents()
 
+  // Coalesce queue lookups by provider — one batch per provider instead of
+  // one fetch per installed template.
+  const metaByAgent = new Map<string, InstalledAgentMetadata>()
+  const pendingByProvider = new Map<SkillProvider, string[]>()
   for (const agent of agents) {
     const meta = await getInstalledAgentMetadata(agent.slug)
     if (!meta) continue
+    metaByAgent.set(agent.slug, meta)
+    if (meta.pendingQueueItemId) {
+      const p = (meta.provider ?? 'github') as SkillProvider
+      const list = pendingByProvider.get(p) ?? []
+      list.push(meta.pendingQueueItemId)
+      pendingByProvider.set(p, list)
+    }
+  }
 
-    const workspaceDir = getAgentWorkspaceDir(agent.slug)
-    const currentHash = await computeAgentTemplateHash(workspaceDir)
+  const queueStatuses = new Map<string, string | null>()
+  await Promise.all(Array.from(pendingByProvider.entries()).map(async ([p, ids]) => {
+    try {
+      const statuses = await getSkillsetProvider(p).getQueueItemStatuses(ids)
+      for (const [id, s] of statuses) queueStatuses.set(id, s)
+    } catch (error) {
+      captureException(error, { tags: { area: 'template-refresh', op: 'queue-batch' }, extra: { provider: p } })
+    }
+  }))
 
-    // If content matches original and has openPrUrl, check if PR was merged
-    if (currentHash === meta.originalContentHash && meta.openPrUrl) {
-      const repoDir = getSkillsetRepoDir(meta.skillsetId)
-      const agentDirInRepo = path.join(repoDir, meta.agentPath.replace(/\/$/, ''))
-      if (await directoryExists(agentDirInRepo)) {
-        const repoHash = await computeAgentTemplateHash(agentDirInRepo)
-        if (repoHash === currentHash) {
-          meta.openPrUrl = undefined
-          await fs.promises.writeFile(
-            getAgentMetadataPath(agent.slug),
-            JSON.stringify(meta, null, 2),
-            'utf-8'
-          )
+  for (const [slug, meta] of metaByAgent) {
+    const workspaceDir = getAgentWorkspaceDir(slug)
+    const repoDir = getSkillsetRepoDirForRef(toSkillsetRefFromMeta(meta))
+    const agentDirInRepo = path.join(repoDir, meta.agentPath.replace(/\/$/, ''))
+
+    // Step 1: resolve any pending platform submission.
+    if (meta.pendingQueueItemId) {
+      const s = queueStatuses.get(meta.pendingQueueItemId)
+      if (s === 'merged' || s === 'rejected') {
+        if (s === 'merged') {
+          try {
+            await refreshSkillset(toSkillsetRefFromMeta(meta))
+          } catch (error) {
+            captureException(error, { tags: { area: 'template-refresh', op: 'queue-merged-pull' }, extra: { agentSlug: slug } })
+          }
+          if (await directoryExists(agentDirInRepo)) {
+            await copyTemplateFiles(agentDirInRepo, workspaceDir)
+            meta.originalContentHash = await computeAgentTemplateHash(workspaceDir)
+          }
         }
+        meta.pendingQueueItemId = undefined
+        meta.openPrUrl = undefined
+        await writeJsonFile(getAgentMetadataPath(slug), meta)
+        continue
       }
     }
 
-    // If modified, check if changes are now upstream
-    if (currentHash !== meta.originalContentHash) {
-      const repoDir = getSkillsetRepoDir(meta.skillsetId)
-      const agentDirInRepo = path.join(repoDir, meta.agentPath.replace(/\/$/, ''))
-      if (await directoryExists(agentDirInRepo)) {
-        const repoHash = await computeAgentTemplateHash(agentDirInRepo)
-        if (repoHash === currentHash) {
-          meta.originalContentHash = currentHash
-          meta.openPrUrl = undefined
-          await fs.promises.writeFile(
-            getAgentMetadataPath(agent.slug),
-            JSON.stringify(meta, null, 2),
-            'utf-8'
-          )
-        }
+    if (!(await directoryExists(agentDirInRepo))) continue
+
+    const currentHash = await computeAgentTemplateHash(workspaceDir)
+    const repoHash = await computeAgentTemplateHash(agentDirInRepo)
+
+    // Local matches remote — clear any stale PR link.
+    if (repoHash === currentHash) {
+      if (meta.openPrUrl || currentHash !== meta.originalContentHash) {
+        meta.originalContentHash = currentHash
+        meta.openPrUrl = undefined
+        await writeJsonFile(getAgentMetadataPath(slug), meta)
       }
+      continue
+    }
+
+    // Remote has moved forward with a PR open — adopt remote.
+    if (meta.openPrUrl
+        && currentHash !== meta.originalContentHash
+        && repoHash !== meta.originalContentHash) {
+      await copyTemplateFiles(agentDirInRepo, workspaceDir)
+      meta.originalContentHash = repoHash
+      meta.openPrUrl = undefined
+
+      try {
+        const index = await readIndexJson(repoDir)
+        const agentEntry = index.agents?.find((a: { path: string }) => a.path === meta.agentPath)
+        if (agentEntry?.version) {
+          meta.installedVersion = agentEntry.version
+        }
+      } catch (error) {
+        captureException(error, { tags: { area: 'template-refresh', op: 'read-index' }, extra: { agentSlug: slug } })
+      }
+
+      await writeJsonFile(getAgentMetadataPath(slug), meta)
     }
   }
 }
@@ -968,8 +1114,7 @@ Rules for the version bump:
       suggestedBody: parsed.body || fallback.suggestedBody,
       suggestedVersion: parsed.version || fallback.suggestedVersion,
     }
-  } catch (error) {
-    console.error('Failed to generate agent PR suggestions:', error)
+  } catch {
     return fallback
   }
 }
@@ -1043,8 +1188,7 @@ Generate:
       suggestedBody: parsed.body || fallback.suggestedBody,
       suggestedVersion: parsed.version || fallback.suggestedVersion,
     }
-  } catch (error) {
-    console.error('Failed to generate agent publish suggestions:', error)
+  } catch {
     return fallback
   }
 }
@@ -1071,18 +1215,7 @@ export async function getAgentPRInfo(
     throw new Error('Agent has no skillset metadata - cannot create PR')
   }
 
-  // Check gh CLI
-  try {
-    await execFileAsync('gh', ['--version'], { timeout: 5000 })
-  } catch {
-    throw new Error('GitHub CLI (gh) is not installed. Install it from https://cli.github.com')
-  }
-
-  try {
-    await execFileAsync('gh', ['auth', 'status'], { timeout: 5000 })
-  } catch {
-    throw new Error('GitHub CLI is not authenticated. Run `gh auth login` to sign in.')
-  }
+  await getSkillsetProvider(meta.provider).ensurePublishPreconditions()
 
   const suggestions = await generateAgentPRSuggestions(meta, agentSlug)
 
@@ -1100,66 +1233,77 @@ export async function getAgentPRInfo(
 export async function createAgentPR(
   agentSlug: string,
   options: { title: string; body: string; newVersion?: string },
-): Promise<{ prUrl: string }> {
+): Promise<{ prUrl?: string; successMessage: string }> {
   const meta = await getInstalledAgentMetadata(agentSlug)
   if (!meta) {
     throw new Error('Agent has no skillset metadata - cannot create PR')
   }
 
   const workspaceDir = getAgentWorkspaceDir(agentSlug)
-  const repoDir = getSkillsetRepoDir(meta.skillsetId)
-  const ctx = await prepareForkBranch(repoDir, `update-agent-${agentSlug}`)
-
-  // Copy template files from workspace to the repo agent dir
-  const agentDirInRepo = path.join(repoDir, meta.agentPath.replace(/\/$/, ''))
-  await ensureDirectory(agentDirInRepo)
-
-  const templateFiles = await walkTemplateFiles(workspaceDir)
-  for (const relativePath of templateFiles) {
-    const srcPath = path.join(workspaceDir, relativePath)
-    const destPath = path.join(agentDirInRepo, relativePath)
-    await ensureDirectory(path.dirname(destPath))
-    await fs.promises.copyFile(srcPath, destPath)
+  const claudeMdPath = getAgentClaudeMdPath(agentSlug)
+  const claudeMdContent = await readFileOrNull(claudeMdPath)
+  if (!claudeMdContent) {
+    throw new Error('CLAUDE.md not found')
   }
+  const nextClaudeMdContent = options.newVersion
+    ? updateAgentFrontmatterVersion(claudeMdContent, options.newVersion)
+    : claudeMdContent
+  const targetName = path.basename(meta.agentPath.replace(/\/$/, ''))
 
-  // Update version in index.json if provided
+  const metaRef = toSkillsetRefFromMeta(meta)
+  const hostingProvider = getSkillsetProvider(meta.provider)
+  const repoDir = getSkillsetRepoDirForRef(metaRef)
+
+  const files = await collectAgentFilesForPlatform(workspaceDir, meta.agentPath, {
+    claudeMdContent: nextClaudeMdContent,
+  })
+
   if (options.newVersion) {
     const index = await readIndexJson(repoDir)
     if (index.agents) {
       const agentEntry = index.agents.find((a) => a.path === meta.agentPath)
       if (agentEntry) {
         agentEntry.version = options.newVersion
-        await fs.promises.writeFile(
-          path.join(repoDir, 'index.json'),
-          JSON.stringify(index, null, 2) + '\n',
-          'utf-8'
-        )
+        files.push({ path: 'index.json', content: JSON.stringify(index, null, 2) + '\n' })
       }
     }
   }
 
-  // Stage and commit
-  await execFileAsync('git', ['add', '.'], {
-    cwd: repoDir, timeout: 10000, env: GIT_ENV,
+  const result = await hostingProvider.publishUpdate({
+    repoDir,
+    branchPrefix: `update-agent-${agentSlug}`,
+    files,
+    title: options.title,
+    body: options.body,
+    skillsetId: meta.skillsetId,
+    skillsetUrl: meta.skillsetUrl,
+    skillsetName: metaRef.skillsetName,
+    providerData: metaRef.providerData,
+    targetName,
+    targetType: 'agent',
+    message: options.body,
   })
 
-  await execFileAsync(
-    'git',
-    ['commit', '-m', options.title],
-    { cwd: repoDir, timeout: 10000, env: GIT_ENV }
-  )
+  if (result.queueItem?.id && result.status !== 'merged') {
+    meta.pendingQueueItemId = result.queueItem.id
+  } else if (result.status === 'merged') {
+    await refreshSkillset(metaRef)
+    const agentDirInRepo = path.join(repoDir, meta.agentPath.replace(/\/$/, ''))
+    if (await directoryExists(agentDirInRepo)) {
+      await copyTemplateFiles(agentDirInRepo, workspaceDir)
+    } else {
+      await fs.promises.writeFile(claudeMdPath, nextClaudeMdContent, 'utf-8')
+    }
+    meta.originalContentHash = await computeAgentTemplateHash(workspaceDir)
+    meta.pendingQueueItemId = undefined
+  }
 
-  const prUrl = await pushAndCreatePR(ctx, options)
+  if (result.prUrl) {
+    meta.openPrUrl = result.prUrl
+  }
 
-  // Save PR URL in metadata
-  meta.openPrUrl = prUrl
-  await fs.promises.writeFile(
-    getAgentMetadataPath(agentSlug),
-    JSON.stringify(meta, null, 2),
-    'utf-8'
-  )
-
-  return { prUrl }
+  await writeJsonFile(getAgentMetadataPath(agentSlug), meta)
+  return { prUrl: result.prUrl, successMessage: result.successMessage }
 }
 
 // ============================================================================
@@ -1191,18 +1335,7 @@ export async function getAgentPublishInfo(
     throw new Error('CLAUDE.md not found')
   }
 
-  // Check gh CLI
-  try {
-    await execFileAsync('gh', ['--version'], { timeout: 5000 })
-  } catch {
-    throw new Error('GitHub CLI (gh) is not installed. Install it from https://cli.github.com')
-  }
-
-  try {
-    await execFileAsync('gh', ['auth', 'status'], { timeout: 5000 })
-  } catch {
-    throw new Error('GitHub CLI is not authenticated. Run `gh auth login` to sign in.')
-  }
+  await getSkillsetProvider(skillsetConfig.provider).ensurePublishPreconditions()
 
   const { frontmatter } = parseMarkdownWithFrontmatter<AgentFrontmatter>(claudeMdContent)
   const agentName = frontmatter.name || agentSlug
@@ -1224,11 +1357,16 @@ export async function publishAgentToSkillset(
   agentSlug: string,
   skillsetConfig: SkillsetConfig,
   options: { title: string; body: string; newVersion?: string },
-): Promise<{ prUrl: string }> {
+): Promise<{ prUrl?: string; successMessage: string }> {
   const workspaceDir = getAgentWorkspaceDir(agentSlug)
-  const claudeMdContent = await readFileOrNull(getAgentClaudeMdPath(agentSlug))
+  const claudeMdPath = getAgentClaudeMdPath(agentSlug)
+  let claudeMdContent = await readFileOrNull(claudeMdPath)
   if (!claudeMdContent) {
     throw new Error('CLAUDE.md not found')
+  }
+
+  if (options.newVersion) {
+    claudeMdContent = updateAgentFrontmatterVersion(claudeMdContent, options.newVersion)
   }
 
   const { frontmatter } = parseMarkdownWithFrontmatter<AgentFrontmatter>(claudeMdContent)
@@ -1240,74 +1378,48 @@ export async function publishAgentToSkillset(
   const agentDirName = agentSlug
   const agentPathInRepo = `agents/${agentDirName}/`
 
-  // Ensure the skillset cache is available
-  const repoDir = getSkillsetRepoDir(skillsetConfig.id)
+  const skillsetRef = toSkillsetRefFromConfig(skillsetConfig)
+  const repoDir = getSkillsetRepoDirForRef(skillsetRef)
   if (!(await directoryExists(path.join(repoDir, '.git')))) {
-    await ensureSkillsetCached(skillsetConfig.id, skillsetConfig.url)
+    await ensureSkillsetCached(skillsetRef)
   }
 
-  const ctx = await prepareForkBranch(repoDir, `add-agent-${agentDirName}`)
-
-  // Check for naming conflict
   const index = await readIndexJson(repoDir)
   const agents = index.agents || []
   const conflict = agents.find((a) => a.path === agentPathInRepo)
   if (conflict) {
-    // Clean up
-    await execFileAsync('git', ['checkout', ctx.baseBranch], {
-      cwd: repoDir, timeout: 10000, env: GIT_ENV,
-    }).catch(() => {})
-    await execFileAsync('git', ['branch', '-D', ctx.branchName], {
-      cwd: repoDir, timeout: 5000, env: GIT_ENV,
-    }).catch(() => {})
     throw new Error(
       `An agent already exists at "${agentPathInRepo}" in this skillset.`
     )
   }
 
-  // Create agent directory and copy template files
-  const destDir = path.join(repoDir, 'agents', agentDirName)
-  await ensureDirectory(destDir)
+  const hostingProvider = getSkillsetProvider(skillsetConfig.provider)
 
-  const templateFiles = await walkTemplateFiles(workspaceDir)
-  for (const relativePath of templateFiles) {
-    const srcPath = path.join(workspaceDir, relativePath)
-    const destPath = path.join(destDir, relativePath)
-    await ensureDirectory(path.dirname(destPath))
-    await fs.promises.copyFile(srcPath, destPath)
-  }
-
-  // Update index.json with the new agent entry
+  // Prepare agent template files + updated index.json
+  const files = await collectAgentFilesForPlatform(workspaceDir, agentPathInRepo, {
+    claudeMdContent,
+  })
   if (!index.agents) {
     index.agents = []
   }
-  index.agents.push({
-    name: agentName,
-    path: agentPathInRepo,
-    description,
-    version,
+  index.agents.push({ name: agentName, path: agentPathInRepo, description, version })
+  files.push({ path: 'index.json', content: JSON.stringify(index, null, 2) + '\n' })
+
+  const result = await hostingProvider.publishUpdate({
+    repoDir,
+    branchPrefix: `add-agent-${agentDirName}`,
+    files,
+    title: options.title,
+    body: options.body,
+    skillsetId: skillsetConfig.id,
+    skillsetUrl: skillsetConfig.url,
+    skillsetName: skillsetConfig.name,
+    providerData: skillsetRef.providerData,
+    targetName: agentDirName,
+    targetType: 'agent',
+    message: options.body,
   })
-  await fs.promises.writeFile(
-    path.join(repoDir, 'index.json'),
-    JSON.stringify(index, null, 2) + '\n',
-    'utf-8'
-  )
 
-  // Stage and commit
-  await execFileAsync('git', ['add', '.'], {
-    cwd: repoDir, timeout: 10000, env: GIT_ENV,
-  })
-
-  await execFileAsync(
-    'git',
-    ['commit', '-m', options.title],
-    { cwd: repoDir, timeout: 10000, env: GIT_ENV }
-  )
-
-  const prUrl = await pushAndCreatePR(ctx, options)
-
-  // Write metadata so the agent is now tracked
-  const hash = await computeAgentTemplateHash(workspaceDir)
   const metadata: InstalledAgentMetadata = {
     skillsetId: skillsetConfig.id,
     skillsetUrl: skillsetConfig.url,
@@ -1315,15 +1427,30 @@ export async function publishAgentToSkillset(
     agentPath: agentPathInRepo,
     installedVersion: version,
     installedAt: new Date().toISOString(),
-    originalContentHash: hash,
-    openPrUrl: prUrl,
+    originalContentHash: await computeAgentTemplateHash(workspaceDir),
+    provider: skillsetConfig.provider,
+    providerData: skillsetRef.providerData,
+    skillsetName: skillsetConfig.name,
   }
 
-  await fs.promises.writeFile(
-    getAgentMetadataPath(agentSlug),
-    JSON.stringify(metadata, null, 2),
-    'utf-8'
-  )
+  if (result.queueItem?.id && result.status !== 'merged') {
+    metadata.pendingQueueItemId = result.queueItem.id
+  } else if (result.status === 'merged') {
+    await refreshSkillset(skillsetRef)
+    const repoDirAfter = getSkillsetRepoDirForRef(skillsetRef)
+    const agentDirInRepo = path.join(repoDirAfter, agentPathInRepo.replace(/\/$/, ''))
+    if (await directoryExists(agentDirInRepo)) {
+      await copyTemplateFiles(agentDirInRepo, workspaceDir)
+    } else {
+      await fs.promises.writeFile(claudeMdPath, claudeMdContent, 'utf-8')
+    }
+    metadata.originalContentHash = await computeAgentTemplateHash(workspaceDir)
+  }
 
-  return { prUrl }
+  if (result.prUrl) {
+    metadata.openPrUrl = result.prUrl
+  }
+
+  await writeJsonFile(getAgentMetadataPath(agentSlug), metadata)
+  return { prUrl: result.prUrl, successMessage: result.successMessage }
 }

@@ -1,8 +1,13 @@
+import { useEffect, useRef } from 'react'
 import { apiFetch } from '@renderer/lib/api'
 import { downloadBlob } from '@renderer/lib/download'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
-import type { ApiAgent, ApiDiscoverableAgent, ApiAgentTemplateStatus } from '@shared/lib/types/api'
+import type { ApiAgent, ApiDiscoverableAgent, ApiItemStatus } from '@shared/lib/types/api'
+
+// Alias preserves the prior export name for downstream consumers while we
+// route everything through the canonical `ApiItemStatus`.
+type ApiAgentTemplateStatus = ApiItemStatus
 
 // Module-level flag ensures the background refresh fires only once across all
 // component instances that call useDiscoverableAgents().
@@ -198,19 +203,93 @@ export function useInstallAgentFromSkillset() {
   })
 }
 
+// Tracks slugs whose session-scoped background refresh has already fired,
+// so we don't hammer the refresh endpoint on every remount. Cleared on
+// full page reload.
+const templateRefreshSet = new Set<string>()
+
+function statusesEqual(a: ApiAgentTemplateStatus, b: ApiAgentTemplateStatus): boolean {
+  if (a === b) return true
+  return (
+    a.type === b.type
+    && a.skillsetId === b.skillsetId
+    && a.skillsetName === b.skillsetName
+    && a.sourceLabel === b.sourceLabel
+    && a.latestVersion === b.latestVersion
+    && a.openPrUrl === b.openPrUrl
+    && a.publishable === b.publishable
+  )
+}
+
 export function useAgentTemplateStatus(agentSlug: string | null) {
-  return useQuery<ApiAgentTemplateStatus>({
+  const queryClient = useQueryClient()
+
+  const query = useQuery<ApiAgentTemplateStatus>({
     queryKey: ['agent-template-status', agentSlug],
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug!)}/template-status`)
       if (!res.ok) throw new Error('Failed to fetch template status')
-      return res.json()
+      return await res.json() as ApiAgentTemplateStatus
     },
     enabled: !!agentSlug,
   })
+
+  // Fire a single background refresh per slug, per session — this kicks any
+  // pending queue items forward and adopts merged content. We do it in an
+  // effect (not inside queryFn) so the read path stays pure and React Query's
+  // own retries/refetches don't trigger extra network calls.
+  const lastSlugRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!agentSlug) return
+    if (lastSlugRef.current === agentSlug) return
+    lastSlugRef.current = agentSlug
+
+    if (templateRefreshSet.has(agentSlug)) return
+    templateRefreshSet.add(agentSlug)
+
+    let cancelled = false
+    apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/template-refresh`, { method: 'POST' })
+      .then(async (r) => {
+        if (cancelled || !r.ok) return
+        const fresh = await r.json() as ApiAgentTemplateStatus
+        const current = queryClient.getQueryData<ApiAgentTemplateStatus>(['agent-template-status', agentSlug])
+        if (!current || !statusesEqual(fresh, current)) {
+          queryClient.setQueryData(['agent-template-status', agentSlug], fresh)
+        }
+      })
+      .catch(() => { /* best-effort; a user-triggered refresh surfaces the error */ })
+
+    return () => { cancelled = true }
+  }, [agentSlug, queryClient])
+
+  return query
 }
 
-export function useUpdateAgentTemplate() {
+export function useRefreshAgentTemplateStatus() {
+  const queryClient = useQueryClient()
+
+  return useMutation<
+    ApiAgentTemplateStatus,
+    Error,
+    { agentSlug: string }
+  >({
+    mutationFn: async ({ agentSlug }) => {
+      const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/template-refresh`, {
+        method: 'POST',
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || 'Failed to refresh template status')
+      }
+      return res.json()
+    },
+    onSuccess: (data, vars) => {
+      queryClient.setQueryData(['agent-template-status', vars.agentSlug], data)
+    },
+  })
+}
+
+function useTemplateUpdateMutation(errorMessage: string) {
   const queryClient = useQueryClient()
 
   return useMutation<
@@ -224,7 +303,7 @@ export function useUpdateAgentTemplate() {
       })
       if (!res.ok) {
         const data = await res.json()
-        throw new Error(data.error || 'Failed to update template')
+        throw new Error(data.error || errorMessage)
       }
       return res.json()
     },
@@ -233,6 +312,14 @@ export function useUpdateAgentTemplate() {
       queryClient.invalidateQueries({ queryKey: ['agents'] })
     },
   })
+}
+
+export function useUpdateAgentTemplate() {
+  return useTemplateUpdateMutation('Failed to update template')
+}
+
+export function useForceSyncAgentTemplate() {
+  return useTemplateUpdateMutation('Failed to sync template from remote')
 }
 
 export interface AgentTemplatePRInfo {
@@ -263,7 +350,7 @@ export function useCreateAgentTemplatePR() {
   const queryClient = useQueryClient()
 
   return useMutation<
-    { prUrl: string },
+    { prUrl?: string; successMessage: string },
     Error,
     { agentSlug: string; title: string; body: string; newVersion?: string }
   >({
@@ -318,7 +405,7 @@ export function usePublishAgentTemplate() {
   const queryClient = useQueryClient()
 
   return useMutation<
-    { prUrl: string },
+    { prUrl?: string; successMessage: string },
     Error,
     {
       agentSlug: string

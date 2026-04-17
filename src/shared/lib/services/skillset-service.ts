@@ -30,9 +30,23 @@ import type {
   DiscoverableSkill,
   SkillWithStatus,
   SkillStatus,
+  SkillProvider,
 } from '@shared/lib/types/skillset'
+import { InstalledSkillMetadataSchema } from '@shared/lib/types/skillset-schema'
+import { getSkillsetProvider } from '@shared/lib/skillset-provider'
+import {
+  copyDirectoryFiltered,
+  writeJsonFile,
+} from '@shared/lib/utils/file-storage'
+import { captureException } from '@shared/lib/error-reporting'
+import { pruneInstalledSkillIfInvalid } from './skillset-reconcile'
 
 const execFileAsync = promisify(execFile)
+
+const GIT_ENV = {
+  ...process.env,
+  GIT_TERMINAL_PROMPT: '0',
+}
 
 // ============================================================================
 // Path Helpers
@@ -43,7 +57,14 @@ function getSkillsetCacheDir(): string {
 }
 
 export function getSkillsetRepoDir(skillsetId: string): string {
-  return path.join(getSkillsetCacheDir(), skillsetId)
+  // Strict allowlist — only alphanumerics, dot, dash, underscore survive.
+  // Anything else (slashes, `..`, null bytes, backslashes, …) collapses to
+  // `--`. Leading/trailing dots and dashes are trimmed to prevent names like
+  // `.` / `..` from escaping the cache directory.
+  const safeName = skillsetId
+    .replace(/[^a-zA-Z0-9._-]+/g, '--')
+    .replace(/^[-.]+|[-.]+$/g, '') || 'skillset'
+  return path.join(getSkillsetCacheDir(), safeName)
 }
 
 function getAgentSkillsDir(agentSlug: string): string {
@@ -63,6 +84,43 @@ function sanitizeDirName(name: string): string {
     throw new Error(`Invalid directory name: ${name}`)
   }
   return name
+}
+
+type SkillsetRef = {
+  skillsetId: string
+  skillsetUrl: string
+  provider?: SkillProvider
+  skillsetName?: string
+  providerData?: SkillsetConfig['providerData']
+}
+
+function toSkillsetRefFromConfig(config: Pick<SkillsetConfig, 'id' | 'url' | 'name' | 'provider' | 'providerData'>): SkillsetRef {
+  const provider = getSkillsetProvider(config.provider)
+  return {
+    skillsetId: config.id,
+    skillsetUrl: config.url,
+    provider: config.provider,
+    skillsetName: config.name,
+    providerData: provider.normalizeProviderData(config),
+  }
+}
+
+function toSkillsetRefFromMeta(
+  meta: Pick<InstalledSkillMetadata, 'skillsetId' | 'skillsetUrl' | 'skillsetName' | 'provider' | 'providerData'>,
+): SkillsetRef {
+  const provider = getSkillsetProvider(meta.provider)
+  return {
+    skillsetId: meta.skillsetId,
+    skillsetUrl: meta.skillsetUrl,
+    provider: meta.provider,
+    skillsetName: meta.skillsetName,
+    providerData: provider.normalizeProviderData(meta),
+  }
+}
+
+function getSkillsetRepoDirForRef(ref: Pick<SkillsetRef, 'skillsetId' | 'provider' | 'providerData'>): string {
+  const provider = getSkillsetProvider(ref.provider)
+  return getSkillsetRepoDir(provider.getEffectiveRepoId(ref))
 }
 
 // ============================================================================
@@ -102,6 +160,174 @@ function skillPathToDirName(skillPath: string): string {
 /** Compute SHA-256 hash of content */
 export function contentHash(content: string): string {
   return crypto.createHash('sha256').update(content, 'utf-8').digest('hex')
+}
+
+type SkillPackageFile = {
+  relativePath: string
+  content: string
+}
+
+type SkillPackageDiffSummary = {
+  summary: string
+  changedFileCount: number
+}
+
+const SKILL_PACKAGE_EXCLUDED = new Set([
+  '.git',
+  '.skillset-metadata.json',
+  '.skillset-original.md',
+])
+
+async function readSkillPackageFiles(skillDir: string): Promise<SkillPackageFile[]> {
+  const files: SkillPackageFile[] = []
+
+  async function walk(dir: string, relativeBase: string): Promise<void> {
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true })
+
+    for (const entry of entries) {
+      if (SKILL_PACKAGE_EXCLUDED.has(entry.name)) continue
+
+      const relativePath = relativeBase ? path.join(relativeBase, entry.name) : entry.name
+      const fullPath = path.join(dir, entry.name)
+
+      if (entry.isDirectory()) {
+        await walk(fullPath, relativePath)
+        continue
+      }
+
+      if (!entry.isFile()) continue
+
+      files.push({
+        relativePath,
+        content: await fs.promises.readFile(fullPath, 'utf-8'),
+      })
+    }
+  }
+
+  await walk(skillDir, '')
+  return files.sort((a, b) => a.relativePath.localeCompare(b.relativePath))
+}
+
+function hashSkillPackageFiles(files: SkillPackageFile[]): string {
+  const hash = crypto.createHash('sha256')
+
+  for (const file of [...files].sort((a, b) => a.relativePath.localeCompare(b.relativePath))) {
+    hash.update(file.relativePath, 'utf-8')
+    hash.update('\0', 'utf-8')
+    hash.update(file.content, 'utf-8')
+    hash.update('\0', 'utf-8')
+  }
+
+  return hash.digest('hex')
+}
+
+async function getSkillPackageHash(skillDir: string): Promise<string> {
+  return hashSkillPackageFiles(await readSkillPackageFiles(skillDir))
+}
+
+function upsertSkillMdInPackageFiles(
+  files: SkillPackageFile[],
+  transform: (content: string) => string,
+): SkillPackageFile[] {
+  let foundSkillMd = false
+  const updated = files.map((file) => {
+    if (file.relativePath !== 'SKILL.md') return file
+    foundSkillMd = true
+    return { ...file, content: transform(file.content) }
+  })
+
+  if (!foundSkillMd) {
+    throw new Error('SKILL.md not found')
+  }
+
+  return updated
+}
+
+function getSkillMdFromPackageFiles(files: SkillPackageFile[]): string {
+  const skillMd = files.find((file) => file.relativePath === 'SKILL.md')
+  if (!skillMd) throw new Error('SKILL.md not found')
+  return skillMd.content
+}
+
+function toRepoRelativePath(baseDir: string, relativePath: string): string {
+  return path.posix.join(
+    baseDir.split(path.sep).join(path.posix.sep),
+    relativePath.split(path.sep).join(path.posix.sep),
+  )
+}
+
+function toPlatformSkillFiles(
+  repoSkillDir: string,
+  files: SkillPackageFile[],
+): Array<{ path: string; content: string }> {
+  return files.map((file) => ({
+    path: toRepoRelativePath(repoSkillDir, file.relativePath),
+    content: file.content,
+  }))
+}
+
+async function getRepoSkillPackageFiles(
+  repoDir: string,
+  skillPath: string,
+): Promise<SkillPackageFile[] | null> {
+  const repoSkillDir = path.join(repoDir, path.dirname(skillPath))
+  if (!(await directoryExists(repoSkillDir))) return null
+  return readSkillPackageFiles(repoSkillDir)
+}
+
+function truncateForPrompt(content: string, maxChars = 400): string {
+  if (content.length <= maxChars) return content
+  return `${content.slice(0, maxChars)}\n... [truncated]`
+}
+
+function summarizeSkillPackageDiff(
+  originalFiles: SkillPackageFile[],
+  modifiedFiles: SkillPackageFile[],
+): SkillPackageDiffSummary {
+  const originalMap = new Map(originalFiles.map((file) => [file.relativePath, file.content]))
+  const modifiedMap = new Map(modifiedFiles.map((file) => [file.relativePath, file.content]))
+  const allPaths = Array.from(new Set([
+    ...originalMap.keys(),
+    ...modifiedMap.keys(),
+  ]))
+    .filter((relativePath) => relativePath !== 'SKILL.md')
+    .sort((a, b) => a.localeCompare(b))
+
+  const parts: string[] = []
+  let changedFileCount = 0
+
+  for (const relativePath of allPaths) {
+    const originalContent = originalMap.get(relativePath)
+    const modifiedContent = modifiedMap.get(relativePath)
+
+    if (originalContent == null && modifiedContent != null) {
+      changedFileCount += 1
+      parts.push(
+        `Added file: ${relativePath}\nNew content:\n\`\`\`\n${truncateForPrompt(modifiedContent)}\n\`\`\``
+      )
+      continue
+    }
+
+    if (originalContent != null && modifiedContent == null) {
+      changedFileCount += 1
+      parts.push(
+        `Removed file: ${relativePath}\nPrevious content:\n\`\`\`\n${truncateForPrompt(originalContent)}\n\`\`\``
+      )
+      continue
+    }
+
+    if (originalContent != null && modifiedContent != null && originalContent !== modifiedContent) {
+      changedFileCount += 1
+      parts.push(
+        `Modified file: ${relativePath}\nBefore:\n\`\`\`\n${truncateForPrompt(originalContent)}\n\`\`\`\nAfter:\n\`\`\`\n${truncateForPrompt(modifiedContent)}\n\`\`\``
+      )
+    }
+  }
+
+  return {
+    summary: parts.join('\n\n'),
+    changedFileCount,
+  }
 }
 
 // ============================================================================
@@ -182,10 +408,6 @@ function getDisplayName(dirName: string): string {
 // Git Operations
 // ============================================================================
 
-const GIT_ENV = {
-  ...process.env,
-  GIT_TERMINAL_PROMPT: '0', // Prevent interactive prompts
-}
 
 async function gitClone(url: string, dest: string): Promise<void> {
   try {
@@ -208,11 +430,61 @@ async function gitClone(url: string, dest: string): Promise<void> {
 }
 
 async function gitPull(repoDir: string): Promise<void> {
-  await execFileAsync('git', ['pull'], {
-    cwd: repoDir,
-    timeout: 30000,
-    env: GIT_ENV,
+  // Ensure we're on the default branch before pulling.
+  // After a PR flow the repo may be left on a detached HEAD or stale branch.
+  try {
+    const { stdout: headRef } = await execFileAsync(
+      'git', ['symbolic-ref', 'refs/remotes/origin/HEAD'],
+      { cwd: repoDir, timeout: 5000, env: GIT_ENV },
+    )
+    const defaultBranch = headRef.trim().replace('refs/remotes/origin/', '')
+    await execFileAsync('git', ['checkout', defaultBranch], {
+      cwd: repoDir, timeout: 10000, env: GIT_ENV,
+    })
+  } catch {
+    // Fallback: try main, then master
+    try {
+      await execFileAsync('git', ['checkout', 'main'], {
+        cwd: repoDir, timeout: 10000, env: GIT_ENV,
+      })
+    } catch {
+      await execFileAsync('git', ['checkout', 'master'], {
+        cwd: repoDir, timeout: 10000, env: GIT_ENV,
+      }).catch((err) => {
+        console.warn(`[gitPull] Could not check out default branch in ${repoDir}:`, err)
+        captureException(err, { tags: { area: 'skillset-git', op: 'checkout-default' }, extra: { repoDir } })
+      })
+    }
+  }
+
+  await execFileAsync('git', ['fetch', 'origin'], {
+    cwd: repoDir, timeout: 30000, env: GIT_ENV,
   })
+
+  // Hard-reset to origin so we always get the latest upstream content,
+  // even if the local branch drifted (e.g. leftover PR branch commits).
+  try {
+    const { stdout: branch } = await execFileAsync(
+      'git', ['rev-parse', '--abbrev-ref', 'HEAD'],
+      { cwd: repoDir, timeout: 5000, env: GIT_ENV },
+    )
+    await execFileAsync('git', ['reset', '--hard', `origin/${branch.trim()}`], {
+      cwd: repoDir, timeout: 10000, env: GIT_ENV,
+    })
+  } catch (resetError) {
+    // Fallback to normal pull if reset fails (e.g. branch isn't tracked
+    // upstream). Surface both failures so intermittent breakage is visible.
+    console.warn(`[gitPull] reset --hard failed in ${repoDir}, falling back to git pull:`, resetError)
+    captureException(resetError, { tags: { area: 'skillset-git', op: 'reset-hard' }, extra: { repoDir } })
+    try {
+      await execFileAsync('git', ['pull'], {
+        cwd: repoDir, timeout: 30000, env: GIT_ENV,
+      })
+    } catch (pullError) {
+      captureException(pullError, { tags: { area: 'skillset-git', op: 'pull-fallback' }, extra: { repoDir } })
+      throw pullError
+    }
+  }
 }
 
 async function isGitRepo(dir: string): Promise<boolean> {
@@ -273,22 +545,26 @@ export async function ensureGitInstalled(): Promise<void> {
   }
 }
 
-export async function ensureSkillsetCached(skillsetId: string, url: string): Promise<string> {
-  const repoDir = getSkillsetRepoDir(skillsetId)
+export async function ensureSkillsetCached(ref: SkillsetRef): Promise<string> {
+  const hostingProvider = getSkillsetProvider(ref.provider)
+  const repoDir = getSkillsetRepoDir(hostingProvider.getEffectiveRepoId(ref))
 
-  if (await isGitRepo(repoDir)) {
-    return repoDir
-  }
+  if (await isGitRepo(repoDir)) return repoDir
 
   await ensureGitInstalled()
   await ensureDirectory(getSkillsetCacheDir())
 
-  // Clean up any partial directory
+  const parentDir = path.dirname(repoDir)
+  if (parentDir !== getSkillsetCacheDir()) {
+    await ensureDirectory(parentDir)
+  }
+
   if (await directoryExists(repoDir)) {
     await fs.promises.rm(repoDir, { recursive: true, force: true })
   }
 
-  await gitClone(url, repoDir)
+  const cloneUrl = await hostingProvider.resolveCloneUrl(ref.skillsetUrl, ref)
+  await gitClone(cloneUrl, repoDir)
   return repoDir
 }
 
@@ -299,7 +575,7 @@ export async function readIndexJson(repoDir: string): Promise<SkillsetIndex> {
   const indexPath = path.join(repoDir, 'index.json')
   const content = await readFileOrNull(indexPath)
   if (!content) {
-    throw new Error('index.json not found in skillset repository')
+    throw new Error(`index.json not found in skillset repository at ${indexPath}`)
   }
 
   let raw: unknown
@@ -309,7 +585,6 @@ export async function readIndexJson(repoDir: string): Promise<SkillsetIndex> {
     throw new Error('index.json contains invalid JSON')
   }
 
-  // Validate structure
   const parsed = raw as Record<string, unknown>
   if (!parsed.skillset_name || !Array.isArray(parsed.skills)) {
     throw new Error('Invalid index.json: missing skillset_name or skills array')
@@ -326,22 +601,30 @@ export async function readIndexJson(repoDir: string): Promise<SkillsetIndex> {
  * Validate a skillset URL by cloning the repo and reading index.json.
  * Returns the parsed index on success.
  */
-export async function validateSkillsetUrl(url: string): Promise<SkillsetIndex> {
+export async function validateSkillsetUrl(url: string, provider?: SkillProvider): Promise<SkillsetIndex> {
   const skillsetId = urlToSkillsetId(url)
-  const repoDir = await ensureSkillsetCached(skillsetId, url)
+  const repoDir = await ensureSkillsetCached({ skillsetId, skillsetUrl: url, provider })
   return readIndexJson(repoDir)
 }
 
 /**
  * Refresh a cached skillset repo (git pull) and return the updated index.
  */
-export async function refreshSkillset(skillsetId: string, url: string): Promise<SkillsetIndex> {
-  const repoDir = getSkillsetRepoDir(skillsetId)
+export async function refreshSkillset(ref: SkillsetRef): Promise<SkillsetIndex> {
+  const hostingProvider = getSkillsetProvider(ref.provider)
+  const repoDir = getSkillsetRepoDir(hostingProvider.getEffectiveRepoId(ref))
 
   if (await isGitRepo(repoDir)) {
+    // Always re-resolve the clone URL and update the origin. For platform,
+    // the URL embeds a short-lived token — we need to freshen it every refresh.
+    // For github, set-url is a cheap no-op when unchanged.
+    const freshUrl = await hostingProvider.resolveCloneUrl(ref.skillsetUrl, ref)
+    await execFileAsync('git', ['remote', 'set-url', 'origin', freshUrl], {
+      cwd: repoDir, timeout: 5000, env: GIT_ENV,
+    })
     await gitPull(repoDir)
   } else {
-    await ensureSkillsetCached(skillsetId, url)
+    await ensureSkillsetCached(ref)
   }
 
   return readIndexJson(repoDir)
@@ -350,9 +633,11 @@ export async function refreshSkillset(skillsetId: string, url: string): Promise<
 /**
  * Get the skillset index from local cache (no network).
  */
-export async function getSkillsetIndex(skillsetId: string): Promise<SkillsetIndex | null> {
-  const repoDir = getSkillsetRepoDir(skillsetId)
-  if (!(await isGitRepo(repoDir))) return null
+export async function getSkillsetIndex(
+  ref: Pick<SkillsetRef, 'skillsetId' | 'provider' | 'providerData'>,
+): Promise<SkillsetIndex | null> {
+  const repoDir = getSkillsetRepoDirForRef(ref)
+  if (!await isGitRepo(repoDir)) return null
 
   try {
     return await readIndexJson(repoDir)
@@ -364,8 +649,8 @@ export async function getSkillsetIndex(skillsetId: string): Promise<SkillsetInde
 /**
  * Remove a skillset cache directory.
  */
-export async function removeSkillsetCache(skillsetId: string): Promise<void> {
-  const repoDir = getSkillsetRepoDir(skillsetId)
+export async function removeSkillsetCache(ref: Pick<SkillsetRef, 'skillsetId' | 'provider' | 'providerData'>): Promise<void> {
+  const repoDir = getSkillsetRepoDirForRef(ref)
   if (await directoryExists(repoDir)) {
     await fs.promises.rm(repoDir, { recursive: true, force: true })
   }
@@ -377,15 +662,14 @@ export async function removeSkillsetCache(skillsetId: string): Promise<void> {
  */
 export async function installSkillFromSkillset(
   agentSlug: string,
-  skillsetId: string,
-  skillsetUrl: string,
+  skillsetRef: SkillsetRef,
   skillPath: string,
   skillName: string,
   skillVersion: string,
 ): Promise<{ requiredEnvVars?: Array<{ name: string; description: string }> }> {
-  const repoDir = getSkillsetRepoDir(skillsetId)
+  const repoDir = getSkillsetRepoDirForRef(skillsetRef)
   if (!(await isGitRepo(repoDir))) {
-    await ensureSkillsetCached(skillsetId, skillsetUrl)
+    await ensureSkillsetCached(skillsetRef)
   }
 
   // Determine source and destination directories
@@ -401,7 +685,7 @@ export async function installSkillFromSkillset(
   await ensureDirectory(destDir)
 
   // Copy all files from the skill directory
-  await copyDirectory(skillDirInRepo, destDir)
+  await copyDirectoryFiltered(skillDirInRepo, destDir)
 
   // Read the installed SKILL.md to compute hash and parse metadata
   const skillMdPath = path.join(destDir, 'SKILL.md')
@@ -410,18 +694,21 @@ export async function installSkillFromSkillset(
     throw new Error('SKILL.md not found after installation')
   }
 
-  const hash = contentHash(skillContent)
+  const hash = await getSkillPackageHash(destDir)
   const frontmatter = parseSkillFrontmatter(skillContent)
 
   // Write metadata file
   const metadata: InstalledSkillMetadata = {
-    skillsetId,
-    skillsetUrl,
+    skillsetId: skillsetRef.skillsetId,
+    skillsetUrl: skillsetRef.skillsetUrl,
     skillName,
     skillPath,
     installedVersion: skillVersion,
     installedAt: new Date().toISOString(),
     originalContentHash: hash,
+    provider: skillsetRef.provider,
+    providerData: skillsetRef.providerData,
+    skillsetName: skillsetRef.skillsetName,
   }
 
   await fs.promises.writeFile(
@@ -448,43 +735,69 @@ export async function updateSkillFromSkillset(
   skillDirName: string,
 ): Promise<{ updated: boolean }> {
   sanitizeDirName(skillDirName)
+  console.log('[skillset-debug] updateSkillFromSkillset enter (Update/ForceSync)', { agentSlug, skillDirName })
+
   const metadataPath = getSkillMetadataPath(agentSlug, skillDirName)
   const metaContent = await readFileOrNull(metadataPath)
   if (!metaContent) {
+    console.log('[skillset-debug] updateSkillFromSkillset: no metadata, skip', { agentSlug, skillDirName, metadataPath })
     return { updated: false }
   }
 
   let meta: InstalledSkillMetadata
   try {
     meta = JSON.parse(metaContent)
-  } catch {
+  } catch (error) {
+    console.log('[skillset-debug] updateSkillFromSkillset: metadata JSON parse failed', { agentSlug, skillDirName, error: String(error) })
     return { updated: false }
   }
 
+  console.log('[skillset-debug] updateSkillFromSkillset: loaded metadata', {
+    agentSlug,
+    skillDirName,
+    metaSkillsetId: meta.skillsetId,
+    metaProvider: meta.provider,
+    metaSkillPath: meta.skillPath,
+  })
+
+  const skillsetRef = toSkillsetRefFromMeta(meta)
+
   // Refresh the skillset cache
-  await refreshSkillset(meta.skillsetId, meta.skillsetUrl)
+  await refreshSkillset(skillsetRef)
 
   // Re-install the skill (overwrites existing)
-  const index = await getSkillsetIndex(meta.skillsetId)
-  if (!index) return { updated: false }
+  const index = await getSkillsetIndex(skillsetRef)
+  if (!index) {
+    console.log('[skillset-debug] updateSkillFromSkillset: skillset index missing, skip', { agentSlug, skillDirName })
+    return { updated: false }
+  }
 
   const skillEntry = index.skills.find((s) => s.path === meta.skillPath)
-  if (!skillEntry) return { updated: false }
+  if (!skillEntry) {
+    console.log('[skillset-debug] updateSkillFromSkillset: skill path no longer in index', { agentSlug, skillDirName, skillPath: meta.skillPath })
+    return { updated: false }
+  }
 
   await installSkillFromSkillset(
     agentSlug,
-    meta.skillsetId,
-    meta.skillsetUrl,
+    skillsetRef,
     meta.skillPath,
     meta.skillName,
     skillEntry.version,
   )
 
+  console.log('[skillset-debug] updateSkillFromSkillset: re-installed ok', { agentSlug, skillDirName, installedVersion: skillEntry.version })
   return { updated: true }
 }
 
 /**
  * Read installed skill metadata from .skillset-metadata.json.
+ *
+ * Also the lazy-cleanup backstop: if the provider reports that this
+ * installed skill is no longer valid for the current auth (e.g. a platform
+ * skill from a previous org), the directory is deleted and we return null.
+ * That way stale installs get cleaned up on first read without needing a
+ * startup sweep, and callers see the record as "not installed".
  */
 export async function getInstalledSkillMetadata(
   agentSlug: string,
@@ -494,15 +807,36 @@ export async function getInstalledSkillMetadata(
   const content = await readFileOrNull(metadataPath)
   if (!content) return null
 
+  let raw: unknown
   try {
-    return JSON.parse(content) as InstalledSkillMetadata
-  } catch {
+    raw = JSON.parse(content)
+  } catch (error) {
+    captureException(error, { tags: { area: 'skill-metadata', op: 'json-parse' }, extra: { agentSlug, skillDirName } })
     return null
   }
+
+  const parsed = InstalledSkillMetadataSchema.safeParse(raw)
+  if (!parsed.success) {
+    captureException(parsed.error, { tags: { area: 'skill-metadata', op: 'schema' }, extra: { agentSlug, skillDirName } })
+    return null
+  }
+
+  const skillDir = path.dirname(metadataPath)
+  const pruned = await pruneInstalledSkillIfInvalid(parsed.data, skillDir)
+  if (pruned) return null
+
+  return parsed.data as InstalledSkillMetadata
 }
 
 /**
  * Get all agent skills with version/status info.
+ *
+ * READ-ONLY: does not mutate metadata, does not touch git, does not write
+ * files. Queue-item status checks (for pending platform submissions) are
+ * coalesced into one batched request per provider. Transitioning a pending
+ * submission to merged/rejected — and the file reconciliation that goes with
+ * it — is the job of `refreshAgentSkills`, which the client invokes via
+ * the explicit refresh endpoint.
  */
 export async function getAgentSkillsWithStatus(
   agentSlug: string,
@@ -517,18 +851,34 @@ export async function getAgentSkillsWithStatus(
   // Build a map of skillset indexes for quick lookup
   const indexMap = new Map<string, SkillsetIndex>()
   for (const ss of skillsets) {
-    const index = await getSkillsetIndex(ss.id)
+    const index = await getSkillsetIndex(toSkillsetRefFromConfig(ss))
     if (index) indexMap.set(ss.id, index)
   }
 
-  // Build a map of skillset names
-  const skillsetNameMap = new Map<string, string>()
+  // Build a map of skillset configs for platform repo resolution
+  const skillsetConfigMap = new Map<string, SkillsetConfig>()
   for (const ss of skillsets) {
-    skillsetNameMap.set(ss.id, ss.name)
+    skillsetConfigMap.set(ss.id, ss)
   }
 
-  const skills: SkillWithStatus[] = []
+  console.log('[skillset-debug] getAgentSkillsWithStatus enter', {
+    agentSlug,
+    skillsDir,
+    configuredSkillsets: skillsets.map((s) => ({ id: s.id, name: s.name, provider: s.provider })),
+  })
+
   const entries = await fs.promises.readdir(skillsDir, { withFileTypes: true })
+
+  // First pass: collect metadata + pending queue IDs per provider. This lets
+  // us ask each provider for *all* its queue statuses in one request.
+  type Prepared = {
+    entryName: string
+    skillPath: string
+    meta: InstalledSkillMetadata | null
+    skillMdContent: string | null
+  }
+  const prepared: Prepared[] = []
+  const pendingIdsByProvider = new Map<SkillProvider, string[]>()
 
   for (const entry of entries) {
     if (!entry.isDirectory()) continue
@@ -536,50 +886,119 @@ export async function getAgentSkillsWithStatus(
     const skillPath = path.join(skillsDir, entry.name)
     const skillMdPath = path.join(skillPath, 'SKILL.md')
     const skillMdContent = await readFileOrNull(skillMdPath)
-
     if (!skillMdContent) continue
 
-    const description = parseDescription(skillMdContent)
-    const frontmatter = parseSkillFrontmatter(skillMdContent)
     const meta = await getInstalledSkillMetadata(agentSlug, entry.name)
+    prepared.push({ entryName: entry.name, skillPath, meta, skillMdContent })
+
+    if (meta?.pendingQueueItemId) {
+      const p = (meta.provider ?? 'github') as SkillProvider
+      const list = pendingIdsByProvider.get(p) ?? []
+      list.push(meta.pendingQueueItemId)
+      pendingIdsByProvider.set(p, list)
+    }
+  }
+
+  // Batched queue lookups (one request per provider).
+  const queueStatusByProvider = new Map<SkillProvider, Map<string, string | null>>()
+  await Promise.all(Array.from(pendingIdsByProvider.entries()).map(async ([p, ids]) => {
+    try {
+      const statuses = await getSkillsetProvider(p).getQueueItemStatuses(ids)
+      queueStatusByProvider.set(p, statuses)
+    } catch (error) {
+      captureException(error, { tags: { area: 'skillset-status', op: 'queue-batch' }, extra: { provider: p, count: ids.length } })
+      queueStatusByProvider.set(p, new Map())
+    }
+  }))
+
+  const skills: SkillWithStatus[] = []
+
+  for (const { entryName, skillPath, meta, skillMdContent } of prepared) {
+    const description = parseDescription(skillMdContent!)
+    const frontmatter = parseSkillFrontmatter(skillMdContent!)
 
     let status: SkillStatus
 
     if (!meta) {
-      // Not from a skillset
       status = { type: 'local' }
+      console.log('[skillset-debug] skill status=local (no metadata)', { agentSlug, entry: entryName })
     } else {
-      const skillsetName = skillsetNameMap.get(meta.skillsetId) || meta.skillsetId
-
-      // Check for local modifications
-      const currentHash = contentHash(skillMdContent)
-      if (currentHash !== meta.originalContentHash) {
-        status = { type: 'locally_modified', skillsetId: meta.skillsetId, skillsetName, openPrUrl: meta.openPrUrl }
-      } else if (meta.openPrUrl) {
-        // Content matches original but a PR is still open (e.g. published skill awaiting merge)
-        status = { type: 'locally_modified', skillsetId: meta.skillsetId, skillsetName, openPrUrl: meta.openPrUrl }
+      const ssConfig = skillsetConfigMap.get(meta.skillsetId)
+      if (!ssConfig) {
+        status = { type: 'local' }
+        console.log('[skillset-debug] skill status=local (orphan metadata: ssConfig missing)', {
+          agentSlug,
+          entry: entryName,
+          metaSkillsetId: meta.skillsetId,
+          metaProvider: meta.provider,
+          knownSkillsetIds: Array.from(skillsetConfigMap.keys()),
+        })
       } else {
-        // Check for updates
-        const index = indexMap.get(meta.skillsetId)
-        const skillEntry = index?.skills.find((s) => s.path === meta.skillPath)
+        const metaRef = toSkillsetRefFromMeta(meta)
+        const configRef = toSkillsetRefFromConfig(ssConfig)
+        const hostingProvider = getSkillsetProvider(meta.provider)
+        const info = hostingProvider.getSourceInfo(metaRef, ssConfig)
+        const skillsetName = info.skillsetName
+        const sourceLabel = info.sourceLabel
 
-        if (skillEntry && skillEntry.version !== meta.installedVersion) {
-          status = {
-            type: 'update_available',
-            skillsetId: meta.skillsetId,
-            skillsetName,
-            latestVersion: skillEntry.version,
-          }
+        // Compute current package hash, with legacy single-file detection.
+        const currentPackageFiles = await readSkillPackageFiles(skillPath)
+        const currentHash = hashSkillPackageFiles(currentPackageFiles)
+        const currentSkillMdHash = contentHash(skillMdContent!)
+        const isSingleFileLegacySkill = currentPackageFiles.length === 1
+          && currentPackageFiles[0]?.relativePath === 'SKILL.md'
+        const legacyMatch = currentHash !== meta.originalContentHash
+          && currentSkillMdHash === meta.originalContentHash
+          && isSingleFileLegacySkill
+        // Use the promoted hash for comparison only; don't persist the
+        // upgrade from a listing read.
+        const effectiveOriginalHash = legacyMatch ? currentHash : meta.originalContentHash
+
+        // If the provider reports this pending submission is done, surface
+        // "up_to_date" optimistically — the next refresh will finalize it.
+        const pendingStatus = meta.pendingQueueItemId
+          ? queueStatusByProvider.get((meta.provider ?? 'github') as SkillProvider)?.get(meta.pendingQueueItemId)
+          : undefined
+        const pendingTerminal = pendingStatus === 'merged' || pendingStatus === 'rejected'
+
+        if (!pendingTerminal && (currentHash !== effectiveOriginalHash || meta.openPrUrl)) {
+          status = { type: 'locally_modified', skillsetId: meta.skillsetId, skillsetName, sourceLabel, openPrUrl: meta.openPrUrl }
         } else {
-          status = { type: 'up_to_date', skillsetId: meta.skillsetId, skillsetName }
+          const skillRepoDir = getSkillsetRepoDirForRef(configRef ?? metaRef)
+          const repoFiles = await getRepoSkillPackageFiles(skillRepoDir, meta.skillPath)
+          const remoteCacheHash = repoFiles ? hashSkillPackageFiles(repoFiles) : null
+
+          const index = indexMap.get(meta.skillsetId)
+          const skillEntry = index?.skills.find((s) => s.path === meta.skillPath)
+          const versionChanged = !!(skillEntry && skillEntry.version && skillEntry.version !== meta.installedVersion)
+          const contentChanged = !!(remoteCacheHash && remoteCacheHash !== effectiveOriginalHash)
+
+          if (!pendingTerminal && (versionChanged || contentChanged)) {
+            status = {
+              type: 'update_available',
+              skillsetId: meta.skillsetId,
+              skillsetName,
+              sourceLabel,
+              latestVersion: versionChanged ? skillEntry!.version : undefined,
+            }
+          } else {
+            status = { type: 'up_to_date', skillsetId: meta.skillsetId, skillsetName, sourceLabel }
+          }
         }
+        console.log('[skillset-debug] skill status=tracked', {
+          agentSlug,
+          entry: entryName,
+          statusType: status.type,
+          metaSkillsetId: meta.skillsetId,
+          metaProvider: meta.provider,
+        })
       }
     }
 
     skills.push({
-      name: meta?.skillName || frontmatter.name || getDisplayName(entry.name),
+      name: meta?.skillName || frontmatter.name || getDisplayName(entryName),
       description,
-      path: entry.name,
+      path: entryName,
       status,
     })
   }
@@ -588,77 +1007,146 @@ export async function getAgentSkillsWithStatus(
 }
 
 /**
- * Refresh all skillset caches and reconcile skill status.
- * If a locally modified skill now matches the upstream cache (e.g. PR was merged),
- * update the metadata so status becomes up_to_date.
+ * Refresh all skillset caches and reconcile skill status. This is where
+ * state-changing reconciliation lives (metadata writes, file copies, clearing
+ * openPrUrl, resolving pending platform queue items). The listing read path
+ * in `getAgentSkillsWithStatus` is pure — all mutation happens here.
  */
 export async function refreshAgentSkills(
   agentSlug: string,
   skillsets: SkillsetConfig[],
 ): Promise<void> {
-  // Refresh all skillset caches
+  const configMap = new Map<string, SkillsetConfig>()
+  for (const ss of skillsets) configMap.set(ss.id, ss)
+
   for (const ss of skillsets) {
     try {
-      await refreshSkillset(ss.id, ss.url)
+      await refreshSkillset(toSkillsetRefFromConfig(ss))
     } catch (error) {
       console.warn(`Failed to refresh skillset ${ss.id}:`, error)
+      captureException(error, { tags: { area: 'skillset-refresh', op: 'pull' }, extra: { skillsetId: ss.id } })
     }
   }
 
-  // Reconcile: if local content now matches cache, update metadata
   const skillsDir = getAgentSkillsDir(agentSlug)
   if (!fs.existsSync(skillsDir)) return
 
   const entries = await fs.promises.readdir(skillsDir, { withFileTypes: true })
+
+  // Coalesce queue lookups by provider.
+  type PendingCheck = { entryName: string; meta: InstalledSkillMetadata }
+  const pendingByProvider = new Map<SkillProvider, PendingCheck[]>()
+  const metaByEntry = new Map<string, InstalledSkillMetadata>()
+
   for (const entry of entries) {
     if (!entry.isDirectory()) continue
-
     const meta = await getInstalledSkillMetadata(agentSlug, entry.name)
     if (!meta) continue
+    metaByEntry.set(entry.name, meta)
+    if (meta.pendingQueueItemId) {
+      const p = (meta.provider ?? 'github') as SkillProvider
+      const list = pendingByProvider.get(p) ?? []
+      list.push({ entryName: entry.name, meta })
+      pendingByProvider.set(p, list)
+    }
+  }
 
-    const skillMdContent = await readFileOrNull(
-      path.join(skillsDir, entry.name, 'SKILL.md')
-    )
+  const queueStatuses = new Map<string, string | null>()
+  await Promise.all(Array.from(pendingByProvider.entries()).map(async ([p, items]) => {
+    try {
+      const ids = items.map((i) => i.meta.pendingQueueItemId!)
+      const statuses = await getSkillsetProvider(p).getQueueItemStatuses(ids)
+      for (const [id, s] of statuses) queueStatuses.set(id, s)
+    } catch (error) {
+      captureException(error, { tags: { area: 'skillset-refresh', op: 'queue-batch' }, extra: { provider: p } })
+    }
+  }))
+
+  for (const [entryName, meta] of metaByEntry) {
+    const skillDir = path.join(skillsDir, entryName)
+    const skillMdContent = await readFileOrNull(path.join(skillDir, 'SKILL.md'))
     if (!skillMdContent) continue
 
-    const currentHash = contentHash(skillMdContent)
+    const ssConfig = configMap.get(meta.skillsetId)
+    const skillRepoDir = getSkillsetRepoDirForRef(
+      ssConfig ? toSkillsetRefFromConfig(ssConfig) : toSkillsetRefFromMeta(meta),
+    )
 
-    // For published skills (openPrUrl set, hash matches original):
-    // check if the skill now appears in the upstream cache (PR merged)
-    if (currentHash === meta.originalContentHash && meta.openPrUrl) {
-      const repoDir = getSkillsetRepoDir(meta.skillsetId)
-      const cacheContent = await readFileOrNull(path.join(repoDir, meta.skillPath))
-      if (cacheContent && contentHash(cacheContent) === currentHash) {
+    // Step 1: resolve any pending platform submission.
+    if (meta.pendingQueueItemId) {
+      const queueStatus = queueStatuses.get(meta.pendingQueueItemId)
+      if (queueStatus === 'merged' || queueStatus === 'rejected') {
+        if (queueStatus === 'merged') {
+          try {
+            await refreshSkillset(toSkillsetRefFromMeta(meta))
+          } catch (error) {
+            captureException(error, { tags: { area: 'skillset-refresh', op: 'queue-merged-pull' }, extra: { skillsetId: meta.skillsetId } })
+          }
+          const mergedFiles = await getRepoSkillPackageFiles(skillRepoDir, meta.skillPath)
+          if (mergedFiles) {
+            await copyDirectoryFiltered(path.join(skillRepoDir, path.dirname(meta.skillPath)), skillDir)
+            meta.originalContentHash = hashSkillPackageFiles(mergedFiles)
+            const mergedContent = getSkillMdFromPackageFiles(mergedFiles)
+            await fs.promises.writeFile(path.join(skillDir, '.skillset-original.md'), mergedContent, 'utf-8')
+          } else {
+            meta.originalContentHash = await getSkillPackageHash(skillDir)
+          }
+        }
+        meta.pendingQueueItemId = undefined
         meta.openPrUrl = undefined
-        await fs.promises.writeFile(
-          getSkillMetadataPath(agentSlug, entry.name),
-          JSON.stringify(meta, null, 2),
-          'utf-8'
-        )
+        await writeJsonFile(getSkillMetadataPath(agentSlug, entryName), meta)
+        continue
       }
+    }
+
+    // Step 2: legacy hash migration (persist this time).
+    const currentPackageFiles = await readSkillPackageFiles(skillDir)
+    const currentHash = hashSkillPackageFiles(currentPackageFiles)
+    const currentSkillMdHash = contentHash(skillMdContent)
+    const isSingleFileLegacySkill = currentPackageFiles.length === 1
+      && currentPackageFiles[0]?.relativePath === 'SKILL.md'
+    if (currentHash !== meta.originalContentHash
+        && currentSkillMdHash === meta.originalContentHash
+        && isSingleFileLegacySkill) {
+      meta.originalContentHash = currentHash
+      await writeJsonFile(getSkillMetadataPath(agentSlug, entryName), meta)
+    }
+
+    // Step 3: reconcile against upstream cache.
+    const repoFiles = await getRepoSkillPackageFiles(skillRepoDir, meta.skillPath)
+    const cacheHash = repoFiles ? hashSkillPackageFiles(repoFiles) : null
+
+    if (cacheHash && cacheHash === currentHash) {
+      // Local matches upstream — clear any PR marker, adopt as new baseline.
+      meta.originalContentHash = currentHash
+      meta.openPrUrl = undefined
+      await writeJsonFile(getSkillMetadataPath(agentSlug, entryName), meta)
+      await fs.promises.writeFile(
+        path.join(skillDir, '.skillset-original.md'),
+        skillMdContent,
+        'utf-8',
+      )
       continue
     }
 
-    if (currentHash === meta.originalContentHash) continue // already in sync
-
-    // Check if local content now matches the refreshed cache
-    const repoDir = getSkillsetRepoDir(meta.skillsetId)
-    const cacheContent = await readFileOrNull(path.join(repoDir, meta.skillPath))
-    if (cacheContent && contentHash(cacheContent) === currentHash) {
-      // Changes were merged upstream — update metadata to new baseline
-      meta.originalContentHash = currentHash
+    // Remote has moved forward with a PR open — adopt remote.
+    if (meta.openPrUrl && cacheHash
+        && currentHash !== meta.originalContentHash
+        && cacheHash !== currentHash
+        && cacheHash !== meta.originalContentHash) {
+      const skillDirInRepo = path.join(skillRepoDir, path.dirname(meta.skillPath))
+      await copyDirectoryFiltered(skillDirInRepo, skillDir)
+      const freshContent = await readFileOrNull(path.join(skillDir, 'SKILL.md'))
+      meta.originalContentHash = cacheHash
       meta.openPrUrl = undefined
-      await fs.promises.writeFile(
-        getSkillMetadataPath(agentSlug, entry.name),
-        JSON.stringify(meta, null, 2),
-        'utf-8'
-      )
-      // Also update stored original
-      await fs.promises.writeFile(
-        path.join(skillsDir, entry.name, '.skillset-original.md'),
-        skillMdContent,
-        'utf-8'
-      )
+      await writeJsonFile(getSkillMetadataPath(agentSlug, entryName), meta)
+      if (freshContent) {
+        await fs.promises.writeFile(
+          path.join(skillDir, '.skillset-original.md'),
+          freshContent,
+          'utf-8',
+        )
+      }
     }
   }
 }
@@ -684,7 +1172,8 @@ export async function getDiscoverableSkills(
   const discoverable: DiscoverableSkill[] = []
 
   for (const ss of skillsets) {
-    const index = await getSkillsetIndex(ss.id)
+    const ssRef = toSkillsetRefFromConfig(ss)
+    const index = await getSkillsetIndex(ssRef)
     if (!index) continue
 
     for (const skill of index.skills) {
@@ -693,7 +1182,7 @@ export async function getDiscoverableSkills(
 
       // Try to get required_env_vars from the cached SKILL.md
       let requiredEnvVars: Array<{ name: string; description: string }> | undefined
-      const repoDir = getSkillsetRepoDir(ss.id)
+      const repoDir = getSkillsetRepoDirForRef(ssRef)
       const skillMdPath = path.join(repoDir, skill.path)
       const content = await readFileOrNull(skillMdPath)
       if (content) {
@@ -732,31 +1221,29 @@ async function generatePRSuggestions(
   }
 
   const skillDir = path.join(getAgentSkillsDir(agentSlug), skillDirName)
-  const repoDir = getSkillsetRepoDir(meta.skillsetId)
+  const repoDir = getSkillsetRepoDirForRef(toSkillsetRefFromMeta(meta))
+  const modifiedPackageFiles = await readSkillPackageFiles(skillDir)
 
   // Read original SKILL.md: prefer stored copy, fall back to git history
   let originalContent = await readFileOrNull(path.join(skillDir, '.skillset-original.md'))
   if (!originalContent) {
-    // No stored original — try to recover from git history using the stored hash
     originalContent = await getOriginalFromGitHistory(
       repoDir, meta.skillPath, meta.originalContentHash
     )
   }
   if (!originalContent) {
-    console.warn('[PR suggestions] Could not recover original content')
     return fallback
   }
 
   // Read modified SKILL.md from agent workspace
-  const modifiedContent = await readFileOrNull(path.join(skillDir, 'SKILL.md'))
-  if (!modifiedContent) {
-    console.warn('[PR suggestions] Modified SKILL.md not found')
-    return fallback
-  }
+  const modifiedContent = getSkillMdFromPackageFiles(modifiedPackageFiles)
 
-  if (originalContent === modifiedContent) {
-    return fallback
-  }
+  const originalPackageFiles = await getRepoSkillPackageFiles(repoDir, meta.skillPath)
+  const packageDiff = originalPackageFiles
+    ? summarizeSkillPackageDiff(originalPackageFiles, modifiedPackageFiles)
+    : { summary: '', changedFileCount: 0 }
+
+  if (originalContent === modifiedContent && packageDiff.changedFileCount === 0) return fallback
 
   let client
   try {
@@ -789,6 +1276,14 @@ Modified SKILL.md:
 \`\`\`
 ${modifiedContent}
 \`\`\`
+
+${packageDiff.changedFileCount > 0 ? `Additional changed files in this skill package:
+\`\`\`
+${packageDiff.summary}
+\`\`\`
+
+Consider both the SKILL.md content and these auxiliary file changes when drafting the PR summary and version bump.
+` : ''}
 
 Rules for the version bump:
 - PATCH (x.y.Z): bug fixes, typo corrections, minor wording tweaks
@@ -823,8 +1318,7 @@ Rules for the version bump:
       suggestedBody: parsed.body || fallback.suggestedBody,
       suggestedVersion: parsed.version || fallback.suggestedVersion,
     }
-  } catch (error) {
-    console.error('Failed to generate PR suggestions via AI:', error)
+  } catch {
     return fallback
   }
 }
@@ -849,21 +1343,8 @@ export async function getSkillPRInfo(
     throw new Error('Skill has no skillset metadata - cannot create PR')
   }
 
-  // Check if gh CLI is available
-  try {
-    await execFileAsync('gh', ['--version'], { timeout: 5000 })
-  } catch {
-    throw new Error('GitHub CLI (gh) is not installed. Install it from https://cli.github.com')
-  }
+  await getSkillsetProvider(meta.provider).ensurePublishPreconditions()
 
-  // Check if gh is authenticated
-  try {
-    await execFileAsync('gh', ['auth', 'status'], { timeout: 5000 })
-  } catch {
-    throw new Error('GitHub CLI is not authenticated. Run `gh auth login` to sign in. See https://cli.github.com')
-  }
-
-  // Generate AI-powered suggestions (falls back to static defaults)
   const suggestions = await generatePRSuggestions(meta, agentSlug, skillDirName)
 
   return {
@@ -874,137 +1355,9 @@ export async function getSkillPRInfo(
   }
 }
 
-// ============================================================================
-// Shared Git Fork/Branch/PR Helper
-// ============================================================================
-
-export interface ForkBranchContext {
-  repoDir: string
-  upstreamNwo: string
-  forkOwner: string
-  baseBranch: string
-  branchName: string
-}
-
-/**
- * Prepare a git fork, feature branch, and remote for creating a PR.
- * Handles: cleanup, fork, remote setup, base branch detection, and branch creation.
- */
-export async function prepareForkBranch(
-  repoDir: string,
-  branchPrefix: string,
-): Promise<ForkBranchContext> {
-  // Clean up any leftover state from previous failed attempts
-  await execFileAsync('git', ['checkout', '.'], {
-    cwd: repoDir, timeout: 5000, env: GIT_ENV,
-  }).catch(() => { /* ignore */ })
-
-  // Get the upstream repo nwo (name-with-owner e.g. "DatawizzAI/skills")
-  const { stdout: upstreamNwoRaw } = await execFileAsync(
-    'gh',
-    ['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'],
-    { cwd: repoDir, timeout: 10000 }
-  )
-  const upstreamNwo = upstreamNwoRaw.trim()
-
-  // Fork the skillset repo (idempotent - no-op if already forked)
-  await execFileAsync('gh', ['repo', 'fork', '--clone=false', '--remote=false'], {
-    cwd: repoDir,
-    timeout: 30000,
-  })
-
-  // Get the authenticated user's login to identify the fork
-  const { stdout: userLogin } = await execFileAsync(
-    'gh',
-    ['api', 'user', '--jq', '.login'],
-    { timeout: 10000 }
-  )
-  const forkOwner = userLogin.trim()
-  const repoName = upstreamNwo.split('/')[1]
-
-  // Ensure the fork remote is configured
-  const forkRemoteName = 'fork'
-  const forkUrl = `https://github.com/${forkOwner}/${repoName}.git`
-
-  try {
-    await execFileAsync('git', ['remote', 'add', forkRemoteName, forkUrl], {
-      cwd: repoDir, timeout: 5000, env: GIT_ENV,
-    })
-  } catch {
-    await execFileAsync('git', ['remote', 'set-url', forkRemoteName, forkUrl], {
-      cwd: repoDir, timeout: 5000, env: GIT_ENV,
-    })
-  }
-
-  // Determine the default branch
-  let baseBranch = 'main'
-  try {
-    const { stdout: originHead } = await execFileAsync(
-      'git', ['symbolic-ref', 'refs/remotes/origin/HEAD'],
-      { cwd: repoDir, timeout: 5000, env: GIT_ENV }
-    )
-    baseBranch = originHead.trim().replace('refs/remotes/origin/', '')
-  } catch {
-    try {
-      await execFileAsync('git', ['rev-parse', '--verify', 'origin/main'],
-        { cwd: repoDir, timeout: 5000, env: GIT_ENV })
-      baseBranch = 'main'
-    } catch {
-      baseBranch = 'master'
-    }
-  }
-
-  // Switch to the default branch before creating a new feature branch
-  await execFileAsync('git', ['checkout', baseBranch], {
-    cwd: repoDir, timeout: 10000, env: GIT_ENV,
-  })
-
-  const branchName = `${branchPrefix}-${Date.now()}`
-  await execFileAsync('git', ['checkout', '-b', branchName], {
-    cwd: repoDir, timeout: 10000, env: GIT_ENV,
-  })
-
-  return { repoDir, upstreamNwo, forkOwner, baseBranch, branchName }
-}
-
-/**
- * Push staged changes and create a PR. Always cleans up the local branch afterwards.
- */
-export async function pushAndCreatePR(
-  ctx: ForkBranchContext,
-  options: { title: string; body: string },
-): Promise<string> {
-  await execFileAsync('git', ['push', 'fork', ctx.branchName], {
-    cwd: ctx.repoDir, timeout: 30000, env: GIT_ENV,
-  })
-
-  try {
-    const { stdout: prStdout } = await execFileAsync(
-      'gh',
-      [
-        'pr', 'create',
-        '--repo', ctx.upstreamNwo,
-        '--title', options.title,
-        '--body', options.body,
-        '--head', `${ctx.forkOwner}:${ctx.branchName}`,
-        '--base', ctx.baseBranch,
-      ],
-      { cwd: ctx.repoDir, timeout: 30000 }
-    )
-    return prStdout.trim()
-  } finally {
-    await execFileAsync('git', ['checkout', ctx.baseBranch], {
-      cwd: ctx.repoDir, timeout: 10000, env: GIT_ENV,
-    }).catch(() => { /* ignore */ })
-
-    await execFileAsync('git', ['branch', '-D', ctx.branchName], {
-      cwd: ctx.repoDir, timeout: 5000, env: GIT_ENV,
-    }).catch(() => { /* ignore */ })
-  }
-}
-
 /**
  * Create a PR for local modifications to a skill using gh CLI.
+ * For platform provider, submits via proxy submit-update instead.
  * Accepts user-provided title, body, and optional new version.
  */
 export async function createSkillPR(
@@ -1015,50 +1368,89 @@ export async function createSkillPR(
     body: string
     newVersion?: string
   },
-): Promise<{ prUrl: string }> {
+): Promise<{ prUrl?: string; successMessage: string }> {
   sanitizeDirName(skillDirName)
+  console.log('[skillset-debug] createSkillPR enter (Open PR)', {
+    agentSlug,
+    skillDirName,
+    hasNewVersion: !!options.newVersion,
+  })
   const meta = await getInstalledSkillMetadata(agentSlug, skillDirName)
   if (!meta) {
+    console.log('[skillset-debug] createSkillPR REJECTED: no metadata', { agentSlug, skillDirName })
     throw new Error('Skill has no skillset metadata - cannot create PR')
   }
-
-  // Read the modified SKILL.md
-  const skillMdPath = path.join(getAgentSkillsDir(agentSlug), skillDirName, 'SKILL.md')
-  let modifiedContent = await readFileOrNull(skillMdPath)
-  if (!modifiedContent) {
-    throw new Error('SKILL.md not found')
-  }
-
-  // If a new version was specified, update the version in the frontmatter
-  if (options.newVersion) {
-    modifiedContent = updateFrontmatterVersion(modifiedContent, options.newVersion)
-  }
-
-  const repoDir = getSkillsetRepoDir(meta.skillsetId)
-  const ctx = await prepareForkBranch(repoDir, `update-${skillDirName}`)
-
-  // Copy the modified file to the repo and stage it
-  const destPath = path.join(repoDir, meta.skillPath)
-  await fs.promises.writeFile(destPath, modifiedContent, 'utf-8')
-
-  await execFileAsync('git', ['add', meta.skillPath], {
-    cwd: repoDir, timeout: 10000, env: GIT_ENV,
+  console.log('[skillset-debug] createSkillPR: loaded metadata', {
+    agentSlug,
+    skillDirName,
+    metaSkillsetId: meta.skillsetId,
+    metaProvider: meta.provider,
+    metaSkillPath: meta.skillPath,
   })
 
-  await execFileAsync(
-    'git',
-    ['commit', '-m', options.title],
-    { cwd: repoDir, timeout: 10000, env: GIT_ENV }
-  )
+  const skillDir = path.join(getAgentSkillsDir(agentSlug), skillDirName)
+  let packageFiles = await readSkillPackageFiles(skillDir)
+  let modifiedContent = getSkillMdFromPackageFiles(packageFiles)
 
-  const prUrl = await pushAndCreatePR(ctx, options)
+  if (options.newVersion) {
+    packageFiles = upsertSkillMdInPackageFiles(packageFiles, (content) =>
+      updateFrontmatterVersion(content, options.newVersion!)
+    )
+    modifiedContent = getSkillMdFromPackageFiles(packageFiles)
+  }
 
-  // Save the PR URL in metadata so the UI can show it
-  const metadataPath = getSkillMetadataPath(agentSlug, skillDirName)
-  meta.openPrUrl = prUrl
-  await fs.promises.writeFile(metadataPath, JSON.stringify(meta, null, 2), 'utf-8')
+  const metaRef = toSkillsetRefFromMeta(meta)
+  const hostingProvider = getSkillsetProvider(meta.provider)
+  const repoDir = getSkillsetRepoDirForRef(metaRef)
+  const skillFiles = toPlatformSkillFiles(path.posix.dirname(meta.skillPath), packageFiles)
 
-  return { prUrl }
+  const result = await hostingProvider.publishUpdate({
+    repoDir,
+    branchPrefix: `update-${skillDirName}`,
+    files: skillFiles,
+    title: options.title,
+    body: options.body,
+    gitAddPaths: [path.posix.dirname(meta.skillPath)],
+    skillsetId: meta.skillsetId,
+    skillsetUrl: meta.skillsetUrl,
+    skillsetName: metaRef.skillsetName,
+    providerData: metaRef.providerData,
+    targetName: path.basename(path.dirname(meta.skillPath)),
+    targetType: 'skill',
+    message: options.body,
+  })
+
+  if (result.queueItem?.id && result.status !== 'merged') {
+    meta.pendingQueueItemId = result.queueItem.id
+  } else if (result.status === 'merged') {
+    const modifiedHash = hashSkillPackageFiles(packageFiles)
+    await refreshSkillset(metaRef)
+    meta.originalContentHash = modifiedHash
+    meta.pendingQueueItemId = undefined
+    await fs.promises.writeFile(path.join(skillDir, 'SKILL.md'), modifiedContent, 'utf-8')
+    await fs.promises.writeFile(
+      path.join(getAgentSkillsDir(agentSlug), skillDirName, '.skillset-original.md'),
+      modifiedContent,
+      'utf-8',
+    )
+  }
+
+  if (result.prUrl) {
+    meta.openPrUrl = result.prUrl
+  }
+
+  await writeJsonFile(getSkillMetadataPath(agentSlug, skillDirName), meta)
+
+  console.log('[skillset-debug] createSkillPR: publishUpdate ok', {
+    agentSlug,
+    skillDirName,
+    provider: meta.provider,
+    resultStatus: result.status,
+    prUrl: result.prUrl,
+    queueItemId: result.queueItem?.id,
+  })
+
+  return { prUrl: result.prUrl, successMessage: result.successMessage }
 }
 
 /**
@@ -1066,7 +1458,9 @@ export async function createSkillPR(
  */
 function updateFrontmatterVersion(content: string, newVersion: string): string {
   const match = content.match(/^(---\s*\n)([\s\S]*?)(\n---)/);
-  if (!match) return content
+  if (!match) {
+    return content
+  }
 
   let frontmatter = match[2]
 
@@ -1076,6 +1470,8 @@ function updateFrontmatterVersion(content: string, newVersion: string): string {
       /^(\s*version:\s*).+$/m,
       `$1${newVersion}`
     )
+  } else {
+    frontmatter = frontmatter.trimEnd() + `\nversion: ${newVersion}`
   }
 
   return match[1] + frontmatter + match[3] + content.slice(match[0].length)
@@ -1163,8 +1559,7 @@ Generate:
       suggestedBody: parsed.body || fallback.suggestedBody,
       suggestedVersion: parsed.version || fallback.suggestedVersion,
     }
-  } catch (error) {
-    console.error('Failed to generate publish suggestions via AI:', error)
+  } catch {
     return fallback
   }
 }
@@ -1186,11 +1581,30 @@ export async function getSkillPublishInfo(
 }> {
   sanitizeDirName(skillDirName)
 
+  console.log('[skillset-debug] getSkillPublishInfo enter', {
+    agentSlug,
+    skillDirName,
+    skillsetConfig: { id: skillsetConfig.id, name: skillsetConfig.name, provider: skillsetConfig.provider },
+    metadataPath: getSkillMetadataPath(agentSlug, skillDirName),
+  })
+
   // Verify skill exists and is local (no metadata)
   const meta = await getInstalledSkillMetadata(agentSlug, skillDirName)
   if (meta) {
+    console.log('[skillset-debug] getSkillPublishInfo REJECTED: skill has metadata', {
+      agentSlug,
+      skillDirName,
+      metaSkillsetId: meta.skillsetId,
+      metaProvider: meta.provider,
+      metaSkillsetName: meta.skillsetName,
+      metaOpenPrUrl: meta.openPrUrl,
+      metaPendingQueueItemId: meta.pendingQueueItemId,
+      sameAsRequestedSkillset: meta.skillsetId === skillsetConfig.id,
+    })
     throw new Error('Skill already belongs to a skillset — use Open PR instead')
   }
+
+  console.log('[skillset-debug] getSkillPublishInfo: no metadata, proceeding', { agentSlug, skillDirName })
 
   const skillMdPath = path.join(getAgentSkillsDir(agentSlug), skillDirName, 'SKILL.md')
   const skillContent = await readFileOrNull(skillMdPath)
@@ -1198,19 +1612,7 @@ export async function getSkillPublishInfo(
     throw new Error('SKILL.md not found')
   }
 
-  // Check if gh CLI is available
-  try {
-    await execFileAsync('gh', ['--version'], { timeout: 5000 })
-  } catch {
-    throw new Error('GitHub CLI (gh) is not installed. Install it from https://cli.github.com')
-  }
-
-  // Check if gh is authenticated
-  try {
-    await execFileAsync('gh', ['auth', 'status'], { timeout: 5000 })
-  } catch {
-    throw new Error('GitHub CLI is not authenticated. Run `gh auth login` to sign in. See https://cli.github.com')
-  }
+  await getSkillsetProvider(skillsetConfig.provider).ensurePublishPreconditions()
 
   const skillName = getDisplayName(skillDirName)
   const suggestions = await generatePublishSuggestions(skillContent, skillName)
@@ -1225,7 +1627,7 @@ export async function getSkillPublishInfo(
 
 /**
  * Publish a local skill to a skillset repository via PR.
- * Creates a PR that adds the SKILL.md and updates index.json.
+ * Creates a PR that adds the full skill package and updates index.json.
  */
 export async function publishSkillToSkillset(
   agentSlug: string,
@@ -1236,19 +1638,18 @@ export async function publishSkillToSkillset(
     body: string
     newVersion?: string
   },
-): Promise<{ prUrl: string }> {
+): Promise<{ prUrl?: string; successMessage: string }> {
   sanitizeDirName(skillDirName)
 
-  // Read the local SKILL.md
-  const skillMdPath = path.join(getAgentSkillsDir(agentSlug), skillDirName, 'SKILL.md')
-  let skillContent = await readFileOrNull(skillMdPath)
-  if (!skillContent) {
-    throw new Error('SKILL.md not found')
-  }
+  const skillDir = path.join(getAgentSkillsDir(agentSlug), skillDirName)
+  let packageFiles = await readSkillPackageFiles(skillDir)
+  let skillContent = getSkillMdFromPackageFiles(packageFiles)
 
-  // If a version was specified, update the frontmatter
   if (options.newVersion) {
-    skillContent = updateFrontmatterVersion(skillContent, options.newVersion)
+    packageFiles = upsertSkillMdInPackageFiles(packageFiles, (content) =>
+      updateFrontmatterVersion(content, options.newVersion!)
+    )
+    skillContent = getSkillMdFromPackageFiles(packageFiles)
   }
 
   const frontmatter = parseSkillFrontmatter(skillContent)
@@ -1257,64 +1658,47 @@ export async function publishSkillToSkillset(
   const description = parseDescription(skillContent)
   const skillPathInRepo = `skills/${skillDirName}/SKILL.md`
 
-  // Ensure the skillset cache is available
-  const repoDir = getSkillsetRepoDir(skillsetConfig.id)
+  const hostingProvider = getSkillsetProvider(skillsetConfig.provider)
+  const skillsetRef = toSkillsetRefFromConfig(skillsetConfig)
+
+  const repoDir = getSkillsetRepoDirForRef(skillsetRef)
   if (!(await isGitRepo(repoDir))) {
-    await ensureSkillsetCached(skillsetConfig.id, skillsetConfig.url)
+    await ensureSkillsetCached(skillsetRef)
   }
 
-  const ctx = await prepareForkBranch(repoDir, `add-${skillDirName}`)
-
-  // Check for naming conflict — abort if a skill already exists at this path
+  // Check for naming conflict
   const index = await readIndexJson(repoDir)
-  const conflict = index.skills.find(
-    (s) => s.path === skillPathInRepo
-  )
+  const conflict = index.skills.find((s) => s.path === skillPathInRepo)
   if (conflict) {
-    // Clean up the branch before throwing
-    await execFileAsync('git', ['checkout', ctx.baseBranch], {
-      cwd: repoDir, timeout: 10000, env: GIT_ENV,
-    }).catch(() => { /* ignore */ })
-    await execFileAsync('git', ['branch', '-D', ctx.branchName], {
-      cwd: repoDir, timeout: 5000, env: GIT_ENV,
-    }).catch(() => { /* ignore */ })
     throw new Error(
       `A skill already exists at "${conflict.path}" in this skillset. Choose a different name or use a different skillset.`
     )
   }
 
-  // Create skill directory and write SKILL.md
-  const destDir = path.join(repoDir, 'skills', skillDirName)
-  await ensureDirectory(destDir)
-  await fs.promises.writeFile(path.join(destDir, 'SKILL.md'), skillContent, 'utf-8')
+  // Prepare skill files + updated index.json
+  const skillFiles = toPlatformSkillFiles(`skills/${skillDirName}`, packageFiles)
+  index.skills.push({ name: skillName, path: skillPathInRepo, description, version })
+  const allFiles = [
+    ...skillFiles,
+    { path: 'index.json', content: JSON.stringify(index, null, 2) + '\n' },
+  ]
 
-  // Update index.json with the new skill entry
-  index.skills.push({
-    name: skillName,
-    path: skillPathInRepo,
-    description,
-    version,
+  const result = await hostingProvider.publishUpdate({
+    repoDir,
+    branchPrefix: `add-${skillDirName}`,
+    files: allFiles,
+    title: options.title,
+    body: options.body,
+    gitAddPaths: [`skills/${skillDirName}`, 'index.json'],
+    skillsetId: skillsetConfig.id,
+    skillsetUrl: skillsetConfig.url,
+    skillsetName: skillsetConfig.name,
+    providerData: skillsetRef.providerData,
+    targetName: skillDirName,
+    targetType: 'skill',
+    message: options.body,
   })
-  await fs.promises.writeFile(
-    path.join(repoDir, 'index.json'),
-    JSON.stringify(index, null, 2) + '\n',
-    'utf-8'
-  )
 
-  // Stage both files and commit
-  await execFileAsync('git', ['add', skillPathInRepo, 'index.json'], {
-    cwd: repoDir, timeout: 10000, env: GIT_ENV,
-  })
-
-  await execFileAsync(
-    'git',
-    ['commit', '-m', options.title],
-    { cwd: repoDir, timeout: 10000, env: GIT_ENV }
-  )
-
-  const prUrl = await pushAndCreatePR(ctx, options)
-
-  // Write metadata so the skill is now tracked as belonging to this skillset
   const metadata: InstalledSkillMetadata = {
     skillsetId: skillsetConfig.id,
     skillsetUrl: skillsetConfig.url,
@@ -1322,45 +1706,32 @@ export async function publishSkillToSkillset(
     skillPath: skillPathInRepo,
     installedVersion: version,
     installedAt: new Date().toISOString(),
-    originalContentHash: contentHash(skillContent),
-    openPrUrl: prUrl,
+    originalContentHash: hashSkillPackageFiles(packageFiles),
+    provider: skillsetConfig.provider,
+    providerData: skillsetRef.providerData,
+    skillsetName: skillsetConfig.name,
   }
 
-  const metadataPath = getSkillMetadataPath(agentSlug, skillDirName)
-  await fs.promises.writeFile(metadataPath, JSON.stringify(metadata, null, 2), 'utf-8')
+  if (result.queueItem?.id && result.status !== 'merged') {
+    metadata.pendingQueueItemId = result.queueItem.id
+  } else if (result.status === 'merged') {
+    metadata.originalContentHash = hashSkillPackageFiles(packageFiles)
+    await fs.promises.writeFile(path.join(skillDir, 'SKILL.md'), skillContent, 'utf-8')
+  }
 
-  // Store original content for future diffs
+  if (result.prUrl) {
+    metadata.openPrUrl = result.prUrl
+  }
+
+  await writeJsonFile(getSkillMetadataPath(agentSlug, skillDirName), metadata)
+
   await fs.promises.writeFile(
     path.join(getAgentSkillsDir(agentSlug), skillDirName, '.skillset-original.md'),
     skillContent,
     'utf-8'
   )
 
-  return { prUrl }
+  return { prUrl: result.prUrl, successMessage: result.successMessage }
 }
 
-// ============================================================================
-// File Copy Helper
-// ============================================================================
-
-/**
- * Recursively copy a directory, excluding .git and internal skillset files.
- */
-export async function copyDirectory(src: string, dest: string): Promise<void> {
-  await ensureDirectory(dest)
-  const entries = await fs.promises.readdir(src, { withFileTypes: true })
-
-  const EXCLUDED = new Set(['.git', '.skillset-metadata.json', '.skillset-original.md'])
-  for (const entry of entries) {
-    if (EXCLUDED.has(entry.name)) continue
-
-    const srcPath = path.join(src, entry.name)
-    const destPath = path.join(dest, entry.name)
-
-    if (entry.isDirectory()) {
-      await copyDirectory(srcPath, destPath)
-    } else {
-      await fs.promises.copyFile(srcPath, destPath)
-    }
-  }
-}
+export { copyDirectoryFiltered as copyDirectory } from '@shared/lib/utils/file-storage'

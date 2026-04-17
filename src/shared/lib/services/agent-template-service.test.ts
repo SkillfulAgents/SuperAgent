@@ -20,8 +20,6 @@ vi.mock('@shared/lib/services/skillset-service', async (importOriginal) => {
     getSkillsetIndex: vi.fn(),
     readIndexJson: vi.fn(),
     refreshSkillset: vi.fn(),
-    prepareForkBranch: vi.fn(),
-    pushAndCreatePR: vi.fn(),
     copyDirectory: vi.fn(),
     // Keep the real parseSkillFrontmatter for collectAgentRequiredEnvVars tests
   }
@@ -42,6 +40,15 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 vi.mock('@shared/lib/utils/retry', () => ({
   withRetry: async (fn: () => Promise<unknown>) => fn(),
+}))
+
+const mockGetPlatformAuthStatus = vi.fn((_userId?: string) => ({ orgId: undefined as string | undefined }))
+vi.mock('@shared/lib/services/platform-auth-service', () => ({
+  getPlatformAuthStatus: (...args: [string?]) => mockGetPlatformAuthStatus(...args),
+  getPlatformAccessToken: vi.fn(() => undefined),
+}))
+vi.mock('@shared/lib/platform-auth/config', () => ({
+  getPlatformProxyBaseUrl: vi.fn(() => undefined),
 }))
 
 import {
@@ -1424,7 +1431,7 @@ describe('getAgentTemplateStatus', () => {
     }
   })
 
-  it('falls back to skillsetId when skillset config is not found', async () => {
+  it('returns local when skillset config is not found', async () => {
     const workspaceDir = createWorkspace('no-config-agent', {
       'CLAUDE.md': MINIMAL_CLAUDE_MD,
     })
@@ -1445,10 +1452,11 @@ describe('getAgentTemplateStatus', () => {
     mockGetSkillsetIndex.mockResolvedValue(null)
 
     const result = await getAgentTemplateStatus('no-config-agent', [])
-    if (result.type !== 'local') {
-      expect(result.skillsetName).toBe('orphaned-skillset-id')
-    }
+    expect(result.type).toBe('local')
   })
+
+  // Access filtering removed: platform skillsets are cleaned up on org switch/disconnect
+  // instead of being filtered at query time. See platform-auth-service.ts removePlatformSkillsets().
 })
 
 // ============================================================================
@@ -1649,8 +1657,8 @@ describe('getDiscoverableAgents', () => {
   })
 
   it('returns agents from multiple skillsets sorted alphabetically', async () => {
-    mockGetSkillsetIndex.mockImplementation(async (id: string) => {
-      if (id === 'skillset-a') {
+    mockGetSkillsetIndex.mockImplementation(async (ref) => {
+      if (ref.skillsetId === 'skillset-a') {
         return {
           skillset_name: 'Skillset A',
           description: 'A',
@@ -1661,7 +1669,7 @@ describe('getDiscoverableAgents', () => {
           ],
         }
       }
-      if (id === 'skillset-b') {
+      if (ref.skillsetId === 'skillset-b') {
         return {
           skillset_name: 'Skillset B',
           description: 'B',

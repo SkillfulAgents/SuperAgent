@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import crypto from 'crypto'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
@@ -75,6 +76,15 @@ vi.mock('@shared/lib/utils/retry', () => ({
   withRetry: async (fn: () => Promise<unknown>) => fn(),
 }))
 
+const mockGetPlatformAuthStatus = vi.fn((_userId?: string) => ({ orgId: undefined as string | undefined }))
+vi.mock('@shared/lib/services/platform-auth-service', () => ({
+  getPlatformAuthStatus: (...args: [string?]) => mockGetPlatformAuthStatus(...args),
+  getPlatformAccessToken: vi.fn(() => undefined),
+}))
+vi.mock('@shared/lib/platform-auth/config', () => ({
+  getPlatformProxyBaseUrl: vi.fn(() => undefined),
+}))
+
 import {
   contentHash,
   parseSkillFrontmatter,
@@ -85,6 +95,7 @@ import {
   getSkillPublishInfo,
   validateSkillsetUrl,
   createSkillPR,
+  getSkillPRInfo,
   getInstalledSkillMetadata,
   getSkillsetRepoDir,
 } from './skillset-service'
@@ -124,12 +135,20 @@ describe('skillset-service', () => {
     skillDirName: string,
     skillMdContent: string,
     metadata?: InstalledSkillMetadata,
+    extraFiles?: Record<string, string>,
   ): Promise<string> {
     const skillDir = path.join(
       testDir, 'agents', agentSlug, 'workspace', '.claude', 'skills', skillDirName,
     )
     await fs.promises.mkdir(skillDir, { recursive: true })
     await fs.promises.writeFile(path.join(skillDir, 'SKILL.md'), skillMdContent, 'utf-8')
+    if (extraFiles) {
+      for (const [relativePath, content] of Object.entries(extraFiles)) {
+        const fullPath = path.join(skillDir, relativePath)
+        await fs.promises.mkdir(path.dirname(fullPath), { recursive: true })
+        await fs.promises.writeFile(fullPath, content, 'utf-8')
+      }
+    }
     if (metadata) {
       await fs.promises.writeFile(
         path.join(skillDir, '.skillset-metadata.json'),
@@ -184,6 +203,17 @@ describe('skillset-service', () => {
       addedAt: '2026-01-01T00:00:00.000Z',
       ...overrides,
     }
+  }
+
+  function hashTestSkillPackage(files: Record<string, string>): string {
+    const hash = crypto.createHash('sha256')
+    for (const relativePath of Object.keys(files).sort()) {
+      hash.update(relativePath, 'utf-8')
+      hash.update('\0', 'utf-8')
+      hash.update(files[relativePath], 'utf-8')
+      hash.update('\0', 'utf-8')
+    }
+    return hash.digest('hex')
   }
 
   function buildIndex(overrides: Partial<SkillsetIndex> = {}): SkillsetIndex {
@@ -252,6 +282,43 @@ describe('skillset-service', () => {
       expect(result[0].path).toBe('my-cool-skill')
     })
 
+    it('detects local modifications when a non-SKILL file changes', async () => {
+      const skillPath = 'skills/multi-file/SKILL.md'
+      const extraFiles = {
+        'sync/helper.py': 'print("v1")\n',
+      }
+      const meta = buildMetadata({
+        skillPath,
+        skillName: 'Multi File Skill',
+        originalContentHash: hashTestSkillPackage({
+          'SKILL.md': SKILL_MD_PLAIN,
+          ...extraFiles,
+        }),
+      })
+      const config = buildSkillsetConfig()
+      const index = buildIndex({
+        skills: [{ name: meta.skillName, path: skillPath, description: 'desc', version: '1.0.0' }],
+      })
+
+      await createSkillDir('test-agent', 'multi-file', SKILL_MD_PLAIN, meta, extraFiles)
+      await createSkillsetCache(config.id, index, {
+        [skillPath]: SKILL_MD_PLAIN,
+        'skills/multi-file/sync/helper.py': 'print("v1")\n',
+      })
+
+      const before = await getAgentSkillsWithStatus('test-agent', [config])
+      expect(before[0].status.type).toBe('up_to_date')
+
+      await fs.promises.writeFile(
+        path.join(testDir, 'agents', 'test-agent', 'workspace', '.claude', 'skills', 'multi-file', 'sync', 'helper.py'),
+        'print("v2")\n',
+        'utf-8',
+      )
+
+      const after = await getAgentSkillsWithStatus('test-agent', [config])
+      expect(after[0].status.type).toBe('locally_modified')
+    })
+
     it('returns up_to_date when content matches and versions match', async () => {
       const skillContent = '# Test Skill\nOriginal content'
       const meta = buildMetadata({ originalContentHash: contentHash(skillContent) })
@@ -270,6 +337,7 @@ describe('skillset-service', () => {
         type: 'up_to_date',
         skillsetId: 'test-skillset',
         skillsetName: 'Test Skillset',
+        sourceLabel: 'Test Skillset',
       })
     })
 
@@ -291,7 +359,34 @@ describe('skillset-service', () => {
         type: 'update_available',
         skillsetId: 'test-skillset',
         skillsetName: 'Test Skillset',
+        sourceLabel: 'Test Skillset',
         latestVersion: '2.0.0',
+      })
+    })
+
+    it('returns update_available when remote content changed but version is same', async () => {
+      const originalContent = '# Test Skill\nOriginal content'
+      const updatedContent = '# Test Skill\nRemote updated content'
+      const meta = buildMetadata({ originalContentHash: contentHash(originalContent) })
+      const config = buildSkillsetConfig()
+      const index = buildIndex({
+        skills: [{ name: 'Test Skill', path: meta.skillPath, description: 'desc', version: '1.0.0' }],
+      })
+
+      await createSkillDir('test-agent', 'test-skill', originalContent, meta)
+      // Cache has updated content but same version in index.json
+      await createSkillsetCache(config.id, index, {
+        [path.dirname(meta.skillPath) + '/SKILL.md']: updatedContent,
+      })
+
+      const result = await getAgentSkillsWithStatus('test-agent', [config])
+
+      expect(result).toHaveLength(1)
+      expect(result[0].status).toEqual({
+        type: 'update_available',
+        skillsetId: 'test-skillset',
+        skillsetName: 'Test Skillset',
+        sourceLabel: 'Test Skillset',
       })
     })
 
@@ -330,6 +425,7 @@ describe('skillset-service', () => {
         type: 'locally_modified',
         skillsetId: 'test-skillset',
         skillsetName: 'Test Skillset',
+        sourceLabel: 'Test Skillset',
         openPrUrl: prUrl,
       })
     })
@@ -353,6 +449,7 @@ describe('skillset-service', () => {
         type: 'locally_modified',
         skillsetId: 'test-skillset',
         skillsetName: 'Test Skillset',
+        sourceLabel: 'Test Skillset',
         openPrUrl: prUrl,
       })
     })
@@ -469,7 +566,7 @@ Instructions here`
       await refreshAgentSkills('test-agent', [config])
 
       const updated = await readMetadata('test-agent', 'test-skill')
-      expect(updated.originalContentHash).toBe(contentHash(modifiedContent))
+      expect(updated.originalContentHash).toBe(hashTestSkillPackage({ 'SKILL.md': modifiedContent }))
       expect(updated.openPrUrl).toBeUndefined()
 
       // .skillset-original.md also updated
@@ -501,6 +598,116 @@ Instructions here`
 
       const updated = await readMetadata('test-agent', 'test-skill')
       expect(updated.originalContentHash).toBe(originalHash)
+    })
+
+    it('platform: merged queue item clears pendingQueueItemId and adopts remote content', async () => {
+      mockGetPlatformAuthStatus.mockReturnValue({ orgId: 'org_A' })
+      const proxyBase = 'https://platform.example'
+      const queueId = 'q-1'
+      const modifiedContent = '# Test Skill\nModified locally'
+      const mergedContent = '# Test Skill\nMerged remote'
+
+      const meta = buildMetadata({
+        provider: 'platform',
+        providerData: { orgId: 'org_A', repoId: 'platform--repo' },
+        openPrUrl: `platform:queue:${queueId}`,
+        pendingQueueItemId: queueId,
+        skillsetId: 'platform--repo--test',
+        originalContentHash: contentHash('# Test Skill\nOriginal content'),
+      })
+      const config = buildSkillsetConfig({
+        id: meta.skillsetId,
+        provider: 'platform',
+        providerData: { orgId: 'org_A', repoId: 'platform--repo' },
+      })
+      const index = buildIndex({
+        skills: [{ name: 'Test Skill', path: meta.skillPath, description: 'desc', version: '1.0.0' }],
+      })
+
+      await createSkillDir('test-agent', 'test-skill', modifiedContent, meta)
+      await createSkillsetCache('platform--repo', index, { [meta.skillPath]: mergedContent })
+
+      // Mock platform env + batched queue endpoint reporting merged.
+      const platformAuthMod = await import('@shared/lib/services/platform-auth-service')
+      vi.mocked(platformAuthMod.getPlatformAccessToken).mockReturnValue('plat_test_xx')
+      const proxyMod = await import('@shared/lib/platform-auth/config')
+      vi.mocked(proxyMod.getPlatformProxyBaseUrl).mockReturnValue(proxyBase)
+
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('/queue/batch')) {
+          return { ok: true, status: 200, json: async () => ({ items: { [queueId]: { status: 'merged' } } }) }
+        }
+        if (url.includes('/git-url')) {
+          return { ok: true, status: 200, json: async () => ({ url: 'https://platform.example/repo.git', defaultBranch: 'main' }) }
+        }
+        return { ok: false, status: 404, json: async () => ({}), text: async () => '' }
+      }))
+
+      await refreshAgentSkills('test-agent', [config])
+      vi.unstubAllGlobals()
+
+      const updated = await readMetadata('test-agent', 'test-skill')
+      expect(updated.pendingQueueItemId).toBeUndefined()
+      expect(updated.openPrUrl).toBeUndefined()
+      const onDiskSkill = await fs.promises.readFile(
+        path.join(testDir, 'agents', 'test-agent', 'workspace', '.claude', 'skills', 'test-skill', 'SKILL.md'),
+        'utf-8',
+      )
+      // Remote content was adopted (lazy / refresh path).
+      expect(onDiskSkill).toBe(mergedContent)
+    })
+
+    it('platform: rejected queue item clears pendingQueueItemId without touching files', async () => {
+      mockGetPlatformAuthStatus.mockReturnValue({ orgId: 'org_A' })
+      const proxyBase = 'https://platform.example'
+      const queueId = 'q-2'
+      const localContent = '# Test Skill\nLocal modifications'
+
+      const meta = buildMetadata({
+        provider: 'platform',
+        providerData: { orgId: 'org_A', repoId: 'platform--repo' },
+        pendingQueueItemId: queueId,
+        skillsetId: 'platform--repo--test',
+        originalContentHash: contentHash('# Test Skill\nOriginal'),
+      })
+      const config = buildSkillsetConfig({
+        id: meta.skillsetId,
+        provider: 'platform',
+        providerData: { orgId: 'org_A', repoId: 'platform--repo' },
+      })
+      const index = buildIndex({
+        skills: [{ name: 'Test Skill', path: meta.skillPath, description: 'desc', version: '1.0.0' }],
+      })
+
+      await createSkillDir('test-agent', 'test-skill', localContent, meta)
+      await createSkillsetCache('platform--repo', index, { [meta.skillPath]: '# Test Skill\nOriginal' })
+
+      const platformAuthMod = await import('@shared/lib/services/platform-auth-service')
+      vi.mocked(platformAuthMod.getPlatformAccessToken).mockReturnValue('plat_test_xx')
+      const proxyMod = await import('@shared/lib/platform-auth/config')
+      vi.mocked(proxyMod.getPlatformProxyBaseUrl).mockReturnValue(proxyBase)
+
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('/queue/batch')) {
+          return { ok: true, status: 200, json: async () => ({ items: { [queueId]: { status: 'rejected' } } }) }
+        }
+        if (url.includes('/git-url')) {
+          return { ok: true, status: 200, json: async () => ({ url: 'https://platform.example/repo.git', defaultBranch: 'main' }) }
+        }
+        return { ok: false, status: 404, json: async () => ({}), text: async () => '' }
+      }))
+
+      await refreshAgentSkills('test-agent', [config])
+      vi.unstubAllGlobals()
+
+      const updated = await readMetadata('test-agent', 'test-skill')
+      expect(updated.pendingQueueItemId).toBeUndefined()
+      // Rejection does not overwrite local content.
+      const onDiskSkill = await fs.promises.readFile(
+        path.join(testDir, 'agents', 'test-agent', 'workspace', '.claude', 'skills', 'test-skill', 'SKILL.md'),
+        'utf-8',
+      )
+      expect(onDiskSkill).toBe(localContent)
     })
   })
 
@@ -608,7 +815,7 @@ Instructions here`
       const meta = await readMetadata('test-agent', 'new-skill')
       expect(meta.skillsetId).toBe(config.id)
       expect(meta.openPrUrl).toBe('https://github.com/TestOrg/skills/pull/99')
-      expect(meta.originalContentHash).toBe(contentHash(SKILL_MD_PLAIN))
+      expect(meta.originalContentHash).toBe(hashTestSkillPackage({ 'SKILL.md': SKILL_MD_PLAIN }))
 
       const originalPath = path.join(
         testDir, 'agents', 'test-agent', 'workspace', '.claude', 'skills',
@@ -729,6 +936,62 @@ metadata:
       const result = await getSkillPublishInfo('test-agent', 'versioned-skill', skillsetConfig)
 
       expect(result.suggestedVersion).toBe('2.5.0')
+    })
+  })
+
+  describe('getSkillPRInfo', () => {
+    it('uses package diff when only auxiliary files changed', async () => {
+      const meta = buildMetadata({
+        skillPath: 'skills/word-counter/SKILL.md',
+        skillName: 'Word Counter',
+      })
+      await createSkillDir(
+        'test-agent',
+        'word-counter',
+        SKILL_MD_PLAIN,
+        meta,
+        { 'sync/helper.py': 'print("new")\n' },
+      )
+      await fs.promises.writeFile(
+        path.join(
+          testDir,
+          'agents',
+          'test-agent',
+          'workspace',
+          '.claude',
+          'skills',
+          'word-counter',
+          '.skillset-original.md',
+        ),
+        SKILL_MD_PLAIN,
+        'utf-8',
+      )
+      await createSkillsetCache(meta.skillsetId, buildIndex(), {
+        [meta.skillPath]: SKILL_MD_PLAIN,
+        'skills/word-counter/sync/helper.py': 'print("old")\n',
+      })
+      mockExecFileAsNoOp()
+      mockGetApiKey.mockReturnValue('sk-test-key')
+      mockAnthropicCreate.mockResolvedValue({
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            title: 'Update word counter helper logic',
+            body: 'Refreshes the helper implementation for word counting.',
+            version: '1.0.1',
+          }),
+        }],
+      })
+
+      const result = await getSkillPRInfo('test-agent', 'word-counter')
+
+      expect(result.suggestedTitle).toBe('Update word counter helper logic')
+      expect(mockAnthropicCreate).toHaveBeenCalledTimes(1)
+
+      const requestPayload = mockAnthropicCreate.mock.calls[0]?.[0] as {
+        messages?: Array<{ content?: string }>
+      }
+      expect(requestPayload.messages?.[0]?.content).toContain('Modified file: sync/helper.py')
     })
   })
 
@@ -1559,6 +1822,38 @@ Just content, no frontmatter at all.`
       // Content should be unchanged since there is no frontmatter to update
       expect(writtenContent).toBe(skillMd)
     })
+
+    it('copies non-SKILL files into the PR branch', async () => {
+      const skillPath = 'skills/multi-file/SKILL.md'
+      const meta = buildMetadata({
+        skillPath,
+        skillName: 'Multi File Skill',
+      })
+      const config = buildSkillsetConfig()
+      await createSkillDir(
+        'test-agent',
+        'multi-file',
+        SKILL_MD_PLAIN,
+        meta,
+        { 'sync/run.py': 'print("ship it")\n' },
+      )
+      await createSkillsetCache(config.id, buildIndex(), {
+        [skillPath]: SKILL_MD_PLAIN,
+        'skills/multi-file/sync/run.py': 'print("old")\n',
+      })
+
+      await createSkillPR('test-agent', 'multi-file', {
+        title: 'Update skill',
+        body: 'Updated',
+      })
+
+      const repoDir = getSkillsetRepoDir(config.id)
+      const writtenAuxFile = await fs.promises.readFile(
+        path.join(repoDir, 'skills', 'multi-file', 'sync', 'run.py'),
+        'utf-8',
+      )
+      expect(writtenAuxFile).toBe('print("ship it")\n')
+    })
   })
 
   // --------------------------------------------------------------------------
@@ -1665,7 +1960,7 @@ description:
       expect(result[0].status.type).toBe('up_to_date')
     })
 
-    it('uses skillsetId as skillsetName when config name is not found', async () => {
+    it('treats orphan skills (no matching config) as local', async () => {
       const skillContent = '# Test Skill\nOriginal content'
       const meta = buildMetadata({
         originalContentHash: contentHash(skillContent),
@@ -1675,13 +1970,13 @@ description:
       await createSkillDir('test-agent', 'orphan-skill', skillContent, meta)
 
       const result = await getAgentSkillsWithStatus('test-agent', [])
-      // With no config, the name map has no entry — falls back to skillsetId
       expect(result[0].status).toEqual({
-        type: 'up_to_date',
-        skillsetId: 'unknown-skillset',
-        skillsetName: 'unknown-skillset',
+        type: 'local',
       })
     })
+
+    // Access filtering removed: platform skillsets are cleaned up on org switch/disconnect
+    // instead of being filtered at query time. See platform-auth-service.ts removePlatformSkillsets().
 
     it('handles multiple skills with mixed statuses', async () => {
       const originalContent = '# Test Skill\nOriginal content'
@@ -1862,6 +2157,30 @@ metadata:
         (s: { path: string }) => s.path === 'skills/default-ver/SKILL.md',
       )
       expect(entry.version).toBe('1.0.0')
+    })
+
+    it('publishes non-SKILL files alongside the skill definition', async () => {
+      const config = buildSkillsetConfig()
+      await createSkillDir(
+        'test-agent',
+        'packaged-skill',
+        SKILL_MD_PLAIN,
+        undefined,
+        { 'sync/helper.py': 'print("helper")\n' },
+      )
+      await createSkillsetCache(config.id, buildIndex({ skills: [] }))
+
+      await publishSkillToSkillset('test-agent', 'packaged-skill', config, {
+        title: 'Add skill',
+        body: 'Adding',
+      })
+
+      const repoDir = getSkillsetRepoDir(config.id)
+      const writtenAuxFile = await fs.promises.readFile(
+        path.join(repoDir, 'skills', 'packaged-skill', 'sync', 'helper.py'),
+        'utf-8',
+      )
+      expect(writtenAuxFile).toBe('print("helper")\n')
     })
   })
 })

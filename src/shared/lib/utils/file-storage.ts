@@ -431,3 +431,39 @@ export function getAgentSessionsDir(slug: string): string {
 export function getSessionJsonlPath(slug: string, sessionId: string): string {
   return path.join(getAgentSessionsDir(slug), `${sessionId}.jsonl`)
 }
+
+// ============================================================================
+// Copy / Write Helpers
+// ============================================================================
+
+const DEFAULT_COPY_EXCLUDED = new Set(['.git', '.skillset-metadata.json', '.skillset-original.md'])
+
+export async function copyDirectoryFiltered(
+  src: string,
+  dest: string,
+  extraExclusions?: string[],
+): Promise<void> {
+  await ensureDirectory(dest)
+  const entries = await fs.promises.readdir(src, { withFileTypes: true })
+
+  const excluded = extraExclusions
+    ? new Set([...DEFAULT_COPY_EXCLUDED, ...extraExclusions])
+    : DEFAULT_COPY_EXCLUDED
+
+  for (const entry of entries) {
+    if (excluded.has(entry.name)) continue
+
+    const srcPath = path.join(src, entry.name)
+    const destPath = path.join(dest, entry.name)
+
+    if (entry.isDirectory()) {
+      await copyDirectoryFiltered(srcPath, destPath, extraExclusions)
+    } else {
+      await fs.promises.copyFile(srcPath, destPath)
+    }
+  }
+}
+
+export async function writeJsonFile(filePath: string, data: unknown): Promise<void> {
+  await fs.promises.writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8')
+}

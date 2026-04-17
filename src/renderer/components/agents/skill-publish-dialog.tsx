@@ -15,13 +15,16 @@ import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Loader2, ExternalLink, AlertTriangle, ChevronLeft } from 'lucide-react'
 import { useSkillPublishInfo, usePublishSkill } from '@renderer/hooks/use-agent-skills'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
-import type { ApiSkillsetConfig } from '@shared/lib/types/api'
+import { getPublishDialogCopy } from '@renderer/lib/skillset-publish-ui'
+import type { ApiSkillsetConfig, ApiItemStatus } from '@shared/lib/types/api'
 
 interface SkillPublishDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   agentSlug: string
   skillDir: string
+  skillStatus: ApiItemStatus
+  onOpenReview: () => void
 }
 
 export function SkillPublishDialog({
@@ -29,7 +32,10 @@ export function SkillPublishDialog({
   onOpenChange,
   agentSlug,
   skillDir,
+  skillStatus,
+  onOpenReview,
 }: SkillPublishDialogProps) {
+  const canPublish = skillStatus.type === 'local'
   const [step, setStep] = useState<'pick' | 'form'>('pick')
   const [selectedSkillset, setSelectedSkillset] = useState<ApiSkillsetConfig | null>(null)
   const { data: skillsets } = useSkillsets()
@@ -37,14 +43,23 @@ export function SkillPublishDialog({
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [newVersion, setNewVersion] = useState('')
-  const [prUrl, setPrUrl] = useState<string | null>(null)
+  const [publishResult, setPublishResult] = useState<{ prUrl?: string; successMessage: string } | null>(null)
 
   const { data: publishInfo, isLoading: isLoadingInfo, error: infoError } = useSkillPublishInfo(
-    step === 'form' ? agentSlug : null,
-    step === 'form' ? skillDir : null,
-    step === 'form' ? selectedSkillset?.id ?? null : null,
+    step === 'form' && canPublish ? agentSlug : null,
+    step === 'form' && canPublish ? skillDir : null,
+    step === 'form' && canPublish ? selectedSkillset?.id ?? null : null,
   )
   const publishSkill = usePublishSkill()
+
+  useEffect(() => {
+    if (!open || skillStatus.type === 'local') return
+
+    onOpenChange(false)
+    if (skillStatus.type === 'locally_modified') {
+      onOpenReview()
+    }
+  }, [open, onOpenChange, onOpenReview, skillStatus.type])
 
   // Populate fields when AI suggestions arrive
   useEffect(() => {
@@ -63,10 +78,12 @@ export function SkillPublishDialog({
       setTitle('')
       setBody('')
       setNewVersion('')
-      setPrUrl(null)
+      setPublishResult(null)
       publishSkill.reset()
     }
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const copy = getPublishDialogCopy('skill', selectedSkillset?.publishMode ?? 'pull_request')
 
   const handleSkillsetSelect = (ss: ApiSkillsetConfig) => {
     setSelectedSkillset(ss)
@@ -79,6 +96,7 @@ export function SkillPublishDialog({
     setTitle('')
     setBody('')
     setNewVersion('')
+    setPublishResult(null)
     publishSkill.reset()
   }
 
@@ -95,7 +113,7 @@ export function SkillPublishDialog({
         body: body.trim(),
         newVersion: newVersion.trim() || undefined,
       })
-      setPrUrl(result.prUrl)
+      setPublishResult(result)
     } catch {
       // Error is handled by publishSkill.error
     }
@@ -152,26 +170,28 @@ export function SkillPublishDialog({
             <DialogHeader>
               <DialogTitle>Publish Skill</DialogTitle>
               <DialogDescription>
-                Submit this skill to the {selectedSkillset?.name} skillset via a pull request.
+                Submit this skill to the {selectedSkillset?.name} skillset{copy.descriptionSuffix ? ` ${copy.descriptionSuffix}` : ''}.
               </DialogDescription>
             </DialogHeader>
 
-            {prUrl ? (
+            {publishResult ? (
               <div className="py-6 space-y-3">
                 <Alert>
                   <AlertDescription>
-                    Pull request created successfully.
+                    {publishResult.successMessage}
                   </AlertDescription>
                 </Alert>
-                <a
-                  href={prUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-2 text-sm text-primary hover:underline"
-                >
-                  <ExternalLink className="h-4 w-4" />
-                  {prUrl}
-                </a>
+                {publishResult.prUrl && (
+                  <a
+                    href={publishResult.prUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-2 text-sm text-primary hover:underline"
+                  >
+                    <ExternalLink className="h-4 w-4" />
+                    {publishResult.prUrl}
+                  </a>
+                )}
               </div>
             ) : (
               <div className="py-4 space-y-4">
@@ -185,7 +205,7 @@ export function SkillPublishDialog({
                 )}
 
                 <div className="space-y-1.5">
-                  <Label htmlFor="publish-title">PR Title</Label>
+                  <Label htmlFor="publish-title">{copy.titleLabel}</Label>
                   <div className="relative">
                     <Input
                       id="publish-title"
@@ -245,11 +265,12 @@ export function SkillPublishDialog({
                     <AlertDescription>{publishSkill.error.message}</AlertDescription>
                   </Alert>
                 )}
+
               </div>
             )}
 
             <DialogFooter>
-              {prUrl ? (
+              {publishResult ? (
                 <Button type="button" onClick={() => onOpenChange(false)}>
                   Done
                 </Button>
@@ -278,10 +299,10 @@ export function SkillPublishDialog({
                     {publishSkill.isPending ? (
                       <>
                         <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                        Publishing...
+                        {copy.pendingButton}
                       </>
                     ) : (
-                      'Create Pull Request'
+                      copy.submitButton
                     )}
                   </Button>
                 </>

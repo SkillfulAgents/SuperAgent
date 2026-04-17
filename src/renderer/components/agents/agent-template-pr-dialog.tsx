@@ -14,18 +14,23 @@ import { Label } from '@renderer/components/ui/label'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Loader2, ExternalLink, AlertTriangle } from 'lucide-react'
 import { useAgentTemplatePRInfo, useCreateAgentTemplatePR } from '@renderer/hooks/use-agent-templates'
+import { getSubmitDialogCopy } from '@renderer/lib/skillset-publish-ui'
+import type { ApiSkillsetConfig } from '@shared/lib/types/api'
 
 interface AgentTemplatePRDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   agentSlug: string
+  publishMode?: ApiSkillsetConfig['publishMode']
 }
 
 export function AgentTemplatePRDialog({
   open,
   onOpenChange,
   agentSlug,
+  publishMode = 'pull_request',
 }: AgentTemplatePRDialogProps) {
+  const copy = getSubmitDialogCopy('agent template', publishMode)
   const { data: prInfo, isLoading: isLoadingInfo, error: infoError } = useAgentTemplatePRInfo(
     open ? agentSlug : null,
   )
@@ -34,7 +39,7 @@ export function AgentTemplatePRDialog({
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [newVersion, setNewVersion] = useState('')
-  const [prUrl, setPrUrl] = useState<string | null>(null)
+  const [publishResult, setPublishResult] = useState<{ prUrl?: string; successMessage: string } | null>(null)
 
   useEffect(() => {
     if (prInfo) {
@@ -49,7 +54,7 @@ export function AgentTemplatePRDialog({
       setTitle('')
       setBody('')
       setNewVersion('')
-      setPrUrl(null)
+      setPublishResult(null)
       createPR.reset()
     }
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -65,7 +70,7 @@ export function AgentTemplatePRDialog({
         body: body.trim(),
         newVersion: newVersion.trim() || undefined,
       })
-      setPrUrl(result.prUrl)
+      setPublishResult(result)
     } catch {
       // Error is handled by createPR.error
     }
@@ -76,28 +81,30 @@ export function AgentTemplatePRDialog({
       <DialogContent className="max-w-lg">
         <form onSubmit={handleSubmit}>
           <DialogHeader>
-            <DialogTitle>Open Pull Request</DialogTitle>
+            <DialogTitle>{copy.title}</DialogTitle>
             <DialogDescription>
-              Submit your local agent template changes back to the skillset repository.
+              {copy.description}
             </DialogDescription>
           </DialogHeader>
 
-          {prUrl ? (
+          {publishResult ? (
             <div className="py-6 space-y-3">
               <Alert>
                 <AlertDescription>
-                  Pull request created successfully.
+                  {publishResult.successMessage}
                 </AlertDescription>
               </Alert>
-              <a
-                href={prUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-2 text-sm text-primary hover:underline"
-              >
-                <ExternalLink className="h-4 w-4" />
-                {prUrl}
-              </a>
+              {publishResult.prUrl && (
+                <a
+                  href={publishResult.prUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-sm text-primary hover:underline"
+                >
+                  <ExternalLink className="h-4 w-4" />
+                  {publishResult.prUrl}
+                </a>
+              )}
             </div>
           ) : (
             <div className="py-4 space-y-4">
@@ -111,7 +118,7 @@ export function AgentTemplatePRDialog({
               )}
 
               <div className="space-y-1.5">
-                <Label htmlFor="agent-pr-title">PR Title</Label>
+                <Label htmlFor="agent-pr-title">{copy.titleLabel}</Label>
                 <div className="relative">
                   <Input
                     id="agent-pr-title"
@@ -171,11 +178,12 @@ export function AgentTemplatePRDialog({
                   <AlertDescription>{createPR.error.message}</AlertDescription>
                 </Alert>
               )}
+
             </div>
           )}
 
           <DialogFooter>
-            {prUrl ? (
+            {publishResult ? (
               <Button type="button" onClick={() => onOpenChange(false)}>
                 Done
               </Button>
@@ -195,10 +203,10 @@ export function AgentTemplatePRDialog({
                   {createPR.isPending ? (
                     <>
                       <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      Creating PR...
+                      {copy.pendingButton}
                     </>
                   ) : (
-                    'Create Pull Request'
+                    copy.submitButton
                   )}
                 </Button>
               </>

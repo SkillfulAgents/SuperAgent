@@ -3,13 +3,16 @@ import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Checkbox } from '@renderer/components/ui/checkbox'
-import { Search, ChevronLeft, ChevronRight, Filter, MoreVertical, FileCode, CloudUpload } from 'lucide-react'
+import { Search, ChevronLeft, ChevronRight, Filter, MoreVertical, FileCode, CloudUpload, GitPullRequest, Send, RefreshCw, Loader2 } from 'lucide-react'
 import { DiscoverableSkillCard } from '../discoverable-skill-card'
 import { StatusBadge } from '../status-badge'
 import { SkillFilesDialog } from '../skill-files-dialog'
 import { SkillPublishDialog } from '../skill-publish-dialog'
+import { SkillPRDialog } from '../skill-pr-dialog'
 import { HomeCollapsible } from './home-collapsible'
-import { useAgentSkills, useDiscoverableSkills } from '@renderer/hooks/use-agent-skills'
+import { useAgentSkills, useDiscoverableSkills, useUpdateSkill } from '@renderer/hooks/use-agent-skills'
+import { useSkillsetPublishMode } from '@renderer/hooks/use-skillsets'
+import { getReviewActionLabel, isPullRequestPublishMode } from '@renderer/lib/skillset-publish-ui'
 import type { ApiSkillWithStatus } from '@shared/lib/types/api'
 
 const SKILLS_PER_PAGE = 6
@@ -188,6 +191,11 @@ export function HomeSkills({ agentSlug }: HomeSkillsProps) {
 function SkillRow({ skill, agentSlug }: { skill: ApiSkillWithStatus; agentSlug: string }) {
   const [filesOpen, setFilesOpen] = useState(false)
   const [publishOpen, setPublishOpen] = useState(false)
+  const [reviewOpen, setReviewOpen] = useState(false)
+  const updateSkill = useUpdateSkill()
+  const publishMode = useSkillsetPublishMode(skill.status.skillsetId)
+  const ReviewIcon = isPullRequestPublishMode(publishMode) ? GitPullRequest : Send
+  const actionLabel = getReviewActionLabel(publishMode)
 
   return (
     <>
@@ -220,13 +228,38 @@ function SkillRow({ skill, agentSlug }: { skill: ApiSkillWithStatus; agentSlug: 
                 <FileCode className="h-3.5 w-3.5" />
                 View Files
               </button>
-              <button
-                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
-                onClick={() => setPublishOpen(true)}
-              >
-                <CloudUpload className="h-3.5 w-3.5" />
-                Publish Skill
-              </button>
+              {skill.status.type === 'local' && skill.status.publishable !== false && (
+                <button
+                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                  onClick={() => setPublishOpen(true)}
+                >
+                  <CloudUpload className="h-3.5 w-3.5" />
+                  Publish Skill
+                </button>
+              )}
+              {skill.status.type === 'update_available' && (
+                <button
+                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                  disabled={updateSkill.isPending}
+                  onClick={() => updateSkill.mutate({ agentSlug, skillDir: skill.path })}
+                >
+                  {updateSkill.isPending ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-3.5 w-3.5" />
+                  )}
+                  Update
+                </button>
+              )}
+              {skill.status.type === 'locally_modified' && (
+                <button
+                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                  onClick={() => setReviewOpen(true)}
+                >
+                  <ReviewIcon className="h-3.5 w-3.5" />
+                  {actionLabel}
+                </button>
+              )}
             </PopoverContent>
           </Popover>
         </div>
@@ -244,6 +277,15 @@ function SkillRow({ skill, agentSlug }: { skill: ApiSkillWithStatus; agentSlug: 
         onOpenChange={setPublishOpen}
         agentSlug={agentSlug}
         skillDir={skill.path}
+        skillStatus={skill.status}
+        onOpenReview={() => setReviewOpen(true)}
+      />
+      <SkillPRDialog
+        open={reviewOpen}
+        onOpenChange={setReviewOpen}
+        agentSlug={agentSlug}
+        skillDir={skill.path}
+        publishMode={publishMode}
       />
     </>
   )

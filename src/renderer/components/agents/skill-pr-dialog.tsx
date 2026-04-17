@@ -14,12 +14,15 @@ import { Label } from '@renderer/components/ui/label'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Loader2, ExternalLink, AlertTriangle } from 'lucide-react'
 import { useSkillPRInfo, useCreateSkillPR } from '@renderer/hooks/use-agent-skills'
+import { getSubmitDialogCopy } from '@renderer/lib/skillset-publish-ui'
+import type { ApiSkillsetConfig } from '@shared/lib/types/api'
 
 interface SkillPRDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   agentSlug: string
   skillDir: string
+  publishMode?: ApiSkillsetConfig['publishMode']
 }
 
 export function SkillPRDialog({
@@ -27,7 +30,9 @@ export function SkillPRDialog({
   onOpenChange,
   agentSlug,
   skillDir,
+  publishMode = 'pull_request',
 }: SkillPRDialogProps) {
+  const copy = getSubmitDialogCopy('skill', publishMode)
   const { data: prInfo, isLoading: isLoadingInfo, error: infoError } = useSkillPRInfo(
     open ? agentSlug : null,
     open ? skillDir : null,
@@ -37,7 +42,7 @@ export function SkillPRDialog({
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [newVersion, setNewVersion] = useState('')
-  const [prUrl, setPrUrl] = useState<string | null>(null)
+  const [publishResult, setPublishResult] = useState<{ prUrl?: string; successMessage: string } | null>(null)
 
   // Populate fields when AI suggestions arrive
   useEffect(() => {
@@ -54,7 +59,7 @@ export function SkillPRDialog({
       setTitle('')
       setBody('')
       setNewVersion('')
-      setPrUrl(null)
+      setPublishResult(null)
       createPR.reset()
     }
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -71,7 +76,7 @@ export function SkillPRDialog({
         body: body.trim(),
         newVersion: newVersion.trim() || undefined,
       })
-      setPrUrl(result.prUrl)
+      setPublishResult(result)
     } catch {
       // Error is handled by createPR.error
     }
@@ -82,28 +87,30 @@ export function SkillPRDialog({
       <DialogContent className="max-w-lg">
         <form onSubmit={handleSubmit}>
           <DialogHeader>
-            <DialogTitle>Open Pull Request</DialogTitle>
+            <DialogTitle>{copy.title}</DialogTitle>
             <DialogDescription>
-              Submit your local changes back to the skillset repository.
+              {copy.description}
             </DialogDescription>
           </DialogHeader>
 
-          {prUrl ? (
+          {publishResult ? (
             <div className="py-6 space-y-3">
               <Alert>
                 <AlertDescription>
-                  Pull request created successfully.
+                  {publishResult.successMessage}
                 </AlertDescription>
               </Alert>
-              <a
-                href={prUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-2 text-sm text-primary hover:underline"
-              >
-                <ExternalLink className="h-4 w-4" />
-                {prUrl}
-              </a>
+              {publishResult.prUrl && (
+                <a
+                  href={publishResult.prUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-sm text-primary hover:underline"
+                >
+                  <ExternalLink className="h-4 w-4" />
+                  {publishResult.prUrl}
+                </a>
+              )}
             </div>
           ) : (
             <div className="py-4 space-y-4">
@@ -117,7 +124,7 @@ export function SkillPRDialog({
               )}
 
               <div className="space-y-1.5">
-                <Label htmlFor="pr-title">PR Title</Label>
+                <Label htmlFor="pr-title">{copy.titleLabel}</Label>
                 <div className="relative">
                   <Input
                     id="pr-title"
@@ -180,11 +187,12 @@ export function SkillPRDialog({
                   <AlertDescription>{createPR.error.message}</AlertDescription>
                 </Alert>
               )}
+
             </div>
           )}
 
           <DialogFooter>
-            {prUrl ? (
+            {publishResult ? (
               <Button type="button" onClick={() => onOpenChange(false)}>
                 Done
               </Button>
@@ -204,10 +212,10 @@ export function SkillPRDialog({
                   {createPR.isPending ? (
                     <>
                       <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      Creating PR...
+                      {copy.pendingButton}
                     </>
                   ) : (
-                    'Create Pull Request'
+                    copy.submitButton
                   )}
                 </Button>
               </>

@@ -800,6 +800,7 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
 
       const email = callbackUrl.searchParams.get('email')
       const label = callbackUrl.searchParams.get('label') || 'SuperAgent'
+      const orgId = callbackUrl.searchParams.get('org_id')
       const orgName = callbackUrl.searchParams.get('org_name')
       const role = callbackUrl.searchParams.get('role')
       const apiUrl = `http://localhost:${actualApiPort}/api/platform-auth/complete`
@@ -813,6 +814,7 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
           token,
           email,
           label,
+          orgId,
           orgName,
           role,
         }),

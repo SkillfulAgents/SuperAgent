@@ -40,15 +40,20 @@ export interface ApiAgent {
 }
 
 /**
- * Agent template status from skillset tracking
+ * Shared status shape used by both skill and agent template tracking.
  */
-export interface ApiAgentTemplateStatus {
+export interface ApiItemStatus {
   type: 'local' | 'up_to_date' | 'update_available' | 'locally_modified'
   skillsetId?: string
   skillsetName?: string
+  sourceLabel?: string
+  publishable?: boolean
   latestVersion?: string
   openPrUrl?: string
 }
+
+/** @deprecated Use ApiItemStatus instead */
+export type ApiAgentTemplateStatus = ApiItemStatus
 
 /**
  * Agent available from a skillset but not yet installed
@@ -220,13 +225,7 @@ export interface ApiSkillWithStatus {
   name: string
   description: string
   path: string
-  status: {
-    type: 'local' | 'up_to_date' | 'update_available' | 'locally_modified'
-    skillsetId?: string
-    skillsetName?: string
-    latestVersion?: string
-    openPrUrl?: string
-  }
+  status: ApiItemStatus
 }
 
 /**
@@ -265,6 +264,10 @@ export interface ApiSkillsetConfig {
   skillCount: number
   agentCount: number
   addedAt: string
+  provider?: 'github' | 'platform'
+  badgeLabel?: string
+  showUrl: boolean
+  publishMode: 'pull_request' | 'hosted_submit'
 }
 
 // ============================================================================

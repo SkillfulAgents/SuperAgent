@@ -17,7 +17,6 @@ export function SkillsetsTab() {
   const addSkillset = useAddSkillset()
   const removeSkillset = useRemoveSkillset()
   const refreshSkillset = useRefreshSkillset()
-
   const [urlInput, setUrlInput] = useState('')
   const [validationResult, setValidationResult] = useState<{
     valid: boolean
@@ -130,15 +129,22 @@ export function SkillsetsTab() {
                   <span className="text-xs text-muted-foreground">
                     {ss.skillCount} {ss.skillCount === 1 ? 'skill' : 'skills'}
                   </span>
+                  {ss.badgeLabel && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
+                      {ss.badgeLabel}
+                    </span>
+                  )}
                 </div>
                 {ss.description && (
                   <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">
                     {ss.description}
                   </p>
                 )}
-                <p className="text-xs text-muted-foreground mt-1 font-mono truncate">
-                  {ss.url}
-                </p>
+                {ss.showUrl && (
+                  <p className="text-xs text-muted-foreground mt-1 font-mono truncate">
+                    {ss.url}
+                  </p>
+                )}
               </div>
               <div className="flex gap-1 shrink-0">
                 <Button

@@ -1,9 +1,15 @@
+import { useEffect, useRef } from 'react'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ApiSkillWithStatus, ApiDiscoverableSkill } from '@shared/lib/types/api'
 
+const AUTO_REFRESH_DEBOUNCE_MS = 10_000
+const agentSkillAutoRefreshAt = new Map<string, number>()
+
 export function useAgentSkills(agentSlug: string | null) {
-  return useQuery<ApiSkillWithStatus[]>({
+  const queryClient = useQueryClient()
+
+  const query = useQuery<ApiSkillWithStatus[]>({
     queryKey: ['agent-skills', agentSlug],
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug!)}/skills`)
@@ -13,6 +19,31 @@ export function useAgentSkills(agentSlug: string | null) {
     },
     enabled: !!agentSlug,
   })
+
+  const lastSlugRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!agentSlug) return
+    if (lastSlugRef.current === agentSlug) return
+    lastSlugRef.current = agentSlug
+
+    const lastRefreshAt = agentSkillAutoRefreshAt.get(agentSlug) ?? 0
+    if (Date.now() - lastRefreshAt < AUTO_REFRESH_DEBOUNCE_MS) return
+    agentSkillAutoRefreshAt.set(agentSlug, Date.now())
+
+    let cancelled = false
+    apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/skills/refresh`, { method: 'POST' })
+      .then(async (res) => {
+        if (cancelled || !res.ok) return
+        const fresh = await res.json() as { skills: ApiSkillWithStatus[] }
+        queryClient.setQueryData(['agent-skills', agentSlug], fresh.skills)
+        queryClient.invalidateQueries({ queryKey: ['discoverable-skills', agentSlug] })
+      })
+      .catch(() => { /* best-effort; a user-triggered refresh surfaces the error */ })
+
+    return () => { cancelled = true }
+  }, [agentSlug, queryClient])
+
+  return query
 }
 
 export function useDiscoverableSkills(agentSlug: string | null) {
@@ -62,7 +93,7 @@ export function useInstallSkill() {
   })
 }
 
-export function useUpdateSkill() {
+function useSkillSyncMutation(errorMessage: string) {
   const queryClient = useQueryClient()
 
   return useMutation<
@@ -76,7 +107,7 @@ export function useUpdateSkill() {
       })
       if (!res.ok) {
         const data = await res.json()
-        throw new Error(data.error || 'Failed to update skill')
+        throw new Error(data.error || errorMessage)
       }
       return res.json()
     },
@@ -84,6 +115,14 @@ export function useUpdateSkill() {
       queryClient.invalidateQueries({ queryKey: ['agent-skills', vars.agentSlug] })
     },
   })
+}
+
+export function useUpdateSkill() {
+  return useSkillSyncMutation('Failed to update skill')
+}
+
+export function useForceSyncSkill() {
+  return useSkillSyncMutation('Failed to sync skill from remote')
 }
 
 export interface SkillPRInfo {
@@ -114,7 +153,7 @@ export function useCreateSkillPR() {
   const queryClient = useQueryClient()
 
   return useMutation<
-    { prUrl: string },
+    { prUrl?: string; successMessage: string },
     Error,
     { agentSlug: string; skillDir: string; title: string; body: string; newVersion?: string }
   >({
@@ -163,6 +202,7 @@ export function useSkillPublishInfo(
       return res.json()
     },
     enabled: !!agentSlug && !!skillDir && !!skillsetId,
+    retry: false,
   })
 }
 
@@ -170,7 +210,7 @@ export function usePublishSkill() {
   const queryClient = useQueryClient()
 
   return useMutation<
-    { prUrl: string },
+    { prUrl?: string; successMessage: string },
     Error,
     {
       agentSlug: string

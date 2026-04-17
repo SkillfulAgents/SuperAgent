@@ -12,6 +12,7 @@ export interface PlatformAuthStatus {
   tokenPreview: string | null
   email: string | null
   label: string | null
+  orgId: string | null
   orgName: string | null
   role: string | null
   createdAt: string | null
@@ -134,11 +135,20 @@ export function useSavePlatformAccessKey() {
       window.localStorage.setItem(PLATFORM_AUTH_CHOICE_STORAGE_KEY, 'platform')
       queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
       await applyPlatformDefaults().catch(() => {})
+
+      // Auto-sync provider-owned skillsets after platform auth is ready.
+      void apiFetch('/api/skillsets/sync-remote', {
+        method: 'POST',
+        body: JSON.stringify({ provider: 'platform' }),
+      })
+        .then(() => queryClient.invalidateQueries({ queryKey: ['skillsets'] }))
+        .catch(() => {})
     },
   })
 }
 
 export function usePlatformConnect(options?: PlatformConnectOptions) {
+  const queryClient = useQueryClient()
   const platformAuthQuery = usePlatformAuthStatus()
   const platformAuth = platformAuthQuery.data
   const applyPlatformDefaults = useApplyPlatformDefaults()
@@ -170,6 +180,15 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
       void applyPlatformDefaults().catch((err) => {
         setError(err instanceof Error ? err.message : 'Failed to apply platform defaults.')
       })
+
+      // Auto-sync provider-owned skillsets after successful connection.
+      void apiFetch('/api/skillsets/sync-remote', {
+        method: 'POST',
+        body: JSON.stringify({ provider: 'platform' }),
+      })
+        .then(() => queryClient.invalidateQueries({ queryKey: ['skillsets'] }))
+        .catch(() => {})
+
       onSuccessRef.current?.(params)
       return
     }

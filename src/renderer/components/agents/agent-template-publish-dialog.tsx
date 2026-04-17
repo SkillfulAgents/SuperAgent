@@ -15,6 +15,7 @@ import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Loader2, ExternalLink, AlertTriangle, ChevronLeft } from 'lucide-react'
 import { useAgentTemplatePublishInfo, usePublishAgentTemplate } from '@renderer/hooks/use-agent-templates'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
+import { getPublishDialogCopy } from '@renderer/lib/skillset-publish-ui'
 import type { ApiSkillsetConfig } from '@shared/lib/types/api'
 
 interface AgentTemplatePublishDialogProps {
@@ -35,7 +36,7 @@ export function AgentTemplatePublishDialog({
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [newVersion, setNewVersion] = useState('')
-  const [prUrl, setPrUrl] = useState<string | null>(null)
+  const [publishResult, setPublishResult] = useState<{ prUrl?: string; successMessage: string } | null>(null)
 
   const { data: publishInfo, isLoading: isLoadingInfo, error: infoError } = useAgentTemplatePublishInfo(
     step === 'form' ? agentSlug : null,
@@ -58,10 +59,12 @@ export function AgentTemplatePublishDialog({
       setTitle('')
       setBody('')
       setNewVersion('')
-      setPrUrl(null)
+      setPublishResult(null)
       publishAgent.reset()
     }
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const copy = getPublishDialogCopy('agent template', selectedSkillset?.publishMode ?? 'pull_request')
 
   const handleSkillsetSelect = (ss: ApiSkillsetConfig) => {
     setSelectedSkillset(ss)
@@ -74,6 +77,7 @@ export function AgentTemplatePublishDialog({
     setTitle('')
     setBody('')
     setNewVersion('')
+    setPublishResult(null)
     publishAgent.reset()
   }
 
@@ -89,7 +93,7 @@ export function AgentTemplatePublishDialog({
         body: body.trim(),
         newVersion: newVersion.trim() || undefined,
       })
-      setPrUrl(result.prUrl)
+      setPublishResult(result)
     } catch {
       // Error is handled by publishAgent.error
     }
@@ -146,26 +150,28 @@ export function AgentTemplatePublishDialog({
             <DialogHeader>
               <DialogTitle>Publish Agent Template</DialogTitle>
               <DialogDescription>
-                Submit this agent template to the {selectedSkillset?.name} skillset via a pull request.
+                Submit this agent template to the {selectedSkillset?.name} skillset{copy.descriptionSuffix ? ` ${copy.descriptionSuffix}` : ''}.
               </DialogDescription>
             </DialogHeader>
 
-            {prUrl ? (
+            {publishResult ? (
               <div className="py-6 space-y-3">
                 <Alert>
                   <AlertDescription>
-                    Pull request created successfully.
+                    {publishResult.successMessage}
                   </AlertDescription>
                 </Alert>
-                <a
-                  href={prUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-2 text-sm text-primary hover:underline"
-                >
-                  <ExternalLink className="h-4 w-4" />
-                  {prUrl}
-                </a>
+                {publishResult.prUrl && (
+                  <a
+                    href={publishResult.prUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-2 text-sm text-primary hover:underline"
+                  >
+                    <ExternalLink className="h-4 w-4" />
+                    {publishResult.prUrl}
+                  </a>
+                )}
               </div>
             ) : (
               <div className="py-4 space-y-4">
@@ -179,7 +185,7 @@ export function AgentTemplatePublishDialog({
                 )}
 
                 <div className="space-y-1.5">
-                  <Label htmlFor="agent-publish-title">PR Title</Label>
+                  <Label htmlFor="agent-publish-title">{copy.titleLabel}</Label>
                   <div className="relative">
                     <Input
                       id="agent-publish-title"
@@ -239,11 +245,12 @@ export function AgentTemplatePublishDialog({
                     <AlertDescription>{publishAgent.error.message}</AlertDescription>
                   </Alert>
                 )}
+
               </div>
             )}
 
             <DialogFooter>
-              {prUrl ? (
+              {publishResult ? (
                 <Button type="button" onClick={() => onOpenChange(false)}>
                   Done
                 </Button>
@@ -272,10 +279,10 @@ export function AgentTemplatePublishDialog({
                     {publishAgent.isPending ? (
                       <>
                         <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                        Publishing...
+                        {copy.pendingButton}
                       </>
                     ) : (
-                      'Create Pull Request'
+                      copy.submitButton
                     )}
                   </Button>
                 </>

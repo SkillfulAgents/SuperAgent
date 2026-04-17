@@ -1,7 +1,19 @@
 import { useState } from 'react'
-import { Sparkles, RefreshCw, GitPullRequest, Loader2, Upload } from 'lucide-react'
+import { Sparkles, RefreshCw, GitPullRequest, Send, Loader2, Upload } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
-import { useUpdateSkill } from '@renderer/hooks/use-agent-skills'
+import { useForceSyncSkill, useUpdateSkill } from '@renderer/hooks/use-agent-skills'
+import { useSkillsetPublishMode } from '@renderer/hooks/use-skillsets'
+import { getReviewActionLabel, isPullRequestPublishMode } from '@renderer/lib/skillset-publish-ui'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@renderer/components/ui/alert-dialog'
 import { StatusBadge } from './status-badge'
 import { SkillPRDialog } from './skill-pr-dialog'
 import { SkillPublishDialog } from './skill-publish-dialog'
@@ -15,8 +27,14 @@ interface AgentSkillCardProps {
 
 export function AgentSkillCard({ skill, agentSlug }: AgentSkillCardProps) {
   const updateSkill = useUpdateSkill()
+  const forceSyncSkill = useForceSyncSkill()
   const [prDialogOpen, setPrDialogOpen] = useState(false)
   const [publishDialogOpen, setPublishDialogOpen] = useState(false)
+  const [forceSyncDialogOpen, setForceSyncDialogOpen] = useState(false)
+  const sourceLabel = skill.status.sourceLabel || null
+  const publishMode = useSkillsetPublishMode(skill.status.skillsetId)
+  const isPR = isPullRequestPublishMode(publishMode)
+  const SubmitIcon = isPR ? GitPullRequest : Send
 
   return (
     <SkillContextMenu skill={skill} agentSlug={agentSlug}>
@@ -30,9 +48,9 @@ export function AgentSkillCard({ skill, agentSlug }: AgentSkillCardProps) {
           <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">
             {skill.description}
           </p>
-          {skill.status.skillsetName && (
+          {sourceLabel && (
             <p className="text-xs text-muted-foreground mt-1">
-              From: {skill.status.skillsetName}
+              {sourceLabel}
             </p>
           )}
         </div>
@@ -56,17 +74,36 @@ export function AgentSkillCard({ skill, agentSlug }: AgentSkillCardProps) {
             </Button>
           )}
           {skill.status.type === 'locally_modified' && (
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 text-xs"
-              onClick={() => setPrDialogOpen(true)}
-            >
-              <GitPullRequest className="h-3 w-3 mr-1" />
-              Open PR
-            </Button>
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs"
+                onClick={() => setForceSyncDialogOpen(true)}
+                disabled={forceSyncSkill.isPending}
+              >
+                {forceSyncSkill.isPending ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <>
+                    <RefreshCw className="h-3 w-3 mr-1" />
+                    Force Sync
+                  </>
+                )}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs"
+                onClick={() => setPrDialogOpen(true)}
+              >
+                <SubmitIcon className="h-3 w-3 mr-1" />
+                {getReviewActionLabel(publishMode)}
+              </Button>
+            </>
           )}
-          {skill.status.type === 'local' && (
+          {/* Hidden-org platform skills are shown as local, but must not be re-published from this org. */}
+          {skill.status.type === 'local' && skill.status.publishable !== false && (
             <Button
               size="icon"
               variant="ghost"
@@ -83,13 +120,42 @@ export function AgentSkillCard({ skill, agentSlug }: AgentSkillCardProps) {
           onOpenChange={setPrDialogOpen}
           agentSlug={agentSlug}
           skillDir={skill.path}
+          publishMode={publishMode}
         />
         <SkillPublishDialog
           open={publishDialogOpen}
           onOpenChange={setPublishDialogOpen}
           agentSlug={agentSlug}
           skillDir={skill.path}
+          skillStatus={skill.status}
+          onOpenReview={() => setPrDialogOpen(true)}
         />
+        <AlertDialog open={forceSyncDialogOpen} onOpenChange={setForceSyncDialogOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Force sync skill from remote?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will discard your local changes to {skill.name} and replace them with
+                the latest version from the skillset.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={forceSyncSkill.isPending}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(event) => {
+                  event.preventDefault()
+                  forceSyncSkill.mutate(
+                    { agentSlug, skillDir: skill.path },
+                    { onSuccess: () => setForceSyncDialogOpen(false) }
+                  )
+                }}
+                disabled={forceSyncSkill.isPending}
+              >
+                {forceSyncSkill.isPending ? 'Syncing...' : 'Force Sync'}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </SkillContextMenu>
   )

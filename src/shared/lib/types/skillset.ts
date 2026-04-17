@@ -30,6 +30,12 @@ export interface SkillsetIndex {
 // Skillset Configuration (stored in settings)
 // ============================================================================
 
+/** Skill provider type */
+export type SkillProvider = 'github' | 'platform'
+
+/** Provider-specific serialized data owned by the concrete provider */
+export type SkillsetProviderData = Record<string, unknown>
+
 /** A configured skillset in user settings */
 export interface SkillsetConfig {
   id: string // deterministic slug from URL
@@ -37,6 +43,8 @@ export interface SkillsetConfig {
   name: string // from index.json skillset_name
   description: string // from index.json description
   addedAt: string // ISO date
+  provider?: SkillProvider // defaults to 'github'
+  providerData?: SkillsetProviderData
 }
 
 // ============================================================================
@@ -51,8 +59,12 @@ export interface InstalledSkillMetadata {
   skillPath: string // path within skillset repo
   installedVersion: string
   installedAt: string // ISO date
-  originalContentHash: string // SHA-256 of SKILL.md at install time
+  originalContentHash: string // SHA-256 of the installed skill package at install time
   openPrUrl?: string // URL of an open PR for local changes
+  provider?: SkillProvider // defaults to 'github'
+  providerData?: SkillsetProviderData
+  skillsetName?: string
+  pendingQueueItemId?: string // platform queue item ID for pending submissions
 }
 
 // ============================================================================
@@ -78,10 +90,33 @@ export interface SkillFrontmatterMetadata {
 
 /** Skill status for UI display */
 export type SkillStatus =
-  | { type: 'local' }
-  | { type: 'up_to_date'; skillsetId: string; skillsetName: string }
-  | { type: 'update_available'; skillsetId: string; skillsetName: string; latestVersion: string }
-  | { type: 'locally_modified'; skillsetId: string; skillsetName: string; openPrUrl?: string }
+  | {
+    type: 'local'
+    skillsetId?: string
+    skillsetName?: string
+    sourceLabel?: string
+    publishable?: boolean
+  }
+  | {
+    type: 'up_to_date'
+    skillsetId: string
+    skillsetName: string
+    sourceLabel?: string
+  }
+  | {
+    type: 'update_available'
+    skillsetId: string
+    skillsetName: string
+    sourceLabel?: string
+    latestVersion?: string
+  }
+  | {
+    type: 'locally_modified'
+    skillsetId: string
+    skillsetName: string
+    sourceLabel?: string
+    openPrUrl?: string
+  }
 
 /** Extended skill info with status */
 export interface SkillWithStatus {
@@ -124,14 +159,47 @@ export interface InstalledAgentMetadata {
   installedAt: string // ISO date
   originalContentHash: string // SHA-256 of template-eligible files
   openPrUrl?: string
+  provider?: SkillProvider
+  providerData?: SkillsetProviderData
+  skillsetName?: string
+  pendingQueueItemId?: string
 }
 
 /** Agent template status (mirrors SkillStatus) */
 export type AgentTemplateStatus =
-  | { type: 'local' }
-  | { type: 'up_to_date'; skillsetId: string; skillsetName: string }
-  | { type: 'update_available'; skillsetId: string; skillsetName: string; latestVersion: string }
-  | { type: 'locally_modified'; skillsetId: string; skillsetName: string; openPrUrl?: string }
+  | {
+    type: 'local'
+    skillsetId?: string
+    skillsetName?: string
+    sourceLabel?: string
+    publishable?: boolean
+  }
+  | {
+    type: 'up_to_date'
+    skillsetId: string
+    skillsetName: string
+    sourceLabel?: string
+  }
+  | {
+    type: 'update_available'
+    skillsetId: string
+    skillsetName: string
+    sourceLabel?: string
+    latestVersion?: string
+  }
+  | {
+    type: 'locally_modified'
+    skillsetId: string
+    skillsetName: string
+    sourceLabel?: string
+    openPrUrl?: string
+  }
+
+/** Result from submitting a skill/agent update to the platform queue. */
+export type PlatformSubmitResult = {
+  status: string
+  queueItem?: { id: string; branch_name: string; status: string }
+}
 
 /** An agent available from a skillset that is not yet installed */
 export interface DiscoverableAgent {
