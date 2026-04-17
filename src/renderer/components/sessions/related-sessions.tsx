@@ -203,10 +203,17 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
 
   return (
     <>
-      <button
-        type="button"
+      <div
+        role="button"
+        tabIndex={0}
         className="group relative w-full flex items-center gap-3 py-3 px-1 hover:bg-muted/50 transition-colors text-left cursor-pointer"
         onClick={() => selectSession(session.id)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            selectSession(session.id)
+          }
+        }}
       >
         {showIcon && <MessageSquare className="h-4 w-4 text-muted-foreground shrink-0" />}
         <div className="flex-1 min-w-0">
@@ -275,7 +282,7 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
             </PopoverContent>
           </Popover>
         </div>
-      </button>
+      </div>
 
       <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
         <AlertDialogContent>
