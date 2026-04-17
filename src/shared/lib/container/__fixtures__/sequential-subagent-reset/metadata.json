@@ -1,0 +1,9 @@
+{
+  "sessionId": "a5aa2da1-b2da-40c7-b5af-52cc8add12e6",
+  "agentSlug": "tests-ftwgpn",
+  "parentToolIdA": "toolu_01RRTqqdNu4csLKrYPaH6GzD",
+  "parentToolIdB": "toolu_01KDeQNz18VrLXZDCeYGvxTg",
+  "agentIdA": "a5e718509e2c4b12b",
+  "description": "App restart between subagent A (HN) completion and subagent B (GitHub) trigger. Only A file exists in subagents dir when B starts. Bug: B is assigned A agentId via FIFO discovery.",
+  "totalEntries": 163
+}

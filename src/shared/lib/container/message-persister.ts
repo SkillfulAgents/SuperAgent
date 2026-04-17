@@ -31,8 +31,30 @@ import { computerUsePermissionManager } from '@shared/lib/computer-use/permissio
 import { resolveAppFromWindowRef } from '@shared/lib/computer-use/executor'
 import { getRequiredPermissionLevel, resolveTargetApp, type ComputerUsePermissionLevel } from '@shared/lib/computer-use/types'
 import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
+import { SubagentCapture } from './subagent-capture'
 import * as path from 'path'
-import { promises as fsPromises } from 'fs'
+import { promises as fsPromises, readdirSync } from 'fs'
+
+// Seed completedSubagentIds with every agent-*.jsonl already on disk for this
+// session. Called when StreamingState is (re)created so the FIFO live-discovery
+// in discoverSubagentIds() can't match a new subagent to a stale file from a
+// prior run of the same session (the root cause of the "subagent B shows
+// subagent A's history" bug across app restarts).
+export function seedKnownSubagentIds(agentSlug: string | undefined, sessionId: string): Set<string> {
+  const seeded = new Set<string>()
+  if (!agentSlug) return seeded
+  try {
+    const subagentsDir = path.join(getAgentSessionsDir(agentSlug), sessionId, 'subagents')
+    for (const file of readdirSync(subagentsDir)) {
+      if (file.startsWith('agent-') && file.endsWith('.jsonl')) {
+        seeded.add(file.slice('agent-'.length, -'.jsonl'.length))
+      }
+    }
+  } catch {
+    // Directory missing / unreadable — nothing to seed, which is fine.
+  }
+  return seeded
+}
 
 // Per-subagent streaming state (supports multiple concurrent background agents)
 interface SubagentStreamingState {
@@ -87,6 +109,8 @@ class MessagePersister {
   private containerClients: Map<string, ContainerClient> = new Map()
   // Callback to request stopping a container (registered by container-manager)
   private onStopContainerRequested: ((agentSlug: string) => void) | null = null
+  // Dev-only capture for building fixture replay tests
+  private capture: SubagentCapture | null = SubagentCapture.fromEnv()
 
   // Subscribe to a session's messages for SSE streaming.
   // Returns a promise that resolves when the WebSocket connection is ready.
@@ -111,7 +135,7 @@ class MessagePersister {
       agentSlug,
       lastContextWindow: 200_000,
       lastAssistantUsage: null,
-      completedSubagentIds: new Set(),
+      completedSubagentIds: seedKnownSubagentIds(agentSlug, sessionId),
       activeSubagents: new Map(),
       slashCommands: [],
       isAwaitingInput: false,
@@ -129,6 +153,12 @@ class MessagePersister {
     )
 
     this.subscriptions.set(sessionId, unsubscribe)
+
+    if (this.capture && agentSlug) {
+      const subagentsDir = path.join(getAgentSessionsDir(agentSlug), sessionId, 'subagents')
+      await this.capture.snapshotSubagentsDir(sessionId, subagentsDir, 'subscribe')
+      await this.capture.recordNote(sessionId, 'subscribe', { agentSlug, containerSessionId })
+    }
 
     // Wait for the WebSocket connection to be established
     await ready
@@ -345,7 +375,7 @@ class MessagePersister {
         agentSlug,
         lastContextWindow: 200_000,
         lastAssistantUsage: null,
-        completedSubagentIds: new Set(),
+        completedSubagentIds: seedKnownSubagentIds(agentSlug, sessionId),
         activeSubagents: new Map(),
         slashCommands: [],
         isAwaitingInput: false,
@@ -353,6 +383,11 @@ class MessagePersister {
         lastApiErrorCode: null,
       }
       this.streamingStates.set(sessionId, state)
+      if (this.capture && agentSlug) {
+        const subagentsDir = path.join(getAgentSessionsDir(agentSlug), sessionId, 'subagents')
+        this.capture.snapshotSubagentsDir(sessionId, subagentsDir, 'state-created').catch(() => {})
+        this.capture.recordNote(sessionId, 'state_created', { agentSlug }).catch(() => {})
+      }
     }
     state.isActive = true
     state.isInterrupted = false // Reset interrupted flag on new message
@@ -394,6 +429,7 @@ class MessagePersister {
 
   // Broadcast to SSE clients
   private broadcastToSSE(sessionId: string, data: unknown): void {
+    this.capture?.recordOutput(sessionId, data)
     const clients = this.sseClients.get(sessionId)
     if (clients) {
       clients.forEach((callback) => {
@@ -411,6 +447,7 @@ class MessagePersister {
     sessionId: string,
     message: StreamMessage
   ): void {
+    this.capture?.recordInput(sessionId, message)
     const state = this.streamingStates.get(sessionId)
     if (!state) return
 
