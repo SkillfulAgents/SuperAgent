@@ -12,8 +12,9 @@ import {
   updateChatIntegration,
   updateChatIntegrationStatus,
   deleteChatIntegration,
+  DuplicateBotTokenError,
 } from '@shared/lib/services/chat-integration-service'
-import { listChatIntegrationSessions, deleteChatIntegrationSession, archiveChatIntegrationSession, getChatIntegrationSessionById, deleteChatIntegrationSessionsByIntegration } from '@shared/lib/services/chat-integration-session-service'
+import { listChatIntegrationSessions, archiveChatIntegrationSession, getChatIntegrationSessionById, deleteChatIntegrationSessionsByIntegration } from '@shared/lib/services/chat-integration-session-service'
 import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
 import { validateChatIntegrationConfig } from '@shared/lib/chat-integrations/config-schema'
 import { Authenticated, AgentUser, EntityAgentRole } from '../middleware/auth'
@@ -72,14 +73,32 @@ chatIntegrationsRouter.post('/:id', AgentUser(), async (c) => {
     const user = c.get('user' as never) as { id: string } | undefined
     const createdByUserId = user?.id
 
-    const id = createChatIntegration({
-      agentSlug,
-      provider,
-      name,
-      config,
-      showToolCalls: showToolCalls ?? false,
-      createdByUserId,
-    })
+    let id: string
+    try {
+      id = createChatIntegration({
+        agentSlug,
+        provider,
+        name,
+        config,
+        showToolCalls: showToolCalls ?? false,
+        createdByUserId,
+      })
+    } catch (err) {
+      if (err instanceof DuplicateBotTokenError) {
+        // User-facing conflict — capture at `warning` level so we can track frequency
+        // but it doesn't page anyone as an error.
+        captureException(err, {
+          tags: { ...SENTRY_TAGS, operation: 'create-integration-duplicate' },
+          level: 'warning',
+          extra: { agentSlug, provider, existingIntegrationId: err.existingIntegrationId },
+        })
+        return c.json(
+          { error: err.message, code: 'duplicate_bot_token', existingIntegrationId: err.existingIntegrationId },
+          409,
+        )
+      }
+      throw err
+    }
 
     // Start the integration
     try {
@@ -88,6 +107,10 @@ chatIntegrationsRouter.post('/:id', AgentUser(), async (c) => {
       // Integration was created but failed to connect — update status to error
       const errMsg = err instanceof Error ? err.message : String(err)
       console.error('Failed to connect new chat integration:', err)
+      captureException(err, {
+        tags: { ...SENTRY_TAGS, operation: 'create-integration-connect' },
+        extra: { integrationId: id, agentSlug, provider },
+      })
       updateChatIntegrationStatus(id, 'error', errMsg)
     }
 
@@ -144,6 +167,17 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
     const updated = getChatIntegration(id)
     return c.json(updated)
   } catch (error) {
+    if (error instanceof DuplicateBotTokenError) {
+      captureException(error, {
+        tags: { ...SENTRY_TAGS, operation: 'update-integration-duplicate' },
+        level: 'warning',
+        extra: { integrationId: c.req.param('integrationId'), existingIntegrationId: error.existingIntegrationId },
+      })
+      return c.json(
+        { error: error.message, code: 'duplicate_bot_token', existingIntegrationId: error.existingIntegrationId },
+        409,
+      )
+    }
     console.error('Failed to update chat integration:', error)
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'update-integration' }, extra: { integrationId: c.req.param('integrationId') } })
     return c.json({ error: 'Failed to update chat integration' }, 500)

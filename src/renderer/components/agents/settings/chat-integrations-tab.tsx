@@ -17,6 +17,7 @@ import {
   useDeleteChatIntegration,
   useUpdateChatIntegration,
   useTestChatIntegrationCredentials,
+  ChatIntegrationApiError,
 } from '@renderer/hooks/use-chat-integrations'
 import {
   Plus,
@@ -485,7 +486,11 @@ export function ChatIntegrationsTab({ agentSlug }: ChatIntegrationsTabProps) {
           )}
 
           {createIntegration.error && (
-            <p className="text-xs text-red-500">{createIntegration.error.message}</p>
+            <p className="text-xs text-red-500">
+              {createIntegration.error instanceof ChatIntegrationApiError && createIntegration.error.code === 'duplicate_bot_token'
+                ? 'This bot is already connected to another integration. Remove the existing one first, or use a different bot.'
+                : createIntegration.error.message}
+            </p>
           )}
 
           {/* Action buttons */}

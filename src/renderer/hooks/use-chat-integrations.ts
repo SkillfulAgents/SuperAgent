@@ -10,6 +10,19 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 
 export type { ChatIntegration, ChatIntegrationSession }
 
+export class ChatIntegrationApiError extends Error {
+  readonly status: number
+  readonly code?: string
+  readonly existingIntegrationId?: string
+  constructor(message: string, status: number, code?: string, existingIntegrationId?: string) {
+    super(message)
+    this.name = 'ChatIntegrationApiError'
+    this.status = status
+    this.code = code
+    this.existingIntegrationId = existingIntegrationId
+  }
+}
+
 // ── Query keys ──────────────────────────────────────────────────────────
 
 export const chatIntegrationKeys = {
@@ -105,8 +118,17 @@ export function useCreateChatIntegration() {
         body: JSON.stringify(body),
       })
       if (!res.ok) {
-        const error = await res.json().catch(() => ({ error: 'Failed to create' }))
-        throw new Error((error as { error: string }).error)
+        const payload = await res.json().catch(() => ({ error: 'Failed to create' })) as {
+          error?: string
+          code?: string
+          existingIntegrationId?: string
+        }
+        throw new ChatIntegrationApiError(
+          payload.error ?? 'Failed to create',
+          res.status,
+          payload.code,
+          payload.existingIntegrationId,
+        )
       }
       return res.json() as Promise<ChatIntegration>
     },
