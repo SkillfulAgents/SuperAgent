@@ -320,7 +320,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
           )}
         </div>
 
-        {/* Right Column — Crons + Skills + Volumes */}
+        {/* Right Column — Crons + Connections + Skills + Volumes */}
         {showRightColumn && (
           <div className="space-y-3">
             <HomeCrons
@@ -329,9 +329,9 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
               formatDate={formatDate}
               onSelectTask={selectScheduledTask}
             />
+            <HomeConnections agentSlug={agent.slug} onOpenSettings={onOpenSettings} />
             <HomeSkills agentSlug={agent.slug} />
             <HomeVolumes agentSlug={agent.slug} />
-            <HomeConnections agentSlug={agent.slug} onOpenSettings={onOpenSettings} />
             <HomeExtras agentSlug={agent.slug} onOpenSettings={onOpenSettings} />
           </div>
         )}

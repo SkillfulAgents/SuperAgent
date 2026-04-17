@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { ChevronRight, Copy, ExternalLink } from 'lucide-react'
+import { ArrowUpRight, ChevronRight, Copy } from 'lucide-react'
 import { apiFetch } from '@renderer/lib/api'
 import { isElectron } from '@renderer/lib/env'
 
@@ -33,8 +33,8 @@ export function HomeExtras({ agentSlug, onOpenSettings }: HomeExtrasProps) {
     }
   }
 
-  const directoryIcon = isElectron() ? (
-    <ExternalLink className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+  const directoryHoverIcon = isElectron() ? (
+    <ArrowUpRight className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
   ) : (
     <Copy className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
   )
@@ -44,7 +44,7 @@ export function HomeExtras({ agentSlug, onOpenSettings }: HomeExtrasProps) {
     <div className="rounded-xl border bg-background py-2">
       <div className="divide-y divide-border/50">
         <ExtrasButton label="System Prompt" onClick={() => onOpenSettings?.('system-prompt')} />
-        <ExtrasButton label={directoryLabel} onClick={handleOpenDirectory} icon={directoryIcon} />
+        <ExtrasButton label={directoryLabel} onClick={handleOpenDirectory} hoverIcon={directoryHoverIcon} />
         <ExtrasButton label="Secrets" onClick={() => onOpenSettings?.('secrets')} />
         <ExtrasButton label="API Logs" onClick={() => onOpenSettings?.('audit-log')} />
       </div>
@@ -55,15 +55,27 @@ export function HomeExtras({ agentSlug, onOpenSettings }: HomeExtrasProps) {
   )
 }
 
-function ExtrasButton({ label, onClick, icon }: { label: string; onClick: () => void; icon?: ReactNode }) {
+function ExtrasButton({ label, onClick, hoverIcon }: { label: string; onClick: () => void; hoverIcon?: ReactNode }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-center justify-between py-3 px-4 text-left hover:bg-muted/50 transition-colors"
+      className="group flex w-full items-center justify-between py-3 px-4 text-left hover:bg-muted/50 transition-colors"
     >
       <span className="text-sm font-medium text-muted-foreground">{label}</span>
-      {icon ?? <ChevronRight className="h-4 w-4 text-muted-foreground" aria-hidden="true" />}
+      {hoverIcon ? (
+        <span className="relative h-4 w-4">
+          <ChevronRight
+            className="absolute inset-0 h-4 w-4 text-muted-foreground transition-opacity group-hover:opacity-0"
+            aria-hidden="true"
+          />
+          <span className="absolute inset-0 opacity-0 transition-opacity group-hover:opacity-100">
+            {hoverIcon}
+          </span>
+        </span>
+      ) : (
+        <ChevronRight className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+      )}
     </button>
   )
 }
