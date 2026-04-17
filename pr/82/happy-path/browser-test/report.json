@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Agent successfully navigated to https://example.com and returned the page title \"Example Domain\"",
+  "steps": [
+    "Navigated to http://localhost:47891 - Page loaded successfully showing Super Agent interface with agents list in sidebar",
+    "Found and clicked the \"QA-20260417-013822-wnit\" agent in the sidebar - Agent chat view opened with session \"Browser Navigation and Page Title Retrieval\"",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the message input field - Message displayed in input box, Send button became enabled",
+    "Clicked Send button - Message sent, agent status changed to \"working\", browser preview appeared on right side showing \"Example Domain\"",
+    "Waited up to 3 minutes for response - Agent completed in 7 seconds, returned clear response: \"The page title is \"Example Domain\".\"",
+    "Verified response mentions \"Example Domain\" - Response explicitly states the page title is \"Example Domain\", confirming successful browser navigation and title retrieval. Browser preview on right side also shows the actual Example Domain page content."
+  ],
+  "bugs": [],
+  "durationMs": 91917,
+  "sessionId": "cf171fbe-c70d-40b3-983e-1dbd9cdfcf11",
+  "cost": {
+    "inputTokens": 282,
+    "outputTokens": 7901,
+    "cacheCreationTokens": 119273,
+    "cacheReadTokens": 957282,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.284606
+  }
+}
