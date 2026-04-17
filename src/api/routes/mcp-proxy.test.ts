@@ -1685,6 +1685,66 @@ describe('mcp-proxy route', () => {
       expect(mockResolveMcpPolicy).not.toHaveBeenCalled()
     })
 
+    it.each([
+      'initialize',
+      'notifications/initialized',
+      'notifications/cancelled',
+      'notifications/progress',
+      'notifications/tools/list_changed',
+      'tools/list',
+      'prompts/list',
+      'resources/list',
+      'resources/templates/list',
+      'logging/setLevel',
+      'completion/complete',
+      'roots/list',
+      'ping',
+    ])('discovery/protocol method "%s" skips policy enforcement and review', async (method) => {
+      setupSuccessPath()
+      // Force policy to "review" — if the method weren't whitelisted, requestReview would fire.
+      mockResolveMcpPolicy.mockResolvedValue({
+        decision: 'review',
+        matchedScopes: [],
+        scopeDescriptions: {},
+        resolvedFrom: 'global_default',
+      })
+
+      const body = JSON.stringify({ jsonrpc: '2.0', method, id: 1 })
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body,
+      })
+      expect(res.status).toBe(200)
+      expect(mockResolveMcpPolicy).not.toHaveBeenCalled()
+      expect(mockRequestReview).not.toHaveBeenCalled()
+    })
+
+    it.each([
+      ['prompts/get', { name: 'summarize' }],
+      ['resources/read', { uri: 'file://a.txt' }],
+      ['sampling/createMessage', {}],
+      ['elicitation/create', {}],
+    ])('content-returning method "%s" still triggers review', async (method, params) => {
+      setupSuccessPath()
+      mockResolveMcpPolicy.mockResolvedValue({
+        decision: 'review',
+        matchedScopes: [],
+        scopeDescriptions: {},
+        resolvedFrom: 'global_default',
+      })
+      mockRequestReview.mockResolvedValue('allow')
+
+      const body = JSON.stringify({ jsonrpc: '2.0', method, params, id: 1 })
+      await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body,
+      })
+      expect(mockResolveMcpPolicy).toHaveBeenCalledOnce()
+      expect(mockRequestReview).toHaveBeenCalledOnce()
+    })
+
     it('audit log includes policyDecision and matchedTool', async () => {
       setupSuccessPath()
       mockResolveMcpPolicy.mockResolvedValue({

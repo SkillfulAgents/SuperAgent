@@ -182,12 +182,22 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   // Only tool invocations (tools/call) need policy checks.
   const MCP_PROTOCOL_METHODS = new Set([
     'initialize',
-    'notifications/initialized',
-    'tools/list',
     'ping',
+    'tools/list',
+    'prompts/list',
+    'resources/list',
+    'resources/templates/list',
+    'logging/setLevel',
+    'completion/complete',
+    'roots/list',
   ])
   // GET/HEAD requests are SSE transport setup — always protocol-level.
-  const isProtocolMethod = method === 'GET' || method === 'HEAD' || MCP_PROTOCOL_METHODS.has(mcpMethodInfo)
+  // All `notifications/*` are fire-and-forget protocol chatter with no data transfer.
+  const isProtocolMethod =
+    method === 'GET' ||
+    method === 'HEAD' ||
+    MCP_PROTOCOL_METHODS.has(mcpMethodInfo) ||
+    mcpMethodInfo.startsWith('notifications/')
 
   const userId = mcp.userId ?? 'local'
   let resolvedPolicyDecision: string = 'allow'
