@@ -37,8 +37,15 @@ export function CreateAgentScreen({ open, onClose, initialTemplate }: CreateAgen
       }
       setMounted(true)
       setExiting(false)
+    } else if (mounted && !exiting) {
+      setExiting(true)
+      exitTimerRef.current = setTimeout(() => {
+        exitTimerRef.current = null
+        setExiting(false)
+        setMounted(false)
+      }, EXIT_DURATION_MS)
     }
-  }, [open])
+  }, [open, mounted, exiting])
 
   // Flip from hidden → visible on the first frame after mount.
   useEffect(() => {

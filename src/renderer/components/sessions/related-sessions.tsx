@@ -238,6 +238,7 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
                 size="icon"
                 variant="outline"
                 className="h-6 w-6"
+                aria-label={`Actions for ${session.name}`}
                 onClick={(e) => e.stopPropagation()}
               >
                 <MoreVertical className="h-3.5 w-3.5" />

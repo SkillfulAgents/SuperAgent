@@ -179,6 +179,7 @@ export function MainContent() {
               type="button"
               className={`text-[13px] font-light truncate transition-colors app-no-drag ${isAgentLeaf ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
               onClick={() => selectSession(null)}
+              data-testid="agent-breadcrumb"
             >
               {agent?.name || 'Loading...'}
             </button>

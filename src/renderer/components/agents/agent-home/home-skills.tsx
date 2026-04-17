@@ -97,6 +97,7 @@ export function HomeSkills({ agentSlug }: HomeSkillsProps) {
                       variant="ghost"
                       className="h-6 w-6 relative"
                       title="Filter by skillset"
+                      aria-label="Filter by skillset"
                     >
                       <Filter className="h-3 w-3 text-muted-foreground" />
                       {selectedSkillsets && selectedSkillsets.size < skillsetList.length && (
@@ -215,6 +216,7 @@ function SkillRow({ skill, agentSlug }: { skill: ApiSkillWithStatus; agentSlug: 
                 size="icon"
                 variant="outline"
                 className="h-6 w-6"
+                aria-label={`Actions for ${skill.name ?? 'skill'}`}
                 onClick={(e) => e.stopPropagation()}
               >
                 <MoreVertical className="h-3.5 w-3.5" />
