@@ -28,12 +28,7 @@ import { sanitizeMcpName } from './sanitize-mcp-name';
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in src/renderer/components/messages/message-list.tsx
 const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] ';
 
-// Tracking marker appended to Agent/Task subagent prompts via PreToolUse hook.
-// Lets message-persister deterministically map parent tool_use_id → subagent agentId
-// by reading the first message of each subagent jsonl (much more reliable than
-// the previous mtime-based FIFO guessing, especially for parallel subagents).
-// Format: <!-- sa-track:<tool_use_id> -->
-// Keep SA_TRACK_MARKER_REGEX in sync in src/shared/lib/container/message-persister.ts
+// Keep in sync with SA_TRACK_MARKER_REGEX in message-persister.ts
 const SA_TRACK_MARKER_PREFIX = '<!-- sa-track:';
 const SA_TRACK_MARKER_SUFFIX = ' -->';
 
@@ -563,10 +558,6 @@ export class ClaudeCodeProcess extends EventEmitter {
                 },
               ],
             },
-            // Inject a tracking marker into every subagent prompt so the host can
-            // deterministically map parent tool_use_id → subagent agentId when
-            // reading the resulting subagent jsonl transcript. The marker is an
-            // HTML comment, invisible to the subagent's behavior.
             {
               matcher: '^(Agent|Task)$',
               hooks: [

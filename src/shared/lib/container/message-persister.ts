@@ -57,12 +57,8 @@ export function seedKnownSubagentIds(agentSlug: string | undefined, sessionId: s
   return seeded
 }
 
-// Regex matching the tracking marker injected into subagent prompts by the
-// PreToolUse hook in agent-container/src/claude-code.ts.
-// Keep in sync with SA_TRACK_MARKER_PREFIX/SUFFIX in that file.
+// Keep in sync with SA_TRACK_MARKER_PREFIX/SUFFIX in claude-code.ts
 const SA_TRACK_MARKER_REGEX = /<!-- sa-track:([A-Za-z0-9_-]+) -->/
-
-// Read only the first line of a JSONL file without loading the whole file.
 async function readFirstJsonlLine(filePath: string): Promise<string | null> {
   let stream: ReturnType<typeof createReadStream> | null = null
   try {
@@ -917,8 +913,7 @@ class MessagePersister {
         }
       }
 
-      // Marker-based matching: read the first line of each unclaimed file and
-      // look for a sa-track marker that encodes the parent tool_use_id.
+      // Marker-based matching (preferred over FIFO below)
       const matchedIds = new Set<string>()
       await Promise.all(
         unclaimed.map(async ({ id }) => {
@@ -940,14 +935,14 @@ class MessagePersister {
         })
       )
 
-      // Rebuild needingIds after marker pass; skip FIFO if all matched.
+      // Skip FIFO if all matched
       const stillNeeding: string[] = []
       for (const [parentToolId, sub] of state.activeSubagents) {
         if (!sub.agentId) stillNeeding.push(parentToolId)
       }
       if (stillNeeding.length === 0) return
 
-      // FIFO fallback: match oldest unclaimed file → first registered parentToolId.
+      // FIFO fallback for containers without marker injection
       const unclaimedLeft = unclaimed
         .filter(u => !matchedIds.has(u.id))
         .sort((a, b) => a.mtimeMs - b.mtimeMs)
