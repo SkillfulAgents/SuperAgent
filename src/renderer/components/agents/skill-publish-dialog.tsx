@@ -16,13 +16,15 @@ import { Loader2, ExternalLink, AlertTriangle, ChevronLeft } from 'lucide-react'
 import { useSkillPublishInfo, usePublishSkill } from '@renderer/hooks/use-agent-skills'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
 import { getPublishDialogCopy } from '@renderer/lib/skillset-publish-ui'
-import type { ApiSkillsetConfig } from '@shared/lib/types/api'
+import type { ApiSkillsetConfig, ApiItemStatus } from '@shared/lib/types/api'
 
 interface SkillPublishDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   agentSlug: string
   skillDir: string
+  skillStatus: ApiItemStatus
+  onOpenReview: () => void
 }
 
 export function SkillPublishDialog({
@@ -30,7 +32,10 @@ export function SkillPublishDialog({
   onOpenChange,
   agentSlug,
   skillDir,
+  skillStatus,
+  onOpenReview,
 }: SkillPublishDialogProps) {
+  const canPublish = skillStatus.type === 'local'
   const [step, setStep] = useState<'pick' | 'form'>('pick')
   const [selectedSkillset, setSelectedSkillset] = useState<ApiSkillsetConfig | null>(null)
   const { data: skillsets } = useSkillsets()
@@ -41,11 +46,20 @@ export function SkillPublishDialog({
   const [publishResult, setPublishResult] = useState<{ prUrl?: string; successMessage: string } | null>(null)
 
   const { data: publishInfo, isLoading: isLoadingInfo, error: infoError } = useSkillPublishInfo(
-    step === 'form' ? agentSlug : null,
-    step === 'form' ? skillDir : null,
-    step === 'form' ? selectedSkillset?.id ?? null : null,
+    step === 'form' && canPublish ? agentSlug : null,
+    step === 'form' && canPublish ? skillDir : null,
+    step === 'form' && canPublish ? selectedSkillset?.id ?? null : null,
   )
   const publishSkill = usePublishSkill()
+
+  useEffect(() => {
+    if (!open || skillStatus.type === 'local') return
+
+    onOpenChange(false)
+    if (skillStatus.type === 'locally_modified') {
+      onOpenReview()
+    }
+  }, [open, onOpenChange, onOpenReview, skillStatus.type])
 
   // Populate fields when AI suggestions arrive
   useEffect(() => {

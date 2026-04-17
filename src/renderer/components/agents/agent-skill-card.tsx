@@ -127,6 +127,8 @@ export function AgentSkillCard({ skill, agentSlug }: AgentSkillCardProps) {
           onOpenChange={setPublishDialogOpen}
           agentSlug={agentSlug}
           skillDir={skill.path}
+          skillStatus={skill.status}
+          onOpenReview={() => setPrDialogOpen(true)}
         />
         <AlertDialog open={forceSyncDialogOpen} onOpenChange={setForceSyncDialogOpen}>
           <AlertDialogContent>

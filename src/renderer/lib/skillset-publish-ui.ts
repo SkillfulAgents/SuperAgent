@@ -23,7 +23,7 @@ export function isPullRequestPublishMode(mode: PublishMode): boolean {
 }
 
 export function getReviewActionLabel(mode: PublishMode): string {
-  return isPullRequestPublishMode(mode) ? 'Open PR' : 'Submit'
+  return isPullRequestPublishMode(mode) ? 'Open PR' : 'Push'
 }
 
 export function getPublishDialogCopy(
@@ -62,10 +62,10 @@ export function getSubmitDialogCopy(
   }
 
   return {
-    title: 'Submit Changes',
-    description: `Submit your local ${target} changes back to the skillset.`,
+    title: 'Push Changes',
+    description: `Push your local ${target} changes back to the skillset.`,
     titleLabel: 'Title',
-    submitButton: 'Submit Changes',
-    pendingButton: 'Submitting...',
+    submitButton: 'Push Changes',
+    pendingButton: 'Pushing...',
   }
 }

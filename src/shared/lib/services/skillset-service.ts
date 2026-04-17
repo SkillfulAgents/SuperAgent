@@ -735,18 +735,30 @@ export async function updateSkillFromSkillset(
   skillDirName: string,
 ): Promise<{ updated: boolean }> {
   sanitizeDirName(skillDirName)
+  console.log('[skillset-debug] updateSkillFromSkillset enter (Update/ForceSync)', { agentSlug, skillDirName })
+
   const metadataPath = getSkillMetadataPath(agentSlug, skillDirName)
   const metaContent = await readFileOrNull(metadataPath)
   if (!metaContent) {
+    console.log('[skillset-debug] updateSkillFromSkillset: no metadata, skip', { agentSlug, skillDirName, metadataPath })
     return { updated: false }
   }
 
   let meta: InstalledSkillMetadata
   try {
     meta = JSON.parse(metaContent)
-  } catch {
+  } catch (error) {
+    console.log('[skillset-debug] updateSkillFromSkillset: metadata JSON parse failed', { agentSlug, skillDirName, error: String(error) })
     return { updated: false }
   }
+
+  console.log('[skillset-debug] updateSkillFromSkillset: loaded metadata', {
+    agentSlug,
+    skillDirName,
+    metaSkillsetId: meta.skillsetId,
+    metaProvider: meta.provider,
+    metaSkillPath: meta.skillPath,
+  })
 
   const skillsetRef = toSkillsetRefFromMeta(meta)
 
@@ -755,10 +767,16 @@ export async function updateSkillFromSkillset(
 
   // Re-install the skill (overwrites existing)
   const index = await getSkillsetIndex(skillsetRef)
-  if (!index) return { updated: false }
+  if (!index) {
+    console.log('[skillset-debug] updateSkillFromSkillset: skillset index missing, skip', { agentSlug, skillDirName })
+    return { updated: false }
+  }
 
   const skillEntry = index.skills.find((s) => s.path === meta.skillPath)
-  if (!skillEntry) return { updated: false }
+  if (!skillEntry) {
+    console.log('[skillset-debug] updateSkillFromSkillset: skill path no longer in index', { agentSlug, skillDirName, skillPath: meta.skillPath })
+    return { updated: false }
+  }
 
   await installSkillFromSkillset(
     agentSlug,
@@ -768,6 +786,7 @@ export async function updateSkillFromSkillset(
     skillEntry.version,
   )
 
+  console.log('[skillset-debug] updateSkillFromSkillset: re-installed ok', { agentSlug, skillDirName, installedVersion: skillEntry.version })
   return { updated: true }
 }
 
@@ -842,6 +861,12 @@ export async function getAgentSkillsWithStatus(
     skillsetConfigMap.set(ss.id, ss)
   }
 
+  console.log('[skillset-debug] getAgentSkillsWithStatus enter', {
+    agentSlug,
+    skillsDir,
+    configuredSkillsets: skillsets.map((s) => ({ id: s.id, name: s.name, provider: s.provider })),
+  })
+
   const entries = await fs.promises.readdir(skillsDir, { withFileTypes: true })
 
   // First pass: collect metadata + pending queue IDs per provider. This lets
@@ -896,10 +921,18 @@ export async function getAgentSkillsWithStatus(
 
     if (!meta) {
       status = { type: 'local' }
+      console.log('[skillset-debug] skill status=local (no metadata)', { agentSlug, entry: entryName })
     } else {
       const ssConfig = skillsetConfigMap.get(meta.skillsetId)
       if (!ssConfig) {
         status = { type: 'local' }
+        console.log('[skillset-debug] skill status=local (orphan metadata: ssConfig missing)', {
+          agentSlug,
+          entry: entryName,
+          metaSkillsetId: meta.skillsetId,
+          metaProvider: meta.provider,
+          knownSkillsetIds: Array.from(skillsetConfigMap.keys()),
+        })
       } else {
         const metaRef = toSkillsetRefFromMeta(meta)
         const configRef = toSkillsetRefFromConfig(ssConfig)
@@ -952,6 +985,13 @@ export async function getAgentSkillsWithStatus(
             status = { type: 'up_to_date', skillsetId: meta.skillsetId, skillsetName, sourceLabel }
           }
         }
+        console.log('[skillset-debug] skill status=tracked', {
+          agentSlug,
+          entry: entryName,
+          statusType: status.type,
+          metaSkillsetId: meta.skillsetId,
+          metaProvider: meta.provider,
+        })
       }
     }
 
@@ -1330,10 +1370,23 @@ export async function createSkillPR(
   },
 ): Promise<{ prUrl?: string; successMessage: string }> {
   sanitizeDirName(skillDirName)
+  console.log('[skillset-debug] createSkillPR enter (Open PR)', {
+    agentSlug,
+    skillDirName,
+    hasNewVersion: !!options.newVersion,
+  })
   const meta = await getInstalledSkillMetadata(agentSlug, skillDirName)
   if (!meta) {
+    console.log('[skillset-debug] createSkillPR REJECTED: no metadata', { agentSlug, skillDirName })
     throw new Error('Skill has no skillset metadata - cannot create PR')
   }
+  console.log('[skillset-debug] createSkillPR: loaded metadata', {
+    agentSlug,
+    skillDirName,
+    metaSkillsetId: meta.skillsetId,
+    metaProvider: meta.provider,
+    metaSkillPath: meta.skillPath,
+  })
 
   const skillDir = path.join(getAgentSkillsDir(agentSlug), skillDirName)
   let packageFiles = await readSkillPackageFiles(skillDir)
@@ -1387,6 +1440,15 @@ export async function createSkillPR(
   }
 
   await writeJsonFile(getSkillMetadataPath(agentSlug, skillDirName), meta)
+
+  console.log('[skillset-debug] createSkillPR: publishUpdate ok', {
+    agentSlug,
+    skillDirName,
+    provider: meta.provider,
+    resultStatus: result.status,
+    prUrl: result.prUrl,
+    queueItemId: result.queueItem?.id,
+  })
 
   return { prUrl: result.prUrl, successMessage: result.successMessage }
 }
@@ -1519,11 +1581,30 @@ export async function getSkillPublishInfo(
 }> {
   sanitizeDirName(skillDirName)
 
+  console.log('[skillset-debug] getSkillPublishInfo enter', {
+    agentSlug,
+    skillDirName,
+    skillsetConfig: { id: skillsetConfig.id, name: skillsetConfig.name, provider: skillsetConfig.provider },
+    metadataPath: getSkillMetadataPath(agentSlug, skillDirName),
+  })
+
   // Verify skill exists and is local (no metadata)
   const meta = await getInstalledSkillMetadata(agentSlug, skillDirName)
   if (meta) {
+    console.log('[skillset-debug] getSkillPublishInfo REJECTED: skill has metadata', {
+      agentSlug,
+      skillDirName,
+      metaSkillsetId: meta.skillsetId,
+      metaProvider: meta.provider,
+      metaSkillsetName: meta.skillsetName,
+      metaOpenPrUrl: meta.openPrUrl,
+      metaPendingQueueItemId: meta.pendingQueueItemId,
+      sameAsRequestedSkillset: meta.skillsetId === skillsetConfig.id,
+    })
     throw new Error('Skill already belongs to a skillset — use Open PR instead')
   }
+
+  console.log('[skillset-debug] getSkillPublishInfo: no metadata, proceeding', { agentSlug, skillDirName })
 
   const skillMdPath = path.join(getAgentSkillsDir(agentSlug), skillDirName, 'SKILL.md')
   const skillContent = await readFileOrNull(skillMdPath)

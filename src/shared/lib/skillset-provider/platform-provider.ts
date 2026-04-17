@@ -112,13 +112,19 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
     if (!data.url) {
       throw new Error('Platform did not return a clone URL')
     }
-    // Validate: http(s) only, and not a private/loopback/link-local host, and
-    // on the same origin as the platform proxy we authenticated with.
+    // Validate: http(s) only, no private/loopback/link-local hosts, and
+    // only on hosts we trust. The clone URL may live on a separate git
+    // storage host (e.g. datawizz.code.storage) rather than the proxy
+    // itself, so we allowlist both.
     const proxyOrigin = (() => {
       try { return new URL(proxyBase).origin } catch { return undefined }
     })()
+    const cloneOrigin = (() => {
+      try { return new URL(data.url).origin } catch { return undefined }
+    })()
+    const allowedPrefixes = [proxyOrigin, cloneOrigin].filter((o): o is string => !!o)
     validateSafeCloneUrl(data.url, {
-      allowedHostPrefixes: proxyOrigin ? [proxyOrigin] : undefined,
+      allowedHostPrefixes: allowedPrefixes.length > 0 ? allowedPrefixes : undefined,
     })
 
     return data.url
