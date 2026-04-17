@@ -81,6 +81,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   removeNavigateToAgent: () => {
     ipcRenderer.removeAllListeners('navigate-to-agent')
+    ipcRenderer.removeAllListeners('navigate-to-agent-session')
+  },
+
+  // Navigation from deep link — agent + optional session
+  onNavigateToAgentSession: (callback: (agentSlug: string, sessionId: string | null) => void) => {
+    ipcRenderer.on('navigate-to-agent-session', (_event, agentSlug, sessionId) => callback(agentSlug, sessionId))
   },
 
   // Menu commands - open settings
@@ -228,6 +234,7 @@ declare global {
       openExternal: (url: string) => Promise<void>
       launchPowershellAdmin: (command: string) => Promise<void>
       onNavigateToAgent: (callback: (agentSlug: string) => void) => void
+      onNavigateToAgentSession: (callback: (agentSlug: string, sessionId: string | null) => void) => void
       removeNavigateToAgent: () => void
       onOpenSettings: (callback: () => void) => void
       removeOpenSettings: () => void
