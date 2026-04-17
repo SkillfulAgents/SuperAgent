@@ -223,6 +223,34 @@
   animation: boink-down 0.35s ease-out;
 }
 
+/* Dual arc spinner for browser tab loading indicator */
+@keyframes dual-arc-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+@keyframes dual-arc-spin-reverse {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(-360deg); }
+}
+.dual-arc-spinner::before,
+.dual-arc-spinner::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  border: 1.5px solid transparent;
+}
+.dual-arc-spinner::before {
+  border-top-color: rgb(59, 130, 246);
+  border-right-color: rgb(59, 130, 246);
+  animation: dual-arc-spin 1s linear infinite;
+}
+.dual-arc-spinner::after {
+  border-bottom-color: rgb(147, 197, 253);
+  border-left-color: rgb(147, 197, 253);
+  animation: dual-arc-spin-reverse 1.5s linear infinite;
+}
+
 /* Browser preview internal glow — GPU-composited opacity animation on a fixed gradient border */
 @keyframes browser-glow-pulse {
   0%, 100% { opacity: 0.6; }
