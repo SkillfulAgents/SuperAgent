@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import { isElectron, getPlatform } from '@renderer/lib/env'
@@ -29,6 +29,9 @@ export function CreateAgentScreen({ open, onClose, initialTemplate }: CreateAgen
   const [revealed, setRevealed] = useState(false)
   const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Drive mount + exit animation purely off the `open` prop. Close handlers
+  // (X, Escape, onAgentCreated) just call onClose(); the parent flips open→false
+  // and this effect plays the exit animation before unmounting.
   useEffect(() => {
     if (open) {
       if (exitTimerRef.current) {
@@ -37,15 +40,17 @@ export function CreateAgentScreen({ open, onClose, initialTemplate }: CreateAgen
       }
       setMounted(true)
       setExiting(false)
-    } else if (mounted && !exiting) {
-      setExiting(true)
-      exitTimerRef.current = setTimeout(() => {
-        exitTimerRef.current = null
-        setExiting(false)
-        setMounted(false)
-      }, EXIT_DURATION_MS)
+      return
     }
-  }, [open, mounted, exiting])
+    // open === false
+    if (!mounted) return
+    setExiting(true)
+    exitTimerRef.current = setTimeout(() => {
+      exitTimerRef.current = null
+      setExiting(false)
+      setMounted(false)
+    }, EXIT_DURATION_MS)
+  }, [open, mounted])
 
   // Flip from hidden → visible on the first frame after mount.
   useEffect(() => {
@@ -54,17 +59,6 @@ export function CreateAgentScreen({ open, onClose, initialTemplate }: CreateAgen
     return () => cancelAnimationFrame(raf)
   }, [mounted])
 
-  const beginClose = useCallback(() => {
-    if (exiting) return
-    setExiting(true)
-    exitTimerRef.current = setTimeout(() => {
-      exitTimerRef.current = null
-      setExiting(false)
-      setMounted(false)
-      onClose()
-    }, EXIT_DURATION_MS)
-  }, [exiting, onClose])
-
   useEffect(() => () => {
     if (exitTimerRef.current) clearTimeout(exitTimerRef.current)
   }, [])
@@ -72,11 +66,11 @@ export function CreateAgentScreen({ open, onClose, initialTemplate }: CreateAgen
   useEffect(() => {
     if (!mounted) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') beginClose()
+      if (e.key === 'Escape') onClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [mounted, beginClose])
+  }, [mounted, onClose])
 
   if (!mounted) return null
 
@@ -110,7 +104,7 @@ export function CreateAgentScreen({ open, onClose, initialTemplate }: CreateAgen
             <h2 className="text-2xl font-normal app-no-drag">Create agent</h2>
             <button
               type="button"
-              onClick={beginClose}
+              onClick={onClose}
               aria-label="Close"
               data-testid="create-agent-close"
               className="app-no-drag inline-flex items-center justify-center rounded-md p-2 text-muted-foreground hover:text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring transition-colors"
