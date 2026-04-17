@@ -130,9 +130,9 @@ export function HomeConnections({ agentSlug, onOpenSettings }: HomeConnectionsPr
         <div className="ml-auto">
           <Popover>
             <PopoverTrigger asChild>
-              <Button type="button" variant="ghost" size="sm" className="h-7 text-xs text-muted-foreground">
-                <Plus className="h-3.5 w-3.5 mr-1.5" />
-                Add connection
+              <Button type="button" variant="ghost" size="sm">
+                <Plus />
+                Add Connection
               </Button>
             </PopoverTrigger>
             <PopoverContent align="end" className="w-56 p-1">
