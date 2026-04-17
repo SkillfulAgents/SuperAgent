@@ -60,9 +60,10 @@ describe('PlatformSkillsetProvider.resolveCloneUrl', () => {
     expect(out).toBe('https://platform.example/git/acme.git')
   })
 
-  it('rejects URLs on a different host than the proxy', async () => {
-    mockGitUrlResponse({ url: 'https://evil.example/git/acme.git' })
-    await expect(provider.resolveCloneUrl('ignored', makeRef())).rejects.toThrow(/not on an allowed host/)
+  it('allows clone URLs on a different host than the proxy (separate storage)', async () => {
+    mockGitUrlResponse({ url: 'https://storage.example/git/acme.git', defaultBranch: 'main' })
+    const out = await provider.resolveCloneUrl('ignored', makeRef())
+    expect(out).toBe('https://storage.example/git/acme.git')
   })
 
   it('rejects URLs pointing at private IPs (SSRF)', async () => {
