@@ -27,12 +27,24 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 const mockReaddir = vi.fn()
 const mockStat = vi.fn()
-vi.mock('fs', () => ({
-  promises: {
-    readdir: (...args: unknown[]) => mockReaddir(...args),
-    stat: (...args: unknown[]) => mockStat(...args),
-  },
-}))
+// Maps a file path to the first-line content that createReadStream should emit.
+// Tests that exercise marker-based subagent discovery populate this before sending messages.
+const mockFirstLineByPath = new Map<string, string>()
+vi.mock('fs', () => {
+  // Use Node's real Readable so readline.createInterface works against the mock stream.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Readable } = require('stream') as typeof import('stream')
+  return {
+    promises: {
+      readdir: (...args: unknown[]) => mockReaddir(...args),
+      stat: (...args: unknown[]) => mockStat(...args),
+    },
+    createReadStream: (filePath: string) => {
+      const line = mockFirstLineByPath.get(filePath) ?? ''
+      return Readable.from([line + '\n'])
+    },
+  }
+})
 vi.mock('@shared/lib/utils/file-storage', () => ({
   getAgentSessionsDir: vi.fn(() => '/mock/sessions'),
 }))
@@ -640,6 +652,104 @@ describe('MessagePersister', () => {
       const events = sseEvents.filter(e => e.type === 'subagent_updated')
       expect(events.length).toBeGreaterThanOrEqual(1)
       expect(events[0].agentId).toBeNull()
+    })
+
+    it('maps parent tool_use_id to agentId deterministically via the sa-track marker, even when mtime order would mismatch', async () => {
+      // Two subagents created in REVERSE mtime order relative to registration:
+      // tool-A is registered first, but its subagent jsonl (abc123) has a
+      // NEWER mtime than tool-B's (def456). Without the marker, the old FIFO
+      // logic would misassign (tool-A → def456, tool-B → abc123).
+      mockReaddir.mockResolvedValue(['agent-abc123.jsonl', 'agent-def456.jsonl'])
+      mockStat.mockImplementation((filePath: string) => {
+        if (filePath.includes('abc123')) return Promise.resolve({ mtimeMs: 2000 }) // newer
+        if (filePath.includes('def456')) return Promise.resolve({ mtimeMs: 1000 }) // older
+        return Promise.reject(new Error('ENOENT'))
+      })
+
+      // Wire the first-line marker content for each subagent jsonl.
+      // In production this line is written by the SDK as the subagent's
+      // initial user message after the claude-code.ts PreToolUse hook
+      // appended the marker to the prompt.
+      mockFirstLineByPath.set(
+        `/mock/sessions/${SESSION_ID}/subagents/agent-abc123.jsonl`,
+        JSON.stringify({ type: 'user', message: { content: 'do A\n\n<!-- sa-track:tool-A -->' } })
+      )
+      mockFirstLineByPath.set(
+        `/mock/sessions/${SESSION_ID}/subagents/agent-def456.jsonl`,
+        JSON.stringify({ type: 'user', message: { content: 'do B\n\n<!-- sa-track:tool-B -->' } })
+      )
+
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_start', content_block: { type: 'tool_use', id: 'tool-A', name: 'Task' } },
+      })
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'content_block_stop' } })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_start', content_block: { type: 'tool_use', id: 'tool-B', name: 'Task' } },
+      })
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'content_block_stop' } })
+
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'assistant',
+        parent_tool_use_id: 'tool-A',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'working' }] },
+      })
+
+      await vi.waitFor(() => {
+        // Marker-based matching: tool-A → abc123, tool-B → def456,
+        // even though mtime order would have flipped these under FIFO.
+        const eventsA = sseEvents.filter(e => e.type === 'subagent_updated' && e.parentToolId === 'tool-A' && e.agentId === 'abc123')
+        expect(eventsA.length).toBeGreaterThanOrEqual(1)
+        const eventsB = sseEvents.filter(e => e.type === 'subagent_updated' && e.parentToolId === 'tool-B' && e.agentId === 'def456')
+        expect(eventsB.length).toBeGreaterThanOrEqual(1)
+      })
+
+      // Confirm no cross-wired mappings leaked.
+      const wrongA = sseEvents.filter(e => e.type === 'subagent_updated' && e.parentToolId === 'tool-A' && e.agentId === 'def456')
+      const wrongB = sseEvents.filter(e => e.type === 'subagent_updated' && e.parentToolId === 'tool-B' && e.agentId === 'abc123')
+      expect(wrongA).toHaveLength(0)
+      expect(wrongB).toHaveLength(0)
+    })
+
+    it('falls back to mtime FIFO for files without the sa-track marker (legacy transcripts)', async () => {
+      mockReaddir.mockResolvedValue(['agent-legacy1.jsonl', 'agent-legacy2.jsonl'])
+      mockStat.mockImplementation((filePath: string) => {
+        if (filePath.includes('legacy1')) return Promise.resolve({ mtimeMs: 1000 })
+        if (filePath.includes('legacy2')) return Promise.resolve({ mtimeMs: 2000 })
+        return Promise.reject(new Error('ENOENT'))
+      })
+
+      // No markers set → mockFirstLineByPath returns empty string for both files.
+
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_start', content_block: { type: 'tool_use', id: 'tool-A', name: 'Task' } },
+      })
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'content_block_stop' } })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_start', content_block: { type: 'tool_use', id: 'tool-B', name: 'Task' } },
+      })
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'content_block_stop' } })
+
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'assistant',
+        parent_tool_use_id: 'tool-A',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'working' }] },
+      })
+
+      await vi.waitFor(() => {
+        // Fallback to mtime FIFO: tool-A (first registered) gets legacy1 (oldest).
+        const eventsA = sseEvents.filter(e => e.type === 'subagent_updated' && e.parentToolId === 'tool-A' && e.agentId === 'legacy1')
+        expect(eventsA.length).toBeGreaterThanOrEqual(1)
+        const eventsB = sseEvents.filter(e => e.type === 'subagent_updated' && e.parentToolId === 'tool-B' && e.agentId === 'legacy2')
+        expect(eventsB.length).toBeGreaterThanOrEqual(1)
+      })
     })
   })
 
