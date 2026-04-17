@@ -73,14 +73,6 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
     category: 'Project Management',
   },
   {
-    slug: 'monday',
-    displayName: 'Monday.com',
-    description: 'Board management, item operations, GraphQL access',
-    url: 'https://mcp.monday.com/mcp',
-    authType: 'oauth',
-    category: 'Project Management',
-  },
-  {
     slug: 'airtable',
     displayName: 'Airtable',
     description: 'Record CRUD, base/table listing, search, schema inspection',
@@ -141,14 +133,6 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
     category: 'Developer Tools',
   },
   {
-    slug: 'vercel',
-    displayName: 'Vercel',
-    description: 'Deployments, environment variables, domains, project controls',
-    url: 'https://mcp.vercel.com/',
-    authType: 'oauth',
-    category: 'Developer Tools',
-  },
-  {
     slug: 'cloudflare',
     displayName: 'Cloudflare API',
     description: 'Full Cloudflare API — 2,500+ endpoints via Code Mode',
@@ -181,14 +165,6 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
     category: 'Developer Tools',
   },
   {
-    slug: 'neon',
-    displayName: 'Neon',
-    description: 'Serverless PostgreSQL database management',
-    url: 'https://mcp.neon.tech/sse',
-    authType: 'oauth',
-    category: 'Developer Tools',
-  },
-  {
     slug: 'supabase',
     displayName: 'Supabase',
     description: 'Database access and platform integration',
@@ -213,27 +189,11 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
     category: 'Developer Tools',
   },
   {
-    slug: 'figma',
-    displayName: 'Figma',
-    description: 'Design context extraction, code generation from frames',
-    url: 'https://mcp.figma.com/mcp',
-    authType: 'oauth',
-    category: 'Developer Tools',
-  },
-  {
     slug: 'datadog',
     displayName: 'Datadog',
     description: 'Logs, traces, incidents, monitors, dashboards, metrics',
     url: 'https://mcp.datadoghq.com/api/unstable/mcp-server/mcp',
     authType: 'bearer',
-    category: 'Developer Tools',
-  },
-  {
-    slug: 'semgrep',
-    displayName: 'Semgrep',
-    description: 'Code vulnerability and security scanning',
-    url: 'https://mcp.semgrep.ai/mcp',
-    authType: 'oauth',
     category: 'Developer Tools',
   },
   {
@@ -283,30 +243,6 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
     displayName: 'PayPal',
     description: 'Commerce, payments, inventory, shipping, refunds',
     url: 'https://mcp.paypal.com/mcp',
-    authType: 'oauth',
-    category: 'Payments & Finance',
-  },
-  {
-    slug: 'square',
-    displayName: 'Square',
-    description: 'Payments, orders, inventory, customer management',
-    url: 'https://mcp.squareup.com/sse',
-    authType: 'oauth',
-    category: 'Payments & Finance',
-  },
-  {
-    slug: 'plaid',
-    displayName: 'Plaid',
-    description: 'Financial data — Link analytics, usage metrics',
-    url: 'https://api.dashboard.plaid.com/mcp/sse',
-    authType: 'oauth',
-    category: 'Payments & Finance',
-  },
-  {
-    slug: 'ramp',
-    displayName: 'Ramp',
-    description: 'Corporate card and expense management',
-    url: 'https://ramp-mcp-remote.ramp.com/mcp',
     authType: 'oauth',
     category: 'Payments & Finance',
   },
@@ -371,26 +307,10 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
 
   // Document Management & Content
   {
-    slug: 'dropbox',
-    displayName: 'Dropbox',
-    description: 'File operations — list, search, download, upload',
-    url: 'https://mcp.dropbox.com/mcp',
-    authType: 'oauth',
-    category: 'Documents & Content',
-  },
-  {
     slug: 'egnyte',
     displayName: 'Egnyte',
     description: 'Enterprise content management — document Q&A, summarization',
     url: 'https://mcp-server.egnyte.com/sse',
-    authType: 'oauth',
-    category: 'Documents & Content',
-  },
-  {
-    slug: 'canva',
-    displayName: 'Canva',
-    description: 'Design — search, create, autofill templates, export',
-    url: 'https://mcp.canva.com/mcp',
     authType: 'oauth',
     category: 'Documents & Content',
   },
@@ -478,14 +398,6 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
   },
 
   // Aggregator Platforms
-  {
-    slug: 'zapier',
-    displayName: 'Zapier',
-    description: 'Workflow automation across 7,000+ apps',
-    url: 'https://mcp.zapier.com/api/mcp/mcp',
-    authType: 'bearer',
-    category: 'Aggregators',
-  },
   {
     slug: 'waystation',
     displayName: 'WayStation',

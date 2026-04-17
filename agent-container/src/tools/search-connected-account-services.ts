@@ -40,15 +40,11 @@ const SERVICES: ServiceInfo[] = [
   // Project Management
   { slug: 'notion', displayName: 'Notion', category: 'Project Management', description: 'Workspace and documentation' },
   { slug: 'linear', displayName: 'Linear', category: 'Project Management', description: 'Issue tracking and project management' },
-  { slug: 'confluence', displayName: 'Confluence', category: 'Project Management', description: 'Team documentation and wiki' },
   { slug: 'asana', displayName: 'Asana', category: 'Project Management', description: 'Project and task management' },
-  { slug: 'monday', displayName: 'Monday.com', category: 'Project Management', description: 'Work management platform' },
   { slug: 'clickup', displayName: 'ClickUp', category: 'Project Management', description: 'Project management and productivity' },
-  { slug: 'trello', displayName: 'Trello', category: 'Project Management', description: 'Project boards and task management' },
   // CRM & Sales
   { slug: 'hubspot', displayName: 'HubSpot', category: 'CRM & Sales', description: 'CRM and marketing platform' },
   { slug: 'salesforce', displayName: 'Salesforce', category: 'CRM & Sales', description: 'CRM and sales platform' },
-  { slug: 'zendesk', displayName: 'Zendesk', category: 'CRM & Sales', description: 'Customer support and ticketing' },
   { slug: 'intercom', displayName: 'Intercom', category: 'CRM & Sales', description: 'Customer messaging platform' },
   // Cloud Storage & Documents
   { slug: 'airtable', displayName: 'Airtable', category: 'Cloud Storage & Documents', description: 'Spreadsheet-database hybrid' },
@@ -60,7 +56,6 @@ const SERVICES: ServiceInfo[] = [
   // Finance
   { slug: 'stripe', displayName: 'Stripe', category: 'Finance', description: 'Payment processing' },
   { slug: 'quickbooks', displayName: 'QuickBooks', category: 'Finance', description: 'Accounting and bookkeeping' },
-  { slug: 'xero', displayName: 'Xero', category: 'Finance', description: 'Accounting software' },
   // Marketing
   { slug: 'mailchimp', displayName: 'Mailchimp', category: 'Marketing', description: 'Email marketing platform' },
   // Design

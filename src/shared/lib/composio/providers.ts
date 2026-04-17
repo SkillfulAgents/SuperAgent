@@ -130,22 +130,10 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     description: 'Issue tracking and project management',
   },
   {
-    slug: 'confluence',
-    displayName: 'Confluence',
-    icon: 'book-open',
-    description: 'Team documentation and wiki',
-  },
-  {
     slug: 'asana',
     displayName: 'Asana',
     icon: 'check-circle',
     description: 'Project and task management',
-  },
-  {
-    slug: 'monday',
-    displayName: 'Monday.com',
-    icon: 'layout-grid',
-    description: 'Work management platform',
   },
   {
     slug: 'clickup',
@@ -153,13 +141,6 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     icon: 'check-circle',
     description: 'Project management and productivity',
   },
-  {
-    slug: 'trello',
-    displayName: 'Trello',
-    icon: 'layout-grid',
-    description: 'Project boards and task management',
-  },
-
   // CRM & Sales
   {
     slug: 'hubspot',
@@ -172,12 +153,6 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Salesforce',
     icon: 'cloud',
     description: 'CRM and sales platform',
-  },
-  {
-    slug: 'zendesk',
-    displayName: 'Zendesk',
-    icon: 'headphones',
-    description: 'Customer support and ticketing',
   },
   {
     slug: 'intercom',
@@ -233,13 +208,6 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     icon: 'calculator',
     description: 'Accounting and bookkeeping',
   },
-  {
-    slug: 'xero',
-    displayName: 'Xero',
-    icon: 'calculator',
-    description: 'Accounting software',
-  },
-
   // Marketing
   {
     slug: 'mailchimp',
