@@ -220,10 +220,10 @@ function SkillRow({ skill, agentSlug }: { skill: ApiSkillWithStatus; agentSlug: 
                 <MoreVertical className="h-3.5 w-3.5" />
               </Button>
             </PopoverTrigger>
-            <PopoverContent align="end" className="w-36 p-1">
+            <PopoverContent align="end" className="w-36 p-1" onClick={(e) => e.stopPropagation()}>
               <button
                 className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
-                onClick={() => setFilesOpen(true)}
+                onClick={(e) => { e.stopPropagation(); setFilesOpen(true) }}
               >
                 <FileCode className="h-3.5 w-3.5" />
                 View Files
@@ -231,7 +231,7 @@ function SkillRow({ skill, agentSlug }: { skill: ApiSkillWithStatus; agentSlug: 
               {skill.status.type === 'local' && skill.status.publishable !== false && (
                 <button
                   className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
-                  onClick={() => setPublishOpen(true)}
+                  onClick={(e) => { e.stopPropagation(); setPublishOpen(true) }}
                 >
                   <CloudUpload className="h-3.5 w-3.5" />
                   Publish Skill
@@ -241,7 +241,7 @@ function SkillRow({ skill, agentSlug }: { skill: ApiSkillWithStatus; agentSlug: 
                 <button
                   className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                   disabled={updateSkill.isPending}
-                  onClick={() => updateSkill.mutate({ agentSlug, skillDir: skill.path })}
+                  onClick={(e) => { e.stopPropagation(); updateSkill.mutate({ agentSlug, skillDir: skill.path }) }}
                 >
                   {updateSkill.isPending ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -254,7 +254,7 @@ function SkillRow({ skill, agentSlug }: { skill: ApiSkillWithStatus; agentSlug: 
               {skill.status.type === 'locally_modified' && (
                 <button
                   className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
-                  onClick={() => setReviewOpen(true)}
+                  onClick={(e) => { e.stopPropagation(); setReviewOpen(true) }}
                 >
                   <ReviewIcon className="h-3.5 w-3.5" />
                   {actionLabel}
