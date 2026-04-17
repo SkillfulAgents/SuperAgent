@@ -139,7 +139,7 @@ function friendlyRealtimeError(err: { code?: string; message?: string } | undefi
   return new Error(msg)
 }
 
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
+export function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer)
   let binary = ''
   for (let i = 0; i < bytes.length; i++) {
@@ -294,7 +294,7 @@ export function createSttAdapter(provider: SttProvider): SttAdapter {
 // --- Shared audio capture ---
 
 /** Convert Float32 audio samples [-1, 1] to Int16 PCM */
-function float32ToInt16(float32: Float32Array): Int16Array {
+export function float32ToInt16(float32: Float32Array): Int16Array {
   const int16 = new Int16Array(float32.length)
   for (let i = 0; i < float32.length; i++) {
     const s = Math.max(-1, Math.min(1, float32[i]))

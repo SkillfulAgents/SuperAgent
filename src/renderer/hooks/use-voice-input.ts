@@ -15,18 +15,35 @@ interface SttCredentials {
   token: string
 }
 
-/** Hook to check whether voice input is fully configured (provider + API key). */
-export function useIsVoiceConfigured(): boolean {
-  const { data } = useQuery({
+interface SttConfiguredStatus {
+  configured: boolean
+  supportsVoiceAgent: boolean
+}
+
+function useSttConfiguredStatus(): SttConfiguredStatus {
+  const { data } = useQuery<SttConfiguredStatus>({
     queryKey: ['stt-configured'],
     queryFn: async () => {
       const res = await apiFetch('/api/stt/configured')
-      if (!res.ok) return { configured: false }
-      return res.json() as Promise<{ configured: boolean }>
+      if (!res.ok) return { configured: false, supportsVoiceAgent: false }
+      return res.json() as Promise<SttConfiguredStatus>
     },
     staleTime: 60_000,
   })
-  return data?.configured ?? false
+  return data ?? { configured: false, supportsVoiceAgent: false }
+}
+
+/** Hook to check whether voice input is fully configured (provider + API key). */
+export function useIsVoiceConfigured(): boolean {
+  return useSttConfiguredStatus().configured
+}
+
+/**
+ * Hook to check whether the configured STT provider supports Voice Agent (S2S)
+ * sessions. Returns false if STT is not configured at all.
+ */
+export function useIsVoiceAgentConfigured(): boolean {
+  return useSttConfiguredStatus().supportsVoiceAgent
 }
 
 export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {

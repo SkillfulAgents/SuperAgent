@@ -54,6 +54,8 @@ export function MainContent() {
   const pendingMessagesRef = useRef(new Map<string, { text: string; sentAt: number; sender?: { id: string; name: string; email: string } }>())
   // Draft input text per session — survives navigation between sessions
   const draftsRef = useRef(new Map<string, string>())
+  // External draft injected from voice feedback — triggers a re-render to push into MessageInput
+  const [externalDraft, setExternalDraft] = useState<string | null>(null)
   const [, forceUpdate] = useState(0)
   const { data: agent } = useAgent(agentSlug)
   const { data: sessions } = useSessions(agentSlug)
@@ -119,6 +121,11 @@ export function MainContent() {
       }
     }
   }, [sessionId])
+
+  /** Inject a draft from outside (e.g., voice feedback) — triggers re-render + push into MessageInput */
+  const handleSetExternalDraft = useCallback((draft: string) => {
+    setExternalDraft(draft)
+  }, [])
 
   const handleMessageSent = useCallback((content: string) => {
     if (sessionId) {
@@ -403,6 +410,7 @@ export function MainContent() {
                 agentSlug={agentSlug}
                 pendingUserMessage={pendingUserMessage}
                 onPendingMessageAppeared={handlePendingMessageAppeared}
+                onSetDraft={handleSetExternalDraft}
               />
               <div className="bg-background max-w-[740px] mx-auto w-full">
                 <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
@@ -412,6 +420,8 @@ export function MainContent() {
                   agentSlug={agentSlug}
                   onMessageSent={handleMessageSent}
                   initialDraft={currentDraft}
+                  externalDraft={externalDraft}
+                  onExternalDraftConsumed={() => setExternalDraft(null)}
                   onDraftChange={handleDraftChange}
                   initialEffort={session?.effort}
                 />
