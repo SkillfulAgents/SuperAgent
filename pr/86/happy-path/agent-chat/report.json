@@ -1,25 +1,27 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "Agent \"QA-20260417-180004-8u6s\" received and responded to math question correctly",
+  "reason": "Verified agent responsiveness and correct mathematical calculation",
   "steps": [
-    "Step 1: Navigated to http://localhost:47891 — Page loaded successfully with Super Agent app displayed",
-    "Step 2: Found agent \"QA-20260417-180004-8u6s\" in sidebar and clicked it — Agent detail page opened, showing the agent with status indicator",
-    "Step 3: Verified agent status — Status showed \"idle\" which is a valid status per requirements",
-    "Step 4: Typed message \"Hello! What is 2+2?\" in message input field — Message successfully entered in the textbox",
-    "Step 5: Clicked \"Send message\" button — Message transmitted to agent, status changed to \"working\", activity indicator showed \"Working...\"",
-    "Step 6: Waited up to 3 minutes for response — Agent responded within 2 seconds with the answer \"4\"",
-    "Step 7: Verified response content — Agent response clearly displays \"4\" as shown in the chat and screenshot"
+    "Navigated to http://localhost:47891 — Application loaded successfully with sidebar showing multiple agents",
+    "Located agent \"QA-20260417-182031-b8zs\" in sidebar with status \"idle\" — Agent found and ready",
+    "Clicked on agent in sidebar — Agent detail page loaded showing idle status and message input field",
+    "Verified agent status is \"idle\" — Status indicator confirmed agent is in idle state",
+    "Typed message \"Hello! What is 2+2?\" in message input field — Message text entered successfully",
+    "Clicked Send message button — Message submitted and session created",
+    "Waited for agent response — Agent responded within 1 second with answer \"4\"",
+    "Verified response contains \"4\" — Response displayed correctly in chat view with \"Worked for 1s\" indicator",
+    "Took final screenshot documenting complete interaction — Screenshot captured showing full conversation"
   ],
   "bugs": [],
-  "durationMs": 69895,
-  "sessionId": "dd09d572-d34b-40c5-a2bb-ac1ab863c135",
+  "durationMs": 49265,
+  "sessionId": "3325f08a-c4ac-4786-bbff-b6cb44a8f327",
   "cost": {
-    "inputTokens": 207,
-    "outputTokens": 6528,
-    "cacheCreationTokens": 111684,
-    "cacheReadTokens": 642030,
+    "inputTokens": 171,
+    "outputTokens": 5787,
+    "cacheCreationTokens": 108019,
+    "cacheReadTokens": 503790,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.236655
+    "totalCostUsd": 0.214509
   }
 }
