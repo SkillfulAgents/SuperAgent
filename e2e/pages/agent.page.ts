@@ -16,22 +16,19 @@ export class AgentPage {
   }
 
   /**
-   * Fill in the agent name and submit the create dialog
+   * Open the create-agent screen, type the given prompt (used both as the agent's first
+   * message and to seed the auto-generated name), and submit.
    */
-  async createAgent(name: string) {
+  async createAgent(prompt: string) {
     await this.clickCreateAgent()
 
-    // Wait for dialog to be visible
-    await expect(this.page.locator('[data-testid="create-agent-dialog"]')).toBeVisible()
+    await expect(this.page.locator('[data-testid="create-agent-screen"]')).toBeVisible()
 
-    // Fill in the name
-    await this.page.locator('[data-testid="agent-name-input"]').fill(name)
+    await this.page.locator('[data-testid="create-agent-prompt"]').fill(prompt)
 
-    // Click create
     await this.page.locator('[data-testid="create-agent-submit"]').click()
 
-    // Wait for dialog to close
-    await expect(this.page.locator('[data-testid="create-agent-dialog"]')).not.toBeVisible()
+    await expect(this.page.locator('[data-testid="create-agent-screen"]')).not.toBeVisible()
   }
 
   /**

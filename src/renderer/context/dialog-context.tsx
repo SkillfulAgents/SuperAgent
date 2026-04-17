@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react'
+import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
 
 interface DialogContextType {
   settingsOpen: boolean
@@ -6,7 +7,9 @@ interface DialogContextType {
   settingsTab: string | undefined
   openSettings: (tab?: string) => void
   createAgentOpen: boolean
-  setCreateAgentOpen: (open: boolean) => void
+  createAgentTemplate: ApiDiscoverableAgent | null
+  openCreateAgent: (template?: ApiDiscoverableAgent | null) => void
+  closeCreateAgent: () => void
   openWizard: () => void
 }
 
@@ -22,10 +25,21 @@ export function DialogProvider({
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<string | undefined>()
   const [createAgentOpen, setCreateAgentOpen] = useState(false)
+  const [createAgentTemplate, setCreateAgentTemplate] = useState<ApiDiscoverableAgent | null>(null)
 
   const openSettings = useCallback((tab?: string) => {
     setSettingsTab(tab)
     setSettingsOpen(true)
+  }, [])
+
+  const openCreateAgent = useCallback((template?: ApiDiscoverableAgent | null) => {
+    setCreateAgentTemplate(template ?? null)
+    setCreateAgentOpen(true)
+  }, [])
+
+  const closeCreateAgent = useCallback(() => {
+    setCreateAgentOpen(false)
+    setCreateAgentTemplate(null)
   }, [])
 
   const openWizard = useCallback(() => {
@@ -42,6 +56,7 @@ export function DialogProvider({
     })
 
     window.electronAPI.onOpenCreateAgent?.(() => {
+      setCreateAgentTemplate(null)
       setCreateAgentOpen(true)
     })
 
@@ -59,7 +74,9 @@ export function DialogProvider({
         settingsTab,
         openSettings,
         createAgentOpen,
-        setCreateAgentOpen,
+        createAgentTemplate,
+        openCreateAgent,
+        closeCreateAgent,
         openWizard,
       }}
     >

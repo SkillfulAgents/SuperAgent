@@ -68,15 +68,15 @@ test.describe('Accessibility Audit', () => {
     await agentPage.deleteAgent()
   })
 
-  test('create agent dialog has no critical a11y violations', async ({ page }) => {
+  test('create agent screen has no critical a11y violations', async ({ page }) => {
     await page.locator('[data-testid="create-agent-button"]').click()
-    await expect(page.locator('[data-testid="create-agent-dialog"]')).toBeVisible()
+    await expect(page.locator('[data-testid="create-agent-screen"]')).toBeVisible()
 
     const results = await new AxeBuilder({ page })
       .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
       .analyze()
 
-    logViolations('Create Agent Dialog', results.violations)
+    logViolations('Create Agent Screen', results.violations)
     expect(results.violations.filter(v => v.impact === 'critical')).toEqual([])
   })
 })

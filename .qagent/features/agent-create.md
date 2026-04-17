@@ -9,14 +9,15 @@ This feature covers creating an agent, starting its container, and deleting it f
 ## Sidebar - Create Agent
 
 ### Components
-- **Create Agent button** (`data-testid='create-agent-button'`) - opens the creation dialog.
-- **Create Agent dialog** (`data-testid='create-agent-dialog'`) - modal for new agent creation.
-- **Agent name input** (`data-testid='agent-name-input'`) - text input for agent name.
+- **Create Agent button** (`data-testid='create-agent-button'`) - opens the creation screen.
+- **Create Agent screen** (`data-testid='create-agent-screen'`) - full-screen takeover for new agent creation.
+- **Prompt composer** (`data-testid='create-agent-prompt'`) - textarea for the agent's first instruction; name is auto-generated from the prompt.
 - **Submit button** (`data-testid='create-agent-submit'`) - confirms creation.
+- **Close button** (`data-testid='create-agent-close'`) - dismisses the screen.
 
 ### Interactions
-- Click "Create Agent" to open the dialog.
-- Enter a name and submit.
+- Click "Create Agent" to open the screen.
+- Type a prompt describing what the agent should do, then submit.
 - A new agent entry appears in the sidebar list.
 
 > **Note:** Agent sidebar entries have a random slug suffix in their `data-testid`, e.g. `agent-item-smoke-test-agent-9qux7n`. Always use a **prefix match**: `[data-testid^="agent-item-<agent-name>"]`.
@@ -27,7 +28,7 @@ This feature covers creating an agent, starting its container, and deleting it f
 - **Template cards** - preconfigured templates shown on the home page.
 
 ### Interactions
-- Clicking a template opens the create dialog pre-filled with template settings.
+- Clicking a template opens the create screen with the template pre-selected at the name-your-agent step.
 - If required environment variables are missing, user can cancel.
 - Otherwise user can adjust the name and create the agent.
 

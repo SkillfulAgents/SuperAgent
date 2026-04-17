@@ -37,7 +37,7 @@ import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
-import { CreateAgentDialog } from '@renderer/components/agents/create-agent-dialog'
+import { CreateAgentScreen } from '@renderer/components/agents/create-agent-screen'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
@@ -899,7 +899,7 @@ function ApiKeyWarning({ onOpenSettings }: { onOpenSettings: () => void }) {
 
 export function AppSidebar() {
   useRenderTracker('AppSidebar')
-  const { settingsOpen, setSettingsOpen, settingsTab, createAgentOpen, setCreateAgentOpen, openWizard } = useDialogs()
+  const { settingsOpen, setSettingsOpen, settingsTab, createAgentOpen, createAgentTemplate, openCreateAgent, closeCreateAgent, openWizard } = useDialogs()
   const { clearSelection } = useSelection()
   const [containerSetupOpen, setContainerSetupOpen] = useState(false)
   const { data: agents, isLoading, error } = useAgents()
@@ -1046,7 +1046,7 @@ export function AppSidebar() {
         <SidebarContent>
           <SidebarGroup>
             <SidebarGroupLabel>Agents</SidebarGroupLabel>
-            <SidebarGroupAction onClick={() => setCreateAgentOpen(true)} title="New Agent" data-testid="create-agent-button">
+            <SidebarGroupAction onClick={() => openCreateAgent()} title="New Agent" data-testid="create-agent-button">
               <Plus />
               <span className="sr-only">New Agent</span>
             </SidebarGroupAction>
@@ -1106,9 +1106,10 @@ export function AppSidebar() {
         <UserFooter />
       </SidebarFooter>
 
-      <CreateAgentDialog
+      <CreateAgentScreen
         open={createAgentOpen}
-        onOpenChange={setCreateAgentOpen}
+        onClose={closeCreateAgent}
+        initialTemplate={createAgentTemplate}
       />
 
       <GlobalSettingsDialog

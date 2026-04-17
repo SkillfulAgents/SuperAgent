@@ -250,3 +250,31 @@
   animation: voice-agent-breathe 3.6s ease-in-out infinite;
   will-change: box-shadow;
 }
+
+/* Create-agent screen intro: items fade down from the top with a brief blur.
+   Transition-based so enter/exit are symmetric and don't flicker on class swap. */
+.create-agent-item {
+  transition:
+    opacity 360ms cubic-bezier(0.22, 1, 0.36, 1),
+    filter 360ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 360ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity, filter, transform;
+}
+
+.create-agent-item[data-hidden="true"] {
+  opacity: 0;
+  filter: blur(6px);
+  transform: translateY(-10px);
+}
+
+.create-agent-item[data-hidden="false"] {
+  opacity: 1;
+  filter: blur(0);
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .create-agent-item {
+    transition-duration: 1ms;
+  }
+}

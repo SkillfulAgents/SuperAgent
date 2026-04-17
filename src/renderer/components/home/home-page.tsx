@@ -1,5 +1,5 @@
 
-import { useState, useMemo } from 'react'
+import { useMemo } from 'react'
 import { useAgents } from '@renderer/hooks/use-agents'
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
@@ -9,7 +9,7 @@ import { useSessions } from '@renderer/hooks/use-sessions'
 import { useSelection } from '@renderer/context/selection-context'
 import { AgentStatus, getAgentActivityStatus } from '@renderer/components/agents/agent-status'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
-import { CreateAgentDialog } from '@renderer/components/agents/create-agent-dialog'
+import { useDialogs } from '@renderer/context/dialog-context'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Button } from '@renderer/components/ui/button'
 import { useSidebar } from '@renderer/components/ui/sidebar'
@@ -379,8 +379,7 @@ export function HomePage() {
     () => applyAgentOrder(agents ?? [], userSettings?.agentOrder),
     [agents, userSettings?.agentOrder]
   )
-  const [createAgentOpen, setCreateAgentOpen] = useState(false)
-  const [selectedTemplate, setSelectedTemplate] = useState<ApiDiscoverableAgent | null>(null)
+  const { openCreateAgent } = useDialogs()
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && sidebarState === 'collapsed' && !isFullScreen
@@ -406,7 +405,7 @@ export function HomePage() {
               <h2 className="text-lg font-semibold">Your Agents</h2>
               <Button
                 size="sm"
-                onClick={() => setCreateAgentOpen(true)}
+                onClick={() => openCreateAgent()}
                 className="app-no-drag"
               >
                 <Plus className="h-4 w-4 mr-1" />
@@ -428,7 +427,7 @@ export function HomePage() {
               <div className="text-center py-12 border rounded-lg bg-muted/30">
                 <Bot className="h-10 w-10 mx-auto text-muted-foreground mb-3" />
                 <p className="text-muted-foreground mb-4">No agents yet</p>
-                <Button onClick={() => setCreateAgentOpen(true)}>
+                <Button onClick={() => openCreateAgent()}>
                   <Plus className="h-4 w-4 mr-1" />
                   Create your first agent
                 </Button>
@@ -445,7 +444,7 @@ export function HomePage() {
                   <TemplateCard
                     key={`${template.skillsetId}::${template.path}`}
                     template={template}
-                    onClick={() => { setSelectedTemplate(template); setCreateAgentOpen(true) }}
+                    onClick={() => openCreateAgent(template)}
                   />
                 ))}
               </div>
@@ -453,12 +452,6 @@ export function HomePage() {
           )}
         </div>
       </div>
-
-      <CreateAgentDialog
-        open={createAgentOpen}
-        onOpenChange={(open) => { setCreateAgentOpen(open); if (!open) setSelectedTemplate(null) }}
-        initialTemplate={selectedTemplate}
-      />
     </div>
   )
 }

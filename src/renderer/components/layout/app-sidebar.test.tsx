@@ -118,7 +118,9 @@ const mockDialogContext = {
   setSettingsOpen: vi.fn(),
   settingsTab: undefined,
   createAgentOpen: false,
-  setCreateAgentOpen: vi.fn(),
+  createAgentTemplate: null,
+  openCreateAgent: vi.fn(),
+  closeCreateAgent: vi.fn(),
   openWizard: vi.fn(),
 }
 vi.mock('@renderer/context/dialog-context', () => ({
@@ -143,8 +145,8 @@ vi.mock('@renderer/context/selection-context', () => ({
 }))
 
 // Mock complex child components
-vi.mock('@renderer/components/agents/create-agent-dialog', () => ({
-  CreateAgentDialog: () => null,
+vi.mock('@renderer/components/agents/create-agent-screen', () => ({
+  CreateAgentScreen: () => null,
 }))
 
 vi.mock('@renderer/components/agents/agent-status', () => ({
@@ -309,12 +311,12 @@ describe('AppSidebar', () => {
     expect(screen.getByTestId('create-agent-button')).toBeInTheDocument()
   })
 
-  it('opens create agent dialog on button click', async () => {
+  it('opens create agent screen on button click', async () => {
     const user = userEvent.setup()
     renderWithProviders(<AppSidebar />)
 
     await user.click(screen.getByTestId('create-agent-button'))
-    expect(mockDialogContext.setCreateAgentOpen).toHaveBeenCalledWith(true)
+    expect(mockDialogContext.openCreateAgent).toHaveBeenCalled()
   })
 
   it('renders session sub-items', () => {

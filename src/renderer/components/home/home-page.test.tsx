@@ -149,9 +149,13 @@ vi.mock('@renderer/components/agents/agent-status', () => ({
   getAgentActivityStatus: () => 'sleeping',
 }))
 
-vi.mock('@renderer/components/agents/create-agent-dialog', () => ({
-  CreateAgentDialog: () => null,
-}))
+vi.mock('@renderer/context/dialog-context', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@renderer/context/dialog-context')>()
+  return {
+    ...actual,
+    useDialogs: () => ({ openCreateAgent: vi.fn() }),
+  }
+})
 
 vi.mock('@renderer/components/ui/sidebar', () => ({
   SidebarTrigger: () => <button>sidebar</button>,
