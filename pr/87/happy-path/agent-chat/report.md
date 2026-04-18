@@ -1,21 +1,15 @@
 [TEST_PASS]
 
-[REASON] Successfully navigated to agent, verified idle status, sent message "Hello! What is 2+2?", and verified agent responded with "4" in under 3 minutes.
+[REASON] Agent successfully received the message "Hello! What is 2+2?" and responded with "4" within seconds.
 
-[STEP] Navigated to http://localhost:47891 - Successfully loaded the Super Agent application home page with three agents listed in the sidebar.
+[STEP] Step 1: Navigated to http://localhost:47891 - Page loaded successfully, showing "Your Agents" with three agents listed in the sidebar, all with "idle" status.
 
-[STEP] Found the "QA-20260417-234018-llpx" agent in the sidebar - Located the agent in the sidebar list marked with "idle" status.
+[STEP] Step 2: Found the "QA-20260418-000442-wm13" agent in the sidebar and clicked it - Successfully navigated to the agent's detail page, showing the agent name and "idle" status indicator.
 
-[STEP] Clicked the "QA-20260417-234018-llpx" agent - Successfully opened the agent detail page showing the agent name in the header and agent status as "idle".
+[STEP] Step 3: Verified agent status is "running" or "idle" - Agent status confirmed as "idle" (visible at top right of page and in the sidebar status badge).
 
-[STEP] Verified agent status is "running" or "idle" - Confirmed agent status is "idle" which satisfies the requirement.
+[STEP] Step 4: Sent message "Hello! What is 2+2?" - Message was typed into the message input field and sent successfully by clicking the "Send message" button. A new session called "Basic Math Query Session" was created.
 
-[STEP] Clicked on the message input textbox - Successfully focused the textbox with placeholder text "How can I help? Press cmd+enter to send".
+[STEP] Step 5: Waited for response - Agent responded within 1 second (displayed "Worked for 1s" indicator), well under the 3-minute timeout limit.
 
-[STEP] Typed the message "Hello! What is 2+2?" - Successfully entered the message text into the input field and the Send button became enabled.
-
-[STEP] Clicked the Send button - Successfully sent the message, creating a new session "Basic Math Question Session" and navigating to the chat view.
-
-[STEP] Waited for agent response - Agent responded in approximately 2 seconds (well under the 3-minute timeout).
-
-[STEP] Verified the response mentions "4" - Agent responded with the single message "4" which is the correct answer and clearly mentions the required number.
+[STEP] Step 6: Verified response mentions "4" and took screenshot - Agent's response clearly displays "4", which is the correct mathematical answer to 2+2. Final screenshot confirms the complete conversation with the correct response.

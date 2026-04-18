@@ -1,27 +1,24 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "Successfully navigated to agent, verified idle status, sent message \"Hello! What is 2+2?\", and verified agent responded with \"4\" in under 3 minutes.",
+  "reason": "Agent successfully received the message \"Hello! What is 2+2?\" and responded with \"4\" within seconds.",
   "steps": [
-    "Navigated to http://localhost:47891 - Successfully loaded the Super Agent application home page with three agents listed in the sidebar.",
-    "Found the \"QA-20260417-234018-llpx\" agent in the sidebar - Located the agent in the sidebar list marked with \"idle\" status.",
-    "Clicked the \"QA-20260417-234018-llpx\" agent - Successfully opened the agent detail page showing the agent name in the header and agent status as \"idle\".",
-    "Verified agent status is \"running\" or \"idle\" - Confirmed agent status is \"idle\" which satisfies the requirement.",
-    "Clicked on the message input textbox - Successfully focused the textbox with placeholder text \"How can I help? Press cmd+enter to send\".",
-    "Typed the message \"Hello! What is 2+2?\" - Successfully entered the message text into the input field and the Send button became enabled.",
-    "Clicked the Send button - Successfully sent the message, creating a new session \"Basic Math Question Session\" and navigating to the chat view.",
-    "Waited for agent response - Agent responded in approximately 2 seconds (well under the 3-minute timeout).",
-    "Verified the response mentions \"4\" - Agent responded with the single message \"4\" which is the correct answer and clearly mentions the required number."
+    "Step 1: Navigated to http://localhost:47891 - Page loaded successfully, showing \"Your Agents\" with three agents listed in the sidebar, all with \"idle\" status.",
+    "Step 2: Found the \"QA-20260418-000442-wm13\" agent in the sidebar and clicked it - Successfully navigated to the agent's detail page, showing the agent name and \"idle\" status indicator.",
+    "Step 3: Verified agent status is \"running\" or \"idle\" - Agent status confirmed as \"idle\" (visible at top right of page and in the sidebar status badge).",
+    "Step 4: Sent message \"Hello! What is 2+2?\" - Message was typed into the message input field and sent successfully by clicking the \"Send message\" button. A new session called \"Basic Math Query Session\" was created.",
+    "Step 5: Waited for response - Agent responded within 1 second (displayed \"Worked for 1s\" indicator), well under the 3-minute timeout limit.",
+    "Step 6: Verified response mentions \"4\" and took screenshot - Agent's response clearly displays \"4\", which is the correct mathematical answer to 2+2. Final screenshot confirms the complete conversation with the correct response."
   ],
   "bugs": [],
-  "durationMs": 72037,
-  "sessionId": "a7b63c36-8017-41c1-b201-35d721fe0323",
+  "durationMs": 65611,
+  "sessionId": "64f4249a-a936-4956-a584-56802c23c44e",
   "cost": {
-    "inputTokens": 320,
-    "outputTokens": 9853,
-    "cacheCreationTokens": 129659,
-    "cacheReadTokens": 1163692,
+    "inputTokens": 270,
+    "outputTokens": 7663,
+    "cacheCreationTokens": 123578,
+    "cacheReadTokens": 940193,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.328028
+    "totalCostUsd": 0.287077
   }
 }

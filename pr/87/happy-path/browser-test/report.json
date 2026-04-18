@@ -1,25 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "QA test for browser use feature: Agent successfully opened a browser, navigated to https://example.com, retrieved the page title, and returned the response \"The page title is Example Domain.\"",
+  "reason": "Browser use feature successfully executes browser commands through an agent and returns the expected page title \"Example Domain\"",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully showing Super Agent homepage with agent list in sidebar.",
-    "Found the \"QA-20260417-234020-8axj\" agent in the sidebar — Agent was visible in the list marked as \"idle\" status.",
-    "Clicked on the \"QA-20260417-234020-8axj\" agent in the sidebar — Agent details page opened, showing message input box and agent information.",
-    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input box — Message appeared in the textbox with correct content.",
-    "Clicked \"Send message\" button — Message was sent successfully, agent status changed to \"working\", and a new session titled \"Browser Page Title Check\" was created.",
-    "Waited up to 3 minutes (180 seconds) for response — Agent completed its work in 6 seconds.",
-    "Verified the response mentions \"Example Domain\" — Response clearly states: \"The page title is Example Domain.\" Also visible: browser preview showing the Example Domain page, completed \"Open Browser\" action, and \"Browser Command $ get title\" action both showing checkmarks."
+    "Navigated to http://localhost:47891 - Page loaded successfully showing the Super Agent dashboard with three agents listed in the sidebar",
+    "Found and clicked agent \"QA-20260418-000443-9ix6\" - Agent page opened with chat interface, message input box, and sidebar with Crons, Connections, Skills, and Volumes sections",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input box - Message appeared in the text field",
+    "Clicked \"Send message\" button to send the request - Message was sent, agent status changed to \"working\", and session was created titled \"Browser Navigation and Page Title Lookup\"",
+    "Waited for agent response (up to 3 minutes) - Agent completed in 6 seconds, executing two actions: \"Open Browser https://example.com\" and \"Browser Command $ get title\", both with checkmarks indicating completion",
+    "Verified response mentions \"Example Domain\" - Response clearly displayed: \"The page title is \"Example Domain\".\" - Test requirement met"
   ],
   "bugs": [],
-  "durationMs": 94917,
-  "sessionId": "ea7d719d-ac2a-4005-97de-8dac78d32e4c",
+  "durationMs": 89811,
+  "sessionId": "4e00733e-bdf8-4b64-92fb-ad3206c46326",
   "cost": {
-    "inputTokens": 300,
-    "outputTokens": 8918,
-    "cacheCreationTokens": 122809,
-    "cacheReadTokens": 1051023,
+    "inputTokens": 342,
+    "outputTokens": 12535,
+    "cacheCreationTokens": 131466,
+    "cacheReadTokens": 1216688,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.303504
+    "totalCostUsd": 0.349018
   }
 }
