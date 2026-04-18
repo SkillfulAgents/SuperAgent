@@ -5,7 +5,12 @@ import { Loader2, MicOff, Pause, Phone, PhoneOff, Play, RotateCcw } from 'lucide
 import { useVoiceAgent, type VoiceAgentTranscriptEntry } from '@renderer/hooks/use-voice-agent'
 import type { VoiceAgentConfig } from '@renderer/lib/voice-agent'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { cn } from '@shared/lib/utils'
+
+function formatTranscript(entries: VoiceAgentTranscriptEntry[]): string {
+  return entries.map(e => `${e.role}: ${e.text}`).join('\n')
+}
 
 interface VoiceAgentProps {
   config: VoiceAgentConfig
@@ -31,9 +36,20 @@ interface VoiceAgentProps {
  * - Controls: mute, stop, restart
  */
 export function VoiceAgent({ config, onResult, onClose, layout = 'vertical', className }: VoiceAgentProps) {
+  const { track } = useAnalyticsTracking()
+  const sessionStartedAtRef = useRef<number | null>(null)
+  const transcriptRef = useRef<VoiceAgentTranscriptEntry[]>([])
+
   const handleFunctionCall = useCallback((name: string, args: string) => {
+    track('voice_agent_ended', {
+      functionName: name,
+      transcript: formatTranscript(transcriptRef.current),
+      transcriptTurns: transcriptRef.current.length,
+      durationMs: sessionStartedAtRef.current ? Date.now() - sessionStartedAtRef.current : undefined,
+    })
+    sessionStartedAtRef.current = null
     onResult?.(name, args)
-  }, [onResult])
+  }, [onResult, track])
 
   const toolsKey = JSON.stringify(config.tools)
   const contextKey = JSON.stringify(config.conversationContext)
@@ -60,15 +76,42 @@ export function VoiceAgent({ config, onResult, onClose, layout = 'vertical', cla
     onFunctionCall: handleFunctionCall,
   })
 
+  transcriptRef.current = transcript
+
+  useEffect(() => {
+    if (state === 'active' && sessionStartedAtRef.current === null) {
+      sessionStartedAtRef.current = Date.now()
+      track('voice_agent_started')
+    }
+  }, [state, track])
+
+  const handlePause = useCallback(() => {
+    track('voice_agent_paused')
+    pause()
+  }, [pause, track])
+
   const handleStop = useCallback(() => {
+    track('voice_agent_stopped', {
+      transcript: formatTranscript(transcriptRef.current),
+      transcriptTurns: transcriptRef.current.length,
+      durationMs: sessionStartedAtRef.current ? Date.now() - sessionStartedAtRef.current : undefined,
+    })
+    sessionStartedAtRef.current = null
     stop()
     onClose?.()
-  }, [stop, onClose])
+  }, [stop, onClose, track])
 
   const handleRestart = useCallback(() => {
+    track('voice_agent_stopped', {
+      reason: 'restart',
+      transcript: formatTranscript(transcriptRef.current),
+      transcriptTurns: transcriptRef.current.length,
+      durationMs: sessionStartedAtRef.current ? Date.now() - sessionStartedAtRef.current : undefined,
+    })
+    sessionStartedAtRef.current = null
     stop()
     start()
-  }, [stop, start])
+  }, [stop, start, track])
 
   // Auto-start once on mount
   const hasStartedRef = useRef(false)
@@ -121,7 +164,7 @@ export function VoiceAgent({ config, onResult, onClose, layout = 'vertical', cla
           </Button>
         ) : (
           <>
-            <PauseButton key={state} onPause={pause} onResume={resume} disabled={!isActive} />
+            <PauseButton key={state} onPause={handlePause} onResume={resume} disabled={!isActive} />
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
