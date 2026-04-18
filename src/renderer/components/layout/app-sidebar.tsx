@@ -963,7 +963,7 @@ export function AppSidebar() {
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && !isFullScreen
 
   return (
-    <Sidebar data-testid="app-sidebar">
+    <Sidebar variant="inset" data-testid="app-sidebar">
       <SidebarHeader
         className="h-12 border-b app-drag-region"
         style={{

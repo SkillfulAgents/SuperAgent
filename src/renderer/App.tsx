@@ -69,7 +69,7 @@ function AppContent() {
           <GlobalNotificationHandler />
           <SidebarProvider className="h-screen">
             <AppSidebar />
-            <SidebarInset className="min-w-0 h-full">
+            <SidebarInset className="min-w-0">
               <MainContent />
             </SidebarInset>
           </SidebarProvider>
