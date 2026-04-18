@@ -58,9 +58,9 @@ export const PlatformAuthSettingsSchema = z.object({
   tokenPreview: z.string(),
   email: z.string().nullable(),
   label: z.string().nullable(),
-  orgId: z.string().nullable(),
-  orgName: z.string().nullable(),
-  role: z.string().nullable(),
+  orgId: z.string().nullish().transform((v) => v ?? null),
+  orgName: z.string().nullish().transform((v) => v ?? null),
+  role: z.string().nullish().transform((v) => v ?? null),
   createdAt: z.string(),
   updatedAt: z.string(),
 })
