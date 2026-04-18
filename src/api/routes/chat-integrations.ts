@@ -45,6 +45,70 @@ chatIntegrationsRouter.get('/:integrationId', IntegrationAgentRole('viewer'), as
   }
 })
 
+// POST /api/chat-integrations/test-credentials - Test credentials before creating
+// NOTE: must be declared before `POST /:id` — Hono matches routes in declaration
+// order, so a parameterized `/:id` would otherwise shadow this static path.
+chatIntegrationsRouter.post('/test-credentials', Authenticated(), async (c) => {
+  try {
+    const body = await c.req.json()
+    const { provider, config } = body
+
+    if (!provider || !config) {
+      return c.json({ error: 'Missing required fields: provider, config' }, 400)
+    }
+
+    // Validate by attempting a lightweight API call
+    if (provider === 'telegram') {
+      const botToken = config.botToken
+      if (!botToken) {
+        return c.json({ error: 'Missing botToken' }, 400)
+      }
+      // Call Telegram getMe to validate
+      const res = await fetch(`https://api.telegram.org/bot${botToken}/getMe`)
+      const data = await res.json() as { ok: boolean; result?: { username: string; first_name: string } }
+      if (!data.ok) {
+        return c.json({ valid: false, error: 'Invalid bot token' }, 400)
+      }
+      return c.json({ valid: true, botName: data.result?.first_name, botUsername: data.result?.username })
+    }
+
+    if (provider === 'slack') {
+      const botToken = config.botToken
+      const appToken = config.appToken
+      if (!botToken) {
+        return c.json({ error: 'Missing botToken' }, 400)
+      }
+      if (!appToken) {
+        return c.json({ error: 'Missing appToken (app-level token for Socket Mode)' }, 400)
+      }
+      // Validate bot token via auth.test
+      const res = await fetch('https://slack.com/api/auth.test', {
+        headers: { 'Authorization': `Bearer ${botToken}` },
+      })
+      const data = await res.json() as { ok: boolean; team?: string; user?: string; error?: string }
+      if (!data.ok) {
+        return c.json({ valid: false, error: `Bot token invalid: ${data.error || 'unknown error'}` }, 400)
+      }
+      // Validate app token via apps.connections.open (proves Socket Mode will work)
+      const socketRes = await fetch('https://slack.com/api/apps.connections.open', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${appToken}` },
+      })
+      const socketData = await socketRes.json() as { ok: boolean; error?: string }
+      if (!socketData.ok) {
+        return c.json({ valid: false, error: `App token invalid: ${socketData.error || 'unknown error'}. Ensure Socket Mode is enabled and the token has connections:write scope.` }, 400)
+      }
+      return c.json({ valid: true, team: data.team, user: data.user })
+    }
+
+    return c.json({ error: 'Invalid provider' }, 400)
+  } catch (error) {
+    console.error('Failed to test credentials:', error)
+    captureException(error, { tags: { ...SENTRY_TAGS, operation: 'test-credentials' } })
+    return c.json({ error: 'Failed to test credentials' }, 500)
+  }
+})
+
 // POST /api/chat-integrations - Create a new integration
 // AgentUser validates the user has 'user' role on the agent identified by :id param
 chatIntegrationsRouter.post('/:id', AgentUser(), async (c) => {
@@ -278,68 +342,6 @@ chatIntegrationsRouter.delete('/:integrationId/sessions/:sessionId', Integration
     console.error('Failed to clear chat session:', error)
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'clear-session' }, extra: { integrationId: c.req.param('integrationId'), sessionId: c.req.param('sessionId') } })
     return c.json({ error: 'Failed to clear session' }, 500)
-  }
-})
-
-// POST /api/chat-integrations/test-credentials - Test credentials before creating
-chatIntegrationsRouter.post('/test-credentials', Authenticated(), async (c) => {
-  try {
-    const body = await c.req.json()
-    const { provider, config } = body
-
-    if (!provider || !config) {
-      return c.json({ error: 'Missing required fields: provider, config' }, 400)
-    }
-
-    // Validate by attempting a lightweight API call
-    if (provider === 'telegram') {
-      const botToken = config.botToken
-      if (!botToken) {
-        return c.json({ error: 'Missing botToken' }, 400)
-      }
-      // Call Telegram getMe to validate
-      const res = await fetch(`https://api.telegram.org/bot${botToken}/getMe`)
-      const data = await res.json() as { ok: boolean; result?: { username: string; first_name: string } }
-      if (!data.ok) {
-        return c.json({ valid: false, error: 'Invalid bot token' }, 400)
-      }
-      return c.json({ valid: true, botName: data.result?.first_name, botUsername: data.result?.username })
-    }
-
-    if (provider === 'slack') {
-      const botToken = config.botToken
-      const appToken = config.appToken
-      if (!botToken) {
-        return c.json({ error: 'Missing botToken' }, 400)
-      }
-      if (!appToken) {
-        return c.json({ error: 'Missing appToken (app-level token for Socket Mode)' }, 400)
-      }
-      // Validate bot token via auth.test
-      const res = await fetch('https://slack.com/api/auth.test', {
-        headers: { 'Authorization': `Bearer ${botToken}` },
-      })
-      const data = await res.json() as { ok: boolean; team?: string; user?: string; error?: string }
-      if (!data.ok) {
-        return c.json({ valid: false, error: `Bot token invalid: ${data.error || 'unknown error'}` }, 400)
-      }
-      // Validate app token via apps.connections.open (proves Socket Mode will work)
-      const socketRes = await fetch('https://slack.com/api/apps.connections.open', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${appToken}` },
-      })
-      const socketData = await socketRes.json() as { ok: boolean; error?: string }
-      if (!socketData.ok) {
-        return c.json({ valid: false, error: `App token invalid: ${socketData.error || 'unknown error'}. Ensure Socket Mode is enabled and the token has connections:write scope.` }, 400)
-      }
-      return c.json({ valid: true, team: data.team, user: data.user })
-    }
-
-    return c.json({ error: 'Invalid provider' }, 400)
-  } catch (error) {
-    console.error('Failed to test credentials:', error)
-    captureException(error, { tags: { ...SENTRY_TAGS, operation: 'test-credentials' } })
-    return c.json({ error: 'Failed to test credentials' }, 500)
   }
 })
 
