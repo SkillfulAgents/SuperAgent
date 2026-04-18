@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Agent successfully executed browser automation to open https://example.com and retrieve the page title \"Example Domain\"",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully with Super Agent interface showing multiple agents in sidebar",
+    "Found and clicked on \"QA-20260418-190642-epgf\" agent in sidebar — Agent page opened, showing chat interface with \"No sessions yet\" message",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in input field — Message successfully entered in textbox",
+    "Clicked Send message button — Message was sent, agent status changed to \"working\", new session \"Browser Page Title Lookup\" was created",
+    "Waited up to 3 minutes for response with \"Example Domain\" — Agent responded within 7 seconds with message \"The page title is \"Example Domain\".\"",
+    "Verified response contains \"Example Domain\" and took screenshot — Response confirmed to contain \"Example Domain\", screenshot shows:"
+  ],
+  "bugs": [],
+  "durationMs": 92174,
+  "sessionId": "1a080f72-2250-4445-82f3-d3f87ba620a0",
+  "cost": {
+    "inputTokens": 234,
+    "outputTokens": 8910,
+    "cacheCreationTokens": 113519,
+    "cacheReadTokens": 728867,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.259569
+  }
+}
