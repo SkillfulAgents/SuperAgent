@@ -12,6 +12,7 @@ import {
 import { Alert, AlertDescription, AlertTitle } from '@renderer/components/ui/alert'
 import { useSettings, useUpdateSettings, useStartRunner, useRestartRunner, useRefreshAvailability } from '@renderer/hooks/use-settings'
 import { AlertCircle, AlertTriangle, Play, Loader2, RefreshCw, Plus, X } from 'lucide-react'
+import { RunnerSetupErrorPanel, getRunnerSetupPayload } from '@renderer/components/settings/runner-setup-error-panel'
 import { DEFAULT_LIMA_VM_MEMORY, VALID_LIMA_VM_MEMORY_OPTIONS } from '@shared/lib/container/types'
 import { getDefaultAgentImage } from '@shared/lib/config/version'
 
@@ -425,11 +426,15 @@ export function RuntimeTab() {
               Restarting {RUNNER_LABELS[containerRunner] || containerRunner}...
             </span>
           )}
-          {startRunner.error && (
+          {startRunner.error && getRunnerSetupPayload(startRunner.error) ? (
+            <div className="mt-2">
+              <RunnerSetupErrorPanel error={startRunner.error} />
+            </div>
+          ) : startRunner.error ? (
             <span className="text-destructive block mt-1">
               {startRunner.error.message}
             </span>
-          )}
+          ) : null}
           {startRunner.isSuccess && startRunner.data?.message && (
             <span className="text-green-600 dark:text-green-400 block mt-1">
               {startRunner.data.message}
@@ -487,11 +492,15 @@ export function RuntimeTab() {
 
           {runtimeSettingsChanged && (
             <div className="flex items-center justify-end gap-2 pt-2 border-t">
-              {restartRunner.error && (
+              {restartRunner.error && getRunnerSetupPayload(restartRunner.error) ? (
+                <div className="mr-auto w-full">
+                  <RunnerSetupErrorPanel error={restartRunner.error} />
+                </div>
+              ) : restartRunner.error ? (
                 <p className="text-sm text-destructive mr-auto">
                   {restartRunner.error.message}
                 </p>
-              )}
+              ) : null}
               {restartRunner.isSuccess && restartRunner.data?.message && (
                 <p className="text-sm text-green-600 dark:text-green-400 mr-auto">
                   {restartRunner.data.message}
