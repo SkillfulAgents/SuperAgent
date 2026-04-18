@@ -54,7 +54,7 @@ export function AgentStatus({ status, hasActiveSessions = false, hasSessionsAwai
         <div className={cn('rounded-full bg-blue-500', dotSize)} />
       )}
       <span
-        className={cn(isSmall ? 'text-[10px]' : 'text-xs', {
+        className={cn(isSmall ? 'text-2xs' : 'text-xs', {
           'text-muted-foreground': activityStatus === 'sleeping',
           'text-blue-500': activityStatus === 'idle',
           'text-green-600': activityStatus === 'working',

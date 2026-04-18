@@ -77,7 +77,7 @@ export function PolicySummaryPill({ accountId, toolkit, onClick, compact = false
               'inline-flex items-center border text-xs transition-colors overflow-hidden bg-white dark:bg-background',
               'hover:opacity-80',
               compact ? 'rounded-[6px]' : 'rounded-full',
-              compact ? 'text-[11px]' : 'text-xs',
+              compact ? 'text-xs' : 'text-xs',
               compact && 'gap-1.5 px-1.5',
               compact && 'border-transparent bg-transparent text-emerald-600 dark:text-emerald-400',
               !hasAnyPolicy && (compact ? 'py-px gap-1.5' : 'px-2 py-0.5 gap-1 text-muted-foreground')

@@ -36,7 +36,7 @@ function MethodBadge({ method }: { method: string }) {
     DELETE: 'text-red-700 bg-red-100 dark:text-red-300 dark:bg-red-900/40',
   }
   return (
-    <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold leading-none ${colors[method] ?? 'text-muted-foreground bg-muted'}`}>
+    <span className={`inline-block rounded px-1.5 py-0.5 text-2xs font-semibold leading-none ${colors[method] ?? 'text-muted-foreground bg-muted'}`}>
       {method}
     </span>
   )
@@ -60,7 +60,7 @@ function SourceBadge({ source }: { source: 'proxy' | 'mcp' }) {
     ? 'text-purple-700 bg-purple-100 dark:text-purple-300 dark:bg-purple-900/40'
     : 'text-sky-700 bg-sky-100 dark:text-sky-300 dark:bg-sky-900/40'
   return (
-    <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold leading-none ${style}`}>
+    <span className={`inline-block rounded px-1.5 py-0.5 text-2xs font-semibold leading-none ${style}`}>
       {source === 'mcp' ? 'MCP' : 'API'}
     </span>
   )
@@ -84,7 +84,7 @@ function PolicyBadge({ decision }: { decision: string | null }) {
   }
   return (
     <span
-      className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold leading-none ${styles[decision] ?? 'text-muted-foreground bg-muted'}`}
+      className={`inline-block rounded px-1.5 py-0.5 text-2xs font-semibold leading-none ${styles[decision] ?? 'text-muted-foreground bg-muted'}`}
       title={`Policy: ${decision}`}
     >
       {labels[decision] ?? decision}

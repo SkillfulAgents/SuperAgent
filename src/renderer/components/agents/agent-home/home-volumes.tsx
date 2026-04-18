@@ -57,7 +57,7 @@ export function HomeVolumes({ agentSlug }: HomeVolumesProps) {
         {volumes.pendingRestart ? (
           <div className="flex flex-col gap-1 rounded-lg bg-orange-50 dark:bg-orange-950/30 p-2.5">
             <div className="flex items-center gap-2">
-              <span className="text-[11px] text-orange-600 dark:text-orange-400 flex-1">
+              <span className="text-xs text-orange-600 dark:text-orange-400 flex-1">
                 Restart your agent for mount changes to take effect.
               </span>
               <Button
@@ -72,7 +72,7 @@ export function HomeVolumes({ agentSlug }: HomeVolumesProps) {
               </Button>
             </div>
             {volumes.restartError && (
-              <span className="text-[11px] text-destructive" role="alert">
+              <span className="text-xs text-destructive" role="alert">
                 {volumes.restartError}
               </span>
             )}
@@ -150,7 +150,7 @@ function VolumeRow({ mount, onRemove, isRemovingMount }: VolumeRowProps) {
           <span className="text-xs font-medium truncate">{mount.folderName}</span>
           <VolumeStatusBadge health={mount.health} />
         </div>
-        <div className="text-[11px] text-muted-foreground mt-0.5 line-clamp-1 font-mono" title={mount.hostPath}>
+        <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1 font-mono" title={mount.hostPath}>
           {mount.hostPath}
         </div>
         <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">

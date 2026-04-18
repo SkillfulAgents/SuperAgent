@@ -144,7 +144,7 @@ function CompactToolCall({ toolCall }: { toolCall: ApiToolCall }) {
   const isError = toolCall.isError
 
   return (
-    <div className="text-[11px] rounded-md border border-border/30 px-2 py-1">
+    <div className="text-xs rounded-md border border-border/30 px-2 py-1">
       <button
         className={cn(
           'w-full flex items-center gap-1 rounded-sm',
@@ -171,7 +171,7 @@ function CompactToolCall({ toolCall }: { toolCall: ApiToolCall }) {
       </button>
       {expanded && parsed.text && (
         <pre className={cn(
-          'ml-5 mt-0.5 mb-1 text-[10px] leading-snug whitespace-pre-wrap break-words rounded p-1.5 max-h-32 overflow-y-auto',
+          'ml-5 mt-0.5 mb-1 text-2xs leading-snug whitespace-pre-wrap break-words rounded p-1.5 max-h-32 overflow-y-auto',
           isError
             ? 'bg-red-50/50 text-red-700/70 dark:bg-red-950/30 dark:text-red-300/70'
             : 'bg-muted/30 text-muted-foreground/70'
@@ -194,7 +194,7 @@ function CompactStreamingTool({ name, partialInput }: { name: string; partialInp
   }
 
   return (
-    <div className="flex items-center gap-1 py-0.5 text-[11px]">
+    <div className="flex items-center gap-1 py-0.5 text-xs">
       <Loader2 className="h-2.5 w-2.5 shrink-0 animate-spin text-muted-foreground" />
       {Icon && <Icon className="h-2.5 w-2.5 shrink-0 text-muted-foreground/70" />}
       <span className="font-medium text-foreground/80 shrink-0">

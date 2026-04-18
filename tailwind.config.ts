@@ -65,6 +65,24 @@ const config: Config = {
 			md: 'calc(var(--radius) - 2px)',
 			sm: 'calc(var(--radius) - 4px)'
 		},
+		fontSize: {
+			// Proportional ~13/14 reduction applied to the default Tailwind scale.
+			// `2xs` is a new micro-label size below Tailwind's defaults for badges/chips.
+			'2xs': ['10px', { lineHeight: '0.875rem' }],
+			xs: ['11px', { lineHeight: '1rem' }],
+			sm: ['13px', { lineHeight: '1.25rem' }],
+			base: ['15px', { lineHeight: '1.5rem' }],
+			lg: ['17px', { lineHeight: '1.75rem' }],
+			xl: ['19px', { lineHeight: '1.75rem' }],
+			'2xl': ['22px', { lineHeight: '2rem' }],
+			'3xl': ['28px', { lineHeight: '2.25rem' }],
+			'4xl': ['33px', { lineHeight: '2.5rem' }],
+			'5xl': ['45px', { lineHeight: '1' }],
+			'6xl': ['56px', { lineHeight: '1' }],
+			'7xl': ['67px', { lineHeight: '1' }],
+			'8xl': ['89px', { lineHeight: '1' }],
+			'9xl': ['119px', { lineHeight: '1' }],
+		},
 		keyframes: {
 			'cobalt-glow': {
 				'0%, 100%': {

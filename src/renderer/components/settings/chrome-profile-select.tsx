@@ -33,7 +33,7 @@ function ProfileAvatar({ name, avatarUrl }: { name: string; avatarUrl?: string }
   }
 
   return (
-    <span className="h-5 w-5 rounded-full shrink-0 bg-muted flex items-center justify-center text-[10px] font-medium text-muted-foreground">
+    <span className="h-5 w-5 rounded-full shrink-0 bg-muted flex items-center justify-center text-2xs font-medium text-muted-foreground">
       {name.charAt(0).toUpperCase()}
     </span>
   )

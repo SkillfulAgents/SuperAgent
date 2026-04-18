@@ -66,7 +66,7 @@ export function DonutChart({
         />
       </svg>
       {showLabel && (
-        <span className={`absolute inset-0 flex items-center justify-center text-[10px] font-medium tabular-nums ${textClass}`}>
+        <span className={`absolute inset-0 flex items-center justify-center text-2xs font-medium tabular-nums ${textClass}`}>
           {percent}
         </span>
       )}

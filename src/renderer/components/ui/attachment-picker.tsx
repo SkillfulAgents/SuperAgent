@@ -112,7 +112,7 @@ export function AttachmentPicker({
         <PopoverContent side="top" align={popoverAlign} className={`${showRecent ? 'w-64' : 'w-40'} p-1`}>
           {showRecent && (
             <>
-              <div className="px-2 py-1 text-[11px] text-muted-foreground">Recent</div>
+              <div className="px-2 py-1 text-xs text-muted-foreground">Recent</div>
               {recentFiles.map((file) => (
                 <button
                   key={file.path}

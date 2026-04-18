@@ -424,7 +424,7 @@ function ChatIntegrationSubItem({
                           {session.displayName || `Chat ${session.externalChatId.slice(-6)}`}
                         </span>
                         {isArchived && (
-                          <span className="ml-auto text-[10px] text-muted-foreground/50 shrink-0">archived</span>
+                          <span className="ml-auto text-2xs text-muted-foreground/50 shrink-0">archived</span>
                         )}
                       </button>
                     </SidebarMenuSubButton>

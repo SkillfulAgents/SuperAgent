@@ -66,7 +66,7 @@ export function EffortSelector({ value, onChange, disabled }: EffortSelectorProp
               )}
             >
               <span className="text-xs font-medium leading-tight">{option.label}</span>
-              <span className="text-[11px] leading-tight text-muted-foreground">{option.blurb}</span>
+              <span className="text-xs leading-tight text-muted-foreground">{option.blurb}</span>
             </button>
           ))}
         </div>
