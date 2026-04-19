@@ -24,13 +24,14 @@ import { HomeExtras } from './home-extras'
 import { HomeConnections } from './home-connections'
 import { HomeVolumes } from './home-volumes'
 import { HomeBookmarks } from './home-bookmarks'
-import { useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
+import { useUpdateAgent, useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { AgentCreationAids } from '@renderer/components/agents/agent-creation-aids'
 import {
   useTypewriterPlaceholder,
   DEFAULT_AGENT_PROMPT_EXAMPLES,
 } from '@renderer/hooks/use-typewriter-placeholder'
 import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
+import { deriveAgentName } from '@renderer/lib/derive-agent-name'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { formatDistanceToNow } from 'date-fns'
 
@@ -54,6 +55,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const [effort, setEffort] = useState<EffortLevel>('high')
   const sessionSearchRef = useRef<HTMLInputElement>(null)
   const createSession = useCreateSession()
+  const updateAgent = useUpdateAgent()
   const deleteAgent = useDeleteAgent()
 
   const { data: sessionsData } = useSessions(agent.slug)
@@ -101,13 +103,21 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
       return res.json() as Promise<{ path: string }>
     }, [agent.slug]),
     onSubmit: useCallback(async (content: string) => {
+      const shouldRename = agent.name === UNTITLED_AGENT_NAME && sessions.length === 0
       const session = await createSession.mutateAsync({
         agentSlug: agent.slug,
         message: content,
         effort,
       })
       onSessionCreated(session.id, content)
-    }, [createSession, agent.slug, onSessionCreated, effort]),
+      // Fire rename only after the session is created + navigated, so the
+      // updateAgent query invalidation can't race with the session transition.
+      if (shouldRename) {
+        void deriveAgentName(content).then((name) => {
+          if (name) updateAgent.mutate({ slug: agent.slug, name })
+        })
+      }
+    }, [createSession, agent.slug, agent.name, onSessionCreated, effort, sessions.length, updateAgent]),
     submitDisabled: createSession.isPending || !isRuntimeReady,
     keepMessageUntilComplete: true,
   })
