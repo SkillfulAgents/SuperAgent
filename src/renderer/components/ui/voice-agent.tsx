@@ -220,7 +220,7 @@ export function VoiceAgent({ config, onResult, onClose, layout = 'vertical', cla
   )
 }
 
-const ORB_BASE = 'flex h-[150px] w-[150px] items-center justify-center rounded-full bg-blue-100 dark:bg-blue-900/30'
+const ORB_BASE = 'voice-agent-orb relative flex h-[150px] w-[150px] items-center justify-center rounded-full'
 
 /** Pulsing / waveform indicator showing who is speaking */
 function SpeakingIndicator({
@@ -234,25 +234,48 @@ function SpeakingIndicator({
   analyserRef: React.RefObject<AnalyserNode | null>
   playbackAnalyserRef: React.RefObject<AnalyserNode | null>
 }) {
-  if (isConnecting) {
-    return (
-      <div className={cn(ORB_BASE, 'shadow-[0_0_28px_rgba(59,130,246,0.28)]')}>
-        <Loader2 className="h-5 w-5 animate-spin text-blue-500/50" />
-      </div>
-    )
-  }
-
   const speakingAnalyser =
-    speakingState === 'user' ? analyserRef :
-    speakingState === 'agent' ? playbackAnalyserRef : null
+    !isConnecting && speakingState === 'user' ? analyserRef :
+    !isConnecting && speakingState === 'agent' ? playbackAnalyserRef : null
+
+  const orbRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = orbRef.current
+    if (!el) return
+    let raf = 0
+    let smoothed = 0.15
+    const tick = () => {
+      raf = requestAnimationFrame(tick)
+      const analyser = speakingAnalyser?.current
+      let target: number
+      if (analyser) {
+        const arr = new Uint8Array(analyser.frequencyBinCount)
+        analyser.getByteFrequencyData(arr)
+        let sum = 0
+        for (let i = 0; i < arr.length; i++) sum += arr[i]
+        target = (sum / arr.length) / 255
+      } else {
+        // Idle: slow sinusoidal breath so the orb still feels alive
+        target = 0.12 + (Math.sin(performance.now() / 1600) + 1) * 0.06
+      }
+      smoothed += (target - smoothed) * 0.25
+      el.style.setProperty('--orb-amp', smoothed.toFixed(3))
+    }
+    tick()
+    return () => cancelAnimationFrame(raf)
+  }, [speakingAnalyser])
 
   return (
-    <div className={cn(ORB_BASE, 'voice-agent-breathe')}>
-      {speakingAnalyser ? (
-        <MiniWaveform analyserRef={speakingAnalyser} bars={12} width={45} height={30} color="rgb(59,130,246)" />
-      ) : (
-        <StaticDots count={9} size={2} dotClassName="bg-blue-500/50" />
-      )}
+    <div ref={orbRef} className={ORB_BASE}>
+      <div className="relative z-10 blur-[2px]">
+        {isConnecting ? (
+          <Loader2 className="h-5 w-5 animate-spin text-blue-700/70 dark:text-blue-100/70" />
+        ) : speakingAnalyser ? (
+          <MiniWaveform analyserRef={speakingAnalyser} bars={12} width={45} height={30} color="rgb(30,64,175)" />
+        ) : (
+          <StaticDots count={9} size={2} dotClassName="bg-blue-800/60 dark:bg-blue-100/70" />
+        )}
+      </div>
     </div>
   )
 }

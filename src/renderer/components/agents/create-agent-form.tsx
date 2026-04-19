@@ -614,7 +614,7 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
       </div>
 
       <Dialog open={showVoiceAgent} onOpenChange={(open) => { if (!open) closeVoiceAgent() }}>
-        <DialogContent className="max-w-2xl p-0 overflow-hidden h-[420px]">
+        <DialogContent className="max-w-2xl p-0 overflow-hidden h-[420px] flex flex-col">
           <DialogHeader className="sr-only">
             <DialogTitle>Let&apos;s talk about your agent</DialogTitle>
             <DialogDescription>
