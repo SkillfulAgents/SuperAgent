@@ -1,5 +1,6 @@
 
-import { ChevronDown, ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard, Loader2, WifiOff, LogOut, User, Users, CircleHelp, Ban, Zap, MessageCircle } from 'lucide-react'
+import { ChevronDown, ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard, Loader2, WifiOff, LogOut, User, Users, Ban, Zap, MessageCircle } from 'lucide-react'
+import { cn } from '@shared/lib/utils/cn'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
@@ -111,14 +112,18 @@ function SessionSubItem({
         >
           <button onClick={handleClick} className="flex items-center gap-2 w-full" data-testid={`session-item-${session.id}`}>
             {isAwaitingInput ? (
-              <CircleHelp className="h-3 w-3 shrink-0 text-orange-500" />
+              <span className="relative flex h-1.5 w-1.5 shrink-0">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-orange-500 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-orange-500"></span>
+              </span>
             ) : isWorking ? (
-              <span className="relative flex h-2 w-2 shrink-0">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-current opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-current"></span>
+              <span className="inline-flex items-center gap-0.5 shrink-0">
+                <span className="h-[3px] w-[3px] rounded-full bg-foreground animate-dot-wave" />
+                <span className="h-[3px] w-[3px] rounded-full bg-foreground animate-dot-wave [animation-delay:0.15s]" />
+                <span className="h-[3px] w-[3px] rounded-full bg-foreground animate-dot-wave [animation-delay:0.3s]" />
               </span>
             ) : hasUnread ? (
-              <span className="h-2 w-2 shrink-0 rounded-full bg-blue-500" />
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500" />
             ) : null}
             <span className="truncate">{session.name}</span>
           </button>
@@ -719,6 +724,12 @@ export const AgentMenuItem = React.forwardRef<
             data-testid={`agent-item-${agent.slug}`}
           >
             <span className="flex items-center gap-1.5 min-w-0">
+              <ChevronRight
+                className={cn(
+                  'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform',
+                  hasExpandableContent && isOpen && 'rotate-90'
+                )}
+              />
               <span className="truncate">{agent.name}</span>
               {isShared && <Users className="h-3 w-3 shrink-0 text-muted-foreground" />}
             </span>
@@ -726,17 +737,13 @@ export const AgentMenuItem = React.forwardRef<
               status={agent.status}
               hasActiveSessions={sessions?.some((s) => s.isActive) || (agent.hasActiveSessions ?? false)}
               hasSessionsAwaitingInput={sessions?.some((s) => s.isAwaitingInput) || (agent.hasSessionsAwaitingInput ?? false)}
+              iconOnly
+              hideIdle
             />
           </SidebarMenuButton>
         </AgentContextMenu>
         {hasExpandableContent ? (
           <>
-            <CollapsibleTrigger asChild>
-              <SidebarMenuAction className="data-[state=open]:rotate-90">
-                <ChevronRight />
-                <span className="sr-only">Toggle sessions</span>
-              </SidebarMenuAction>
-            </CollapsibleTrigger>
             <CollapsibleContent>
               <SidebarMenuSub>
                 {isOpen && sessionsLoading && showSkeleton ? (

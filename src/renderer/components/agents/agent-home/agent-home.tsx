@@ -57,6 +57,8 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
       name: s.name,
       createdAt: typeof s.createdAt === 'string' ? s.createdAt : new Date(s.createdAt).toISOString(),
       isActive: s.isActive,
+      isAwaitingInput: s.isAwaitingInput,
+      hasUnreadNotifications: s.hasUnreadNotifications,
     }))
   }, [sessionsData])
 

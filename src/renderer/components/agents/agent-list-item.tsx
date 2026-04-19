@@ -25,6 +25,8 @@ export function AgentListItem({ agent, selected, onClick }: AgentListItemProps) 
         status={agent.status}
         hasActiveSessions={agent.hasActiveSessions ?? false}
         hasSessionsAwaitingInput={agent.hasSessionsAwaitingInput ?? false}
+        iconOnly
+        hideIdle
       />
     </button>
   )

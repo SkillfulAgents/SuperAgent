@@ -39,6 +39,8 @@ interface SessionItem {
   name: string
   createdAt: string
   isActive?: boolean
+  isAwaitingInput?: boolean
+  hasUnreadNotifications?: boolean
 }
 
 interface RelatedSessionsProps {
@@ -218,12 +220,20 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
         {showIcon && <MessageSquare className="h-4 w-4 text-muted-foreground shrink-0" />}
         <div className="flex-1 min-w-0">
           <div className="text-xs font-medium truncate flex items-center gap-2">
-            {session.isActive && (
-              <span className="relative flex h-2 w-2 shrink-0">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-current opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-current"></span>
+            {session.isAwaitingInput ? (
+              <span className="relative flex h-1.5 w-1.5 shrink-0">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-orange-500 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-orange-500"></span>
               </span>
-            )}
+            ) : session.isActive ? (
+              <span className="inline-flex items-center gap-0.5 shrink-0">
+                <span className="h-[3px] w-[3px] rounded-full bg-foreground animate-dot-wave" />
+                <span className="h-[3px] w-[3px] rounded-full bg-foreground animate-dot-wave [animation-delay:0.15s]" />
+                <span className="h-[3px] w-[3px] rounded-full bg-foreground animate-dot-wave [animation-delay:0.3s]" />
+              </span>
+            ) : session.hasUnreadNotifications ? (
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500" />
+            ) : null}
             <HighlightMatch text={session.name} query={searchQuery ?? ''} />
           </div>
           <div className="text-xs text-muted-foreground">

@@ -206,7 +206,7 @@ async function updateTrayMenu(): Promise<void> {
 
   // Add awaiting input agents section
   if (awaitingInput.length > 0) {
-    menuTemplate.push({ label: 'Awaiting Input', enabled: false })
+    menuTemplate.push({ label: 'Needs Input', enabled: false })
     awaitingInput.forEach(agent => {
       menuTemplate.push({
         label: agent.name,
