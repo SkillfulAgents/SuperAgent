@@ -1,5 +1,6 @@
 
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
+import { TemplateInstallDialog } from '@renderer/components/agents/template-install-dialog'
 import { useAgents } from '@renderer/hooks/use-agents'
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
@@ -9,7 +10,7 @@ import { useSessions } from '@renderer/hooks/use-sessions'
 import { useSelection } from '@renderer/context/selection-context'
 import { AgentStatus, getAgentActivityStatus } from '@renderer/components/agents/agent-status'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
-import { useDialogs } from '@renderer/context/dialog-context'
+import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Button } from '@renderer/components/ui/button'
 import { useSidebar } from '@renderer/components/ui/sidebar'
@@ -379,7 +380,8 @@ export function HomePage() {
     () => applyAgentOrder(agents ?? [], userSettings?.agentOrder),
     [agents, userSettings?.agentOrder]
   )
-  const { openCreateAgent } = useDialogs()
+  const { createUntitledAgent, isPending: isCreatingAgent } = useCreateUntitledAgent()
+  const [templateToInstall, setTemplateToInstall] = useState<ApiDiscoverableAgent | null>(null)
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && sidebarState === 'collapsed' && !isFullScreen
@@ -405,8 +407,9 @@ export function HomePage() {
               <h2 className="text-lg font-semibold">Your Agents</h2>
               <Button
                 size="sm"
-                onClick={() => openCreateAgent()}
+                onClick={() => { void createUntitledAgent() }}
                 className="app-no-drag"
+                disabled={isCreatingAgent}
               >
                 <Plus className="h-4 w-4 mr-1" />
                 New Agent
@@ -427,7 +430,7 @@ export function HomePage() {
               <div className="text-center py-12 border rounded-lg bg-muted/30">
                 <Bot className="h-10 w-10 mx-auto text-muted-foreground mb-3" />
                 <p className="text-muted-foreground mb-4">No agents yet</p>
-                <Button onClick={() => openCreateAgent()}>
+                <Button onClick={() => { void createUntitledAgent() }} disabled={isCreatingAgent}>
                   <Plus className="h-4 w-4 mr-1" />
                   Create your first agent
                 </Button>
@@ -444,7 +447,7 @@ export function HomePage() {
                   <TemplateCard
                     key={`${template.skillsetId}::${template.path}`}
                     template={template}
-                    onClick={() => openCreateAgent(template)}
+                    onClick={() => setTemplateToInstall(template)}
                   />
                 ))}
               </div>
@@ -452,6 +455,11 @@ export function HomePage() {
           )}
         </div>
       </div>
+
+      <TemplateInstallDialog
+        template={templateToInstall}
+        onClose={() => setTemplateToInstall(null)}
+      />
     </div>
   )
 }

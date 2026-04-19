@@ -37,7 +37,7 @@ import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
-import { CreateAgentScreen } from '@renderer/components/agents/create-agent-screen'
+import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
@@ -899,7 +899,17 @@ function ApiKeyWarning({ onOpenSettings }: { onOpenSettings: () => void }) {
 
 export function AppSidebar() {
   useRenderTracker('AppSidebar')
-  const { settingsOpen, setSettingsOpen, settingsTab, createAgentOpen, createAgentTemplate, openCreateAgent, closeCreateAgent, openWizard } = useDialogs()
+  const { settingsOpen, setSettingsOpen, settingsTab, openWizard } = useDialogs()
+  const { createUntitledAgent, isPending: isCreatingAgent } = useCreateUntitledAgent()
+
+  // Electron menu → New Agent
+  useEffect(() => {
+    if (!window.electronAPI?.onOpenCreateAgent) return
+    window.electronAPI.onOpenCreateAgent(() => { void createUntitledAgent() })
+    return () => {
+      window.electronAPI?.removeOpenCreateAgent?.()
+    }
+  }, [createUntitledAgent])
   const { clearSelection } = useSelection()
   const [containerSetupOpen, setContainerSetupOpen] = useState(false)
   const { data: agents, isLoading, error } = useAgents()
@@ -1046,7 +1056,12 @@ export function AppSidebar() {
         <SidebarContent>
           <SidebarGroup>
             <SidebarGroupLabel>Agents</SidebarGroupLabel>
-            <SidebarGroupAction onClick={() => openCreateAgent()} title="New Agent" data-testid="create-agent-button">
+            <SidebarGroupAction
+              onClick={() => { void createUntitledAgent() }}
+              title="New Agent"
+              data-testid="create-agent-button"
+              disabled={isCreatingAgent}
+            >
               <Plus />
               <span className="sr-only">New Agent</span>
             </SidebarGroupAction>
@@ -1105,12 +1120,6 @@ export function AppSidebar() {
         </SidebarMenu>
         <UserFooter />
       </SidebarFooter>
-
-      <CreateAgentScreen
-        open={createAgentOpen}
-        onClose={closeCreateAgent}
-        initialTemplate={createAgentTemplate}
-      />
 
       <GlobalSettingsDialog
         open={settingsOpen}

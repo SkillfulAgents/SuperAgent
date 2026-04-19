@@ -16,24 +16,21 @@ export class AgentPage {
   }
 
   /**
-   * Open the create-agent screen, type the given prompt (used both as the agent's first
-   * message and to seed the auto-generated name), submit, then navigate back to the
-   * agent-home view so subsequent assertions (settings button, fresh message count)
-   * behave like the old non-session-starting flow.
+   * Click "New Agent" — this immediately creates an Untitled agent and lands on
+   * its AgentHome. Type the prompt, submit via the Create Agent button, then
+   * click the agent breadcrumb so the caller lands on agent-home (where
+   * agent-settings-button lives) rather than the first session view.
    */
   async createAgent(prompt: string) {
     await this.clickCreateAgent()
 
-    await expect(this.page.locator('[data-testid="create-agent-screen"]')).toBeVisible()
+    // Land on AgentHome for the fresh Untitled agent
+    await expect(this.page.locator('[data-testid="home-message-input"]')).toBeVisible()
 
-    await this.page.locator('[data-testid="create-agent-prompt"]').fill(prompt)
+    await this.page.locator('[data-testid="home-message-input"]').fill(prompt)
+    await this.page.locator('[data-testid="home-send-button"]').click()
 
-    await this.page.locator('[data-testid="create-agent-submit"]').click()
-
-    await expect(this.page.locator('[data-testid="create-agent-screen"]')).not.toBeVisible()
-
-    // The new flow auto-creates a session; click the agent breadcrumb to return to
-    // agent-home where agent-settings-button lives and message history is fresh.
+    // First submit creates a session and navigates to it; come back to agent-home.
     await this.page.locator('[data-testid="agent-breadcrumb"]').click()
     await expect(this.page.locator('[data-testid="agent-settings-button"]')).toBeVisible()
   }

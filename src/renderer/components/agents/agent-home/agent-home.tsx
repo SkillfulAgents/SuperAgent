@@ -24,7 +24,14 @@ import { HomeExtras } from './home-extras'
 import { HomeConnections } from './home-connections'
 import { HomeVolumes } from './home-volumes'
 import { HomeBookmarks } from './home-bookmarks'
-import type { ApiAgent } from '@renderer/hooks/use-agents'
+import { useUpdateAgent, useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
+import { AgentCreationAids } from '@renderer/components/agents/agent-creation-aids'
+import {
+  useTypewriterPlaceholder,
+  DEFAULT_AGENT_PROMPT_EXAMPLES,
+} from '@renderer/hooks/use-typewriter-placeholder'
+import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
+import { deriveAgentName } from '@renderer/lib/derive-agent-name'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { formatDistanceToNow } from 'date-fns'
 
@@ -36,7 +43,7 @@ interface AgentHomeProps {
 
 export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHomeProps) {
   useRenderTracker('AgentHome')
-  const { selectScheduledTask, consumePendingDraft } = useSelection()
+  const { selectScheduledTask, consumePendingDraft, selectAgent } = useSelection()
   const { canUseAgent, canAdminAgent } = useUser()
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)
@@ -48,6 +55,8 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const [effort, setEffort] = useState<EffortLevel>('high')
   const sessionSearchRef = useRef<HTMLInputElement>(null)
   const createSession = useCreateSession()
+  const updateAgent = useUpdateAgent()
+  const deleteAgent = useDeleteAgent()
 
   const { data: sessionsData } = useSessions(agent.slug)
   const sessions = useMemo(() => {
@@ -94,13 +103,23 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
       return res.json() as Promise<{ path: string }>
     }, [agent.slug]),
     onSubmit: useCallback(async (content: string) => {
+      // If this is the first message on an Untitled agent, auto-derive a name
+      // and update the agent in parallel with session creation so the sidebar
+      // label switches from "Untitled" as quickly as possible.
+      const shouldRename = agent.name === UNTITLED_AGENT_NAME && sessions.length === 0
+      if (shouldRename) {
+        void deriveAgentName(content).then((name) => {
+          if (name) updateAgent.mutate({ slug: agent.slug, name })
+        })
+      }
+
       const session = await createSession.mutateAsync({
         agentSlug: agent.slug,
         message: content,
         effort,
       })
       onSessionCreated(session.id, content)
-    }, [createSession, agent.slug, onSessionCreated, effort]),
+    }, [createSession, agent.slug, agent.name, onSessionCreated, effort, sessions.length, updateAgent]),
     submitDisabled: createSession.isPending || !isRuntimeReady,
     keepMessageUntilComplete: true,
   })
@@ -130,6 +149,34 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   }
 
   const isDisabled = createSession.isPending || composer.isUploading || !isRuntimeReady
+
+  const isFreshUntitled = agent.name === UNTITLED_AGENT_NAME && sessions.length === 0
+  const typewriterPlaceholder = useTypewriterPlaceholder(
+    isFreshUntitled ? DEFAULT_AGENT_PROMPT_EXAMPLES : [],
+  )
+  const composerPlaceholder = isFreshUntitled
+    ? typewriterPlaceholder
+    : 'How can I help? Press cmd+enter to send'
+
+  const handleVoiceResult = useCallback(
+    ({ name, prompt }: { name: string; prompt: string }) => {
+      if (prompt) composer.setMessage(prompt)
+      if (name && agent.name === UNTITLED_AGENT_NAME) {
+        updateAgent.mutate({ slug: agent.slug, name })
+      }
+    },
+    [composer, agent.slug, agent.name, updateAgent],
+  )
+
+  const handleImportComplete = useCallback(
+    async ({ agent: imported }: { agent: ApiAgent }) => {
+      selectAgent(imported.slug)
+      if (agent.name === UNTITLED_AGENT_NAME && sessions.length === 0 && agent.slug !== imported.slug) {
+        deleteAgent.mutate(agent.slug)
+      }
+    },
+    [selectAgent, agent.slug, agent.name, sessions.length, deleteAgent],
+  )
 
   const formatDate = useCallback(
     (dateStr: string) => formatDistanceToNow(new Date(dateStr), { addSuffix: true }),
@@ -188,7 +235,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                   onChange={(e) => composer.setMessage(e.target.value)}
                   onKeyDown={handleKeyDown}
                   onPaste={composer.handlePaste}
-                  placeholder="How can I help? Press cmd+enter to send"
+                  placeholder={composerPlaceholder}
                   disabled={isDisabled}
                   rows={2}
                   autoFocus
@@ -224,20 +271,37 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                   rightActions={(
                     <>
                       <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} />
-                      <Button
-                        type="submit"
-                        size="icon"
-                        className="h-[34px] w-[34px]"
-                        disabled={!composer.canSubmit}
-                        data-testid="home-send-button"
-                        aria-label="Send message"
-                      >
-                        {isDisabled ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <ArrowUp className="h-4 w-4" />
-                        )}
-                      </Button>
+                      {isFreshUntitled ? (
+                        <Button
+                          type="submit"
+                          size="sm"
+                          data-testid="home-send-button"
+                        >
+                          {isDisabled ? (
+                            <>
+                              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                              Creating...
+                            </>
+                          ) : (
+                            'Create Agent'
+                          )}
+                        </Button>
+                      ) : (
+                        <Button
+                          type="submit"
+                          size="icon"
+                          className="h-[34px] w-[34px]"
+                          disabled={!composer.canSubmit}
+                          data-testid="home-send-button"
+                          aria-label="Send message"
+                        >
+                          {isDisabled ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <ArrowUp className="h-4 w-4" />
+                          )}
+                        </Button>
+                      )}
                     </>
                   )}
                   footer={(
@@ -249,71 +313,74 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
               {/* Bookmarks */}
               <HomeBookmarks agentSlug={agent.slug} isOwner={isOwner} />
 
-              {/* Sessions list */}
+              {/* Sessions list / creation aids */}
               <div className="pt-2">
-                <div className="flex items-center gap-2">
-                  <h2 className="text-sm font-medium text-muted-foreground flex-1">Sessions</h2>
-                  <Popover open={sortPopoverOpen} onOpenChange={setSortPopoverOpen}>
-                    <PopoverTrigger asChild>
-                      <Button type="button" size="icon" variant="ghost" className="h-6 w-6 shrink-0" aria-label="Sort sessions">
-                        <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground" />
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent align="end" className="w-40 p-1">
-                      <button
-                        className={`flex w-full items-center rounded-sm px-2 py-1.5 text-xs transition-colors ${sessionSort === 'newest' ? 'bg-muted font-medium' : 'hover:bg-muted'}`}
-                        onClick={() => { setSessionSort('newest'); setSortPopoverOpen(false) }}
-                      >
-                        Newest first
-                      </button>
-                      <button
-                        className={`flex w-full items-center rounded-sm px-2 py-1.5 text-xs transition-colors ${sessionSort === 'oldest' ? 'bg-muted font-medium' : 'hover:bg-muted'}`}
-                        onClick={() => { setSessionSort('oldest'); setSortPopoverOpen(false) }}
-                      >
-                        Oldest first
-                      </button>
-                    </PopoverContent>
-                  </Popover>
-                  <Button
-                    type="button"
-                    size="icon"
-                    variant="ghost"
-                    className="h-6 w-6 shrink-0"
-                    onClick={() => {
-                      const next = !sessionSearchOpen
-                      setSessionSearchOpen(next)
-                      if (!next) setSessionSearch('')
-                      else setTimeout(() => sessionSearchRef.current?.focus(), 0)
-                    }}
-                    aria-label="Search sessions"
-                  >
-                    <Search className="h-3.5 w-3.5 text-muted-foreground" />
-                  </Button>
-                  {sessionSearchOpen && (
-                    <Input
-                      ref={sessionSearchRef}
-                      value={sessionSearch}
-                      onChange={(e) => setSessionSearch(e.target.value)}
-                      placeholder="Filter sessions..."
-                      className="h-6 text-xs flex-1"
-                    />
-                  )}
-                </div>
-                <div className="border-b mt-2" />
                 {sessions.length > 0 ? (
-                  <RelatedSessions
-                    sessions={sessions}
-                    agentSlug={agent.slug}
-                    formatDate={formatDate}
-                    showIcon={false}
-                    showHeader={false}
-                    searchQuery={sessionSearch}
-                    sortOrder={sessionSort}
-                  />
+                  <>
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-sm font-medium text-muted-foreground flex-1">Sessions</h2>
+                      <Popover open={sortPopoverOpen} onOpenChange={setSortPopoverOpen}>
+                        <PopoverTrigger asChild>
+                          <Button type="button" size="icon" variant="ghost" className="h-6 w-6 shrink-0" aria-label="Sort sessions">
+                            <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground" />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent align="end" className="w-40 p-1">
+                          <button
+                            className={`flex w-full items-center rounded-sm px-2 py-1.5 text-xs transition-colors ${sessionSort === 'newest' ? 'bg-muted font-medium' : 'hover:bg-muted'}`}
+                            onClick={() => { setSessionSort('newest'); setSortPopoverOpen(false) }}
+                          >
+                            Newest first
+                          </button>
+                          <button
+                            className={`flex w-full items-center rounded-sm px-2 py-1.5 text-xs transition-colors ${sessionSort === 'oldest' ? 'bg-muted font-medium' : 'hover:bg-muted'}`}
+                            onClick={() => { setSessionSort('oldest'); setSortPopoverOpen(false) }}
+                          >
+                            Oldest first
+                          </button>
+                        </PopoverContent>
+                      </Popover>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="h-6 w-6 shrink-0"
+                        onClick={() => {
+                          const next = !sessionSearchOpen
+                          setSessionSearchOpen(next)
+                          if (!next) setSessionSearch('')
+                          else setTimeout(() => sessionSearchRef.current?.focus(), 0)
+                        }}
+                        aria-label="Search sessions"
+                      >
+                        <Search className="h-3.5 w-3.5 text-muted-foreground" />
+                      </Button>
+                      {sessionSearchOpen && (
+                        <Input
+                          ref={sessionSearchRef}
+                          value={sessionSearch}
+                          onChange={(e) => setSessionSearch(e.target.value)}
+                          placeholder="Filter sessions..."
+                          className="h-6 text-xs flex-1"
+                        />
+                      )}
+                    </div>
+                    <div className="border-b mt-2" />
+                    <RelatedSessions
+                      sessions={sessions}
+                      agentSlug={agent.slug}
+                      formatDate={formatDate}
+                      showIcon={false}
+                      showHeader={false}
+                      searchQuery={sessionSearch}
+                      sortOrder={sessionSort}
+                    />
+                  </>
                 ) : (
-                  <div className="rounded-lg border border-dashed p-4 mt-3">
-                    <p className="text-xs text-muted-foreground">No sessions yet. Send a message to start one.</p>
-                  </div>
+                  <AgentCreationAids
+                    onVoiceResult={handleVoiceResult}
+                    onImportComplete={handleImportComplete}
+                  />
                 )}
               </div>
             </>
