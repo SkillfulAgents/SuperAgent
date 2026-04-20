@@ -703,6 +703,30 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
     return
   }
 
+  // Agent deep link — navigate to the agent and select its latest session when available.
+  if (url.startsWith(`${PROTOCOL_SCHEME}://agent/`)) {
+    try {
+      const slug = decodeURIComponent(url.replace(`${PROTOCOL_SCHEME}://agent/`, '').split('/')[0])
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.show()
+        mainWindow.focus()
+        fetch(`http://localhost:${actualApiPort}/api/agents/${slug}/sessions`)
+          .then(res => res.ok ? res.json() : [])
+          .then((sessions: Array<{ id: string; isActive: boolean; updatedAt?: string }>) => {
+            const active = sessions.find(s => s.isActive)
+            const latest = active ?? sessions[0]
+            mainWindow!.webContents.send('navigate-to-agent', slug, latest?.id ?? null)
+          })
+          .catch(() => {
+            mainWindow!.webContents.send('navigate-to-agent', slug, null)
+          })
+      }
+    } catch (error) {
+      console.error('Failed to navigate to agent from deep link:', error)
+    }
+    return
+  }
+
   // Dashboard deep links — open in a standalone window (doesn't need mainWindow)
   if (url.startsWith(`${PROTOCOL_SCHEME}://dashboard/`)) {
     try {

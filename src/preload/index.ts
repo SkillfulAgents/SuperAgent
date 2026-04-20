@@ -74,9 +74,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('launch-powershell-admin', command)
   },
 
-  // Navigation from tray menu
-  onNavigateToAgent: (callback: (agentSlug: string) => void) => {
-    ipcRenderer.on('navigate-to-agent', (_event, agentSlug) => callback(agentSlug))
+  // Navigation from tray menu or deep links.
+  onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void) => {
+    ipcRenderer.on('navigate-to-agent', (_event, agentSlug, sessionId) => callback(agentSlug, sessionId))
   },
 
   removeNavigateToAgent: () => {
@@ -227,7 +227,7 @@ declare global {
       getFullScreenState: () => Promise<boolean>
       openExternal: (url: string) => Promise<void>
       launchPowershellAdmin: (command: string) => Promise<void>
-      onNavigateToAgent: (callback: (agentSlug: string) => void) => void
+      onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void) => void
       removeNavigateToAgent: () => void
       onOpenSettings: (callback: () => void) => void
       removeOpenSettings: () => void
