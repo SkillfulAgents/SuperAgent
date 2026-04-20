@@ -241,14 +241,46 @@
   animation: browser-glow-pulse 4s ease-in-out infinite;
 }
 
-@keyframes voice-agent-breathe {
-  0%, 100% { box-shadow: 0 0 18px rgba(59, 130, 246, 0.22); }
-  50% { box-shadow: 0 0 36px rgba(59, 130, 246, 0.45); }
+/* Voice agent orb — glowing sphere with radial depth and amp-driven reactivity.
+   --orb-amp (0..1) is set on the element via JS, driven by the active analyser
+   when speaking or a slow sinusoidal breath when idle. */
+.voice-agent-orb {
+  --orb-amp: 0.15;
+  background:
+    radial-gradient(
+      circle at 30% 28%,
+      rgba(219, 234, 254, 0.95) 0%,
+      rgba(96, 165, 250, 0.55) 42%,
+      rgba(37, 99, 235, 0.4) 78%,
+      rgba(30, 58, 138, 0.45) 100%
+    );
+  box-shadow:
+    0 0 calc(20px + var(--orb-amp) * 80px) rgba(59, 130, 246, calc(0.25 + var(--orb-amp) * 0.55)),
+    inset 0 -14px 30px rgba(30, 64, 175, 0.3),
+    inset 0 12px 24px rgba(255, 255, 255, 0.4);
+  transform: scale(calc(1 + var(--orb-amp) * 0.09));
+  will-change: transform, box-shadow;
 }
 
-.voice-agent-breathe {
-  animation: voice-agent-breathe 3.6s ease-in-out infinite;
-  will-change: box-shadow;
+@media (prefers-reduced-motion: reduce) {
+  .voice-agent-orb {
+    transform: none;
+  }
+}
+
+.dark .voice-agent-orb {
+  background:
+    radial-gradient(
+      circle at 30% 28%,
+      rgba(147, 197, 253, 0.75) 0%,
+      rgba(59, 130, 246, 0.4) 42%,
+      rgba(30, 64, 175, 0.4) 78%,
+      rgba(15, 23, 42, 0.6) 100%
+    );
+  box-shadow:
+    0 0 calc(20px + var(--orb-amp) * 80px) rgba(96, 165, 250, calc(0.3 + var(--orb-amp) * 0.6)),
+    inset 0 -14px 30px rgba(15, 23, 42, 0.5),
+    inset 0 12px 24px rgba(147, 197, 253, 0.25);
 }
 
 /* Create-agent screen intro: items fade down from the top with a brief blur.

@@ -263,7 +263,7 @@ export function VoiceAgent({ config, onResult, onClose, layout = 'vertical', cla
   )
 }
 
-const ORB_BASE = 'flex h-[150px] w-[150px] items-center justify-center rounded-full bg-blue-100 dark:bg-blue-900/30'
+const ORB_BASE = 'voice-agent-orb relative flex h-[150px] w-[150px] items-center justify-center rounded-full'
 
 /** Pulsing / waveform indicator showing who is speaking */
 function SpeakingIndicator({
@@ -277,27 +277,81 @@ function SpeakingIndicator({
   analyserRef: React.RefObject<AnalyserNode | null>
   playbackAnalyserRef: React.RefObject<AnalyserNode | null>
 }) {
-  if (isConnecting) {
-    return (
-      <div className={cn(ORB_BASE, 'shadow-[0_0_28px_rgba(59,130,246,0.28)]')}>
-        <Loader2 className="h-5 w-5 animate-spin text-blue-500/50" />
-      </div>
-    )
-  }
-
   const speakingAnalyser =
-    speakingState === 'user' ? analyserRef :
-    speakingState === 'agent' ? playbackAnalyserRef : null
+    !isConnecting && speakingState === 'user' ? analyserRef :
+    !isConnecting && speakingState === 'agent' ? playbackAnalyserRef : null
+
+  const isDark = useIsDark()
+  const orbRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = orbRef.current
+    if (!el) return
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (reduceMotion) {
+      el.style.setProperty('--orb-amp', '0.15')
+      return
+    }
+    let raf = 0
+    let smoothed = 0.15
+    let freqBuf: Uint8Array<ArrayBuffer> | null = null
+    const tick = () => {
+      raf = requestAnimationFrame(tick)
+      const analyser = speakingAnalyser?.current
+      let target: number
+      if (analyser) {
+        if (!freqBuf || freqBuf.length !== analyser.frequencyBinCount) {
+          freqBuf = new Uint8Array(analyser.frequencyBinCount)
+        }
+        analyser.getByteFrequencyData(freqBuf)
+        let sum = 0
+        for (let i = 0; i < freqBuf.length; i++) sum += freqBuf[i]
+        target = (sum / freqBuf.length) / 255
+      } else {
+        // Idle: slow sinusoidal breath so the orb still feels alive
+        target = 0.12 + (Math.sin(performance.now() / 1600) + 1) * 0.06
+      }
+      smoothed += (target - smoothed) * 0.25
+      el.style.setProperty('--orb-amp', smoothed.toFixed(3))
+    }
+    tick()
+    return () => cancelAnimationFrame(raf)
+  }, [speakingAnalyser])
 
   return (
-    <div className={cn(ORB_BASE, 'voice-agent-breathe')}>
-      {speakingAnalyser ? (
-        <MiniWaveform analyserRef={speakingAnalyser} bars={12} width={45} height={30} color="rgb(59,130,246)" />
-      ) : (
-        <StaticDots count={9} size={2} dotClassName="bg-blue-500/50" />
-      )}
+    <div ref={orbRef} className={ORB_BASE}>
+      <div className="relative z-10 blur-[2px]">
+        {isConnecting ? (
+          <Loader2 className="h-5 w-5 animate-spin text-blue-700/70 dark:text-blue-100/70" />
+        ) : speakingAnalyser ? (
+          <MiniWaveform
+            analyserRef={speakingAnalyser}
+            bars={12}
+            width={45}
+            height={30}
+            color={isDark ? 'rgb(191,219,254)' : 'rgb(30,64,175)'}
+          />
+        ) : (
+          <StaticDots count={9} size={2} dotClassName="bg-blue-800/60 dark:bg-blue-100/70" />
+        )}
+      </div>
     </div>
   )
+}
+
+/** Tracks whether the `dark` class is applied to <html>. */
+function useIsDark() {
+  const [isDark, setIsDark] = useState(() =>
+    typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
+  )
+  useEffect(() => {
+    const el = document.documentElement
+    const observer = new MutationObserver(() => {
+      setIsDark(el.classList.contains('dark'))
+    })
+    observer.observe(el, { attributes: true, attributeFilter: ['class'] })
+    return () => observer.disconnect()
+  }, [])
+  return isDark
 }
 
 /** Row of small static dots — used for the Ready state */
