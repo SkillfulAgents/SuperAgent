@@ -259,8 +259,13 @@
     inset 0 -14px 30px rgba(30, 64, 175, 0.3),
     inset 0 12px 24px rgba(255, 255, 255, 0.4);
   transform: scale(calc(1 + var(--orb-amp) * 0.09));
-  transition: transform 120ms ease-out;
   will-change: transform, box-shadow;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-agent-orb {
+    transform: none;
+  }
 }
 
 .dark .voice-agent-orb {

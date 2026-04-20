@@ -238,22 +238,31 @@ function SpeakingIndicator({
     !isConnecting && speakingState === 'user' ? analyserRef :
     !isConnecting && speakingState === 'agent' ? playbackAnalyserRef : null
 
+  const isDark = useIsDark()
   const orbRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const el = orbRef.current
     if (!el) return
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (reduceMotion) {
+      el.style.setProperty('--orb-amp', '0.15')
+      return
+    }
     let raf = 0
     let smoothed = 0.15
+    let freqBuf: Uint8Array<ArrayBuffer> | null = null
     const tick = () => {
       raf = requestAnimationFrame(tick)
       const analyser = speakingAnalyser?.current
       let target: number
       if (analyser) {
-        const arr = new Uint8Array(analyser.frequencyBinCount)
-        analyser.getByteFrequencyData(arr)
+        if (!freqBuf || freqBuf.length !== analyser.frequencyBinCount) {
+          freqBuf = new Uint8Array(analyser.frequencyBinCount)
+        }
+        analyser.getByteFrequencyData(freqBuf)
         let sum = 0
-        for (let i = 0; i < arr.length; i++) sum += arr[i]
-        target = (sum / arr.length) / 255
+        for (let i = 0; i < freqBuf.length; i++) sum += freqBuf[i]
+        target = (sum / freqBuf.length) / 255
       } else {
         // Idle: slow sinusoidal breath so the orb still feels alive
         target = 0.12 + (Math.sin(performance.now() / 1600) + 1) * 0.06
@@ -271,13 +280,35 @@ function SpeakingIndicator({
         {isConnecting ? (
           <Loader2 className="h-5 w-5 animate-spin text-blue-700/70 dark:text-blue-100/70" />
         ) : speakingAnalyser ? (
-          <MiniWaveform analyserRef={speakingAnalyser} bars={12} width={45} height={30} color="rgb(30,64,175)" />
+          <MiniWaveform
+            analyserRef={speakingAnalyser}
+            bars={12}
+            width={45}
+            height={30}
+            color={isDark ? 'rgb(191,219,254)' : 'rgb(30,64,175)'}
+          />
         ) : (
           <StaticDots count={9} size={2} dotClassName="bg-blue-800/60 dark:bg-blue-100/70" />
         )}
       </div>
     </div>
   )
+}
+
+/** Tracks whether the `dark` class is applied to <html>. */
+function useIsDark() {
+  const [isDark, setIsDark] = useState(() =>
+    typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
+  )
+  useEffect(() => {
+    const el = document.documentElement
+    const observer = new MutationObserver(() => {
+      setIsDark(el.classList.contains('dark'))
+    })
+    observer.observe(el, { attributes: true, attributeFilter: ['class'] })
+    return () => observer.disconnect()
+  }, [])
+  return isDark
 }
 
 /** Row of small static dots — used for the Ready state */
