@@ -1091,7 +1091,13 @@ app.on('before-quit', async (event) => {
 
     await gracefulShutdown()
     clearTimeout(forceExitTimer)
-    app.quit()
+    // Defer app.quit() by one tick. When launched via `electron-vite dev`, calling
+    // app.quit() synchronously after a preventDefault'd before-quit fails to reach
+    // [NSApp terminate:] on macOS — the process hangs in AppKit's idle event loop.
+    // Does NOT reproduce when Electron is launched directly (without electron-vite),
+    // so the trigger is something electron-vite does to the Electron child process.
+    // See alex8088/electron-vite#899 for the upstream bug (repro + A/B control).
+    setImmediate(() => app.quit())
   }
 })
 
@@ -1101,7 +1107,8 @@ process.on('uncaughtException', async (error) => {
   captureException(error, { tags: { type: 'uncaughtException' }, level: 'fatal' })
   await flushErrorReporting(3000)
   await gracefulShutdown()
-  app.quit()
+  // See before-quit handler above for why this is deferred
+  setImmediate(() => app.quit())
 })
 
 // Handle unhandled promise rejections
@@ -1110,5 +1117,6 @@ process.on('unhandledRejection', async (reason) => {
   captureException(reason instanceof Error ? reason : new Error(String(reason)), { tags: { type: 'unhandledRejection' }, level: 'fatal' })
   await flushErrorReporting(3000)
   await gracefulShutdown()
-  app.quit()
+  // See before-quit handler above for why this is deferred
+  setImmediate(() => app.quit())
 })
