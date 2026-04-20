@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { apiFetch } from '@renderer/lib/api'
 import { ChromeProfileSelect } from '@renderer/components/settings/chrome-profile-select'
@@ -75,6 +75,20 @@ export function BrowserSetupStep({ onCanProceedChange }: BrowserSetupStepProps) 
       onCanProceedChange?.(true)
     }
   }, [effectiveProvider, hasSavedBrowserbaseCredentials, onCanProceedChange])
+
+  // Persist the auto-selected Chrome provider so that users who see Chrome
+  // pre-selected and click Next without interacting still have the preference
+  // saved. Without this, hostBrowserProvider stays undefined and the app
+  // silently falls back to the container runtime.
+  const hasAutoSavedRef = useRef(false)
+  useEffect(() => {
+    if (hasAutoSavedRef.current) return
+    if (!settings) return
+    if (settings.app?.hostBrowserProvider) return
+    if (!isChromeAvailable) return
+    hasAutoSavedRef.current = true
+    updateSettings.mutate({ app: { hostBrowserProvider: 'chrome' } })
+  }, [settings, isChromeAvailable, updateSettings])
 
   const handleSelectProvider = (id: string) => {
     const providerId = id === CONTAINER_VALUE ? undefined : id as HostBrowserProviderId
