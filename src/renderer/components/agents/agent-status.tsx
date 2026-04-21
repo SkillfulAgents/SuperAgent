@@ -18,7 +18,6 @@ interface AgentStatusProps {
   hasSessionsAwaitingInput?: boolean
   size?: 'sm' | 'default'
   iconOnly?: boolean
-  hideIdle?: boolean
   workingDotClassName?: string
   className?: string
 }
@@ -34,9 +33,8 @@ export function getAgentActivityStatus(
   return 'idle'
 }
 
-export function AgentStatus({ status, hasActiveSessions = false, hasSessionsAwaitingInput = false, size = 'default', iconOnly = false, hideIdle = false, workingDotClassName, className }: AgentStatusProps) {
+export function AgentStatus({ status, hasActiveSessions = false, hasSessionsAwaitingInput = false, size = 'default', iconOnly = false, workingDotClassName, className }: AgentStatusProps) {
   const activityStatus = getAgentActivityStatus(status, hasActiveSessions, hasSessionsAwaitingInput)
-  if (hideIdle && activityStatus === 'idle') return null
   const isSmall = size === 'sm'
   const iconSize = isSmall ? 'h-2.5 w-2.5' : 'h-3 w-3'
 
