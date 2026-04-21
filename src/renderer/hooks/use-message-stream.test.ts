@@ -1795,5 +1795,105 @@ describe('useMessageStream', () => {
         expect(result.current.pendingScriptRunRequests).toHaveLength(0)
       })
     })
+
+    it('autoApproved:true populates suppress-set and skips pendingScriptRunRequests', async () => {
+      const mod = await getHookModule()
+      const wrapper = createWrapper()
+
+      const { result } = renderHook(
+        () => mod.useMessageStream('session-auto-1', 'agent-1'),
+        { wrapper }
+      )
+
+      await vi.waitFor(() => {
+        expect(MockEventSource.instances.length).toBeGreaterThan(0)
+      })
+      const es = MockEventSource.instances[MockEventSource.instances.length - 1]
+
+      act(() => {
+        es.simulateMessage({ type: 'connected', isActive: true })
+      })
+
+      act(() => {
+        es.simulateMessage({
+          type: 'script_run_request',
+          toolUseId: 'tool-auto',
+          script: 'sw_vers',
+          explanation: 'Check version',
+          scriptType: 'shell',
+          autoApproved: true,
+        })
+      })
+
+      await vi.waitFor(() => {
+        expect(result.current.autoApprovedScriptRunIds.has('tool-auto')).toBe(true)
+      })
+
+      // Auto-approved requests must NOT appear in the pending prompt list.
+      expect(result.current.pendingScriptRunRequests).toHaveLength(0)
+    })
+
+    it('default autoApprovedScriptRunIds is empty for a fresh session', async () => {
+      const mod = await getHookModule()
+      const wrapper = createWrapper()
+
+      const { result } = renderHook(
+        () => mod.useMessageStream('session-auto-empty', 'agent-1'),
+        { wrapper }
+      )
+
+      expect(result.current.autoApprovedScriptRunIds.size).toBe(0)
+    })
+
+    it('mixes autoApproved and prompt requests independently', async () => {
+      const mod = await getHookModule()
+      const wrapper = createWrapper()
+
+      const { result } = renderHook(
+        () => mod.useMessageStream('session-auto-mixed', 'agent-1'),
+        { wrapper }
+      )
+
+      await vi.waitFor(() => {
+        expect(MockEventSource.instances.length).toBeGreaterThan(0)
+      })
+      const es = MockEventSource.instances[MockEventSource.instances.length - 1]
+
+      act(() => {
+        es.simulateMessage({ type: 'connected', isActive: true })
+      })
+
+      // First request: needs prompt.
+      act(() => {
+        es.simulateMessage({
+          type: 'script_run_request',
+          toolUseId: 'tool-prompt',
+          script: 'echo hi',
+          explanation: 'Say hi',
+          scriptType: 'shell',
+          autoApproved: false,
+        })
+      })
+
+      // Second request: auto-approved.
+      act(() => {
+        es.simulateMessage({
+          type: 'script_run_request',
+          toolUseId: 'tool-auto',
+          script: 'sw_vers',
+          explanation: 'Check version',
+          scriptType: 'shell',
+          autoApproved: true,
+        })
+      })
+
+      await vi.waitFor(() => {
+        expect(result.current.pendingScriptRunRequests).toHaveLength(1)
+        expect(result.current.autoApprovedScriptRunIds.has('tool-auto')).toBe(true)
+      })
+
+      expect(result.current.pendingScriptRunRequests[0].toolUseId).toBe('tool-prompt')
+      expect(result.current.autoApprovedScriptRunIds.has('tool-prompt')).toBe(false)
+    })
   })
 })

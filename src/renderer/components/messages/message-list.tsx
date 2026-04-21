@@ -171,6 +171,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     pendingBrowserInputRequests: sseBrowserInputRequests,
     pendingScriptRunRequests: sseScriptRunRequests,
     pendingComputerUseRequests: sseComputerUseRequests,
+    autoApprovedScriptRunIds,
   } = useMessageStream(sessionId, agentSlug)
   const isOnline = useIsOnline()
 
@@ -404,13 +405,15 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
 
     const messageBased = isActive ? messagesBasedPendingRequests.scriptRunRequests : []
     for (const req of [...sseScriptRunRequests, ...messageBased]) {
+      // Skip auto-approved tool_uses: server is already executing them, no prompt needed.
+      if (autoApprovedScriptRunIds.has(req.toolUseId)) continue
       if (!seen.has(req.toolUseId) && !dismissedRequestIds.current.has(req.toolUseId)) {
         seen.add(req.toolUseId)
         merged.push(req)
       }
     }
     return merged
-  }, [sseScriptRunRequests, messagesBasedPendingRequests.scriptRunRequests, isActive])
+  }, [sseScriptRunRequests, messagesBasedPendingRequests.scriptRunRequests, isActive, autoApprovedScriptRunIds])
 
   const pendingComputerUseRequests = useMemo(() => {
     const seen = new Set<string>()

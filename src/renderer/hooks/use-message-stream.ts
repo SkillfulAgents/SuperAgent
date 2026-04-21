@@ -124,6 +124,15 @@ const streamListeners = new Map<string, Set<() => void>>()
 // Slash commands per session (separate from streamStates to avoid touching 25+ set() calls)
 const sessionSlashCommands = new Map<string, SlashCommandInfo[]>()
 
+// Stable empty Set so the hook return is referentially stable when nothing is auto-approved.
+const EMPTY_AUTO_APPROVED_SET: ReadonlySet<string> = new Set()
+
+// Tool-use ids of script_run requests that the server auto-approved on this session.
+// We suppress any prompt UI for these ids — both the SSE-broadcast pending list
+// (we never add them) and the messages-based fallback in MessageList. Tracked outside
+// StreamState to avoid threading a new field through ~15 state-rebuild sites.
+const sessionAutoApprovedScriptRunIds = new Map<string, Set<string>>()
+
 
 // Singleton EventSource connections per session (prevents duplicates from StrictMode/re-renders)
 const eventSources = new Map<string, EventSource>()
@@ -632,8 +641,18 @@ function getOrCreateEventSource(
         }
       }
       else if (data.type === 'script_run_request') {
-        // Agent is requesting script execution on the host
-        if (current && !current.pendingScriptRunRequests.some(r => r.toolUseId === data.toolUseId)) {
+        // Agent is requesting script execution on the host. When `autoApproved` is
+        // true the server is already executing it; we just record the toolUseId so
+        // the messages-based fallback in MessageList knows to suppress its prompt.
+        if (data.autoApproved) {
+          let approved = sessionAutoApprovedScriptRunIds.get(sessionId)
+          if (!approved) {
+            approved = new Set()
+            sessionAutoApprovedScriptRunIds.set(sessionId, approved)
+          }
+          approved.add(data.toolUseId)
+          streamListeners.get(sessionId)?.forEach((l) => l())
+        } else if (current && !current.pendingScriptRunRequests.some(r => r.toolUseId === data.toolUseId)) {
           const newRequest: ScriptRunRequest = {
             toolUseId: data.toolUseId,
             script: data.script,
@@ -1080,6 +1099,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     apiRetry: null,
   })
   const [slashCommands, setSlashCommands] = useState<SlashCommandInfo[]>([])
+  const [autoApprovedScriptRunIds, setAutoApprovedScriptRunIds] = useState<ReadonlySet<string>>(EMPTY_AUTO_APPROVED_SET)
   const queryClient = useQueryClient()
 
   // Update local state when global state changes
@@ -1090,6 +1110,21 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
         setState(globalState)
       }
       setSlashCommands(sessionSlashCommands.get(sessionId) ?? [])
+      const approved = sessionAutoApprovedScriptRunIds.get(sessionId)
+      // Hand back a fresh snapshot when the contents changed so React re-renders consumers.
+      setAutoApprovedScriptRunIds((prev) => {
+        if (!approved || approved.size === 0) {
+          return prev.size === 0 ? prev : EMPTY_AUTO_APPROVED_SET
+        }
+        if (prev.size === approved.size) {
+          let identical = true
+          for (const id of approved) {
+            if (!prev.has(id)) { identical = false; break }
+          }
+          if (identical) return prev
+        }
+        return new Set(approved)
+      })
     }
   }, [sessionId])
 
@@ -1148,5 +1183,5 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     }
   }, [sessionId, agentSlug, updateState, queryClient])
 
-  return { ...state, slashCommands }
+  return { ...state, slashCommands, autoApprovedScriptRunIds }
 }

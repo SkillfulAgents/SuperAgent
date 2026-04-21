@@ -1232,11 +1232,13 @@ class MessagePersister {
           // Mark session as awaiting input when a blocking user-input tool fires
           // Only tools with 'request_' prefix actually block waiting for user response
           // (schedule_task, deliver_file, search_* resolve immediately and don't block)
-          // Note: computer-use tools are handled by handleComputerUseRequestTool which
-          // only marks awaiting input when user approval is actually needed (not auto-executed)
+          // Note: computer-use AND request_script_run tools are handled by their own
+          // handlers which only mark awaiting input when user approval is actually
+          // needed (not when auto-executed against a cached permission grant).
           if (
             state.currentToolUse.name === 'AskUserQuestion' ||
-            state.currentToolUse.name.startsWith('mcp__user-input__request_')
+            (state.currentToolUse.name.startsWith('mcp__user-input__request_') &&
+              state.currentToolUse.name !== 'mcp__user-input__request_script_run')
           ) {
             this.markSessionAwaitingInput(sessionId)
           }
@@ -1957,16 +1959,19 @@ class MessagePersister {
         return
       }
 
-      // Check computer use permissions (use_host_shell level)
+      // Check computer use permissions (use_host_shell level) — auto-execute when granted.
+      // We still broadcast (with autoApproved: true) so the client can suppress any
+      // messages-based fallback prompt for this toolUseId during the brief window
+      // between tool_use being persisted and tool_result coming back.
+      let autoApproved = false
       if (agentSlug) {
         const permissionResult = computerUsePermissionManager.checkPermission(agentSlug, 'use_host_shell')
         if (permissionResult === 'granted') {
-          // Auto-approved — broadcast will still happen for UI to show, but no approval needed
-          // The run-script endpoint will handle execution
+          autoApproved = true
+          this.autoExecuteScriptRun(agentSlug, toolUseId, input.script, input.scriptType)
         }
       }
 
-      // Broadcast to UI for user approval (or showing auto-approved state)
       this.broadcastToSSE(sessionId, {
         type: 'script_run_request',
         toolUseId,
@@ -1974,12 +1979,18 @@ class MessagePersister {
         explanation: input.explanation,
         scriptType: input.scriptType,
         agentSlug,
+        autoApproved,
       })
 
-      if (agentSlug && !this.hasActiveViewers(sessionId)) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'script_run').catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-        })
+      // Only flip the global "awaiting input" status (which drives the orange agent-status
+      // pill in the sidebar / tray) when the user actually has to respond.
+      if (!autoApproved) {
+        this.markSessionAwaitingInput(sessionId)
+        if (agentSlug && !this.hasActiveViewers(sessionId)) {
+          notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'script_run').catch((err) => {
+            console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
+          })
+        }
       }
     } catch (error) {
       console.error('[MessagePersister] Error handling script run request:', error)
@@ -2082,6 +2093,46 @@ class MessagePersister {
     } catch (error) {
       console.error('[MessagePersister] Error handling computer use request:', error)
     }
+  }
+
+  /**
+   * Auto-execute a host script when use_host_shell permission is already cached.
+   * Calls the internal /run-script API endpoint which executes and resolves the input.
+   */
+  private autoExecuteScriptRun(
+    agentSlug: string,
+    toolUseId: string,
+    script: string,
+    scriptType: string,
+  ): void {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 35_000)
+    fetch(`http://localhost:${process.env.PORT || '3000'}/api/agents/${encodeURIComponent(agentSlug)}/sessions/_auto/run-script`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ toolUseId, script, scriptType }),
+      signal: controller.signal,
+    })
+      .then((res) => {
+        clearTimeout(timeout)
+        if (!res.ok) {
+          console.error('[MessagePersister] Auto-execute script run failed:', res.status)
+        }
+      })
+      .catch((err: Error) => {
+        clearTimeout(timeout)
+        console.error('[MessagePersister] Failed to auto-execute script run:', err)
+        getContainerManager().then((cm) =>
+          cm.getClient(agentSlug)
+            .fetch(`/inputs/${encodeURIComponent(toolUseId)}/reject`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ reason: `Auto-execute failed: ${err.message}` }),
+            })
+        ).catch((rejectErr: Error) => {
+          console.error('[MessagePersister] Failed to reject after auto-execute failure:', rejectErr)
+        })
+      })
   }
 
   /**

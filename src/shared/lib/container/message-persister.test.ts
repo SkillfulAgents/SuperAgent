@@ -1971,7 +1971,8 @@ describe('MessagePersister', () => {
       })
     }
 
-    it('broadcasts script_run_request SSE event when all checks pass', () => {
+    it('broadcasts script_run_request with autoApproved:false when permission needed', () => {
+      mockCheckPermission.mockReturnValue('prompt_needed')
       sseEvents.length = 0
 
       simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-1', {
@@ -1989,7 +1990,50 @@ describe('MessagePersister', () => {
         explanation: 'Check macOS version',
         scriptType: 'shell',
         agentSlug: AGENT_SLUG,
+        autoApproved: false,
       })
+    })
+
+    it('auto-executes AND broadcasts with autoApproved:true when use_host_shell granted', async () => {
+      const { notificationManager } = await import('@shared/lib/notifications/notification-manager')
+      mockCheckPermission.mockReturnValue('granted')
+      sseEvents.length = 0
+      const fetchMock = vi.fn(() => Promise.resolve({ ok: true } as Response))
+      vi.stubGlobal('fetch', fetchMock)
+      const triggerSpy = vi.mocked(notificationManager.triggerSessionWaitingInput)
+      triggerSpy.mockClear()
+
+      simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-granted', {
+        script: 'sw_vers',
+        explanation: 'Check macOS version',
+        scriptType: 'shell',
+      })
+
+      // Broadcast still happens, but flagged as auto-approved so the UI can suppress its prompt.
+      const scriptEvents = sseEvents.filter(e => e.type === 'script_run_request')
+      expect(scriptEvents).toHaveLength(1)
+      expect(scriptEvents[0]).toMatchObject({
+        type: 'script_run_request',
+        toolUseId: 'tool-sr-granted',
+        autoApproved: true,
+      })
+
+      // No "user attention required" notification when auto-approved.
+      expect(triggerSpy).not.toHaveBeenCalled()
+
+      // Posted to internal /run-script endpoint with the script payload.
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+      expect(url).toContain(`/api/agents/${AGENT_SLUG}/sessions/_auto/run-script`)
+      expect(init.method).toBe('POST')
+      const body = JSON.parse(init.body as string)
+      expect(body).toEqual({
+        toolUseId: 'tool-sr-granted',
+        script: 'sw_vers',
+        scriptType: 'shell',
+      })
+
+      vi.unstubAllGlobals()
     })
 
     it('broadcasts script_run_request even without prior permission (prompts user)', () => {
@@ -2033,7 +2077,7 @@ describe('MessagePersister', () => {
       expect(scriptEvents).toHaveLength(0)
     })
 
-    it('sets isAwaitingInput after request_script_run tool fires', () => {
+    it('sets isAwaitingInput after request_script_run tool fires (prompt path)', () => {
       mockCheckPermission.mockReturnValue('prompt_needed')
 
       simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-6', {
@@ -2043,6 +2087,22 @@ describe('MessagePersister', () => {
       })
 
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+    })
+
+    it('does NOT set isAwaitingInput when use_host_shell is auto-approved', () => {
+      mockCheckPermission.mockReturnValue('granted')
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true } as Response)))
+
+      simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-auto-status', {
+        script: 'sw_vers',
+        explanation: 'Check version',
+        scriptType: 'shell',
+      })
+
+      // Auto-approved scripts must not flip the global awaiting-input flag — that's
+      // what drives the orange agent-status indicator.
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      vi.unstubAllGlobals()
     })
   })
 
