@@ -164,8 +164,8 @@ describe('BrowserDrawerPanel', () => {
   it('shows "Browser" text in header', async () => {
     render(<BrowserDrawerPanel {...defaultProps} />, { wrapper: Wrapper })
     await act(async () => { await new Promise(r => setTimeout(r, 10)) })
-    // Use exact match to avoid colliding with "Close Browser" in dialog
-    expect(screen.getByText('Browser (connecting...)')).toBeInTheDocument()
+    // Header text is "Browser" or "Browser (connecting...)" depending on WS state
+    expect(screen.getByText(/^Browser(\s|$)/)).toBeInTheDocument()
   })
 
   it('shows tab bar when tab_list message is received', async () => {
