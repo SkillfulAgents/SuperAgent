@@ -1,0 +1,17 @@
+{
+  "storyId": "browser-test",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: erified the response mentions \"Example Domain\" and took a screenshot — The agent's response clearly states \"The page title is Example Domain.\" The screenshot confirms the successful completion with visible browser tool calls and the live browser preview on the right showing the Example Domain page.\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 61188,
+  "sessionId": "4e730ce1-905f-4b48-92b3-1daec57bf088",
+  "cost": {
+    "inputTokens": 261,
+    "outputTokens": 7832,
+    "cacheCreationTokens": 40863,
+    "cacheReadTokens": 911842,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.181684
+  }
+}
