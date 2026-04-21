@@ -339,6 +339,13 @@ describe('AgentHome', () => {
     expect(capturedComposerOptions.agentSlug).toBe('test-agent')
   })
 
+  it('passes a namespaced draftKey so the composer persists per agent', () => {
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+    expect(capturedComposerOptions.draftKey).toBe('agent:test-agent')
+  })
+
   it('passes submitDisabled based on createSession.isPending and runtime readiness', () => {
     mockCreateSession.isPending = false
     mockRuntimeStatus.data.runtimeReadiness.status = 'READY'

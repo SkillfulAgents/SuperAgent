@@ -34,6 +34,7 @@ import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { usePendingProxyReviews } from '@renderer/hooks/use-proxy-reviews'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
+import { useDraft } from '@renderer/context/drafts-context'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { useEffect, useRef, useState, useCallback, useMemo, Fragment } from 'react'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
@@ -64,17 +65,16 @@ interface MessageListProps {
   agentSlug: string
   pendingUserMessage?: PendingMessage | null
   onPendingMessageAppeared?: () => void
-  /** Set the draft text in the message input (used by voice feedback) */
-  onSetDraft?: (draft: string) => void
 }
 
-export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendingMessageAppeared, onSetDraft }: MessageListProps) {
+export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendingMessageAppeared }: MessageListProps) {
   useRenderTracker('MessageList')
   const { data: messages, isLoading } = useMessages(sessionId, agentSlug)
   const deleteMessage = useDeleteMessage()
   const deleteToolCall = useDeleteToolCall()
   const { canUseAgent, user } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
+  const [, setSessionDraft] = useDraft<string>(`session:${sessionId}`)
 
   // Proxy reviews come from a separate API (not the message stream)
   const { data: proxyReviewsData, refetch: refetchProxyReviews } = usePendingProxyReviews(agentSlug)
@@ -1038,7 +1038,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
         onOpenChange={setFeedbackDialogOpen}
         agentInstructions={agentData?.instructions ?? ''}
         messages={plainMessages}
-        onSetDraft={onSetDraft}
+        onSetDraft={setSessionDraft}
       />
     </div>
   )

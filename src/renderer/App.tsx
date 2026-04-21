@@ -6,6 +6,7 @@ import { AuthGate } from './components/auth/auth-gate'
 import { SelectionProvider } from './context/selection-context'
 import { ConnectivityProvider } from './context/connectivity-context'
 import { DialogProvider } from './context/dialog-context'
+import { DraftsProvider } from './context/drafts-context'
 import { AppSidebar } from './components/layout/app-sidebar'
 import { MainContent } from './components/layout/main-content'
 import { SidebarProvider, SidebarInset } from './components/ui/sidebar'
@@ -87,9 +88,11 @@ export default function App() {
           <AnalyticsProvider>
             <SelectionProvider>
               <ConnectivityProvider>
-                <ErrorBoundary>
-                  <AppContent />
-                </ErrorBoundary>
+                <DraftsProvider>
+                  <ErrorBoundary>
+                    <AppContent />
+                  </ErrorBoundary>
+                </DraftsProvider>
               </ConnectivityProvider>
             </SelectionProvider>
           </AnalyticsProvider>

@@ -105,6 +105,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
     }, [createSession, agent.slug, onSessionCreated, effort]),
     submitDisabled: createSession.isPending || !isRuntimeReady,
     keepMessageUntilComplete: true,
+    draftKey: `agent:${agent.slug}`,
   })
 
   // Consume any pending draft from voice agent flow

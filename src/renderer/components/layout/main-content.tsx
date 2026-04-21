@@ -54,10 +54,6 @@ export function MainContent() {
   const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined)
   // Pending user messages per session — survives navigation between sessions
   const pendingMessagesRef = useRef(new Map<string, { text: string; sentAt: number; sender?: { id: string; name: string; email: string } }>())
-  // Draft input text per session — survives navigation between sessions
-  const draftsRef = useRef(new Map<string, string>())
-  // External draft injected from voice feedback — triggers a re-render to push into MessageInput
-  const [externalDraft, setExternalDraft] = useState<string | null>(null)
   const [, forceUpdate] = useState(0)
   const { data: agent } = useAgent(agentSlug)
   const { data: sessions } = useSessions(agentSlug)
@@ -121,22 +117,6 @@ export function MainContent() {
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && sidebarState === 'collapsed' && !isFullScreen
 
   const pendingUserMessage = sessionId ? (pendingMessagesRef.current.get(sessionId) ?? null) : null
-  const currentDraft = sessionId ? (draftsRef.current.get(sessionId) ?? '') : ''
-
-  const handleDraftChange = useCallback((draft: string) => {
-    if (sessionId) {
-      if (draft) {
-        draftsRef.current.set(sessionId, draft)
-      } else {
-        draftsRef.current.delete(sessionId)
-      }
-    }
-  }, [sessionId])
-
-  /** Inject a draft from outside (e.g., voice feedback) — triggers re-render + push into MessageInput */
-  const handleSetExternalDraft = useCallback((draft: string) => {
-    setExternalDraft(draft)
-  }, [])
 
   const handleMessageSent = useCallback((content: string) => {
     if (sessionId) {
@@ -424,7 +404,6 @@ export function MainContent() {
                 agentSlug={agentSlug}
                 pendingUserMessage={pendingUserMessage}
                 onPendingMessageAppeared={handlePendingMessageAppeared}
-                onSetDraft={handleSetExternalDraft}
               />
               <div className="bg-background max-w-[740px] mx-auto w-full">
                 <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
@@ -433,10 +412,6 @@ export function MainContent() {
                   sessionId={sessionId}
                   agentSlug={agentSlug}
                   onMessageSent={handleMessageSent}
-                  initialDraft={currentDraft}
-                  externalDraft={externalDraft}
-                  onExternalDraftConsumed={() => setExternalDraft(null)}
-                  onDraftChange={handleDraftChange}
                   initialEffort={session?.effort}
                 />
                 <div className="flex justify-between items-center gap-1.5 px-6 py-3">
@@ -480,6 +455,7 @@ export function MainContent() {
           /* Show home page with large input when no session is selected */
           agent && (
             <AgentHome
+              key={agent.slug}
               agent={agent}
               onSessionCreated={handleSessionCreated}
               onOpenSettings={(tab?: string) => { setSettingsTab(tab); setSettingsOpen(true) }}
