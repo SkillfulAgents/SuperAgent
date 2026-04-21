@@ -210,6 +210,11 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
         dashboardCount: artifacts.length,
         dashboardNames: artifacts.map((a) => a.name || a.slug),
         dashboardSlugs: artifacts.map((a) => a.slug),
+        dashboards: artifacts.map((a) => ({
+          slug: a.slug,
+          name: a.name || a.slug,
+          ...(a.hasScreenshot ? { hasScreenshot: true } : {}),
+        })),
       }
     }))
   )
@@ -3885,6 +3890,44 @@ agents.patch('/:id/artifacts/:artifactSlug', AgentAdmin(), async (c) => {
   } catch (error) {
     console.error('Failed to rename artifact:', error)
     return c.json({ error: 'Failed to rename artifact' }, 500)
+  }
+})
+
+// GET /api/agents/:id/artifacts/:artifactSlug/screenshot.png - Serve the
+// auto-captured dashboard thumbnail directly from the host filesystem. Works
+// regardless of whether the container is running. Must be registered before
+// the catch-all artifact proxy below.
+agents.get('/:id/artifacts/:artifactSlug/screenshot.png', AgentRead(), async (c) => {
+  const agentSlug = c.req.param('id')
+  const artifactSlug = c.req.param('artifactSlug')
+
+  const workspaceDir = getAgentWorkspaceDir(agentSlug)
+  const artifactsDir = path.join(workspaceDir, 'artifacts')
+  const screenshotPath = path.join(artifactsDir, artifactSlug, 'screenshot.png')
+  // Belt-and-suspenders path traversal guard: slug cannot escape artifactsDir.
+  const resolved = path.resolve(screenshotPath)
+  if (!resolved.startsWith(path.resolve(artifactsDir) + path.sep)) {
+    return c.json({ error: 'Invalid artifact slug' }, 400)
+  }
+
+  try {
+    const buf = await fs.promises.readFile(screenshotPath)
+    // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins
+    const body = new Uint8Array(buf)
+    return new Response(body, {
+      status: 200,
+      headers: {
+        'content-type': 'image/png',
+        // Screenshots are overwritten on every restart, so cache briefly.
+        'cache-control': 'public, max-age=60, must-revalidate',
+      },
+    })
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') {
+      return c.json({ error: 'No screenshot available' }, 404)
+    }
+    console.error('Failed to read dashboard screenshot:', error)
+    return c.json({ error: 'Failed to read screenshot' }, 500)
   }
 })
 

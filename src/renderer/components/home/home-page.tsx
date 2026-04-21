@@ -14,12 +14,17 @@ import { useDialogs } from '@renderer/context/dialog-context'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Button } from '@renderer/components/ui/button'
 import { useSidebar } from '@renderer/components/ui/sidebar'
-import { Popover, PopoverTrigger, PopoverContent } from '@renderer/components/ui/popover'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
-import { isElectron, getPlatform } from '@renderer/lib/env'
+import { useImagePalette } from '@renderer/hooks/use-image-palette'
+import {
+  pickDashboardSwatch,
+  buildGradient,
+  deriveForegroundColor,
+} from './dashboard-card-colors'
+import { isElectron, getPlatform, getApiBaseUrl } from '@renderer/lib/env'
 import { Plus, Bot, Download, Loader2, Clock, CalendarClock, LayoutDashboard } from 'lucide-react'
 import { AreaChart, Area, ResponsiveContainer, Tooltip } from 'recharts'
-import type { ApiAgent } from '@shared/lib/types/api'
+import type { ApiAgent, ApiAgentDashboard } from '@shared/lib/types/api'
 import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
 import type { DailyUsageEntry } from '@shared/lib/types/usage'
 import { useRenderTracker } from '@renderer/lib/perf'
@@ -135,7 +140,6 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
   const lastWorked = formatRelativeTime(agent.lastActivityAt)
   const nextRun = formatRelativeTime(agent.nextScheduledTaskAt)
   const dashboardCount = agent.dashboardCount ?? 0
-  const dashboardNames = agent.dashboardNames ?? []
   const scheduledTaskCount = agent.scheduledTaskCount ?? 0
   const sparkData = useAgentUsageSpark(agent.slug, dailyUsage)
   const totalTokens = sparkData?.reduce((sum, d) => sum + d.tokens, 0) ?? 0
@@ -216,9 +220,12 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
                 </span>
               )}
 
-              {/* Dashboards */}
+              {/* Dashboard count (each dashboard also gets its own card below) */}
               {dashboardCount > 0 && (
-                <DashboardChips names={dashboardNames} slugs={agent.dashboardSlugs ?? []} agentSlug={agent.slug} />
+                <span className="flex items-center gap-1">
+                  <LayoutDashboard className="h-3 w-3" />
+                  {dashboardCount} dashboard{dashboardCount !== 1 ? 's' : ''}
+                </span>
               )}
 
               {/* Usage tokens */}
@@ -289,62 +296,79 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
   )
 }
 
-function DashboardChips({ names, slugs, agentSlug }: { names: string[]; slugs: string[]; agentSlug: string }) {
+function DashboardCard({
+  dashboard,
+  agentSlug,
+}: {
+  dashboard: ApiAgentDashboard
+  agentSlug: string
+}) {
   const { selectAgent, selectDashboard } = useSelection()
 
-  const handleClick = (e: React.MouseEvent, slug: string) => {
-    e.stopPropagation()
-    e.preventDefault()
+  const handleClick = () => {
     selectAgent(agentSlug)
-    selectDashboard(slug)
+    selectDashboard(dashboard.slug)
   }
 
-  if (names.length <= 2) {
-    return (
-      <span className="flex items-center gap-1">
-        {names.map((name, i) => (
-          <span
-            key={slugs[i] ?? name}
-            role="button"
-            tabIndex={0}
-            onClick={(e) => handleClick(e, slugs[i])}
-            onKeyDown={(e) => { if (e.key === 'Enter') handleClick(e as unknown as React.MouseEvent, slugs[i]) }}
-            className="inline-flex items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-2xs font-medium hover:bg-muted-foreground/20 cursor-pointer"
-          >
-            <LayoutDashboard className="h-2.5 w-2.5" />
-            {name}
-          </span>
-        ))}
-      </span>
-    )
-  }
+  // Prefix with getApiBaseUrl() so the <img> resolves to the dynamic Electron
+  // API port (and to same-origin in web mode). Bare `/api/...` would resolve
+  // against the renderer's origin and 404.
+  const screenshotUrl = dashboard.hasScreenshot
+    ? `${getApiBaseUrl()}/api/agents/${encodeURIComponent(agentSlug)}/artifacts/${encodeURIComponent(dashboard.slug)}/screenshot.png`
+    : null
+
+  const { status: paletteStatus, palette } = useImagePalette(screenshotUrl)
+  const swatch = palette ? pickDashboardSwatch(palette) : null
+
+  // Hold off on rendering the overlay while we're still extracting colours —
+  // otherwise the first paint uses theme defaults and flashes when the palette
+  // resolves. Once we're ready (or failed), render with whatever we have.
+  const overlayReady = !screenshotUrl || paletteStatus !== 'loading'
 
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className="flex items-center gap-1 hover:text-foreground transition-colors cursor-pointer text-xs text-muted-foreground"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <LayoutDashboard className="h-3 w-3" />
-          {names.length} dashboards
-        </button>
-      </PopoverTrigger>
-      <PopoverContent className="w-48 p-2" align="start" onClick={(e) => e.stopPropagation()}>
-        <div className="flex flex-col gap-0.5">
-          {names.map((name, i) => (
-            <button
-              key={slugs[i] ?? name}
-              onClick={(e) => handleClick(e, slugs[i])}
-              className="text-left text-xs px-2 py-1 rounded hover:bg-muted"
+    // Outer div holds the grid's layout slot at a fixed 96px — the button
+    // inside grows via absolute positioning on hover, overlaying rows below
+    // rather than pushing them. z-index sits on the outer div (not the
+    // animating button) with an asymmetric transition: it snaps to 20 on
+    // mouseenter but waits 420ms on mouseleave, so the card stays above
+    // sibling rows for the full duration of the shrink-back animation.
+    <div className="relative h-24 group z-0 hover:z-20 [transition:z-index_0s_420ms] hover:[transition:z-index_0s]">
+      <button
+        onClick={handleClick}
+        className="absolute inset-x-0 top-0 h-24 group-hover:h-40 group-hover:scale-x-[1.04] group-hover:shadow-lg rounded-lg border bg-card hover:border-accent-foreground/20 text-left overflow-hidden origin-top [transition:transform_150ms_ease-out,height_300ms_cubic-bezier(0.2,0.8,0.2,1)_120ms,box-shadow_250ms_ease-out,border-color_200ms_ease-out]"
+      >
+        {screenshotUrl ? (
+          <img
+            src={screenshotUrl}
+            alt=""
+            className="absolute inset-0 h-full w-full object-cover object-top"
+            loading="lazy"
+            draggable={false}
+          />
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center bg-muted/40">
+            <LayoutDashboard className="h-8 w-8 text-muted-foreground/50" />
+          </div>
+        )}
+        {overlayReady && (
+          <>
+            <div
+              className="absolute inset-0"
+              style={{ background: buildGradient(swatch) }}
+            />
+            <div
+              className="relative z-10 flex h-full flex-col justify-end p-3"
+              style={swatch ? { color: deriveForegroundColor(swatch) } : undefined}
             >
-              {name}
-            </button>
-          ))}
-        </div>
-      </PopoverContent>
-    </Popover>
+              <div className="flex items-center gap-1.5 min-w-0">
+                <LayoutDashboard className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                <span className="font-medium text-sm truncate">{dashboard.name}</span>
+              </div>
+            </div>
+          </>
+        )}
+      </button>
+    </div>
   )
 }
 
@@ -417,9 +441,22 @@ export function HomePage() {
               </div>
             ) : hasAgents ? (
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                {orderedAgents.map((agent) => (
-                  <AgentCard key={agent.slug} agent={agent} dailyUsage={usageData?.daily} />
-                ))}
+                {orderedAgents.flatMap((agent) => {
+                  const dashboards = agent.dashboards ?? []
+                  const cells = [
+                    <AgentCard key={agent.slug} agent={agent} dailyUsage={usageData?.daily} />,
+                  ]
+                  for (const d of dashboards) {
+                    cells.push(
+                      <DashboardCard
+                        key={`${agent.slug}::dashboard::${d.slug}`}
+                        dashboard={d}
+                        agentSlug={agent.slug}
+                      />
+                    )
+                  }
+                  return cells
+                })}
               </div>
             ) : (
               <div className="text-center py-12 border rounded-lg bg-muted/30">

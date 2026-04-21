@@ -37,6 +37,13 @@ export interface ApiAgent {
   dashboardCount?: number
   dashboardNames?: string[]
   dashboardSlugs?: string[]
+  dashboards?: ApiAgentDashboard[]
+}
+
+export interface ApiAgentDashboard {
+  slug: string
+  name: string
+  hasScreenshot?: boolean
 }
 
 /**

@@ -89,6 +89,27 @@ RUN npm install -g agent-browser@0.25.3 && \
       done; \
     fi
 
+# Create a stable symlink to whatever chromium revision got installed above,
+# so our runtime code can point at a fixed path rather than globbing for
+# revisions. Prefer headless_shell (smaller binary, fine for screenshotting);
+# fall back to full chrome. Build fails loudly if neither is present.
+RUN bin=""; \
+    for candidate in /opt/playwright-browsers/chromium_headless_shell-*/chrome-linux/headless_shell; do \
+      [ -x "$candidate" ] && bin="$candidate" && break; \
+    done; \
+    if [ -z "$bin" ]; then \
+      for candidate in /opt/playwright-browsers/chromium-*/chrome-linux/chrome; do \
+        [ -x "$candidate" ] && bin="$candidate" && break; \
+      done; \
+    fi; \
+    if [ -z "$bin" ]; then \
+      echo "No chromium binary found under /opt/playwright-browsers" >&2; \
+      ls -la /opt/playwright-browsers >&2; \
+      exit 1; \
+    fi; \
+    ln -sf "$bin" /opt/playwright-browsers/chromium-current; \
+    echo "Linked /opt/playwright-browsers/chromium-current -> $bin"
+
 # Create workspace directory
 RUN mkdir -p /workspace
 WORKDIR /app
@@ -105,6 +126,13 @@ COPY src ./src
 
 # Build TypeScript
 RUN npm run build
+
+# Functional smoke test: the bash step above confirms a binary exists under
+# /opt/playwright-browsers and is marked executable. This step additionally
+# invokes the runtime resolver (catching drift between the TS CHROMIUM_PATH
+# and the symlink above) and runs `--version` on the resolved binary to
+# catch a non-functional install (corrupt file, missing shared libs, etc.).
+RUN node dist/scripts/assert-chromium-available.js
 
 # Create non-root user for running Claude Code
 RUN useradd -m -s /bin/bash claude && \
