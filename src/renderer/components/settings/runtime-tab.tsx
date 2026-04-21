@@ -3,6 +3,14 @@ import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Button } from '@renderer/components/ui/button'
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@renderer/components/ui/dialog'
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -34,6 +42,10 @@ const RUNNER_LABELS: Record<string, string> = {
   podman: 'Podman',
   lima: 'Built-in Runtime',
   wsl2: 'Built-in Runtime',
+}
+
+function normalizeEnvVarName(name: string): string {
+  return name.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_')
 }
 
 /**
@@ -84,6 +96,11 @@ export function RuntimeTab() {
   const [maxThinkingTokens, setMaxThinkingTokens] = useState<string | null>(null)
   const [maxTurns, setMaxTurns] = useState<string | null>(null)
   const [maxBudgetUsd, setMaxBudgetUsd] = useState<string | null>(null)
+  const [customEnvVarsDraft, setCustomEnvVarsDraft] = useState<Record<string, string>>({})
+  const [isAddEnvDialogOpen, setIsAddEnvDialogOpen] = useState(false)
+  const [newEnvName, setNewEnvName] = useState('')
+  const [newEnvValue, setNewEnvValue] = useState('')
+  const [customEnvError, setCustomEnvError] = useState<string | null>(null)
 
   // Local form state — runtime-specific settings (keyed by field key)
   const [runtimeSettingsForm, setRuntimeSettingsForm] = useState<Record<string, string>>({})
@@ -163,6 +180,7 @@ export function RuntimeTab() {
       setAgentImage(settings.container.agentImage)
       setCpuLimit(settings.container.resourceLimits.cpu.toString())
       setMemoryLimit(settings.container.resourceLimits.memory)
+      setCustomEnvVarsDraft(settings.customEnvVars ?? {})
       setHasChanges(false)
       setAutoSleepMinutes(null)
     }
@@ -224,6 +242,38 @@ export function RuntimeTab() {
       setCpuLimit(settings.container.resourceLimits.cpu.toString())
       setMemoryLimit(settings.container.resourceLimits.memory)
     }
+  }
+
+  const persistCustomEnvVars = async (updated: Record<string, string>) => {
+    setCustomEnvVarsDraft(updated)
+    setCustomEnvError(null)
+    try {
+      await updateSettings.mutateAsync({ customEnvVars: updated })
+    } catch (error) {
+      const message =
+        error && typeof error === 'object' && 'error' in error && typeof error.error === 'string'
+          ? error.error
+          : 'Failed to save custom environment variables'
+      setCustomEnvError(message)
+      console.error('Failed to save custom env vars:', error)
+    }
+  }
+
+  const handleAddCustomEnvVar = async () => {
+    const envName = normalizeEnvVarName(newEnvName)
+    if (!envName) {
+      setCustomEnvError('Environment variable name is required.')
+      return
+    }
+    if (envName in customEnvVarsDraft) {
+      setCustomEnvError('That environment variable already exists.')
+      return
+    }
+
+    await persistCustomEnvVars({ ...customEnvVarsDraft, [envName]: newEnvValue })
+    setNewEnvName('')
+    setNewEnvValue('')
+    setIsAddEnvDialogOpen(false)
   }
 
   // Save runtime-specific settings and restart the runtime
@@ -746,7 +796,7 @@ export function RuntimeTab() {
         </div>
 
         <div className="space-y-2">
-          {Object.entries(settings?.customEnvVars ?? {}).map(([key, value]) => (
+          {Object.entries(customEnvVarsDraft).map(([key, value]) => (
             <div key={key} className="flex items-center gap-2">
               <Input
                 value={key}
@@ -757,46 +807,110 @@ export function RuntimeTab() {
                 value={value}
                 className="font-mono text-sm flex-[3]"
                 onChange={(e) => {
-                  const updated = { ...settings?.customEnvVars, [key]: e.target.value }
-                  updateSettings.mutate({ customEnvVars: updated })
+                  setCustomEnvVarsDraft((prev) => ({ ...prev, [key]: e.target.value }))
                 }}
-                onBlur={(e) => {
-                  const updated = { ...settings?.customEnvVars, [key]: e.target.value }
-                  updateSettings.mutate({ customEnvVars: updated })
+                onBlur={async (e) => {
+                  const updated = { ...customEnvVarsDraft, [key]: e.target.value }
+                  await persistCustomEnvVars(updated)
                 }}
+                disabled={isLoading || updateSettings.isPending}
               />
               <Button
                 variant="ghost"
                 size="icon"
                 className="shrink-0"
-                onClick={() => {
-                  const updated = { ...settings?.customEnvVars }
+                onClick={async () => {
+                  const updated = { ...customEnvVarsDraft }
                   delete updated[key]
-                  updateSettings.mutate({ customEnvVars: updated })
+                  await persistCustomEnvVars(updated)
                 }}
+                disabled={isLoading || updateSettings.isPending}
               >
                 <X className="h-4 w-4" />
               </Button>
             </div>
           ))}
 
+          {customEnvError && (
+            <p className="text-xs text-destructive">{customEnvError}</p>
+          )}
+
           <Button
             variant="outline"
             size="sm"
-            onClick={() => {
-              const name = prompt('Environment variable name (e.g., CLAUDE_CODE_MAX_OUTPUT_TOKENS):')
-              if (!name?.trim()) return
-              const envName = name.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_')
-              const updated = { ...settings?.customEnvVars, [envName]: '' }
-              updateSettings.mutate({ customEnvVars: updated })
-            }}
-            disabled={isLoading}
+            onClick={() => setIsAddEnvDialogOpen(true)}
+            disabled={isLoading || updateSettings.isPending}
           >
             <Plus className="h-4 w-4 mr-2" />
             Add Variable
           </Button>
         </div>
       </div>
+
+      <Dialog
+        open={isAddEnvDialogOpen}
+        onOpenChange={(open) => {
+          setIsAddEnvDialogOpen(open)
+          if (!open) {
+            setNewEnvName('')
+            setNewEnvValue('')
+            setCustomEnvError(null)
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add Custom Environment Variable</DialogTitle>
+            <DialogDescription>
+              These variables are passed to the agent process for new sessions.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="custom-env-name">Variable Name</Label>
+              <Input
+                id="custom-env-name"
+                value={newEnvName}
+                onChange={(e) => setNewEnvName(e.target.value)}
+                placeholder="CLAUDE_CODE_MAX_OUTPUT_TOKENS"
+                className="font-mono text-sm"
+                autoFocus
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="custom-env-value">Value</Label>
+              <Input
+                id="custom-env-value"
+                value={newEnvValue}
+                onChange={(e) => setNewEnvValue(e.target.value)}
+                placeholder="32000"
+                className="font-mono text-sm"
+              />
+            </div>
+
+            {customEnvError && (
+              <p className="text-xs text-destructive">{customEnvError}</p>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setIsAddEnvDialogOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleAddCustomEnvVar}
+              disabled={isLoading || updateSettings.isPending}
+            >
+              Add Variable
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Data Location - Read Only */}
       <div className="space-y-2">
