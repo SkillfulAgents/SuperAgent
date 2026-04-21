@@ -2200,17 +2200,16 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(body[0].hasSessionsAwaitingInput).toBe(true)
   })
 
-  it('does not set awaiting input from proxy reviews when no sessions are active', async () => {
+  it('surfaces awaiting input from proxy reviews even without active sessions', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
     vi.mocked(getSessionSummary).mockResolvedValue({
       sessionIds: ['sess-idle'],
       sessionCount: 1,
       lastActivityAt: new Date(),
     })
-    // Session is NOT active
+    // Session is NOT active — reviews were triggered by a non-session flow (e.g. dashboard startup)
     vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
     vi.mocked(messagePersister.isSessionAwaitingInput).mockReturnValue(false)
-    // Agent has pending proxy reviews, but no active session to associate them with
     mockGetPendingReviewsForAgent.mockReturnValue([
       { id: 'review-1', agentSlug: 'agent-1', accountId: 'acc-1', toolkit: 'gmail', method: 'GET', targetPath: '/messages', matchedScopes: ['gmail.readonly'], scopeDescriptions: {} },
     ])
@@ -2218,7 +2217,7 @@ describe('GET /api/agents (enriched summary)', () => {
     const res = await getReq(app, '/api/agents')
     const body = await res.json()
 
-    expect(body[0].hasSessionsAwaitingInput).toBe(false)
+    expect(body[0].hasSessionsAwaitingInput).toBe(true)
   })
 
   it('picks the latest lastActivityAt across sessions', async () => {

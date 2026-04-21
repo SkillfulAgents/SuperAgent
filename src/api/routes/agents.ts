@@ -163,7 +163,7 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
         if (isActive) {
           hasActiveSessions = true
         }
-        if (messagePersister.isSessionAwaitingInput(sessionId) || (isActive && hasAgentLevelReviews)) {
+        if (messagePersister.isSessionAwaitingInput(sessionId)) {
           hasSessionsAwaitingInput = true
         }
         if (unreadSessionIds.has(sessionId)) {
@@ -178,7 +178,11 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
       }
       if (!hasSessionsAwaitingInput) {
         hasSessionsAwaitingInput = messagePersister.hasSessionsAwaitingInputForAgent(agent.slug)
-          || (hasActiveSessions && hasAgentLevelReviews)
+      }
+      // Pending proxy reviews raise the flag regardless of session state — dashboard-triggered
+      // reviews have no associated session but still need user attention.
+      if (hasAgentLevelReviews) {
+        hasSessionsAwaitingInput = true
       }
 
       // Compute scheduled task summary

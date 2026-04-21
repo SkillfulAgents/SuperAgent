@@ -69,23 +69,28 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
         ? 'Dashboard is starting up...'
         : 'Dashboard is not running. It will start automatically when the agent starts.'
     return (
-      <div className="flex-1 flex flex-col items-center justify-center gap-4 text-muted-foreground p-8">
-        <div className="flex items-center gap-2">
-          {showSpinner && <Loader2 className="h-4 w-4 animate-spin" />}
-          <p className="text-base">{message}</p>
+      <div className="flex-1 overflow-y-auto flex flex-col items-center text-muted-foreground p-8">
+        <div className="m-auto flex flex-col items-center gap-4 w-full max-w-2xl">
+          <div className="flex items-center gap-2">
+            {showSpinner && <Loader2 className="h-4 w-4 animate-spin" />}
+            <p className="text-base">{message}</p>
+          </div>
+          {!isAgentRunning && canStart && startAgent.isError && (
+            <Button
+              onClick={handleStartAgent}
+              disabled={startAgent.isPending}
+            >
+              <Play className="mr-2 h-4 w-4" />
+              Retry
+            </Button>
+          )}
+          {startAgent.isError && (
+            <p className="text-sm text-destructive">{startAgent.error.message}</p>
+          )}
+          <div className="w-full">
+            <PendingAgentReviews agentSlug={agentSlug} />
+          </div>
         </div>
-        {!isAgentRunning && canStart && startAgent.isError && (
-          <Button
-            onClick={handleStartAgent}
-            disabled={startAgent.isPending}
-          >
-            <Play className="mr-2 h-4 w-4" />
-            Retry
-          </Button>
-        )}
-        {startAgent.isError && (
-          <p className="text-sm text-destructive">{startAgent.error.message}</p>
-        )}
       </div>
     )
   }
