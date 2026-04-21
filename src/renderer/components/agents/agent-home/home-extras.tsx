@@ -49,7 +49,7 @@ export function HomeExtras({ agentSlug, onOpenSettings }: HomeExtrasProps) {
         <ExtrasButton label="API Logs" onClick={() => onOpenSettings?.('audit-log')} />
       </div>
       {error && (
-        <p className="px-4 pt-2 text-[11px] text-destructive" role="alert">{error}</p>
+        <p className="px-4 pt-2 text-xs text-destructive" role="alert">{error}</p>
       )}
     </div>
   )

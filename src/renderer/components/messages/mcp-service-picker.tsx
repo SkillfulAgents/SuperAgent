@@ -68,7 +68,7 @@ export function McpServicePicker({
                     <McpSourceIcon slug={option.slug} />
                   </div>
                   <span className="truncate text-sm">{option.displayName}</span>
-                  <span className="shrink-0 text-[11px] text-muted-foreground">
+                  <span className="shrink-0 text-xs text-muted-foreground">
                     {option.servers.length} {option.servers.length === 1 ? 'account' : 'accounts'}
                   </span>
                 </div>

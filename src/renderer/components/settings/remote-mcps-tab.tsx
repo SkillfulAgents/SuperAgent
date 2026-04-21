@@ -247,11 +247,11 @@ export function RemoteMcpsTab() {
   const authBadge = (authType: string) => {
     switch (authType) {
       case 'oauth':
-        return <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300">OAuth</span>
+        return <span className="text-2xs px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300">OAuth</span>
       case 'bearer':
-        return <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300">API Key</span>
+        return <span className="text-2xs px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300">API Key</span>
       default:
-        return <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">No auth</span>
+        return <span className="text-2xs px-1.5 py-0.5 rounded-full bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">No auth</span>
     }
   }
 

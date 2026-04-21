@@ -309,7 +309,7 @@ function DashboardChips({ names, slugs, agentSlug }: { names: string[]; slugs: s
             tabIndex={0}
             onClick={(e) => handleClick(e, slugs[i])}
             onKeyDown={(e) => { if (e.key === 'Enter') handleClick(e as unknown as React.MouseEvent, slugs[i]) }}
-            className="inline-flex items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium hover:bg-muted-foreground/20 cursor-pointer"
+            className="inline-flex items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-2xs font-medium hover:bg-muted-foreground/20 cursor-pointer"
           >
             <LayoutDashboard className="h-2.5 w-2.5" />
             {name}

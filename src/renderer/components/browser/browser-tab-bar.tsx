@@ -38,7 +38,7 @@ export function BrowserTabBar({ tabs, viewingTargetId, autoFollow, loading, onTa
             <ContextMenuTrigger asChild>
               <button
                 className={cn(
-                  'relative flex items-center gap-1 px-2 py-1 rounded text-[11px] leading-tight max-w-[120px] truncate transition-colors',
+                  'relative flex items-center gap-1 px-2 py-1 rounded text-xs leading-tight max-w-[120px] truncate transition-colors',
                   isViewing ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-muted/50',
                 )}
                 onClick={() => onTabClick(tab.targetId)}

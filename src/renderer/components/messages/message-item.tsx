@@ -29,7 +29,7 @@ function CodeBlock({ children }: { children: ReactNode }) {
 
   return (
     <pre className={cn(
-      'relative group rounded-md p-3 text-[13px] leading-relaxed border code-scrollbar',
+      'relative group rounded-md p-3 text-sm leading-relaxed border code-scrollbar',
       'bg-black/[0.03] dark:bg-white/[0.06] border-border/60 text-foreground'
     )}>
       <button
@@ -164,7 +164,7 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
                         const isInline = !className
                         return isInline ? (
                           <code className={cn(
-                            'rounded px-1.5 py-0.5 text-[13px] font-medium',
+                            'rounded px-1.5 py-0.5 text-sm font-medium',
                             'bg-black/[0.05] dark:bg-white/[0.08] text-foreground'
                           )}>
                             {children}

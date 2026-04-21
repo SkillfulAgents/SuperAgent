@@ -129,7 +129,7 @@ export function HomeConnections({ agentSlug, onOpenSettings }: HomeConnectionsPr
               className="h-8 w-8 rounded-lg border border-border bg-background flex items-center justify-center shadow-sm transition-transform duration-100 ease-out hover:scale-110 hover:z-10"
               style={{ marginLeft: -8, zIndex: 8 }}
             >
-              <span className="text-[10px] font-medium text-muted-foreground/70">70+</span>
+              <span className="text-2xs font-medium text-muted-foreground/70">70+</span>
             </div>
           </div>
         )}
@@ -157,7 +157,7 @@ export function HomeConnections({ agentSlug, onOpenSettings }: HomeConnectionsPr
                 <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
               </button>
               <div className="border-t mt-1 pt-1.5 px-2 pb-1.5">
-                <p className="text-[11px] text-muted-foreground leading-snug">
+                <p className="text-xs text-muted-foreground leading-snug">
                   Your agent will also prompt you to add connections while chatting.
                 </p>
               </div>
@@ -253,7 +253,7 @@ function ConnectionRowItem({
           </div>
           <div className="min-w-0 flex-1">
             <div className="text-xs font-medium truncate">{conn.name}</div>
-            <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground mt-0.5">
+            <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground mt-0.5">
               <span className="flex min-w-0 items-center gap-1">
                 <span className="shrink-0">{conn.type}</span>
                 {conn.subtitle && (

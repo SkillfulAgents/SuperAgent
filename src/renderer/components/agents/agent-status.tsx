@@ -62,7 +62,7 @@ export function AgentStatus({ status, hasActiveSessions = false, hasSessionsAwai
       )}
       {!iconOnly && (
         <span
-          className={cn(isSmall ? 'text-[10px]' : 'text-xs', {
+          className={cn(isSmall ? 'text-2xs' : 'text-xs', {
             'text-muted-foreground': activityStatus === 'sleeping' || activityStatus === 'idle',
             'text-foreground': activityStatus === 'working',
             'text-orange-500': activityStatus === 'awaiting_input',

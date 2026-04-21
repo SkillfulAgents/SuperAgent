@@ -188,7 +188,7 @@ export function MainContent() {
           <div className="flex items-center gap-2 min-w-0">
             <button
               type="button"
-              className={`text-[13px] font-light truncate transition-colors app-no-drag ${isAgentLeaf ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+              className={`text-sm font-light truncate transition-colors app-no-drag ${isAgentLeaf ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
               onClick={() => selectSession(null)}
               data-testid="agent-breadcrumb"
             >
@@ -197,13 +197,13 @@ export function MainContent() {
           </div>
           {sessionId && session?.agentSlug === agentSlug && (
             <div className="flex items-center gap-1.5 min-w-0">
-              <span aria-hidden="true" className="text-[13px] font-light text-muted-foreground shrink-0 hidden md:block">/</span>
+              <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
               <SessionContextMenu
                 sessionId={sessionId}
                 sessionName={session?.name || 'Session'}
                 agentSlug={agentSlug}
               >
-                <span className="text-[13px] font-light text-foreground truncate cursor-context-menu app-no-drag">
+                <span className="text-sm font-light text-foreground truncate cursor-context-menu app-no-drag">
                   {session?.name || 'Loading...'}
                 </span>
               </SessionContextMenu>
@@ -211,10 +211,10 @@ export function MainContent() {
           )}
           {scheduledTaskId && scheduledTask && (
             <div className="flex items-center gap-1.5 min-w-0">
-              <span aria-hidden="true" className="text-[13px] font-light text-muted-foreground shrink-0 hidden md:block">/</span>
+              <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
               <div className="flex items-center gap-1 text-muted-foreground">
                 <Clock className="h-4 w-4" />
-                <span className="truncate text-[13px] font-light text-foreground">
+                <span className="truncate text-sm font-light text-foreground">
                   {scheduledTask.name || 'Scheduled Task'}
                 </span>
               </div>
@@ -463,10 +463,10 @@ export function MainContent() {
                     <span />
                   )}
                   <span className="text-xs text-muted-foreground flex items-center gap-1">
-                    <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-[11px] font-sans leading-none">↵</kbd>
+                    <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">↵</kbd>
                     <span>Send</span>
                     <span className="mx-1">·</span>
-                    <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-[11px] font-sans leading-none">⇧↵</kbd>
+                    <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">⇧↵</kbd>
                     <span>New line</span>
                   </span>
                 </div>

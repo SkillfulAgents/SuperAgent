@@ -56,7 +56,7 @@ function CronRow({ task, agentSlug, formatDate, onSelect }: { task: ApiScheduled
         className="group relative w-full py-3 px-4 text-left hover:bg-muted/50 transition-colors"
       >
         <div className="text-xs font-medium truncate">{task.name ?? 'Scheduled Task'}</div>
-        <div className="flex items-center justify-between text-[11px] text-muted-foreground mt-0.5">
+        <div className="flex items-center justify-between text-xs text-muted-foreground mt-0.5">
           <span>{humanizedCron ?? 'One-time'}</span>
           {task.nextExecutionAt && (
             <span>Next: {formatDate(new Date(task.nextExecutionAt).toISOString())}</span>
