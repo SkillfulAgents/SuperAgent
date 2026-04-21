@@ -73,21 +73,19 @@ RUN apt-get update && apt-get install -y \
     libxshmfence1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install agent-browser (native Rust binary since v0.20.0) and download Chromium.
-# Chrome for Testing only provides x86_64 Linux builds, so on ARM64 (e.g. Apple
-# Silicon dev) we fall back to Playwright's Chromium which supports both arches.
-# agent-browser auto-discovers Playwright's Chromium via find_playwright_chromium().
+# Install agent-browser (native Rust binary since v0.20.0) and Playwright's
+# Chromium. Both the agent-browser runtime (via find_playwright_chromium) and
+# our dashboard screenshot code (via playwright-core) share a single Chromium
+# install under PLAYWRIGHT_BROWSERS_PATH — simpler than also downloading
+# Chrome for Testing via `agent-browser install`, and works on both x86_64
+# and ARM64 (Chrome for Testing has no ARM64 Linux build).
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 RUN npm install -g agent-browser@0.25.3 && \
-    if agent-browser install 2>/dev/null; then \
-      true; \
-    else \
-      npx playwright install chromium && \
-      chmod -R o+rx /opt/playwright-browsers && \
-      for d in /opt/playwright-browsers/chromium-*/chrome-linux; do \
-        [ -d "$d" ] && [ ! -d "${d}64" ] && ln -s "$d" "${d}64"; \
-      done; \
-    fi
+    npx playwright install chromium && \
+    chmod -R o+rx /opt/playwright-browsers && \
+    for d in /opt/playwright-browsers/chromium-*/chrome-linux; do \
+      [ -d "$d" ] && [ ! -d "${d}64" ] && ln -s "$d" "${d}64"; \
+    done
 
 # Create a stable symlink to whatever chromium revision got installed above,
 # so our runtime code can point at a fixed path rather than globbing for
