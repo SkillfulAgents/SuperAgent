@@ -1,6 +1,6 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { Button } from '@renderer/components/ui/button'
-import { Play, RefreshCw, LayoutDashboard, ExternalLink, Dock } from 'lucide-react'
+import { Play, RefreshCw, LayoutDashboard, ExternalLink, Dock, Loader2 } from 'lucide-react'
 import { useAgent, useStartAgent } from '@renderer/hooks/use-agents'
 import { useArtifacts } from '@renderer/hooks/use-artifacts'
 import { useUser } from '@renderer/context/user-context'
@@ -45,29 +45,37 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     startAgent.mutate(agentSlug)
   }, [startAgent, agentSlug])
 
+  const autoStartedRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (autoStartedRef.current === agentSlug) return
+    if (!agent || isAgentRunning || !canStart) return
+    if (startAgent.isPending || startAgent.isError) return
+    autoStartedRef.current = agentSlug
+    startAgent.mutate(agentSlug)
+  }, [agent, agentSlug, isAgentRunning, canStart, startAgent])
+
   if (!isAgentRunning || !isDashboardRunning) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-4 text-muted-foreground p-8">
-        <LayoutDashboard className="h-12 w-12 opacity-50" />
-        <div className="text-center">
-          <p className="text-lg font-medium mb-1">
-            {dashboard?.name || dashboardSlug}
-          </p>
-          <p>
+        <div className="flex items-center gap-2">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          <p className="text-base">
             {!isAgentRunning
-              ? 'Agent is not running. Start the agent to view this dashboard.'
+              ? startAgent.isError
+                ? 'Agent failed to start.'
+                : 'Starting up...'
               : dashboard?.status === 'starting'
                 ? 'Dashboard is starting up...'
                 : 'Dashboard is not running. It will start automatically when the agent starts.'}
           </p>
         </div>
-        {!isAgentRunning && canStart && (
+        {!isAgentRunning && canStart && startAgent.isError && (
           <Button
             onClick={handleStartAgent}
             disabled={startAgent.isPending}
           >
             <Play className="mr-2 h-4 w-4" />
-            Start Agent
+            Retry
           </Button>
         )}
         {startAgent.isError && (
