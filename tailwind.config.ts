@@ -77,9 +77,18 @@ const config: Config = {
 					boxShadow: '0 0 6px 1px rgba(30, 64, 175, 0.25), 0 0 16px 3px rgba(37, 99, 235, 0.12), 0 0 32px 6px rgba(59, 130, 246, 0.06)',
 				},
 			},
+			'dot-wave': {
+				'0%, 40%, 100%': {
+					opacity: '0.25',
+				},
+				'10%': {
+					opacity: '1',
+				},
+			},
 		},
 		animation: {
 			'cobalt-glow': 'cobalt-glow 4s ease-in-out infinite',
+			'dot-wave': 'dot-wave 2s ease-in-out infinite',
 		}
 	}
   },

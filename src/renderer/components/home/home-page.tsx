@@ -8,6 +8,7 @@ import { useUsageData } from '@renderer/hooks/use-usage'
 import { useSessions } from '@renderer/hooks/use-sessions'
 import { useSelection } from '@renderer/context/selection-context'
 import { AgentStatus, getAgentActivityStatus } from '@renderer/components/agents/agent-status'
+import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { useDialogs } from '@renderer/context/dialog-context'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
@@ -16,7 +17,7 @@ import { useSidebar } from '@renderer/components/ui/sidebar'
 import { Popover, PopoverTrigger, PopoverContent } from '@renderer/components/ui/popover'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import { isElectron, getPlatform } from '@renderer/lib/env'
-import { Plus, Bot, Download, Loader2, Clock, CalendarClock, LayoutDashboard, CircleHelp } from 'lucide-react'
+import { Plus, Bot, Download, Loader2, Clock, CalendarClock, LayoutDashboard } from 'lucide-react'
 import { AreaChart, Area, ResponsiveContainer, Tooltip } from 'recharts'
 import type { ApiAgent } from '@shared/lib/types/api'
 import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
@@ -110,7 +111,7 @@ function UsageSparkBackground({ data, agentSlug }: { data: { date: string; token
 
 const statusTabBg = {
   sleeping: 'bg-muted',
-  idle: 'bg-blue-100 dark:bg-blue-900/40',
+  idle: 'bg-muted',
   working: 'bg-green-100 dark:bg-green-900/40',
   awaiting_input: 'bg-orange-100 dark:bg-orange-900/40',
 } as const
@@ -123,7 +124,7 @@ function StatusTab({ status, hasActiveSessions, hasSessionsAwaitingInput }: {
   const activityStatus = getAgentActivityStatus(status, hasActiveSessions, hasSessionsAwaitingInput)
   return (
     <div className={`absolute top-0 right-4 z-20 rounded-b-md px-2.5 py-1 ${statusTabBg[activityStatus]}`}>
-      <AgentStatus status={status} hasActiveSessions={hasActiveSessions} hasSessionsAwaitingInput={hasSessionsAwaitingInput} size="sm" />
+      <AgentStatus status={status} hasActiveSessions={hasActiveSessions} hasSessionsAwaitingInput={hasSessionsAwaitingInput} size="sm" workingDotClassName="bg-foreground" />
     </div>
   )
 }
@@ -254,18 +255,15 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
               className={`w-full flex items-center gap-2 px-3 py-1.5 pt-3 text-left text-xs border rounded-b-lg transition-colors hover:brightness-95 ${colors}`}
             >
               {isAwaiting ? (
-                <CircleHelp className="h-3 w-3 shrink-0 text-orange-500" />
+                <AwaitingDot />
               ) : isWorking ? (
-                <span className="relative flex h-2 w-2 shrink-0">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-500 opacity-75" />
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
-                </span>
+                <WorkingDots dotClassName="bg-foreground" />
               ) : hasUnread ? (
                 <span className="h-2 w-2 shrink-0 rounded-full bg-blue-500" />
               ) : null}
               <span className="truncate font-medium">{session.name}</span>
               <span className="ml-auto shrink-0 text-muted-foreground">
-                {isAwaiting ? 'awaiting input' : isWorking ? 'working' : 'new message'}
+                {isAwaiting ? 'needs input' : isWorking ? 'working' : 'new message'}
               </span>
             </button>
           </div>

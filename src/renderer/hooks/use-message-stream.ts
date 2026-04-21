@@ -118,6 +118,34 @@ function upsertSubagent(list: SubagentInfo[], entry: SubagentInfo): SubagentInfo
 }
 
 // Global state to track streaming per session
+const EMPTY_STREAM_STATE: StreamState = {
+  isActive: false,
+  isStreaming: false,
+  streamingMessage: null,
+  streamingToolUse: null,
+  pendingSecretRequests: [],
+  pendingConnectedAccountRequests: [],
+  pendingQuestionRequests: [],
+  pendingFileRequests: [],
+  pendingRemoteMcpRequests: [],
+  pendingBrowserInputRequests: [],
+  pendingScriptRunRequests: [],
+  pendingComputerUseRequests: [],
+  error: null,
+  apiErrorCode: null,
+  browserActive: false,
+  computerUseApp: null,
+  computerUseAppIcon: null,
+  activeStartTime: null,
+  isCompacting: false,
+  contextUsage: null,
+  activeSubagents: [],
+  completedSubagents: null,
+  typingUser: null,
+  peerUserMessage: null,
+  apiRetry: null,
+}
+
 const streamStates = new Map<string, StreamState>()
 const streamListeners = new Map<string, Set<() => void>>()
 
@@ -1071,33 +1099,7 @@ export function clearBrowserActive(sessionId: string): void {
 }
 
 export function useMessageStream(sessionId: string | null, agentSlug: string | null) {
-  const [state, setState] = useState<StreamState>({
-    isActive: false,
-    isStreaming: false,
-    streamingMessage: null,
-    streamingToolUse: null,
-    pendingSecretRequests: [],
-    pendingConnectedAccountRequests: [],
-    pendingQuestionRequests: [],
-    pendingFileRequests: [],
-    pendingRemoteMcpRequests: [],
-    pendingBrowserInputRequests: [],
-    pendingScriptRunRequests: [],
-    pendingComputerUseRequests: [],
-    error: null,
-    apiErrorCode: null,
-    browserActive: false,
-    computerUseApp: null,
-    computerUseAppIcon: null,
-    activeStartTime: null,
-    isCompacting: false,
-    contextUsage: null,
-    activeSubagents: [],
-    completedSubagents: null,
-    typingUser: null,
-    peerUserMessage: null,
-    apiRetry: null,
-  })
+  const [state, setState] = useState<StreamState>(EMPTY_STREAM_STATE)
   const [slashCommands, setSlashCommands] = useState<SlashCommandInfo[]>([])
   const [autoApprovedScriptRunIds, setAutoApprovedScriptRunIds] = useState<ReadonlySet<string>>(EMPTY_AUTO_APPROVED_SET)
   const queryClient = useQueryClient()
@@ -1129,7 +1131,14 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
   }, [sessionId])
 
   useEffect(() => {
-    if (!sessionId || !agentSlug) return
+    if (!sessionId || !agentSlug) {
+      // Reset local state so a previous subscription's values (e.g. isStreaming=true)
+      // don't leak after the caller stops passing a sessionId — otherwise an unselected
+      // session row can get stuck in a "working" state after the stream finishes.
+      setState(EMPTY_STREAM_STATE)
+      setSlashCommands([])
+      return
+    }
 
     // Register listener
     let listeners = streamListeners.get(sessionId)
@@ -1141,33 +1150,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
 
     // Initialize state
     if (!streamStates.has(sessionId)) {
-      streamStates.set(sessionId, {
-        isActive: false,
-        isStreaming: false,
-        streamingMessage: null,
-        streamingToolUse: null,
-        pendingSecretRequests: [],
-        pendingConnectedAccountRequests: [],
-        pendingQuestionRequests: [],
-        pendingFileRequests: [],
-        pendingRemoteMcpRequests: [],
-        pendingBrowserInputRequests: [],
-        pendingScriptRunRequests: [],
-        pendingComputerUseRequests: [],
-        error: null,
-        apiErrorCode: null,
-        browserActive: false,
-        computerUseApp: null,
-        computerUseAppIcon: null,
-        activeStartTime: null,
-        isCompacting: false,
-        contextUsage: null,
-        activeSubagents: [],
-        completedSubagents: null,
-        typingUser: null,
-        peerUserMessage: null,
-        apiRetry: null,
-      })
+      streamStates.set(sessionId, EMPTY_STREAM_STATE)
     }
     updateState()
 
