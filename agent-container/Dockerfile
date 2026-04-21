@@ -76,33 +76,25 @@ RUN apt-get update && apt-get install -y \
 # Install agent-browser (native Rust binary since v0.20.0) and Playwright's
 # Chromium. Both the agent-browser runtime (via find_playwright_chromium) and
 # our dashboard screenshot code (via playwright-core) share a single Chromium
-# install under PLAYWRIGHT_BROWSERS_PATH — simpler than also downloading
-# Chrome for Testing via `agent-browser install`, and works on both x86_64
-# and ARM64 (Chrome for Testing has no ARM64 Linux build).
+# install under PLAYWRIGHT_BROWSERS_PATH.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 RUN npm install -g agent-browser@0.25.3 && \
     npx playwright install chromium && \
-    chmod -R o+rx /opt/playwright-browsers && \
-    for d in /opt/playwright-browsers/chromium-*/chrome-linux; do \
-      [ -d "$d" ] && [ ! -d "${d}64" ] && ln -s "$d" "${d}64"; \
-    done
+    chmod -R o+rx /opt/playwright-browsers
 
-# Create a stable symlink to whatever chromium revision got installed above,
-# so our runtime code can point at a fixed path rather than globbing for
-# revisions. Prefer headless_shell (smaller binary, fine for screenshotting);
-# fall back to full chrome. Build fails loudly if neither is present.
-RUN bin=""; \
-    for candidate in /opt/playwright-browsers/chromium_headless_shell-*/chrome-linux/headless_shell; do \
-      [ -x "$candidate" ] && bin="$candidate" && break; \
-    done; \
+# Create a stable symlink to whatever chromium binary got installed, so our
+# runtime code can point at a fixed path rather than globbing. Playwright's
+# layout (chrome-linux vs chrome-linux64 vs chrome-headless-shell-linux64) has
+# shifted between versions, so we use find to locate the binary regardless.
+# Prefer headless_shell (smaller); fall back to full chrome. Build fails loudly
+# if neither is present.
+RUN bin=$(find /opt/playwright-browsers -type f -name headless_shell -perm -u+x 2>/dev/null | head -n 1); \
     if [ -z "$bin" ]; then \
-      for candidate in /opt/playwright-browsers/chromium-*/chrome-linux/chrome; do \
-        [ -x "$candidate" ] && bin="$candidate" && break; \
-      done; \
+      bin=$(find /opt/playwright-browsers -type f -name chrome -perm -u+x 2>/dev/null | head -n 1); \
     fi; \
     if [ -z "$bin" ]; then \
       echo "No chromium binary found under /opt/playwright-browsers" >&2; \
-      ls -la /opt/playwright-browsers >&2; \
+      ls -laR /opt/playwright-browsers >&2; \
       exit 1; \
     fi; \
     ln -sf "$bin" /opt/playwright-browsers/chromium-current; \
