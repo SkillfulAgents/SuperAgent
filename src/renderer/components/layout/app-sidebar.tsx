@@ -22,7 +22,6 @@ import {
   SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
-  SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarMenuSkeleton,
@@ -40,6 +39,7 @@ import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { CreateAgentScreen } from '@renderer/components/agents/create-agent-screen'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
+import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { DashboardContextMenu } from '@renderer/components/dashboards/dashboard-context-menu'
@@ -112,16 +112,9 @@ function SessionSubItem({
         >
           <button onClick={handleClick} className="flex items-center gap-2 w-full" data-testid={`session-item-${session.id}`}>
             {isAwaitingInput ? (
-              <span className="relative flex h-1.5 w-1.5 shrink-0">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-orange-500 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-orange-500"></span>
-              </span>
+              <AwaitingDot />
             ) : isWorking ? (
-              <span className="inline-flex items-center gap-0.5 shrink-0">
-                <span className="h-[3px] w-[3px] rounded-full bg-foreground animate-dot-wave" />
-                <span className="h-[3px] w-[3px] rounded-full bg-foreground animate-dot-wave [animation-delay:0.15s]" />
-                <span className="h-[3px] w-[3px] rounded-full bg-foreground animate-dot-wave [animation-delay:0.3s]" />
-              </span>
+              <WorkingDots />
             ) : hasUnread ? (
               <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500" />
             ) : null}
@@ -738,7 +731,6 @@ export const AgentMenuItem = React.forwardRef<
               hasActiveSessions={sessions?.some((s) => s.isActive) || (agent.hasActiveSessions ?? false)}
               hasSessionsAwaitingInput={sessions?.some((s) => s.isAwaitingInput) || (agent.hasSessionsAwaitingInput ?? false)}
               iconOnly
-              hideIdle
             />
           </SidebarMenuButton>
         </AgentContextMenu>
