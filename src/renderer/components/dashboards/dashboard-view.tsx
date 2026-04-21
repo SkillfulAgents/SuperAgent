@@ -26,6 +26,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
 
   const dashboard = artifacts?.find((a) => a.slug === dashboardSlug)
   const isAgentRunning = agent?.status === 'running'
+  const isAgentStarting = startAgent.isPending
   const isDashboardRunning = dashboard?.status === 'running'
 
   const baseUrl = getApiBaseUrl()
@@ -48,26 +49,30 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   const autoStartedRef = useRef<string | null>(null)
   useEffect(() => {
     if (autoStartedRef.current === agentSlug) return
-    if (!agent || isAgentRunning || !canStart) return
-    if (startAgent.isPending || startAgent.isError) return
+    if (!agent || isAgentRunning || isAgentStarting || !canStart) return
+    if (startAgent.isError) return
     autoStartedRef.current = agentSlug
     startAgent.mutate(agentSlug)
-  }, [agent, agentSlug, isAgentRunning, canStart, startAgent])
+  }, [agent, agentSlug, isAgentRunning, isAgentStarting, canStart, startAgent])
 
   if (!isAgentRunning || !isDashboardRunning) {
+    const showSpinner = !isAgentRunning
+      ? !startAgent.isError && canStart
+      : dashboard?.status === 'starting'
+    const message = !isAgentRunning
+      ? startAgent.isError
+        ? 'Agent failed to start.'
+        : !canStart
+          ? 'Agent is not running. Ask an admin to start it.'
+          : 'Starting up...'
+      : dashboard?.status === 'starting'
+        ? 'Dashboard is starting up...'
+        : 'Dashboard is not running. It will start automatically when the agent starts.'
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-4 text-muted-foreground p-8">
         <div className="flex items-center gap-2">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          <p className="text-base">
-            {!isAgentRunning
-              ? startAgent.isError
-                ? 'Agent failed to start.'
-                : 'Starting up...'
-              : dashboard?.status === 'starting'
-                ? 'Dashboard is starting up...'
-                : 'Dashboard is not running. It will start automatically when the agent starts.'}
-          </p>
+          {showSpinner && <Loader2 className="h-4 w-4 animate-spin" />}
+          <p className="text-base">{message}</p>
         </div>
         {!isAgentRunning && canStart && startAgent.isError && (
           <Button
