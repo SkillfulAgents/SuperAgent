@@ -34,6 +34,8 @@ import { useUser } from '@renderer/context/user-context'
 import { useMountWarnings } from '@renderer/hooks/use-mount-warnings'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { computeContextPercent } from '@shared/lib/utils/context-usage'
+import { useSessionSearch } from '@renderer/hooks/use-session-search'
+import { SessionSearchBar } from '@renderer/components/messages/session-search-bar'
 
 export function MainContent() {
   useRenderTracker('MainContent')
@@ -73,6 +75,15 @@ export function MainContent() {
   const isViewOnly = agentSlug ? !canUseAgent(agentSlug) : false
   const { warning: mountWarning, dismiss: dismissMountWarning } = useMountWarnings(agentSlug ?? null)
   const { data: runtimeStatus, isPending: isRuntimePending } = useRuntimeStatus()
+  const isSessionView = !!(
+    agentSlug &&
+    sessionId &&
+    !dashboardSlug &&
+    !scheduledTaskId &&
+    !webhookTriggerId &&
+    !chatIntegrationId
+  )
+  const search = useSessionSearch(isSessionView, sessionId ?? null)
   const readiness = runtimeStatus?.runtimeReadiness
   const isRuntimeReady = isRuntimePending || readiness?.status === 'READY'
   const isPulling = readiness?.status === 'PULLING_IMAGE'
@@ -403,7 +414,9 @@ export function MainContent() {
           <ChatIntegrationView integrationId={chatIntegrationId} agentSlug={agentSlug} />
         ) : sessionId ? (
           /* Show messages when a session is selected */
-          <div className="relative flex-1 flex min-h-0">
+          <div className="flex-1 flex flex-col min-h-0">
+            <SessionSearchBar search={search} />
+            <div className="relative flex-1 flex min-h-0">
             {/* Chat column */}
             <div className="flex-1 min-w-0 grid grid-rows-[1fr_auto] min-h-0">
               <MessageList
@@ -461,6 +474,7 @@ export function MainContent() {
             </div>
             {/* Browser drawer panel */}
             <BrowserDrawerPanel agentSlug={agentSlug} sessionId={sessionId} browserActive={browserActive} isActive={isActive} />
+          </div>
           </div>
         ) : (
           /* Show home page with large input when no session is selected */

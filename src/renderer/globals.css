@@ -310,3 +310,20 @@
     transition-duration: 1ms;
   }
 }
+
+/* Find-in-session highlights (CSS Custom Highlight API) */
+::highlight(session-search) {
+  background-color: rgb(253 224 71 / 0.85); /* yellow-300 */
+  color: inherit;
+}
+::highlight(session-search-current) {
+  background-color: rgb(251 146 60); /* orange-400 */
+  color: black;
+}
+.dark ::highlight(session-search) {
+  background-color: rgb(234 179 8 / 0.6); /* yellow-500/60 */
+}
+.dark ::highlight(session-search-current) {
+  background-color: rgb(249 115 22); /* orange-500 */
+  color: black;
+}
