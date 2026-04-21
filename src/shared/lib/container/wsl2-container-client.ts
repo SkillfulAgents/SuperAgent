@@ -130,13 +130,19 @@ export const WSL2_DISTRO_NAME = 'superagent'
 function checkVirtualizationEnabled(): RunnerSetupRemediation | null {
   if (process.platform !== 'win32') return null
   try {
-    // Win32_Processor.VirtualizationFirmwareEnabled reflects the BIOS toggle.
-    // Machines with multiple CPUs are vanishingly rare on consumer Windows, but
-    // handle it by requiring *all* to be enabled.
-    const ps = `powershell -NoProfile -Command "(Get-CimInstance Win32_Processor | ForEach-Object { $_.VirtualizationFirmwareEnabled }) -join ','"`
+    // Win32_Processor.VirtualizationFirmwareEnabled reflects the BIOS toggle,
+    // but it is unreliable on machines where Hyper-V is already active: the
+    // host OS runs in the root partition and the property can report False
+    // even when virtualization is clearly enabled (the hypervisor wouldn't
+    // otherwise be running). Cross-check HypervisorPresent and treat firmware
+    // =False as authoritative only when the hypervisor is absent.
+    const ps = `powershell -NoProfile -Command "$h = (Get-CimInstance Win32_ComputerSystem).HypervisorPresent; $v = (Get-CimInstance Win32_Processor | ForEach-Object { $_.VirtualizationFirmwareEnabled }) -join ','; $h,$v -join '|'"`
     const out = execSync(ps, { encoding: 'utf-8', timeout: 10000 }).trim()
     if (!out) return null
-    const values = out.split(',').map(v => v.trim().toLowerCase())
+    const [hypervisorStr, firmwareStr] = out.split('|')
+    // Hypervisor is running → virt is on, regardless of the firmware flag.
+    if (hypervisorStr?.trim().toLowerCase() === 'true') return null
+    const values = (firmwareStr ?? '').split(',').map(v => v.trim().toLowerCase()).filter(Boolean)
     const allDisabled = values.length > 0 && values.every(v => v === 'false')
     if (allDisabled) {
       return {
@@ -152,7 +158,7 @@ function checkVirtualizationEnabled(): RunnerSetupRemediation | null {
           { label: 'Then retry starting the runtime.' },
         ],
         docsUrl: 'https://aka.ms/enablevirtualization',
-        originalStderr: `VirtualizationFirmwareEnabled=${out}`,
+        originalStderr: `HypervisorPresent=${hypervisorStr};VirtualizationFirmwareEnabled=${firmwareStr}`,
         userResolvable: true,
       }
     }
