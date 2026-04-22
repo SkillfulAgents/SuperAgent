@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('get-api-url')
   },
   platform: process.platform,
+  osVersion: process.getSystemVersion(),
 
   // OAuth callback handling - receives parsed callback params from main process
   onOAuthCallback: (callback: (params: {
@@ -236,6 +237,7 @@ declare global {
     electronAPI?: {
       getApiUrl: () => Promise<string>
       platform: string
+      osVersion: string
       onOAuthCallback: (callback: (params: OAuthCallbackParams) => void) => void
       removeOAuthCallback: () => void
       onMcpOAuthCallback: (callback: (params: { success: boolean; mcpId?: string | null; error?: string | null }) => void) => void

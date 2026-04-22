@@ -17,6 +17,7 @@ import { GettingStartedWizard } from './components/wizard/getting-started-wizard
 import { ErrorBoundary } from './components/ui/error-boundary'
 import { useUserSettings } from './hooks/use-user-settings'
 import { useTheme } from './hooks/use-theme'
+import { useInsetRadius } from './hooks/use-inset-radius'
 import { useUser } from './context/user-context'
 import { useAnalyticsTracking } from './context/analytics-context'
 import { useSettings } from './hooks/use-settings'
@@ -24,6 +25,7 @@ import { setRendererErrorReportingEnabled, setRendererErrorReportingUser } from 
 
 function AppContent() {
   useTheme()
+  useInsetRadius()
 
   const [wizardOpen, setWizardOpen] = useState(false)
   const { data: userSettings } = useUserSettings()
