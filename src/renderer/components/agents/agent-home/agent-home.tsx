@@ -169,7 +169,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const showRightColumn = isOwner
 
   return (
-    <div className="flex-1 flex flex-col overflow-y-auto px-10 py-10 bg-sidebar">
+    <div className="flex-1 flex flex-col overflow-y-auto px-10 py-10 bg-background">
       <div className={`grid gap-10 items-start ${showRightColumn ? 'grid-cols-1 xl:grid-cols-[1fr_minmax(320px,400px)] w-full max-w-6xl mx-auto' : 'max-w-2xl mx-auto'}`}>
         {/* Left Column — Chat composer + Sessions */}
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">

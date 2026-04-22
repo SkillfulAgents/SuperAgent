@@ -9,6 +9,7 @@ import { DialogProvider } from './context/dialog-context'
 import { DraftsProvider } from './context/drafts-context'
 import { AppSidebar } from './components/layout/app-sidebar'
 import { MainContent } from './components/layout/main-content'
+import { WindowControls } from './components/layout/window-controls'
 import { SidebarProvider, SidebarInset } from './components/ui/sidebar'
 import { TrayNavigationHandler } from './components/tray-navigation-handler'
 import { GlobalNotificationHandler } from './components/notifications/global-notification-handler'
@@ -63,6 +64,7 @@ function AppContent() {
 
   return (
     <DialogProvider onOpenWizard={() => setWizardOpen(true)}>
+      <WindowControls />
       {wizardOpen ? (
         <GettingStartedWizard onClose={() => setWizardOpen(false)} />
       ) : (
@@ -70,7 +72,7 @@ function AppContent() {
           <GlobalNotificationHandler />
           <SidebarProvider className="h-screen">
             <AppSidebar />
-            <SidebarInset className="min-w-0 h-full">
+            <SidebarInset className="min-w-0">
               <MainContent />
             </SidebarInset>
           </SidebarProvider>
