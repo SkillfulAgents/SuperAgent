@@ -8,6 +8,7 @@ import {
 } from '@shared/lib/config/settings'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
+import { captureMessage } from '@shared/lib/error-reporting'
 
 const COMPOSIO_BASE_URL = 'https://backend.composio.dev/api/v3'
 
@@ -378,6 +379,22 @@ interface ConnectedAccountWithTokenResponse extends ConnectedAccountGetResponse 
   }
 }
 
+type RedactionPattern = 'literal-redacted' | 'prefix-ellipsis' | 'asterisks' | 'angle-bracket'
+
+function detectRedaction(token: string): RedactionPattern | null {
+  const trimmed = token.trim()
+  // Exact literal Composio emits for composio-managed auth configs (rolled out 2026-04-22).
+  if (trimmed === 'REDACTED') return 'literal-redacted'
+  // Short prefix-with-ellipsis shape emitted when "Mask Connected Account Secrets" is enabled,
+  // e.g. "ya29.abc..." or "sk-liv...". Real tokens are comfortably longer than 20 chars.
+  if (trimmed.endsWith('...') && trimmed.length < 20) return 'prefix-ellipsis'
+  // Defensive: catch obvious placeholder shapes ("***", "********", "<redacted>") in case
+  // Composio changes format again. Real OAuth tokens never look like these.
+  if (/^\*+$/.test(trimmed)) return 'asterisks'
+  if (/^<[^>]*redact[^>]*>$/i.test(trimmed)) return 'angle-bracket'
+  return null
+}
+
 /**
  * Get the access token for a connection.
  * Use this to pass tokens to agent containers.
@@ -416,10 +433,26 @@ export async function getConnectionToken(
     throw new ComposioApiError(`No access token found for auth scheme: ${authScheme}`, 404)
   }
 
-  // Check for redacted tokens (Composio masks tokens when "Mask Connected Account Secrets" is enabled)
-  if (accessToken.endsWith('...') && accessToken.length < 20) {
+  const redactionPattern = detectRedaction(accessToken)
+  if (redactionPattern) {
+    captureMessage('Composio returned a redacted access token', {
+      level: 'warning',
+      tags: {
+        component: 'composio-client',
+        operation: 'get-connection-token',
+        toolkit: response.toolkit?.slug ?? 'unknown',
+        auth_scheme: String(authScheme ?? 'unknown'),
+        is_composio_managed: String(response.auth_config?.is_composio_managed ?? 'unknown'),
+        redaction_pattern: redactionPattern,
+      },
+      extra: {
+        connectionId,
+        authConfigId: response.auth_config?.id,
+      },
+      fingerprint: ['composio-redacted-token', redactionPattern],
+    })
     throw new ComposioApiError(
-      'Access token is redacted by Composio. Please go to Composio Settings > Project Settings > Project Configuration and disable "Mask Connected Account Secrets" to retrieve actual credentials.',
+      'Access token is redacted by Composio. Disable "Mask Connected Account Secrets" in the Composio project settings. If the connection uses a Composio-managed auth config, credentials are redacted regardless of that setting — migrate to a custom auth config (your own OAuth app) to retrieve actual credentials.',
       403
     )
   }
