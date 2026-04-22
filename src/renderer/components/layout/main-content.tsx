@@ -9,6 +9,7 @@ import { HomePage } from '@renderer/components/home/home-page'
 import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/scheduled-task-view'
 import { WebhookTriggerView } from '@renderer/components/webhook-triggers/webhook-trigger-view'
 import { ChatIntegrationView } from '@renderer/components/chat-integrations/chat-integration-view'
+import { ConnectionsView } from '@renderer/components/connections/connections-view'
 import { BrowserDrawerPanel } from '@renderer/components/browser/browser-drawer-panel'
 import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
@@ -16,7 +17,7 @@ import { Separator } from '@renderer/components/ui/separator'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { DonutChart } from '@renderer/components/ui/donut-chart'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
-import { Power, Square, ChevronLeft, Clock, Loader2, AlertCircle, AlertTriangle, X, CalendarClock, Webhook } from 'lucide-react'
+import { Power, Square, ChevronLeft, Clock, Loader2, AlertCircle, AlertTriangle, X, CalendarClock, Webhook, Link2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useAgent, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
@@ -46,6 +47,7 @@ export function MainContent() {
     selectedWebhookTriggerId: webhookTriggerId,
     selectedChatIntegrationId: chatIntegrationId,
     selectedDashboardSlug: dashboardSlug,
+    selectedConnections: connectionsOpen,
     selectSession,
     selectScheduledTask,
     selectWebhookTrigger,
@@ -152,7 +154,8 @@ export function MainContent() {
 
   const showSessionCrumb = !!(sessionId && session?.agentSlug === agentSlug)
   const showTaskCrumb = !!(scheduledTaskId && scheduledTask)
-  const isAgentLeaf = !showSessionCrumb && !showTaskCrumb
+  const showConnectionsCrumb = !!connectionsOpen
+  const isAgentLeaf = !showSessionCrumb && !showTaskCrumb && !showConnectionsCrumb
 
   return (
     <div className="h-full flex flex-col" data-testid="main-content">
@@ -197,6 +200,15 @@ export function MainContent() {
                 <span className="truncate text-sm font-light text-foreground">
                   {scheduledTask.name || 'Scheduled Task'}
                 </span>
+              </div>
+            </div>
+          )}
+          {showConnectionsCrumb && (
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span aria-hidden="true" className="text-[13px] font-light text-muted-foreground shrink-0 hidden md:block">/</span>
+              <div className="flex items-center gap-1 text-muted-foreground">
+                <Link2 className="h-4 w-4" />
+                <span className="truncate text-[13px] font-light text-foreground">Integrations</span>
               </div>
             </div>
           )}
@@ -383,6 +395,8 @@ export function MainContent() {
       <ErrorBoundary>
         {dashboardSlug ? (
           <DashboardView agentSlug={agentSlug} dashboardSlug={dashboardSlug} />
+        ) : connectionsOpen ? (
+          <ConnectionsView agentSlug={agentSlug} />
         ) : /* Show scheduled task view when a scheduled task is selected */
         scheduledTaskId ? (
           <ScheduledTaskView taskId={scheduledTaskId} agentSlug={agentSlug} />

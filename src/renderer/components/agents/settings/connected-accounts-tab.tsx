@@ -137,14 +137,7 @@ export function ConnectedAccountsTab({ agentSlug }: ConnectedAccountsTabProps) {
   const isLoading = isLoadingAgentAccounts || isLoadingAllAccounts
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h3 className="text-sm font-medium">Connected Accounts</h3>
-        <p className="text-xs text-muted-foreground mt-1">
-          Grant this agent access to your connected OAuth accounts.
-        </p>
-      </div>
-
+    <div className="space-y-6 max-w-[600px]">
       {/* Current agent accounts */}
       {isLoading ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">

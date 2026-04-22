@@ -70,22 +70,7 @@ export function RemoteMcpsTab({ agentSlug, onClose }: RemoteMcpsTabProps) {
   const isLoading = isLoadingAgentMcps || isLoadingAllMcps
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h3 className="text-sm font-medium">Remote MCP Servers</h3>
-        <p className="text-xs text-muted-foreground mt-1">
-          Grant this agent access to remote MCP servers for additional tools and capabilities.
-          {' '}
-          <button
-            type="button"
-            onClick={openGlobalMcpSettings}
-            className="text-primary hover:underline"
-          >
-            Manage global MCP servers
-          </button>
-        </p>
-      </div>
-
+    <div className="space-y-6 max-w-[600px]">
       {/* Current agent MCPs */}
       {isLoading ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">

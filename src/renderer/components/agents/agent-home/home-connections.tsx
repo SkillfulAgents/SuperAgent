@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
-import { ChevronRight, MoreVertical, Plus, Settings, Trash2 } from 'lucide-react'
+import { ArrowUpRight, ChevronRight, MoreVertical, Plus, Settings, Trash2 } from 'lucide-react'
+import { useSelection } from '@renderer/context/selection-context'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -49,6 +50,7 @@ function safeDate(value: string | number): Date {
 export function HomeConnections({ agentSlug, onOpenSettings }: HomeConnectionsProps) {
   const { data: accountsData } = useAgentConnectedAccounts(agentSlug)
   const { data: mcpsData } = useAgentRemoteMcps(agentSlug)
+  const { selectConnections } = useSelection()
 
   const connections = useMemo<ConnectionRow[]>(() => {
     const rows: ConnectionRow[] = []
@@ -89,7 +91,7 @@ export function HomeConnections({ agentSlug, onOpenSettings }: HomeConnectionsPr
   }, [accountsData, mcpsData])
 
   return (
-    <HomeCollapsible title="Connections">
+    <HomeCollapsible title="Integrations">
       {connections.length > 0 ? (
         <div className="mt-2 divide-y divide-border/50">
           {connections.map((conn) => (
@@ -103,9 +105,9 @@ export function HomeConnections({ agentSlug, onOpenSettings }: HomeConnectionsPr
         </div>
       ) : (
         <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
-          <p className="text-xs font-medium text-foreground">No connections yet</p>
+          <p className="text-xs font-medium text-foreground">No integrations yet</p>
           <p className="text-xs mt-1">
-            Connect OAuth accounts or MCP servers to give your agent access to external services like Gmail or Slack.
+            Connect APIs or MCP servers to give your agent access to external services like Gmail or Slack.
           </p>
         </div>
       )}
@@ -133,12 +135,22 @@ export function HomeConnections({ agentSlug, onOpenSettings }: HomeConnectionsPr
             </div>
           </div>
         )}
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => selectConnections(true)}
+            data-testid="home-connections-open-page"
+          >
+            Manage
+            <ArrowUpRight />
+          </Button>
           <Popover>
             <PopoverTrigger asChild>
               <Button type="button" variant="ghost" size="sm">
                 <Plus />
-                Add Connection
+                Add Integration
               </Button>
             </PopoverTrigger>
             <PopoverContent align="end" className="w-56 p-1">
@@ -146,7 +158,7 @@ export function HomeConnections({ agentSlug, onOpenSettings }: HomeConnectionsPr
                 className="flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                 onClick={() => onOpenSettings?.('connected-accounts')}
               >
-                OAuth Account
+                API
                 <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
               </button>
               <button
@@ -158,7 +170,7 @@ export function HomeConnections({ agentSlug, onOpenSettings }: HomeConnectionsPr
               </button>
               <div className="border-t mt-1 pt-1.5 px-2 pb-1.5">
                 <p className="text-xs text-muted-foreground leading-snug">
-                  Your agent will also prompt you to add connections while chatting.
+                  Your agent will also prompt you to add integrations while chatting.
                 </p>
               </div>
             </PopoverContent>
@@ -195,7 +207,7 @@ function ConnectionRowItem({
       }
       setShowDeleteDialog(false)
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to remove connection'
+      const message = error instanceof Error ? error.message : 'Failed to remove integration'
       setRemoveError(message)
     }
   }
@@ -280,9 +292,9 @@ function ConnectionRowItem({
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Remove Connection</AlertDialogTitle>
+            <AlertDialogTitle>Remove Integration</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to remove &quot;{conn.name}&quot; from this agent? The connection itself will not be deleted.
+              Are you sure you want to remove &quot;{conn.name}&quot; from this agent? The integration itself will not be deleted.
             </AlertDialogDescription>
           </AlertDialogHeader>
           {removeError && (
