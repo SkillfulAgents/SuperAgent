@@ -1,5 +1,5 @@
 
-import { ChevronDown, ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard, Loader2, WifiOff, LogOut, User, Users, Ban, Zap, MessageCircle } from 'lucide-react'
+import { ChevronDown, ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard, Loader2, WifiOff, LogOut, User, Users, Ban, Zap, MessageCircle, Pause } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
@@ -252,7 +252,15 @@ function WebhookTriggerSubItem({
 
   const tooltip = trigger.status === 'cancelled'
     ? `Cancelled trigger: ${trigger.triggerType}`
+    : trigger.status === 'paused'
+    ? `Paused trigger: ${trigger.triggerType}`
     : `Trigger: ${trigger.triggerType}`
+
+  const icon = trigger.status === 'cancelled'
+    ? <Ban className="h-3 w-3 shrink-0" />
+    : trigger.status === 'paused'
+    ? <Pause className="h-3 w-3 shrink-0" />
+    : <Zap className="h-3 w-3 shrink-0" />
 
   return (
     <SidebarMenuSubItem>
@@ -265,7 +273,7 @@ function WebhookTriggerSubItem({
           onClick={handleClick}
           className={`flex items-center gap-2 w-full text-muted-foreground ${trigger.status === 'cancelled' ? 'opacity-50' : 'opacity-70'}`}
         >
-          {trigger.status === 'cancelled' ? <Ban className="h-3 w-3 shrink-0" /> : <Zap className="h-3 w-3 shrink-0" />}
+          {icon}
           <span className="truncate">{trigger.name || trigger.triggerType}</span>
         </button>
       </SidebarMenuSubButton>

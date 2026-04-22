@@ -1,0 +1,1 @@
+ALTER TABLE `webhook_triggers` ADD `paused_at` integer;

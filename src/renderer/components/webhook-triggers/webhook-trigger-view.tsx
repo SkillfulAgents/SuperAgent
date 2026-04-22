@@ -7,13 +7,15 @@
 
 
 
-import { Zap, Trash2, Loader2, Settings2 } from 'lucide-react'
+import { Zap, Trash2, Loader2, Settings2, Pause, PlayCircle } from 'lucide-react'
 import { RelatedSessions } from '@renderer/components/sessions/related-sessions'
 import { Button } from '@renderer/components/ui/button'
 import {
   useWebhookTrigger,
   useCancelWebhookTrigger,
   useWebhookTriggerSessions,
+  usePauseWebhookTrigger,
+  useResumeWebhookTrigger,
 } from '@renderer/hooks/use-webhook-triggers'
 import { useSelection } from '@renderer/context/selection-context'
 import { useUser } from '@renderer/context/user-context'
@@ -38,9 +40,13 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
   const { data: trigger, isLoading, error } = useWebhookTrigger(triggerId)
   const { data: sessions = [] } = useWebhookTriggerSessions(triggerId)
   const cancelTrigger = useCancelWebhookTrigger()
+  const pauseTrigger = usePauseWebhookTrigger()
+  const resumeTrigger = useResumeWebhookTrigger()
   const { handleWebhookTriggerDeleted } = useSelection()
   const { canUseAgent } = useUser()
   const canCancel = canUseAgent(agentSlug)
+  const isActive = trigger?.status === 'active' || trigger?.status === 'paused'
+  const isPaused = trigger?.status === 'paused'
 
   const handleCancel = async () => {
     try {
@@ -76,62 +82,92 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Trigger header */}
-      <div className="p-6 border-b">
-        <div className="flex items-start justify-between">
-          <div>
-            <h2 className="text-xl font-semibold mb-2">
-              {trigger.name || trigger.triggerType}
-            </h2>
-            <div className="flex items-center gap-4 text-sm text-muted-foreground">
-              <div className="flex items-center gap-1">
-                <Zap className="h-4 w-4" />
-                <span>{trigger.triggerType}</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <span className={`inline-block w-2 h-2 rounded-full ${
-                  trigger.status === 'active' ? 'bg-green-500' : 'bg-gray-400'
-                }`} />
-                <span className="capitalize">{trigger.status}</span>
-              </div>
-            </div>
-          </div>
+      <div className="p-6 border-b space-y-3">
+        {/* Row 1: title + actions */}
+        <div className="flex items-center justify-between gap-4">
+          <h2 className="text-xl font-semibold truncate">
+            {trigger.name || trigger.triggerType}
+          </h2>
 
-          {trigger.status === 'active' && canCancel && (
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button variant="destructive" size="sm">
-                  <Trash2 className="h-4 w-4 mr-2" />
-                  Cancel Trigger
+          {isActive && canCancel && (
+            <div className="flex items-center gap-2 shrink-0">
+              {!isPaused && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => pauseTrigger.mutate({ triggerId, agentSlug })}
+                  disabled={pauseTrigger.isPending}
+                >
+                  <Pause className="h-4 w-4 mr-2" />
+                  {pauseTrigger.isPending ? 'Pausing...' : 'Pause'}
                 </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Cancel Webhook Trigger</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    Are you sure you want to cancel this webhook trigger? It will stop
-                    receiving events. This action cannot be undone.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Keep Trigger</AlertDialogCancel>
-                  <AlertDialogAction
-                    onClick={handleCancel}
-                    disabled={cancelTrigger.isPending}
-                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                  >
-                    {cancelTrigger.isPending ? (
-                      <>
-                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                        Cancelling...
-                      </>
-                    ) : (
-                      'Cancel Trigger'
-                    )}
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
+              )}
+              {isPaused && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => resumeTrigger.mutate({ triggerId, agentSlug })}
+                  disabled={resumeTrigger.isPending}
+                >
+                  <PlayCircle className="h-4 w-4 mr-2" />
+                  {resumeTrigger.isPending ? 'Resuming...' : 'Resume'}
+                </Button>
+              )}
+
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button variant="destructive" size="sm">
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Cancel Trigger
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Cancel Webhook Trigger</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      Are you sure you want to cancel this webhook trigger? It will stop
+                      receiving events. This action cannot be undone.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Keep Trigger</AlertDialogCancel>
+                    <AlertDialogAction
+                      onClick={handleCancel}
+                      disabled={cancelTrigger.isPending}
+                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                    >
+                      {cancelTrigger.isPending ? (
+                        <>
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          Cancelling...
+                        </>
+                      ) : (
+                        'Cancel Trigger'
+                      )}
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            </div>
           )}
+        </div>
+
+        {/* Row 2: details */}
+        <div className="flex items-center gap-4 text-sm text-muted-foreground">
+          <div className="flex items-center gap-1">
+            <Zap className="h-4 w-4" />
+            <span>{trigger.triggerType}</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className={`inline-block w-2 h-2 rounded-full ${
+              trigger.status === 'active'
+                ? 'bg-green-500'
+                : trigger.status === 'paused'
+                ? 'bg-amber-500'
+                : 'bg-gray-400'
+            }`} />
+            <span className="capitalize">{trigger.status}</span>
+          </div>
         </div>
       </div>
 

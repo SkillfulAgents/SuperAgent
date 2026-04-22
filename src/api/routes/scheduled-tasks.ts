@@ -15,6 +15,8 @@ import {
   markTaskExecuted,
   recordManualExecution,
   updateScheduleExpression,
+  pauseScheduledTask,
+  resumeScheduledTask,
 } from '@shared/lib/services/scheduled-task-service'
 import {
   getSessionsByScheduledTask,
@@ -84,6 +86,44 @@ scheduledTasksRouter.delete('/:taskId', TaskAgentRole('user'), async (c) => {
   }
 })
 
+// POST /api/scheduled-tasks/:taskId/pause - Pause a recurring cron task
+scheduledTasksRouter.post('/:taskId/pause', TaskAgentRole('user'), async (c) => {
+  try {
+    const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
+    if (!task || task.scheduleType !== 'cron') {
+      return c.json({ error: 'Only recurring cron tasks can be paused' }, 400)
+    }
+    const paused = await pauseScheduledTask(task.id)
+    if (!paused) {
+      return c.json({ error: 'Task is not pending' }, 400)
+    }
+    const updated = await getScheduledTask(task.id)
+    return c.json(updated)
+  } catch (error) {
+    console.error('Failed to pause scheduled task:', error)
+    return c.json({ error: 'Failed to pause scheduled task' }, 500)
+  }
+})
+
+// POST /api/scheduled-tasks/:taskId/resume - Resume a paused cron task
+scheduledTasksRouter.post('/:taskId/resume', TaskAgentRole('user'), async (c) => {
+  try {
+    const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
+    if (!task) {
+      return c.json({ error: 'Task not found' }, 404)
+    }
+    const resumed = await resumeScheduledTask(task.id)
+    if (!resumed) {
+      return c.json({ error: 'Task is not paused' }, 400)
+    }
+    const updated = await getScheduledTask(task.id)
+    return c.json(updated)
+  } catch (error) {
+    console.error('Failed to resume scheduled task:', error)
+    return c.json({ error: 'Failed to resume scheduled task' }, 500)
+  }
+})
+
 // POST /api/scheduled-tasks/:taskId/reset - Reset a failed/cancelled task back to pending
 scheduledTasksRouter.post('/:taskId/reset', TaskAgentRole('user'), async (c) => {
   try {
@@ -136,7 +176,7 @@ scheduledTasksRouter.patch('/:taskId/timezone', TaskAgentRole('user'), async (c)
 scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) => {
   try {
     const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
-    if (!task || task.status !== 'pending') {
+    if (!task || (task.status !== 'pending' && task.status !== 'paused')) {
       return c.json({ error: 'Task is not pending' }, 400)
     }
 

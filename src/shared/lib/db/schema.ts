@@ -142,8 +142,8 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   prompt: text('prompt').notNull(),
   name: text('name'),
 
-  // Status: pending, executed, cancelled, failed
-  status: text('status', { enum: ['pending', 'executed', 'cancelled', 'failed'] })
+  // Status: pending, paused, executed, cancelled, failed
+  status: text('status', { enum: ['pending', 'paused', 'executed', 'cancelled', 'failed'] })
     .notNull()
     .default('pending'),
 
@@ -166,6 +166,7 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   cancelledAt: integer('cancelled_at', { mode: 'timestamp_ms' }),
+  pausedAt: integer('paused_at', { mode: 'timestamp_ms' }),
 })
 
 // Notifications - user notifications for session events
@@ -376,6 +377,7 @@ export const webhookTriggers = sqliteTable('webhook_triggers', {
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   cancelledAt: integer('cancelled_at', { mode: 'timestamp_ms' }),
+  pausedAt: integer('paused_at', { mode: 'timestamp_ms' }),
 }, (table) => ({
   agentSlugIdx: index('webhook_triggers_agent_slug_idx').on(table.agentSlug),
   statusIdx: index('webhook_triggers_status_idx').on(table.status),

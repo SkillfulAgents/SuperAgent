@@ -75,6 +75,54 @@ export function useUpdateScheduledTaskTimezone() {
 }
 
 /**
+ * Pause a recurring cron task
+ */
+export function usePauseScheduledTask() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ taskId }: { taskId: string; agentSlug: string }) => {
+      const res = await apiFetch(`/api/scheduled-tasks/${taskId}/pause`, {
+        method: 'POST',
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.error || 'Failed to pause scheduled task')
+      }
+      return res.json() as Promise<ApiScheduledTask>
+    },
+    onSuccess: (data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['scheduled-task', variables.taskId] })
+      queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', variables.agentSlug] })
+    },
+  })
+}
+
+/**
+ * Resume a paused cron task
+ */
+export function useResumeScheduledTask() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ taskId }: { taskId: string; agentSlug: string }) => {
+      const res = await apiFetch(`/api/scheduled-tasks/${taskId}/resume`, {
+        method: 'POST',
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.error || 'Failed to resume scheduled task')
+      }
+      return res.json() as Promise<ApiScheduledTask>
+    },
+    onSuccess: (data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['scheduled-task', variables.taskId] })
+      queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', variables.agentSlug] })
+    },
+  })
+}
+
+/**
  * Run a scheduled task immediately
  */
 export function useRunScheduledTaskNow() {
