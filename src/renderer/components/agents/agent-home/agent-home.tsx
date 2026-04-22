@@ -2,7 +2,7 @@
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { ArrowUp, Loader2, Eye, Settings2, Maximize2, Minimize2, Search, ArrowUpDown } from 'lucide-react'
+import { ArrowUp, Loader2, Eye, Settings2, Maximize2, Minimize2, Search, ArrowUpDown, Check } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { useCreateSession, useSessions } from '@renderer/hooks/use-sessions'
 import { useScheduledTasks } from '@renderer/hooks/use-scheduled-tasks'
@@ -24,7 +24,7 @@ import { HomeExtras } from './home-extras'
 import { HomeConnections } from './home-connections'
 import { HomeVolumes } from './home-volumes'
 import { HomeBookmarks } from './home-bookmarks'
-import type { ApiAgent } from '@renderer/hooks/use-agents'
+import { useUpdateAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { formatDistanceToNow } from 'date-fns'
 
@@ -48,6 +48,33 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const [effort, setEffort] = useState<EffortLevel>('high')
   const sessionSearchRef = useRef<HTMLInputElement>(null)
   const createSession = useCreateSession()
+  const updateAgent = useUpdateAgent()
+  const [isEditingName, setIsEditingName] = useState(false)
+  const [editedName, setEditedName] = useState(agent.name)
+
+  const handleStartRename = () => {
+    setEditedName(agent.name)
+    setIsEditingName(true)
+  }
+
+  const handleCancelRename = () => {
+    setIsEditingName(false)
+    setEditedName(agent.name)
+  }
+
+  const handleSaveRename = async () => {
+    const trimmed = editedName.trim()
+    if (!trimmed || trimmed === agent.name) {
+      handleCancelRename()
+      return
+    }
+    try {
+      await updateAgent.mutateAsync({ slug: agent.slug, name: trimmed })
+      setIsEditingName(false)
+    } catch (error) {
+      console.error('Failed to rename agent:', error)
+    }
+  }
 
   const { data: sessionsData } = useSessions(agent.slug)
   const sessions = useMemo(() => {
@@ -146,9 +173,58 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
       <div className={`grid gap-10 items-start ${showRightColumn ? 'grid-cols-1 xl:grid-cols-[1fr_minmax(320px,400px)] w-full max-w-6xl mx-auto' : 'max-w-2xl mx-auto'}`}>
         {/* Left Column — Chat composer + Sessions */}
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
-          <div className="flex items-center justify-between">
-            <h1 className="text-xl font-semibold">{agent.name}</h1>
-            <Button type="button" size="icon" variant="ghost" className="h-8 w-8" onClick={() => onOpenSettings?.()} aria-label="Agent settings" data-testid="agent-settings-button">
+          <div className="flex items-center justify-between gap-2">
+            {isEditingName && isOwner ? (
+              <div className="flex items-center gap-2 flex-1 min-w-0">
+                <Input
+                  value={editedName}
+                  onChange={(e) => setEditedName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      handleSaveRename()
+                    } else if (e.key === 'Escape') {
+                      e.preventDefault()
+                      handleCancelRename()
+                    }
+                  }}
+                  autoFocus
+                  disabled={updateAgent.isPending}
+                  className="h-9 text-xl font-semibold"
+                  data-testid="agent-name-input"
+                />
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="h-8 w-8 shrink-0"
+                  onClick={handleSaveRename}
+                  disabled={updateAgent.isPending}
+                  aria-label="Save name"
+                  data-testid="agent-name-save"
+                >
+                  {updateAgent.isPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Check className="h-4 w-4" />
+                  )}
+                </Button>
+              </div>
+            ) : isOwner ? (
+              <button
+                type="button"
+                className="text-xl font-semibold truncate text-left cursor-pointer hover:opacity-80"
+                onClick={handleStartRename}
+                data-testid="agent-name"
+              >
+                {agent.name}
+              </button>
+            ) : (
+              <h1 className="text-xl font-semibold truncate" data-testid="agent-name">
+                {agent.name}
+              </h1>
+            )}
+            <Button type="button" size="icon" variant="ghost" className="h-8 w-8 shrink-0" onClick={() => onOpenSettings?.()} aria-label="Agent settings" data-testid="agent-settings-button">
               <Settings2 className="h-4 w-4" />
             </Button>
           </div>
