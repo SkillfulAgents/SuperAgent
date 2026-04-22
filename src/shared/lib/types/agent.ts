@@ -96,6 +96,8 @@ export interface SessionMetadata {
   slashCommands?: SlashCommandInfo[]
   // Last effort level used by the user on this session (seeds the composer on reload)
   effort?: EffortLevel
+  // X-Agent: present when this session was created by another agent invoking this one
+  invokedByAgentSlug?: string
 }
 
 /**
