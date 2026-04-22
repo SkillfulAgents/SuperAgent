@@ -189,11 +189,6 @@ function createWindow() {
     ...(process.platform === 'win32' && {
       backgroundMaterial: 'acrylic' as const,
       titleBarStyle: 'hidden' as const,
-      titleBarOverlay: {
-        height: 48,
-        color: '#00000000',
-        symbolColor: '#888888',
-      },
     }),
   })
 
@@ -272,12 +267,37 @@ function createWindow() {
     mainWindow?.webContents.send('fullscreen-change', false)
   })
 
+  // Emit maximize state so the custom Windows title-bar controls can toggle their icon
+  mainWindow.on('maximize', () => {
+    mainWindow?.webContents.send('window-maximized-change', true)
+  })
+  mainWindow.on('unmaximize', () => {
+    mainWindow?.webContents.send('window-maximized-change', false)
+  })
+
   processPendingProtocolUrls()
 }
 
 // IPC handler for getting full screen state
 ipcMain.handle('get-fullscreen-state', () => {
   return mainWindow?.isFullScreen() ?? false
+})
+
+// Custom Windows title-bar controls (Windows uses titleBarStyle: 'hidden' without overlay,
+// so we draw our own buttons in the renderer and drive them via these IPCs).
+ipcMain.on('window-minimize', () => {
+  mainWindow?.minimize()
+})
+ipcMain.on('window-toggle-maximize', () => {
+  if (!mainWindow) return
+  if (mainWindow.isMaximized()) mainWindow.unmaximize()
+  else mainWindow.maximize()
+})
+ipcMain.on('window-close', () => {
+  mainWindow?.close()
+})
+ipcMain.handle('get-window-maximized-state', () => {
+  return mainWindow?.isMaximized() ?? false
 })
 
 // IPC handler for getting the API URL (port may vary)
