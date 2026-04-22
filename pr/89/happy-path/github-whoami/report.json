@@ -1,27 +1,28 @@
 {
   "storyId": "github-whoami",
   "passed": true,
-  "reason": "Verified that agent can use GitHub tool to check authenticated user and return GitHub username",
+  "reason": "Verified that the agent can use GitHub tool to retrieve authenticated user information and return the GitHub username.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully with agent sidebar visible",
-    "Clicked on \"QA-20260418-190644-9nry\" agent in sidebar — Agent page opened and displayed",
-    "Verified agent status is \"running\" or \"idle\" — Status was \"idle\" as required",
-    "Sent message \"Use the GitHub tool to check who I am. Tell me my GitHub username.\" — Message sent successfully, agent transitioned to \"working\" state, session \"GitHub Username Verification Request\" created",
-    "Account access request card appeared for GitHub — Card displayed asking to allow access to GitHub",
-    "Clicked \"Allow Access (1)\" button to grant GitHub account access — Access granted successfully, agent resumed processing with Bash tool execution",
-    "API request review dialog appeared for GitHub GET /user — Allowed the request via \"Allow Once\" option",
-    "Waited for response completion — Response received successfully within 33 seconds (well within 4-minute limit)",
-    "Verified response includes GitHub username — Response displays \"Your GitHub username is yiw190.\" — Took final screenshot documenting the result"
+    "Navigated to http://localhost:47891 - Page loaded successfully showing sidebar with three agents including \"QA-20260422-010340-qt9q\"",
+    "Clicked on \"QA-20260422-010340-qt9q\" agent in the sidebar - Agent detail page opened with agent landing page displayed",
+    "Verified agent status is \"running\" or \"idle\" - Agent status shown as \"idle\" in top-right corner, requirement satisfied",
+    "Sent message \"Use the GitHub tool to check who I am. Tell me my GitHub username.\" - Message typed in input field and sent successfully, agent status changed to \"working\"",
+    "Account access request card appeared asking to grant GitHub account access - Card displayed with GitHub account already checked and \"Allow Access (1)\" button visible",
+    "Clicked \"Allow Access (1)\" button - GitHub account access granted, agent resumed processing and changed status to \"working\"",
+    "API Request Review card appeared asking to allow \"GET /user\" GitHub API call - Card displayed asking \"Allow get the authenticated user?\"",
+    "Clicked \"Allow\" button on API request - Permission dialog appeared with \"Allow Once\" option",
+    "Clicked \"Allow Once\" to confirm permission - Agent completed processing and returned response",
+    "Verified response includes GitHub username - Response displayed: \"Your GitHub username is yiw190.\" Agent status returned to \"idle\" after 25s of work"
   ],
   "bugs": [],
-  "durationMs": 92156,
-  "sessionId": "9cf131a1-a292-48b3-a692-4f900dd9ec11",
+  "durationMs": 118056,
+  "sessionId": "4a04b1ea-75ee-4f1c-9c46-665940666c7b",
   "cost": {
-    "inputTokens": 396,
-    "outputTokens": 12265,
-    "cacheCreationTokens": 63814,
-    "cacheReadTokens": 1589461,
+    "inputTokens": 450,
+    "outputTokens": 12484,
+    "cacheCreationTokens": 72162,
+    "cacheReadTokens": 1893797,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.300435
+    "totalCostUsd": 0.342452
   }
 }

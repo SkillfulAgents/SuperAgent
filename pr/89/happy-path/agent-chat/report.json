@@ -1,24 +1,27 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "All test steps executed successfully. Agent \"QA-20260418-190641-l2rp\" responded correctly to the math question with the answer \"4\" within 3 seconds.",
+  "reason": "Agent QA-20260422-010337-b0up successfully responded to message \"Hello! What is 2+2?\" with the correct answer \"4\"",
   "steps": [
-    "Step 1 - Navigated to http://localhost:47891 — App loaded successfully showing home page with three agents in sidebar.",
-    "Step 2 - Found and clicked \"QA-20260418-190641-l2rp\" agent in sidebar — Agent detail page opened successfully, showing agent name in header and sidebar session list expanded.",
-    "Step 3 - Verified agent status — Status indicator showed \"idle\" (blue dot), which meets requirement of \"running\" or \"idle\".",
-    "Step 4 - Sent message \"Hello! What is 2+2?\" — Message was typed into input field successfully, send button became enabled, and message was submitted. Agent status changed to \"working\" and new session \"Basic Math Question Session\" was created.",
-    "Step 5 - Waited for response — Agent responded in approximately 3 seconds (well within 3-minute limit). Activity indicator showed \"Working...\" during processing, then agent returned to \"idle\" status.",
-    "Step 6 - Verified response mentions \"4\" — Agent response clearly displayed the number \"4\" in the chat view, with processing time shown as \"Worked for 3s\". User message shown as \"Hello! What is 2+2?\" at top right of conversation."
+    "Navigated to http://localhost:47891 — page loaded successfully with Super Agent application displayed",
+    "Found the \"QA-20260422-010337-b0up\" agent in the sidebar — agent was visible with \"idle\" status",
+    "Clicked on the \"QA-20260422-010337-b0up\" agent — agent detail page opened successfully",
+    "Verified agent status is \"running\" or \"idle\" — agent status showed \"idle\" which meets requirement",
+    "Typed message \"Hello! What is 2+2?\" in the input field — message displayed correctly in text input",
+    "Clicked Send button to submit the message — message sent successfully, agent status changed to \"working\"",
+    "Waited for agent response — agent responded within 1 second with \"4\" displayed prominently",
+    "Verified response mentions \"4\" — response clearly shows \"4\" as the answer to 2+2, with \"Worked for 1s\" indicating processing time",
+    "Took screenshot of final response — screenshot captured showing user message and agent's correct response"
   ],
   "bugs": [],
-  "durationMs": 83357,
-  "sessionId": "25528c23-1859-4032-80c4-30165007eb25",
+  "durationMs": 73942,
+  "sessionId": "31814079-b68f-4754-8084-66b849828396",
   "cost": {
     "inputTokens": 315,
-    "outputTokens": 12029,
-    "cacheCreationTokens": 132489,
-    "cacheReadTokens": 1126755,
+    "outputTokens": 9607,
+    "cacheCreationTokens": 130471,
+    "cacheReadTokens": 1121873,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.338747
+    "totalCostUsd": 0.323626
   }
 }
