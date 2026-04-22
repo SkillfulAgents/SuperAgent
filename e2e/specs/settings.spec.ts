@@ -307,16 +307,13 @@ test.describe('Custom environment variables', () => {
     await openSettings(page)
     await goToTab(page, 'runtime')
 
-    // Handle the browser prompt() dialog
-    page.on('dialog', async (dialog) => {
-      expect(dialog.type()).toBe('prompt')
-      await dialog.accept('MY_TEST_VAR')
-    })
+    await page.getByRole('button', { name: 'Add Variable' }).click()
+    const dialog = page.getByRole('dialog').filter({ hasText: 'Add Custom Environment Variable' })
+    await expect(dialog).toBeVisible()
+    await dialog.getByLabel('Variable Name').fill('MY_TEST_VAR')
 
-    // Click Add Variable
-    const addBtn = page.getByRole('button', { name: 'Add Variable' })
     const savePromise = waitForSettingsSave(page)
-    await addBtn.click()
+    await dialog.getByRole('button', { name: 'Add Variable' }).click()
     await savePromise
 
     // The variable should appear in the list (key input is disabled, shows the name)
@@ -343,21 +340,23 @@ test.describe('Custom environment variables', () => {
     await openSettings(page)
     await goToTab(page, 'runtime')
 
-    // Add a variable first
-    page.on('dialog', async (dialog) => {
-      await dialog.accept('EDIT_TEST_VAR')
-    })
-    const addPromise = waitForSettingsSave(page)
     await page.getByRole('button', { name: 'Add Variable' }).click()
+    const dialog = page.getByRole('dialog').filter({ hasText: 'Add Custom Environment Variable' })
+    await expect(dialog).toBeVisible()
+    await dialog.getByLabel('Variable Name').fill('EDIT_TEST_VAR')
+
+    const addPromise = waitForSettingsSave(page)
+    await dialog.getByRole('button', { name: 'Add Variable' }).click()
     await addPromise
 
     // Find the value input (sibling of the key input)
     const row = page.locator('input[disabled][value="EDIT_TEST_VAR"]').locator('..')
     const valueInput = row.locator('input:not([disabled])').first()
 
-    // Type a value — wait for the onChange save before blurring to avoid race condition
-    const fillPromise = waitForSettingsSave(page)
+    // Persist on blur, matching the runtime tab behavior.
     await valueInput.fill('hello-world')
+    const fillPromise = waitForSettingsSave(page)
+    await valueInput.blur()
     await fillPromise
 
     // Close, reopen, verify value persisted
