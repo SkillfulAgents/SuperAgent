@@ -1,6 +1,6 @@
 
 import * as React from 'react'
-import { Settings, FileText, KeyRound, Sparkles, Link2, ScrollText, Users, HardDrive, MessageCircle, Network } from 'lucide-react'
+import { Settings, FileText, KeyRound, Sparkles, ScrollText, Users, HardDrive, MessageCircle, Network } from 'lucide-react'
 import { useUser } from '@renderer/context/user-context'
 import { Button } from '@renderer/components/ui/button'
 import { SettingsDialog, SettingsDialogTab } from '@renderer/components/ui/settings-dialog'
@@ -9,7 +9,6 @@ import { GeneralTab } from './settings/general-tab'
 import { SystemPromptTab } from './settings/system-prompt-tab'
 import { SecretsTab } from './settings/secrets-tab'
 import { SkillsTab } from './settings/skills-tab'
-import { ConnectionsTab } from './settings/connections-tab'
 import { AuditLogTab } from './settings/audit-log-tab'
 import { AccessTab } from './settings/access-tab'
 import { VolumesTab } from './settings/volumes-tab'
@@ -54,11 +53,6 @@ export function AgentSettingsDialog({
 
   const hasChanges = name !== agent.name || instructions !== (agent.instructions || '')
 
-  const resolvedInitialTab =
-    initialTab === 'connected-accounts' || initialTab === 'remote-mcps'
-      ? 'connections'
-      : initialTab
-
   const saveFooter = (
     <div className="flex items-center justify-end gap-2 border-t p-4">
       <Button variant="outline" onClick={() => onOpenChange(false)}>
@@ -88,7 +82,7 @@ export function AgentSettingsDialog({
       onOpenChange={onOpenChange}
       title="Settings"
       description={`Configure settings for ${agent.name}`}
-      initialTab={resolvedInitialTab}
+      initialTab={initialTab}
       overlay={permissionOverlay}
       inert={isAuthMode && rolesReady && !isOwner}
       data-testid="agent-settings-dialog"
@@ -119,9 +113,6 @@ export function AgentSettingsDialog({
           <VolumesTab agentSlug={agent.slug} />
         </SettingsDialogTab>
       )}
-      <SettingsDialogTab id="connections" label="Connections" icon={<Link2 className="h-4 w-4" />}>
-        <ConnectionsTab agentSlug={agent.slug} />
-      </SettingsDialogTab>
       <SettingsDialogTab id="chat-integrations" label="Chat" icon={<MessageCircle className="h-4 w-4" />}>
         <ChatIntegrationsTab agentSlug={agent.slug} />
       </SettingsDialogTab>

@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Settings, Pencil, Shield, Trash2, Loader2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Check, Pencil, RefreshCw, Settings, Shield, Trash2, Wrench, X, Loader2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
@@ -27,8 +27,12 @@ import {
 } from '@renderer/hooks/use-connected-accounts'
 import {
   useDeleteRemoteMcp,
+  useDiscoverMcpTools,
+  useInitiateMcpOAuth,
   useRenameRemoteMcp,
+  useTestMcpConnection,
 } from '@renderer/hooks/use-remote-mcps'
+import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
 import { ScopePolicyEditor } from '@renderer/components/settings/scope-policy-editor'
 import { ToolPolicyEditor } from '@renderer/components/settings/tool-policy-editor'
 
@@ -48,12 +52,18 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools }: Int
   const [renameValue, setRenameValue] = useState(name)
   const [scopesOpen, setScopesOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
+  const [toolsOpen, setToolsOpen] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [mcpStatus, setMcpStatus] = useState<{ kind: 'success' | 'error'; message: string } | null>(null)
+  const [toolsError, setToolsError] = useState<string | null>(null)
 
   const renameAccount = useRenameConnectedAccount()
   const renameMcp = useRenameRemoteMcp()
   const deleteAccount = useDeleteConnectedAccount()
   const deleteMcp = useDeleteRemoteMcp()
+  const testMcpConnection = useTestMcpConnection()
+  const discoverMcpTools = useDiscoverMcpTools()
+  const initiateMcpOAuth = useInitiateMcpOAuth()
 
   const renamePending = type === 'oauth' ? renameAccount.isPending : renameMcp.isPending
   const deletePending = type === 'oauth' ? deleteAccount.isPending : deleteMcp.isPending
@@ -75,6 +85,65 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools }: Int
     setActionError(null)
     setDeleteOpen(true)
   }
+
+  const runTestConnection = async () => {
+    setMcpStatus(null)
+    try {
+      const result = await testMcpConnection.mutateAsync(id)
+      if (result.success) {
+        setMcpStatus({ kind: 'success', message: 'Connection OK' })
+      } else {
+        setMcpStatus({ kind: 'error', message: result.error ?? 'Connection failed' })
+      }
+    } catch (err) {
+      setMcpStatus({
+        kind: 'error',
+        message: err instanceof Error ? err.message : 'Test connection failed',
+      })
+    }
+  }
+
+  const runReconnect = async () => {
+    const popup = prepareOAuthPopup()
+    try {
+      const result = await initiateMcpOAuth.mutateAsync({
+        mcpId: id,
+        electron: !!window.electronAPI,
+      })
+      if (result.redirectUrl) {
+        await popup.navigate(result.redirectUrl)
+      } else {
+        popup.close()
+        // Non-OAuth MCP (or already authed) — re-test so the button updates.
+        await runTestConnection()
+      }
+    } catch (err) {
+      popup.close()
+      setMcpStatus({
+        kind: 'error',
+        message: err instanceof Error ? err.message : 'Reconnect failed',
+      })
+    }
+  }
+
+  const openTools = () => {
+    setMenuOpen(false)
+    setToolsError(null)
+    setToolsOpen(true)
+  }
+
+  const refreshTools = async () => {
+    setToolsError(null)
+    try {
+      await discoverMcpTools.mutateAsync(id)
+    } catch (err) {
+      setToolsError(err instanceof Error ? err.message : 'Discover tools failed')
+    }
+  }
+
+  useEffect(() => {
+    if (!menuOpen) setMcpStatus(null)
+  }, [menuOpen])
 
   const submitRename = async () => {
     const next = renameValue.trim()
@@ -152,6 +221,16 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools }: Int
               Edit permissions
             </button>
           )}
+          {type === 'mcp' && (
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+              onClick={openTools}
+            >
+              <Wrench className="h-3.5 w-3.5" />
+              Discover tools
+            </button>
+          )}
           <button
             type="button"
             className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition-colors"
@@ -160,6 +239,43 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools }: Int
             <Trash2 className="h-3.5 w-3.5" />
             Delete
           </button>
+          {type === 'mcp' && (
+            <>
+              <div className="my-1 h-px bg-border" role="separator" />
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors disabled:opacity-50"
+                onClick={() => {
+                  if (mcpStatus?.kind === 'error') void runReconnect()
+                  else void runTestConnection()
+                }}
+                disabled={
+                  testMcpConnection.isPending ||
+                  discoverMcpTools.isPending ||
+                  initiateMcpOAuth.isPending
+                }
+              >
+                {testMcpConnection.isPending || initiateMcpOAuth.isPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : mcpStatus?.kind === 'success' ? (
+                  <span className="flex h-3.5 w-3.5 items-center justify-center rounded-sm bg-emerald-500/15">
+                    <Check className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+                  </span>
+                ) : mcpStatus?.kind === 'error' ? (
+                  <span className="flex h-3.5 w-3.5 items-center justify-center rounded-sm bg-destructive/15">
+                    <X className="h-3 w-3 text-destructive" />
+                  </span>
+                ) : (
+                  <RefreshCw className="h-3.5 w-3.5" />
+                )}
+                {mcpStatus?.kind === 'success'
+                  ? 'Connected'
+                  : mcpStatus?.kind === 'error'
+                    ? 'Reconnect'
+                    : 'Test connection'}
+              </button>
+            </>
+          )}
         </PopoverContent>
       </Popover>
 
@@ -255,6 +371,66 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools }: Int
           open={scopesOpen}
           onOpenChange={setScopesOpen}
         />
+      )}
+
+      {/* Discover tools dialog */}
+      {type === 'mcp' && (
+        <Dialog
+          open={toolsOpen}
+          onOpenChange={(open) => {
+            if (!discoverMcpTools.isPending) setToolsOpen(open)
+          }}
+        >
+          <DialogContent hideClose onClick={(e) => e.stopPropagation()}>
+            <DialogHeader>
+              <div className="flex items-start justify-between gap-2">
+                <div className="space-y-1.5">
+                  <DialogTitle>Tools for {name}</DialogTitle>
+                  <DialogDescription>
+                    {mcpTools && mcpTools.length > 0
+                      ? `${mcpTools.length} tool${mcpTools.length === 1 ? '' : 's'} available.`
+                      : 'No tools discovered yet. Refresh to fetch the catalog.'}
+                  </DialogDescription>
+                </div>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  onClick={() => { void refreshTools() }}
+                  disabled={discoverMcpTools.isPending}
+                  aria-label="Refresh tools"
+                >
+                  {discoverMcpTools.isPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-4 w-4" />
+                  )}
+                </Button>
+              </div>
+            </DialogHeader>
+            <div className="max-h-[50vh] overflow-y-auto py-1">
+              {mcpTools && mcpTools.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5">
+                  {mcpTools.map((tool) => (
+                    <span
+                      key={tool.name}
+                      className="rounded-md border bg-muted/50 px-2 py-1 text-[11px] text-foreground"
+                    >
+                      {tool.name}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p className="py-6 text-center text-xs text-muted-foreground">
+                  No tools to show.
+                </p>
+              )}
+            </div>
+            {toolsError && (
+              <p className="text-xs text-destructive" role="alert">{toolsError}</p>
+            )}
+          </DialogContent>
+        </Dialog>
       )}
     </>
   )

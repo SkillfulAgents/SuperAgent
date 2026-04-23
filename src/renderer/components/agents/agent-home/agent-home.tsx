@@ -408,7 +408,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
               formatDate={formatDate}
               onSelectTask={selectScheduledTask}
             />
-            <HomeConnections agentSlug={agent.slug} onOpenSettings={onOpenSettings} />
+            <HomeConnections agentSlug={agent.slug} />
             <HomeSkills agentSlug={agent.slug} />
             <HomeVolumes agentSlug={agent.slug} />
             <HomeExtras agentSlug={agent.slug} onOpenSettings={onOpenSettings} />

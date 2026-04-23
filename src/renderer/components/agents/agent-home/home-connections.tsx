@@ -20,11 +20,8 @@ import { HomeCollapsible } from './home-collapsible'
 import { HomeRow } from './home-row'
 import { formatDistanceToNow } from 'date-fns'
 
-type SettingsTab = 'connected-accounts' | 'remote-mcps'
-
 interface HomeConnectionsProps {
   agentSlug: string
-  onOpenSettings?: (tab?: SettingsTab) => void
 }
 
 interface ConnectionRow {
@@ -35,7 +32,6 @@ interface ConnectionRow {
   iconSlug?: string
   type: 'oauth' | 'mcp'
   date: string | number
-  settingsTab: SettingsTab
 }
 
 // MCP's `mappedAt` can be a numeric-string epoch in ms, not an ISO date.
@@ -47,7 +43,7 @@ function safeDate(value: string | number): Date {
   return Number.isFinite(num) ? new Date(num) : new Date(value)
 }
 
-export function HomeConnections({ agentSlug, onOpenSettings }: HomeConnectionsProps) {
+export function HomeConnections({ agentSlug }: HomeConnectionsProps) {
   const { data: accountsData } = useAgentConnectedAccounts(agentSlug)
   const { data: mcpsData } = useAgentRemoteMcps(agentSlug)
   const { selectConnections } = useSelection()
@@ -65,7 +61,6 @@ export function HomeConnections({ agentSlug, onOpenSettings }: HomeConnectionsPr
           iconSlug: account.toolkitSlug,
           type: 'oauth',
           date: account.createdAt,
-          settingsTab: 'connected-accounts',
         })
       }
     }
@@ -80,7 +75,6 @@ export function HomeConnections({ agentSlug, onOpenSettings }: HomeConnectionsPr
           iconSlug: undefined,
           type: 'mcp',
           date: mcp.mappedAt,
-          settingsTab: 'remote-mcps',
         })
       }
     }
@@ -99,7 +93,7 @@ export function HomeConnections({ agentSlug, onOpenSettings }: HomeConnectionsPr
               key={conn.id}
               conn={conn}
               agentSlug={agentSlug}
-              onConfigure={() => onOpenSettings?.(conn.settingsTab)}
+              onConfigure={() => selectConnections(true)}
             />
           ))}
         </div>
