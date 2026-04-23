@@ -20,6 +20,7 @@ import {
   useRemoveMcpFromAgent,
 } from '@renderer/hooks/use-remote-mcps'
 import { COMMON_MCP_SERVERS } from '@shared/lib/mcp/common-servers'
+import { safeDate } from '@renderer/components/connections/utils'
 
 interface ConnectionsTabProps {
   agentSlug: string
@@ -75,12 +76,6 @@ interface UnifiedRow {
   granted: boolean
   toolkit?: string
   mcpTools?: Array<{ name: string; description?: string }>
-}
-
-function safeDate(value: string | number): Date {
-  if (typeof value === 'number') return new Date(value)
-  const num = Number(value)
-  return Number.isFinite(num) ? new Date(num) : new Date(value)
 }
 
 interface AllConnectionsListProps {

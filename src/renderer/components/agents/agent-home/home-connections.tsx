@@ -19,6 +19,7 @@ import { useAgentRemoteMcps, useRemoveMcpFromAgent } from '@renderer/hooks/use-r
 import { HomeCollapsible } from './home-collapsible'
 import { HomeRow } from './home-row'
 import { formatDistanceToNow } from 'date-fns'
+import { safeDate } from '@renderer/components/connections/utils'
 
 interface HomeConnectionsProps {
   agentSlug: string
@@ -32,15 +33,6 @@ interface ConnectionRow {
   iconSlug?: string
   type: 'oauth' | 'mcp'
   date: string | number
-}
-
-// MCP's `mappedAt` can be a numeric-string epoch in ms, not an ISO date.
-// Accounts store `createdAt` as a real ISO string, so the numeric branch
-// only protects the MCP case.
-function safeDate(value: string | number): Date {
-  if (typeof value === 'number') return new Date(value)
-  const num = Number(value)
-  return Number.isFinite(num) ? new Date(num) : new Date(value)
 }
 
 export function HomeConnections({ agentSlug }: HomeConnectionsProps) {
