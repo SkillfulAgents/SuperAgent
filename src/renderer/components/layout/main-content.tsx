@@ -17,7 +17,7 @@ import { Separator } from '@renderer/components/ui/separator'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { DonutChart } from '@renderer/components/ui/donut-chart'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
-import { Power, Square, ChevronLeft, Clock, Loader2, AlertCircle, AlertTriangle, X, CalendarClock, Webhook, Link2 } from 'lucide-react'
+import { Power, Square, ChevronLeft, Clock, Loader2, AlertCircle, AlertTriangle, X, CalendarClock, Webhook } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useAgent, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
@@ -206,10 +206,7 @@ export function MainContent() {
           {showConnectionsCrumb && (
             <div className="flex items-center gap-1.5 min-w-0">
               <span aria-hidden="true" className="text-[13px] font-light text-muted-foreground shrink-0 hidden md:block">/</span>
-              <div className="flex items-center gap-1 text-muted-foreground">
-                <Link2 className="h-4 w-4" />
-                <span className="truncate text-[13px] font-light text-foreground">Integrations</span>
-              </div>
+              <span className="truncate text-[13px] font-light text-foreground">Connections</span>
             </div>
           )}
         </div>

@@ -80,6 +80,31 @@ export function useAddRemoteMcp() {
 }
 
 /**
+ * Rename a remote MCP server
+ */
+export function useRenameRemoteMcp() {
+  const queryClient = useQueryClient()
+
+  return useMutation<void, Error, { mcpId: string; name: string }>({
+    mutationFn: async ({ mcpId, name }) => {
+      const res = await apiFetch(`/api/remote-mcps/${mcpId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      })
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({}))
+        throw new Error(error.error || 'Failed to rename MCP server')
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['remote-mcps'] })
+      queryClient.invalidateQueries({ queryKey: ['agent-remote-mcps'] })
+    },
+  })
+}
+
+/**
  * Delete a remote MCP server
  */
 export function useDeleteRemoteMcp() {

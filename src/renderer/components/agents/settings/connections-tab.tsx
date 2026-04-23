@@ -1,11 +1,12 @@
-import { useMemo, useState } from 'react'
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@renderer/components/ui/tabs'
+import { useEffect, useMemo, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { Switch } from '@renderer/components/ui/switch'
 import { Button } from '@renderer/components/ui/button'
 import { Loader2, Plus } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
-import { IntegrationDirectoryDialog, type DirectoryTab } from '@renderer/components/connections/integration-directory-dialog'
+import { IntegrationDirectoryDialog } from '@renderer/components/connections/integration-directory-dialog'
 import { IntegrationList, IntegrationRow } from '@renderer/components/connections/integration-row'
+import { IntegrationRowActions } from '@renderer/components/connections/integration-row-actions'
 import {
   useConnectedAccounts,
   useAgentConnectedAccounts,
@@ -19,56 +20,46 @@ import {
   useRemoveMcpFromAgent,
 } from '@renderer/hooks/use-remote-mcps'
 import { COMMON_MCP_SERVERS } from '@shared/lib/mcp/common-servers'
-import { ConnectedAccountsTab } from './connected-accounts-tab'
-import { RemoteMcpsTab } from './remote-mcps-tab'
-
-export type ConnectionsSubtab = 'all' | 'accounts' | 'mcps'
 
 interface ConnectionsTabProps {
   agentSlug: string
-  onClose?: () => void
-  initialSubtab?: ConnectionsSubtab
+  /** Render the "New integration" action row above the list. Defaults to true. */
+  showNewButton?: boolean
 }
 
-export function ConnectionsTab({ agentSlug, onClose, initialSubtab = 'all' }: ConnectionsTabProps) {
-  const [subtab, setSubtab] = useState<ConnectionsSubtab>(initialSubtab)
-  const [directoryOpen, setDirectoryOpen] = useState(false)
+export function ConnectionsTab({ agentSlug, showNewButton = true }: ConnectionsTabProps) {
+  return (
+    <div className="flex flex-col gap-4">
+      {showNewButton && (
+        <div className="flex items-center justify-end gap-2">
+          <NewIntegrationButton />
+        </div>
+      )}
+      <AllConnectionsList agentSlug={agentSlug} />
+    </div>
+  )
+}
 
-  const directoryInitialTab: DirectoryTab = subtab === 'mcps' ? 'mcps' : 'apis'
+export function NewIntegrationButton() {
+  const [open, setOpen] = useState(false)
 
   return (
-    <Tabs value={subtab} onValueChange={(v) => setSubtab(v as ConnectionsSubtab)} className="flex flex-col gap-4">
-      <div className="flex items-center justify-between gap-2">
-        <TabsList>
-          <TabsTrigger value="all" data-testid="connections-subtab-all">All</TabsTrigger>
-          <TabsTrigger value="accounts" data-testid="connections-subtab-accounts">APIs</TabsTrigger>
-          <TabsTrigger value="mcps" data-testid="connections-subtab-mcps">MCPs</TabsTrigger>
-        </TabsList>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setDirectoryOpen(true)}
-          data-testid="connections-add-button"
-        >
-          <Plus className="h-4 w-4 mr-1.5" />
-          New integration
-        </Button>
-        <IntegrationDirectoryDialog
-          open={directoryOpen}
-          onOpenChange={setDirectoryOpen}
-          initialTab={directoryInitialTab}
-        />
-      </div>
-      <TabsContent value="all" className="mt-0">
-        <AllConnectionsList agentSlug={agentSlug} />
-      </TabsContent>
-      <TabsContent value="accounts" className="mt-0">
-        <ConnectedAccountsTab agentSlug={agentSlug} />
-      </TabsContent>
-      <TabsContent value="mcps" className="mt-0">
-        <RemoteMcpsTab agentSlug={agentSlug} onClose={onClose} />
-      </TabsContent>
-    </Tabs>
+    <>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => setOpen(true)}
+        data-testid="connections-add-button"
+      >
+        <Plus className="h-4 w-4 mr-1.5" />
+        New connection
+      </Button>
+      <IntegrationDirectoryDialog
+        open={open}
+        onOpenChange={setOpen}
+        initialTab="apis"
+      />
+    </>
   )
 }
 
@@ -78,10 +69,12 @@ interface UnifiedRow {
   name: string
   subtitle?: string
   iconSlug?: string
-  iconFallback: 'oauth' | 'mcp'
+  iconFallback: 'oauth' | 'mcp' | 'blocks'
   type: 'oauth' | 'mcp'
   date: string | number
   granted: boolean
+  toolkit?: string
+  mcpTools?: Array<{ name: string; description?: string }>
 }
 
 function safeDate(value: string | number): Date {
@@ -105,6 +98,11 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
   const assignMcp = useAssignMcpToAgent()
   const removeMcp = useRemoveMcpFromAgent()
 
+  // Optimistic overrides keyed by row.key. Keeps the row visually in its new
+  // section while the mutation is in-flight so the View Transition can animate
+  // the move. Entries are cleared once the server-side truth matches.
+  const [grantOverrides, setGrantOverrides] = useState<Record<string, boolean>>({})
+
   const { grantedRows, notGrantedRows } = useMemo<{
     grantedRows: UnifiedRow[]
     notGrantedRows: UnifiedRow[]
@@ -113,8 +111,10 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
 
     const agentAccountIds = new Set((agentAccountsData?.accounts ?? []).map((a) => a.id))
     for (const account of allAccountsData?.accounts ?? []) {
+      const key = `account-${account.id}`
+      const serverGranted = agentAccountIds.has(account.id)
       out.push({
-        key: `account-${account.id}`,
+        key,
         id: account.id,
         name: account.displayName,
         subtitle: account.provider?.displayName ?? account.toolkitSlug,
@@ -122,22 +122,26 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
         iconFallback: 'oauth',
         type: 'oauth',
         date: account.createdAt,
-        granted: agentAccountIds.has(account.id),
+        granted: grantOverrides[key] ?? serverGranted,
+        toolkit: account.toolkitSlug,
       })
     }
 
     const agentMcpIds = new Set((agentMcpsData?.mcps ?? []).map((m) => m.id))
     for (const mcp of allMcpsData?.servers ?? []) {
+      const key = `mcp-${mcp.id}`
+      const serverGranted = agentMcpIds.has(mcp.id)
       out.push({
-        key: `mcp-${mcp.id}`,
+        key,
         id: mcp.id,
         name: mcp.name,
         subtitle: mcp.url,
         iconSlug: COMMON_MCP_SERVERS.find((cs) => cs.url === mcp.url)?.slug,
-        iconFallback: 'mcp',
+        iconFallback: 'blocks',
         type: 'mcp',
         date: mcp.createdAt,
-        granted: agentMcpIds.has(mcp.id),
+        granted: grantOverrides[key] ?? serverGranted,
+        mcpTools: mcp.tools,
       })
     }
 
@@ -148,24 +152,68 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
       grantedRows: out.filter((r) => r.granted).sort(byDateDesc),
       notGrantedRows: out.filter((r) => !r.granted).sort(byDateDesc),
     }
-  }, [allAccountsData, agentAccountsData, allMcpsData, agentMcpsData])
+  }, [allAccountsData, agentAccountsData, allMcpsData, agentMcpsData, grantOverrides])
+
+  // Drop overrides that the server has now caught up to.
+  useEffect(() => {
+    if (Object.keys(grantOverrides).length === 0) return
+    const agentAccountIds = new Set((agentAccountsData?.accounts ?? []).map((a) => a.id))
+    const agentMcpIds = new Set((agentMcpsData?.mcps ?? []).map((m) => m.id))
+    setGrantOverrides((prev) => {
+      let changed = false
+      const next = { ...prev }
+      for (const [k, v] of Object.entries(prev)) {
+        const [kind, id] = k.split(/-(.+)/)
+        const serverGranted =
+          kind === 'account' ? agentAccountIds.has(id) : agentMcpIds.has(id)
+        if (serverGranted === v) {
+          delete next[k]
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [agentAccountsData, agentMcpsData, grantOverrides])
 
   const isLoading =
     isLoadingAllAccounts || isLoadingAgentAccounts || isLoadingAllMcps || isLoadingAgentMcps
 
   const handleToggle = async (row: UnifiedRow, next: boolean) => {
-    if (row.type === 'oauth') {
-      if (next) {
-        await assignAccounts.mutateAsync({ agentSlug, accountIds: [row.id] })
-      } else {
-        await removeAccount.mutateAsync({ agentSlug, accountId: row.id })
-      }
+    // Optimistic flip — wrapped in View Transitions so the row animates to its
+    // new section.
+    const apply = () => {
+      flushSync(() => {
+        setGrantOverrides((prev) => ({ ...prev, [row.key]: next }))
+      })
+    }
+    const docWithVT = document as Document & { startViewTransition?: (cb: () => void) => unknown }
+    if (typeof docWithVT.startViewTransition === 'function') {
+      docWithVT.startViewTransition(apply)
     } else {
-      if (next) {
-        await assignMcp.mutateAsync({ agentSlug, mcpIds: [row.id] })
+      apply()
+    }
+
+    try {
+      if (row.type === 'oauth') {
+        if (next) {
+          await assignAccounts.mutateAsync({ agentSlug, accountIds: [row.id] })
+        } else {
+          await removeAccount.mutateAsync({ agentSlug, accountId: row.id })
+        }
       } else {
-        await removeMcp.mutateAsync({ agentSlug, mcpId: row.id })
+        if (next) {
+          await assignMcp.mutateAsync({ agentSlug, mcpIds: [row.id] })
+        } else {
+          await removeMcp.mutateAsync({ agentSlug, mcpId: row.id })
+        }
       }
+    } catch {
+      // Revert the optimistic override so the row snaps back.
+      setGrantOverrides((prev) => {
+        const n = { ...prev }
+        delete n[row.key]
+        return n
+      })
     }
   }
 
@@ -185,6 +233,7 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
     return (
       <IntegrationRow
         key={row.key}
+        viewTransitionName={`integration-${row.key}`}
         iconSlug={row.iconSlug}
         iconFallback={row.iconFallback}
         name={row.name}
@@ -197,16 +246,22 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
                 <span className="truncate">{row.subtitle}</span>
               </>
             )}
-            <span className="mx-1 shrink-0">·</span>
+            <span className="shrink-0">·</span>
             <span className="whitespace-nowrap shrink-0">
               {formatDistanceToNow(safeDate(row.date), { addSuffix: true })}
             </span>
           </>
         }
-        onActivate={() => { if (!pending) void handleToggle(row, !row.granted) }}
         right={
           <>
             {pending && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+            <IntegrationRowActions
+              type={row.type}
+              id={row.id}
+              name={row.name}
+              toolkit={row.toolkit}
+              mcpTools={row.mcpTools}
+            />
             <Switch
               checked={row.granted}
               disabled={pending}
@@ -224,7 +279,7 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
   const hasAny = grantedRows.length > 0 || notGrantedRows.length > 0
 
   return (
-    <div className="space-y-6 max-w-[600px]">
+    <div className="space-y-6 max-w-[720px]">
       {isLoading ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />
@@ -232,17 +287,23 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
         </div>
       ) : hasAny ? (
         <>
-          {grantedRows.length > 0 && (
-            <div className="space-y-1.5">
-              <p className="text-[11px] uppercase tracking-wide font-medium text-muted-foreground px-1">
-                Access granted
-              </p>
+          <div className="space-y-1.5">
+            <p className="text-[11px] uppercase tracking-wider font-medium text-muted-foreground px-1">
+              Access granted
+            </p>
+            {grantedRows.length > 0 ? (
               <IntegrationList>{grantedRows.map(renderRow)}</IntegrationList>
-            </div>
-          )}
+            ) : (
+              <div className="rounded-xl border border-dashed bg-background px-4 py-6 text-center">
+                <p className="text-xs text-muted-foreground">
+                  This agent can&apos;t access any connections yet. Toggle one on below.
+                </p>
+              </div>
+            )}
+          </div>
           {notGrantedRows.length > 0 && (
             <div className="space-y-1.5">
-              <p className="text-[11px] uppercase tracking-wide font-medium text-muted-foreground px-1">
+              <p className="text-[11px] uppercase tracking-wider font-medium text-muted-foreground px-1">
                 Access not granted
               </p>
               <IntegrationList>{notGrantedRows.map(renderRow)}</IntegrationList>
@@ -251,7 +312,7 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
         </>
       ) : (
         <p className="text-sm text-muted-foreground">
-          No integrations yet. Add one to get started.
+          No connections yet. Add one to get started.
         </p>
       )}
     </div>

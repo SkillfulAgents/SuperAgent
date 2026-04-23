@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 
 type IntegrationIconFallback = 'oauth' | 'mcp' | 'blocks'
@@ -6,14 +6,24 @@ type IntegrationIconFallback = 'oauth' | 'mcp' | 'blocks'
 interface IntegrationListProps {
   children: ReactNode
   className?: string
+  /** `list` = stacked divided rows; `grid` = 2-col grid of bordered cards. */
+  variant?: 'list' | 'grid'
 }
 
 /**
- * Shared list container for integration/connection rows — rounded card with
- * divided rows. Used by the Integrations page and the directory dialog so both
- * have the same visual treatment.
+ * Shared list container for integration/connection rows.
+ * - `list` (default): rounded card with divided rows.
+ * - `grid`: 2-column grid of standalone bordered tiles.
+ * Used by the Integrations page and the directory dialog.
  */
-export function IntegrationList({ children, className }: IntegrationListProps) {
+export function IntegrationList({ children, className, variant = 'list' }: IntegrationListProps) {
+  if (variant === 'grid') {
+    return (
+      <div className={'grid grid-cols-2 gap-2 items-start ' + (className ?? '')}>
+        {children}
+      </div>
+    )
+  }
   return (
     <div
       className={
@@ -35,6 +45,14 @@ interface IntegrationRowProps {
   onActivate?: () => void
   disabled?: boolean
   ariaLabel?: string
+  /** When true, renders as a standalone bordered tile (for use in grids). */
+  boxed?: boolean
+  /**
+   * Optional `view-transition-name` applied to the row. When set, the
+   * browser's View Transitions API will animate the row's position between
+   * re-renders — used to animate rows moving between list sections.
+   */
+  viewTransitionName?: string
 }
 
 /**
@@ -51,6 +69,8 @@ export function IntegrationRow({
   onActivate,
   disabled,
   ariaLabel,
+  boxed,
+  viewTransitionName,
 }: IntegrationRowProps) {
   const interactive = !!onActivate && !disabled
   return (
@@ -59,8 +79,10 @@ export function IntegrationRow({
       tabIndex={interactive ? 0 : undefined}
       aria-label={ariaLabel}
       aria-disabled={disabled || undefined}
+      style={viewTransitionName ? ({ viewTransitionName } as CSSProperties) : undefined}
       className={
         'group relative py-3 px-4 transition-colors ' +
+        (boxed ? 'rounded-lg border bg-background ' : '') +
         (interactive ? 'hover:bg-muted/50 cursor-pointer ' : '') +
         (disabled ? 'opacity-50 ' : '')
       }
@@ -88,7 +110,7 @@ export function IntegrationRow({
         <div className="min-w-0 flex-1">
           <div className="text-xs font-medium truncate">{name}</div>
           {subtitle && (
-            <div className="flex items-center gap-2 text-[11px] text-muted-foreground mt-0.5">
+            <div className="flex items-center gap-1 text-[11px] text-muted-foreground mt-0.5">
               {subtitle}
             </div>
           )}

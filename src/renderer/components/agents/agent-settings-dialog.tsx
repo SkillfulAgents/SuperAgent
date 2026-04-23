@@ -9,7 +9,7 @@ import { GeneralTab } from './settings/general-tab'
 import { SystemPromptTab } from './settings/system-prompt-tab'
 import { SecretsTab } from './settings/secrets-tab'
 import { SkillsTab } from './settings/skills-tab'
-import { ConnectionsTab, type ConnectionsSubtab } from './settings/connections-tab'
+import { ConnectionsTab } from './settings/connections-tab'
 import { AuditLogTab } from './settings/audit-log-tab'
 import { AccessTab } from './settings/access-tab'
 import { VolumesTab } from './settings/volumes-tab'
@@ -57,12 +57,6 @@ export function AgentSettingsDialog({
     initialTab === 'connected-accounts' || initialTab === 'remote-mcps'
       ? 'connections'
       : initialTab
-  const connectionsSubtab: ConnectionsSubtab =
-    initialTab === 'remote-mcps'
-      ? 'mcps'
-      : initialTab === 'connected-accounts'
-        ? 'accounts'
-        : 'all'
 
   const saveFooter = (
     <div className="flex items-center justify-end gap-2 border-t p-4">
@@ -124,12 +118,8 @@ export function AgentSettingsDialog({
           <VolumesTab agentSlug={agent.slug} />
         </SettingsDialogTab>
       )}
-      <SettingsDialogTab id="connections" label="Integrations" icon={<Link2 className="h-4 w-4" />}>
-        <ConnectionsTab
-          agentSlug={agent.slug}
-          onClose={() => onOpenChange(false)}
-          initialSubtab={connectionsSubtab}
-        />
+      <SettingsDialogTab id="connections" label="Connections" icon={<Link2 className="h-4 w-4" />}>
+        <ConnectionsTab agentSlug={agent.slug} />
       </SettingsDialogTab>
       <SettingsDialogTab id="chat-integrations" label="Chat" icon={<MessageCircle className="h-4 w-4" />}>
         <ChatIntegrationsTab agentSlug={agent.slug} />
