@@ -1,0 +1,232 @@
+/* Generated from DESIGN.md — keep in sync when editing tokens.
+   See ./DESIGN.md (this dashboard) and ~/.claude/skills/dashboards/DESIGN.md (system). */
+
+:root {
+  /* Colors — light */
+  --color-background: #ffffff;
+  --color-foreground: #0a0a0a;
+  --color-card: #ffffff;
+  --color-card-foreground: #0a0a0a;
+  --color-popover: #ffffff;
+  --color-popover-foreground: #0a0a0a;
+  --color-primary: #171717;
+  --color-primary-foreground: #fafafa;
+  --color-secondary: #f5f5f5;
+  --color-secondary-foreground: #171717;
+  --color-muted: #f5f5f5;
+  --color-muted-foreground: #737373;
+  --color-accent: #f5f5f5;
+  --color-accent-foreground: #171717;
+  --color-destructive: #ef4444;
+  --color-destructive-foreground: #fafafa;
+  --color-border: #e5e5e5;
+  --color-input: #e5e5e5;
+  --color-ring: #0a0a0a;
+  --color-chart-1: #e8794a;
+  --color-chart-2: #2a9d8f;
+  --color-chart-3: #264653;
+  --color-chart-4: #e9c46a;
+  --color-chart-5: #f4a261;
+
+  /* Typography */
+  --font-sans: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --text-2xs: 10px;
+  --text-2xs-line: 14px;
+  --text-xs: 11px;
+  --text-xs-line: 16px;
+  --text-sm: 13px;
+  --text-sm-line: 20px;
+  --text-base: 15px;
+  --text-base-line: 24px;
+  --text-lg: 17px;
+  --text-lg-line: 28px;
+  --text-h3: 20px;
+  --text-h3-line: 28px;
+  --text-h2: 22px;
+  --text-h2-line: 32px;
+  --text-h1: 28px;
+  --text-h1-line: 36px;
+
+  /* Spacing (4px base) */
+  --space-px: 1px;
+  --space-0_5: 2px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* Radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-full: 9999px;
+
+  /* Elevation */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.10);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-background: #0a0a0a;
+    --color-foreground: #fafafa;
+    --color-card: #0a0a0a;
+    --color-card-foreground: #fafafa;
+    --color-popover: #0a0a0a;
+    --color-popover-foreground: #fafafa;
+    --color-primary: #fafafa;
+    --color-primary-foreground: #171717;
+    --color-secondary: #262626;
+    --color-secondary-foreground: #fafafa;
+    --color-muted: #262626;
+    --color-muted-foreground: #a3a3a3;
+    --color-accent: #262626;
+    --color-accent-foreground: #fafafa;
+    --color-destructive: #7f1d1d;
+    --color-destructive-foreground: #fafafa;
+    --color-border: #262626;
+    --color-input: #262626;
+    --color-ring: #d4d4d4;
+    --color-chart-1: #3b82f6;
+    --color-chart-2: #22c55e;
+    --color-chart-3: #f97316;
+    --color-chart-4: #a855f7;
+    --color-chart-5: #ec4899;
+  }
+}
+
+/* Baseline element styles — use these instead of resetting per-component. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--text-base-line);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1 {
+  font-size: var(--text-h1);
+  line-height: var(--text-h1-line);
+  font-weight: 600;
+  margin: 0;
+}
+
+h2 {
+  font-size: var(--text-h2);
+  line-height: var(--text-h2-line);
+  font-weight: 600;
+  margin: 0;
+}
+
+h3 {
+  font-size: var(--text-h3);
+  line-height: var(--text-h3-line);
+  font-weight: 600;
+  margin: 0;
+}
+
+code,
+pre {
+  font-family: var(--font-mono);
+}
+
+table {
+  font-variant-numeric: tabular-nums;
+}
+
+a {
+  color: var(--color-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* Component recipes — composable utility classes mirroring the DESIGN.md
+   `components` block. Apply by className; do not duplicate these styles inline. */
+
+.sa-card {
+  background: var(--color-card);
+  color: var(--color-card-foreground);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+}
+
+.sa-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.sa-button-primary {
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+}
+
+.sa-button-secondary {
+  background: var(--color-secondary);
+  color: var(--color-secondary-foreground);
+  border-color: var(--color-border);
+}
+
+.sa-badge {
+  display: inline-flex;
+  align-items: center;
+  background: var(--color-muted);
+  color: var(--color-muted-foreground);
+  border-radius: var(--radius-sm);
+  padding: var(--space-0_5) var(--space-2);
+  font-size: var(--text-2xs);
+  line-height: var(--text-2xs-line);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sa-input {
+  background: var(--color-background);
+  color: var(--color-foreground);
+  border: 1px solid var(--color-input);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-line);
+  font-family: inherit;
+  width: 100%;
+}
+
+.sa-input:focus {
+  outline: none;
+  border-color: var(--color-ring);
+  box-shadow: 0 0 0 1px var(--color-ring);
+}
