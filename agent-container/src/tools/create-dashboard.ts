@@ -34,11 +34,23 @@ Arguments:
         args.framework || 'plain'
       )
 
+      const reactNote =
+        args.framework === 'react'
+          ? 'src/tokens.css (CSS custom properties + .sa-card/.sa-button/.sa-badge/.sa-input recipes) and src/App.jsx'
+          : 'index.js (the <style> block at the top defines the design tokens)'
+
       return {
         content: [
           {
             type: 'text' as const,
-            text: `Dashboard "${args.name}" created at /workspace/artifacts/${args.slug}/\n\nYou can now edit the source files and use start_dashboard to start the server.`,
+            text: `Dashboard "${args.name}" created at /workspace/artifacts/${args.slug}/
+
+REQUIRED before editing any files:
+1. Read /workspace/artifacts/${args.slug}/DESIGN.md — it defines the design system this dashboard inherits (colors, type scale, spacing, component recipes, dark mode rules).
+2. Build on top of the existing token system in ${reactNote}. Do NOT delete or replace the token block, do NOT introduce a parallel set of CSS variables, do NOT load external fonts (Google Fonts, etc.), do NOT hardcode hex colors in component code — use var(--color-*), var(--space-*), var(--text-*), var(--font-sans).
+3. If you genuinely need a value the system doesn't provide, override it in DESIGN.md first, then mirror it in the stylesheet.
+
+Then use start_dashboard to start the server.`,
           },
         ],
       }

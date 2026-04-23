@@ -426,7 +426,58 @@ class DashboardManager {
       JSON.stringify(pkg, null, 2)
     )
 
-    const indexJs = `const port = process.env.DASHBOARD_PORT || 3000;
+    // Plain dashboards inline the design tokens directly in the served HTML.
+    // React dashboards get tokens via the copied template's src/tokens.css.
+    const tokensCss = `:root {
+      --color-background: #ffffff;
+      --color-foreground: #0a0a0a;
+      --color-card: #ffffff;
+      --color-muted: #f5f5f5;
+      --color-muted-foreground: #737373;
+      --color-border: #e5e5e5;
+      --color-primary: #171717;
+      --color-primary-foreground: #fafafa;
+      --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-6: 24px; --space-8: 32px;
+      --radius-md: 6px; --radius-lg: 8px;
+      --text-sm: 13px; --text-base: 15px;
+      --font-sans: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --color-background: #0a0a0a; --color-foreground: #fafafa; --color-card: #0a0a0a;
+        --color-muted: #262626; --color-muted-foreground: #a3a3a3; --color-border: #262626;
+        --color-primary: #fafafa; --color-primary-foreground: #171717;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: var(--font-sans); margin: 0;
+      background: var(--color-background); color: var(--color-foreground);
+      font-size: var(--text-base);
+    }
+    .sa-page { max-width: 960px; margin: 0 auto; padding: var(--space-8) var(--space-6); display: grid; gap: var(--space-6); }
+    .sa-card { background: var(--color-card); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: var(--space-6); }
+    h1 { font-weight: 600; margin: 0; }`
+
+    const indexJs = `// =====================================================================
+// DESIGN SYSTEM — READ ./DESIGN.md BEFORE EDITING THIS FILE.
+//
+// This dashboard inherits the Superagent design system. The <style> block
+// inside the html template below defines the design tokens (CSS custom
+// properties) you must build with: var(--color-*), var(--space-*),
+// var(--text-*), var(--font-sans), and the .sa-page / .sa-card recipes.
+//
+// DO NOT:
+//   - delete or replace the token block
+//   - introduce a parallel set of CSS variables (e.g. --bg, --ink, --accent)
+//   - load external fonts (Google Fonts, etc.)
+//   - hardcode hex/rgb/rgba colors in component styles
+//
+// If you need a value the system doesn't provide, override it in DESIGN.md
+// first, then mirror it in the token block here. Keep the two in sync.
+// =====================================================================
+
+const port = process.env.DASHBOARD_PORT || 3000;
 
 const server = Bun.serve({
   port,
@@ -450,13 +501,16 @@ const html = \`<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${name}</title>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 800px; margin: 0 auto; padding: 2rem; }
-    h1 { color: #333; }
+${tokensCss}
   </style>
 </head>
 <body>
-  <h1>${name}</h1>
-  <p>${description || 'Dashboard is running.'}</p>
+  <div class="sa-page">
+    <header><h1>${name}</h1></header>
+    <section class="sa-card">
+      <p>${description || 'Dashboard is running.'}</p>
+    </section>
+  </div>
 </body>
 </html>\`;
 
@@ -464,6 +518,32 @@ console.log(\`Dashboard server running on http://localhost:\${port}\`);
 `
 
     await fs.promises.writeFile(path.join(dir, 'index.js'), indexJs)
+    await fs.promises.writeFile(path.join(dir, 'DESIGN.md'), this.designMdStub(name))
+  }
+
+  // Per-dashboard DESIGN.md stub — points at the system DESIGN.md and lets the
+  // dashboard override individual tokens. Used by both plain and (as a fallback)
+  // React scaffolds when the React template doesn't already include one.
+  private designMdStub(name: string): string {
+    return `---
+name: ${name}
+extends: ~/.claude/skills/dashboards/DESIGN.md
+# Override any token below to customize this dashboard. Anything not
+# overridden inherits from the system DESIGN.md. After editing tokens here,
+# update matching values in your dashboard's stylesheet — the two must stay
+# in sync.
+---
+
+## Overview
+
+This dashboard inherits the Superagent design system. See the system
+[DESIGN.md](file:~/.claude/skills/dashboards/DESIGN.md) for the full token
+reference and design rules.
+
+## Local Notes
+
+Capture dashboard-specific decisions here.
+`
   }
 
   private async scaffoldReactDashboard(
