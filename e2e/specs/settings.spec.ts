@@ -388,25 +388,22 @@ test.describe('Settings validation errors', () => {
     await appPage.waitForAgentsLoaded()
   })
 
-  test('Runtime tab: shows error for memory below minimum', async ({ page }) => {
+  test('Runtime tab: memory dropdown does not offer values below 512m', async ({ page }) => {
     await openSettings(page)
     await goToTab(page, 'runtime')
 
-    // Memory input is disabled when agents are running — skip if disabled
-    const memoryInput = page.locator('#memory-limit')
-    const isDisabled = await memoryInput.isDisabled()
-    test.skip(isDisabled, 'Memory input is disabled because agents are running')
+    // Memory dropdown is disabled when agents are running — skip if disabled
+    const memoryTrigger = page.locator('#memory-limit')
+    const isDisabled = await memoryTrigger.isDisabled()
+    test.skip(isDisabled, 'Memory dropdown is disabled because agents are running')
 
-    // Set memory to 100m (below 512m minimum)
-    await memoryInput.fill('100m')
+    await memoryTrigger.click()
 
-    // Error message should appear
-    await expect(page.getByText('Memory limit must be at least 512m.')).toBeVisible()
-
-    // Save button should be disabled (it only appears when hasChanges is true)
-    const saveBtn = page.getByRole('button', { name: 'Save' })
-    await expect(saveBtn).toBeVisible()
-    await expect(saveBtn).toBeDisabled()
+    // The smallest option must be 512 MB — no sub-minimum values like 128 MB / 256 MB.
+    const options = page.getByRole('option')
+    await expect(options.first()).toHaveText('512 MB')
+    await expect(page.getByRole('option', { name: '128 MB' })).toHaveCount(0)
+    await expect(page.getByRole('option', { name: '256 MB' })).toHaveCount(0)
   })
 
   test('Runtime tab: shows error for empty agent image', async ({ page }) => {
