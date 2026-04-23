@@ -3,7 +3,7 @@
   <h1 align="center">SuperAgent - AI Agent Platform</h1>
 </p>
 
-SuperAgent is a super app for building and running personal agents. You can create custom agents, let them develop the skills they need to do task for you, and have them run automatocally in the background for you.
+SuperAgent is a super app for building and running personal agents. You can create custom agents, let them develop the skills they need to do tasks for you, and have them run automatically in the background for you.
 
 | Windows | Mac |
 |:-------:|:---:|
@@ -17,7 +17,7 @@ SuperAgent is a super app for building and running personal agents. You can crea
 - **Recurring and Scheduled Tasks** - agents can schedule recurring tasks and future work so they can serve you autonomously in the background.
 - **Browser Access** - agents can spin up and use a web browser to accomplish tasks where no API / MCP is available.
 - **Agent Dashboards & Artifacts** - agents can create dashboard for you to more easily access information.
-- **Create Shared Skillsets** - as agents create skills for your work - creaate skillsets to share them with your team!
+- **Create Shared Skillsets** - as agents create skills for your work - create skillsets to share them with your team!
 
 **Run as:**
 
@@ -26,14 +26,14 @@ SuperAgent is a super app for building and running personal agents. You can crea
 
 ## Pre-Reqs
 
-To get strated with Superagent, you need:
+To get started with Superagent, you need:
 
 1. **A container runtime** -> this is where SuperAgent will run it’s agent containers. Our recommendations:
   1. [Docker Desktop](https://docs.docker.com/desktop/setup/install/mac-install/)
   2. [OrbStack](https://orbstack.dev/download)
   3. [Podman](https://podman.io/get-started)
 2. **An Anthropic API Key** -> we currently only support Anthropic models, more coming soon. Get your API key from the [Anthropic Console](https://platform.claude.com/settings/keys).
-3. **[Optional] A Composio API key** -> SuperAgent uses Composio to generate OAuth Tokens for you for different acocunts. You can get one on [Composio](https://platform.composio.dev).
+3. **[Optional] A Composio API key** -> SuperAgent uses Composio to generate OAuth Tokens for you for different accounts. You can get one on [Composio](https://platform.composio.dev).
 
 
 # Getting Started
