@@ -11,6 +11,7 @@ import { RelatedSessions, type SortOrder } from '@renderer/components/sessions/r
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { useSelection } from '@renderer/context/selection-context'
 import { useUser } from '@renderer/context/user-context'
+import { toast } from 'sonner'
 import { apiFetch } from '@renderer/lib/api'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
@@ -29,6 +30,7 @@ import { AgentCreationAids } from '@renderer/components/agents/agent-creation-ai
 import {
   useTypewriterPlaceholder,
   DEFAULT_AGENT_PROMPT_EXAMPLES,
+  DISABLED as TYPEWRITER_DISABLED,
 } from '@renderer/hooks/use-typewriter-placeholder'
 import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
 import { useRenameUntitledAgent } from '@renderer/hooks/use-rename-untitled-agent'
@@ -85,6 +87,9 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
       setIsEditingName(false)
     } catch (error) {
       console.error('Failed to rename agent:', error)
+      toast.error('Failed to rename agent', {
+        description: error instanceof Error ? error.message : 'Please try again.',
+      })
     }
   }
 
@@ -174,7 +179,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
 
   const isFreshUntitled = agent.name === UNTITLED_AGENT_NAME && sessions.length === 0
   const typewriterPlaceholder = useTypewriterPlaceholder(
-    isFreshUntitled ? DEFAULT_AGENT_PROMPT_EXAMPLES : [],
+    isFreshUntitled ? DEFAULT_AGENT_PROMPT_EXAMPLES : TYPEWRITER_DISABLED,
   )
   const composerPlaceholder = isFreshUntitled
     ? typewriterPlaceholder

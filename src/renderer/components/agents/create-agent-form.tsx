@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
+import { toast } from 'sonner'
 import { Button } from '@renderer/components/ui/button'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
@@ -97,6 +98,9 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
         await onAgentCreated?.()
       } catch (error) {
         console.error('Failed to create agent:', error)
+        toast.error('Failed to create agent', {
+          description: error instanceof Error ? error.message : 'Please try again.',
+        })
       }
     }, [createAgent, createSession, selectAgent, selectSession, track, onAgentCreated]),
   })

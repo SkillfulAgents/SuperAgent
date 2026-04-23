@@ -56,6 +56,9 @@ export function useTypewriterPlaceholder(examples: readonly string[], timings?: 
   return displayed
 }
 
+/** Stable empty reference so callers can pass `DISABLED` when they don't want the effect to run. */
+export const DISABLED: readonly string[] = []
+
 export const DEFAULT_AGENT_PROMPT_EXAMPLES: readonly string[] = [
   'Search LinkedIn for senior backend engineers in NYC with 5+ years of Python experience. Reach out to the top 10 candidates with personalized intro messages.',
   'Every Monday morning, pull highlights from my Granola meetings, Linear issues, and Slack DMs. Send me a briefing of key decisions and blockers from last week.',

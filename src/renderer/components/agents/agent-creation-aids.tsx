@@ -75,6 +75,9 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
       setShowVoiceAgent(true)
     } catch (error) {
       console.error('Failed to start Voice Agent:', error)
+      toast.error('Could not start voice agent', {
+        description: error instanceof Error ? error.message : 'Please try again.',
+      })
     }
   }, [])
 
