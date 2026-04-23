@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from 'react'
 import { Phone, Upload, FileArchive, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@renderer/components/ui/button'
+import { OptionCard } from '@renderer/components/ui/option-card'
 import { Input } from '@renderer/components/ui/input'
 import { Checkbox } from '@renderer/components/ui/checkbox'
 import {
@@ -426,34 +427,3 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
   )
 }
 
-function OptionCard({
-  title,
-  description,
-  icon,
-  buttonLabel,
-  onClick,
-}: {
-  title: string
-  description: React.ReactNode
-  icon: React.ReactNode
-  buttonLabel: string
-  onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={`${title} — ${buttonLabel}`}
-      className="w-full text-left rounded-lg border p-5 flex items-center justify-between gap-4 cursor-pointer opacity-60 hover:opacity-100 focus-visible:opacity-100 hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring transition-all"
-    >
-      <div className="space-y-1">
-        <p className="text-sm font-medium">{title}</p>
-        <p className="text-sm text-muted-foreground">{description}</p>
-      </div>
-      <span className="inline-flex items-center gap-2 shrink-0 text-sm text-muted-foreground">
-        {icon}
-        {buttonLabel}
-      </span>
-    </button>
-  )
-}

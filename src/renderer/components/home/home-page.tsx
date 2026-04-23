@@ -1,6 +1,7 @@
 
 import { useMemo, useState } from 'react'
 import { TemplateInstallDialog } from '@renderer/components/agents/template-install-dialog'
+import { TemplateCard } from '@renderer/components/agents/template-card'
 import { useAgents } from '@renderer/hooks/use-agents'
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
@@ -23,7 +24,7 @@ import {
   deriveForegroundColor,
 } from './dashboard-card-colors'
 import { isElectron, getPlatform, getApiBaseUrl } from '@renderer/lib/env'
-import { Plus, Bot, Download, Loader2, Clock, CalendarClock, LayoutDashboard } from 'lucide-react'
+import { Plus, Bot, Loader2, Clock, CalendarClock, LayoutDashboard } from 'lucide-react'
 import { AreaChart, Area, ResponsiveContainer, Tooltip } from 'recharts'
 import type { ApiAgent, ApiAgentDashboard } from '@shared/lib/types/api'
 import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
@@ -373,25 +374,6 @@ function DashboardCard({
   )
 }
 
-function TemplateCard({ template, onClick }: { template: ApiDiscoverableAgent; onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      className="text-left p-4 rounded-lg border border-dashed bg-card hover:bg-accent/50 transition-colors flex flex-col gap-2"
-    >
-      <div className="flex items-center gap-2">
-        <Download className="h-4 w-4 text-muted-foreground shrink-0" />
-        <span className="font-medium truncate">{template.name}</span>
-        <span className="text-xs text-muted-foreground shrink-0">v{template.version}</span>
-      </div>
-      {template.description && (
-        <p className="text-xs text-muted-foreground line-clamp-2">{template.description}</p>
-      )}
-      <p className="text-xs text-muted-foreground/70">{template.skillsetName}</p>
-    </button>
-  )
-}
-
 export function HomePage() {
   useRenderTracker('HomePage')
   const { data: agents, isLoading: agentsLoading } = useAgents()
@@ -403,6 +385,7 @@ export function HomePage() {
     [agents, userSettings?.agentOrder]
   )
   const { createUntitledAgent, isPending: isCreatingAgent } = useCreateUntitledAgent()
+  const { selectAgent } = useSelection()
   const [templateToInstall, setTemplateToInstall] = useState<ApiDiscoverableAgent | null>(null)
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
@@ -494,6 +477,7 @@ export function HomePage() {
       <TemplateInstallDialog
         template={templateToInstall}
         onClose={() => setTemplateToInstall(null)}
+        onInstalled={(agent) => selectAgent(agent.slug)}
       />
     </div>
   )

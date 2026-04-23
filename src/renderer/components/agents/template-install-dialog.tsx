@@ -13,27 +13,29 @@ import { Input } from '@renderer/components/ui/input'
 import { SkillInstallDialog } from '@renderer/components/agents/skill-install-dialog'
 import { useInstallAgentFromSkillset } from '@renderer/hooks/use-agent-templates'
 import { useDeleteAgent } from '@renderer/hooks/use-agents'
-import { useSelection } from '@renderer/context/selection-context'
 import { apiFetch } from '@renderer/lib/api'
-import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
+import type { ApiAgent, ApiDiscoverableAgent } from '@shared/lib/types/api'
 
 interface TemplateInstallDialogProps {
   template: ApiDiscoverableAgent | null
   onClose: () => void
+  /** Called after the agent is fully installed (after secrets step if required). */
+  onInstalled: (agent: ApiAgent, meta: { hasOnboarding?: boolean }) => void | Promise<void>
 }
 
 /**
- * Lightweight template-install dialog spawned from HomePage's template grid.
- * Replaces the naming step that used to live inside the Create Agent modal.
+ * Lightweight template-install dialog that handles the name step + required
+ * env vars. Pure UI: it only fires `onInstalled` on success — callers decide
+ * what to do with the new agent (select it, track, kick off onboarding, etc).
  */
-export function TemplateInstallDialog({ template, onClose }: TemplateInstallDialogProps) {
+export function TemplateInstallDialog({ template, onClose, onInstalled }: TemplateInstallDialogProps) {
   const [name, setName] = useState('')
   const install = useInstallAgentFromSkillset()
-  const { selectAgent } = useSelection()
   const deleteAgent = useDeleteAgent()
   const [secretsPrompt, setSecretsPrompt] = useState<{
-    agentSlug: string
+    agent: ApiAgent
     requiredEnvVars: Array<{ name: string; description: string }>
+    hasOnboarding?: boolean
   } | null>(null)
 
   useEffect(() => {
@@ -42,7 +44,7 @@ export function TemplateInstallDialog({ template, onClose }: TemplateInstallDial
       setName('')
       install.reset()
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- install reset is stable enough; reinit on template change
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- install.reset is stable enough; reinit on template change
   }, [template])
 
   const handleSubmit = useCallback(
@@ -59,31 +61,32 @@ export function TemplateInstallDialog({ template, onClose }: TemplateInstallDial
 
         if (agent.requiredEnvVars && agent.requiredEnvVars.length > 0) {
           setSecretsPrompt({
-            agentSlug: agent.slug,
+            agent,
             requiredEnvVars: agent.requiredEnvVars,
+            hasOnboarding: agent.hasOnboarding,
           })
           return
         }
 
-        selectAgent(agent.slug)
+        await onInstalled(agent, { hasOnboarding: agent.hasOnboarding })
         onClose()
       } catch (error) {
         console.error('Failed to install agent from skillset:', error)
       }
     },
-    [template, name, install, selectAgent, onClose],
+    [template, name, install, onInstalled, onClose],
   )
 
   const handleSecretsSubmit = useCallback(
     async (envVars: Record<string, string>) => {
       if (!secretsPrompt) return
-      const { agentSlug } = secretsPrompt
+      const { agent, hasOnboarding } = secretsPrompt
       setSecretsPrompt(null)
 
       for (const [key, value] of Object.entries(envVars)) {
         if (value && typeof value === 'string') {
           try {
-            await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/secrets`, {
+            await apiFetch(`/api/agents/${encodeURIComponent(agent.slug)}/secrets`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ key, value }),
@@ -94,10 +97,10 @@ export function TemplateInstallDialog({ template, onClose }: TemplateInstallDial
         }
       }
 
-      selectAgent(agentSlug)
+      await onInstalled(agent, { hasOnboarding })
       onClose()
     },
-    [secretsPrompt, selectAgent, onClose],
+    [secretsPrompt, onInstalled, onClose],
   )
 
   return (
@@ -145,7 +148,7 @@ export function TemplateInstallDialog({ template, onClose }: TemplateInstallDial
           open={!!secretsPrompt}
           onOpenChange={(open) => {
             if (!open) {
-              deleteAgent.mutate(secretsPrompt.agentSlug)
+              deleteAgent.mutate(secretsPrompt.agent.slug)
               setSecretsPrompt(null)
               onClose()
             }
