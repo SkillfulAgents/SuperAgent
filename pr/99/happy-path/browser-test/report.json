@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser-use feature allows agents to open browsers, navigate to URLs, and retrieve page information, returning correct results with \"Example Domain\" as requested.",
+  "steps": [
+    "Navigated to http://localhost:47891 - Page loaded successfully showing the Super Agent interface with three agents in the sidebar.",
+    "Found and clicked the \"QA-20260423-173533-36zl\" agent in the sidebar - Agent page opened successfully, displaying the message input interface with placeholder text \"How can I help? Press cmd+enter to send\".",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message was entered successfully in the input box and the send button became active.",
+    "Clicked the send button to send the message - Message was sent, agent status changed from \"idle\" to \"working\", and a session \"Browser Page Title Lookup\" was created.",
+    "Waited for response up to 3 minutes - Response returned within 6 seconds showing tool calls: \"Open Browser\" and \"Browser Command $ get title\", both with success checkmarks.",
+    "Verified response mentions \"Example Domain\" - Response clearly states: \"The page title is **Example Domain**.\" The live browser preview on the right also displays the Example Domain website, confirming the browser tool worked correctly."
+  ],
+  "bugs": [],
+  "durationMs": 83696,
+  "sessionId": "99102fa6-8027-4c24-9c1a-21fa1e00fe30",
+  "cost": {
+    "inputTokens": 288,
+    "outputTokens": 10062,
+    "cacheCreationTokens": 50446,
+    "cacheReadTokens": 1052995,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.218955
+  }
+}
