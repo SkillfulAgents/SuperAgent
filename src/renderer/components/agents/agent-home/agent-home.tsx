@@ -12,7 +12,6 @@ import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { useSelection } from '@renderer/context/selection-context'
 import { useUser } from '@renderer/context/user-context'
 import { apiFetch } from '@renderer/lib/api'
-import { useQueryClient } from '@tanstack/react-query'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
@@ -32,7 +31,7 @@ import {
   DEFAULT_AGENT_PROMPT_EXAMPLES,
 } from '@renderer/hooks/use-typewriter-placeholder'
 import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
-import { deriveAgentName } from '@renderer/lib/derive-agent-name'
+import { useRenameUntitledAgent } from '@renderer/hooks/use-rename-untitled-agent'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { formatDistanceToNow } from 'date-fns'
 
@@ -58,10 +57,9 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const createSession = useCreateSession()
   const updateAgent = useUpdateAgent()
   const deleteAgent = useDeleteAgent()
-  const queryClient = useQueryClient()
+  const renameUntitledAgent = useRenameUntitledAgent()
   // Tracks whether a name has already been assigned (e.g. by the voice agent)
-  // so the post-submit deriveAgentName fallback doesn't clobber it before the
-  // agents query has invalidated.
+  // so the post-submit deriveAgentName fallback doesn't clobber it.
   const nameAssignedRef = useRef(false)
   const [isEditingName, setIsEditingName] = useState(false)
   const [editedName, setEditedName] = useState(agent.name)
@@ -145,29 +143,13 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
         effort,
       })
       onSessionCreated(session.id, content)
-      // Fire rename after the session is created + navigated. Go through
-      // apiFetch + queryClient directly (not the component-scoped mutation),
-      // so the invalidation still fires after AgentHome unmounts.
+      // Fire rename after the session is created + navigated — the mutation
+      // survives AgentHome unmounting since the queryClient is app-scoped.
       if (shouldRename) {
         nameAssignedRef.current = true
-        const slug = agent.slug
-        void deriveAgentName(content).then(async (name) => {
-          if (!name) return
-          try {
-            const res = await apiFetch(`/api/agents/${slug}`, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ name }),
-            })
-            if (!res.ok) return
-            queryClient.invalidateQueries({ queryKey: ['agents'] })
-            queryClient.invalidateQueries({ queryKey: ['agents', slug] })
-          } catch (error) {
-            console.error('Failed to rename untitled agent:', error)
-          }
-        })
+        renameUntitledAgent.mutate({ slug: agent.slug, prompt: content })
       }
-    }, [createSession, agent.slug, agent.name, onSessionCreated, effort, sessions.length, queryClient]),
+    }, [createSession, agent.slug, agent.name, onSessionCreated, effort, sessions.length, renameUntitledAgent]),
     submitDisabled: createSession.isPending || !isRuntimeReady,
     keepMessageUntilComplete: true,
     draftKey: `agent:${agent.slug}`,
