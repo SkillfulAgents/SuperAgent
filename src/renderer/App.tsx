@@ -9,6 +9,7 @@ import { DialogProvider } from './context/dialog-context'
 import { AppSidebar } from './components/layout/app-sidebar'
 import { MainContent } from './components/layout/main-content'
 import { SidebarProvider, SidebarInset } from './components/ui/sidebar'
+import { Toaster } from './components/ui/sonner'
 import { TrayNavigationHandler } from './components/tray-navigation-handler'
 import { GlobalNotificationHandler } from './components/notifications/global-notification-handler'
 import { GettingStartedWizard } from './components/wizard/getting-started-wizard'
@@ -89,6 +90,7 @@ export default function App() {
               <ConnectivityProvider>
                 <ErrorBoundary>
                   <AppContent />
+                  <Toaster />
                 </ErrorBoundary>
               </ConnectivityProvider>
             </SelectionProvider>

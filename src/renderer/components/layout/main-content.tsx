@@ -466,6 +466,7 @@ export function MainContent() {
           /* Show home page with large input when no session is selected */
           agent && (
             <AgentHome
+              key={agent.slug}
               agent={agent}
               onSessionCreated={handleSessionCreated}
               onOpenSettings={(tab?: string) => { setSettingsTab(tab); setSettingsOpen(true) }}

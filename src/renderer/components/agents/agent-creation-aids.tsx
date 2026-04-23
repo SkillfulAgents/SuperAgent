@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
 import { Phone, Upload, FileArchive, Loader2 } from 'lucide-react'
+import { toast } from 'sonner'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Checkbox } from '@renderer/components/ui/checkbox'
@@ -110,6 +111,15 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
     hasOnboarding?: boolean
   } | null>(null)
 
+  const acceptFile = useCallback((file: File | null | undefined) => {
+    if (!file) return
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+      toast.error('Only .zip template files are supported')
+      return
+    }
+    setImportFile(file)
+  }, [])
+
   const resetImport = useCallback(() => {
     setImportFile(null)
     setImportName('')
@@ -194,10 +204,7 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
 
   const handleFileDrop = (e: React.DragEvent) => {
     e.preventDefault()
-    const file = e.dataTransfer.files[0]
-    if (file && file.name.endsWith('.zip')) {
-      setImportFile(file)
-    }
+    acceptFile(e.dataTransfer.files[0])
   }
 
   return (
@@ -291,8 +298,8 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
                   className="hidden"
                   disabled={importTemplate.isPending}
                   onChange={(e) => {
-                    const file = e.target.files?.[0]
-                    if (file) setImportFile(file)
+                    acceptFile(e.target.files?.[0])
+                    e.target.value = ''
                   }}
                 />
                 {importFile ? (

@@ -1,4 +1,5 @@
 import { useCallback } from 'react'
+import { toast } from 'sonner'
 import { useCreateAgent } from '@renderer/hooks/use-agents'
 import { useSelection } from '@renderer/context/selection-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
@@ -23,6 +24,9 @@ export function useCreateUntitledAgent() {
       return agent
     } catch (error) {
       console.error('Failed to create untitled agent:', error)
+      toast.error('Failed to create agent', {
+        description: error instanceof Error ? error.message : 'Please try again.',
+      })
       return null
     }
   }, [createAgent, selectAgent, track])

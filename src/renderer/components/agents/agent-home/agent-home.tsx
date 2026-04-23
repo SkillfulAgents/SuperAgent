@@ -12,6 +12,7 @@ import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { useSelection } from '@renderer/context/selection-context'
 import { useUser } from '@renderer/context/user-context'
 import { apiFetch } from '@renderer/lib/api'
+import { useQueryClient } from '@tanstack/react-query'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
@@ -43,7 +44,7 @@ interface AgentHomeProps {
 
 export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHomeProps) {
   useRenderTracker('AgentHome')
-  const { selectScheduledTask, consumePendingDraft, selectAgent } = useSelection()
+  const { selectScheduledTask, selectAgent } = useSelection()
   const { canUseAgent, canAdminAgent } = useUser()
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)
@@ -57,6 +58,11 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const createSession = useCreateSession()
   const updateAgent = useUpdateAgent()
   const deleteAgent = useDeleteAgent()
+  const queryClient = useQueryClient()
+  // Tracks whether a name has already been assigned (e.g. by the voice agent)
+  // so the post-submit deriveAgentName fallback doesn't clobber it before the
+  // agents query has invalidated.
+  const nameAssignedRef = useRef(false)
 
   const { data: sessionsData } = useSessions(agent.slug)
   const sessions = useMemo(() => {
@@ -103,33 +109,40 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
       return res.json() as Promise<{ path: string }>
     }, [agent.slug]),
     onSubmit: useCallback(async (content: string) => {
-      const shouldRename = agent.name === UNTITLED_AGENT_NAME && sessions.length === 0
+      const shouldRename =
+        agent.name === UNTITLED_AGENT_NAME && sessions.length === 0 && !nameAssignedRef.current
       const session = await createSession.mutateAsync({
         agentSlug: agent.slug,
         message: content,
         effort,
       })
       onSessionCreated(session.id, content)
-      // Fire rename only after the session is created + navigated, so the
-      // updateAgent query invalidation can't race with the session transition.
+      // Fire rename after the session is created + navigated. Go through
+      // apiFetch + queryClient directly (not the component-scoped mutation),
+      // so the invalidation still fires after AgentHome unmounts.
       if (shouldRename) {
-        void deriveAgentName(content).then((name) => {
-          if (name) updateAgent.mutate({ slug: agent.slug, name })
+        nameAssignedRef.current = true
+        const slug = agent.slug
+        void deriveAgentName(content).then(async (name) => {
+          if (!name) return
+          try {
+            const res = await apiFetch(`/api/agents/${slug}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name }),
+            })
+            if (!res.ok) return
+            queryClient.invalidateQueries({ queryKey: ['agents'] })
+            queryClient.invalidateQueries({ queryKey: ['agents', slug] })
+          } catch (error) {
+            console.error('Failed to rename untitled agent:', error)
+          }
         })
       }
-    }, [createSession, agent.slug, agent.name, onSessionCreated, effort, sessions.length, updateAgent]),
+    }, [createSession, agent.slug, agent.name, onSessionCreated, effort, sessions.length, queryClient]),
     submitDisabled: createSession.isPending || !isRuntimeReady,
     keepMessageUntilComplete: true,
   })
-
-  // Consume any pending draft from voice agent flow
-  useEffect(() => {
-    const draft = consumePendingDraft()
-    if (draft) {
-      composer.setMessage(draft)
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- only run on mount
-  }, [])
 
   // Auto-expand when message gets long (5+ lines)
   useEffect(() => {
@@ -157,10 +170,14 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
     : 'How can I help? Press cmd+enter to send'
 
   const handleVoiceResult = useCallback(
-    ({ prompt }: { name: string; prompt: string }) => {
+    ({ name, prompt }: { name: string; prompt: string }) => {
       if (prompt) composer.setMessage(prompt)
+      if (name && agent.name === UNTITLED_AGENT_NAME) {
+        nameAssignedRef.current = true
+        updateAgent.mutate({ slug: agent.slug, name })
+      }
     },
-    [composer],
+    [composer, agent.name, agent.slug, updateAgent],
   )
 
   const handleImportComplete = useCallback(

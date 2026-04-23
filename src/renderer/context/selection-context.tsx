@@ -9,12 +9,8 @@ interface SelectionContextType {
   selectedChatIntegrationId: string | null
   selectedChatSessionId: string | null // session within a chat integration
   selectedDashboardSlug: string | null
-  /** One-shot draft text to pre-fill the agent home composer. Consumed on read. */
-  pendingDraft: string | null
   selectAgent: (agentSlug: string | null) => void
-  selectAgentWithDraft: (agentSlug: string, draft: string) => void
   selectSession: (sessionId: string | null) => void
-  consumePendingDraft: () => string | null
   selectScheduledTask: (taskId: string | null) => void
   selectWebhookTrigger: (triggerId: string | null) => void
   selectChatIntegration: (integrationId: string | null) => void
@@ -39,7 +35,6 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
   const [selectedChatIntegrationId, setSelectedChatIntegrationId] = useState<string | null>(null)
   const [selectedChatSessionId, setSelectedChatSessionId] = useState<string | null>(null)
   const [selectedDashboardSlug, setSelectedDashboardSlug] = useState<string | null>(null)
-  const [pendingDraft, setPendingDraft] = useState<string | null>(null)
 
   const selectAgent = useCallback((agentSlug: string | null) => {
     setSelectedAgentSlug(agentSlug)
@@ -50,23 +45,6 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedChatSessionId(null)
     setSelectedDashboardSlug(null)
   }, [])
-
-  const selectAgentWithDraft = useCallback((agentSlug: string, draft: string) => {
-    setPendingDraft(draft)
-    setSelectedAgentSlug(agentSlug)
-    setSelectedSessionId(null)
-    setSelectedScheduledTaskId(null)
-    setSelectedWebhookTriggerId(null)
-    setSelectedChatIntegrationId(null)
-    setSelectedChatSessionId(null)
-    setSelectedDashboardSlug(null)
-  }, [])
-
-  const consumePendingDraft = useCallback(() => {
-    const draft = pendingDraft
-    setPendingDraft(null)
-    return draft
-  }, [pendingDraft])
 
   const selectSession = useCallback((sessionId: string | null) => {
     setSelectedSessionId(sessionId)
@@ -185,11 +163,8 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
         selectedChatIntegrationId,
         selectedChatSessionId,
         selectedDashboardSlug,
-        pendingDraft,
         selectAgent,
-        selectAgentWithDraft,
         selectSession,
-        consumePendingDraft,
         selectScheduledTask,
         selectWebhookTrigger,
         selectChatIntegration,
