@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
-import { MoreVertical, Play, ExternalLink, Trash2 } from 'lucide-react'
+import { MoreVertical, Play, ExternalLink, Trash2, Pause, PlayCircle } from 'lucide-react'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -12,7 +12,12 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
-import { useRunScheduledTaskNow, useCancelScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
+import {
+  useRunScheduledTaskNow,
+  useCancelScheduledTask,
+  usePauseScheduledTask,
+  useResumeScheduledTask,
+} from '@renderer/hooks/use-scheduled-tasks'
 import { useHumanizedCron } from '@renderer/hooks/use-humanized-cron'
 import { HomeCollapsible } from './home-collapsible'
 import type { ApiScheduledTask } from '@shared/lib/types/api'
@@ -46,8 +51,12 @@ export function HomeCrons({ agentSlug, scheduledTasks, formatDate, onSelectTask 
 function CronRow({ task, agentSlug, formatDate, onSelect }: { task: ApiScheduledTask; agentSlug: string; formatDate: (dateStr: string) => string; onSelect: () => void }) {
   const runNow = useRunScheduledTaskNow()
   const cancelTask = useCancelScheduledTask()
+  const pauseTask = usePauseScheduledTask()
+  const resumeTask = useResumeScheduledTask()
   const humanizedCron = useHumanizedCron(task.isRecurring ? task.scheduleExpression : null)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const isPaused = task.status === 'paused'
+  const canPause = task.isRecurring
 
   return (
     <>
@@ -55,10 +64,18 @@ function CronRow({ task, agentSlug, formatDate, onSelect }: { task: ApiScheduled
         onClick={onSelect}
         className="group relative w-full py-3 px-4 text-left hover:bg-muted/50 transition-colors"
       >
-        <div className="text-xs font-medium truncate">{task.name ?? 'Scheduled Task'}</div>
-        <div className="flex items-center justify-between text-[11px] text-muted-foreground mt-0.5">
+        <div className="flex items-center gap-1.5">
+          <div className="text-xs font-medium truncate">{task.name ?? 'Scheduled Task'}</div>
+          {isPaused && (
+            <span className="inline-flex items-center gap-0.5 rounded-sm bg-muted px-1 py-0.5 text-[10px] font-medium text-muted-foreground">
+              <Pause className="h-2.5 w-2.5" />
+              Paused
+            </span>
+          )}
+        </div>
+        <div className="flex items-center justify-between text-xs text-muted-foreground mt-0.5">
           <span>{humanizedCron ?? 'One-time'}</span>
-          {task.nextExecutionAt && (
+          {task.nextExecutionAt && !isPaused && (
             <span>Next: {formatDate(new Date(task.nextExecutionAt).toISOString())}</span>
           )}
         </div>
@@ -98,6 +115,32 @@ function CronRow({ task, agentSlug, formatDate, onSelect }: { task: ApiScheduled
                 <Play className="h-3.5 w-3.5" />
                 {runNow.isPending ? 'Running...' : 'Run Now'}
               </button>
+              {canPause && !isPaused && (
+                <button
+                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                  disabled={pauseTask.isPending}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    pauseTask.mutate({ taskId: task.id, agentSlug })
+                  }}
+                >
+                  <Pause className="h-3.5 w-3.5" />
+                  {pauseTask.isPending ? 'Pausing...' : 'Pause'}
+                </button>
+              )}
+              {canPause && isPaused && (
+                <button
+                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                  disabled={resumeTask.isPending}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    resumeTask.mutate({ taskId: task.id, agentSlug })
+                  }}
+                >
+                  <PlayCircle className="h-3.5 w-3.5" />
+                  {resumeTask.isPending ? 'Resuming...' : 'Resume'}
+                </button>
+              )}
               <button
                 className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition-colors"
                 onClick={(e) => {

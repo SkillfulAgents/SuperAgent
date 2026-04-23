@@ -7,6 +7,13 @@ import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import type { ContainerConfig } from './types'
 import { getDataDir } from '@shared/lib/config/data-dir'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import {
+  RunnerSetupError,
+  classifyWSL2Stderr,
+  extractStderr,
+  unknownRunnerSetupError,
+  type RunnerSetupRemediation,
+} from './wsl2-setup-errors'
 
 /**
  * Collect diagnostic data about the WSL2 environment at the moment of failure.
@@ -113,6 +120,85 @@ function collectWSL2Diagnostics(): Record<string, unknown> {
 }
 
 export const WSL2_DISTRO_NAME = 'superagent'
+
+/**
+ * Pre-flight: check if hardware virtualization is enabled in firmware (BIOS).
+ * Returns null if enabled or undetermined; returns a typed error if we can
+ * confirm it's disabled. WSL2 cannot run without this, so fail fast with
+ * actionable guidance rather than letting `wsl --import` error out opaquely.
+ */
+function checkVirtualizationEnabled(): RunnerSetupRemediation | null {
+  if (process.platform !== 'win32') return null
+  try {
+    // Win32_Processor.VirtualizationFirmwareEnabled reflects the BIOS toggle,
+    // but it is unreliable on machines where Hyper-V is already active: the
+    // host OS runs in the root partition and the property can report False
+    // even when virtualization is clearly enabled (the hypervisor wouldn't
+    // otherwise be running). Cross-check HypervisorPresent and treat firmware
+    // =False as authoritative only when the hypervisor is absent.
+    const ps = `powershell -NoProfile -Command "$h = (Get-CimInstance Win32_ComputerSystem).HypervisorPresent; $v = (Get-CimInstance Win32_Processor | ForEach-Object { $_.VirtualizationFirmwareEnabled }) -join ','; $h,$v -join '|'"`
+    const out = execSync(ps, { encoding: 'utf-8', timeout: 10000 }).trim()
+    if (!out) return null
+    const [hypervisorStr, firmwareStr] = out.split('|')
+    // Hypervisor is running → virt is on, regardless of the firmware flag.
+    if (hypervisorStr?.trim().toLowerCase() === 'true') return null
+    const values = (firmwareStr ?? '').split(',').map(v => v.trim().toLowerCase()).filter(Boolean)
+    const allDisabled = values.length > 0 && values.every(v => v === 'false')
+    if (allDisabled) {
+      return {
+        kind: 'virt-disabled-in-bios',
+        title: 'Virtualization is disabled in BIOS',
+        remediation:
+          'WSL2 requires hardware virtualization (Intel VT-x or AMD-V) to be enabled in your computer\'s BIOS/UEFI firmware. Windows reports that it is currently disabled.',
+        steps: [
+          { label: 'Reboot your computer and enter BIOS/UEFI setup (usually F2, F10, or Del during boot).' },
+          { label: 'Find the virtualization setting, typically under "Advanced" → "CPU Configuration" (named "Intel Virtualization Technology", "VT-x", or "AMD-V").' },
+          { label: 'Enable it, save, and reboot.' },
+          { label: 'Verify it is enabled:', command: 'systeminfo | Select-String "Virtualization Enabled"' },
+          { label: 'Then retry starting the runtime.' },
+        ],
+        docsUrl: 'https://aka.ms/enablevirtualization',
+        originalStderr: `HypervisorPresent=${hypervisorStr};VirtualizationFirmwareEnabled=${firmwareStr}`,
+        userResolvable: true,
+      }
+    }
+  } catch {
+    // CIM query failed — not conclusive, let wsl --import run and we'll classify
+    // its stderr if it fails.
+  }
+  return null
+}
+
+/**
+ * Report a WSL2 setup failure to Sentry with classification-aware severity.
+ * User-resolvable config issues (virt off, VMP missing, etc.) are logged as
+ * `captureMessage` to keep the exception signal noise down; unknowns still go
+ * to `captureException`. Always tags the event with the classified `kind` so
+ * support can triage by cause without opening each event.
+ */
+function reportWSL2SetupFailure(
+  originalError: unknown,
+  payload: RunnerSetupRemediation,
+  context: { operation: string; isRetry?: boolean; [key: string]: unknown },
+): void {
+  const extra = {
+    ...context,
+    runner_setup_kind: payload.kind,
+    runner_setup_stderr: payload.originalStderr,
+    original_error_message: originalError instanceof Error ? originalError.message : String(originalError),
+    ...collectWSL2Diagnostics(),
+  }
+  const tags = {
+    component: 'wsl2',
+    operation: context.operation,
+    runner_setup_kind: payload.kind,
+  }
+  if (payload.userResolvable) {
+    captureMessage(`Runner setup blocked: ${payload.kind}`, { level: 'warning', tags, extra })
+  } else {
+    captureException(originalError, { tags, extra })
+  }
+}
 
 /**
  * Convert a Windows path to a WSL2 path.
@@ -384,6 +470,17 @@ async function ensureWSL2ReadyImpl(isRetry: boolean): Promise<void> {
 
   addErrorBreadcrumb({ category: 'wsl2', message: 'ensureWSL2Ready started', data: { wsl2Home, isRetry } })
 
+  // Fail fast if virtualization is disabled in BIOS — `wsl --import` otherwise
+  // errors with an opaque HCS_E_HYPERV_NOT_INSTALLED that users can't act on.
+  if (!isRetry) {
+    const virtError = checkVirtualizationEnabled()
+    if (virtError) {
+      const err = new RunnerSetupError(virtError)
+      reportWSL2SetupFailure(err, virtError, { operation: 'preflight-virt-check', wsl2Home })
+      throw err
+    }
+  }
+
   // Check if distro exists
   let distroExists = false
   try {
@@ -400,11 +497,15 @@ async function ensureWSL2ReadyImpl(isRetry: boolean): Promise<void> {
     try {
       await createWSL2Distro()
     } catch (err) {
-      captureException(err, {
-        tags: { component: 'wsl2', operation: 'create-distro' },
-        extra: { wsl2Home, ...collectWSL2Diagnostics() },
-      })
-      throw err
+      if (err instanceof RunnerSetupError) {
+        // Already classified and reported by createWSL2Distro — just rethrow.
+        throw err
+      }
+      const stderr = extractStderr(err)
+      const payload = classifyWSL2Stderr(stderr) ?? unknownRunnerSetupError(stderr)
+      const setupErr = new RunnerSetupError(payload)
+      reportWSL2SetupFailure(err, payload, { operation: 'create-distro', wsl2Home })
+      throw setupErr
     }
   }
 
@@ -440,6 +541,19 @@ async function ensureWSL2ReadyImpl(isRetry: boolean): Promise<void> {
           await execWithPath('wsl --shutdown')
         } catch { /* best-effort */ }
         return ensureWSL2ReadyImpl(true)
+      }
+      const stderr = extractStderr(error)
+      const payload = classifyWSL2Stderr(stderr)
+      if (payload) {
+        reportWSL2SetupFailure(error, payload, { operation: 'start-distro', wsl2Home, distroExists })
+        // If start fails on a freshly created distro, unregister to avoid a zombie
+        if (!distroExists) {
+          console.error('WSL2 distro start failed after creation, cleaning up...')
+          try {
+            await execWithPath(`wsl --unregister ${WSL2_DISTRO_NAME}`)
+          } catch { /* best-effort cleanup */ }
+        }
+        throw new RunnerSetupError(payload)
       }
       captureException(error, {
         tags: { component: 'wsl2', operation: 'start-distro' },

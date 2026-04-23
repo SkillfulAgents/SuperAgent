@@ -65,6 +65,17 @@ export function getPlatform(): string | undefined {
 }
 
 /**
+ * Get the OS version (only available in Electron).
+ * Examples: macOS "15.4.0" / "26.0.0", Windows "10.0.22631".
+ */
+export function getOSVersion(): string | undefined {
+  if (typeof window !== 'undefined') {
+    return (window as any).electronAPI?.osVersion
+  }
+  return undefined
+}
+
+/**
  * Open a dashboard in a new window (Electron) or new tab (web).
  */
 export function openDashboardExternal(agentSlug: string, dashboardSlug: string, dashboardName?: string): void {

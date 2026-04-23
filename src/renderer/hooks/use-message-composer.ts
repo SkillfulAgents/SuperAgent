@@ -1,7 +1,8 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { useAttachments } from './use-attachments'
 import { useVoiceInput } from './use-voice-input'
 import { useAddMount } from './use-mounts'
+import { useDraft } from '@renderer/context/drafts-context'
 import { appendAttachedFiles, appendMountedFolders } from '@shared/lib/utils/attached-files'
 import { zipFolderFiles, type FolderGroup } from '@renderer/lib/file-utils'
 
@@ -17,16 +18,38 @@ interface UseMessageComposerOptions {
   submitDisabled?: boolean
   /** When true, keep the message in the input until onSubmit resolves (useful when there's a navigation delay). Defaults to false. */
   keepMessageUntilComplete?: boolean
-  /** Initial message to populate the input with (e.g. restored draft). */
-  initialMessage?: string
+  /** If provided, the composer persists its draft under this key via DraftsContext so it survives unmount. */
+  draftKey?: string
 }
 
 export function useMessageComposer(options: UseMessageComposerOptions) {
-  const { agentSlug, onSubmit, submitDisabled, keepMessageUntilComplete } = options
+  const { agentSlug, onSubmit, submitDisabled, keepMessageUntilComplete, draftKey } = options
 
-  const [message, setMessage] = useState(options.initialMessage ?? '')
+  const [draft, setDraft] = useDraft<string>(draftKey)
+  const [message, setMessage] = useState(draft ?? '')
   const [isUploading, setIsUploading] = useState(false)
   const addMountMutation = useAddMount()
+
+  // Persist local message to the draft store so it survives unmount. Skip the
+  // initial commit: the store is already the source of truth at mount, and
+  // writing the default-empty message here would clobber a draft that a sibling
+  // effect may have just written under the same key.
+  const persistedOnceRef = useRef(false)
+  useEffect(() => {
+    if (!persistedOnceRef.current) {
+      persistedOnceRef.current = true
+      return
+    }
+    setDraft(message || undefined)
+  }, [message, setDraft])
+
+  // Sync externally-injected drafts (e.g. voice feedback) into the local message.
+  useEffect(() => {
+    if (draft !== undefined && draft !== message) {
+      setMessage(draft)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- only react to external draft changes
+  }, [draft])
 
   // Mount choice dialog state
   const [pendingFolders, setPendingFolders] = useState<FolderGroup[]>([])

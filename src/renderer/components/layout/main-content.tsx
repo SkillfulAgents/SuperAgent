@@ -34,6 +34,8 @@ import { useUser } from '@renderer/context/user-context'
 import { useMountWarnings } from '@renderer/hooks/use-mount-warnings'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { computeContextPercent } from '@shared/lib/utils/context-usage'
+import { useSessionSearch } from '@renderer/hooks/use-session-search'
+import { SessionSearchBar } from '@renderer/components/messages/session-search-bar'
 
 export function MainContent() {
   useRenderTracker('MainContent')
@@ -52,10 +54,6 @@ export function MainContent() {
   const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined)
   // Pending user messages per session — survives navigation between sessions
   const pendingMessagesRef = useRef(new Map<string, { text: string; sentAt: number; sender?: { id: string; name: string; email: string } }>())
-  // Draft input text per session — survives navigation between sessions
-  const draftsRef = useRef(new Map<string, string>())
-  // External draft injected from voice feedback — triggers a re-render to push into MessageInput
-  const [externalDraft, setExternalDraft] = useState<string | null>(null)
   const [, forceUpdate] = useState(0)
   const { data: agent } = useAgent(agentSlug)
   const { data: sessions } = useSessions(agentSlug)
@@ -73,6 +71,15 @@ export function MainContent() {
   const isViewOnly = agentSlug ? !canUseAgent(agentSlug) : false
   const { warning: mountWarning, dismiss: dismissMountWarning } = useMountWarnings(agentSlug ?? null)
   const { data: runtimeStatus, isPending: isRuntimePending } = useRuntimeStatus()
+  const isSessionView = !!(
+    agentSlug &&
+    sessionId &&
+    !dashboardSlug &&
+    !scheduledTaskId &&
+    !webhookTriggerId &&
+    !chatIntegrationId
+  )
+  const search = useSessionSearch(isSessionView, sessionId ?? null)
   const readiness = runtimeStatus?.runtimeReadiness
   const isRuntimeReady = isRuntimePending || readiness?.status === 'READY'
   const isPulling = readiness?.status === 'PULLING_IMAGE'
@@ -110,22 +117,6 @@ export function MainContent() {
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && sidebarState === 'collapsed' && !isFullScreen
 
   const pendingUserMessage = sessionId ? (pendingMessagesRef.current.get(sessionId) ?? null) : null
-  const currentDraft = sessionId ? (draftsRef.current.get(sessionId) ?? '') : ''
-
-  const handleDraftChange = useCallback((draft: string) => {
-    if (sessionId) {
-      if (draft) {
-        draftsRef.current.set(sessionId, draft)
-      } else {
-        draftsRef.current.delete(sessionId)
-      }
-    }
-  }, [sessionId])
-
-  /** Inject a draft from outside (e.g., voice feedback) — triggers re-render + push into MessageInput */
-  const handleSetExternalDraft = useCallback((draft: string) => {
-    setExternalDraft(draft)
-  }, [])
 
   const handleMessageSent = useCallback((content: string) => {
     if (sessionId) {
@@ -177,7 +168,7 @@ export function MainContent() {
           <div className="flex items-center gap-2 min-w-0">
             <button
               type="button"
-              className={`text-[13px] font-light truncate transition-colors app-no-drag ${isAgentLeaf ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+              className={`text-sm font-light truncate transition-colors app-no-drag ${isAgentLeaf ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
               onClick={() => selectSession(null)}
               data-testid="agent-breadcrumb"
             >
@@ -186,13 +177,13 @@ export function MainContent() {
           </div>
           {sessionId && session?.agentSlug === agentSlug && (
             <div className="flex items-center gap-1.5 min-w-0">
-              <span aria-hidden="true" className="text-[13px] font-light text-muted-foreground shrink-0 hidden md:block">/</span>
+              <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
               <SessionContextMenu
                 sessionId={sessionId}
                 sessionName={session?.name || 'Session'}
                 agentSlug={agentSlug}
               >
-                <span className="text-[13px] font-light text-foreground truncate cursor-context-menu app-no-drag">
+                <span className="text-sm font-light text-foreground truncate cursor-context-menu app-no-drag">
                   {session?.name || 'Loading...'}
                 </span>
               </SessionContextMenu>
@@ -200,10 +191,10 @@ export function MainContent() {
           )}
           {scheduledTaskId && scheduledTask && (
             <div className="flex items-center gap-1.5 min-w-0">
-              <span aria-hidden="true" className="text-[13px] font-light text-muted-foreground shrink-0 hidden md:block">/</span>
+              <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
               <div className="flex items-center gap-1 text-muted-foreground">
                 <Clock className="h-4 w-4" />
-                <span className="truncate text-[13px] font-light text-foreground">
+                <span className="truncate text-sm font-light text-foreground">
                   {scheduledTask.name || 'Scheduled Task'}
                 </span>
               </div>
@@ -403,7 +394,9 @@ export function MainContent() {
           <ChatIntegrationView integrationId={chatIntegrationId} agentSlug={agentSlug} />
         ) : sessionId ? (
           /* Show messages when a session is selected */
-          <div className="relative flex-1 flex min-h-0">
+          <div className="flex-1 flex flex-col min-h-0">
+            <SessionSearchBar search={search} />
+            <div className="relative flex-1 flex min-h-0">
             {/* Chat column */}
             <div className="flex-1 min-w-0 grid grid-rows-[1fr_auto] min-h-0">
               <MessageList
@@ -411,7 +404,6 @@ export function MainContent() {
                 agentSlug={agentSlug}
                 pendingUserMessage={pendingUserMessage}
                 onPendingMessageAppeared={handlePendingMessageAppeared}
-                onSetDraft={handleSetExternalDraft}
               />
               <div className="bg-background max-w-[740px] mx-auto w-full">
                 <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
@@ -420,10 +412,6 @@ export function MainContent() {
                   sessionId={sessionId}
                   agentSlug={agentSlug}
                   onMessageSent={handleMessageSent}
-                  initialDraft={currentDraft}
-                  externalDraft={externalDraft}
-                  onExternalDraftConsumed={() => setExternalDraft(null)}
-                  onDraftChange={handleDraftChange}
                   initialEffort={session?.effort}
                 />
                 <div className="flex justify-between items-center gap-1.5 px-6 py-3">
@@ -450,10 +438,10 @@ export function MainContent() {
                     <span />
                   )}
                   <span className="text-xs text-muted-foreground flex items-center gap-1">
-                    <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-[11px] font-sans leading-none">↵</kbd>
+                    <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">↵</kbd>
                     <span>Send</span>
                     <span className="mx-1">·</span>
-                    <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-[11px] font-sans leading-none">⇧↵</kbd>
+                    <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">⇧↵</kbd>
                     <span>New line</span>
                   </span>
                 </div>
@@ -461,6 +449,7 @@ export function MainContent() {
             </div>
             {/* Browser drawer panel */}
             <BrowserDrawerPanel agentSlug={agentSlug} sessionId={sessionId} browserActive={browserActive} isActive={isActive} />
+          </div>
           </div>
         ) : (
           /* Show home page with large input when no session is selected */

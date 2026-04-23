@@ -37,6 +37,13 @@ export interface ApiAgent {
   dashboardCount?: number
   dashboardNames?: string[]
   dashboardSlugs?: string[]
+  dashboards?: ApiAgentDashboard[]
+}
+
+export interface ApiAgentDashboard {
+  slug: string
+  name: string
+  hasScreenshot?: boolean
 }
 
 /**
@@ -284,7 +291,7 @@ export interface ApiScheduledTask {
   scheduleExpression: string
   prompt: string
   name: string | null
-  status: 'pending' | 'executed' | 'cancelled' | 'failed'
+  status: 'pending' | 'paused' | 'executed' | 'cancelled' | 'failed'
   nextExecutionAt: Date
   lastExecutedAt: Date | null
   isRecurring: boolean
@@ -294,6 +301,7 @@ export interface ApiScheduledTask {
   timezone: string | null
   createdAt: Date
   cancelledAt: Date | null
+  pausedAt: Date | null
 }
 
 // ============================================================================

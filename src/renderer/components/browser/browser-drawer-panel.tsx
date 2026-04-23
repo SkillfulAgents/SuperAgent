@@ -390,7 +390,7 @@ export function BrowserDrawerPanel({
 
         {/* Activity log */}
         <div className="flex items-center gap-1 py-1.5 border-b shrink-0 mx-4 mt-4">
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Activity</span>
+          <span className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">Activity</span>
         </div>
         <BrowserActivityLog sessionId={sessionId} agentSlug={agentSlug} />
       </div>

@@ -112,15 +112,48 @@ class MessagePersister {
   // Dev-only capture for building fixture replay tests
   private capture: SubagentCapture | null = SubagentCapture.fromEnv()
 
+  // In-flight subscribe promises, keyed by sessionId. Concurrent
+  // subscribeToSession() calls for the same session share the underlying
+  // promise so we don't double-install listeners or double-tear-down state.
+  private subscribingNow: Map<string, Promise<void>> = new Map()
+
   // Subscribe to a session's messages for SSE streaming.
   // Returns a promise that resolves when the WebSocket connection is ready.
+  // Idempotent: concurrent calls for the same sessionId await the same in-flight
+  // subscription instead of racing each other (which would re-init state and
+  // leak listeners).
   async subscribeToSession(
     sessionId: string,
     client: ContainerClient,
     containerSessionId: string,
     agentSlug?: string
   ): Promise<void> {
-    // Unsubscribe if already subscribed
+    const inFlight = this.subscribingNow.get(sessionId)
+    if (inFlight) return inFlight
+    const promise = this.doSubscribeToSession(sessionId, client, containerSessionId, agentSlug)
+      .finally(() => {
+        this.subscribingNow.delete(sessionId)
+      })
+    this.subscribingNow.set(sessionId, promise)
+    return promise
+  }
+
+  private async doSubscribeToSession(
+    sessionId: string,
+    client: ContainerClient,
+    containerSessionId: string,
+    agentSlug?: string
+  ): Promise<void> {
+    // Preserve session-lifecycle flags across (re-)subscribe so callers that
+    // markSessionActive *before* subscribing (e.g. x-agent sync invoke) and
+    // SSE reconnects of in-flight sessions don't lose their "currently busy"
+    // state when the listener reattaches.
+    const prior = this.streamingStates.get(sessionId)
+    const priorIsActive = prior?.isActive ?? false
+    const priorIsAwaitingInput = prior?.isAwaitingInput ?? false
+
+    // Unsubscribe if already subscribed (this also clears state, which is why
+    // we captured the flags above)
     this.unsubscribeFromSession(sessionId)
 
     // Initialize state
@@ -129,7 +162,7 @@ class MessagePersister {
       isStreaming: false,
       currentToolUse: null,
       currentToolInput: '',
-      isActive: false,
+      isActive: priorIsActive,
       isInterrupted: false,
       isCompacting: false,
       agentSlug,
@@ -138,7 +171,7 @@ class MessagePersister {
       completedSubagentIds: seedKnownSubagentIds(agentSlug, sessionId),
       activeSubagents: new Map(),
       slashCommands: [],
-      isAwaitingInput: false,
+      isAwaitingInput: priorIsAwaitingInput,
       pendingComputerUseRequests: new Map(),
       lastApiErrorCode: null,
     })
@@ -179,6 +212,81 @@ class MessagePersister {
   isSessionActive(sessionId: string): boolean {
     const state = this.streamingStates.get(sessionId)
     return state?.isActive ?? false
+  }
+
+  // Wait until a session is no longer active (i.e. a 'result' message arrived,
+  // it was interrupted, or the connection closed). Polls streamingState because
+  // there's no single "done" event — multiple code paths (handleMessage 'result',
+  // markSessionInterrupted, markSessionInactive) clear isActive.
+  //
+  // requireActiveFirst (default true): require observing isActive=true at least once
+  // before resolving. Guards against the race where waitForIdle is called before the
+  // session has fully started — without this, an empty/missing state resolves instantly
+  // and the caller thinks the agent finished with no output. Pass false for callers
+  // that explicitly want "resolve if idle now" semantics.
+  // observeMs (default 2000): how long to wait for the session to become active before
+  // giving up with an error (only when requireActiveFirst=true).
+  waitForIdle(
+    sessionId: string,
+    opts?: {
+      timeoutMs?: number
+      signal?: AbortSignal
+      requireActiveFirst?: boolean
+      observeMs?: number
+    },
+  ): Promise<void> {
+    const timeoutMs = opts?.timeoutMs ?? 10 * 60 * 1000 // 10 min default
+    const requireActiveFirst = opts?.requireActiveFirst ?? true
+    const observeMs = opts?.observeMs ?? 2000
+    return new Promise<void>((resolve, reject) => {
+      const startedAt = Date.now()
+      let everActive = false
+      let timer: ReturnType<typeof setTimeout> | null = null
+
+      const cleanup = () => {
+        if (timer) clearTimeout(timer)
+        opts?.signal?.removeEventListener('abort', onAbort)
+      }
+      const onAbort = () => {
+        cleanup()
+        reject(new Error('waitForIdle aborted'))
+      }
+      if (opts?.signal) {
+        if (opts.signal.aborted) {
+          reject(new Error('waitForIdle aborted'))
+          return
+        }
+        opts.signal.addEventListener('abort', onAbort, { once: true })
+      }
+
+      const tick = () => {
+        const state = this.streamingStates.get(sessionId)
+        if (state?.isActive) everActive = true
+
+        if (!state || !state.isActive) {
+          if (requireActiveFirst && !everActive) {
+            // Haven't seen activity yet — keep observing briefly in case the
+            // session is still spinning up. After observeMs, give up cleanly.
+            if (Date.now() - startedAt > observeMs) {
+              cleanup()
+              reject(new Error('waitForIdle: session never became active'))
+              return
+            }
+          } else {
+            cleanup()
+            resolve()
+            return
+          }
+        }
+        if (Date.now() - startedAt > timeoutMs) {
+          cleanup()
+          reject(new Error(`waitForIdle timeout after ${timeoutMs}ms`))
+          return
+        }
+        timer = setTimeout(tick, 250)
+      }
+      tick()
+    })
   }
 
   // Check if a session is waiting for user input
@@ -1232,11 +1340,13 @@ class MessagePersister {
           // Mark session as awaiting input when a blocking user-input tool fires
           // Only tools with 'request_' prefix actually block waiting for user response
           // (schedule_task, deliver_file, search_* resolve immediately and don't block)
-          // Note: computer-use tools are handled by handleComputerUseRequestTool which
-          // only marks awaiting input when user approval is actually needed (not auto-executed)
+          // Note: computer-use AND request_script_run tools are handled by their own
+          // handlers which only mark awaiting input when user approval is actually
+          // needed (not when auto-executed against a cached permission grant).
           if (
             state.currentToolUse.name === 'AskUserQuestion' ||
-            state.currentToolUse.name.startsWith('mcp__user-input__request_')
+            (state.currentToolUse.name.startsWith('mcp__user-input__request_') &&
+              state.currentToolUse.name !== 'mcp__user-input__request_script_run')
           ) {
             this.markSessionAwaitingInput(sessionId)
           }
@@ -1957,16 +2067,19 @@ class MessagePersister {
         return
       }
 
-      // Check computer use permissions (use_host_shell level)
+      // Check computer use permissions (use_host_shell level) — auto-execute when granted.
+      // We still broadcast (with autoApproved: true) so the client can suppress any
+      // messages-based fallback prompt for this toolUseId during the brief window
+      // between tool_use being persisted and tool_result coming back.
+      let autoApproved = false
       if (agentSlug) {
         const permissionResult = computerUsePermissionManager.checkPermission(agentSlug, 'use_host_shell')
         if (permissionResult === 'granted') {
-          // Auto-approved — broadcast will still happen for UI to show, but no approval needed
-          // The run-script endpoint will handle execution
+          autoApproved = true
+          this.autoExecuteScriptRun(agentSlug, toolUseId, input.script, input.scriptType)
         }
       }
 
-      // Broadcast to UI for user approval (or showing auto-approved state)
       this.broadcastToSSE(sessionId, {
         type: 'script_run_request',
         toolUseId,
@@ -1974,12 +2087,18 @@ class MessagePersister {
         explanation: input.explanation,
         scriptType: input.scriptType,
         agentSlug,
+        autoApproved,
       })
 
-      if (agentSlug && !this.hasActiveViewers(sessionId)) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'script_run').catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-        })
+      // Only flip the global "awaiting input" status (which drives the orange agent-status
+      // pill in the sidebar / tray) when the user actually has to respond.
+      if (!autoApproved) {
+        this.markSessionAwaitingInput(sessionId)
+        if (agentSlug && !this.hasActiveViewers(sessionId)) {
+          notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'script_run').catch((err) => {
+            console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
+          })
+        }
       }
     } catch (error) {
       console.error('[MessagePersister] Error handling script run request:', error)
@@ -2082,6 +2201,46 @@ class MessagePersister {
     } catch (error) {
       console.error('[MessagePersister] Error handling computer use request:', error)
     }
+  }
+
+  /**
+   * Auto-execute a host script when use_host_shell permission is already cached.
+   * Calls the internal /run-script API endpoint which executes and resolves the input.
+   */
+  private autoExecuteScriptRun(
+    agentSlug: string,
+    toolUseId: string,
+    script: string,
+    scriptType: string,
+  ): void {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 35_000)
+    fetch(`http://localhost:${process.env.PORT || '3000'}/api/agents/${encodeURIComponent(agentSlug)}/sessions/_auto/run-script`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ toolUseId, script, scriptType }),
+      signal: controller.signal,
+    })
+      .then((res) => {
+        clearTimeout(timeout)
+        if (!res.ok) {
+          console.error('[MessagePersister] Auto-execute script run failed:', res.status)
+        }
+      })
+      .catch((err: Error) => {
+        clearTimeout(timeout)
+        console.error('[MessagePersister] Failed to auto-execute script run:', err)
+        getContainerManager().then((cm) =>
+          cm.getClient(agentSlug)
+            .fetch(`/inputs/${encodeURIComponent(toolUseId)}/reject`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ reason: `Auto-execute failed: ${err.message}` }),
+            })
+        ).catch((rejectErr: Error) => {
+          console.error('[MessagePersister] Failed to reject after auto-execute failure:', rejectErr)
+        })
+      })
   }
 
   /**

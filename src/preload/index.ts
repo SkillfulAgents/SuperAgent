@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('get-api-url')
   },
   platform: process.platform,
+  osVersion: process.getSystemVersion(),
 
   // OAuth callback handling - receives parsed callback params from main process
   onOAuthCallback: (callback: (params: {
@@ -64,6 +65,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('get-fullscreen-state')
   },
 
+  // Custom window controls (Windows custom title bar)
+  minimizeWindow: () => {
+    ipcRenderer.send('window-minimize')
+  },
+  toggleMaximizeWindow: () => {
+    ipcRenderer.send('window-toggle-maximize')
+  },
+  closeWindow: () => {
+    ipcRenderer.send('window-close')
+  },
+  getWindowMaximizedState: (): Promise<boolean> => {
+    return ipcRenderer.invoke('get-window-maximized-state')
+  },
+  onWindowMaximizedChange: (callback: (isMaximized: boolean) => void) => {
+    ipcRenderer.on('window-maximized-change', (_event, isMaximized) => callback(isMaximized))
+  },
+  removeWindowMaximizedChange: () => {
+    ipcRenderer.removeAllListeners('window-maximized-change')
+  },
+
   // Open URL in system default browser
   openExternal: (url: string): Promise<void> => {
     return ipcRenderer.invoke('open-external', url)
@@ -74,9 +95,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('launch-powershell-admin', command)
   },
 
-  // Navigation from tray menu
-  onNavigateToAgent: (callback: (agentSlug: string) => void) => {
-    ipcRenderer.on('navigate-to-agent', (_event, agentSlug) => callback(agentSlug))
+  // Navigation from tray menu or deep links.
+  onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void) => {
+    ipcRenderer.on('navigate-to-agent', (_event, agentSlug, sessionId) => callback(agentSlug, sessionId))
   },
 
   removeNavigateToAgent: () => {
@@ -216,6 +237,7 @@ declare global {
     electronAPI?: {
       getApiUrl: () => Promise<string>
       platform: string
+      osVersion: string
       onOAuthCallback: (callback: (params: OAuthCallbackParams) => void) => void
       removeOAuthCallback: () => void
       onMcpOAuthCallback: (callback: (params: { success: boolean; mcpId?: string | null; error?: string | null }) => void) => void
@@ -225,9 +247,15 @@ declare global {
       onFullScreenChange: (callback: (isFullScreen: boolean) => void) => void
       removeFullScreenChange: () => void
       getFullScreenState: () => Promise<boolean>
+      minimizeWindow: () => void
+      toggleMaximizeWindow: () => void
+      closeWindow: () => void
+      getWindowMaximizedState: () => Promise<boolean>
+      onWindowMaximizedChange: (callback: (isMaximized: boolean) => void) => void
+      removeWindowMaximizedChange: () => void
       openExternal: (url: string) => Promise<void>
       launchPowershellAdmin: (command: string) => Promise<void>
-      onNavigateToAgent: (callback: (agentSlug: string) => void) => void
+      onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void) => void
       removeNavigateToAgent: () => void
       onOpenSettings: (callback: () => void) => void
       removeOpenSettings: () => void

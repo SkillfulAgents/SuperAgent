@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ConnectivityProvider } from '@renderer/context/connectivity-context'
 import { UserProvider } from '@renderer/context/user-context'
 import { DialogProvider } from '@renderer/context/dialog-context'
+import { DraftsProvider } from '@renderer/context/drafts-context'
 import type { ReactElement, ReactNode } from 'react'
 
 export { screen, waitFor, within, act } from '@testing-library/react'
@@ -26,7 +27,9 @@ function AllProviders({ children }: { children: ReactNode }) {
       <ConnectivityProvider>
         <UserProvider>
           <DialogProvider onOpenWizard={() => {}}>
-            {children}
+            <DraftsProvider>
+              {children}
+            </DraftsProvider>
           </DialogProvider>
         </UserProvider>
       </ConnectivityProvider>

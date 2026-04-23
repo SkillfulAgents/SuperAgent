@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import agents from './routes/agents'
+import xAgent from './routes/x-agent'
 import connectedAccounts from './routes/connected-accounts'
 import settings from './routes/settings'
 import providers from './routes/providers'
@@ -136,6 +137,7 @@ if (isAuthMode()) {
 
 // Mount route handlers
 app.route('/api/agents', agents)
+app.route('/api/x-agent', xAgent)
 app.route('/api/connected-accounts', connectedAccounts)
 app.route('/api/settings', settings)
 app.route('/api/providers', providers)

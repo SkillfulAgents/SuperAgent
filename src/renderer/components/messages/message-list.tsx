@@ -28,12 +28,14 @@ import { BrowserInputRequestItem } from './browser-input-request-item'
 import { ScriptRunRequestItem } from './script-run-request-item'
 import { ComputerUseRequestItem } from './computer-use-request-item'
 import { ProxyReviewRequestItem } from './proxy-review-request-item'
+import { XAgentReviewRequestItem } from './x-agent-review-request-item'
 import { PendingRequestStack } from './pending-request-stack'
 import { ArrowDown, Loader2, MessageSquarePlus, WifiOff } from 'lucide-react'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { usePendingProxyReviews } from '@renderer/hooks/use-proxy-reviews'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
+import { useDraft } from '@renderer/context/drafts-context'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { useEffect, useRef, useState, useCallback, useMemo, Fragment } from 'react'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
@@ -64,17 +66,16 @@ interface MessageListProps {
   agentSlug: string
   pendingUserMessage?: PendingMessage | null
   onPendingMessageAppeared?: () => void
-  /** Set the draft text in the message input (used by voice feedback) */
-  onSetDraft?: (draft: string) => void
 }
 
-export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendingMessageAppeared, onSetDraft }: MessageListProps) {
+export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendingMessageAppeared }: MessageListProps) {
   useRenderTracker('MessageList')
   const { data: messages, isLoading } = useMessages(sessionId, agentSlug)
   const deleteMessage = useDeleteMessage()
   const deleteToolCall = useDeleteToolCall()
   const { canUseAgent, user } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
+  const [, setSessionDraft] = useDraft<string>(`session:${sessionId}`)
 
   // Proxy reviews come from a separate API (not the message stream)
   const { data: proxyReviewsData, refetch: refetchProxyReviews } = usePendingProxyReviews(agentSlug)
@@ -171,6 +172,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     pendingBrowserInputRequests: sseBrowserInputRequests,
     pendingScriptRunRequests: sseScriptRunRequests,
     pendingComputerUseRequests: sseComputerUseRequests,
+    autoApprovedScriptRunIds,
   } = useMessageStream(sessionId, agentSlug)
   const isOnline = useIsOnline()
 
@@ -404,13 +406,15 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
 
     const messageBased = isActive ? messagesBasedPendingRequests.scriptRunRequests : []
     for (const req of [...sseScriptRunRequests, ...messageBased]) {
+      // Skip auto-approved tool_uses: server is already executing them, no prompt needed.
+      if (autoApprovedScriptRunIds.has(req.toolUseId)) continue
       if (!seen.has(req.toolUseId) && !dismissedRequestIds.current.has(req.toolUseId)) {
         seen.add(req.toolUseId)
         merged.push(req)
       }
     }
     return merged
-  }, [sseScriptRunRequests, messagesBasedPendingRequests.scriptRunRequests, isActive])
+  }, [sseScriptRunRequests, messagesBasedPendingRequests.scriptRunRequests, isActive, autoApprovedScriptRunIds])
 
   const pendingComputerUseRequests = useMemo(() => {
     const seen = new Set<string>()
@@ -999,22 +1003,34 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
                 onComplete={() => handleComputerUseRequestComplete(request.toolUseId)}
               />
             )),
-            ...pendingProxyReviews.map((review) => (
-              <ProxyReviewRequestItem
-                key={review.id}
-                reviewId={review.id}
-                accountId={review.accountId}
-                toolkit={review.toolkit}
-                method={review.method}
-                targetPath={review.targetPath}
-                matchedScopes={review.matchedScopes}
-                scopeDescriptions={review.scopeDescriptions}
-                displayText={review.displayText}
-                agentSlug={agentSlug}
-                readOnly={isViewOnly}
-                onComplete={() => refetchProxyReviews()}
-              />
-            )),
+            // TODO need to cleanup the reviews mechanism in general. this ugly
+            ...pendingProxyReviews.map((review) =>
+              review.xAgent ? (
+                <XAgentReviewRequestItem
+                  key={review.id}
+                  reviewId={review.id}
+                  agentSlug={agentSlug}
+                  xAgent={review.xAgent}
+                  readOnly={isViewOnly}
+                  onComplete={() => refetchProxyReviews()}
+                />
+              ) : (
+                <ProxyReviewRequestItem
+                  key={review.id}
+                  reviewId={review.id}
+                  accountId={review.accountId}
+                  toolkit={review.toolkit}
+                  method={review.method}
+                  targetPath={review.targetPath}
+                  matchedScopes={review.matchedScopes}
+                  scopeDescriptions={review.scopeDescriptions}
+                  displayText={review.displayText}
+                  agentSlug={agentSlug}
+                  readOnly={isViewOnly}
+                  onComplete={() => refetchProxyReviews()}
+                />
+              ),
+            ),
           ].sort((a, b) => getArrivalOrder(a.key as string) - getArrivalOrder(b.key as string))}
         </PendingRequestStack>
         </div>
@@ -1035,7 +1051,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
         onOpenChange={setFeedbackDialogOpen}
         agentInstructions={agentData?.instructions ?? ''}
         messages={plainMessages}
-        onSetDraft={onSetDraft}
+        onSetDraft={setSessionDraft}
       />
     </div>
   )

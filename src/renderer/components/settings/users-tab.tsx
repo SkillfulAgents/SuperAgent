@@ -263,12 +263,12 @@ export function UsersTab() {
                 <div className="truncate flex items-center gap-1.5">
                   <span className="truncate">{user.name}</span>
                   {isSelf && (
-                    <span className="text-[10px] text-muted-foreground shrink-0">(you)</span>
+                    <span className="text-2xs text-muted-foreground shrink-0">(you)</span>
                   )}
                   {isPendingApproval ? (
-                    <span className="text-[10px] text-amber-500 shrink-0">Pending Approval</span>
+                    <span className="text-2xs text-amber-500 shrink-0">Pending Approval</span>
                   ) : user.banned && (
-                    <span className="text-[10px] text-destructive shrink-0">Banned</span>
+                    <span className="text-2xs text-destructive shrink-0">Banned</span>
                   )}
                   {user.mustChangePassword && (
                     <Tooltip>

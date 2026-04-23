@@ -56,7 +56,7 @@ async function buildAppMenu(): Promise<void> {
   const agentsSubmenu: Electron.MenuItemConstructorOptions[] = []
 
   if (awaitingInput.length > 0) {
-    agentsSubmenu.push({ label: 'Awaiting Input', enabled: false })
+    agentsSubmenu.push({ label: 'Needs Input', enabled: false })
     awaitingInput.forEach(agent => {
       agentsSubmenu.push({
         label: agent.name,

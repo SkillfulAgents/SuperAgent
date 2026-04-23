@@ -77,6 +77,12 @@ import {
 import { type ArtifactInfo, listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
 import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
+import {
+  deletePoliciesForAgent,
+  listPoliciesForCaller,
+  replacePoliciesForCaller,
+  replacePoliciesForCallerInputSchema,
+} from '@shared/lib/services/x-agent-policy-service'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import {
   exportAgentTemplate,
@@ -163,7 +169,7 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
         if (isActive) {
           hasActiveSessions = true
         }
-        if (messagePersister.isSessionAwaitingInput(sessionId) || (isActive && hasAgentLevelReviews)) {
+        if (messagePersister.isSessionAwaitingInput(sessionId)) {
           hasSessionsAwaitingInput = true
         }
         if (unreadSessionIds.has(sessionId)) {
@@ -178,7 +184,11 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
       }
       if (!hasSessionsAwaitingInput) {
         hasSessionsAwaitingInput = messagePersister.hasSessionsAwaitingInputForAgent(agent.slug)
-          || (hasActiveSessions && hasAgentLevelReviews)
+      }
+      // Pending proxy reviews raise the flag regardless of session state — dashboard-triggered
+      // reviews have no associated session but still need user attention.
+      if (hasAgentLevelReviews) {
+        hasSessionsAwaitingInput = true
       }
 
       // Compute scheduled task summary
@@ -206,6 +216,11 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
         dashboardCount: artifacts.length,
         dashboardNames: artifacts.map((a) => a.name || a.slug),
         dashboardSlugs: artifacts.map((a) => a.slug),
+        dashboards: artifacts.map((a) => ({
+          slug: a.slug,
+          name: a.name || a.slug,
+          ...(a.hasScreenshot ? { hasScreenshot: true } : {}),
+        })),
       }
     }))
   )
@@ -709,6 +724,9 @@ agents.delete('/:id', AgentAdmin(), async (c) => {
     if (isAuthMode()) {
       await db.delete(messageAuthor).where(eq(messageAuthor.agentSlug, slug))
     }
+
+    // Clean up x-agent invoke policies referencing this agent (caller or target)
+    await deletePoliciesForAgent(slug)
 
     return c.body(null, 204)
   } catch (error) {
@@ -3884,6 +3902,44 @@ agents.patch('/:id/artifacts/:artifactSlug', AgentAdmin(), async (c) => {
   }
 })
 
+// GET /api/agents/:id/artifacts/:artifactSlug/screenshot.png - Serve the
+// auto-captured dashboard thumbnail directly from the host filesystem. Works
+// regardless of whether the container is running. Must be registered before
+// the catch-all artifact proxy below.
+agents.get('/:id/artifacts/:artifactSlug/screenshot.png', AgentRead(), async (c) => {
+  const agentSlug = c.req.param('id')
+  const artifactSlug = c.req.param('artifactSlug')
+
+  const workspaceDir = getAgentWorkspaceDir(agentSlug)
+  const artifactsDir = path.join(workspaceDir, 'artifacts')
+  const screenshotPath = path.join(artifactsDir, artifactSlug, 'screenshot.png')
+  // Belt-and-suspenders path traversal guard: slug cannot escape artifactsDir.
+  const resolved = path.resolve(screenshotPath)
+  if (!resolved.startsWith(path.resolve(artifactsDir) + path.sep)) {
+    return c.json({ error: 'Invalid artifact slug' }, 400)
+  }
+
+  try {
+    const buf = await fs.promises.readFile(screenshotPath)
+    // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins
+    const body = new Uint8Array(buf)
+    return new Response(body, {
+      status: 200,
+      headers: {
+        'content-type': 'image/png',
+        // Screenshots are overwritten on every restart, so cache briefly.
+        'cache-control': 'public, max-age=60, must-revalidate',
+      },
+    })
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') {
+      return c.json({ error: 'No screenshot available' }, 404)
+    }
+    console.error('Failed to read dashboard screenshot:', error)
+    return c.json({ error: 'Failed to read screenshot' }, 500)
+  }
+})
+
 // GET /api/agents/:id/artifacts/:artifactSlug/view - Standalone dashboard wrapper
 // Serves a self-contained HTML page that handles agent lifecycle (auto-start, wait, then load dashboard)
 agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
@@ -4179,7 +4235,9 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
     decision: 'allow' | 'deny'
     scope: string
     accountId: string
-    reviewType?: 'mcp' | 'api'
+    reviewType?: 'mcp' | 'api' | 'xagent'
+    // For xagent: { operation: 'list' | 'read' | 'invoke', targetSlug?: string }
+    xAgent?: { operation: 'list' | 'read' | 'invoke'; targetSlug: string | null }
   }>()
 
   if (!body.decision || !['allow', 'deny'].includes(body.decision)) {
@@ -4189,10 +4247,20 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   const policyDecision = body.decision === 'allow' ? 'allow' : 'block'
   const now = new Date()
 
-  if (body.reviewType === 'mcp') {
-    // MCP tool review — save to mcpToolPolicies
-    // accountId is actually the mcpId for MCP reviews
-    try {
+  // Persist the policy FIRST. The review is only resolved after the write commits,
+  // so any concurrent /invoke (or other gated call) that runs after this point
+  // will see the new policy on its eval and not create a duplicate review.
+  // If the write fails, surface the error instead of silently degrading to "Allow Once" —
+  // the user thinks they enabled "always" and would otherwise have no idea it didn't stick.
+  try {
+    if (body.reviewType === 'xagent' && body.xAgent) {
+      // X-Agent review — save to xAgentPolicies. The "caller" is the agent the
+      // review is attached to (slug), not the target.
+      const { setPolicy: setAgentPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+      await setAgentPolicy(slug, body.xAgent.operation, body.xAgent.targetSlug, policyDecision)
+    } else if (body.reviewType === 'mcp') {
+      // MCP tool review — save to mcpToolPolicies
+      // accountId is actually the mcpId for MCP reviews
       await db.insert(mcpToolPolicies).values({
         id: randomUUID(),
         mcpId: body.accountId,
@@ -4204,25 +4272,21 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
         target: [mcpToolPolicies.mcpId, mcpToolPolicies.toolName],
         set: { decision: policyDecision, updatedAt: now },
       })
-    } catch (err) {
-      console.warn('Failed to save MCP tool policy:', err)
-    }
-  } else {
-    // API scope review — save to apiScopePolicies
-    // Verify account ownership before saving policy
-    if (body.accountId && isAuthMode()) {
-      const userId = getCurrentUserId(c)
-      const [acct] = await db
-        .select({ userId: connectedAccounts.userId })
-        .from(connectedAccounts)
-        .where(eq(connectedAccounts.id, body.accountId))
-        .limit(1)
-      if (acct && acct.userId !== userId) {
-        return c.json({ error: 'Forbidden: you do not own this account' }, 403)
+    } else {
+      // API scope review — save to apiScopePolicies
+      // Verify account ownership before saving policy
+      if (body.accountId && isAuthMode()) {
+        const userId = getCurrentUserId(c)
+        const [acct] = await db
+          .select({ userId: connectedAccounts.userId })
+          .from(connectedAccounts)
+          .where(eq(connectedAccounts.id, body.accountId))
+          .limit(1)
+        if (acct && acct.userId !== userId) {
+          return c.json({ error: 'Forbidden: you do not own this account' }, 403)
+        }
       }
-    }
 
-    try {
       await db.insert(apiScopePolicies).values({
         id: randomUUID(),
         accountId: body.accountId,
@@ -4234,17 +4298,89 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
         target: [apiScopePolicies.accountId, apiScopePolicies.scope],
         set: { decision: policyDecision, updatedAt: now },
       })
-    } catch (err) {
-      console.warn('Failed to save scope policy (account may not exist):', err)
     }
+  } catch (err) {
+    console.error('Failed to save policy on always-allow:', err)
+    return c.json(
+      { error: `Failed to save policy: ${err instanceof Error ? err.message : 'unknown error'}` },
+      500,
+    )
   }
 
-  // Submit decision for this review
+  // Submit decision for this review (and any others matching the same scope)
   reviewManager.submitDecision(reviewId, body.decision)
-
-  // Resolve all pending reviews for this agent that match the scope
   reviewManager.resolveMatchingPending(slug, body.scope, body.decision)
 
+  return c.json({ ok: true })
+})
+
+// =============================================================================
+// X-Agent invoke policies (per-agent remembered cross-agent permissions)
+// =============================================================================
+
+// GET /api/agents/:id/x-agent-policies - List policies where this agent is the caller
+agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
+  const slug = c.req.param('id')
+  const rows = listPoliciesForCaller(slug)
+  // Enrich with target agent display name (best-effort; null target means "list" op)
+  const targetSlugs = Array.from(
+    new Set(rows.map((r) => r.targetAgentSlug).filter((s): s is string => s !== null)),
+  )
+
+  // In auth mode, hide policies whose target the viewer can't see — otherwise
+  // the policy editor leaks workspace topology (target slugs the user has no ACL on).
+  // null targets ('list' policy) are always visible.
+  let visibleTargets: Set<string> | null = null
+  if (isAuthMode()) {
+    const userId = getCurrentUserId(c)
+    const aclRows = await db
+      .select({ agentSlug: agentAcl.agentSlug })
+      .from(agentAcl)
+      .where(eq(agentAcl.userId, userId))
+    visibleTargets = new Set(aclRows.map((r) => r.agentSlug))
+  }
+
+  const nameMap = new Map<string, string>()
+  for (const targetSlug of targetSlugs) {
+    if (visibleTargets && !visibleTargets.has(targetSlug)) continue
+    const target = await getAgent(targetSlug)
+    if (target) nameMap.set(targetSlug, target.frontmatter.name)
+  }
+  return c.json({
+    policies: rows
+      .filter((r) => r.targetAgentSlug === null || !visibleTargets || visibleTargets.has(r.targetAgentSlug))
+      .map((r) => ({
+        id: r.id,
+        operation: r.operation,
+        targetAgentSlug: r.targetAgentSlug,
+        targetAgentName: r.targetAgentSlug ? nameMap.get(r.targetAgentSlug) ?? null : null,
+        decision: r.decision,
+        updatedAt: r.updatedAt,
+      })),
+  })
+})
+
+// PUT /api/agents/:id/x-agent-policies - Replace all policies for this caller (batch)
+agents.put('/:id/x-agent-policies', AgentAdmin(), async (c) => {
+  const slug = c.req.param('id')
+  // AgentAdmin checks role but not existence (and is a no-op in non-auth mode);
+  // assert here so a typo'd slug doesn't write phantom rows that nothing references.
+  const callerAgent = await getAgent(slug)
+  if (!callerAgent) {
+    return c.json({ error: 'Agent not found' }, 404)
+  }
+  const body = await c.req.json()
+  const parsed = replacePoliciesForCallerInputSchema.safeParse(body)
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid policies payload', details: parsed.error.format() }, 400)
+  }
+  // Don't let an agent set a policy targeting itself — meaningless and would create a confusing row
+  for (const p of parsed.data.policies) {
+    if (p.targetSlug === slug) {
+      return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
+    }
+  }
+  replacePoliciesForCaller(slug, parsed.data.policies)
   return c.json({ ok: true })
 })
 

@@ -346,10 +346,10 @@ describe('AppSidebar', () => {
   })
 
   // ==========================================================================
-  // Awaiting Input Status Tests
+  // Needs Input Status Tests
   // ==========================================================================
 
-  it('derives awaiting input status from sessions data when available', () => {
+  it('derives needs input status from sessions data when available', () => {
     // Agent data says not awaiting (stale), but sessions data says awaiting (fresh)
     mockUseAgents.mockReturnValue({
       data: [

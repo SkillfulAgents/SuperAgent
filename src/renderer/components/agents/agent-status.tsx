@@ -1,6 +1,7 @@
-import { Moon } from 'lucide-react'
+import { Moon, Circle } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import type { ContainerStatus } from '@shared/lib/container/types'
+import { WorkingDots, AwaitingDot } from './status-indicators'
 
 export type AgentActivityStatus = 'sleeping' | 'idle' | 'working' | 'awaiting_input'
 
@@ -8,7 +9,7 @@ const statusLabels: Record<AgentActivityStatus, string> = {
   sleeping: 'sleeping',
   idle: 'idle',
   working: 'working',
-  awaiting_input: 'awaiting input',
+  awaiting_input: 'needs input',
 }
 
 interface AgentStatusProps {
@@ -16,6 +17,8 @@ interface AgentStatusProps {
   hasActiveSessions?: boolean
   hasSessionsAwaitingInput?: boolean
   size?: 'sm' | 'default'
+  iconOnly?: boolean
+  workingDotClassName?: string
   className?: string
 }
 
@@ -30,39 +33,44 @@ export function getAgentActivityStatus(
   return 'idle'
 }
 
-export function AgentStatus({ status, hasActiveSessions = false, hasSessionsAwaitingInput = false, size = 'default', className }: AgentStatusProps) {
+export function AgentStatus({ status, hasActiveSessions = false, hasSessionsAwaitingInput = false, size = 'default', iconOnly = false, workingDotClassName, className }: AgentStatusProps) {
   const activityStatus = getAgentActivityStatus(status, hasActiveSessions, hasSessionsAwaitingInput)
   const isSmall = size === 'sm'
   const iconSize = isSmall ? 'h-2.5 w-2.5' : 'h-3 w-3'
-  const dotSize = isSmall ? 'h-1.5 w-1.5' : 'h-2 w-2'
 
   return (
-    <div className={cn('flex items-center', isSmall ? 'gap-1' : 'gap-1.5', className)} data-testid="agent-status" data-status={activityStatus}>
+    <div
+      className={cn(
+        'flex items-center',
+        iconOnly ? 'w-4 justify-center' : (isSmall ? 'gap-1' : 'gap-1.5'),
+        className
+      )}
+      role={iconOnly ? 'img' : undefined}
+      data-testid="agent-status"
+      data-status={activityStatus}
+      aria-label={iconOnly ? statusLabels[activityStatus] : undefined}
+      title={iconOnly ? statusLabels[activityStatus] : undefined}
+    >
       {activityStatus === 'sleeping' ? (
         <Moon className={cn(iconSize, 'text-muted-foreground')} />
       ) : activityStatus === 'awaiting_input' ? (
-        <span className={cn('relative flex', dotSize)}>
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-orange-500 opacity-75"></span>
-          <span className={cn('relative inline-flex rounded-full bg-orange-500', dotSize)}></span>
-        </span>
+        <AwaitingDot size={size} />
       ) : activityStatus === 'working' ? (
-        <span className={cn('relative flex', dotSize)}>
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-500 opacity-75"></span>
-          <span className={cn('relative inline-flex rounded-full bg-green-500', dotSize)}></span>
-        </span>
+        <WorkingDots dotClassName={workingDotClassName} />
       ) : (
-        <div className={cn('rounded-full bg-blue-500', dotSize)} />
+        <Circle className={cn(iconSize, 'text-muted-foreground')} />
       )}
-      <span
-        className={cn(isSmall ? 'text-[10px]' : 'text-xs', {
-          'text-muted-foreground': activityStatus === 'sleeping',
-          'text-blue-500': activityStatus === 'idle',
-          'text-green-600': activityStatus === 'working',
-          'text-orange-500': activityStatus === 'awaiting_input',
-        })}
-      >
-        {statusLabels[activityStatus]}
-      </span>
+      {!iconOnly && (
+        <span
+          className={cn(isSmall ? 'text-2xs' : 'text-xs', {
+            'text-muted-foreground': activityStatus === 'sleeping' || activityStatus === 'idle',
+            'text-foreground': activityStatus === 'working',
+            'text-orange-500': activityStatus === 'awaiting_input',
+          })}
+        >
+          {statusLabels[activityStatus]}
+        </span>
+      )}
     </div>
   )
 }

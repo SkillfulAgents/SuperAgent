@@ -159,7 +159,7 @@ export function ComputerUseRequestItem({
       <div className="overflow-hidden rounded-md border border-border bg-white dark:bg-background">
         <pre className="overflow-x-auto whitespace-pre-wrap break-all p-2 text-xs font-mono text-foreground/75">
           <code>
-            <span className="mr-2 inline-flex h-6 items-center rounded-md bg-muted px-2 text-[11px] font-medium text-foreground/80 not-italic">
+            <span className="mr-2 inline-flex h-6 items-center rounded-md bg-muted px-2 text-xs font-medium text-foreground/80 not-italic">
               {PERMISSION_LABELS[permissionLevel] || permissionLevel}
             </span>
             {method}{paramStr ? `(${paramStr})` : '()'}

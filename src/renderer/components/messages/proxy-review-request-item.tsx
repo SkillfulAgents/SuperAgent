@@ -238,12 +238,12 @@ export function ProxyReviewRequestItem({
                           <span className="flex flex-col items-start text-left">
                             <span>
                               Always deny{' '}
-                              <span className="ml-1 inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground/70">
+                              <span className="ml-1 inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/70">
                                 {scope}
                               </span>
                             </span>
                             {scopeDescriptions[scope] && (
-                              <span className="block w-full truncate text-[11px] font-normal text-muted-foreground/80 [&_a]:font-normal [&_a]:text-inherit [&_a]:underline">
+                              <span className="block w-full truncate text-xs font-normal text-muted-foreground/80 [&_a]:font-normal [&_a]:text-inherit [&_a]:underline">
                                 <ReactMarkdown
                                   components={{
                                     p: ({ children }) => <>{children}</>,
@@ -269,7 +269,7 @@ export function ProxyReviewRequestItem({
                   <div className="w-full px-3 pt-3 pb-0 text-foreground">
                     <span className="flex flex-col items-start text-left">
                       <span className="text-xs font-medium text-foreground">Deny with reason</span>
-                      <span className="text-[11px] font-normal text-muted-foreground/80">
+                      <span className="text-xs font-normal text-muted-foreground/80">
                         Add a note explaining why this action should be denied
                       </span>
                     </span>
@@ -341,7 +341,7 @@ export function ProxyReviewRequestItem({
                 >
                   <span className="flex min-w-0 w-full flex-col items-start text-left">
                     <span className="block w-full truncate">Allow Once</span>
-                    <span className="block w-full truncate text-[11px] font-normal text-muted-foreground/80">
+                    <span className="block w-full truncate text-xs font-normal text-muted-foreground/80">
                       Only allow this action this one time
                     </span>
                   </span>
@@ -365,12 +365,12 @@ export function ProxyReviewRequestItem({
                         <span className="flex min-w-0 w-full flex-col items-start text-left">
                           <span className="flex w-full min-w-0 items-center gap-1 overflow-hidden">
                             <span className="shrink-0">Always allow</span>
-                            <span className="inline-flex min-w-0 max-w-full items-center truncate rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground/70">
+                            <span className="inline-flex min-w-0 max-w-full items-center truncate rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/70">
                               {scope}
                             </span>
                           </span>
                           {scopeDescriptions[scope] && (
-                            <span className="block w-full truncate text-[11px] font-normal text-muted-foreground/80 [&_a]:font-normal [&_a]:text-inherit [&_a]:underline">
+                            <span className="block w-full truncate text-xs font-normal text-muted-foreground/80 [&_a]:font-normal [&_a]:text-inherit [&_a]:underline">
                               <ReactMarkdown
                                 components={{
                                   p: ({ children }) => <>{children}</>,
@@ -406,7 +406,7 @@ export function ProxyReviewRequestItem({
                   <span className="flex w-full min-w-0 items-center gap-1 overflow-hidden">
                     <span className="shrink-0">Always allow all {toolkit} requests</span>
                   </span>
-                  <span className="block w-full truncate text-[11px] font-normal text-muted-foreground/80">
+                  <span className="block w-full truncate text-xs font-normal text-muted-foreground/80">
                     Allow full read/edit access to {toolkit}
                   </span>
                 </span>

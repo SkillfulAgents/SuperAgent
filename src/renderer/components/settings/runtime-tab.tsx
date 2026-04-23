@@ -12,20 +12,20 @@ import {
 import { Alert, AlertDescription, AlertTitle } from '@renderer/components/ui/alert'
 import { useSettings, useUpdateSettings, useStartRunner, useRestartRunner, useRefreshAvailability } from '@renderer/hooks/use-settings'
 import { AlertCircle, AlertTriangle, Play, Loader2, RefreshCw, Plus, X } from 'lucide-react'
+import { RunnerSetupErrorPanel, getRunnerSetupPayload } from '@renderer/components/settings/runner-setup-error-panel'
 import { DEFAULT_LIMA_VM_MEMORY, VALID_LIMA_VM_MEMORY_OPTIONS } from '@shared/lib/container/types'
 import { getDefaultAgentImage } from '@shared/lib/config/version'
 
-const MIN_MEMORY_BYTES = 512 * 1024 * 1024 // 512 MiB
-
-/** Parse Docker memory string (e.g., "512m", "2g") to bytes. Returns 0 if invalid. */
-function parseMemoryToBytes(value: string): number {
-  const match = value.trim().match(/^([\d.]+)\s*([kmg])$/i)
-  if (!match) return 0
-  const num = parseFloat(match[1])
-  const unit = match[2].toLowerCase()
-  const multipliers: Record<string, number> = { k: 1024, m: 1024 ** 2, g: 1024 ** 3 }
-  return Math.round(num * (multipliers[unit] || 1))
-}
+const CPU_LIMIT_OPTIONS = [1, 2, 4, 6, 8]
+const MEMORY_LIMIT_OPTIONS: { value: string; label: string }[] = [
+  { value: '512m', label: '512 MB' },
+  { value: '1g', label: '1 GB' },
+  { value: '2g', label: '2 GB' },
+  { value: '4g', label: '4 GB' },
+  { value: '8g', label: '8 GB' },
+  { value: '16g', label: '16 GB' },
+  { value: '32g', label: '32 GB' },
+]
 
 const RUNNER_LABELS: Record<string, string> = {
   'apple-container': 'macOS Container',
@@ -192,21 +192,20 @@ export function RuntimeTab() {
     setHasChanges(changed)
   }, [containerRunner, agentImage, cpuLimit, memoryLimit, settings])
 
-  const memoryTooLow = parseMemoryToBytes(memoryLimit) > 0 && parseMemoryToBytes(memoryLimit) < MIN_MEMORY_BYTES
   const latestAgentImage = getDefaultAgentImage()
   const trimmedAgentImage = agentImage.trim()
   const agentImageMissing = trimmedAgentImage.length === 0
   const isLatestAgentImage = trimmedAgentImage === latestAgentImage
 
   const handleSave = async () => {
-    if (memoryTooLow || agentImageMissing) return
+    if (agentImageMissing) return
     try {
       await updateSettings.mutateAsync({
         container: {
           containerRunner,
           agentImage: trimmedAgentImage,
           resourceLimits: {
-            cpu: parseFloat(cpuLimit) || 1,
+            cpu: parseInt(cpuLimit, 10) || 1,
             memory: memoryLimit,
           },
         },
@@ -425,11 +424,15 @@ export function RuntimeTab() {
               Restarting {RUNNER_LABELS[containerRunner] || containerRunner}...
             </span>
           )}
-          {startRunner.error && (
+          {startRunner.error && getRunnerSetupPayload(startRunner.error) ? (
+            <div className="mt-2">
+              <RunnerSetupErrorPanel error={startRunner.error} />
+            </div>
+          ) : startRunner.error ? (
             <span className="text-destructive block mt-1">
               {startRunner.error.message}
             </span>
-          )}
+          ) : null}
           {startRunner.isSuccess && startRunner.data?.message && (
             <span className="text-green-600 dark:text-green-400 block mt-1">
               {startRunner.data.message}
@@ -487,11 +490,15 @@ export function RuntimeTab() {
 
           {runtimeSettingsChanged && (
             <div className="flex items-center justify-end gap-2 pt-2 border-t">
-              {restartRunner.error && (
+              {restartRunner.error && getRunnerSetupPayload(restartRunner.error) ? (
+                <div className="mr-auto w-full">
+                  <RunnerSetupErrorPanel error={restartRunner.error} />
+                </div>
+              ) : restartRunner.error ? (
                 <p className="text-sm text-destructive mr-auto">
                   {restartRunner.error.message}
                 </p>
-              )}
+              ) : null}
               {restartRunner.isSuccess && restartRunner.data?.message && (
                 <p className="text-sm text-green-600 dark:text-green-400 mr-auto">
                   {restartRunner.data.message}
@@ -552,17 +559,30 @@ export function RuntimeTab() {
       <div className="grid grid-cols-2 gap-4">
         <div className="space-y-2">
           <Label htmlFor="cpu-limit">CPU Limit</Label>
-          <Input
-            id="cpu-limit"
-            type="number"
-            min="0.1"
-            step="0.1"
+          <Select
             value={cpuLimit}
-            onChange={(e) => setCpuLimit(e.target.value)}
-            placeholder="1"
+            onValueChange={setCpuLimit}
             disabled={isLoading || hasRunningAgents}
-            className={hasRunningAgents ? 'bg-muted' : ''}
-          />
+          >
+            <SelectTrigger
+              id="cpu-limit"
+              className={hasRunningAgents ? 'bg-muted' : ''}
+            >
+              <SelectValue placeholder="Select CPU cores" />
+            </SelectTrigger>
+            <SelectContent>
+              {(CPU_LIMIT_OPTIONS.map(String).includes(cpuLimit)
+                ? CPU_LIMIT_OPTIONS.map(String)
+                : cpuLimit
+                  ? [cpuLimit, ...CPU_LIMIT_OPTIONS.map(String)]
+                  : CPU_LIMIT_OPTIONS.map(String)
+              ).map((v) => (
+                <SelectItem key={v} value={v}>
+                  {v} {v === '1' ? 'core' : 'cores'}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <p className="text-xs text-muted-foreground">
             Number of CPU cores.
           </p>
@@ -570,20 +590,31 @@ export function RuntimeTab() {
 
         <div className="space-y-2">
           <Label htmlFor="memory-limit">Memory Limit</Label>
-          <Input
-            id="memory-limit"
+          <Select
             value={memoryLimit}
-            onChange={(e) => setMemoryLimit(e.target.value)}
-            placeholder="512m"
+            onValueChange={setMemoryLimit}
             disabled={isLoading || hasRunningAgents}
-            className={hasRunningAgents ? 'bg-muted' : ''}
-          />
+          >
+            <SelectTrigger
+              id="memory-limit"
+              className={hasRunningAgents ? 'bg-muted' : ''}
+            >
+              <SelectValue placeholder="Select memory limit" />
+            </SelectTrigger>
+            <SelectContent>
+              {(MEMORY_LIMIT_OPTIONS.some((o) => o.value === memoryLimit) || !memoryLimit
+                ? MEMORY_LIMIT_OPTIONS
+                : [{ value: memoryLimit, label: memoryLimit }, ...MEMORY_LIMIT_OPTIONS]
+              ).map((opt) => (
+                <SelectItem key={opt.value} value={opt.value}>
+                  {opt.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <p className="text-xs text-muted-foreground">
-            Memory limit (e.g., 512m, 1g). Minimum 512m.
+            Maximum memory available to each agent container.
           </p>
-          {memoryTooLow && (
-            <p className="text-xs text-destructive">Memory limit must be at least 512m.</p>
-          )}
         </div>
       </div>
 
@@ -816,7 +847,7 @@ export function RuntimeTab() {
           </Button>
           <Button
             onClick={handleSave}
-            disabled={updateSettings.isPending || saveBlocked || memoryTooLow || agentImageMissing}
+            disabled={updateSettings.isPending || saveBlocked || agentImageMissing}
           >
             {updateSettings.isPending ? 'Saving...' : 'Save'}
           </Button>
