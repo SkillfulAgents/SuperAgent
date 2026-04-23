@@ -2638,4 +2638,111 @@ describe('MessagePersister', () => {
       })
     })
   })
+
+  // ============================================================================
+  // waitForIdle — sync x-agent invoke race protection
+  // ============================================================================
+
+  describe('waitForIdle', () => {
+    const WAIT_SESSION = 'wait-session'
+
+    afterEach(() => {
+      messagePersister.unsubscribeFromSession(WAIT_SESSION)
+    })
+
+    it('rejects with "session never became active" when state never appears (requireActiveFirst default)', async () => {
+      await expect(
+        messagePersister.waitForIdle(WAIT_SESSION, { observeMs: 100 }),
+      ).rejects.toThrow(/never became active/)
+    })
+
+    it('resolves immediately for missing state when requireActiveFirst=false', async () => {
+      await expect(
+        messagePersister.waitForIdle(WAIT_SESSION, { requireActiveFirst: false }),
+      ).resolves.toBeUndefined()
+    })
+
+    it('rejects with "aborted" when the abort signal fires mid-wait', async () => {
+      // Caller cancellation (e.g. HTTP client disconnect) must propagate through
+      // waitForIdle so we don't keep polling after no one's listening.
+      messagePersister.markSessionActive(WAIT_SESSION, AGENT_SLUG)
+      const ctrl = new AbortController()
+      const promise = messagePersister.waitForIdle(WAIT_SESSION, { signal: ctrl.signal })
+      setTimeout(() => ctrl.abort(), 30)
+      await expect(promise).rejects.toThrow(/aborted/)
+    })
+
+    it('rejects synchronously when signal is already aborted', async () => {
+      messagePersister.markSessionActive(WAIT_SESSION, AGENT_SLUG)
+      const ctrl = new AbortController()
+      ctrl.abort()
+      await expect(
+        messagePersister.waitForIdle(WAIT_SESSION, { signal: ctrl.signal }),
+      ).rejects.toThrow(/aborted/)
+    })
+
+    it('rejects with timeout when an active session never goes idle', async () => {
+      // Once the session is active, observeMs no longer applies — timeoutMs is
+      // the stop-gap. Verifies the timeout branch (not the never-active branch).
+      messagePersister.markSessionActive(WAIT_SESSION, AGENT_SLUG)
+      await expect(
+        messagePersister.waitForIdle(WAIT_SESSION, { timeoutMs: 200 }),
+      ).rejects.toThrow(/timeout after 200ms/)
+    })
+
+    it('resolves once an active session goes idle (and preserves isActive across subscribe)', async () => {
+      // Mirror the x-agent sync-invoke pattern: markSessionActive *before* subscribe
+      messagePersister.markSessionActive(WAIT_SESSION, AGENT_SLUG)
+      const client = createMockClient()
+      await messagePersister.subscribeToSession(WAIT_SESSION, client, WAIT_SESSION, AGENT_SLUG)
+      // Without preservation, isActive would have been wiped here and waitForIdle
+      // would reject "never became active" instead of waiting for the result event.
+      expect(messagePersister.isSessionActive(WAIT_SESSION)).toBe(true)
+
+      const promise = messagePersister.waitForIdle(WAIT_SESSION, { observeMs: 1000 })
+      setTimeout(() => client._sendMessage({ type: 'result', subtype: 'success' }), 50)
+      await expect(promise).resolves.toBeUndefined()
+    })
+  })
+
+  // ============================================================================
+  // subscribeToSession preserves isActive (sync x-agent invoke race fix)
+  // ============================================================================
+
+  describe('subscribeToSession state preservation', () => {
+    const PRESERVE_SESSION = 'preserve-session'
+
+    afterEach(() => {
+      messagePersister.unsubscribeFromSession(PRESERVE_SESSION)
+    })
+
+    it('preserves isActive=true from prior state when (re-)subscribing', async () => {
+      // Caller marks active before subscribing (x-agent sync invoke pattern)
+      messagePersister.markSessionActive(PRESERVE_SESSION, AGENT_SLUG)
+      expect(messagePersister.isSessionActive(PRESERVE_SESSION)).toBe(true)
+
+      const client = createMockClient()
+      await messagePersister.subscribeToSession(PRESERVE_SESSION, client, PRESERVE_SESSION, AGENT_SLUG)
+
+      // Without preservation, isActive would be reset to false here
+      expect(messagePersister.isSessionActive(PRESERVE_SESSION)).toBe(true)
+    })
+
+    it('defaults isActive=false when subscribing fresh (no prior state)', async () => {
+      const client = createMockClient()
+      await messagePersister.subscribeToSession(PRESERVE_SESSION, client, PRESERVE_SESSION, AGENT_SLUG)
+      expect(messagePersister.isSessionActive(PRESERVE_SESSION)).toBe(false)
+    })
+
+    it('concurrent subscribeToSession calls share the in-flight subscription (no double-init)', async () => {
+      const client = createMockClient()
+      const subscribeSpy = client.subscribeToStream as ReturnType<typeof vi.fn>
+      // Fire two concurrent subscribes for the same session before either resolves
+      const p1 = messagePersister.subscribeToSession(PRESERVE_SESSION, client, PRESERVE_SESSION, AGENT_SLUG)
+      const p2 = messagePersister.subscribeToSession(PRESERVE_SESSION, client, PRESERVE_SESSION, AGENT_SLUG)
+      await Promise.all([p1, p2])
+      // Underlying transport subscription must only happen once
+      expect(subscribeSpy).toHaveBeenCalledTimes(1)
+    })
+  })
 })

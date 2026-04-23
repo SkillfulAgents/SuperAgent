@@ -142,8 +142,8 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   prompt: text('prompt').notNull(),
   name: text('name'),
 
-  // Status: pending, executed, cancelled, failed
-  status: text('status', { enum: ['pending', 'executed', 'cancelled', 'failed'] })
+  // Status: pending, paused, executed, cancelled, failed
+  status: text('status', { enum: ['pending', 'paused', 'executed', 'cancelled', 'failed'] })
     .notNull()
     .default('pending'),
 
@@ -166,6 +166,7 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   cancelledAt: integer('cancelled_at', { mode: 'timestamp_ms' }),
+  pausedAt: integer('paused_at', { mode: 'timestamp_ms' }),
 })
 
 // Notifications - user notifications for session events
@@ -311,6 +312,26 @@ export const apiScopePolicies = sqliteTable('api_scope_policies', {
   accountScopeUnique: uniqueIndex('api_scope_policies_unique').on(table.accountId, table.scope),
 }))
 
+// Agent invoke policies - per-caller policies for x-agent operations
+// callerAgentSlug → (operation, optional targetAgentSlug) → decision
+//   operation 'list' uses targetAgentSlug = null (one row per caller)
+//   operation 'read' / 'invoke' use targetAgentSlug = the other agent
+//   create_agent is intentionally absent — spec requires manual approval, no memory
+export const xAgentPolicies = sqliteTable('x_agent_policies', {
+  id: text('id').primaryKey(),
+  callerAgentSlug: text('caller_agent_slug').notNull(),
+  targetAgentSlug: text('target_agent_slug'), // null = applies to all (used for 'list')
+  operation: text('operation', { enum: ['list', 'read', 'invoke'] }).notNull(),
+  decision: text('decision', { enum: ['allow', 'review', 'block'] }).notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  // Unique per (caller, target, operation). NULL targetAgentSlug counts as a distinct value in SQLite.
+  callerTargetOpUnique: uniqueIndex('x_agent_policies_unique')
+    .on(table.callerAgentSlug, table.targetAgentSlug, table.operation),
+  callerSlugIdx: index('x_agent_policies_caller_idx').on(table.callerAgentSlug),
+}))
+
 // MCP tool policies - per-MCP tool-level access policies
 export const mcpToolPolicies = sqliteTable('mcp_tool_policies', {
   id: text('id').primaryKey(),
@@ -356,6 +377,7 @@ export const webhookTriggers = sqliteTable('webhook_triggers', {
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   cancelledAt: integer('cancelled_at', { mode: 'timestamp_ms' }),
+  pausedAt: integer('paused_at', { mode: 'timestamp_ms' }),
 }, (table) => ({
   agentSlugIdx: index('webhook_triggers_agent_slug_idx').on(table.agentSlug),
   statusIdx: index('webhook_triggers_status_idx').on(table.status),
@@ -437,6 +459,8 @@ export type ApiScopePolicy = typeof apiScopePolicies.$inferSelect
 export type NewApiScopePolicy = typeof apiScopePolicies.$inferInsert
 export type McpToolPolicy = typeof mcpToolPolicies.$inferSelect
 export type NewMcpToolPolicy = typeof mcpToolPolicies.$inferInsert
+export type XAgentPolicy = typeof xAgentPolicies.$inferSelect
+export type NewXAgentPolicy = typeof xAgentPolicies.$inferInsert
 export type WebhookTrigger = typeof webhookTriggers.$inferSelect
 export type NewWebhookTrigger = typeof webhookTriggers.$inferInsert
 export type ChatIntegration = typeof chatIntegrations.$inferSelect

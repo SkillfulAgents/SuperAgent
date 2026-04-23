@@ -44,6 +44,13 @@ import {
   listDashboardsDef,
   getDashboardLogsDef,
 } from './dashboard-tools'
+import {
+  listAgentsDef,
+  createAgentDef,
+  invokeAgentDef,
+  getAgentSessionsDef,
+  getAgentSessionTranscriptDef,
+} from './x-agent-tools'
 
 const definitions: Record<string, ToolDefinition> = {
   // Agent tools
@@ -97,6 +104,13 @@ const definitions: Record<string, ToolDefinition> = {
   'mcp__dashboards__start_dashboard': startDashboardDef,
   'mcp__dashboards__list_dashboards': listDashboardsDef,
   'mcp__dashboards__get_dashboard_logs': getDashboardLogsDef,
+
+  // MCP tools - x-agent (cross-agent work)
+  'mcp__agents__list_agents': listAgentsDef,
+  'mcp__agents__create_agent': createAgentDef,
+  'mcp__agents__invoke_agent': invokeAgentDef,
+  'mcp__agents__get_agent_sessions': getAgentSessionsDef,
+  'mcp__agents__get_agent_session_transcript': getAgentSessionTranscriptDef,
 }
 
 export function getToolDefinition(toolName: string): ToolDefinition | undefined {

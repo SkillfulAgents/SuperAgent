@@ -28,6 +28,7 @@ import { BrowserInputRequestItem } from './browser-input-request-item'
 import { ScriptRunRequestItem } from './script-run-request-item'
 import { ComputerUseRequestItem } from './computer-use-request-item'
 import { ProxyReviewRequestItem } from './proxy-review-request-item'
+import { XAgentReviewRequestItem } from './x-agent-review-request-item'
 import { PendingRequestStack } from './pending-request-stack'
 import { ArrowDown, Loader2, MessageSquarePlus, WifiOff } from 'lucide-react'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
@@ -1002,22 +1003,34 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
                 onComplete={() => handleComputerUseRequestComplete(request.toolUseId)}
               />
             )),
-            ...pendingProxyReviews.map((review) => (
-              <ProxyReviewRequestItem
-                key={review.id}
-                reviewId={review.id}
-                accountId={review.accountId}
-                toolkit={review.toolkit}
-                method={review.method}
-                targetPath={review.targetPath}
-                matchedScopes={review.matchedScopes}
-                scopeDescriptions={review.scopeDescriptions}
-                displayText={review.displayText}
-                agentSlug={agentSlug}
-                readOnly={isViewOnly}
-                onComplete={() => refetchProxyReviews()}
-              />
-            )),
+            // TODO need to cleanup the reviews mechanism in general. this ugly
+            ...pendingProxyReviews.map((review) =>
+              review.xAgent ? (
+                <XAgentReviewRequestItem
+                  key={review.id}
+                  reviewId={review.id}
+                  agentSlug={agentSlug}
+                  xAgent={review.xAgent}
+                  readOnly={isViewOnly}
+                  onComplete={() => refetchProxyReviews()}
+                />
+              ) : (
+                <ProxyReviewRequestItem
+                  key={review.id}
+                  reviewId={review.id}
+                  accountId={review.accountId}
+                  toolkit={review.toolkit}
+                  method={review.method}
+                  targetPath={review.targetPath}
+                  matchedScopes={review.matchedScopes}
+                  scopeDescriptions={review.scopeDescriptions}
+                  displayText={review.displayText}
+                  agentSlug={agentSlug}
+                  readOnly={isViewOnly}
+                  onComplete={() => refetchProxyReviews()}
+                />
+              ),
+            ),
           ].sort((a, b) => getArrivalOrder(a.key as string) - getArrivalOrder(b.key as string))}
         </PendingRequestStack>
         </div>

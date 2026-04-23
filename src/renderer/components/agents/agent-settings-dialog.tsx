@@ -1,6 +1,6 @@
 
 import * as React from 'react'
-import { Settings, FileText, KeyRound, Sparkles, Link2, ScrollText, Users, HardDrive, MessageCircle } from 'lucide-react'
+import { Settings, FileText, KeyRound, Sparkles, Link2, ScrollText, Users, HardDrive, MessageCircle, Network } from 'lucide-react'
 import { useUser } from '@renderer/context/user-context'
 import { Button } from '@renderer/components/ui/button'
 import { SettingsDialog, SettingsDialogTab } from '@renderer/components/ui/settings-dialog'
@@ -14,6 +14,7 @@ import { AuditLogTab } from './settings/audit-log-tab'
 import { AccessTab } from './settings/access-tab'
 import { VolumesTab } from './settings/volumes-tab'
 import { ChatIntegrationsTab } from './settings/chat-integrations-tab'
+import { XAgentPoliciesTab } from './settings/x-agent-policies-tab'
 
 interface AgentSettingsDialogProps {
   agent: ApiAgent
@@ -123,6 +124,9 @@ export function AgentSettingsDialog({
       </SettingsDialogTab>
       <SettingsDialogTab id="chat-integrations" label="Chat" icon={<MessageCircle className="h-4 w-4" />}>
         <ChatIntegrationsTab agentSlug={agent.slug} />
+      </SettingsDialogTab>
+      <SettingsDialogTab id="x-agent-policies" label="Agents" icon={<Network className="h-4 w-4" />}>
+        <XAgentPoliciesTab agentSlug={agent.slug} />
       </SettingsDialogTab>
       <SettingsDialogTab id="audit-log" label="API Log" icon={<ScrollText className="h-4 w-4" />}>
         <AuditLogTab agentSlug={agent.slug} />

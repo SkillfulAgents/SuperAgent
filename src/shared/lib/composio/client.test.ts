@@ -13,6 +13,11 @@ vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getPlatformAccessToken: () => null,
 }))
 
+const mockCaptureMessage = vi.fn()
+vi.mock('@shared/lib/error-reporting', () => ({
+  captureMessage: (...args: unknown[]) => mockCaptureMessage(...args),
+}))
+
 // Mock global fetch
 const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
@@ -164,6 +169,83 @@ describe('getConnectionToken', () => {
 
     const result = await getConnectionToken('conn-1')
     expect(result.accessToken).toBe(longToken)
+  })
+
+  it('detects literal "REDACTED" tokens (composio-managed auth configs, 2026-04-22 change)', async () => {
+    mockFetchOk(makeComposioResponse({
+      authScheme: 'OAUTH2',
+      val: { status: 'ACTIVE', access_token: 'REDACTED' },
+    }))
+
+    await expect(getConnectionToken('conn-1')).rejects.toThrow('redacted')
+    try {
+      await getConnectionToken('conn-1')
+    } catch (e) {
+      expect((e as ComposioApiError).statusCode).toBe(403)
+    }
+  })
+
+  it('emits a Sentry warning with toolkit and pattern tags when a redacted token is detected', async () => {
+    mockFetchOk(makeComposioResponse(
+      { authScheme: 'OAUTH2', val: { status: 'ACTIVE', access_token: 'REDACTED' } },
+      { toolkit: { slug: 'slack' }, auth_config: { id: 'ac_rNLPL7-eRjv2', auth_scheme: 'OAUTH2', is_composio_managed: true } },
+    ))
+
+    await expect(getConnectionToken('ca_enPiGqqyyQJl')).rejects.toThrow('redacted')
+
+    expect(mockCaptureMessage).toHaveBeenCalledTimes(1)
+    const [message, context] = mockCaptureMessage.mock.calls[0]
+    expect(message).toMatch(/redacted/i)
+    expect(context.level).toBe('warning')
+    expect(context.tags).toMatchObject({
+      component: 'composio-client',
+      toolkit: 'slack',
+      auth_scheme: 'OAUTH2',
+      is_composio_managed: 'true',
+      redaction_pattern: 'literal-redacted',
+    })
+    expect(context.extra).toMatchObject({
+      connectionId: 'ca_enPiGqqyyQJl',
+      authConfigId: 'ac_rNLPL7-eRjv2',
+    })
+    expect(context.fingerprint).toEqual(['composio-redacted-token', 'literal-redacted'])
+  })
+
+  it('does not emit a Sentry warning for valid tokens', async () => {
+    mockFetchOk(makeComposioResponse({
+      authScheme: 'OAUTH2',
+      val: { status: 'ACTIVE', access_token: 'fake-valid-token-1234567890abcdef' },
+    }))
+    await getConnectionToken('conn-1')
+    expect(mockCaptureMessage).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['REDACTED', 'exact literal'],
+    [' REDACTED ', 'literal with whitespace'],
+    ['********', 'asterisks'],
+    ['<redacted>', 'angle-bracket placeholder'],
+    ['<REDACTED>', 'angle-bracket placeholder uppercase'],
+  ])('rejects placeholder token %j (%s)', async (token) => {
+    mockFetchOk(makeComposioResponse({
+      authScheme: 'OAUTH2',
+      val: { status: 'ACTIVE', access_token: token },
+    }))
+    await expect(getConnectionToken('conn-1')).rejects.toThrow('redacted')
+  })
+
+  it.each([
+    ['fake-slack-style-token-0000000000000000000000', 'slack-length token'],
+    ['fake-github-style-token-0000000000000000', 'github-length token'],
+    ['fake-notion-style-token-0000000000000000000000', 'notion-length token'],
+    ['redacted_something_longer_123456', 'token containing the word redacted but not a placeholder'],
+  ])('accepts real token %j (%s)', async (token) => {
+    mockFetchOk(makeComposioResponse({
+      authScheme: 'OAUTH2',
+      val: { status: 'ACTIVE', access_token: token },
+    }))
+    const result = await getConnectionToken('conn-1')
+    expect(result.accessToken).toBe(token)
   })
 
   it('calculates expiresAt from expires_in', async () => {

@@ -112,15 +112,48 @@ class MessagePersister {
   // Dev-only capture for building fixture replay tests
   private capture: SubagentCapture | null = SubagentCapture.fromEnv()
 
+  // In-flight subscribe promises, keyed by sessionId. Concurrent
+  // subscribeToSession() calls for the same session share the underlying
+  // promise so we don't double-install listeners or double-tear-down state.
+  private subscribingNow: Map<string, Promise<void>> = new Map()
+
   // Subscribe to a session's messages for SSE streaming.
   // Returns a promise that resolves when the WebSocket connection is ready.
+  // Idempotent: concurrent calls for the same sessionId await the same in-flight
+  // subscription instead of racing each other (which would re-init state and
+  // leak listeners).
   async subscribeToSession(
     sessionId: string,
     client: ContainerClient,
     containerSessionId: string,
     agentSlug?: string
   ): Promise<void> {
-    // Unsubscribe if already subscribed
+    const inFlight = this.subscribingNow.get(sessionId)
+    if (inFlight) return inFlight
+    const promise = this.doSubscribeToSession(sessionId, client, containerSessionId, agentSlug)
+      .finally(() => {
+        this.subscribingNow.delete(sessionId)
+      })
+    this.subscribingNow.set(sessionId, promise)
+    return promise
+  }
+
+  private async doSubscribeToSession(
+    sessionId: string,
+    client: ContainerClient,
+    containerSessionId: string,
+    agentSlug?: string
+  ): Promise<void> {
+    // Preserve session-lifecycle flags across (re-)subscribe so callers that
+    // markSessionActive *before* subscribing (e.g. x-agent sync invoke) and
+    // SSE reconnects of in-flight sessions don't lose their "currently busy"
+    // state when the listener reattaches.
+    const prior = this.streamingStates.get(sessionId)
+    const priorIsActive = prior?.isActive ?? false
+    const priorIsAwaitingInput = prior?.isAwaitingInput ?? false
+
+    // Unsubscribe if already subscribed (this also clears state, which is why
+    // we captured the flags above)
     this.unsubscribeFromSession(sessionId)
 
     // Initialize state
@@ -129,7 +162,7 @@ class MessagePersister {
       isStreaming: false,
       currentToolUse: null,
       currentToolInput: '',
-      isActive: false,
+      isActive: priorIsActive,
       isInterrupted: false,
       isCompacting: false,
       agentSlug,
@@ -138,7 +171,7 @@ class MessagePersister {
       completedSubagentIds: seedKnownSubagentIds(agentSlug, sessionId),
       activeSubagents: new Map(),
       slashCommands: [],
-      isAwaitingInput: false,
+      isAwaitingInput: priorIsAwaitingInput,
       pendingComputerUseRequests: new Map(),
       lastApiErrorCode: null,
     })
@@ -179,6 +212,81 @@ class MessagePersister {
   isSessionActive(sessionId: string): boolean {
     const state = this.streamingStates.get(sessionId)
     return state?.isActive ?? false
+  }
+
+  // Wait until a session is no longer active (i.e. a 'result' message arrived,
+  // it was interrupted, or the connection closed). Polls streamingState because
+  // there's no single "done" event — multiple code paths (handleMessage 'result',
+  // markSessionInterrupted, markSessionInactive) clear isActive.
+  //
+  // requireActiveFirst (default true): require observing isActive=true at least once
+  // before resolving. Guards against the race where waitForIdle is called before the
+  // session has fully started — without this, an empty/missing state resolves instantly
+  // and the caller thinks the agent finished with no output. Pass false for callers
+  // that explicitly want "resolve if idle now" semantics.
+  // observeMs (default 2000): how long to wait for the session to become active before
+  // giving up with an error (only when requireActiveFirst=true).
+  waitForIdle(
+    sessionId: string,
+    opts?: {
+      timeoutMs?: number
+      signal?: AbortSignal
+      requireActiveFirst?: boolean
+      observeMs?: number
+    },
+  ): Promise<void> {
+    const timeoutMs = opts?.timeoutMs ?? 10 * 60 * 1000 // 10 min default
+    const requireActiveFirst = opts?.requireActiveFirst ?? true
+    const observeMs = opts?.observeMs ?? 2000
+    return new Promise<void>((resolve, reject) => {
+      const startedAt = Date.now()
+      let everActive = false
+      let timer: ReturnType<typeof setTimeout> | null = null
+
+      const cleanup = () => {
+        if (timer) clearTimeout(timer)
+        opts?.signal?.removeEventListener('abort', onAbort)
+      }
+      const onAbort = () => {
+        cleanup()
+        reject(new Error('waitForIdle aborted'))
+      }
+      if (opts?.signal) {
+        if (opts.signal.aborted) {
+          reject(new Error('waitForIdle aborted'))
+          return
+        }
+        opts.signal.addEventListener('abort', onAbort, { once: true })
+      }
+
+      const tick = () => {
+        const state = this.streamingStates.get(sessionId)
+        if (state?.isActive) everActive = true
+
+        if (!state || !state.isActive) {
+          if (requireActiveFirst && !everActive) {
+            // Haven't seen activity yet — keep observing briefly in case the
+            // session is still spinning up. After observeMs, give up cleanly.
+            if (Date.now() - startedAt > observeMs) {
+              cleanup()
+              reject(new Error('waitForIdle: session never became active'))
+              return
+            }
+          } else {
+            cleanup()
+            resolve()
+            return
+          }
+        }
+        if (Date.now() - startedAt > timeoutMs) {
+          cleanup()
+          reject(new Error(`waitForIdle timeout after ${timeoutMs}ms`))
+          return
+        }
+        timer = setTimeout(tick, 250)
+      }
+      tick()
+    })
   }
 
   // Check if a session is waiting for user input

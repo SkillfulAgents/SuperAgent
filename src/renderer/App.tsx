@@ -9,6 +9,7 @@ import { DialogProvider } from './context/dialog-context'
 import { DraftsProvider } from './context/drafts-context'
 import { AppSidebar } from './components/layout/app-sidebar'
 import { MainContent } from './components/layout/main-content'
+import { WindowControls } from './components/layout/window-controls'
 import { SidebarProvider, SidebarInset } from './components/ui/sidebar'
 import { TrayNavigationHandler } from './components/tray-navigation-handler'
 import { GlobalNotificationHandler } from './components/notifications/global-notification-handler'
@@ -16,6 +17,7 @@ import { GettingStartedWizard } from './components/wizard/getting-started-wizard
 import { ErrorBoundary } from './components/ui/error-boundary'
 import { useUserSettings } from './hooks/use-user-settings'
 import { useTheme } from './hooks/use-theme'
+import { useInsetRadius } from './hooks/use-inset-radius'
 import { useUser } from './context/user-context'
 import { useAnalyticsTracking } from './context/analytics-context'
 import { useSettings } from './hooks/use-settings'
@@ -23,6 +25,7 @@ import { setRendererErrorReportingEnabled, setRendererErrorReportingUser } from 
 
 function AppContent() {
   useTheme()
+  useInsetRadius()
 
   const [wizardOpen, setWizardOpen] = useState(false)
   const { data: userSettings } = useUserSettings()
@@ -63,6 +66,7 @@ function AppContent() {
 
   return (
     <DialogProvider onOpenWizard={() => setWizardOpen(true)}>
+      <WindowControls />
       {wizardOpen ? (
         <GettingStartedWizard onClose={() => setWizardOpen(false)} />
       ) : (
@@ -70,7 +74,7 @@ function AppContent() {
           <GlobalNotificationHandler />
           <SidebarProvider className="h-screen">
             <AppSidebar />
-            <SidebarInset className="min-w-0 h-full">
+            <SidebarInset className="min-w-0">
               <MainContent />
             </SidebarInset>
           </SidebarProvider>
