@@ -1,0 +1,25 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the agent can execute browser operations - specifically navigating to https://example.com and retrieving the page title \"Example Domain\"",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully showing Super Agent interface with three agents in the sidebar",
+    "Clicked on \"QA-20260423-035824-i29a\" agent in the sidebar — Agent opened, displaying the chat interface and agent details",
+    "Clicked on the message input textbox — Input field became active and focused",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully entered into the input field",
+    "Clicked the \"Send message\" button — Message was sent, agent status changed to \"working\", session was created with title \"Browser Navigation and Page Title Retrieval\"",
+    "Waited up to 180 seconds for response containing \"Example Domain\" — Agent completed the task in 8 seconds and returned the response: \"The page title is \"Example Domain\".\"",
+    "Verified response mentions \"Example Domain\" and took screenshot — Response clearly states the page title is \"Example Domain\", browser preview shows the Example Domain page, two tool call cards show \"Open Browser\" and \"Browser Command $ get title\" operations both completed successfully with checkmarks, agent status is now \"idle\""
+  ],
+  "bugs": [],
+  "durationMs": 83463,
+  "sessionId": "c892eb0a-b3ab-465c-9e39-e205d4804cbb",
+  "cost": {
+    "inputTokens": 234,
+    "outputTokens": 7266,
+    "cacheCreationTokens": 38291,
+    "cacheReadTokens": 803666,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.164794
+  }
+}
