@@ -27,6 +27,7 @@ vi.mock('./base-container-client', () => ({
   BaseContainerClient: class {
     config: any
     constructor(config: any) { this.config = config }
+    protected getContainerName() { return `superagent-${this.config.agentId}` }
   },
   checkCommandAvailable: vi.fn(),
   execWithPath: vi.fn(),
@@ -72,6 +73,22 @@ import {
 const mockedFs = vi.mocked(fs)
 const mockedExecWithPath = vi.mocked(execWithPath)
 const mockedGetSettings = vi.mocked(getSettings)
+
+async function loadFreshLimaModuleForTest() {
+  vi.resetModules()
+
+  const fsModule = await import('fs')
+  const baseModule = await import('./base-container-client')
+  const settingsModule = await import('@shared/lib/config/settings')
+  const limaModule = await import('./lima-container-client')
+
+  return {
+    mockedFs: vi.mocked(fsModule),
+    mockedExecWithPath: vi.mocked(baseModule.execWithPath),
+    mockedGetSettings: vi.mocked(settingsModule.getSettings),
+    ...limaModule,
+  }
+}
 
 // ============================================================================
 // parseLimaList — test indirectly via LimaContainerClient.isRunning()
@@ -377,6 +394,158 @@ describe('stopLimaVm', () => {
 // ============================================================================
 // LimaContainerClient static methods
 // ============================================================================
+
+// ============================================================================
+// LimaContainerClient.handleRunError — corrupted image recovery
+// ============================================================================
+
+describe('LimaContainerClient.handleRunError', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    Object.defineProperty(process, 'resourcesPath', { value: undefined, writable: true, configurable: true })
+    process.env.HOME = '/Users/testuser'
+    mockedFs.readFileSync.mockReturnValue('v2.1.1')
+    mockedGetSettings.mockReturnValue({ container: { agentImage: 'ghcr.io/test/image:latest' } } as any)
+  })
+
+  it('rebuilds Lima VM on corrupted snapshot', async () => {
+    const client = new LimaContainerClient({ agentId: 'test-agent' } as any)
+    const error = new Error('level=fatal msg="mount callback failed on /tmp/containerd-mount123: no users found"')
+    const existingVm = JSON.stringify({ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 * 1024 * 1024 })
+    mockedExecWithPath
+      .mockResolvedValueOnce({ stdout: existingVm, stderr: '' })
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+
+    const result = await (client as any).handleRunError(error)
+
+    expect(result).toBe(true)
+    expect(mockedExecWithPath.mock.calls.some((c) => (c[0] as string).includes(`stop ${LIMA_VM_NAME} --force`))).toBe(true)
+    expect(mockedExecWithPath.mock.calls.some((c) => (c[0] as string).includes(`delete ${LIMA_VM_NAME} --force`))).toBe(true)
+  })
+
+  it('returns false when VM rebuild fails', async () => {
+    const client = new LimaContainerClient({ agentId: 'test-agent' } as any)
+    const error = new Error('mount callback failed: no users found')
+    const existingVm = JSON.stringify({ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 * 1024 * 1024 })
+    mockedExecWithPath
+      .mockResolvedValueOnce({ stdout: existingVm, stderr: '' })
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      .mockRejectedValueOnce(new Error('rebuild failed'))
+
+    expect(await (client as any).handleRunError(error)).toBe(false)
+  })
+
+  it('provisions Lima VM for known VM issues without force recreate', async () => {
+    const client = new LimaContainerClient({ agentId: 'test-agent' } as any)
+    const error = new Error('ENOENT: limactl not found')
+    const existingVm = JSON.stringify({ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 * 1024 * 1024 })
+    mockedExecWithPath
+      .mockResolvedValueOnce({ stdout: existingVm, stderr: '' })
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ name: LIMA_VM_NAME, status: 'Running' }), stderr: '' })
+
+    expect(await (client as any).handleRunError(error)).toBe(true)
+    expect(mockedExecWithPath.mock.calls.some((c) => (c[0] as string).includes(`stop ${LIMA_VM_NAME} --force`))).toBe(false)
+    expect(mockedExecWithPath.mock.calls.some((c) => (c[0] as string).includes(`delete ${LIMA_VM_NAME} --force`))).toBe(false)
+  })
+})
+
+describe('LimaContainerClient.reconcileRuntimeState', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    Object.defineProperty(process, 'resourcesPath', { value: undefined, writable: true, configurable: true })
+    process.env.HOME = '/Users/testuser'
+  })
+
+  it('rebuilds VM when image layers are corrupted', async () => {
+    const {
+      LimaContainerClient: FreshLimaContainerClient,
+      LIMA_VM_NAME: freshVmName,
+      mockedFs: freshMockedFs,
+      mockedExecWithPath: freshMockedExecWithPath,
+      mockedGetSettings: freshMockedGetSettings,
+    } = await loadFreshLimaModuleForTest()
+
+    freshMockedGetSettings.mockReturnValue({ container: { agentImage: 'ghcr.io/test/image:latest', runtimeSettings: {} } } as any)
+    freshMockedFs.readFileSync.mockReturnValue('v99.0.0')
+    const existingVm = JSON.stringify({ name: freshVmName, status: 'Running', memory: 4 * 1024 * 1024 * 1024 })
+    freshMockedExecWithPath
+      // nerdctl run --rm (image integrity check) fails with corruption error
+      .mockRejectedValueOnce(new Error('mount callback failed on /tmp/containerd-mount123: no users found'))
+      // ensureLimaReady(true): list VMs
+      .mockResolvedValueOnce({ stdout: existingVm, stderr: '' })
+      // stop --force
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      // delete --force
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      // create
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      // list (running check)
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ name: LIMA_VM_NAME, status: 'Stopped' }), stderr: '' })
+      // start
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+
+    const rebuilt = await FreshLimaContainerClient.reconcileRuntimeState()
+
+    expect(rebuilt).toBe(true)
+    expect(freshMockedExecWithPath.mock.calls.some((c) => (c[0] as string).includes('nerdctl run --rm'))).toBe(true)
+    expect(freshMockedExecWithPath.mock.calls.some((c) => (c[0] as string).includes(`stop ${freshVmName} --force`))).toBe(true)
+    expect(freshMockedExecWithPath.mock.calls.some((c) => (c[0] as string).includes(`delete ${freshVmName} --force`))).toBe(true)
+  })
+
+  it('rebuilds stale VM and skips image probe', async () => {
+    const {
+      LimaContainerClient: FreshLimaContainerClient,
+      LIMA_VM_NAME: freshVmName,
+      mockedFs: freshMockedFs,
+      mockedExecWithPath: freshMockedExecWithPath,
+      mockedGetSettings: freshMockedGetSettings,
+    } = await loadFreshLimaModuleForTest()
+
+    freshMockedGetSettings.mockReturnValue({ container: { agentImage: 'ghcr.io/test/image:latest', runtimeSettings: {} } } as any)
+    freshMockedFs.readFileSync.mockReturnValue('v2.0.3')
+    const existingVm = JSON.stringify({ name: freshVmName, status: 'Running', memory: 4 * 1024 * 1024 * 1024 })
+    freshMockedExecWithPath
+      // ensureLimaReady(false): list VMs
+      .mockResolvedValueOnce({ stdout: existingVm, stderr: '' })
+      // stop --force
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      // delete --force
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      // create
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      // list (running check)
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ name: freshVmName, status: 'Stopped' }), stderr: '' })
+      // start
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+
+    const rebuilt = await FreshLimaContainerClient.reconcileRuntimeState()
+
+    expect(rebuilt).toBe(true)
+    expect(freshMockedExecWithPath.mock.calls.some((c) => (c[0] as string).includes('nerdctl run --rm'))).toBe(false)
+  })
+
+  it('returns false when VM and image are healthy', async () => {
+    const {
+      LimaContainerClient: FreshLimaContainerClient,
+      mockedFs: freshMockedFs,
+      mockedExecWithPath: freshMockedExecWithPath,
+      mockedGetSettings: freshMockedGetSettings,
+    } = await loadFreshLimaModuleForTest()
+
+    freshMockedGetSettings.mockReturnValue({ container: { agentImage: 'ghcr.io/test/image:latest', runtimeSettings: {} } } as any)
+    freshMockedFs.readFileSync.mockReturnValue('v99.0.0')
+    // nerdctl run --rm succeeds
+    freshMockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+
+    const rebuilt = await FreshLimaContainerClient.reconcileRuntimeState()
+
+    expect(rebuilt).toBe(false)
+  })
+})
 
 describe('LimaContainerClient.isRunning', () => {
   beforeEach(() => {
