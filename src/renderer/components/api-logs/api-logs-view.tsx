@@ -1,4 +1,4 @@
-import { ArrowLeft, Loader2, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react'
+import { ArrowLeft, Loader2, RefreshCw, ChevronLeft, ChevronRight, ChevronDown, ChevronUp } from 'lucide-react'
 import { Fragment, useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { format } from 'date-fns'
@@ -6,6 +6,14 @@ import { apiFetch } from '@renderer/lib/api'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useSelection } from '@renderer/context/selection-context'
 import { Button } from '@renderer/components/ui/button'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@renderer/components/ui/table'
 import { useRenderTracker } from '@renderer/lib/perf'
 
 interface AuditLogEntry {
@@ -210,81 +218,102 @@ export function ApiLogsView({ agentSlug }: ApiLogsViewProps) {
           </div>
         ) : (
           <>
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs border-collapse">
-                <thead>
-                  <tr className="border-b text-left text-muted-foreground">
-                    <th className="font-medium px-2 py-2 whitespace-nowrap">Timestamp</th>
-                    <th className="font-medium px-2 py-2 whitespace-nowrap">Duration</th>
-                    <th className="font-medium px-2 py-2">Source</th>
-                    <th className="font-medium px-2 py-2">Method</th>
-                    <th className="font-medium px-2 py-2">Status</th>
-                    <th className="font-medium px-2 py-2 whitespace-nowrap">Policy</th>
-                    <th className="font-medium px-2 py-2">Toolkit</th>
-                    <th className="font-medium px-2 py-2 w-full">Path (error)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {entries.map((entry) => {
-                    const time = format(new Date(entry.createdAt), 'MM/dd/yy, HH:mm:ss')
-                    const isExpanded = expandedId === entry.id
+            <Table className="text-xs [&_th]:px-3 [&_td]:px-3">
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="whitespace-nowrap">Timestamp</TableHead>
+                  <TableHead className="whitespace-nowrap">Duration</TableHead>
+                  <TableHead>Source</TableHead>
+                  <TableHead>Method</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="whitespace-nowrap">Policy</TableHead>
+                  <TableHead>Toolkit</TableHead>
+                  <TableHead className="w-full">Path (error)</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {entries.map((entry) => {
+                  const time = format(new Date(entry.createdAt), 'MM/dd/yy, HH:mm:ss')
+                  const isExpanded = expandedId === entry.id
 
-                    return (
-                      <Fragment key={entry.id}>
-                        <tr
-                          role="button"
-                          tabIndex={0}
-                          className={`group border-b cursor-pointer hover:bg-muted/30 transition-colors ${isExpanded ? 'bg-muted/30 border-b-0' : ''}`}
-                          onClick={() => setExpandedId(isExpanded ? null : entry.id)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              e.preventDefault()
-                              setExpandedId(isExpanded ? null : entry.id)
-                            }
-                          }}
-                        >
-                          <td className="px-2 py-2 align-middle text-muted-foreground whitespace-nowrap">
-                            {time}
-                          </td>
-                          <td className="px-2 py-2 align-middle text-muted-foreground tabular-nums whitespace-nowrap">
-                            {entry.durationMs !== null ? `${entry.durationMs}ms` : '—'}
-                          </td>
-                          <td className="px-2 py-2 align-middle"><SourceBadge source={entry.source} /></td>
-                          <td className="px-2 py-2 align-middle"><MethodBadge method={entry.method} /></td>
-                          <td className="px-2 py-2 align-middle"><StatusBadge status={entry.statusCode} /></td>
-                          <td className="px-2 py-2 align-middle whitespace-nowrap">
-                            {entry.policyDecision ? <PolicyBadge decision={entry.policyDecision} /> : null}
-                          </td>
-                          <td className="px-2 py-2 align-middle max-w-[120px]">
-                            <span className="text-muted-foreground font-medium truncate block" title={entry.label}>
-                              {entry.label}
-                            </span>
-                          </td>
-                          <td className="px-2 py-2 align-middle min-w-0 w-full">
-                            <p
-                              className="font-mono truncate"
-                              title={entry.errorMessage ? `${entry.targetUrl} (${entry.errorMessage})` : entry.targetUrl}
+                  return (
+                    <Fragment key={entry.id}>
+                      <TableRow
+                        role="button"
+                        tabIndex={0}
+                        data-state={isExpanded ? 'selected' : undefined}
+                        className={`group cursor-pointer hover:bg-muted/30 ${isExpanded ? 'bg-muted/30 border-b-0' : ''}`}
+                        onClick={() => setExpandedId(isExpanded ? null : entry.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            setExpandedId(isExpanded ? null : entry.id)
+                          }
+                        }}
+                      >
+                        <TableCell className="text-muted-foreground whitespace-nowrap">{time}</TableCell>
+                        <TableCell className="text-muted-foreground tabular-nums whitespace-nowrap">
+                          {entry.durationMs !== null ? `${entry.durationMs}ms` : '—'}
+                        </TableCell>
+                        <TableCell><SourceBadge source={entry.source} /></TableCell>
+                        <TableCell><MethodBadge method={entry.method} /></TableCell>
+                        <TableCell><StatusBadge status={entry.statusCode} /></TableCell>
+                        <TableCell className="whitespace-nowrap">
+                          {entry.policyDecision ? <PolicyBadge decision={entry.policyDecision} /> : null}
+                        </TableCell>
+                        <TableCell className="max-w-[120px]">
+                          <span className="text-muted-foreground font-medium truncate block" title={entry.label}>
+                            {entry.label}
+                          </span>
+                        </TableCell>
+                        <TableCell className="min-w-0 w-full relative">
+                          <p
+                            className="font-mono truncate"
+                            title={entry.errorMessage ? `${entry.targetUrl} (${entry.errorMessage})` : entry.targetUrl}
+                          >
+                            {entry.targetUrl}
+                            {entry.errorMessage && (
+                              <span className="text-red-600 dark:text-red-400"> ({entry.errorMessage})</span>
+                            )}
+                          </p>
+                          <div className={`pointer-events-none absolute inset-y-0 right-2 flex items-center transition-opacity ${isExpanded ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="pointer-events-auto h-7 px-2 text-xs"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setExpandedId(isExpanded ? null : entry.id)
+                              }}
                             >
-                              {entry.targetUrl}
-                              {entry.errorMessage && (
-                                <span className="text-red-600 dark:text-red-400"> ({entry.errorMessage})</span>
+                              {isExpanded ? (
+                                <>
+                                  Less
+                                  <ChevronUp className="h-3.5 w-3.5" />
+                                </>
+                              ) : (
+                                <>
+                                  More
+                                  <ChevronDown className="h-3.5 w-3.5" />
+                                </>
                               )}
-                            </p>
-                          </td>
-                        </tr>
-                        {isExpanded && (
-                          <tr className="bg-muted/30 border-b">
-                            <td colSpan={8} className="px-2 pb-3">
-                              <EntryDetails entry={entry} />
-                            </td>
-                          </tr>
-                        )}
-                      </Fragment>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                      {isExpanded && (
+                        <TableRow className="bg-muted/30 hover:bg-muted/30">
+                          <TableCell colSpan={8} className="pb-3">
+                            <EntryDetails entry={entry} />
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </Fragment>
+                  )
+                })}
+              </TableBody>
+            </Table>
 
             {totalPages > 1 && (
               <div className="flex items-center justify-between pt-2">
