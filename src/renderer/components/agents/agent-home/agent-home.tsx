@@ -56,6 +56,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const [sortPopoverOpen, setSortPopoverOpen] = useState(false)
   const [effort, setEffort] = useState<EffortLevel>('high')
   const sessionSearchRef = useRef<HTMLInputElement>(null)
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
   const createSession = useCreateSession()
   const updateAgent = useUpdateAgent()
   const deleteAgent = useDeleteAgent()
@@ -160,11 +161,22 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
     draftKey: `agent:${agent.slug}`,
   })
 
-  // Auto-expand when message gets long (5+ lines)
+  // Auto-grow textarea up to 6 lines, then auto-expand to full view
   useEffect(() => {
-    const lineCount = composer.message.split('\n').length
-    if (lineCount >= 5 && !isExpanded) {
+    const el = composerTextareaRef.current
+    if (!el) return
+    if (isExpanded) {
+      el.style.height = ''
+      return
+    }
+    el.style.height = 'auto'
+    const lineHeightPx = 20 // text-sm line-height (1.25rem)
+    const maxGrowPx = lineHeightPx * 6
+    if (el.scrollHeight > maxGrowPx) {
       setIsExpanded(true)
+      el.style.height = ''
+    } else {
+      el.style.height = `${el.scrollHeight}px`
     }
   }, [composer.message, isExpanded])
 
@@ -306,6 +318,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                 {...composer.dragHandlers}
               >
                 <ChatComposerBox
+                  textareaRef={composerTextareaRef}
                   attachments={composer.attachments}
                   onRemoveAttachment={composer.removeAttachment}
                   value={composer.message}
@@ -368,7 +381,6 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                           type="submit"
                           size="icon"
                           className="h-[34px] w-[34px]"
-                          disabled={!composer.canSubmit}
                           data-testid="home-send-button"
                           aria-label="Send message"
                         >
