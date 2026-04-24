@@ -1,12 +1,11 @@
 
 import * as React from 'react'
-import { Settings, FileText, KeyRound, Sparkles, Link2, ScrollText, Plug, Users, HardDrive, MessageCircle, Network } from 'lucide-react'
+import { Settings, KeyRound, Sparkles, Link2, ScrollText, Plug, Users, HardDrive, MessageCircle, Network } from 'lucide-react'
 import { useUser } from '@renderer/context/user-context'
 import { Button } from '@renderer/components/ui/button'
 import { SettingsDialog, SettingsDialogTab } from '@renderer/components/ui/settings-dialog'
 import { useUpdateAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { GeneralTab } from './settings/general-tab'
-import { SystemPromptTab } from './settings/system-prompt-tab'
 import { SecretsTab } from './settings/secrets-tab'
 import { SkillsTab } from './settings/skills-tab'
 import { ConnectedAccountsTab } from './settings/connected-accounts-tab'
@@ -31,7 +30,6 @@ export function AgentSettingsDialog({
   initialTab,
 }: AgentSettingsDialogProps) {
   const [name, setName] = React.useState(agent.name)
-  const [instructions, setInstructions] = React.useState(agent.instructions || '')
   const updateAgent = useUpdateAgent()
   const { isAuthMode, canAdminAgent, rolesReady } = useUser()
   const isOwner = canAdminAgent(agent.slug)
@@ -40,20 +38,18 @@ export function AgentSettingsDialog({
   React.useEffect(() => {
     if (open) {
       setName(agent.name)
-      setInstructions(agent.instructions || '')
     }
-  }, [open, agent.name, agent.instructions])
+  }, [open, agent.name])
 
   const handleSave = async () => {
     await updateAgent.mutateAsync({
       slug: agent.slug,
       name: name.trim() || agent.name,
-      instructions: instructions.trim() || undefined,
     })
     onOpenChange(false)
   }
 
-  const hasChanges = name !== agent.name || instructions !== (agent.instructions || '')
+  const hasChanges = name !== agent.name
 
   const saveFooter = (
     <div className="flex items-center justify-end gap-2 border-t p-4">
@@ -96,12 +92,6 @@ export function AgentSettingsDialog({
           agentSlug={agent.slug}
           onNameChange={setName}
           onDialogClose={() => onOpenChange(false)}
-        />
-      </SettingsDialogTab>
-      <SettingsDialogTab id="system-prompt" label="System Prompt" icon={<FileText className="h-4 w-4" />} footer={saveFooter}>
-        <SystemPromptTab
-          systemPrompt={instructions}
-          onSystemPromptChange={setInstructions}
         />
       </SettingsDialogTab>
       <SettingsDialogTab id="secrets" label="Secrets" icon={<KeyRound className="h-4 w-4" />}>
