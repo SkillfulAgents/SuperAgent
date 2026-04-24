@@ -1,6 +1,6 @@
 
 import * as React from 'react'
-import { Settings, FileText, KeyRound, Sparkles, Link2, ScrollText, Plug, Users, HardDrive, MessageCircle, Network } from 'lucide-react'
+import { Settings, FileText, KeyRound, Sparkles, Link2, Plug, Users, HardDrive, MessageCircle, Network } from 'lucide-react'
 import { useUser } from '@renderer/context/user-context'
 import { Button } from '@renderer/components/ui/button'
 import { SettingsDialog, SettingsDialogTab } from '@renderer/components/ui/settings-dialog'
@@ -11,7 +11,6 @@ import { SecretsTab } from './settings/secrets-tab'
 import { SkillsTab } from './settings/skills-tab'
 import { ConnectedAccountsTab } from './settings/connected-accounts-tab'
 import { RemoteMcpsTab } from './settings/remote-mcps-tab'
-import { AuditLogTab } from './settings/audit-log-tab'
 import { AccessTab } from './settings/access-tab'
 import { VolumesTab } from './settings/volumes-tab'
 import { ChatIntegrationsTab } from './settings/chat-integrations-tab'
@@ -126,9 +125,6 @@ export function AgentSettingsDialog({
       </SettingsDialogTab>
       <SettingsDialogTab id="x-agent-policies" label="Agents" icon={<Network className="h-4 w-4" />}>
         <XAgentPoliciesTab agentSlug={agent.slug} />
-      </SettingsDialogTab>
-      <SettingsDialogTab id="audit-log" label="API Log" icon={<ScrollText className="h-4 w-4" />}>
-        <AuditLogTab agentSlug={agent.slug} />
       </SettingsDialogTab>
       {isAuthMode && (
         <SettingsDialogTab id="access" label="Access" icon={<Users className="h-4 w-4" />}>
