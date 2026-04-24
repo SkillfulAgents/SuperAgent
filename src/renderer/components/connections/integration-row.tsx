@@ -1,5 +1,6 @@
 import type { CSSProperties, ReactNode } from 'react'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
+import { cn } from '@shared/lib/utils/cn'
 
 type IntegrationIconFallback = 'oauth' | 'mcp' | 'blocks'
 
@@ -14,23 +15,17 @@ interface IntegrationListProps {
  * Shared list container for integration/connection rows.
  * - `list` (default): rounded card with divided rows.
  * - `grid`: 2-column grid of standalone bordered tiles.
- * Used by the Integrations page and the directory dialog.
  */
 export function IntegrationList({ children, className, variant = 'list' }: IntegrationListProps) {
   if (variant === 'grid') {
     return (
-      <div className={'grid grid-cols-2 gap-2 items-start ' + (className ?? '')}>
+      <div className={cn('grid grid-cols-2 gap-2 items-start', className)}>
         {children}
       </div>
     )
   }
   return (
-    <div
-      className={
-        'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden ' +
-        (className ?? '')
-      }
-    >
+    <div className={cn('rounded-xl border bg-background divide-y divide-border/50 overflow-hidden', className)}>
       {children}
     </div>
   )
@@ -56,9 +51,13 @@ interface IntegrationRowProps {
 }
 
 /**
- * Standard row used inside <IntegrationList>. Matches the home-connections
- * styling: 7x7 rounded-md bg-muted icon, text-xs name, text-[11px] muted
- * subtitle, optional right-hand slot (Switch, badge, spinner, etc.).
+ * Standard row used inside <IntegrationList>. 7x7 rounded-md bg-muted icon,
+ * text-xs name, text-[11px] muted subtitle, optional right-hand slot (Switch,
+ * badge, spinner, etc.).
+ *
+ * When `onActivate` is provided the row behaves as a button via role/tabIndex
+ * rather than a native <button>: the `right` slot often contains interactive
+ * children (menu trigger, Switch) and nested <button> elements are invalid.
  */
 export function IntegrationRow({
   iconSlug,
@@ -80,12 +79,12 @@ export function IntegrationRow({
       aria-label={ariaLabel}
       aria-disabled={disabled || undefined}
       style={viewTransitionName ? ({ viewTransitionName } as CSSProperties) : undefined}
-      className={
-        'group relative py-3 px-4 transition-colors ' +
-        (boxed ? 'rounded-lg border bg-background ' : '') +
-        (interactive ? 'hover:bg-muted/50 cursor-pointer ' : '') +
-        (disabled ? 'opacity-50 ' : '')
-      }
+      className={cn(
+        'group relative py-3 px-4 transition-colors',
+        boxed && 'rounded-lg border bg-background',
+        interactive && 'hover:bg-muted/50 cursor-pointer',
+        disabled && 'opacity-50',
+      )}
       onClick={interactive ? onActivate : undefined}
       onKeyDown={
         interactive

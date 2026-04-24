@@ -1,7 +1,7 @@
 import { apiFetch } from '@renderer/lib/api'
 import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Dialog,
@@ -25,6 +25,7 @@ import {
 import { HighlightMatch } from '@renderer/components/ui/highlight-match'
 import { Loader2, Plus, Search } from 'lucide-react'
 import { IntegrationList, IntegrationRow } from './integration-row'
+import { mcpDraftSchema, type McpDraft, type McpAuthType } from './mcp-draft-schema'
 import {
   useInitiateConnection,
   useInvalidateConnectedAccounts,
@@ -32,7 +33,9 @@ import {
 import {
   useAddRemoteMcp,
   useInitiateMcpOAuth,
+  useInvalidateRemoteMcps,
 } from '@renderer/hooks/use-remote-mcps'
+import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
 import type { Provider } from '@shared/lib/composio/providers'
 import { COMMON_MCP_SERVERS, type CommonMcpServer } from '@shared/lib/mcp/common-servers'
 
@@ -47,18 +50,24 @@ interface IntegrationDirectoryDialogProps {
 export function IntegrationDirectoryDialog({ open, onOpenChange, initialTab = 'apis' }: IntegrationDirectoryDialogProps) {
   const [tab, setTab] = useState<DirectoryTab>(initialTab)
   const [filter, setFilter] = useState('')
+  const prevOpen = useRef(open)
 
+  // Reset only when the dialog transitions from closed → open, not when the
+  // `initialTab` prop identity churns mid-session.
   useEffect(() => {
-    if (open) {
+    if (open && !prevOpen.current) {
       setTab(initialTab)
       setFilter('')
     }
+    prevOpen.current = open
   }, [open, initialTab])
 
   const handleTabChange = (v: string) => {
     setTab(v as DirectoryTab)
     setFilter('')
   }
+
+  const close = useCallback(() => onOpenChange(false), [onOpenChange])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -86,10 +95,10 @@ export function IntegrationDirectoryDialog({ open, onOpenChange, initialTab = 'a
             </div>
           </div>
           <TabsContent value="apis" className="mt-0">
-            <ApisPanel filter={filter} onConnected={() => onOpenChange(false)} />
+            <ApisPanel filter={filter} onConnected={close} />
           </TabsContent>
           <TabsContent value="mcps" className="mt-0">
-            <McpsPanel filter={filter} onAdded={() => onOpenChange(false)} />
+            <McpsPanel filter={filter} onAdded={close} />
           </TabsContent>
         </Tabs>
       </DialogContent>
@@ -160,7 +169,7 @@ function ApisPanel({ filter, onConnected }: { filter: string; onConnected: () =>
   }, [invalidateAccounts, onConnected])
 
   const filtered = useMemo(() => {
-    const providers = providersData?.providers ?? []
+    const providers = Array.isArray(providersData?.providers) ? providersData.providers : []
     if (!filter.trim()) return providers
     const q = filter.toLowerCase()
     return providers.filter((p) =>
@@ -176,7 +185,11 @@ function ApisPanel({ filter, onConnected }: { filter: string; onConnected: () =>
     const popup = prepareOAuthPopup()
     try {
       const isElectron = !!window.electronAPI
-      const result = await initiateConnection.mutateAsync({ providerSlug: slug, electron: isElectron })
+      const result = await initiateConnection.mutateAsync({
+        providerSlug: slug,
+        electron: isElectron,
+        location: 'connections_tab',
+      })
       await popup.navigate(result.redirectUrl)
     } catch (err) {
       popup.close()
@@ -244,24 +257,29 @@ function ApisPanel({ filter, onConnected }: { filter: string; onConnected: () =>
 
 // --- MCPs panel ---
 
-type McpAuthType = 'none' | 'oauth' | 'bearer'
-
-interface McpDraft {
-  /** Which tile this draft originated from. 'custom' = the Custom MCP tile. */
-  sourceSlug: string
-  name: string
-  url: string
-  authType: McpAuthType
-  token: string
-}
+type DraftState = Omit<McpDraft, 'authType' | 'token'> & { authType: McpAuthType; token: string }
 
 function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void }) {
   const addMcp = useAddRemoteMcp()
   const initiateOAuth = useInitiateMcpOAuth()
+  const invalidateRemoteMcps = useInvalidateRemoteMcps()
 
   const [error, setError] = useState<string | null>(null)
-  const [draft, setDraft] = useState<McpDraft | null>(null)
+  const [draft, setDraft] = useState<DraftState | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [oauthPending, setOauthPending] = useState(false)
+
+  useMcpOAuthListener(oauthPending, ({ success, error: oauthError }) => {
+    setOauthPending(false)
+    setSubmitting(false)
+    if (success) {
+      invalidateRemoteMcps()
+      setDraft(null)
+      onAdded()
+    } else {
+      setError(oauthError || 'OAuth authorization failed')
+    }
+  })
 
   const filtered = useMemo(() => {
     if (!filter.trim()) return COMMON_MCP_SERVERS
@@ -307,22 +325,33 @@ function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void })
   const submitDraft = async () => {
     if (!draft) return
     setError(null)
+
+    const parsed = mcpDraftSchema.safeParse(draft)
+    if (!parsed.success) {
+      setError(parsed.error.issues[0]?.message ?? 'Invalid MCP server details')
+      return
+    }
+    const valid = parsed.data
+
     setSubmitting(true)
     try {
-      if (draft.authType === 'oauth') {
+      if (valid.authType === 'oauth') {
         const popup = prepareOAuthPopup()
         try {
           const isElectron = !!window.electronAPI
           const result = await initiateOAuth.mutateAsync({
-            name: draft.name.trim(),
-            url: draft.url.trim(),
+            name: valid.name,
+            url: valid.url,
             electron: isElectron,
           })
           if (result.redirectUrl) {
+            setOauthPending(true)
             await popup.navigate(result.redirectUrl)
-          } else {
-            popup.close()
+            // Keep dialog open and spinner running until useMcpOAuthListener fires.
+            return
           }
+          popup.close()
+          setDraft(null)
           onAdded()
         } catch (err) {
           popup.close()
@@ -330,27 +359,27 @@ function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void })
         }
       } else {
         await addMcp.mutateAsync({
-          name: draft.name.trim(),
-          url: draft.url.trim(),
-          authType: draft.authType,
-          accessToken: draft.authType === 'bearer' ? draft.token.trim() : undefined,
+          name: valid.name,
+          url: valid.url,
+          authType: valid.authType,
+          accessToken: valid.authType === 'bearer' ? valid.token.trim() : undefined,
         })
+        setDraft(null)
         onAdded()
       }
-      setDraft(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add MCP server')
     } finally {
-      setSubmitting(false)
+      // Only clear submitting if we're not waiting on OAuth — the listener
+      // clears both states itself.
+      if (!oauthPending) setSubmitting(false)
     }
   }
 
   const renderDraftBody = () => {
     if (!draft) return null
-    const canSubmit =
-      draft.name.trim().length > 0 &&
-      draft.url.trim().length > 0 &&
-      (draft.authType !== 'bearer' || draft.token.trim().length > 0)
+    const canSubmit = mcpDraftSchema.safeParse(draft).success
+    const busy = submitting || oauthPending
     return (
       <div className="space-y-2">
         <div>
@@ -405,11 +434,13 @@ function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void })
           </div>
         )}
         <div className="flex justify-end pt-2">
-          <Button size="sm" onClick={submitDraft} disabled={!canSubmit || submitting}>
-            {submitting ? (
+          <Button size="sm" onClick={submitDraft} disabled={!canSubmit || busy}>
+            {busy ? (
               <>
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                {draft.authType === 'oauth' ? 'Connecting...' : 'Adding...'}
+                {oauthPending
+                  ? 'Waiting for OAuth...'
+                  : draft.authType === 'oauth' ? 'Connecting...' : 'Adding...'}
               </>
             ) : (
               <>
@@ -467,7 +498,7 @@ function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void })
 
   return (
     <div className="space-y-3">
-      {error && (
+      {error && !draft && (
         <div className="rounded-md border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
           {error}
         </div>

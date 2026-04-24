@@ -7,6 +7,7 @@ import { formatDistanceToNow } from 'date-fns'
 import { IntegrationDirectoryDialog } from '@renderer/components/connections/integration-directory-dialog'
 import { IntegrationList, IntegrationRow } from '@renderer/components/connections/integration-row'
 import { IntegrationRowActions } from '@renderer/components/connections/integration-row-actions'
+import { McpStatusPill } from '@renderer/components/connections/mcp-status-pill'
 import {
   useConnectedAccounts,
   useAgentConnectedAccounts,
@@ -18,24 +19,19 @@ import {
   useAgentRemoteMcps,
   useAssignMcpToAgent,
   useRemoveMcpFromAgent,
+  type RemoteMcpServer,
 } from '@renderer/hooks/use-remote-mcps'
 import { COMMON_MCP_SERVERS } from '@shared/lib/mcp/common-servers'
 import { safeDate } from '@renderer/components/connections/utils'
+import { startViewTransition } from '@renderer/lib/view-transition'
 
-interface ConnectionsTabProps {
+interface ConnectionsListProps {
   agentSlug: string
-  /** Render the "New integration" action row above the list. Defaults to true. */
-  showNewButton?: boolean
 }
 
-export function ConnectionsTab({ agentSlug, showNewButton = true }: ConnectionsTabProps) {
+export function ConnectionsList({ agentSlug }: ConnectionsListProps) {
   return (
     <div className="flex flex-col gap-4">
-      {showNewButton && (
-        <div className="flex items-center justify-end gap-2">
-          <NewIntegrationButton />
-        </div>
-      )}
       <AllConnectionsList agentSlug={agentSlug} />
     </div>
   )
@@ -76,6 +72,8 @@ interface UnifiedRow {
   granted: boolean
   toolkit?: string
   mcpTools?: Array<{ name: string; description?: string }>
+  mcpStatus?: RemoteMcpServer['status']
+  mcpErrorMessage?: string | null
 }
 
 interface AllConnectionsListProps {
@@ -104,8 +102,13 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
   }>(() => {
     const out: UnifiedRow[] = []
 
-    const agentAccountIds = new Set((agentAccountsData?.accounts ?? []).map((a) => a.id))
-    for (const account of allAccountsData?.accounts ?? []) {
+    const agentAccounts = Array.isArray(agentAccountsData?.accounts) ? agentAccountsData.accounts : []
+    const allAccounts = Array.isArray(allAccountsData?.accounts) ? allAccountsData.accounts : []
+    const agentMcps = Array.isArray(agentMcpsData?.mcps) ? agentMcpsData.mcps : []
+    const allMcps = Array.isArray(allMcpsData?.servers) ? allMcpsData.servers : []
+
+    const agentAccountIds = new Set(agentAccounts.map((a) => a.id))
+    for (const account of allAccounts) {
       const key = `account-${account.id}`
       const serverGranted = agentAccountIds.has(account.id)
       out.push({
@@ -122,8 +125,8 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
       })
     }
 
-    const agentMcpIds = new Set((agentMcpsData?.mcps ?? []).map((m) => m.id))
-    for (const mcp of allMcpsData?.servers ?? []) {
+    const agentMcpIds = new Set(agentMcps.map((m) => m.id))
+    for (const mcp of allMcps) {
       const key = `mcp-${mcp.id}`
       const serverGranted = agentMcpIds.has(mcp.id)
       out.push({
@@ -137,6 +140,8 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
         date: mcp.createdAt,
         granted: grantOverrides[key] ?? serverGranted,
         mcpTools: mcp.tools,
+        mcpStatus: mcp.status,
+        mcpErrorMessage: mcp.errorMessage,
       })
     }
 
@@ -149,11 +154,18 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
     }
   }, [allAccountsData, agentAccountsData, allMcpsData, agentMcpsData, grantOverrides])
 
-  // Drop overrides that the server has now caught up to.
+  // Drop overrides the server has now caught up to. Self-terminating: the
+  // setter returns the same reference when no entries changed (changed=false),
+  // so React bails out and the effect does not loop despite depending on
+  // grantOverrides.
   useEffect(() => {
     if (Object.keys(grantOverrides).length === 0) return
-    const agentAccountIds = new Set((agentAccountsData?.accounts ?? []).map((a) => a.id))
-    const agentMcpIds = new Set((agentMcpsData?.mcps ?? []).map((m) => m.id))
+    const agentAccountIds = new Set(
+      (Array.isArray(agentAccountsData?.accounts) ? agentAccountsData.accounts : []).map((a) => a.id),
+    )
+    const agentMcpIds = new Set(
+      (Array.isArray(agentMcpsData?.mcps) ? agentMcpsData.mcps : []).map((m) => m.id),
+    )
     setGrantOverrides((prev) => {
       let changed = false
       const next = { ...prev }
@@ -174,19 +186,15 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
     isLoadingAllAccounts || isLoadingAgentAccounts || isLoadingAllMcps || isLoadingAgentMcps
 
   const handleToggle = async (row: UnifiedRow, next: boolean) => {
-    // Optimistic flip — wrapped in View Transitions so the row animates to its
-    // new section.
-    const apply = () => {
+    // Optimistic flip wrapped in View Transitions so the row animates to its
+    // new section. flushSync forces the optimistic state into the DOM before
+    // startViewTransition snapshots the "before" image — without it the
+    // transition starts post-state and nothing animates.
+    startViewTransition(() => {
       flushSync(() => {
         setGrantOverrides((prev) => ({ ...prev, [row.key]: next }))
       })
-    }
-    const docWithVT = document as Document & { startViewTransition?: (cb: () => void) => unknown }
-    if (typeof docWithVT.startViewTransition === 'function') {
-      docWithVT.startViewTransition(apply)
-    } else {
-      apply()
-    }
+    })
 
     try {
       if (row.type === 'oauth') {
@@ -245,11 +253,13 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
             <span className="whitespace-nowrap shrink-0">
               {formatDistanceToNow(safeDate(row.date), { addSuffix: true })}
             </span>
+            {row.type === 'mcp' && row.mcpStatus && row.mcpStatus !== 'active' && (
+              <McpStatusPill status={row.mcpStatus} errorMessage={row.mcpErrorMessage} />
+            )}
           </>
         }
         right={
           <>
-            {pending && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
             <IntegrationRowActions
               type={row.type}
               id={row.id}
@@ -257,14 +267,21 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
               toolkit={row.toolkit}
               mcpTools={row.mcpTools}
             />
-            <Switch
-              checked={row.granted}
-              disabled={pending}
-              onClick={(e) => e.stopPropagation()}
-              onCheckedChange={(next) => { void handleToggle(row, next) }}
-              aria-label={`${row.granted ? 'Revoke' : 'Grant'} ${row.name} access for this agent`}
-              data-testid={`connection-switch-${row.type}-${row.id}`}
-            />
+            {pending ? (
+              <Loader2
+                className="h-4 w-4 animate-spin text-muted-foreground"
+                aria-label="Saving access change"
+                data-testid={`connection-switch-${row.type}-${row.id}-pending`}
+              />
+            ) : (
+              <Switch
+                checked={row.granted}
+                onClick={(e) => e.stopPropagation()}
+                onCheckedChange={(next) => { void handleToggle(row, next) }}
+                aria-label={`${row.granted ? 'Revoke' : 'Grant'} ${row.name} access for this agent`}
+                data-testid={`connection-switch-${row.type}-${row.id}`}
+              />
+            )}
           </>
         }
       />
@@ -274,7 +291,7 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
   const hasAny = grantedRows.length > 0 || notGrantedRows.length > 0
 
   return (
-    <div className="space-y-6 max-w-[720px]">
+    <div className="space-y-6">
       {isLoading ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />

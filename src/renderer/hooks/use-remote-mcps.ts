@@ -99,6 +99,7 @@ export function useRenameRemoteMcp() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['remote-mcps'] })
+      // TODO: invalidate only affected agents once we can scope this by mcpId
       queryClient.invalidateQueries({ queryKey: ['agent-remote-mcps'] })
     },
   })

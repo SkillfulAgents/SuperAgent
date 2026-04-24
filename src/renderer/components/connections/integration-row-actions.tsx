@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Check, Pencil, RefreshCw, Settings, Shield, Trash2, Wrench, X, Loader2 } from 'lucide-react'
+import { useRef, useState } from 'react'
+import { Check, Pencil, RefreshCw, Settings, Shield, Trash2, Wrench, X, Loader2, LogOut } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
@@ -23,18 +23,23 @@ import {
 } from '@renderer/components/ui/dialog'
 import {
   useDeleteConnectedAccount,
+  useRemoveAgentConnectedAccount,
   useRenameConnectedAccount,
 } from '@renderer/hooks/use-connected-accounts'
 import {
   useDeleteRemoteMcp,
   useDiscoverMcpTools,
   useInitiateMcpOAuth,
+  useRemoveMcpFromAgent,
   useRenameRemoteMcp,
   useTestMcpConnection,
+  useInvalidateRemoteMcps,
 } from '@renderer/hooks/use-remote-mcps'
+import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
 import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
 import { ScopePolicyEditor } from '@renderer/components/settings/scope-policy-editor'
 import { ToolPolicyEditor } from '@renderer/components/settings/tool-policy-editor'
+import { useQueryClient } from '@tanstack/react-query'
 
 export interface IntegrationRowActionsProps {
   type: 'oauth' | 'mcp'
@@ -44,29 +49,63 @@ export interface IntegrationRowActionsProps {
   toolkit?: string
   /** Tool catalog, used by the MCP scope editor. Required for `type === 'mcp'`. */
   mcpTools?: Array<{ name: string; description?: string }>
+  /**
+   * When provided, exposes a "Remove from this agent" action and scopes the
+   * Delete copy to contrast with it. Used by the agent home row; omit on the
+   * global manage page where per-agent access is controlled by the toggle.
+   */
+  agentSlug?: string
 }
 
-export function IntegrationRowActions({ type, id, name, toolkit, mcpTools }: IntegrationRowActionsProps) {
+export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agentSlug }: IntegrationRowActionsProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameValue, setRenameValue] = useState(name)
   const [scopesOpen, setScopesOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
+  const [removeFromAgentOpen, setRemoveFromAgentOpen] = useState(false)
   const [toolsOpen, setToolsOpen] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const [mcpStatus, setMcpStatus] = useState<{ kind: 'success' | 'error'; message: string } | null>(null)
   const [toolsError, setToolsError] = useState<string | null>(null)
+  const [oauthPending, setOauthPending] = useState(false)
+
+  // Trigger ref so we can restore focus to the menu button after closing a
+  // dialog that unmounted the Popover (Radix otherwise loses the anchor).
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
 
   const renameAccount = useRenameConnectedAccount()
   const renameMcp = useRenameRemoteMcp()
   const deleteAccount = useDeleteConnectedAccount()
   const deleteMcp = useDeleteRemoteMcp()
+  const removeAccountFromAgent = useRemoveAgentConnectedAccount()
+  const removeMcpFromAgent = useRemoveMcpFromAgent()
   const testMcpConnection = useTestMcpConnection()
   const discoverMcpTools = useDiscoverMcpTools()
   const initiateMcpOAuth = useInitiateMcpOAuth()
+  const invalidateRemoteMcps = useInvalidateRemoteMcps()
+  const queryClient = useQueryClient()
 
   const renamePending = type === 'oauth' ? renameAccount.isPending : renameMcp.isPending
   const deletePending = type === 'oauth' ? deleteAccount.isPending : deleteMcp.isPending
+  const removeFromAgentPending =
+    type === 'oauth' ? removeAccountFromAgent.isPending : removeMcpFromAgent.isPending
+
+  useMcpOAuthListener(oauthPending, ({ success, error }) => {
+    setOauthPending(false)
+    if (success) {
+      setMcpStatus({ kind: 'success', message: 'Connected' })
+      invalidateRemoteMcps()
+      queryClient.invalidateQueries({ queryKey: ['agent-remote-mcps'] })
+    } else {
+      setMcpStatus({ kind: 'error', message: error || 'Reconnect failed' })
+    }
+  })
+
+  const restoreFocus = (e: Event) => {
+    e.preventDefault()
+    triggerRef.current?.focus()
+  }
 
   const openRename = () => {
     setMenuOpen(false)
@@ -84,6 +123,12 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools }: Int
     setMenuOpen(false)
     setActionError(null)
     setDeleteOpen(true)
+  }
+
+  const openRemoveFromAgent = () => {
+    setMenuOpen(false)
+    setActionError(null)
+    setRemoveFromAgentOpen(true)
   }
 
   const runTestConnection = async () => {
@@ -105,12 +150,14 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools }: Int
 
   const runReconnect = async () => {
     const popup = prepareOAuthPopup()
+    setMcpStatus(null)
     try {
       const result = await initiateMcpOAuth.mutateAsync({
         mcpId: id,
         electron: !!window.electronAPI,
       })
       if (result.redirectUrl) {
+        setOauthPending(true)
         await popup.navigate(result.redirectUrl)
       } else {
         popup.close()
@@ -140,10 +187,6 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools }: Int
       setToolsError(err instanceof Error ? err.message : 'Discover tools failed')
     }
   }
-
-  useEffect(() => {
-    if (!menuOpen) setMcpStatus(null)
-  }, [menuOpen])
 
   const submitRename = async () => {
     const next = renameValue.trim()
@@ -178,15 +221,39 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools }: Int
     }
   }
 
+  const submitRemoveFromAgent = async () => {
+    if (!agentSlug) return
+    setActionError(null)
+    try {
+      if (type === 'oauth') {
+        await removeAccountFromAgent.mutateAsync({ agentSlug, accountId: id })
+      } else {
+        await removeMcpFromAgent.mutateAsync({ agentSlug, mcpId: id })
+      }
+      setRemoveFromAgentOpen(false)
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Remove failed')
+    }
+  }
+
   // The MCP scope editor needs the tool catalog. If missing, hide the option.
   const canEditScopes =
     type === 'oauth' ? !!toolkit : Array.isArray(mcpTools) && mcpTools.length > 0
 
+  const connectionNoun = type === 'oauth' ? 'API connection' : 'MCP server'
+
   return (
     <>
-      <Popover open={menuOpen} onOpenChange={setMenuOpen}>
+      <Popover
+        open={menuOpen}
+        onOpenChange={(open) => {
+          setMenuOpen(open)
+          if (!open) setMcpStatus(null)
+        }}
+      >
         <PopoverTrigger asChild>
           <Button
+            ref={triggerRef}
             type="button"
             size="icon"
             variant="ghost"
@@ -200,7 +267,7 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools }: Int
         </PopoverTrigger>
         <PopoverContent
           align="end"
-          className="w-40 p-1"
+          className="w-48 p-1"
           onClick={(e) => e.stopPropagation()}
         >
           <button
@@ -231,13 +298,23 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools }: Int
               Discover tools
             </button>
           )}
+          {agentSlug && (
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+              onClick={openRemoveFromAgent}
+            >
+              <LogOut className="h-3.5 w-3.5" />
+              Remove from agent
+            </button>
+          )}
           <button
             type="button"
             className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition-colors"
             onClick={openDelete}
           >
             <Trash2 className="h-3.5 w-3.5" />
-            Delete
+            {agentSlug ? 'Delete for all agents' : 'Delete'}
           </button>
           {type === 'mcp' && (
             <>
@@ -252,10 +329,11 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools }: Int
                 disabled={
                   testMcpConnection.isPending ||
                   discoverMcpTools.isPending ||
-                  initiateMcpOAuth.isPending
+                  initiateMcpOAuth.isPending ||
+                  oauthPending
                 }
               >
-                {testMcpConnection.isPending || initiateMcpOAuth.isPending ? (
+                {testMcpConnection.isPending || initiateMcpOAuth.isPending || oauthPending ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 ) : mcpStatus?.kind === 'success' ? (
                   <span className="flex h-3.5 w-3.5 items-center justify-center rounded-sm bg-emerald-500/15">
@@ -268,11 +346,13 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools }: Int
                 ) : (
                   <RefreshCw className="h-3.5 w-3.5" />
                 )}
-                {mcpStatus?.kind === 'success'
-                  ? 'Connected'
-                  : mcpStatus?.kind === 'error'
-                    ? 'Reconnect'
-                    : 'Test connection'}
+                {oauthPending
+                  ? 'Waiting for OAuth...'
+                  : mcpStatus?.kind === 'success'
+                    ? 'Connected'
+                    : mcpStatus?.kind === 'error'
+                      ? 'Reconnect'
+                      : 'Test connection'}
               </button>
             </>
           )}
@@ -281,7 +361,7 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools }: Int
 
       {/* Rename dialog */}
       <Dialog open={renameOpen} onOpenChange={(open) => { if (!renamePending) setRenameOpen(open) }}>
-        <DialogContent onClick={(e) => e.stopPropagation()}>
+        <DialogContent onClick={(e) => e.stopPropagation()} onCloseAutoFocus={restoreFocus}>
           <DialogHeader>
             <DialogTitle>Rename connection</DialogTitle>
             <DialogDescription>Pick a new name for this connection.</DialogDescription>
@@ -318,7 +398,7 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools }: Int
         </DialogContent>
       </Dialog>
 
-      {/* Delete confirmation */}
+      {/* Delete confirmation — global */}
       <AlertDialog
         open={deleteOpen}
         onOpenChange={(open) => {
@@ -328,11 +408,24 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools }: Int
           }
         }}
       >
-        <AlertDialogContent onClick={(e) => e.stopPropagation()}>
+        <AlertDialogContent onClick={(e) => e.stopPropagation()} onCloseAutoFocus={restoreFocus}>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete connection</AlertDialogTitle>
+            <AlertDialogTitle>
+              {agentSlug ? `Delete this ${connectionNoun} for all agents?` : `Delete ${connectionNoun}?`}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete &quot;{name}&quot; and revoke access for every agent using it. This action cannot be undone.
+              {agentSlug ? (
+                <>
+                  This permanently deletes &quot;{name}&quot; and revokes access for every agent using
+                  it — not just this one. If you only want this agent to lose access, cancel and
+                  pick &quot;Remove from agent&quot; instead.
+                </>
+              ) : (
+                <>
+                  This permanently deletes &quot;{name}&quot; and revokes access for every agent using it.
+                  This action cannot be undone.
+                </>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           {actionError && (
@@ -348,11 +441,49 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools }: Int
               disabled={deletePending}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              {deletePending ? 'Deleting...' : 'Delete'}
+              {deletePending ? 'Deleting...' : agentSlug ? 'Delete for all agents' : 'Delete'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Remove from this agent (only when agentSlug provided) */}
+      {agentSlug && (
+        <AlertDialog
+          open={removeFromAgentOpen}
+          onOpenChange={(open) => {
+            if (!removeFromAgentPending) {
+              setRemoveFromAgentOpen(open)
+              if (!open) setActionError(null)
+            }
+          }}
+        >
+          <AlertDialogContent onClick={(e) => e.stopPropagation()} onCloseAutoFocus={restoreFocus}>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Remove from this agent?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This agent will lose access to &quot;{name}&quot;. The connection stays available to
+                other agents and can be re-granted later.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            {actionError && (
+              <p className="text-xs text-destructive" role="alert">{actionError}</p>
+            )}
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={removeFromAgentPending}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(e) => {
+                  e.preventDefault()
+                  void submitRemoveFromAgent()
+                }}
+                disabled={removeFromAgentPending}
+              >
+                {removeFromAgentPending ? 'Removing...' : 'Remove'}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
 
       {/* Scope editor */}
       {type === 'oauth' && toolkit && scopesOpen && (
@@ -381,7 +512,11 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools }: Int
             if (!discoverMcpTools.isPending) setToolsOpen(open)
           }}
         >
-          <DialogContent hideClose onClick={(e) => e.stopPropagation()}>
+          <DialogContent
+            onClick={(e) => e.stopPropagation()}
+            onCloseAutoFocus={restoreFocus}
+            className="pr-14"
+          >
             <DialogHeader>
               <div className="flex items-start justify-between gap-2">
                 <div className="space-y-1.5">
