@@ -1,24 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser-use feature test: agent successfully opens browser, navigates to https://example.com, retrieves page title, and confirms it is \"Example Domain\"",
+  "reason": "Verified that Super Agent can execute browser tools to open a URL and retrieve the page title successfully",
   "steps": [
-    "Navigated to http://localhost:47891 - Application loaded successfully with agent list displayed",
-    "Clicked on \"QA-20260424-222155-4p15\" agent in sidebar - Agent chat interface opened and displayed",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message entered into input field successfully",
-    "Clicked Send message button - Message sent and agent began processing the task",
-    "Waited for response (up to 3 minutes) - Agent completed work in 9 seconds",
-    "Verified response mentions \"Example Domain\" - Response clearly displayed \"The page title is Example Domain.\" with all tool calls showing success checkmarks"
+    "Navigated to http://localhost:47891 — Successfully loaded the Super Agent interface with sidebar showing three agents",
+    "Found and clicked the \"QA-20260424-223228-3jou\" agent in the sidebar — Agent interface opened with message input field ready",
+    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was submitted successfully",
+    "Waited for agent response (up to 3 minutes) — Agent completed task in 7 seconds with successful response",
+    "Verified response mentions \"Example Domain\" — Response clearly states 'The page title is \"Example Domain\".' and browser preview shows the Example Domain page with correct page content"
   ],
   "bugs": [],
-  "durationMs": 87239,
-  "sessionId": "5364115c-b6fa-47e5-a2b9-65939c56d7f5",
+  "durationMs": 95243,
+  "sessionId": "457463f5-dbe0-4a41-9715-1b9de7d24afb",
   "cost": {
-    "inputTokens": 315,
-    "outputTokens": 9867,
-    "cacheCreationTokens": 52476,
-    "cacheReadTokens": 1187727,
+    "inputTokens": 363,
+    "outputTokens": 10347,
+    "cacheCreationTokens": 128745,
+    "cacheReadTokens": 1307896,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.234018
+    "totalCostUsd": 0.343819
   }
 }
