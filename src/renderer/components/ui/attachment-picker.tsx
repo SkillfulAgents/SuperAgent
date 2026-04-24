@@ -28,7 +28,7 @@ export function AttachmentPicker({
   onFolderSelect,
   onRecentFileAttach,
   disabled,
-  buttonClassName = 'h-[34px] px-3',
+  buttonClassName = 'h-[34px] w-[34px] p-0',
   popoverAlign = 'start',
 }: AttachmentPickerProps) {
   const [open, setOpen] = useState(false)
@@ -100,13 +100,14 @@ export function AttachmentPicker({
         <PopoverTrigger asChild>
           <Button
             type="button"
-            variant="ghost"
+            variant="outline"
+            size="icon"
             className={buttonClassName}
             disabled={disabled}
             title="Add files"
+            aria-label="Add files"
           >
-            <Plus className="mr-1 h-4 w-4" />
-            Add files
+            <Plus className="h-4 w-4" />
           </Button>
         </PopoverTrigger>
         <PopoverContent side="top" align={popoverAlign} className={`${showRecent ? 'w-64' : 'w-40'} p-1`}>

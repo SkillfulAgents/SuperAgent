@@ -49,11 +49,11 @@ export function ChatComposerBox({
 }: ChatComposerBoxProps) {
   return (
     <div className={cn(
-      'relative mx-auto w-full rounded-2xl border border-border/60 bg-background/95 px-3 py-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/80',
+      'group relative mx-auto w-full rounded-2xl border border-border/60 bg-background/95 px-3 py-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/80',
       className
     )}>
       {topRightActions && (
-        <div className="absolute top-2 right-2 z-10">{topRightActions}</div>
+        <div className="absolute top-2 right-2 z-10 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">{topRightActions}</div>
       )}
       <AttachmentPreview attachments={attachments} onRemove={onRemoveAttachment} />
       <div className={attachments.length > 0 ? 'mt-2' : ''}>
@@ -72,12 +72,12 @@ export function ChatComposerBox({
           autoFocus={autoFocus}
           data-testid={dataTestId}
           className={cn(
-            'w-full resize-none rounded-md bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 min-h-[60px] max-h-[200px] overflow-y-auto',
+            'w-full resize-none rounded-md bg-background pl-1 pr-4 py-0 text-sm placeholder:text-muted-foreground focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 max-h-[200px] overflow-y-auto',
             textareaClassName
           )}
         />
       </div>
-      <div className="mt-2 flex items-center justify-between gap-2">
+      <div className="mt-1 flex items-center justify-between gap-2">
         <div className="flex items-center gap-1">{leftActions}</div>
         <div className="flex items-center gap-2">{rightActions}</div>
       </div>
