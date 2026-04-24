@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the agent can successfully open a browser, navigate to a URL, extract the page title, and respond with \"Example Domain\" in the chat interface.",
+  "reason": "Successfully verified that the agent can open a browser, navigate to https://example.com, retrieve the page title \"Example Domain\", and report the results in the chat interface.",
   "steps": [
-    "Step 1: Navigated to http://localhost:47891 — Successfully loaded the Super Agent interface with three agents listed in the sidebar.",
-    "Step 2: Found and clicked the \"QA-20260424-232948-vzlf\" agent in the sidebar — Successfully opened the agent's chat interface showing \"Browser Navigation and Page Title Check\" task.",
-    "Step 3: Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully sent and agent began processing.",
-    "Step 4: Waited up to 3 minutes for response — Agent completed the task in 7 seconds, executing two tool calls: \"Open Browser https://example.com\" and \"Page Snapshot\".",
-    "Step 5: Verified the response mentions \"Example Domain\" — The agent's response clearly states: \"The page title is \"Example Domain\".\" which confirms successful page navigation and title extraction."
+    "Navigated to http://localhost:47891 - Page loaded successfully showing Super Agent interface with agent list in sidebar",
+    "Clicked on agent \"QA-20260424-234207-f1ar\" in the main content area - Agent view opened successfully with chat interface",
+    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message sent successfully, agent status changed to \"working\"",
+    "Waited 5 seconds for agent to process the request - Agent completed processing after 8 seconds total",
+    "Verified response mentions \"Example Domain\" - Response clearly states: \"The page title is \"Example Domain\".\" Agent also showed three completed browser operations: Open Browser, Browser Command (get title), and Close Browser"
   ],
   "bugs": [],
-  "durationMs": 99962,
-  "sessionId": "c9df783c-6bee-4373-83a0-7c42de016f5f",
+  "durationMs": 68451,
+  "sessionId": "dbec54ea-c7d9-418b-84d1-e389a429b60f",
   "cost": {
-    "inputTokens": 338,
-    "outputTokens": 9392,
-    "cacheCreationTokens": 57044,
-    "cacheReadTokens": 1341804,
+    "inputTokens": 315,
+    "outputTokens": 10063,
+    "cacheCreationTokens": 53215,
+    "cacheReadTokens": 1188019,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.252783
+    "totalCostUsd": 0.235951
   }
 }
