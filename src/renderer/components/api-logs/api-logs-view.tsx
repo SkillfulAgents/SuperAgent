@@ -1,7 +1,7 @@
 import { ArrowLeft, Loader2, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react'
-import { useState, useEffect } from 'react'
+import { Fragment, useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { formatDistanceToNow, format } from 'date-fns'
+import { format } from 'date-fns'
 import { apiFetch } from '@renderer/lib/api'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useSelection } from '@renderer/context/selection-context'
@@ -27,7 +27,7 @@ interface ApiLogsViewProps {
   agentSlug: string
 }
 
-const PAGE_SIZE = 20
+const PAGE_SIZE = 15
 
 function MethodBadge({ method }: { method: string }) {
   const colors: Record<string, string> = {
@@ -110,7 +110,7 @@ function EntryDetails({ entry }: { entry: AuditLogEntry }) {
   const ts = new Date(entry.createdAt)
 
   return (
-    <div className="text-xs space-y-1.5 pt-2 mt-2 border-t border-dashed">
+    <div className="text-xs space-y-1.5 pt-1">
       <DetailRow label="Full path" value={<span className="font-mono">{entry.targetUrl}</span>} />
       <DetailRow label="Source" value={entry.source === 'mcp' ? 'MCP Proxy' : 'API Proxy'} />
       <DetailRow label="Toolkit / MCP" value={entry.label} />
@@ -168,7 +168,7 @@ export function ApiLogsView({ agentSlug }: ApiLogsViewProps) {
 
   return (
     <div className="flex-1 overflow-auto">
-      <div className="mx-auto w-full max-w-4xl px-10 pt-6 pb-10 space-y-6">
+      <div className="mx-auto w-full max-w-5xl px-10 pt-6 pb-10 space-y-6">
         <div>
           <Button
             type="button"
@@ -179,14 +179,11 @@ export function ApiLogsView({ agentSlug }: ApiLogsViewProps) {
             data-testid="api-logs-back-button"
           >
             <ArrowLeft className="h-3.5 w-3.5 mr-1" />
-            Back to Agent Home
+            Back
           </Button>
           <div className="flex items-end justify-between gap-4">
             <div>
               <h2 className="text-xl font-medium">API Logs</h2>
-              <p className="text-xs text-muted-foreground mt-1">
-                Recent API and MCP proxy requests made by this agent.
-              </p>
             </div>
             <div className="shrink-0">
               <Button
@@ -213,63 +210,80 @@ export function ApiLogsView({ agentSlug }: ApiLogsViewProps) {
           </div>
         ) : (
           <>
-            <div className="space-y-1.5">
-              {entries.map((entry) => {
-                const time = formatDistanceToNow(new Date(entry.createdAt), { addSuffix: true })
-                const isExpanded = expandedId === entry.id
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs border-collapse">
+                <thead>
+                  <tr className="border-b text-left text-muted-foreground">
+                    <th className="font-medium px-2 py-2 whitespace-nowrap">Timestamp</th>
+                    <th className="font-medium px-2 py-2 whitespace-nowrap">Duration</th>
+                    <th className="font-medium px-2 py-2">Source</th>
+                    <th className="font-medium px-2 py-2">Method</th>
+                    <th className="font-medium px-2 py-2">Status</th>
+                    <th className="font-medium px-2 py-2 whitespace-nowrap">Policy</th>
+                    <th className="font-medium px-2 py-2">Toolkit</th>
+                    <th className="font-medium px-2 py-2 w-full">Path (error)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {entries.map((entry) => {
+                    const time = format(new Date(entry.createdAt), 'MM/dd/yy, HH:mm:ss')
+                    const isExpanded = expandedId === entry.id
 
-                return (
-                  <div
-                    key={entry.id}
-                    role="button"
-                    tabIndex={0}
-                    className="rounded-xl border bg-background px-3 py-2 text-xs cursor-pointer hover:bg-muted/30 transition-colors"
-                    onClick={() => setExpandedId(isExpanded ? null : entry.id)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault()
-                        setExpandedId(isExpanded ? null : entry.id)
-                      }
-                    }}
-                  >
-                    <div className="grid grid-cols-[auto_auto_auto_auto_auto_1fr_auto] items-center gap-2">
-                      <SourceBadge source={entry.source} />
-                      <MethodBadge method={entry.method} />
-                      <StatusBadge status={entry.statusCode} />
-                      {entry.policyDecision ? (
-                        <PolicyBadge decision={entry.policyDecision} />
-                      ) : (
-                        <span />
-                      )}
-                      <span className="text-muted-foreground font-medium truncate max-w-[80px]" title={entry.label}>
-                        {entry.label}
-                      </span>
-                      <div className="min-w-0">
-                        <p
-                          className="font-mono text-xs truncate"
-                          title={entry.targetUrl}
+                    return (
+                      <Fragment key={entry.id}>
+                        <tr
+                          role="button"
+                          tabIndex={0}
+                          className={`group border-b cursor-pointer hover:bg-muted/30 transition-colors ${isExpanded ? 'bg-muted/30 border-b-0' : ''}`}
+                          onClick={() => setExpandedId(isExpanded ? null : entry.id)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault()
+                              setExpandedId(isExpanded ? null : entry.id)
+                            }
+                          }}
                         >
-                          {entry.targetUrl}
-                        </p>
-                        {!isExpanded && entry.errorMessage && (
-                          <p className="text-red-600 dark:text-red-400 mt-0.5 truncate" title={entry.errorMessage}>
-                            {entry.errorMessage}
-                          </p>
+                          <td className="px-2 py-2 align-middle text-muted-foreground whitespace-nowrap">
+                            {time}
+                          </td>
+                          <td className="px-2 py-2 align-middle text-muted-foreground tabular-nums whitespace-nowrap">
+                            {entry.durationMs !== null ? `${entry.durationMs}ms` : '—'}
+                          </td>
+                          <td className="px-2 py-2 align-middle"><SourceBadge source={entry.source} /></td>
+                          <td className="px-2 py-2 align-middle"><MethodBadge method={entry.method} /></td>
+                          <td className="px-2 py-2 align-middle"><StatusBadge status={entry.statusCode} /></td>
+                          <td className="px-2 py-2 align-middle whitespace-nowrap">
+                            {entry.policyDecision ? <PolicyBadge decision={entry.policyDecision} /> : null}
+                          </td>
+                          <td className="px-2 py-2 align-middle max-w-[120px]">
+                            <span className="text-muted-foreground font-medium truncate block" title={entry.label}>
+                              {entry.label}
+                            </span>
+                          </td>
+                          <td className="px-2 py-2 align-middle min-w-0 w-full">
+                            <p
+                              className="font-mono truncate"
+                              title={entry.errorMessage ? `${entry.targetUrl} (${entry.errorMessage})` : entry.targetUrl}
+                            >
+                              {entry.targetUrl}
+                              {entry.errorMessage && (
+                                <span className="text-red-600 dark:text-red-400"> ({entry.errorMessage})</span>
+                              )}
+                            </p>
+                          </td>
+                        </tr>
+                        {isExpanded && (
+                          <tr className="bg-muted/30 border-b">
+                            <td colSpan={8} className="px-2 pb-3">
+                              <EntryDetails entry={entry} />
+                            </td>
+                          </tr>
                         )}
-                      </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        {entry.durationMs !== null && (
-                          <span className="text-muted-foreground tabular-nums">{entry.durationMs}ms</span>
-                        )}
-                        <span className="text-muted-foreground whitespace-nowrap">
-                          {time}
-                        </span>
-                      </div>
-                    </div>
-                    {isExpanded && <EntryDetails entry={entry} />}
-                  </div>
-                )
-              })}
+                      </Fragment>
+                    )
+                  })}
+                </tbody>
+              </table>
             </div>
 
             {totalPages > 1 && (
