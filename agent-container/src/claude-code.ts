@@ -410,13 +410,16 @@ export class ClaudeCodeProcess extends EventEmitter {
         ...(this.maxTurns && { maxTurns: this.maxTurns }),
         ...(this.maxBudgetUsd && { maxBudgetUsd: this.maxBudgetUsd }),
         ...(this.effort && { effort: this.effort }),
-        ...((this.customEnvVars || this.maxOutputTokens) && {
-          env: {
-            ...this.customEnvVars,
-            // Explicit maxOutputTokens setting takes precedence over custom env var
-            ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
-          },
-        }),
+        env: {
+          // Agent SDK 0.2.113+ replaces process.env with options.env instead of
+          // overlaying it, so we must spread process.env explicitly or the Claude
+          // subprocess loses PATH, HOME, ANTHROPIC_API_KEY, connected-account env
+          // vars, and anything else set on the container.
+          ...process.env,
+          ...this.customEnvVars,
+          // Explicit maxOutputTokens setting takes precedence over custom env var
+          ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
+        },
         mcpServers: {
           'user-input': createUserInputMcpServer(),
           'browser': createBrowserMcpServer(),
