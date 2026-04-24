@@ -9,6 +9,7 @@ interface SelectionContextType {
   selectedChatIntegrationId: string | null
   selectedChatSessionId: string | null // session within a chat integration
   selectedDashboardSlug: string | null
+  selectedApiLogs: boolean
   selectAgent: (agentSlug: string | null) => void
   selectSession: (sessionId: string | null) => void
   selectScheduledTask: (taskId: string | null) => void
@@ -16,6 +17,7 @@ interface SelectionContextType {
   selectChatIntegration: (integrationId: string | null) => void
   selectChatSession: (integrationId: string, sessionId: string) => void
   selectDashboard: (slug: string | null) => void
+  selectApiLogs: (on: boolean) => void
   clearSelection: () => void
   handleAgentDeleted: (agentSlug: string) => void
   handleSessionDeleted: (sessionId: string) => void
@@ -35,6 +37,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
   const [selectedChatIntegrationId, setSelectedChatIntegrationId] = useState<string | null>(null)
   const [selectedChatSessionId, setSelectedChatSessionId] = useState<string | null>(null)
   const [selectedDashboardSlug, setSelectedDashboardSlug] = useState<string | null>(null)
+  const [selectedApiLogs, setSelectedApiLogs] = useState(false)
 
   const selectAgent = useCallback((agentSlug: string | null) => {
     setSelectedAgentSlug(agentSlug)
@@ -44,6 +47,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedChatIntegrationId(null)
     setSelectedChatSessionId(null)
     setSelectedDashboardSlug(null)
+    setSelectedApiLogs(false)
   }, [])
 
   const selectSession = useCallback((sessionId: string | null) => {
@@ -53,6 +57,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedChatIntegrationId(null)
     setSelectedChatSessionId(null)
     setSelectedDashboardSlug(null)
+    setSelectedApiLogs(false)
   }, [])
 
   const selectScheduledTask = useCallback((taskId: string | null) => {
@@ -62,6 +67,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedChatIntegrationId(null)
     setSelectedChatSessionId(null)
     setSelectedDashboardSlug(null)
+    setSelectedApiLogs(false)
   }, [])
 
   const selectWebhookTrigger = useCallback((triggerId: string | null) => {
@@ -71,6 +77,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedChatIntegrationId(null)
     setSelectedChatSessionId(null)
     setSelectedDashboardSlug(null)
+    setSelectedApiLogs(false)
   }, [])
 
   const selectChatIntegration = useCallback((integrationId: string | null) => {
@@ -80,6 +87,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedScheduledTaskId(null)
     setSelectedWebhookTriggerId(null)
     setSelectedDashboardSlug(null)
+    setSelectedApiLogs(false)
   }, [])
 
   const selectChatSession = useCallback((integrationId: string, sessionId: string) => {
@@ -89,6 +97,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedScheduledTaskId(null)
     setSelectedWebhookTriggerId(null)
     setSelectedDashboardSlug(null)
+    setSelectedApiLogs(false)
   }, [])
 
   const selectDashboard = useCallback((slug: string | null) => {
@@ -98,6 +107,19 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedWebhookTriggerId(null)
     setSelectedChatIntegrationId(null)
     setSelectedChatSessionId(null)
+    setSelectedApiLogs(false)
+  }, [])
+
+  const selectApiLogs = useCallback((on: boolean) => {
+    setSelectedApiLogs(on)
+    if (on) {
+      setSelectedSessionId(null)
+      setSelectedScheduledTaskId(null)
+      setSelectedWebhookTriggerId(null)
+      setSelectedChatIntegrationId(null)
+      setSelectedChatSessionId(null)
+      setSelectedDashboardSlug(null)
+    }
   }, [])
 
   const clearSelection = useCallback(() => {
@@ -108,6 +130,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedChatIntegrationId(null)
     setSelectedChatSessionId(null)
     setSelectedDashboardSlug(null)
+    setSelectedApiLogs(false)
   }, [])
 
   const handleAgentDeleted = useCallback((agentSlug: string) => {
@@ -119,6 +142,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
       setSelectedChatIntegrationId(null)
       setSelectedChatSessionId(null)
       setSelectedDashboardSlug(null)
+      setSelectedApiLogs(false)
     }
   }, [selectedAgentSlug])
 
@@ -163,6 +187,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
         selectedChatIntegrationId,
         selectedChatSessionId,
         selectedDashboardSlug,
+        selectedApiLogs,
         selectAgent,
         selectSession,
         selectScheduledTask,
@@ -170,6 +195,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
         selectChatIntegration,
         selectChatSession,
         selectDashboard,
+        selectApiLogs,
         clearSelection,
         handleAgentDeleted,
         handleSessionDeleted,

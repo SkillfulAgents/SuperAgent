@@ -9,6 +9,7 @@ import { HomePage } from '@renderer/components/home/home-page'
 import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/scheduled-task-view'
 import { WebhookTriggerView } from '@renderer/components/webhook-triggers/webhook-trigger-view'
 import { ChatIntegrationView } from '@renderer/components/chat-integrations/chat-integration-view'
+import { ApiLogsView } from '@renderer/components/api-logs/api-logs-view'
 import { BrowserDrawerPanel } from '@renderer/components/browser/browser-drawer-panel'
 import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
@@ -46,6 +47,7 @@ export function MainContent() {
     selectedWebhookTriggerId: webhookTriggerId,
     selectedChatIntegrationId: chatIntegrationId,
     selectedDashboardSlug: dashboardSlug,
+    selectedApiLogs: apiLogsOpen,
     selectSession,
     selectScheduledTask,
     selectWebhookTrigger,
@@ -152,7 +154,8 @@ export function MainContent() {
 
   const showSessionCrumb = !!(sessionId && session?.agentSlug === agentSlug)
   const showTaskCrumb = !!(scheduledTaskId && scheduledTask)
-  const isAgentLeaf = !showSessionCrumb && !showTaskCrumb
+  const showApiLogsCrumb = !!apiLogsOpen
+  const isAgentLeaf = !showSessionCrumb && !showTaskCrumb && !showApiLogsCrumb
 
   return (
     <div className="h-full flex flex-col" data-testid="main-content">
@@ -198,6 +201,12 @@ export function MainContent() {
                   {scheduledTask.name || 'Scheduled Task'}
                 </span>
               </div>
+            </div>
+          )}
+          {showApiLogsCrumb && (
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span aria-hidden="true" className="text-[13px] font-light text-muted-foreground shrink-0 hidden md:block">/</span>
+              <span className="truncate text-[13px] font-light text-foreground">API Logs</span>
             </div>
           )}
         </div>
@@ -383,6 +392,8 @@ export function MainContent() {
       <ErrorBoundary>
         {dashboardSlug ? (
           <DashboardView agentSlug={agentSlug} dashboardSlug={dashboardSlug} />
+        ) : apiLogsOpen ? (
+          <ApiLogsView agentSlug={agentSlug} />
         ) : /* Show scheduled task view when a scheduled task is selected */
         scheduledTaskId ? (
           <ScheduledTaskView taskId={scheduledTaskId} agentSlug={agentSlug} />
