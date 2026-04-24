@@ -1,24 +1,28 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "Agent QA-20260423-041434-ct8i successfully received message \"Hello! What is 2+2?\" and responded with \"4\", confirming basic agent communication functionality.",
+  "reason": "Successfully sent message to agent and received correct mathematical response",
   "steps": [
-    "Navigated to http://localhost:47891 - Application loaded successfully, displaying sidebar with three agents and home page showing agent cards.",
-    "Found and clicked agent \"QA-20260423-041434-ct8i\" in sidebar - Agent detail page opened, showing message input field and agent configuration options.",
-    "Verified agent status - Status indicator displayed \"idle\" in top right corner of agent detail view.",
-    "Sent message \"Hello! What is 2+2?\" - Message was typed into input field and sent by clicking Send button. Agent status changed to \"working\" and a new session \"Basic Math Question Session\" was created.",
-    "Waited for response - Agent processed message and returned response in approximately 1 second (displayed as \"Worked for 1s\").",
-    "Verified response mentions \"4\" - Agent responded with exactly \"4\", the correct answer to the mathematical question. Response is clearly visible in the chat area."
+    "Navigated to http://localhost:47891 — Page loaded successfully with agent sidebar visible",
+    "Located agent \"QA-20260424-145152-v757\" in sidebar with status \"idle\" — Agent found and clickable",
+    "Clicked on \"QA-20260424-145152-v757\" agent — Agent page loaded with message input field displayed",
+    "Verified agent status is \"idle\" — Status indicator clearly shows \"idle\" in top section",
+    "Clicked on message input field — Input field became active and ready for typing",
+    "Typed message \"Hello! What is 2+2?\" — Message successfully entered in input field",
+    "Clicked \"Send message\" button — Message was sent and agent processing began",
+    "Waited for agent response — Agent responded in approximately 1 second",
+    "Verified response contains \"4\" — Response clearly shows \"4\" in the chat message",
+    "Took full page screenshot — Screenshot captured showing complete conversation with correct response"
   ],
   "bugs": [],
-  "durationMs": 71275,
-  "sessionId": "2abda0dc-485d-49d3-b72c-33f6aa253c72",
+  "durationMs": 64804,
+  "sessionId": "e14bbdd7-ac0b-43a3-ab7e-6339e1366971",
   "cost": {
-    "inputTokens": 315,
-    "outputTokens": 10459,
-    "cacheCreationTokens": 131674,
-    "cacheReadTokens": 1126323,
+    "inputTokens": 255,
+    "outputTokens": 7691,
+    "cacheCreationTokens": 118619,
+    "cacheReadTokens": 872378,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.329835
+    "totalCostUsd": 0.274222
   }
 }

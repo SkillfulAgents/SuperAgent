@@ -1,0 +1,20 @@
+[    3999ms] ReferenceError: setSelectedConnections is not defined
+    at http://localhost:47891/assets/index-C9hS3dK8.js:47:146523
+    at D (http://localhost:47891/assets/index-C9hS3dK8.js:177:52616)
+    at Object.Sn (http://localhost:47891/assets/index-C9hS3dK8.js:5:9836)
+    at bie (http://localhost:47891/assets/index-C9hS3dK8.js:5:9996)
+    at wie (http://localhost:47891/assets/index-C9hS3dK8.js:5:10057)
+    at PM (http://localhost:47891/assets/index-C9hS3dK8.js:5:31540)
+    at jM (http://localhost:47891/assets/index-C9hS3dK8.js:5:31977)
+    at http://localhost:47891/assets/index-C9hS3dK8.js:5:37223
+    at g1 (http://localhost:47891/assets/index-C9hS3dK8.js:8:37613)
+    at kt (http://localhost:47891/assets/index-C9hS3dK8.js:5:8970)
+    at gP (http://localhost:47891/assets/index-C9hS3dK8.js:5:33293)
+    at Z0 (http://localhost:47891/assets/index-C9hS3dK8.js:5:17419)
+    at Lie (http://localhost:47891/assets/index-C9hS3dK8.js:5:17202)
+    at HTMLDivElement.r (http://localhost:47891/assets/index-C9hS3dK8.js:269:5956)
+[   22587ms] [ERROR] Failed to submit: ReferenceError: setSelectedConnections is not defined
+    at http://localhost:47891/assets/index-C9hS3dK8.js:47:146620
+    at http://localhost:47891/assets/index-C9hS3dK8.js:255:113449
+    at http://localhost:47891/assets/index-C9hS3dK8.js:254:149949
+    at async W (http://localhost:47891/assets/index-C9hS3dK8.js:254:67192) @ http://localhost:47891/assets/index-C9hS3dK8.js:268

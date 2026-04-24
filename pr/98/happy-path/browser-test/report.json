@@ -1,25 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser-use feature successfully opened a real browser, navigated to example.com, and returned the correct page title \"Example Domain\" in the agent response.",
+  "reason": "Verified that the browser-use feature successfully opens a browser, navigates to URLs, and extracts page information, with the agent returning the correct page title \"Example Domain\"",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded the Super Agent application with agent list in sidebar",
-    "Found and clicked agent \"QA-20260423-041436-5fb3\" in the sidebar — Agent page loaded, showing chat interface with input textbox and empty sessions",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the chat input — Message appeared correctly in the textbox",
-    "Sent message using Cmd+Enter — Message was submitted and agent began processing the request",
-    "Waited 3 seconds for initial response — Agent status changed to \"working\", browser tools began executing (\"Open Browser\" action visible)",
-    "Waited 5 more seconds for completion — Agent completed all browser actions (Open Browser, Browser Command get title, Close Browser) and returned response",
-    "Verified response mentions \"Example Domain\" — Response displayed: \"The page title is \"Example Domain\".\" which is the correct title from https://example.com"
+    "Navigated to http://localhost:47891 — Application loaded successfully with the SuperAgent interface showing three agents in the sidebar",
+    "Found and clicked on the \"QA-20260424-145153-zwww\" agent in the sidebar — Agent was selected and the chat interface appeared with a message input field",
+    "Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully submitted and the agent transitioned to \"working\" status",
+    "Waited up to 3 minutes for the agent to process the request — Agent completed execution in 12 seconds and returned to \"idle\" status",
+    "Verified the response mentions \"Example Domain\" and took a screenshot — Response clearly states \"The page title is Example Domain\" with:"
   ],
   "bugs": [],
-  "durationMs": 80065,
-  "sessionId": "807f4672-5b2a-4b46-b8b6-cbd18b844742",
+  "durationMs": 87332,
+  "sessionId": "154e362c-850d-438a-a24f-be68003a898f",
   "cost": {
-    "inputTokens": 315,
-    "outputTokens": 10252,
-    "cacheCreationTokens": 50806,
-    "cacheReadTokens": 1169065,
+    "inputTokens": 234,
+    "outputTokens": 7212,
+    "cacheCreationTokens": 115279,
+    "cacheReadTokens": 742400,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.231989
+    "totalCostUsd": 0.254633
   }
 }
