@@ -48,8 +48,8 @@ export abstract class BaseLlmProvider {
   /** Get the default model for a given purpose. */
   abstract getDefaultModel(purpose: ModelPurpose): string
 
-  /** Get env vars to inject into agent containers. */
-  abstract getContainerEnvVars(): Record<string, string | undefined>
+  /** Get env vars to inject into agent containers. `agentId` enables agent-scoped vars. */
+  abstract getContainerEnvVars(agentId: string): Record<string, string | undefined>
 
   /** Validate an API key. */
   abstract validateKey(apiKey: string): Promise<{ valid: boolean; error?: string }>

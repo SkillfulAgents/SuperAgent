@@ -39,7 +39,7 @@ export class OpenRouterLlmProvider extends BaseLlmProvider {
     }
   }
 
-  getContainerEnvVars(): Record<string, string | undefined> {
+  getContainerEnvVars(_agentId: string): Record<string, string | undefined> {
     return {
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_BASE_URL: OPENROUTER_BASE_URL,

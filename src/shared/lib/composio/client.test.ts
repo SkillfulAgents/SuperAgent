@@ -11,6 +11,11 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getPlatformAccessToken: () => null,
+  getPlatformBearerWithMember: () => null,
+}))
+
+vi.mock('@shared/lib/platform-auth/agent-owner', () => ({
+  getLatestPlatformAccountId: () => null,
 }))
 
 const mockCaptureMessage = vi.fn()

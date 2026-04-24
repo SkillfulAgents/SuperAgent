@@ -1,16 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mockGetPlatformProxyBaseUrl = vi.fn()
-const mockGetPlatformAccessToken = vi.fn()
-const mockGetPlatformAuthStatus = vi.fn()
+const mockGetPlatformBearerWithMember = vi.fn()
+const mockGetLatestPlatformAccountId = vi.fn()
 
 vi.mock('@shared/lib/platform-auth/config', () => ({
   getPlatformProxyBaseUrl: () => mockGetPlatformProxyBaseUrl(),
 }))
 
+const mockGetPlatformAuthStatus = vi.fn()
+
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
-  getPlatformAccessToken: () => mockGetPlatformAccessToken(),
+  getPlatformBearerWithMember: (memberId: string | null) => mockGetPlatformBearerWithMember(memberId),
   getPlatformAuthStatus: () => mockGetPlatformAuthStatus(),
+}))
+
+vi.mock('@shared/lib/platform-auth/agent-owner', () => ({
+  getLatestPlatformAccountId: () => mockGetLatestPlatformAccountId(),
 }))
 
 vi.mock('@shared/lib/error-reporting', () => ({
@@ -37,7 +43,7 @@ describe('PlatformSkillsetProvider.resolveCloneUrl', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockGetPlatformProxyBaseUrl.mockReturnValue('https://platform.example')
-    mockGetPlatformAccessToken.mockReturnValue('plat_test_token_xxxxx')
+    mockGetPlatformBearerWithMember.mockReturnValue('plat_test_token_xxxxx')
   })
 
   afterEach(() => {
@@ -85,7 +91,7 @@ describe('PlatformSkillsetProvider.resolveCloneUrl', () => {
   })
 
   it('throws when unauthenticated', async () => {
-    mockGetPlatformAccessToken.mockReturnValue(null)
+    mockGetPlatformBearerWithMember.mockReturnValue(null)
     await expect(provider.resolveCloneUrl('ignored', makeRef())).rejects.toThrow(/Platform not connected/)
   })
 })
@@ -94,7 +100,7 @@ describe('PlatformSkillsetProvider.getQueueItemStatuses', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockGetPlatformProxyBaseUrl.mockReturnValue('https://platform.example')
-    mockGetPlatformAccessToken.mockReturnValue('plat_test_token_xxxxx')
+    mockGetPlatformBearerWithMember.mockReturnValue('plat_test_token_xxxxx')
   })
 
   afterEach(() => {
@@ -148,7 +154,7 @@ describe('PlatformSkillsetProvider.getQueueItemStatuses', () => {
   })
 
   it('returns nulls when unauthenticated', async () => {
-    mockGetPlatformAccessToken.mockReturnValue(null)
+    mockGetPlatformBearerWithMember.mockReturnValue(null)
     const result = await provider.getQueueItemStatuses(['a', 'b'])
     expect(result.get('a')).toBe(null)
     expect(result.get('b')).toBe(null)

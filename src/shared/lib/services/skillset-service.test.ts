@@ -80,6 +80,10 @@ const mockGetPlatformAuthStatus = vi.fn((_userId?: string) => ({ orgId: undefine
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getPlatformAuthStatus: (...args: [string?]) => mockGetPlatformAuthStatus(...args),
   getPlatformAccessToken: vi.fn(() => undefined),
+  getPlatformBearerWithMember: vi.fn(() => undefined),
+}))
+vi.mock('@shared/lib/platform-auth/agent-owner', () => ({
+  getLatestPlatformAccountId: () => null,
 }))
 vi.mock('@shared/lib/platform-auth/config', () => ({
   getPlatformProxyBaseUrl: vi.fn(() => undefined),
@@ -630,6 +634,7 @@ Instructions here`
       // Mock platform env + batched queue endpoint reporting merged.
       const platformAuthMod = await import('@shared/lib/services/platform-auth-service')
       vi.mocked(platformAuthMod.getPlatformAccessToken).mockReturnValue('plat_test_xx')
+      vi.mocked(platformAuthMod.getPlatformBearerWithMember).mockReturnValue('plat_test_xx')
       const proxyMod = await import('@shared/lib/platform-auth/config')
       vi.mocked(proxyMod.getPlatformProxyBaseUrl).mockReturnValue(proxyBase)
 
@@ -684,6 +689,7 @@ Instructions here`
 
       const platformAuthMod = await import('@shared/lib/services/platform-auth-service')
       vi.mocked(platformAuthMod.getPlatformAccessToken).mockReturnValue('plat_test_xx')
+      vi.mocked(platformAuthMod.getPlatformBearerWithMember).mockReturnValue('plat_test_xx')
       const proxyMod = await import('@shared/lib/platform-auth/config')
       vi.mocked(proxyMod.getPlatformProxyBaseUrl).mockReturnValue(proxyBase)
 

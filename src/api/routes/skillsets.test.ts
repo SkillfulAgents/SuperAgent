@@ -33,7 +33,12 @@ vi.mock('@shared/lib/platform-auth/config', () => ({
 
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getPlatformAccessToken: (...args: unknown[]) => mockGetPlatformAccessToken(...args),
+  getPlatformBearerWithMember: (memberId: unknown) => mockGetPlatformAccessToken() ? `${mockGetPlatformAccessToken()}${memberId ? `:${memberId}` : ''}` : null,
   getPlatformAuthStatus: (...args: unknown[]) => mockGetPlatformAuthStatus(...args),
+}))
+
+vi.mock('@shared/lib/platform-auth/agent-owner', () => ({
+  getLatestPlatformAccountId: () => null,
 }))
 
 vi.mock('../middleware/auth', () => ({

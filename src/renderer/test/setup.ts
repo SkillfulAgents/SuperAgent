@@ -1,12 +1,21 @@
 import '@testing-library/jest-dom/vitest'
 import { vi } from 'vitest'
 
+const signIn = {
+  email: vi.fn(),
+  oauth2: vi.fn(),
+}
+
+const signUp = {
+  email: vi.fn(),
+}
+
 // Mock auth-client globally — UserProvider imports it at module level.
 // When __AUTH_MODE__ is false the hooks are never called, but the import still runs.
 vi.mock('@renderer/lib/auth-client', () => ({
   authClient: {},
-  signIn: vi.fn(),
-  signUp: vi.fn(),
+  signIn,
+  signUp,
   signOut: vi.fn(),
   useSession: () => ({ data: null, isPending: false }),
 }))

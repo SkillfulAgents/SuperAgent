@@ -87,7 +87,7 @@ export class BedrockLlmProvider extends BaseLlmProvider {
     }
   }
 
-  getContainerEnvVars(): Record<string, string | undefined> {
+  getContainerEnvVars(_agentId: string): Record<string, string | undefined> {
     const settings = getSettings()
     const region = this.getRegion()
     const bearerToken = this.getEffectiveApiKey()

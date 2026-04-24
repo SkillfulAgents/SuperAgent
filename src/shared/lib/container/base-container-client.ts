@@ -183,6 +183,20 @@ export const AGENT_CONTAINER_PATH = './agent-container'
 export const CONTAINER_INTERNAL_PORT = 3000
 const BASE_PORT = 4000
 
+// Exported for tests. Strips provider-managed keys out of user-supplied
+// customEnvVars so attribution headers (e.g. X-Platform-Member-Id via
+// ANTHROPIC_CUSTOM_HEADERS) cannot be overridden by agent configuration.
+export function getSessionCustomEnvVars(agentId: string, customEnvVars?: Record<string, string>): Record<string, string> | undefined {
+  if (!customEnvVars) return undefined
+
+  const providerEnvKeys = new Set(Object.keys(getActiveLlmProvider().getContainerEnvVars(agentId)))
+  if (providerEnvKeys.size === 0) return customEnvVars
+
+  return Object.fromEntries(
+    Object.entries(customEnvVars).filter(([key]) => !providerEnvKeys.has(key))
+  )
+}
+
 /**
  * Parse a memory value string (e.g., "231.2MiB", "1.5GiB", "512MB") to bytes.
  */
@@ -721,6 +735,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   async createSession(options: CreateSessionOptions): Promise<ContainerSession> {
     const port = await this.getPortOrThrow()
     const timeoutMs = 60000 // 60 second timeout
+    const customEnvVars = getSessionCustomEnvVars(this.config.agentId, options.customEnvVars)
 
     try {
       const controller = new AbortController()
@@ -741,7 +756,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           maxThinkingTokens: options.maxThinkingTokens,
           maxTurns: options.maxTurns,
           maxBudgetUsd: options.maxBudgetUsd,
-          customEnvVars: options.customEnvVars,
+          customEnvVars,
           maxBrowserTabs: options.maxBrowserTabs,
           effort: options.effort,
         }),
@@ -1075,10 +1090,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    */
   protected buildEnvFile(additionalEnvVars?: Record<string, string>): { flag: string; cleanup: () => void } {
     const envVars: Record<string, string | undefined> = {
-      ...getActiveLlmProvider().getContainerEnvVars(),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
       ...this.config.envVars,
       ...additionalEnvVars,
+      // Provider env is authoritative for provider-specific keys.
+      ...getActiveLlmProvider().getContainerEnvVars(this.config.agentId),
     }
 
     return writeEnvFile(envVars, this.config.agentId)

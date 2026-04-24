@@ -6,8 +6,9 @@ import {
   getEffectiveComposioApiKey,
   getComposioUserId,
 } from '@shared/lib/config/settings'
-import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import { getPlatformBearerWithMember, getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
+import { getLatestPlatformAccountId } from '@shared/lib/platform-auth/agent-owner'
 import { captureMessage } from '@shared/lib/error-reporting'
 
 const COMPOSIO_BASE_URL = 'https://backend.composio.dev/api/v3'
@@ -33,7 +34,7 @@ function getPlatformComposioBaseUrl(): string {
 }
 
 function getPlatformComposioToken(): string | null {
-  return getPlatformAccessToken()
+  return getPlatformBearerWithMember(getLatestPlatformAccountId())
 }
 
 /**
@@ -45,7 +46,7 @@ function shouldUseLocalComposioKey(): boolean {
 
 async function composioFetch<T>(
   endpoint: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
 ): Promise<T> {
   const localApiKey = getEffectiveComposioApiKey()
   const platformToken = localApiKey ? null : getPlatformComposioToken()

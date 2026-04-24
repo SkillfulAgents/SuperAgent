@@ -1,5 +1,6 @@
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
-import { getPlatformAccessToken, getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
+import { getPlatformBearerWithMember, getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
+import { getLatestPlatformAccountId } from '@shared/lib/platform-auth/agent-owner'
 import type {
   InstalledAgentMetadata,
   InstalledSkillMetadata,
@@ -23,6 +24,14 @@ type PlatformProviderData = {
   repoId?: string
   orgId?: string
   orgName?: string
+}
+
+function buildPlatformHeaders(token: string): Record<string, string> {
+  return { Authorization: `Bearer ${token}` }
+}
+
+function getPlatformToken(): string | null {
+  return getPlatformBearerWithMember(getLatestPlatformAccountId())
 }
 
 export class PlatformSkillsetProvider extends BaseSkillsetProvider {
@@ -83,7 +92,7 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
 
   override async resolveCloneUrl(url: string, options?: SkillsetProviderRef): Promise<string> {
     const proxyBase = getPlatformProxyBaseUrl()
-    const token = getPlatformAccessToken()
+    const token = getPlatformToken()
     if (!proxyBase || !token) {
       throw new Error('Platform not connected. Please connect to platform first.')
     }
@@ -101,7 +110,7 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
 
     const fetchUrl = `${proxyBase}/v1/skills/git-url?skillset=${encodeURIComponent(skillsetName)}`
     const res = await fetch(fetchUrl, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: buildPlatformHeaders(token),
     })
 
     if (!res.ok) {
@@ -143,7 +152,7 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
 
   private async submitUpdate(input: SkillsetHostedUpdateInput): Promise<PlatformSubmitResult> {
     const proxyBase = getPlatformProxyBaseUrl()
-    const token = getPlatformAccessToken()
+    const token = getPlatformToken()
     if (!proxyBase || !token) {
       throw new Error('Platform not connected. Please connect to platform first.')
     }
@@ -152,7 +161,7 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
     const res = await fetch(`${proxyBase}/v1/skills/submit-update`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${token}`,
+        ...buildPlatformHeaders(token),
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -183,7 +192,7 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
     if (ids.length === 0) return result
 
     const proxyBase = getPlatformProxyBaseUrl()
-    const token = getPlatformAccessToken()
+    const token = getPlatformToken()
     if (!proxyBase || !token) {
       for (const id of ids) result.set(id, null)
       return result
@@ -193,7 +202,7 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
       const res = await fetch(`${proxyBase}/v1/skills/queue/batch`, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${token}`,
+          ...buildPlatformHeaders(token),
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ ids }),
@@ -215,7 +224,7 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
     await Promise.all(ids.map(async (id) => {
       try {
         const res = await fetch(`${proxyBase}/v1/skills/queue/${encodeURIComponent(id)}`, {
-          headers: { Authorization: `Bearer ${token}` },
+          headers: buildPlatformHeaders(token),
         })
         if (!res.ok) {
           result.set(id, null)
@@ -233,13 +242,13 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
 
   override async listRemoteSkillsets(): Promise<SkillsetRemoteDescriptor[]> {
     const proxyBase = getPlatformProxyBaseUrl()
-    const token = getPlatformAccessToken()
+    const token = getPlatformToken()
     if (!proxyBase || !token) {
       throw new Error('Platform not connected. Please connect to platform first.')
     }
 
     const res = await fetch(`${proxyBase}/v1/skills/skillsets`, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: buildPlatformHeaders(token),
     })
     if (!res.ok) {
       throw new Error(`Failed to fetch platform skillsets: ${res.status}`)
