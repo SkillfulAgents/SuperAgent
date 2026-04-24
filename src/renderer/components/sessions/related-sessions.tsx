@@ -54,13 +54,16 @@ interface RelatedSessionsProps {
   agentSlug?: string
   searchQuery?: string
   sortOrder?: SortOrder
+  dateAsTitle?: boolean
+  formatSubtext?: (date: string) => string
+  pageSize?: number
 }
 
 export type SortOrder = 'newest' | 'oldest'
 
-const PAGE_SIZE = 10
+const DEFAULT_PAGE_SIZE = 10
 
-export function RelatedSessions({ sessions, formatDate, className, showIcon = true, title, showHeader = true, agentSlug, searchQuery, sortOrder: sortOrderProp }: RelatedSessionsProps) {
+export function RelatedSessions({ sessions, formatDate, className, showIcon = true, title, showHeader = true, agentSlug, searchQuery, sortOrder: sortOrderProp, dateAsTitle = false, formatSubtext, pageSize = DEFAULT_PAGE_SIZE }: RelatedSessionsProps) {
   const [page, setPage] = useState(0)
   const [sortOrderInternal, setSortOrder] = useState<SortOrder>('newest')
   const sortOrder = sortOrderProp ?? sortOrderInternal
@@ -87,8 +90,8 @@ export function RelatedSessions({ sessions, formatDate, className, showIcon = tr
     if (page !== 0) setPage(0)
   }
 
-  const totalPages = Math.ceil(sorted.length / PAGE_SIZE)
-  const paginated = sorted.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
+  const totalPages = Math.ceil(sorted.length / pageSize)
+  const paginated = sorted.slice(page * pageSize, (page + 1) * pageSize)
 
   if (sessions.length === 0) return null
 
@@ -119,39 +122,45 @@ export function RelatedSessions({ sessions, formatDate, className, showIcon = tr
             formatDate={formatDate}
             agentSlug={agentSlug}
             searchQuery={searchQuery}
+            dateAsTitle={dateAsTitle}
+            formatSubtext={formatSubtext}
           />
         ))}
       </div>
       {totalPages > 1 && (
         <div className="flex items-center justify-between mt-3">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setPage((p) => p - 1)}
-            disabled={page === 0}
-          >
-            <ChevronLeft className="h-4 w-4" />
-            Previous
-          </Button>
           <span className="text-xs text-muted-foreground">
             Page {page + 1} of {totalPages}
           </span>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setPage((p) => p + 1)}
-            disabled={page >= totalPages - 1}
-          >
-            Next
-            <ChevronRight className="h-4 w-4" />
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="icon"
+              className="h-7 w-7"
+              onClick={() => setPage((p) => p - 1)}
+              disabled={page === 0}
+              aria-label="Previous page"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              variant="outline"
+              size="icon"
+              className="h-7 w-7"
+              onClick={() => setPage((p) => p + 1)}
+              disabled={page >= totalPages - 1}
+              aria-label="Next page"
+            >
+              <ChevronRight className="h-3.5 w-3.5" />
+            </Button>
+          </div>
         </div>
       )}
     </div>
   )
 }
 
-function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, searchQuery }: { session: SessionItem; showIcon: boolean; formatDate: (date: string) => string; agentSlug?: string; searchQuery?: string }) {
+function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, searchQuery, dateAsTitle = false, formatSubtext }: { session: SessionItem; showIcon: boolean; formatDate: (date: string) => string; agentSlug?: string; searchQuery?: string; dateAsTitle?: boolean; formatSubtext?: (date: string) => string }) {
   const { selectSession, selectedAgentSlug, handleSessionDeleted } = useSelection()
   const agentSlug = agentSlugProp ?? selectedAgentSlug
   const { canAdminAgent } = useUser()
@@ -220,7 +229,7 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
       >
         {showIcon && <MessageSquare className="h-4 w-4 text-muted-foreground shrink-0" />}
         <div className="flex-1 min-w-0">
-          <div className="text-xs font-medium truncate flex items-center gap-2">
+          <div className={`text-xs truncate flex items-center gap-2 ${dateAsTitle ? 'font-normal' : 'font-medium'}`}>
             {session.isAwaitingInput ? (
               <AwaitingDot />
             ) : session.isActive ? (
@@ -228,11 +237,24 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
             ) : session.hasUnreadNotifications ? (
               <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500" />
             ) : null}
-            <HighlightMatch text={session.name} query={searchQuery ?? ''} />
+            {dateAsTitle ? (
+              <>
+                <span>{formatDate(session.createdAt)}</span>
+                {formatSubtext && (
+                  <span className="text-xs font-normal text-muted-foreground">
+                    {formatSubtext(session.createdAt)}
+                  </span>
+                )}
+              </>
+            ) : (
+              <HighlightMatch text={session.name} query={searchQuery ?? ''} />
+            )}
           </div>
-          <div className="text-xs text-muted-foreground">
-            {formatDate(session.createdAt)}
-          </div>
+          {!dateAsTitle && (
+            <div className="text-xs text-muted-foreground truncate">
+              {formatDate(session.createdAt)}
+            </div>
+          )}
         </div>
         <div className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
           <Popover>

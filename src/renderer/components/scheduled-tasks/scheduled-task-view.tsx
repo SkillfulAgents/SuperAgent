@@ -6,12 +6,13 @@
  */
 
 import { useState } from 'react'
-import { Clock, Calendar, Repeat, Trash2, Globe, Play, Pencil, Loader2, Pause, PlayCircle } from 'lucide-react'
-import { RelatedSessions } from '@renderer/components/sessions/related-sessions'
+import { Trash2, Play, Pencil, Loader2, Settings, Pause, ArrowUpDown } from 'lucide-react'
+import { RelatedSessions, type SortOrder } from '@renderer/components/sessions/related-sessions'
 import { useHumanizedCron } from '@renderer/hooks/use-humanized-cron'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
+import { Switch } from '@renderer/components/ui/switch'
 import { TimezonePicker } from '@renderer/components/ui/timezone-picker'
 import {
   useScheduledTask,
@@ -37,7 +38,6 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
 } from '@renderer/components/ui/alert-dialog'
 import {
   Dialog,
@@ -47,6 +47,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/components/ui/dialog'
+import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 
 interface ScheduledTaskViewProps {
   taskId: string
@@ -69,6 +70,14 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const isActive = task?.status === 'pending' || task?.status === 'paused'
   const isPaused = task?.status === 'paused'
 
+  // Settings popover / delete dialog state
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+
+  // Run history sort
+  const [runSort, setRunSort] = useState<SortOrder>('newest')
+  const [runSortPopoverOpen, setRunSortPopoverOpen] = useState(false)
+
   // Edit schedule modal state
   const [editScheduleOpen, setEditScheduleOpen] = useState(false)
   const [scheduleDescription, setScheduleDescription] = useState('')
@@ -82,6 +91,18 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
     const d = typeof date === 'string' ? new Date(date) : date
     const tz = task?.timezone || undefined
     return d.toLocaleString(undefined, { timeZone: tz })
+  }
+
+  const formatDateOnlyInTaskTz = (date: Date | string) => {
+    const d = typeof date === 'string' ? new Date(date) : date
+    const tz = task?.timezone || undefined
+    return d.toLocaleDateString(undefined, { timeZone: tz })
+  }
+
+  const formatTimeOnlyInTaskTz = (date: Date | string) => {
+    const d = typeof date === 'string' ? new Date(date) : date
+    const tz = task?.timezone || undefined
+    return d.toLocaleTimeString(undefined, { timeZone: tz })
   }
 
   const taskTzLabel = task?.timezone?.replace(/_/g, ' ') || 'UTC'
@@ -168,18 +189,55 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const isRecurring = task.isRecurring
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
+    <div className="flex-1 flex flex-col overflow-y-auto max-w-4xl w-full mx-auto px-10">
       {/* Task header */}
-      <div className="p-6 border-b space-y-3">
-        {/* Row 1: title + actions */}
+      <div className="pt-6 pb-10">
         <div className="flex items-center justify-between gap-4">
-          <h2 className="text-xl font-semibold truncate">
+          <h2 className="text-xl font-medium truncate">
             {task.name || 'Scheduled Task'}
           </h2>
 
           {isActive && canCancel && (
             <div className="flex items-center gap-2 shrink-0">
-              {/* Run Now button */}
+              {/* Settings popover */}
+              <Popover open={settingsOpen} onOpenChange={setSettingsOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Cron settings"
+                    className="text-muted-foreground"
+                  >
+                    <Settings className="h-4 w-4" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-44 p-1">
+                  {isRecurring && !isPaused && (
+                    <button
+                      className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-muted transition-colors"
+                      onClick={() => {
+                        setSettingsOpen(false)
+                        handleOpenEditSchedule()
+                      }}
+                    >
+                      <Pencil className="h-4 w-4" />
+                      Edit Schedule
+                    </button>
+                  )}
+                  <button
+                    className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-destructive hover:bg-destructive/10 transition-colors"
+                    onClick={() => {
+                      setSettingsOpen(false)
+                      setDeleteDialogOpen(true)
+                    }}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    Delete Cron
+                  </button>
+                </PopoverContent>
+              </Popover>
+
+              {/* Run Now button (far right) */}
               <Button
                 variant="default"
                 size="sm"
@@ -194,50 +252,8 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
                 {runNow.isPending ? 'Running...' : 'Run Now'}
               </Button>
 
-              {/* Pause / Resume (recurring only) */}
-              {isRecurring && !isPaused && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => pauseTask.mutate({ taskId, agentSlug })}
-                  disabled={pauseTask.isPending}
-                >
-                  <Pause className="h-4 w-4 mr-2" />
-                  {pauseTask.isPending ? 'Pausing...' : 'Pause'}
-                </Button>
-              )}
-              {isRecurring && isPaused && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => resumeTask.mutate({ taskId, agentSlug })}
-                  disabled={resumeTask.isPending}
-                >
-                  <PlayCircle className="h-4 w-4 mr-2" />
-                  {resumeTask.isPending ? 'Resuming...' : 'Resume'}
-                </Button>
-              )}
-
-              {/* Edit Schedule button (recurring, not paused) */}
-              {isRecurring && !isPaused && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleOpenEditSchedule}
-                >
-                  <Pencil className="h-4 w-4 mr-2" />
-                  Edit Schedule
-                </Button>
-              )}
-
-              {/* Delete Cron button */}
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button variant="destructive" size="sm">
-                    <Trash2 className="h-4 w-4 mr-2" />
-                    Delete Cron
-                  </Button>
-                </AlertDialogTrigger>
+              {/* Delete confirmation dialog */}
+              <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
                 <AlertDialogContent>
                   <AlertDialogHeader>
                     <AlertDialogTitle>Delete Cron</AlertDialogTitle>
@@ -260,126 +276,154 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
             </div>
           )}
         </div>
-
-        {/* Row 2: details */}
-        <div className="flex items-center gap-4 text-sm text-muted-foreground">
-          <div className="flex items-center gap-1">
-            {isRecurring ? (
-              <Repeat className="h-4 w-4" />
-            ) : (
-              <Clock className="h-4 w-4" />
-            )}
-            <span>{isRecurring ? 'Recurring' : 'One-time'}</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <Calendar className="h-4 w-4" />
-            <span>{humanizedCron ?? task.scheduleExpression}</span>
-            {humanizedCron && humanizedCron !== task.scheduleExpression && (
-              <span className="text-xs text-muted-foreground/60">({task.scheduleExpression})</span>
-            )}
-          </div>
-          <div className="flex items-center gap-1">
-            <Globe className="h-4 w-4" />
-            <span>{taskTzLabel}</span>
-          </div>
-        </div>
       </div>
 
-      {/* Task details */}
-      <div className="flex-1 overflow-auto p-6">
-        {/* Next execution time */}
-        <div className="mb-6">
-          <h3 className="text-sm font-medium text-muted-foreground mb-2">
-            {task.status === 'pending' ? 'Next Execution' : 'Status'}
-          </h3>
-          {task.status === 'pending' ? (
-            <div className="text-lg">
-              {formatInTaskTz(nextExecution)}
-            </div>
-          ) : task.status === 'paused' ? (
-            <div className="text-lg">Paused</div>
+      {/* Two-column body */}
+      <div className="grid grid-cols-1 lg:grid-cols-[3fr_2fr] gap-y-6 lg:gap-x-10 lg:gap-y-0">
+        {/* Run History (left, 2/3) */}
+        <div className="pb-6 order-2 lg:order-1">
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-medium text-muted-foreground flex-1">Run History</h2>
+            {sessions.length > 0 && (
+              <Popover open={runSortPopoverOpen} onOpenChange={setRunSortPopoverOpen}>
+                <PopoverTrigger asChild>
+                  <Button type="button" size="icon" variant="ghost" className="h-6 w-6 shrink-0" aria-label="Sort runs">
+                    <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-40 p-1">
+                  <button
+                    className={`flex w-full items-center rounded-sm px-2 py-1.5 text-xs transition-colors ${runSort === 'newest' ? 'bg-muted font-medium' : 'hover:bg-muted'}`}
+                    onClick={() => { setRunSort('newest'); setRunSortPopoverOpen(false) }}
+                  >
+                    Newest first
+                  </button>
+                  <button
+                    className={`flex w-full items-center rounded-sm px-2 py-1.5 text-xs transition-colors ${runSort === 'oldest' ? 'bg-muted font-medium' : 'hover:bg-muted'}`}
+                    onClick={() => { setRunSort('oldest'); setRunSortPopoverOpen(false) }}
+                  >
+                    Oldest first
+                  </button>
+                </PopoverContent>
+              </Popover>
+            )}
+          </div>
+          <div className="border-b mt-2" />
+          {sessions.length > 0 ? (
+            <RelatedSessions
+              sessions={sessions}
+              formatDate={formatDateOnlyInTaskTz}
+              formatSubtext={formatTimeOnlyInTaskTz}
+              agentSlug={agentSlug}
+              showIcon={false}
+              showHeader={false}
+              sortOrder={runSort}
+              dateAsTitle
+              pageSize={15}
+            />
           ) : (
-            <div className="text-lg capitalize">{task.status}</div>
+            <div className="rounded-lg border border-dashed p-4 mt-3 text-sm text-muted-foreground">
+              No runs yet. Sessions will appear here once this cron runs.
+            </div>
           )}
         </div>
 
-        {/* Execution count for recurring tasks */}
-        {isRecurring && task.executionCount > 0 && (
-          <div className="mb-6">
-            <h3 className="text-sm font-medium text-muted-foreground mb-2">
-              Execution Count
-            </h3>
-            <div className="text-lg">{task.executionCount}</div>
-          </div>
-        )}
-
-        {/* Prompt */}
-        <div>
-          <h3 className="text-sm font-medium text-muted-foreground mb-2">
-            Task Prompt
-          </h3>
-          <div className="border-2 border-dashed border-muted rounded-lg p-4 bg-muted/20">
-            <div className="flex items-start gap-2 mb-3 text-sm text-muted-foreground">
-              <Clock className="h-4 w-4 mt-0.5 shrink-0" />
-              <span>
-                This prompt will be sent to the agent{' '}
-                {task.status === 'pending'
-                  ? `on ${formatInTaskTz(nextExecution)}`
-                  : 'when executed'}
-              </span>
+        {/* Details card (right, 1/3) */}
+        <div className="space-y-3 order-1 lg:order-2">
+          {/* Instructions card */}
+          <div className="rounded-xl border bg-background py-4">
+            <div className="px-4">
+              <span className="text-sm font-medium text-muted-foreground">Task Prompt</span>
             </div>
-            <div className="whitespace-pre-wrap text-sm">{task.prompt}</div>
+            <div className="px-4 pt-3 whitespace-pre-wrap text-xs">{task.prompt}</div>
           </div>
-        </div>
 
-        <RelatedSessions sessions={sessions} formatDate={formatInTaskTz} className="mt-6" agentSlug={agentSlug} />
-
-        {/* Last execution info */}
-        {task.lastExecutedAt && sessions.length === 0 && (
-          <div className="mt-6">
-            <h3 className="text-sm font-medium text-muted-foreground mb-2">
-              Last Executed
-            </h3>
-            <div className="text-sm">
-              {formatInTaskTz(task.lastExecutedAt)}
-              {task.lastSessionId && (
-                <span className="text-muted-foreground ml-2">
-                  (Session: {task.lastSessionId.slice(0, 8)}...)
-                </span>
+          {/* Details + toggle card */}
+          <div className="rounded-xl border bg-background py-4">
+            <div className="px-4 flex items-center justify-between gap-4">
+              <span className="text-sm font-medium text-muted-foreground">Details</span>
+              {isRecurring && isActive && canCancel ? (
+                <div className="flex items-center gap-2">
+                  <div className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-xs font-medium ${isPaused ? 'bg-muted text-muted-foreground' : 'bg-green-500/10 text-green-700 dark:text-green-400'}`}>
+                    {isPaused ? (
+                      <Pause className="h-2.5 w-2.5 fill-current" />
+                    ) : (
+                      <span className="h-1.5 w-1.5 rounded-full bg-green-500" />
+                    )}
+                    {isPaused ? 'Paused' : 'Active'}
+                  </div>
+                  <Switch
+                    checked={!isPaused}
+                    disabled={pauseTask.isPending || resumeTask.isPending}
+                    onCheckedChange={(checked) => {
+                      if (checked) {
+                        resumeTask.mutate({ taskId, agentSlug })
+                      } else {
+                        pauseTask.mutate({ taskId, agentSlug })
+                      }
+                    }}
+                    aria-label={isPaused ? 'Resume cron' : 'Pause cron'}
+                  />
+                </div>
+              ) : (
+                <span className="text-xs text-muted-foreground capitalize">{task.status}</span>
               )}
             </div>
-          </div>
-        )}
 
-        {/* Created info */}
-        <div className="mt-6">
-          <h3 className="text-sm font-medium text-muted-foreground mb-2">
-            Created
-          </h3>
-          <div className="text-sm">
-            {formatInTaskTz(task.createdAt)}
+            <dl className="px-4 pt-3 space-y-4">
+              <div>
+                <dt className="text-xs text-muted-foreground">Schedule</dt>
+                <dd className="text-xs font-normal">
+                  {humanizedCron
+                    ? `Runs ${humanizedCron.charAt(0).toLowerCase() + humanizedCron.slice(1)}`
+                    : task.scheduleExpression}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">Timezone</dt>
+                <dd className="text-xs font-normal">{taskTzLabel}</dd>
+              </div>
+              {(isRecurring && task.executionCount > 0) || task.status === 'pending' ? (
+                <div className="flex gap-8">
+                  {task.status === 'pending' && (
+                    <div>
+                      <dt className="text-xs text-muted-foreground">Next Run</dt>
+                      <dd className="text-xs font-normal">{formatInTaskTz(nextExecution)}</dd>
+                    </div>
+                  )}
+                  {isRecurring && task.executionCount > 0 && (
+                    <div>
+                      <dt className="text-xs text-muted-foreground">Runs</dt>
+                      <dd className="text-xs font-normal">{task.executionCount}</dd>
+                    </div>
+                  )}
+                </div>
+              ) : null}
+            </dl>
+
+            <div className="px-4 pt-6 text-xs text-muted-foreground">
+              Created {formatInTaskTz(task.createdAt)}
+            </div>
           </div>
+
+          {/* Last execution info */}
+          {task.lastExecutedAt && sessions.length === 0 && (
+            <div>
+              <h3 className="text-sm font-medium text-muted-foreground mb-2">
+                Last Executed
+              </h3>
+              <div className="text-sm">
+                {formatInTaskTz(task.lastExecutedAt)}
+                {task.lastSessionId && (
+                  <span className="text-muted-foreground ml-2">
+                    (Session: {task.lastSessionId.slice(0, 8)}...)
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
         </div>
-
-        {/* Timezone selector */}
-        {isActive && canCancel && (
-          <div className="mt-6">
-            <h3 className="text-sm font-medium text-muted-foreground mb-2">
-              Timezone
-            </h3>
-            <TimezonePicker
-              value={task.timezone || 'UTC'}
-              onValueChange={(value) => {
-                updateTimezone.mutate({ taskId: task.id, timezone: value })
-              }}
-              disabled={updateTimezone.isPending}
-              className="w-64"
-            />
-            <p className="text-xs text-muted-foreground mt-1">
-              Schedule times are interpreted in this timezone
-            </p>
-          </div>
-        )}
       </div>
 
       {/* Edit Schedule Modal */}
@@ -443,6 +487,23 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
 
             {parseError && (
               <div className="text-sm text-destructive">{parseError}</div>
+            )}
+
+            {isActive && canCancel && (
+              <div className="space-y-2 pt-2 border-t">
+                <Label htmlFor="timezone-picker">Timezone</Label>
+                <TimezonePicker
+                  value={task.timezone || 'UTC'}
+                  onValueChange={(value) => {
+                    updateTimezone.mutate({ taskId: task.id, timezone: value })
+                  }}
+                  disabled={updateTimezone.isPending}
+                  className="w-full"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Schedule times are interpreted in this timezone
+                </p>
+              </div>
             )}
           </div>
 
