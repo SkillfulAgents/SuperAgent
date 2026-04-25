@@ -197,6 +197,7 @@ export function useDiscoverMcpTools() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['remote-mcps'] })
+      queryClient.invalidateQueries({ queryKey: ['agent-remote-mcps'] })
     },
   })
 }
@@ -220,6 +221,7 @@ export function useTestMcpConnection() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['remote-mcps'] })
+      queryClient.invalidateQueries({ queryKey: ['agent-remote-mcps'] })
     },
   })
 }

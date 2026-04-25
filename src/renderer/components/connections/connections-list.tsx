@@ -240,6 +240,11 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
         iconSlug={row.iconSlug}
         iconFallback={row.iconFallback}
         name={row.name}
+        nameBadge={
+          row.type === 'mcp' && row.mcpStatus && row.mcpStatus !== 'active' ? (
+            <McpStatusPill status={row.mcpStatus} errorMessage={row.mcpErrorMessage} />
+          ) : undefined
+        }
         subtitle={
           <>
             <span className="shrink-0">{row.type === 'oauth' ? 'API' : 'MCP'}</span>
@@ -253,9 +258,6 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
             <span className="whitespace-nowrap shrink-0">
               {formatDistanceToNow(safeDate(row.date), { addSuffix: true })}
             </span>
-            {row.type === 'mcp' && row.mcpStatus && row.mcpStatus !== 'active' && (
-              <McpStatusPill status={row.mcpStatus} errorMessage={row.mcpErrorMessage} />
-            )}
           </>
         }
         right={
@@ -266,6 +268,8 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
               name={row.name}
               toolkit={row.toolkit}
               mcpTools={row.mcpTools}
+              agentSlug={agentSlug}
+              hideRemoveFromAgent
             />
             {pending ? (
               <Loader2

@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { Check, Pencil, RefreshCw, Settings, Shield, Trash2, Wrench, X, Loader2, LogOut } from 'lucide-react'
+import { ArrowUpRight, Check, Pencil, RefreshCw, Settings, Shield, Trash2, Wrench, X, Loader2, LogOut } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
@@ -50,14 +50,20 @@ export interface IntegrationRowActionsProps {
   /** Tool catalog, used by the MCP scope editor. Required for `type === 'mcp'`. */
   mcpTools?: Array<{ name: string; description?: string }>
   /**
-   * When provided, exposes a "Remove from this agent" action and scopes the
-   * Delete copy to contrast with it. Used by the agent home row; omit on the
-   * global manage page where per-agent access is controlled by the toggle.
+   * When provided, scopes the Delete copy to "Delete for all agents" to make
+   * the global blast radius explicit. Combined with `hideRemoveFromAgent` on
+   * surfaces that already expose per-agent access via a toggle.
    */
   agentSlug?: string
+  /**
+   * Hides the "Remove from agent" menu item even when `agentSlug` is set.
+   * Used on the connections list where per-agent access is already controlled
+   * by the row's Switch toggle.
+   */
+  hideRemoveFromAgent?: boolean
 }
 
-export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agentSlug }: IntegrationRowActionsProps) {
+export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agentSlug, hideRemoveFromAgent }: IntegrationRowActionsProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameValue, setRenameValue] = useState(name)
@@ -298,7 +304,7 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agent
               Discover tools
             </button>
           )}
-          {agentSlug && (
+          {agentSlug && !hideRemoveFromAgent && (
             <button
               type="button"
               className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
@@ -346,13 +352,18 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agent
                 ) : (
                   <RefreshCw className="h-3.5 w-3.5" />
                 )}
-                {oauthPending
-                  ? 'Waiting for OAuth...'
-                  : mcpStatus?.kind === 'success'
-                    ? 'Connected'
-                    : mcpStatus?.kind === 'error'
-                      ? 'Reconnect'
-                      : 'Test connection'}
+                {oauthPending ? (
+                  'Waiting for OAuth...'
+                ) : mcpStatus?.kind === 'success' ? (
+                  'Connected'
+                ) : mcpStatus?.kind === 'error' ? (
+                  <span className="inline-flex items-center gap-1">
+                    Reconnect
+                    <ArrowUpRight className="h-3 w-3" />
+                  </span>
+                ) : (
+                  'Test connection'
+                )}
               </button>
             </>
           )}
@@ -515,33 +526,14 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agent
           <DialogContent
             onClick={(e) => e.stopPropagation()}
             onCloseAutoFocus={restoreFocus}
-            className="pr-14"
           >
             <DialogHeader>
-              <div className="flex items-start justify-between gap-2">
-                <div className="space-y-1.5">
-                  <DialogTitle>Tools for {name}</DialogTitle>
-                  <DialogDescription>
-                    {mcpTools && mcpTools.length > 0
-                      ? `${mcpTools.length} tool${mcpTools.length === 1 ? '' : 's'} available.`
-                      : 'No tools discovered yet. Refresh to fetch the catalog.'}
-                  </DialogDescription>
-                </div>
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="outline"
-                  onClick={() => { void refreshTools() }}
-                  disabled={discoverMcpTools.isPending}
-                  aria-label="Refresh tools"
-                >
-                  {discoverMcpTools.isPending ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <RefreshCw className="h-4 w-4" />
-                  )}
-                </Button>
-              </div>
+              <DialogTitle>Tools for {name}</DialogTitle>
+              <DialogDescription>
+                {mcpTools && mcpTools.length > 0
+                  ? `${mcpTools.length} tool${mcpTools.length === 1 ? '' : 's'} available.`
+                  : 'No tools discovered yet. Check for new tools to fetch the catalog.'}
+              </DialogDescription>
             </DialogHeader>
             <div className="max-h-[50vh] overflow-y-auto py-1">
               {mcpTools && mcpTools.length > 0 ? (
@@ -560,6 +552,22 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agent
                   No tools to show.
                 </p>
               )}
+            </div>
+            <div className="flex items-center justify-start">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => { void refreshTools() }}
+                disabled={discoverMcpTools.isPending}
+              >
+                {discoverMcpTools.isPending ? (
+                  <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+                )}
+                Check for new tools
+              </Button>
             </div>
             {toolsError && (
               <p className="text-xs text-destructive" role="alert">{toolsError}</p>

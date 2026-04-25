@@ -35,6 +35,8 @@ interface IntegrationRowProps {
   iconSlug?: string
   iconFallback: IntegrationIconFallback
   name: ReactNode
+  /** Inline badge/chip rendered next to the name on the same row. */
+  nameBadge?: ReactNode
   subtitle?: ReactNode
   right?: ReactNode
   onActivate?: () => void
@@ -63,6 +65,7 @@ export function IntegrationRow({
   iconSlug,
   iconFallback,
   name,
+  nameBadge,
   subtitle,
   right,
   onActivate,
@@ -107,7 +110,10 @@ export function IntegrationRow({
           />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-xs font-medium truncate">{name}</div>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="text-xs font-medium truncate">{name}</span>
+            {nameBadge && <span className="shrink-0">{nameBadge}</span>}
+          </div>
           {subtitle && (
             <div className="flex items-center gap-1 text-[11px] text-muted-foreground mt-0.5">
               {subtitle}
