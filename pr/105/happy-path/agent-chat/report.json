@@ -1,27 +1,25 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "Verified that agent \"QA-20260424-234206-2ssa\" is functional, accepts messages, and responds correctly with mathematical calculations.",
+  "reason": "Agent QA-20260425-012206-igu2 successfully received and responded to the message \"Hello! What is 2+2?\" with the correct answer \"4\".",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully with Super Agent application displayed",
-    "Found agent \"QA-20260424-234206-2ssa\" in sidebar — Agent found with \"idle\" status visible",
-    "Clicked on agent \"QA-20260424-234206-2ssa\" — Agent detail page opened with \"idle\" status confirmed",
-    "Verified agent status is \"running\" or \"idle\" — Status confirmed as \"idle\"",
-    "Typed message \"Hello! What is 2+2?\" in message input — Message successfully entered in text field",
-    "Clicked send button — Message sent and agent began processing",
-    "Awaited agent response — Response received immediately (within 1 second, well under 3 minute limit)",
-    "Verified response mentions \"4\" — Response clearly shows \"4\" as the answer to the mathematical question",
-    "Took final screenshot — Screenshot captured showing complete conversation with response"
+    "Navigated to http://localhost:47891 — Page loaded successfully with sidebar showing three agents including QA-20260425-012206-igu2.",
+    "Clicked on agent \"QA-20260425-012206-igu2\" in the sidebar — Agent detail page opened and displayed the agent's home screen.",
+    "Verified agent status — Status indicator showed \"idle\" at the top right of the agent detail page.",
+    "Clicked on the message input field and typed \"Hello! What is 2+2?\" — Message was successfully entered into the input field.",
+    "Clicked the \"Send message\" button — Message was sent and the agent began processing (status changed to \"working\").",
+    "Waited for response — Response arrived within 2 seconds. The agent displayed \"4\" as the answer with \"Worked for 2s\" metadata below.",
+    "Verified response mentions \"4\" — The agent's response clearly shows \"4\" as the correct answer to the math question \"What is 2+2?\", displayed prominently in the chat interface."
   ],
   "bugs": [],
-  "durationMs": 59622,
-  "sessionId": "7f40bb9c-3a04-4964-89a4-adf289aa3b77",
+  "durationMs": 79430,
+  "sessionId": "d4fb99ed-e5d7-46b2-a189-dbf19905f4ae",
   "cost": {
-    "inputTokens": 261,
-    "outputTokens": 9158,
-    "cacheCreationTokens": 123430,
-    "cacheReadTokens": 891262,
+    "inputTokens": 288,
+    "outputTokens": 9664,
+    "cacheCreationTokens": 128950,
+    "cacheReadTokens": 1022139,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.289465
+    "totalCostUsd": 0.312009
   }
 }

@@ -1,23 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Successfully verified that the agent can open a browser, navigate to https://example.com, retrieve the page title \"Example Domain\", and report the results in the chat interface.",
+  "reason": "Verified that the agent successfully opens a browser, navigates to https://example.com, retrieves the page title, and returns the correct result \"Example Domain\"",
   "steps": [
-    "Navigated to http://localhost:47891 - Page loaded successfully showing Super Agent interface with agent list in sidebar",
-    "Clicked on agent \"QA-20260424-234207-f1ar\" in the main content area - Agent view opened successfully with chat interface",
-    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message sent successfully, agent status changed to \"working\"",
-    "Waited 5 seconds for agent to process the request - Agent completed processing after 8 seconds total",
-    "Verified response mentions \"Example Domain\" - Response clearly states: \"The page title is \"Example Domain\".\" Agent also showed three completed browser operations: Open Browser, Browser Command (get title), and Close Browser"
+    "Navigated to http://localhost:47891 — Application loaded successfully with Super Agent interface showing three agents in sidebar",
+    "Found and clicked on \"QA-20260425-012208-93bv\" agent in the sidebar — Agent view loaded with chat interface and message input field",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message appeared in input field",
+    "Clicked \"Send message\" button — Message was sent successfully, agent status changed to \"working\", browser preview panel appeared on the right showing the https://example.com page",
+    "Waited up to 3 minutes for response — Agent completed task in 8 seconds, returned response: \"The page title is \"Example Domain\".\"",
+    "Verified response mentions \"Example Domain\" and took screenshot — Screenshot captured showing the correct response with \"Example Domain\" mentioned in agent reply"
   ],
   "bugs": [],
-  "durationMs": 68451,
-  "sessionId": "dbec54ea-c7d9-418b-84d1-e389a429b60f",
+  "durationMs": 90281,
+  "sessionId": "54d3daa3-4ee0-4509-b960-3e9a1692d7e4",
   "cost": {
-    "inputTokens": 315,
-    "outputTokens": 10063,
-    "cacheCreationTokens": 53215,
-    "cacheReadTokens": 1188019,
+    "inputTokens": 309,
+    "outputTokens": 9324,
+    "cacheCreationTokens": 51406,
+    "cacheReadTokens": 1156377,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.235951
+    "totalCostUsd": 0.226824
   }
 }
