@@ -1,24 +1,26 @@
 {
   "storyId": "browser-test",
-  "passed": true,
-  "reason": "Verified that the agent successfully opens a browser, navigates to https://example.com, retrieves the page title, and returns the correct result \"Example Domain\"",
+  "passed": false,
+  "reason": "Agent encountered LLM Provider Error (529 Overloaded) instead of completing the browser navigation task and returning the page title\n  Bugs found:\n    - Agent received \"LLM Provider Error: API Error: Repeated 529 Overloaded errors\" when attempting to execute browser navigation task. The error message states \"This error came from the external LLM provider API, not from this application\" - indicating the Claude API was overloaded and returned 529 errors. The agent worked for 7 seconds before failing. The expected response mentioning \"Example Domain\" was never received.",
   "steps": [
-    "Navigated to http://localhost:47891 — Application loaded successfully with Super Agent interface showing three agents in sidebar",
-    "Found and clicked on \"QA-20260425-012208-93bv\" agent in the sidebar — Agent view loaded with chat interface and message input field",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message appeared in input field",
-    "Clicked \"Send message\" button — Message was sent successfully, agent status changed to \"working\", browser preview panel appeared on the right showing the https://example.com page",
-    "Waited up to 3 minutes for response — Agent completed task in 8 seconds, returned response: \"The page title is \"Example Domain\".\"",
-    "Verified response mentions \"Example Domain\" and took screenshot — Screenshot captured showing the correct response with \"Example Domain\" mentioned in agent reply"
+    "Navigated to http://localhost:47891 — Page loaded successfully showing Super Agent interface with list of agents in sidebar",
+    "Clicked on \"QA-20260425-013122-xrtl\" agent in sidebar — Agent interface opened with chat input box and various configuration panels visible",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into input box — Message text appeared in the input field",
+    "Clicked \"Send message\" button — Message was sent successfully; agent status changed to \"working\" and a new session \"Browser Navigation Test Session\" was created in the sidebar",
+    "Waited 180 seconds (3 minutes) for response — Agent completed processing and status changed to \"idle\"; however, instead of the expected response about the page title, an \"LLM Provider Error\" was displayed stating \"API Error: Repeated 529 Overloaded errors · check status.claude.com\" with a note that the error came from the external LLM provider API. The agent worked for 7 seconds total before encountering the error.",
+    "Verified response mentions \"Example Domain\" — FAILED: No response about page title was received; error message shown instead"
   ],
-  "bugs": [],
-  "durationMs": 90281,
-  "sessionId": "54d3daa3-4ee0-4509-b960-3e9a1692d7e4",
+  "bugs": [
+    "Agent received \"LLM Provider Error: API Error: Repeated 529 Overloaded errors\" when attempting to execute browser navigation task. The error message states \"This error came from the external LLM provider API, not from this application\" - indicating the Claude API was overloaded and returned 529 errors. The agent worked for 7 seconds before failing. The expected response mentioning \"Example Domain\" was never received."
+  ],
+  "durationMs": 93201,
+  "sessionId": "518e805c-e4c2-47fe-af6f-f4f649c4c8e9",
   "cost": {
-    "inputTokens": 309,
-    "outputTokens": 9324,
-    "cacheCreationTokens": 51406,
-    "cacheReadTokens": 1156377,
+    "inputTokens": 288,
+    "outputTokens": 9774,
+    "cacheCreationTokens": 51465,
+    "cacheReadTokens": 1080978,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.226824
+    "totalCostUsd": 0.221587
   }
 }

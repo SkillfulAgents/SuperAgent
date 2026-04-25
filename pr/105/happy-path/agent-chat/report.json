@@ -1,25 +1,27 @@
 {
   "storyId": "agent-chat",
-  "passed": true,
-  "reason": "Agent QA-20260425-012206-igu2 successfully received and responded to the message \"Hello! What is 2+2?\" with the correct answer \"4\".",
+  "passed": false,
+  "reason": "Agent encountered external LLM Provider API error (529 Overloaded) instead of responding to math question\n  Bugs found:\n    - LLM Provider Error: API Error: Repeated 529 Overloaded errors · check status.claude.com. The agent failed to respond to the message \"Hello! What is 2+2?\" with the expected mathematical answer containing \"4\". Instead, it returned an error from the external LLM provider API, indicating the Claude API is experiencing overload issues.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully with sidebar showing three agents including QA-20260425-012206-igu2.",
-    "Clicked on agent \"QA-20260425-012206-igu2\" in the sidebar — Agent detail page opened and displayed the agent's home screen.",
-    "Verified agent status — Status indicator showed \"idle\" at the top right of the agent detail page.",
-    "Clicked on the message input field and typed \"Hello! What is 2+2?\" — Message was successfully entered into the input field.",
-    "Clicked the \"Send message\" button — Message was sent and the agent began processing (status changed to \"working\").",
-    "Waited for response — Response arrived within 2 seconds. The agent displayed \"4\" as the answer with \"Worked for 2s\" metadata below.",
-    "Verified response mentions \"4\" — The agent's response clearly shows \"4\" as the correct answer to the math question \"What is 2+2?\", displayed prominently in the chat interface."
+    "Navigated to http://localhost:47891 — Page loaded successfully showing the SuperAgent application with sidebar listing three agents",
+    "Clicked on agent \"QA-20260425-013120-duxl\" in the sidebar — Agent page opened showing the agent's home screen with agent status \"idle\" displayed at the top right",
+    "Verified agent status is \"running\" or \"idle\" — Agent status was \"idle\", which matches the expected states",
+    "Clicked on the message input field and typed \"Hello! What is 2+2?\" — Message was successfully entered in the input field",
+    "Clicked the \"Send message\" button — Message was sent successfully. The chat view opened, showing the user message \"Hello! What is 2+2?\" and a new session titled \"Math Question from QA Agent\" was created. Agent status changed to \"working\"",
+    "Waited up to 3 minutes for a response — The agent processed the request for approximately 10 seconds, then returned an error",
+    "Verified the response mentions \"4\" — The response was an LLM Provider Error card stating \"API Error: Repeated 529 Overloaded errors · check status.claude.com\". No response containing \"4\" was received. The error message indicates the external LLM provider API is overloaded and unable to process the request."
   ],
-  "bugs": [],
-  "durationMs": 79430,
-  "sessionId": "d4fb99ed-e5d7-46b2-a189-dbf19905f4ae",
+  "bugs": [
+    "LLM Provider Error: API Error: Repeated 529 Overloaded errors · check status.claude.com. The agent failed to respond to the message \"Hello! What is 2+2?\" with the expected mathematical answer containing \"4\". Instead, it returned an error from the external LLM provider API, indicating the Claude API is experiencing overload issues."
+  ],
+  "durationMs": 92566,
+  "sessionId": "12b9805a-cfc2-4b7d-8e46-83479c14fef7",
   "cost": {
     "inputTokens": 288,
-    "outputTokens": 9664,
-    "cacheCreationTokens": 128950,
-    "cacheReadTokens": 1022139,
+    "outputTokens": 9172,
+    "cacheCreationTokens": 126483,
+    "cacheReadTokens": 1017604,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.312009
+    "totalCostUsd": 0.306012
   }
 }
