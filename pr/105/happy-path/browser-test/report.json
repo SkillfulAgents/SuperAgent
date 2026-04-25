@@ -1,26 +1,26 @@
 {
   "storyId": "browser-test",
   "passed": false,
-  "reason": "Agent encountered LLM Provider Error (529 Overloaded) instead of completing the browser navigation task and returning the page title\n  Bugs found:\n    - Agent received \"LLM Provider Error: API Error: Repeated 529 Overloaded errors\" when attempting to execute browser navigation task. The error message states \"This error came from the external LLM provider API, not from this application\" - indicating the Claude API was overloaded and returned 529 errors. The agent worked for 7 seconds before failing. The expected response mentioning \"Example Domain\" was never received.",
+  "reason": "Agent encountered LLM Provider Error (529 Overloaded) while attempting to execute browser navigation task, preventing verification that response mentions \"Example Domain\"\n  Bugs found:\n    - Agent received \"API Error: Repeated 529 Overloaded errors\" from external LLM provider - the agent was unable to complete the browser navigation task and return the expected response mentioning \"Example Domain\"",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully showing Super Agent interface with list of agents in sidebar",
-    "Clicked on \"QA-20260425-013122-xrtl\" agent in sidebar — Agent interface opened with chat input box and various configuration panels visible",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into input box — Message text appeared in the input field",
-    "Clicked \"Send message\" button — Message was sent successfully; agent status changed to \"working\" and a new session \"Browser Navigation Test Session\" was created in the sidebar",
-    "Waited 180 seconds (3 minutes) for response — Agent completed processing and status changed to \"idle\"; however, instead of the expected response about the page title, an \"LLM Provider Error\" was displayed stating \"API Error: Repeated 529 Overloaded errors · check status.claude.com\" with a note that the error came from the external LLM provider API. The agent worked for 7 seconds total before encountering the error.",
-    "Verified response mentions \"Example Domain\" — FAILED: No response about page title was received; error message shown instead"
+    "Navigated to http://localhost:47891 - Page loaded successfully showing Super Agent interface with list of agents in sidebar",
+    "Located and clicked on \"QA-20260425-014715-mewk\" agent in sidebar - Agent chat interface opened with message input field",
+    "Clicked on message input textbox and typed \"Open a browser and go to https://example.com. Tell me the page title.\" - Message was successfully entered in the input field",
+    "Clicked \"Send message\" button - Message was sent to agent, agent status changed to \"working\", and session was created titled \"Browser Navigation to Example.com\"",
+    "Waited for response within 3 minutes - After approximately 6 seconds of processing, agent returned an LLM Provider Error instead of a successful response. Error message stated: \"API Error: Repeated 529 Overloaded errors · check status.claude.com\" with note \"This error came from the external LLM provider API, not from this application. Check your provider configuration in Settings.\"",
+    "Verified response content - Response did not mention \"Example Domain\" as required. Instead received an error notification indicating the external LLM provider was overloaded and unable to process the request."
   ],
   "bugs": [
-    "Agent received \"LLM Provider Error: API Error: Repeated 529 Overloaded errors\" when attempting to execute browser navigation task. The error message states \"This error came from the external LLM provider API, not from this application\" - indicating the Claude API was overloaded and returned 529 errors. The agent worked for 7 seconds before failing. The expected response mentioning \"Example Domain\" was never received."
+    "Agent received \"API Error: Repeated 529 Overloaded errors\" from external LLM provider - the agent was unable to complete the browser navigation task and return the expected response mentioning \"Example Domain\""
   ],
-  "durationMs": 93201,
-  "sessionId": "518e805c-e4c2-47fe-af6f-f4f649c4c8e9",
+  "durationMs": 87158,
+  "sessionId": "6a4b9e87-38cd-4434-9e2f-5e211489841b",
   "cost": {
-    "inputTokens": 288,
-    "outputTokens": 9774,
-    "cacheCreationTokens": 51465,
-    "cacheReadTokens": 1080978,
+    "inputTokens": 309,
+    "outputTokens": 8796,
+    "cacheCreationTokens": 124540,
+    "cacheReadTokens": 1078407,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.221587
+    "totalCostUsd": 0.307805
   }
 }
