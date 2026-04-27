@@ -20,6 +20,10 @@ async function getAuthLazy() {
 export { type AgentRole, ROLE_HIERARCHY, hasMinRole } from '@shared/lib/types/agent'
 import { type AgentRole, ROLE_HIERARCHY, hasMinRole } from '@shared/lib/types/agent'
 
+/**
+ * Authenticated — verifies user session and attaches user to context.
+ * No-op when AUTH_MODE is disabled.
+ */
 export function Authenticated(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
     if (!isAuthMode()) {

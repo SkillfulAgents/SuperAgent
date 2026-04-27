@@ -55,5 +55,3 @@ tsconfig.tsbuildinfo
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 .claude/worktrees/
-# Runtime data dir for authmode dev script (Secrets/authmode.txt)
-.tmp-authmode-fresh-data/
