@@ -81,6 +81,11 @@ vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getPlatformAuthStatus: (...args: [string?]) => mockGetPlatformAuthStatus(...args),
   getPlatformAccessToken: vi.fn(() => undefined),
 }))
+// Skillset code paths read attribution from AsyncLocalStorage (set by
+// the `Authenticated` middleware in production). These service-level
+// tests skip the middleware, so individual tests that need attribution
+// must wrap their work in `runWithRequestUser('local', ...)`.
+import { runWithRequestUser } from '@shared/lib/attribution'
 vi.mock('@shared/lib/platform-auth/config', () => ({
   getPlatformProxyBaseUrl: vi.fn(() => undefined),
 }))
@@ -643,7 +648,7 @@ Instructions here`
         return { ok: false, status: 404, json: async () => ({}), text: async () => '' }
       }))
 
-      await refreshAgentSkills('test-agent', [config])
+      await runWithRequestUser('local', () => refreshAgentSkills('test-agent', [config]))
       vi.unstubAllGlobals()
 
       const updated = await readMetadata('test-agent', 'test-skill')
@@ -697,7 +702,7 @@ Instructions here`
         return { ok: false, status: 404, json: async () => ({}), text: async () => '' }
       }))
 
-      await refreshAgentSkills('test-agent', [config])
+      await runWithRequestUser('local', () => refreshAgentSkills('test-agent', [config]))
       vi.unstubAllGlobals()
 
       const updated = await readMetadata('test-agent', 'test-skill')

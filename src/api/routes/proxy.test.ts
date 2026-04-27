@@ -5,6 +5,7 @@ import { Hono } from 'hono'
 const mockValidateProxyToken = vi.fn()
 const mockIsHostAllowed = vi.fn()
 const mockGetConnectionToken = vi.fn()
+const mockFromResourceCreator = vi.fn()
 
 vi.mock('@shared/lib/proxy/token-store', () => ({
   validateProxyToken: (...args: unknown[]) => mockValidateProxyToken(...args),
@@ -16,6 +17,12 @@ vi.mock('@shared/lib/proxy/allowed-hosts', () => ({
 
 vi.mock('@shared/lib/composio/client', () => ({
   getConnectionToken: (...args: unknown[]) => mockGetConnectionToken(...args),
+}))
+
+vi.mock('@shared/lib/attribution', () => ({
+  attribution: {
+    fromResourceCreator: (...args: unknown[]) => mockFromResourceCreator(...args),
+  },
 }))
 
 // Mock DB with chainable query builder
@@ -88,6 +95,11 @@ describe('proxy route', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     app = createApp()
+    mockFromResourceCreator.mockReturnValue({
+      applyTo: vi.fn(),
+      toHeaderEntries: () => [],
+      getKey: () => 'member:sub_member_1',
+    })
 
     // Default: DB insert for audit log succeeds
     mockInsertValues.mockResolvedValue(undefined)

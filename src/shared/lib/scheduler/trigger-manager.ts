@@ -8,12 +8,14 @@
  */
 
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
+import { attribution, type Attribution } from '@shared/lib/attribution'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import {
   getWebhookTriggersByComposioId,
+  listWebhookTriggerAuths,
   markTriggerFired,
   markTriggerFailed,
 } from '@shared/lib/services/webhook-trigger-service'
@@ -47,8 +49,8 @@ function composeTriggerPrompt(trigger: WebhookTrigger, events: WebhookEvent[]): 
 
 class TriggerManager {
   private isRunning = false
-  private realtimeClient: SupabaseRealtimeClient | null = null
-  private jwtRefreshInterval: NodeJS.Timeout | null = null
+  private realtimeClients = new Map<string, SupabaseRealtimeClient>()
+  private jwtRefreshIntervals = new Map<string, NodeJS.Timeout>()
   private isProcessing = false
 
   async start(): Promise<void> {
@@ -78,15 +80,15 @@ class TriggerManager {
   stop(): void {
     this.isRunning = false
 
-    if (this.realtimeClient) {
-      this.realtimeClient.disconnect()
-      this.realtimeClient = null
+    for (const client of this.realtimeClients.values()) {
+      client.disconnect()
     }
+    this.realtimeClients.clear()
 
-    if (this.jwtRefreshInterval) {
-      clearInterval(this.jwtRefreshInterval)
-      this.jwtRefreshInterval = null
+    for (const interval of this.jwtRefreshIntervals.values()) {
+      clearInterval(interval)
     }
+    this.jwtRefreshIntervals.clear()
 
     console.log('[TriggerManager] Stopped')
   }
@@ -95,22 +97,34 @@ class TriggerManager {
     return this.isRunning
   }
 
+  /**
+   * Discover and subscribe to a lane for `ownerUserId` if we don't have one
+   * yet. Called by the trigger-creation path so a brand-new owner doesn't
+   * have to wait for the next process restart to start receiving events.
+   *
+   * Idempotent: existing active lane = no-op.
+   */
+  async ensureLaneForOwner(ownerUserId: string | null): Promise<void> {
+    if (!this.isRunning) return
+    const auth = attribution.fromResourceCreator(ownerUserId)
+    if (!auth) return
+    const laneKey = auth.getKey()
+    if (this.realtimeClients.get(laneKey)?.isActive()) return
+    try {
+      await this.pollAndProcessLane(auth)
+    } catch (error) {
+      console.error(`[TriggerManager] Failed to ensure lane ${laneKey}:`, error)
+    }
+  }
+
   private async pollAndProcess(): Promise<void> {
     if (this.isProcessing) return
     this.isProcessing = true
 
     try {
-      const result = await pollAndClaimEvents()
-
-      // Process claimed events
-      if (result.events.length > 0) {
-        console.log(`[TriggerManager] Processing ${result.events.length} event(s)`)
-        await this.processEvents(result.events)
-      }
-
-      // Set up Realtime subscription if we got connection info
-      if (result.realtime && !this.realtimeClient?.isActive()) {
-        await this.subscribeToRealtime(result.realtime)
+      const auths = await listWebhookTriggerAuths()
+      for (const auth of auths) {
+        await this.pollAndProcessLane(auth)
       }
     } catch (error) {
       console.error('[TriggerManager] Poll failed:', error)
@@ -119,22 +133,41 @@ class TriggerManager {
     }
   }
 
-  private async subscribeToRealtime(
-    config: { url: string; apikey: string; jwt: string; channel: string }
-  ): Promise<void> {
-    if (this.realtimeClient) {
-      this.realtimeClient.disconnect()
+  private async pollAndProcessLane(auth: Attribution): Promise<void> {
+    const laneKey = auth.getKey()
+    const result = await pollAndClaimEvents(auth)
+
+    if (result.events.length > 0) {
+      console.log(`[TriggerManager] Processing ${result.events.length} event(s) for lane ${laneKey}`)
+      await this.processEvents(auth, result.events)
     }
 
-    this.realtimeClient = new SupabaseRealtimeClient()
+    const realtimeClient = this.realtimeClients.get(laneKey)
+    if (result.realtime && !realtimeClient?.isActive()) {
+      await this.subscribeToRealtime(auth, result.realtime)
+    }
+  }
+
+  private async subscribeToRealtime(
+    auth: Attribution,
+    config: { url: string; apikey: string; jwt: string; channel: string }
+  ): Promise<void> {
+    const laneKey = auth.getKey()
+    const existingClient = this.realtimeClients.get(laneKey)
+    if (existingClient) {
+      existingClient.disconnect()
+    }
+
+    const realtimeClient = new SupabaseRealtimeClient()
+    this.realtimeClients.set(laneKey, realtimeClient)
 
     try {
-      await this.realtimeClient.connect(
+      await realtimeClient.connect(
         config,
         () => {
           // On any INSERT event, re-poll to claim and process
-          this.pollAndProcess().catch((err) => {
-            console.error('[TriggerManager] Re-poll after realtime event failed:', err)
+          this.pollAndProcessLane(auth).catch((err) => {
+            console.error(`[TriggerManager] Re-poll after realtime event failed for lane ${laneKey}:`, err)
           })
         },
         () => {
@@ -143,28 +176,35 @@ class TriggerManager {
       )
 
       // Refresh JWT every 50 minutes (token lasts 1 hour)
-      this.jwtRefreshInterval = setInterval(async () => {
+      const existingInterval = this.jwtRefreshIntervals.get(laneKey)
+      if (existingInterval) {
+        clearInterval(existingInterval)
+      }
+
+      const refreshInterval = setInterval(async () => {
         try {
-          const freshResult = await pollAndClaimEvents()
-          if (freshResult.realtime?.jwt && this.realtimeClient) {
-            await this.realtimeClient.updateToken(freshResult.realtime.jwt)
+          const freshResult = await pollAndClaimEvents(auth)
+          const latestClient = this.realtimeClients.get(laneKey)
+          if (freshResult.realtime?.jwt && latestClient) {
+            await latestClient.updateToken(freshResult.realtime.jwt)
           }
           // Also process any events that came in during the refresh
           if (freshResult.events.length > 0) {
-            await this.processEvents(freshResult.events)
+            await this.processEvents(auth, freshResult.events)
           }
         } catch (error) {
-          console.error('[TriggerManager] JWT refresh failed:', error)
+          console.error(`[TriggerManager] JWT refresh failed for lane ${laneKey}:`, error)
         }
       }, 50 * 60 * 1000)
+      this.jwtRefreshIntervals.set(laneKey, refreshInterval)
 
-      console.log('[TriggerManager] Realtime subscription active')
+      console.log(`[TriggerManager] Realtime subscription active for lane ${laneKey}`)
     } catch (error) {
-      console.error('[TriggerManager] Failed to subscribe to realtime:', error)
+      console.error(`[TriggerManager] Failed to subscribe to realtime for lane ${laneKey}:`, error)
     }
   }
 
-  private async processEvents(events: WebhookEvent[]): Promise<void> {
+  private async processEvents(auth: Attribution, events: WebhookEvent[]): Promise<void> {
     // Group events by composio_trigger_id for batching
     const grouped = new Map<string, WebhookEvent[]>()
     for (const event of events) {
@@ -179,19 +219,20 @@ class TriggerManager {
 
     for (const [composioTriggerId, groupedEvents] of grouped) {
       try {
-        await this.processEventGroup(composioTriggerId, groupedEvents)
+        await this.processEventGroup(auth, composioTriggerId, groupedEvents)
       } catch (error) {
         console.error(
           `[TriggerManager] Failed to process events for trigger ${composioTriggerId}:`,
           error
         )
         // Ack events anyway to prevent them from piling up
-        await acknowledgeEvents(groupedEvents.map((e) => e.id)).catch(console.error)
+        await acknowledgeEvents(groupedEvents.map((e) => e.id), auth).catch(console.error)
       }
     }
   }
 
   private async processEventGroup(
+    auth: Attribution,
     composioTriggerId: string,
     events: WebhookEvent[]
   ): Promise<void> {
@@ -203,7 +244,7 @@ class TriggerManager {
       console.warn(
         `[TriggerManager] No active local triggers for composio ID ${composioTriggerId}, acking events`
       )
-      await acknowledgeEvents(events.map((e) => e.id))
+      await acknowledgeEvents(events.map((e) => e.id), auth)
       return
     }
 
@@ -220,7 +261,7 @@ class TriggerManager {
     }
 
     // Ack events after all triggers have been processed
-    await acknowledgeEvents(events.map((e) => e.id))
+    await acknowledgeEvents(events.map((e) => e.id), auth)
   }
 
   private async spawnSessionForTrigger(

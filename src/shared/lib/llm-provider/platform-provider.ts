@@ -2,13 +2,12 @@ import Anthropic from '@anthropic-ai/sdk'
 import { BaseLlmProvider, type ModelOption, type ModelPurpose } from './base-llm-provider'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
+import { attribution } from '@shared/lib/attribution'
 import type { ApiKeyStatus } from '../config/settings'
 
 export class PlatformLlmProvider extends BaseLlmProvider {
   readonly id = 'platform' as const
   readonly name = 'Platform'
-  // Not used — getApiKeyStatus/getEffectiveApiKey are both overridden to
-  // read the platform token instead of a settings-stored API key.
   protected readonly settingsKeyField = 'anthropicApiKey' as const
   protected readonly envVarName = 'PLATFORM_TOKEN'
 
@@ -24,17 +23,21 @@ export class PlatformLlmProvider extends BaseLlmProvider {
   }
 
   override getEffectiveApiKey(): string | undefined {
-    return getPlatformAccessToken() ?? process.env[this.envVarName] ?? undefined
+    return getPlatformAccessToken() ?? undefined
   }
 
-  createClient(): Anthropic {
-    const apiKey = this.getEffectiveApiKey()
-    if (!apiKey) throw new Error('Platform token not configured. Please log in to the platform.')
+  private createPlatformClient(token: string): Anthropic {
     return new Anthropic({
       apiKey: '',
       baseURL: getPlatformProxyBaseUrl(),
-      authToken: apiKey,
+      authToken: token,
     })
+  }
+
+  createClient(): Anthropic {
+    const token = this.getEffectiveApiKey()
+    if (!token) throw new Error('Platform token not configured. Please log in to the platform.')
+    return this.createPlatformClient(token)
   }
 
   getAvailableModels(): ModelOption[] {
@@ -54,23 +57,30 @@ export class PlatformLlmProvider extends BaseLlmProvider {
     }
   }
 
-  getContainerEnvVars(): Record<string, string | undefined> {
+  getContainerEnvVars(agentId: string): Record<string, string | undefined> {
     const proxyUrl = getPlatformProxyBaseUrl()
     const containerUrl = proxyUrl.replace('://localhost', '://host.docker.internal')
+    const token = this.getEffectiveApiKey()
+
+    // ANTHROPIC_CUSTOM_HEADERS must be newline-delimited "Name: value"
+    // lines (not JSON) for claude-agent-sdk to parse them as headers.
+    const auth = attribution.fromAgentOwner(agentId)
+    const customHeaders = auth
+      ?.toExtraHeaderEntries()
+      .map(([name, value]) => `${name}: ${value}`)
+      .join('\n')
+
     return {
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_BASE_URL: containerUrl,
-      ANTHROPIC_AUTH_TOKEN: this.getEffectiveApiKey(),
+      ANTHROPIC_AUTH_TOKEN: token,
+      ANTHROPIC_CUSTOM_HEADERS: customHeaders || undefined,
     }
   }
 
   async validateKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
     try {
-      const client = new Anthropic({
-        apiKey: '',
-        baseURL: getPlatformProxyBaseUrl(),
-        authToken: apiKey,
-      })
+      const client = this.createPlatformClient(apiKey)
       await client.messages.create({
         model: 'claude-haiku-4-5',
         max_tokens: 1,

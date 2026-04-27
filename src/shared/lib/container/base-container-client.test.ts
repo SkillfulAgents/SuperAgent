@@ -1,8 +1,21 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { writeEnvFile, parseMemoryValue, shellQuote, isConnectionError, getEnhancedPath } from './base-container-client'
+
+const mockGetContainerEnvVars = vi.fn()
+vi.mock('@shared/lib/llm-provider', () => ({
+  getActiveLlmProvider: () => ({ getContainerEnvVars: mockGetContainerEnvVars }),
+}))
+
+import {
+  writeEnvFile,
+  parseMemoryValue,
+  shellQuote,
+  isConnectionError,
+  getEnhancedPath,
+  getSessionCustomEnvVars,
+} from './base-container-client'
 
 describe('writeEnvFile', () => {
   const cleanups: (() => void)[] = []
@@ -568,5 +581,39 @@ describe('getEnhancedPath', () => {
     // Every separator should be the platform delimiter
     const parts = enhanced.split(path.delimiter)
     expect(parts.length).toBeGreaterThan(1)
+  })
+})
+
+describe('getSessionCustomEnvVars', () => {
+  it('returns undefined when no customEnvVars are supplied', () => {
+    mockGetContainerEnvVars.mockReturnValue({ ANTHROPIC_API_KEY: 'sk' })
+    expect(getSessionCustomEnvVars('agent-1', undefined)).toBeUndefined()
+  })
+
+  it('passes customEnvVars through untouched when provider has no managed keys', () => {
+    mockGetContainerEnvVars.mockReturnValue({})
+    expect(getSessionCustomEnvVars('agent-1', { MY_VAR: 'x', OTHER: 'y' })).toEqual({
+      MY_VAR: 'x',
+      OTHER: 'y',
+    })
+  })
+
+  it('strips provider-managed keys so agents cannot bypass attribution', () => {
+    mockGetContainerEnvVars.mockReturnValue({
+      ANTHROPIC_API_KEY: '',
+      ANTHROPIC_BASE_URL: 'https://proxy.example.com',
+      ANTHROPIC_AUTH_TOKEN: 'platform-token',
+      ANTHROPIC_CUSTOM_HEADERS: 'X-Platform-Member-Id: sub_real_owner',
+    })
+
+    const filtered = getSessionCustomEnvVars('agent-1', {
+      MY_VAR: 'x',
+      ANTHROPIC_AUTH_TOKEN: 'hijacked-token',
+      ANTHROPIC_CUSTOM_HEADERS: 'X-Platform-Member-Id: sub_fake_owner',
+    })
+
+    expect(filtered).toEqual({ MY_VAR: 'x' })
+    expect(filtered).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN')
+    expect(filtered).not.toHaveProperty('ANTHROPIC_CUSTOM_HEADERS')
   })
 })

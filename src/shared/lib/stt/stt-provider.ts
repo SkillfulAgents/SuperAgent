@@ -35,7 +35,6 @@ export abstract class BaseSttProvider {
   /** Mint a short-lived ephemeral token for client-side use. */
   abstract mintEphemeralToken(apiKey: string): Promise<string>
 
-  /** Convenience: resolve the effective key and mint an ephemeral token. */
   async getEphemeralToken(): Promise<{ provider: SttProvider; token: string }> {
     const apiKey = this.getEffectiveApiKey()
     if (!apiKey) {

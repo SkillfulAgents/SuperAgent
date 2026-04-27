@@ -19,6 +19,7 @@ import {
   deleteComposioTrigger,
 } from '@shared/lib/composio/triggers'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
+import { attribution } from '@shared/lib/attribution'
 import { db } from '@shared/lib/db'
 import { connectedAccounts } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
@@ -1622,7 +1623,15 @@ class MessagePersister {
           return
         }
 
-        const triggers = await getAvailableTriggers(account.toolkitSlug)
+        // Composio buckets connected accounts by creator's member id;
+        // attribute by the connection's stored userId, not the request user.
+        const auth = attribution.fromResourceCreator(account.userId)
+        if (!auth) {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Outbound auth not configured')
+          return
+        }
+
+        const triggers = await getAvailableTriggers(account.toolkitSlug, auth)
         const formatted = triggers.length === 0
           ? 'No webhook triggers available for this account.'
           : `Available triggers for ${account.toolkitSlug}:\n\n${triggers.map((t) =>
@@ -1689,10 +1698,17 @@ class MessagePersister {
           return
         }
 
+        // Attribute by the connection's creator (Composio buckets by user_id).
+        const auth = attribution.fromResourceCreator(account.userId)
+        if (!auth) {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Outbound auth not configured')
+          return
+        }
+
         const composioConnectionId = account.composioConnectionId
 
         // Validate trigger type against available triggers for this account
-        const availableTriggers = await getAvailableTriggers(account.toolkitSlug)
+        const availableTriggers = await getAvailableTriggers(account.toolkitSlug, auth)
         const validSlugs = availableTriggers.map((t) => t.slug)
         if (!validSlugs.includes(input.trigger_type)) {
           const suggestion = validSlugs.length > 0
@@ -1707,6 +1723,7 @@ class MessagePersister {
         const composioTriggerId = await enableComposioTrigger(
           input.trigger_type,
           composioConnectionId,
+          auth,
           input.trigger_config,
         )
 
@@ -1726,10 +1743,17 @@ class MessagePersister {
         } catch (dbError) {
           // Rollback Composio trigger
           console.error('[MessagePersister] SQLite save failed, rolling back Composio trigger:', dbError)
-          await deleteComposioTrigger(composioTriggerId).catch(console.error)
+          await deleteComposioTrigger(composioTriggerId, auth).catch(console.error)
           await this.rejectContainerInput(agentSlug, toolUseId, 'Failed to save trigger locally').catch(console.error)
           return
         }
+
+        // TriggerManager only initialises lanes at startup; nudge it to
+        // discover this owner so events fire without a process restart.
+        // Dynamic import avoids the import cycle with the scheduler module.
+        void import('@shared/lib/scheduler/trigger-manager').then(({ triggerManager }) =>
+          triggerManager.ensureLaneForOwner(account.userId),
+        ).catch((err) => console.error('[MessagePersister] ensureLaneForOwner failed:', err))
 
         // 3. Broadcast events
         this.broadcastToSSE(sessionId, {

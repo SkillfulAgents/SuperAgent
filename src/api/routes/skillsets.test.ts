@@ -36,8 +36,16 @@ vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getPlatformAuthStatus: (...args: unknown[]) => mockGetPlatformAuthStatus(...args),
 }))
 
+// Production `Authenticated()` enters an AsyncLocalStorage scope so deep
+// callers (skillset platform provider) can read the request user via
+// `attribution.fromCurrentRequest()`. The test mock must mirror that or
+// every provider call returns null and we end up with 500s deep in
+// route handlers that look mysterious.
+import { runWithRequestUser } from '@shared/lib/attribution'
+
 vi.mock('../middleware/auth', () => ({
-  Authenticated: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  Authenticated: () => async (_c: unknown, next: () => Promise<void>) =>
+    runWithRequestUser('local', () => next()),
   IsAdmin: () => async (_c: unknown, next: () => Promise<void>) => next(),
 }))
 

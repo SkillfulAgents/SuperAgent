@@ -5,6 +5,10 @@ import { isHostAllowed } from '@shared/lib/proxy/allowed-hosts'
 import { matchScopes } from '@shared/lib/proxy/scope-matcher'
 import { resolveApiPolicy } from '@shared/lib/proxy/policy-resolver'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
+import {
+  type Attribution,
+} from '@shared/lib/attribution'
+import { attribution } from '@shared/lib/attribution'
 import { getConnectionToken } from '@shared/lib/composio/client'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { db } from '@shared/lib/db'
@@ -23,14 +27,19 @@ const tokenCache = new Map<
 
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes
 
-async function getCachedToken(composioConnectionId: string): Promise<string> {
-  const cached = tokenCache.get(composioConnectionId)
+async function getCachedToken(
+  composioConnectionId: string,
+  auth?: Attribution | null,
+): Promise<string> {
+  const cacheKey = `${composioConnectionId}:${auth?.getKey() ?? 'default'}`
+  const cached = tokenCache.get(cacheKey)
   if (cached && cached.cacheExpiresAt > Date.now()) {
     return cached.accessToken
   }
 
   const { accessToken, expiresAt } = await getConnectionToken(
-    composioConnectionId
+    composioConnectionId,
+    auth,
   )
 
   let ttl = DEFAULT_CACHE_TTL_MS
@@ -42,7 +51,7 @@ async function getCachedToken(composioConnectionId: string): Promise<string> {
   // At least 30s cache to avoid hammering Composio
   ttl = Math.max(ttl, 30_000)
 
-  tokenCache.set(composioConnectionId, {
+  tokenCache.set(cacheKey, {
     accessToken,
     cacheExpiresAt: Date.now() + ttl,
   })
@@ -169,6 +178,8 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
   }
 
   const account = results[0].account
+  // Composio buckets by connection creator; using anyone else 404s.
+  const outboundAuth = attribution.fromResourceCreator(account.userId)
 
   // 3. Validate target host against toolkit allowlist
   if (!isHostAllowed(account.toolkitSlug, targetHost)) {
@@ -268,7 +279,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
   // 4. Fetch real token (with cache)
   let realToken: string
   try {
-    realToken = await getCachedToken(account.composioConnectionId)
+    realToken = await getCachedToken(account.composioConnectionId, outboundAuth)
   } catch (error) {
     await logAuditEntry({
       agentSlug,

@@ -43,10 +43,12 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
 }))
 
 const mockGetWebhookTriggersByComposioId = vi.fn()
+const mockListWebhookTriggerAuths = vi.fn()
 const mockMarkTriggerFired = vi.fn().mockResolvedValue(undefined)
 const mockMarkTriggerFailed = vi.fn().mockResolvedValue(undefined)
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   getWebhookTriggersByComposioId: (...args: unknown[]) => mockGetWebhookTriggersByComposioId(...args),
+  listWebhookTriggerAuths: (...args: unknown[]) => mockListWebhookTriggerAuths(...args),
   markTriggerFired: (...args: unknown[]) => mockMarkTriggerFired(...args),
   markTriggerFailed: (...args: unknown[]) => mockMarkTriggerFailed(...args),
 }))
@@ -68,7 +70,7 @@ vi.mock('@shared/lib/services/agent-service', () => ({
 const mockPollAndClaimEvents = vi.fn()
 const mockAcknowledgeEvents = vi.fn().mockResolvedValue(undefined)
 vi.mock('@shared/lib/services/webhook-events-client', () => ({
-  pollAndClaimEvents: () => mockPollAndClaimEvents(),
+  pollAndClaimEvents: (...args: unknown[]) => mockPollAndClaimEvents(...args),
   acknowledgeEvents: (...args: unknown[]) => mockAcknowledgeEvents(...args),
 }))
 
@@ -81,13 +83,33 @@ vi.mock('@shared/lib/services/supabase-realtime-client', () => ({
   })),
 }))
 
+const mockFromResourceCreator = vi.fn()
+vi.mock('@shared/lib/attribution', () => ({
+  attribution: {
+    fromResourceCreator: (...args: unknown[]) => mockFromResourceCreator(...args),
+  },
+}))
+
 // Import after mocks
 import { triggerManager } from './trigger-manager'
+import type { Attribution } from '@shared/lib/attribution'
+
+function makeAttribution(memberId: string): Attribution {
+  return {
+    applyTo() {},
+    toHeaderEntries() { return [['X-Platform-Member-Id', memberId]] },
+      toExtraHeaderEntries() { return this.toHeaderEntries().filter(([n]) => n !== "Authorization") },
+    getKey() {
+      return `member:${memberId}`
+    },
+  }
+}
 
 describe('TriggerManager', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockCreateSession.mockResolvedValue({ id: 'session_123' })
+    mockListWebhookTriggerAuths.mockResolvedValue([makeAttribution('sub_member_1')])
   })
 
   describe('start', () => {
@@ -99,6 +121,9 @@ describe('TriggerManager', () => {
 
       await triggerManager.start()
       expect(mockPollAndClaimEvents).toHaveBeenCalledTimes(1)
+      expect(mockPollAndClaimEvents).toHaveBeenCalledWith(expect.objectContaining({
+        getKey: expect.any(Function),
+      }))
 
       triggerManager.stop()
     })
@@ -144,7 +169,10 @@ describe('TriggerManager', () => {
       expect(mockMarkTriggerFired).toHaveBeenCalledWith('trigger_1', 'session_123')
 
       // Verify events were acknowledged
-      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1'])
+      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(
+        ['whe_1'],
+        expect.objectContaining({ getKey: expect.any(Function) }),
+      )
 
       triggerManager.stop()
     })
@@ -181,7 +209,10 @@ describe('TriggerManager', () => {
       expect(prompt).toContain('Event 3:')
 
       // All 3 events acknowledged
-      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1', 'whe_2', 'whe_3'])
+      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(
+        ['whe_1', 'whe_2', 'whe_3'],
+        expect.objectContaining({ getKey: expect.any(Function) }),
+      )
 
       triggerManager.stop()
     })
@@ -199,7 +230,10 @@ describe('TriggerManager', () => {
       await triggerManager.start()
 
       expect(mockCreateSession).not.toHaveBeenCalled()
-      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_orphan'])
+      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(
+        ['whe_orphan'],
+        expect.objectContaining({ getKey: expect.any(Function) }),
+      )
 
       triggerManager.stop()
     })
@@ -226,11 +260,71 @@ describe('TriggerManager', () => {
       await triggerManager.start()
 
       expect(mockMarkTriggerFailed).toHaveBeenCalledWith('trigger_1', 'Agent no longer exists')
-      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1'])
+      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(
+        ['whe_1'],
+        expect.objectContaining({ getKey: expect.any(Function) }),
+      )
       expect(mockCreateSession).not.toHaveBeenCalled()
 
       triggerManager.stop()
       mockAgentExists.mockResolvedValue(true) // restore for other tests
+    })
+
+    it('polls each member lane separately', async () => {
+      mockListWebhookTriggerAuths.mockResolvedValue([
+        makeAttribution('sub_member_1'),
+        makeAttribution('sub_member_2'),
+      ])
+      mockPollAndClaimEvents
+        .mockResolvedValueOnce({ events: [], realtime: null })
+        .mockResolvedValueOnce({ events: [], realtime: null })
+
+      await triggerManager.start()
+
+      expect(mockPollAndClaimEvents.mock.calls[0][0].getKey()).toBe('member:sub_member_1')
+      expect(mockPollAndClaimEvents.mock.calls[1][0].getKey()).toBe('member:sub_member_2')
+
+      triggerManager.stop()
+    })
+  })
+
+  describe('ensureLaneForOwner', () => {
+    // A trigger created at runtime (after start()) targets an owner whose
+    // lane wasn't built at boot. Without ensureLaneForOwner the new owner
+    // never gets a realtime subscription and events go undelivered until
+    // the next process restart.
+    it('subscribes a new lane that didn\'t exist at startup', async () => {
+      mockListWebhookTriggerAuths.mockResolvedValue([])
+      mockPollAndClaimEvents.mockResolvedValue({ events: [], realtime: null })
+      await triggerManager.start()
+      expect(mockPollAndClaimEvents).not.toHaveBeenCalled()
+
+      mockFromResourceCreator.mockReturnValue(makeAttribution('sub_new_member'))
+      mockPollAndClaimEvents.mockResolvedValue({ events: [], realtime: null })
+      await triggerManager.ensureLaneForOwner('user_new')
+
+      expect(mockFromResourceCreator).toHaveBeenCalledWith('user_new')
+      expect(mockPollAndClaimEvents).toHaveBeenCalledTimes(1)
+      expect(mockPollAndClaimEvents.mock.calls[0][0].getKey()).toBe('member:sub_new_member')
+
+      triggerManager.stop()
+    })
+
+    it('is a no-op when the manager is not running', async () => {
+      mockFromResourceCreator.mockReturnValue(makeAttribution('sub_x'))
+      await triggerManager.ensureLaneForOwner('user_x')
+      expect(mockPollAndClaimEvents).not.toHaveBeenCalled()
+    })
+
+    it('skips when attribution is unresolvable (orphan owner)', async () => {
+      mockListWebhookTriggerAuths.mockResolvedValue([])
+      await triggerManager.start()
+      mockFromResourceCreator.mockReturnValue(null)
+
+      await triggerManager.ensureLaneForOwner('user_orphan')
+      expect(mockPollAndClaimEvents).not.toHaveBeenCalled()
+
+      triggerManager.stop()
     })
   })
 })

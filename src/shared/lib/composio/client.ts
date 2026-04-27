@@ -6,6 +6,7 @@ import {
   getEffectiveComposioApiKey,
   getComposioUserId,
 } from '@shared/lib/config/settings'
+import type { Attribution } from '@shared/lib/attribution'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { captureMessage } from '@shared/lib/error-reporting'
@@ -32,10 +33,6 @@ function getPlatformComposioBaseUrl(): string {
   return `${getPlatformProxyBaseUrl()}/v1/composio`
 }
 
-function getPlatformComposioToken(): string | null {
-  return getPlatformAccessToken()
-}
-
 /**
  * Make a request to the Composio API.
  */
@@ -45,17 +42,27 @@ function shouldUseLocalComposioKey(): boolean {
 
 async function composioFetch<T>(
   endpoint: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  auth?: Attribution | null,
 ): Promise<T> {
   const localApiKey = getEffectiveComposioApiKey()
-  const platformToken = localApiKey ? null : getPlatformComposioToken()
   const headers = new Headers(options.headers)
   headers.set('Content-Type', 'application/json')
 
   let url: string
-  if (platformToken) {
+  if (!localApiKey) {
+    if (!auth) {
+      throw new ComposioApiError('Outbound auth is not configured for Composio proxy requests', 401)
+    }
     url = `${getPlatformComposioBaseUrl()}${endpoint}`
-    headers.set('Authorization', `Bearer ${platformToken}`)
+    try {
+      auth.applyTo(headers)
+    } catch (error) {
+      throw new ComposioApiError(
+        error instanceof Error ? error.message : 'Outbound auth could not be applied',
+        400,
+      )
+    }
     headers.delete('x-api-key')
   } else if (localApiKey) {
     url = `${COMPOSIO_BASE_URL}${endpoint}`
@@ -160,8 +167,8 @@ function mapAuthConfigListItem(item: AuthConfigListItem): AuthConfig {
 /**
  * List all auth configs for the current user.
  */
-export async function listAuthConfigs(): Promise<AuthConfig[]> {
-  const response = await composioFetch<ListAuthConfigsResponse>('/auth_configs')
+export async function listAuthConfigs(auth?: Attribution | null): Promise<AuthConfig[]> {
+  const response = await composioFetch<ListAuthConfigsResponse>('/auth_configs', {}, auth)
   return (response.items || []).map(mapAuthConfigListItem)
 }
 
@@ -170,10 +177,11 @@ export async function listAuthConfigs(): Promise<AuthConfig[]> {
  * Uses Composio-managed OAuth credentials.
  */
 export async function getOrCreateAuthConfig(
-  providerSlug: string
+  providerSlug: string,
+  auth?: Attribution | null,
 ): Promise<AuthConfig> {
   // First, check if an enabled auth config already exists for this provider
-  const existing = await listAuthConfigs()
+  const existing = await listAuthConfigs(auth)
   const matchingConfigs = existing
     .filter(
       (config) =>
@@ -187,17 +195,21 @@ export async function getOrCreateAuthConfig(
   }
 
   // Create a new auth config with Composio-managed OAuth
-  const response = await composioFetch<AuthConfigCreateResponse>('/auth_configs', {
-    method: 'POST',
-    body: JSON.stringify({
-      toolkit: {
-        slug: providerSlug,
-      },
-      auth_config: {
-        type: 'use_composio_managed_auth',
-      },
-    }),
-  })
+  const response = await composioFetch<AuthConfigCreateResponse>(
+    '/auth_configs',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        toolkit: {
+          slug: providerSlug,
+        },
+        auth_config: {
+          type: 'use_composio_managed_auth',
+        },
+      }),
+    },
+    auth,
+  )
 
   return mapAuthConfigCreateResponse(response)
 }
@@ -249,11 +261,12 @@ interface ListConnectedAccountsResponse {
  */
 export async function listConnections(
   toolkit?: string,
-  userIdOverride?: string
+  userIdOverride?: string,
+  auth?: Attribution | null,
 ): Promise<ComposioConnection[]> {
   const useLocal = shouldUseLocalComposioKey()
   let endpoint = '/connected_accounts'
-  if (useLocal || !getPlatformComposioToken()) {
+  if (useLocal) {
     const userId = userIdOverride || getComposioUserId()
     if (!userId) {
       throw new ComposioApiError('Composio User ID is not configured', 401)
@@ -266,7 +279,7 @@ export async function listConnections(
     endpoint += `toolkit_slug=${encodeURIComponent(toolkit)}`
   }
 
-  const response = await composioFetch<ListConnectedAccountsResponse>(endpoint)
+  const response = await composioFetch<ListConnectedAccountsResponse>(endpoint, {}, auth)
   return (response.items || []).map((item) => ({
     id: item.id,
     status: item.status as ComposioConnection['status'],
@@ -285,10 +298,11 @@ interface InitiateConnectionResponse {
 export async function initiateConnection(
   authConfigId: string,
   callbackUrl: string,
-  userIdOverride?: string
+  userIdOverride?: string,
+  auth?: Attribution | null,
 ): Promise<InitiateConnectionResponse> {
   const useLocal = shouldUseLocalComposioKey()
-  const needsUserId = useLocal || !getPlatformComposioToken()
+  const needsUserId = useLocal
   const userId = needsUserId ? (userIdOverride || getComposioUserId()) : null
   if (needsUserId && !userId) {
     throw new ComposioApiError('Composio User ID is not configured', 401)
@@ -313,7 +327,8 @@ export async function initiateConnection(
           callback_url: callbackUrl,
         },
       }),
-    }
+    },
+    auth,
   )
 
   // The redirect URL may be in data.redirectUrl or redirect_url
@@ -332,10 +347,13 @@ export async function initiateConnection(
  * Get a specific connection by ID.
  */
 export async function getConnection(
-  connectionId: string
+  connectionId: string,
+  auth?: Attribution | null,
 ): Promise<ComposioConnection> {
   const response = await composioFetch<ConnectedAccountGetResponse>(
-    `/connected_accounts/${connectionId}`
+    `/connected_accounts/${connectionId}`,
+    {},
+    auth,
   )
   return {
     id: response.id,
@@ -346,10 +364,14 @@ export async function getConnection(
 /**
  * Delete a connection.
  */
-export async function deleteConnection(connectionId: string): Promise<void> {
-  await composioFetch(`/connected_accounts/${connectionId}`, {
-    method: 'DELETE',
-  })
+export async function deleteConnection(connectionId: string, auth?: Attribution | null): Promise<void> {
+  await composioFetch(
+    `/connected_accounts/${connectionId}`,
+    {
+      method: 'DELETE',
+    },
+    auth,
+  )
 }
 
 // ============================================================================
@@ -401,10 +423,13 @@ function detectRedaction(token: string): RedactionPattern | null {
  * The token is in state.val based on the auth scheme.
  */
 export async function getConnectionToken(
-  connectionId: string
+  connectionId: string,
+  auth?: Attribution | null,
 ): Promise<ConnectionTokenResponse> {
   const response = await composioFetch<ConnectedAccountWithTokenResponse>(
-    `/connected_accounts/${connectionId}`
+    `/connected_accounts/${connectionId}`,
+    {},
+    auth,
   )
 
   const authScheme = response.state?.authScheme
@@ -517,7 +542,8 @@ export async function getGoogleUserInfo(accessToken: string): Promise<GoogleUser
 export async function getAccountDisplayName(
   connectionId: string,
   toolkitSlug: string,
-  fallbackName: string
+  fallbackName: string,
+  auth?: Attribution | null,
 ): Promise<string> {
   // Fetch user-specific info for providers that support it
   const googleToolkits = [
@@ -536,7 +562,7 @@ export async function getAccountDisplayName(
 
   if (googleToolkits.includes(slug)) {
     try {
-      const { accessToken } = await getConnectionToken(connectionId)
+      const { accessToken } = await getConnectionToken(connectionId, auth)
       const userInfo = await getGoogleUserInfo(accessToken)
       if (userInfo?.email) {
         return userInfo.email
@@ -546,7 +572,7 @@ export async function getAccountDisplayName(
     }
   } else if (microsoftToolkits.includes(slug)) {
     try {
-      const { accessToken } = await getConnectionToken(connectionId)
+      const { accessToken } = await getConnectionToken(connectionId, auth)
       const res = await fetch('https://graph.microsoft.com/v1.0/me', {
         headers: { Authorization: `Bearer ${accessToken}` },
       })
@@ -576,7 +602,7 @@ export async function getAccountDisplayName(
  * false when using a local Composio API key or when not connected.
  */
 export function isPlatformComposioActive(): boolean {
-  return !shouldUseLocalComposioKey() && Boolean(getPlatformComposioToken())
+  return !shouldUseLocalComposioKey() && Boolean(getPlatformAccessToken())
 }
 
 export { ComposioApiError }

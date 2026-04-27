@@ -3,9 +3,11 @@ import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { PlatformAuthSettingsSchema } from '@shared/lib/types/skillset-schema'
 import { captureException } from '@shared/lib/error-reporting'
 import { isAuthMode } from '@shared/lib/auth/mode'
+import { decodeOrgIdFromToken } from '@shared/lib/attribution'
 
 export type PlatformAuthRecord = PlatformAuthSettings
 
+// `env` means AUTH_MODE is using an org-managed PLATFORM_TOKEN.
 export type PlatformAuthSource = 'settings' | 'env' | null
 
 export interface PlatformAuthStatus {
@@ -70,20 +72,6 @@ async function reconcileAfterAuthChange(): Promise<void> {
     await mod.reconcileInstalledForCurrentAuth()
   } catch (error) {
     captureException(error, { tags: { area: 'platform-auth', op: 'reconcile' } })
-  }
-}
-
-function decodeOrgIdFromToken(token: string): string | null {
-  const segments = token.split('.')
-  if (segments.length !== 3) return null
-  try {
-    const normalized = segments[1].replace(/-/g, '+').replace(/_/g, '/')
-    const padded = normalized + '='.repeat((4 - (normalized.length % 4 || 4)) % 4)
-    const json = Buffer.from(padded, 'base64').toString('utf8')
-    const parsed = JSON.parse(json) as { orgId?: unknown }
-    return typeof parsed.orgId === 'string' && parsed.orgId.length > 0 ? parsed.orgId : null
-  } catch {
-    return null
   }
 }
 
