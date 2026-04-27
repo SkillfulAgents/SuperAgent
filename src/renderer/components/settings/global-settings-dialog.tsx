@@ -53,11 +53,9 @@ export function GlobalSettingsDialog({
       <SettingsDialogTab id="notifications" label="Notifications" icon={<Bell className="h-4 w-4" />}>
         <NotificationsTab />
       </SettingsDialogTab>
-      {!isAuthMode && (
-        <SettingsDialogTab id="platform" label="Platform" icon={<Waypoints className="h-4 w-4" />}>
-          <PlatformTab />
-        </SettingsDialogTab>
-      )}
+      <SettingsDialogTab id="platform" label="Platform" icon={<Waypoints className="h-4 w-4" />}>
+        <PlatformTab />
+      </SettingsDialogTab>
       <SettingsDialogTab id="accounts" label="Accounts" icon={<Link2 className="h-4 w-4" />}>
         <AccountsTab />
       </SettingsDialogTab>

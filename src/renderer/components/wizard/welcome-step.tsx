@@ -1,4 +1,3 @@
-import { useEffect, useRef } from 'react'
 import { Loader2 } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
@@ -19,25 +18,12 @@ export function WelcomeStep({ onChoosePlatform, onContinueToManualSetup }: Welco
     handleConnect,
     isLaunching,
     error: platformError,
-    isConnected: isPlatformConnected,
   } = usePlatformConnect({
     successMessage: null,
     onSuccess: () => {
       onChoosePlatform?.()
     },
   })
-
-  // When platform access is already provisioned (e.g. AUTH_MODE deployments
-  // running with an org-issued PLATFORM_TOKEN), skip the legacy access-key
-  // exchange entirely. The org picker on `/auth/superagent` is irrelevant
-  // there because the token is fixed to one org by deployment.
-  const autoAdvancedRef = useRef(false)
-  useEffect(() => {
-    if (autoAdvancedRef.current) return
-    if (!isPlatformConnected) return
-    autoAdvancedRef.current = true
-    onChoosePlatform?.()
-  }, [isPlatformConnected, onChoosePlatform])
 
   async function handleManualSetup() {
     try {

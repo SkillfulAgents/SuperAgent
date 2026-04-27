@@ -7,9 +7,6 @@ import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
 
 export const PLATFORM_AUTH_CHOICE_STORAGE_KEY = 'superagent-auth-choice'
 
-// `env` means the active token came from an org-provisioned `PLATFORM_TOKEN`.
-export type PlatformAuthSource = 'settings' | 'env' | null
-
 export interface PlatformAuthStatus {
   connected: boolean
   tokenPreview: string | null
@@ -20,7 +17,6 @@ export interface PlatformAuthStatus {
   role: string | null
   createdAt: string | null
   updatedAt: string | null
-  source: PlatformAuthSource
   platformBaseUrl: string
 }
 
