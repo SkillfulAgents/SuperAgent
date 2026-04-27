@@ -1,31 +1,50 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mockGetPlatformProxyBaseUrl = vi.fn()
-const mockGetPlatformBearerWithMember = vi.fn()
-const mockGetLatestPlatformAccountId = vi.fn()
+const mockFromCurrentRequest = vi.fn()
+const mockGetPlatformAuthStatus = vi.fn()
 
 vi.mock('@shared/lib/platform-auth/config', () => ({
   getPlatformProxyBaseUrl: () => mockGetPlatformProxyBaseUrl(),
 }))
 
-const mockGetPlatformAuthStatus = vi.fn()
-
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
-  getPlatformBearerWithMember: (memberId: string | null) => mockGetPlatformBearerWithMember(memberId),
   getPlatformAuthStatus: () => mockGetPlatformAuthStatus(),
 }))
 
-vi.mock('@shared/lib/platform-auth/agent-owner', () => ({
-  getLatestPlatformAccountId: () => mockGetLatestPlatformAccountId(),
+vi.mock('@shared/lib/attribution', () => ({
+  attribution: {
+    fromCurrentRequest: () => mockFromCurrentRequest(),
+  },
 }))
 
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: vi.fn(),
 }))
 
+import type { Attribution } from '@shared/lib/attribution'
 import { PlatformSkillsetProvider } from './platform-provider'
 
 const provider = new PlatformSkillsetProvider()
+
+function makeAttribution(memberId = 'sub_member_1'): Attribution {
+  return {
+    applyTo(headers) {
+      headers.set('Authorization', 'Bearer plat_test_token_xxxxx')
+      headers.set('X-Platform-Member-Id', memberId)
+    },
+    toHeaderEntries() {
+      return [
+        ['Authorization', 'Bearer plat_test_token_xxxxx'],
+        ['X-Platform-Member-Id', memberId],
+      ]
+    },
+      toExtraHeaderEntries() { return this.toHeaderEntries().filter(([n]) => n !== "Authorization") },
+    getKey() {
+      return `member:${memberId}`
+    },
+  }
+}
 
 function makeRef(overrides: Partial<{ skillsetId: string; skillsetName: string; repoId: string; orgId: string }> = {}) {
   return {
@@ -43,7 +62,7 @@ describe('PlatformSkillsetProvider.resolveCloneUrl', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockGetPlatformProxyBaseUrl.mockReturnValue('https://platform.example')
-    mockGetPlatformBearerWithMember.mockReturnValue('plat_test_token_xxxxx')
+    mockFromCurrentRequest.mockReturnValue(makeAttribution())
   })
 
   afterEach(() => {
@@ -73,8 +92,6 @@ describe('PlatformSkillsetProvider.resolveCloneUrl', () => {
   })
 
   it('rejects URLs pointing at private IPs (SSRF)', async () => {
-    // Same origin check would pass only if proxy is also private; set both so
-    // the only rejection is from private-host detection.
     mockGetPlatformProxyBaseUrl.mockReturnValue('http://127.0.0.1')
     mockGitUrlResponse({ url: 'http://127.0.0.1/git/acme.git' })
     await expect(provider.resolveCloneUrl('ignored', makeRef())).rejects.toThrow(/Unsafe clone URL host/)
@@ -91,8 +108,23 @@ describe('PlatformSkillsetProvider.resolveCloneUrl', () => {
   })
 
   it('throws when unauthenticated', async () => {
-    mockGetPlatformBearerWithMember.mockReturnValue(null)
+    mockFromCurrentRequest.mockReturnValue(null)
     await expect(provider.resolveCloneUrl('ignored', makeRef())).rejects.toThrow(/Platform not connected/)
+  })
+
+  it('applies the resolved outbound auth headers to the proxy request', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ url: 'https://platform.example/git/acme.git', defaultBranch: 'main' }),
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+
+    await provider.resolveCloneUrl('ignored', makeRef())
+
+    const headers = fetchSpy.mock.calls[0][1]?.headers as Headers
+    expect(headers.get('Authorization')).toBe('Bearer plat_test_token_xxxxx')
+    expect(headers.get('X-Platform-Member-Id')).toBe('sub_member_1')
   })
 })
 
@@ -100,7 +132,7 @@ describe('PlatformSkillsetProvider.getQueueItemStatuses', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockGetPlatformProxyBaseUrl.mockReturnValue('https://platform.example')
-    mockGetPlatformBearerWithMember.mockReturnValue('plat_test_token_xxxxx')
+    mockFromCurrentRequest.mockReturnValue(makeAttribution())
   })
 
   afterEach(() => {
@@ -154,7 +186,7 @@ describe('PlatformSkillsetProvider.getQueueItemStatuses', () => {
   })
 
   it('returns nulls when unauthenticated', async () => {
-    mockGetPlatformBearerWithMember.mockReturnValue(null)
+    mockFromCurrentRequest.mockReturnValue(null)
     const result = await provider.getQueueItemStatuses(['a', 'b'])
     expect(result.get('a')).toBe(null)
     expect(result.get('b')).toBe(null)

@@ -3,6 +3,7 @@ import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { PlatformAuthSettingsSchema } from '@shared/lib/types/skillset-schema'
 import { captureException } from '@shared/lib/error-reporting'
 import { isAuthMode } from '@shared/lib/auth/mode'
+import { decodeOrgIdFromToken } from '@shared/lib/attribution'
 
 export type PlatformAuthRecord = PlatformAuthSettings
 
@@ -71,21 +72,6 @@ async function reconcileAfterAuthChange(): Promise<void> {
     await mod.reconcileInstalledForCurrentAuth()
   } catch (error) {
     captureException(error, { tags: { area: 'platform-auth', op: 'reconcile' } })
-  }
-}
-
-// Best-effort decode for the orgId claim used by env-managed UI.
-function decodeOrgIdFromToken(token: string): string | null {
-  const segments = token.split('.')
-  if (segments.length !== 3) return null
-  try {
-    const normalized = segments[1].replace(/-/g, '+').replace(/_/g, '/')
-    const padded = normalized + '='.repeat((4 - (normalized.length % 4 || 4)) % 4)
-    const json = Buffer.from(padded, 'base64').toString('utf8')
-    const parsed = JSON.parse(json) as { orgId?: unknown }
-    return typeof parsed.orgId === 'string' && parsed.orgId.length > 0 ? parsed.orgId : null
-  } catch {
-    return null
   }
 }
 
@@ -182,14 +168,6 @@ export function getPlatformAccessToken(_userId?: string): string | null {
   if (!isAuthMode()) return null
   const envToken = process.env.PLATFORM_TOKEN?.trim()
   return envToken ? envToken : null
-}
-
-// Build a composite bearer `<token>:<memberId>` that the proxy can split.
-// Falls back to raw token when memberId is unavailable.
-export function getPlatformBearerWithMember(memberId: string | null): string | null {
-  const token = getPlatformAccessToken()
-  if (!token) return null
-  return memberId ? `${token}:${memberId}` : token
 }
 
 async function clearPlatformAuth(): Promise<void> {

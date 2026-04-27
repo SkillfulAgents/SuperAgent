@@ -46,10 +46,6 @@ const mockGetPlatformAuthStatus = vi.fn((_userId?: string) => ({ orgId: undefine
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getPlatformAuthStatus: (...args: [string?]) => mockGetPlatformAuthStatus(...args),
   getPlatformAccessToken: vi.fn(() => undefined),
-  getPlatformBearerWithMember: vi.fn(() => undefined),
-}))
-vi.mock('@shared/lib/platform-auth/agent-owner', () => ({
-  getLatestPlatformAccountId: () => null,
 }))
 vi.mock('@shared/lib/platform-auth/config', () => ({
   getPlatformProxyBaseUrl: vi.fn(() => undefined),

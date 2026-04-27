@@ -1,9 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { BaseLlmProvider, type ModelOption, type ModelPurpose } from './base-llm-provider'
-import { isAuthMode } from '@shared/lib/auth/mode'
-import { getPlatformAccessToken, getPlatformBearerWithMember } from '@shared/lib/services/platform-auth-service'
+import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
-import { getOwnerAccountIdForProvider } from '@shared/lib/platform-auth/agent-owner'
+import { attribution } from '@shared/lib/attribution'
 import type { ApiKeyStatus } from '../config/settings'
 
 export class PlatformLlmProvider extends BaseLlmProvider {
@@ -11,9 +10,6 @@ export class PlatformLlmProvider extends BaseLlmProvider {
   readonly name = 'Platform'
   protected readonly settingsKeyField = 'anthropicApiKey' as const
   protected readonly envVarName = 'PLATFORM_TOKEN'
-  // The auth provider id this LLM provider attributes usage to. Owned here so
-  // the auth module doesn't need to know which provider id is "the platform one".
-  protected readonly authProviderId = 'platform'
 
   override getApiKeyStatus(): ApiKeyStatus {
     const token = getPlatformAccessToken()
@@ -64,16 +60,21 @@ export class PlatformLlmProvider extends BaseLlmProvider {
   getContainerEnvVars(agentId: string): Record<string, string | undefined> {
     const proxyUrl = getPlatformProxyBaseUrl()
     const containerUrl = proxyUrl.replace('://localhost', '://host.docker.internal')
+    const token = this.getEffectiveApiKey()
 
-    const memberId = isAuthMode()
-      ? getOwnerAccountIdForProvider(agentId, this.authProviderId)
-      : null
-    const bearer = getPlatformBearerWithMember(memberId)
+    // ANTHROPIC_CUSTOM_HEADERS must be newline-delimited "Name: value"
+    // lines (not JSON) for claude-agent-sdk to parse them as headers.
+    const auth = attribution.fromAgentOwner(agentId)
+    const customHeaders = auth
+      ?.toExtraHeaderEntries()
+      .map(([name, value]) => `${name}: ${value}`)
+      .join('\n')
 
     return {
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_BASE_URL: containerUrl,
-      ANTHROPIC_AUTH_TOKEN: bearer ?? undefined,
+      ANTHROPIC_AUTH_TOKEN: token,
+      ANTHROPIC_CUSTOM_HEADERS: customHeaders || undefined,
     }
   }
 

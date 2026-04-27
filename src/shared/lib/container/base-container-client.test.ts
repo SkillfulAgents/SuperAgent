@@ -602,15 +602,18 @@ describe('getSessionCustomEnvVars', () => {
     mockGetContainerEnvVars.mockReturnValue({
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_BASE_URL: 'https://proxy.example.com',
-      ANTHROPIC_AUTH_TOKEN: 'platform-token:sub_real_owner',
+      ANTHROPIC_AUTH_TOKEN: 'platform-token',
+      ANTHROPIC_CUSTOM_HEADERS: 'X-Platform-Member-Id: sub_real_owner',
     })
 
     const filtered = getSessionCustomEnvVars('agent-1', {
       MY_VAR: 'x',
       ANTHROPIC_AUTH_TOKEN: 'hijacked-token',
+      ANTHROPIC_CUSTOM_HEADERS: 'X-Platform-Member-Id: sub_fake_owner',
     })
 
     expect(filtered).toEqual({ MY_VAR: 'x' })
     expect(filtered).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN')
+    expect(filtered).not.toHaveProperty('ANTHROPIC_CUSTOM_HEADERS')
   })
 })

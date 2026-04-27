@@ -9,6 +9,7 @@ import { getAppBaseUrl, getTrustedOrigins } from './config'
 import { getSettings, DEFAULT_AUTH_SETTINGS } from '@shared/lib/config/settings'
 import { enforceMaxConcurrentSessions } from './session-enforcement'
 import { getGenericOAuthProviderConfigs } from './provider-config'
+import { isAuthMode } from './mode'
 
 // Re-export isAuthMode from its own file (no better-auth imports)
 // so consumers that only need the check don't pull in ESM deps.
@@ -106,13 +107,14 @@ export function getAuth() {
                   console.log(`First user ${createdUser.email} promoted to admin`)
                 }
 
-                // If admin approval is required and this is NOT the first user,
-                // auto-ban them pending admin review.
-                // Read fresh settings so runtime changes are picked up without
-                // needing to recreate the Better Auth singleton.
+                // Auto-ban-pending-approval is only meaningful for standalone
+                // installs where SuperAgent owns the user list. In auth-mode
+                // the platform's `subscribed_member` table is the gatekeeper
+                // -- if the user reached this hook they were already vouched
+                // by platform OIDC, and there's no local admin to "approve".
                 const currentSettings = getSettings()
                 const currentAuth = { ...DEFAULT_AUTH_SETTINGS, ...currentSettings.auth }
-                if (result.changes === 0 && currentAuth.requireAdminApproval) {
+                if (result.changes === 0 && currentAuth.requireAdminApproval && !isAuthMode()) {
                   db.update(schema.user)
                     .set({ banned: true, banReason: 'Pending admin approval' })
                     .where(eq(schema.user.id, createdUser.id))

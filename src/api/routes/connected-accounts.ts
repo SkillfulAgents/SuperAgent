@@ -10,6 +10,7 @@ import {
   deleteConnection,
   getAccountDisplayName,
 } from '@shared/lib/composio/client'
+import { attribution } from '@shared/lib/attribution'
 import { getAppBaseUrlFromRequest, getCurrentUserId } from '@shared/lib/auth/config'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { Authenticated, OwnsAccount, IsAdmin, Or } from '../middleware/auth'
@@ -114,7 +115,8 @@ connectedAccountsRouter.post('/initiate', async (c) => {
       )
     }
 
-    const authConfig = await getOrCreateAuthConfig(providerSlug)
+    const outboundAuth = attribution.fromCurrentRequest()
+    const authConfig = await getOrCreateAuthConfig(providerSlug, outboundAuth)
 
     // Build the callback URL
     // For Electron, use custom protocol; for web, use HTTP callback
@@ -133,7 +135,8 @@ connectedAccountsRouter.post('/initiate', async (c) => {
     const { connectionId, redirectUrl } = await initiateConnection(
       authConfig.id,
       callbackUrl,
-      composioUserId
+      composioUserId,
+      outboundAuth,
     )
 
     return c.json({
@@ -183,7 +186,8 @@ connectedAccountsRouter.post('/complete', async (c) => {
       return c.json({ error: 'Missing toolkit' }, 400)
     }
 
-    const connection = await getConnection(connectionId)
+    const outboundAuth = attribution.fromCurrentRequest()
+    const connection = await getConnection(connectionId, outboundAuth)
 
     if (connection.status !== 'ACTIVE') {
       return c.json({ error: `Connection status: ${connection.status}` }, 400)
@@ -194,7 +198,7 @@ connectedAccountsRouter.post('/complete', async (c) => {
     const fallbackName = provider?.displayName || toolkit
 
     // Try to get user-specific display name (e.g., email for Gmail)
-    const displayName = await getAccountDisplayName(connectionId, toolkitSlug, fallbackName)
+    const displayName = await getAccountDisplayName(connectionId, toolkitSlug, fallbackName, outboundAuth)
 
     const id = crypto.randomUUID()
     const now = new Date()
@@ -251,7 +255,8 @@ connectedAccountsRouter.get('/callback', async (c) => {
       )
     }
 
-    const connection = await getConnection(connectionId)
+    const outboundAuth = attribution.fromCurrentRequest()
+    const connection = await getConnection(connectionId, outboundAuth)
 
     if (connection.status !== 'ACTIVE') {
       return c.html(
@@ -267,7 +272,7 @@ connectedAccountsRouter.get('/callback', async (c) => {
     const fallbackName = provider?.displayName || toolkit
 
     // Try to get user-specific display name (e.g., email for Gmail)
-    const displayName = await getAccountDisplayName(connectionId, toolkitSlug, fallbackName)
+    const displayName = await getAccountDisplayName(connectionId, toolkitSlug, fallbackName, outboundAuth)
 
     const id = crypto.randomUUID()
     const now = new Date()
@@ -396,7 +401,12 @@ connectedAccountsRouter.delete('/:id', Or(OwnsAccount(), IsAdmin()), async (c) =
     }
 
     try {
-      await deleteConnection(existing.composioConnectionId)
+      // Admin deletes someone else's connection via Or(OwnsAccount, IsAdmin):
+      // attribute by creator, not request user, or Composio 404s.
+      await deleteConnection(
+        existing.composioConnectionId,
+        attribution.fromResourceCreator(existing.userId),
+      )
     } catch (error) {
       console.warn('Failed to delete connection from Composio:', error)
     }

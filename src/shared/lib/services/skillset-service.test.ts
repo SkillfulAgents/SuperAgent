@@ -80,11 +80,12 @@ const mockGetPlatformAuthStatus = vi.fn((_userId?: string) => ({ orgId: undefine
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getPlatformAuthStatus: (...args: [string?]) => mockGetPlatformAuthStatus(...args),
   getPlatformAccessToken: vi.fn(() => undefined),
-  getPlatformBearerWithMember: vi.fn(() => undefined),
 }))
-vi.mock('@shared/lib/platform-auth/agent-owner', () => ({
-  getLatestPlatformAccountId: () => null,
-}))
+// Skillset code paths read attribution from AsyncLocalStorage (set by
+// the `Authenticated` middleware in production). These service-level
+// tests skip the middleware, so individual tests that need attribution
+// must wrap their work in `runWithRequestUser('local', ...)`.
+import { runWithRequestUser } from '@shared/lib/attribution'
 vi.mock('@shared/lib/platform-auth/config', () => ({
   getPlatformProxyBaseUrl: vi.fn(() => undefined),
 }))
@@ -634,7 +635,6 @@ Instructions here`
       // Mock platform env + batched queue endpoint reporting merged.
       const platformAuthMod = await import('@shared/lib/services/platform-auth-service')
       vi.mocked(platformAuthMod.getPlatformAccessToken).mockReturnValue('plat_test_xx')
-      vi.mocked(platformAuthMod.getPlatformBearerWithMember).mockReturnValue('plat_test_xx')
       const proxyMod = await import('@shared/lib/platform-auth/config')
       vi.mocked(proxyMod.getPlatformProxyBaseUrl).mockReturnValue(proxyBase)
 
@@ -648,7 +648,7 @@ Instructions here`
         return { ok: false, status: 404, json: async () => ({}), text: async () => '' }
       }))
 
-      await refreshAgentSkills('test-agent', [config])
+      await runWithRequestUser('local', () => refreshAgentSkills('test-agent', [config]))
       vi.unstubAllGlobals()
 
       const updated = await readMetadata('test-agent', 'test-skill')
@@ -689,7 +689,6 @@ Instructions here`
 
       const platformAuthMod = await import('@shared/lib/services/platform-auth-service')
       vi.mocked(platformAuthMod.getPlatformAccessToken).mockReturnValue('plat_test_xx')
-      vi.mocked(platformAuthMod.getPlatformBearerWithMember).mockReturnValue('plat_test_xx')
       const proxyMod = await import('@shared/lib/platform-auth/config')
       vi.mocked(proxyMod.getPlatformProxyBaseUrl).mockReturnValue(proxyBase)
 
@@ -703,7 +702,7 @@ Instructions here`
         return { ok: false, status: 404, json: async () => ({}), text: async () => '' }
       }))
 
-      await refreshAgentSkills('test-agent', [config])
+      await runWithRequestUser('local', () => refreshAgentSkills('test-agent', [config]))
       vi.unstubAllGlobals()
 
       const updated = await readMetadata('test-agent', 'test-skill')

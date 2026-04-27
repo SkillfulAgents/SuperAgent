@@ -9,19 +9,12 @@ import type { RequestBrowserInputInput } from '@shared/lib/tool-definitions/requ
 import type { RequestScriptRunInput } from '@shared/lib/tool-definitions/request-script-run'
 import { createScheduledTask } from '@shared/lib/services/scheduled-task-service'
 import {
-  createWebhookTrigger,
+  getAvailableTriggersForConnectedAccount,
   listActiveWebhookTriggers,
   cancelWebhookTriggerWithCleanup,
+  setupWebhookTriggerForConnectedAccount,
 } from '@shared/lib/services/webhook-trigger-service'
-import {
-  getAvailableTriggers,
-  enableComposioTrigger,
-  deleteComposioTrigger,
-} from '@shared/lib/composio/triggers'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
-import { db } from '@shared/lib/db'
-import { connectedAccounts } from '@shared/lib/db/schema'
-import { eq } from 'drizzle-orm'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { updateSessionMetadata } from '@shared/lib/services/session-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
@@ -1610,22 +1603,12 @@ class MessagePersister {
           return
         }
 
-        // Look up the connected account to get its toolkit slug
-        const [account] = await db
-          .select()
-          .from(connectedAccounts)
-          .where(eq(connectedAccounts.id, input.connected_account_id))
-          .limit(1)
-
-        if (!account) {
-          await this.rejectContainerInput(agentSlug, toolUseId, `Connected account ${input.connected_account_id} not found`)
-          return
-        }
-
-        const triggers = await getAvailableTriggers(account.toolkitSlug)
+        const { toolkitSlug, triggers } = await getAvailableTriggersForConnectedAccount(
+          input.connected_account_id,
+        )
         const formatted = triggers.length === 0
           ? 'No webhook triggers available for this account.'
-          : `Available triggers for ${account.toolkitSlug}:\n\n${triggers.map((t) =>
+          : `Available triggers for ${toolkitSlug}:\n\n${triggers.map((t) =>
               `- **${t.slug}** (${t.name}): ${t.description}${t.type === 'poll' ? ' [poll-based]' : ''}`
             ).join('\n')}\n\nUse setup_trigger with the trigger slug to subscribe.`
 
@@ -1677,59 +1660,15 @@ class MessagePersister {
           return
         }
 
-        // Resolve local SQLite account ID → Composio connection ID
-        const [account] = await db
-          .select()
-          .from(connectedAccounts)
-          .where(eq(connectedAccounts.id, input.connected_account_id))
-          .limit(1)
-
-        if (!account) {
-          await this.rejectContainerInput(agentSlug, toolUseId, `Connected account ${input.connected_account_id} not found`)
-          return
-        }
-
-        const composioConnectionId = account.composioConnectionId
-
-        // Validate trigger type against available triggers for this account
-        const availableTriggers = await getAvailableTriggers(account.toolkitSlug)
-        const validSlugs = availableTriggers.map((t) => t.slug)
-        if (!validSlugs.includes(input.trigger_type)) {
-          const suggestion = validSlugs.length > 0
-            ? `\n\nAvailable triggers for ${account.toolkitSlug}: ${validSlugs.join(', ')}`
-            : `\n\nNo triggers are available for ${account.toolkitSlug}.`
-          await this.rejectContainerInput(agentSlug, toolUseId,
-            `Invalid trigger type "${input.trigger_type}" for this account.${suggestion}`)
-          return
-        }
-
-        // 1. Enable trigger on Composio via proxy (using Composio's ca_* ID)
-        const composioTriggerId = await enableComposioTrigger(
-          input.trigger_type,
-          composioConnectionId,
-          input.trigger_config,
-        )
-
-        // 2. Save to SQLite (store the local account ID for app-level lookups)
-        let triggerId: string
-        try {
-          triggerId = await createWebhookTrigger({
-            agentSlug,
-            composioTriggerId,
-            connectedAccountId: input.connected_account_id,
-            triggerType: input.trigger_type,
-            triggerConfig: input.trigger_config ? JSON.stringify(input.trigger_config) : undefined,
-            prompt: input.prompt,
-            name: input.name,
-            createdBySessionId: sessionId,
-          })
-        } catch (dbError) {
-          // Rollback Composio trigger
-          console.error('[MessagePersister] SQLite save failed, rolling back Composio trigger:', dbError)
-          await deleteComposioTrigger(composioTriggerId).catch(console.error)
-          await this.rejectContainerInput(agentSlug, toolUseId, 'Failed to save trigger locally').catch(console.error)
-          return
-        }
+        const { triggerId, composioTriggerId } = await setupWebhookTriggerForConnectedAccount({
+          agentSlug,
+          connectedAccountId: input.connected_account_id,
+          triggerType: input.trigger_type,
+          prompt: input.prompt,
+          name: input.name,
+          triggerConfig: input.trigger_config,
+          createdBySessionId: sessionId,
+        })
 
         // 3. Broadcast events
         this.broadcastToSSE(sessionId, {

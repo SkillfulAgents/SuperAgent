@@ -5,7 +5,7 @@
  * Only works when platform Composio is active (not local API key mode).
  */
 
-import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import type { Attribution } from '@shared/lib/attribution'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 
 function getPlatformComposioBaseUrl(): string {
@@ -25,15 +25,18 @@ class ComposioTriggerError extends Error {
 async function triggerFetch<T>(
   endpoint: string,
   options: RequestInit = {},
+  auth: Attribution,
 ): Promise<T> {
-  const token = getPlatformAccessToken()
-  if (!token) {
-    throw new ComposioTriggerError('Platform access token not available', 401)
-  }
-
   const headers = new Headers(options.headers)
   headers.set('Content-Type', 'application/json')
-  headers.set('Authorization', `Bearer ${token}`)
+  try {
+    auth.applyTo(headers)
+  } catch (error) {
+    throw new ComposioTriggerError(
+      error instanceof Error ? error.message : 'Outbound auth could not be applied',
+      400,
+    )
+  }
 
   const url = `${getPlatformComposioBaseUrl()}${endpoint}`
   const response = await fetch(url, { ...options, headers })
@@ -78,9 +81,12 @@ interface TriggerTypesResponse {
   }>
 }
 
-export async function getAvailableTriggers(toolkitSlug: string): Promise<AvailableTrigger[]> {
+export async function getAvailableTriggers(
+  toolkitSlug: string,
+  auth: Attribution,
+): Promise<AvailableTrigger[]> {
   const params = new URLSearchParams({ toolkit_slug: toolkitSlug })
-  const response = await triggerFetch<TriggerTypesResponse>(`/triggers/types?${params}`)
+  const response = await triggerFetch<TriggerTypesResponse>(`/triggers/types?${params}`, {}, auth)
   return (response.items || []).map((item) => ({
     slug: item.slug,
     name: item.name,
@@ -102,6 +108,7 @@ interface EnableTriggerResponse {
 export async function enableComposioTrigger(
   triggerSlug: string,
   connectedAccountId: string,
+  auth: Attribution,
   triggerConfig?: Record<string, unknown>,
 ): Promise<string> {
   const body: Record<string, unknown> = { connected_account_id: connectedAccountId }
@@ -112,22 +119,31 @@ export async function enableComposioTrigger(
   const response = await triggerFetch<EnableTriggerResponse>(
     `/triggers/${encodeURIComponent(triggerSlug)}/enable`,
     { method: 'POST', body: JSON.stringify(body) },
+    auth,
   )
 
   return response.trigger_id
 }
 
-export async function disableComposioTrigger(composioTriggerId: string): Promise<void> {
+export async function disableComposioTrigger(
+  composioTriggerId: string,
+  auth: Attribution,
+): Promise<void> {
   await triggerFetch(
     `/triggers/${encodeURIComponent(composioTriggerId)}/disable`,
     { method: 'PATCH' },
+    auth,
   )
 }
 
-export async function deleteComposioTrigger(composioTriggerId: string): Promise<void> {
+export async function deleteComposioTrigger(
+  composioTriggerId: string,
+  auth: Attribution,
+): Promise<void> {
   await triggerFetch(
     `/triggers/${encodeURIComponent(composioTriggerId)}`,
     { method: 'DELETE' },
+    auth,
   )
 }
 
@@ -153,8 +169,10 @@ export interface ActiveComposioTrigger {
   isDisabled: boolean
 }
 
-export async function listActiveComposioTriggers(): Promise<ActiveComposioTrigger[]> {
-  const response = await triggerFetch<ActiveTriggersResponse>('/triggers/active')
+export async function listActiveComposioTriggers(
+  auth: Attribution,
+): Promise<ActiveComposioTrigger[]> {
+  const response = await triggerFetch<ActiveTriggersResponse>('/triggers/active', {}, auth)
   return (response.items || []).map((item) => ({
     id: item.id,
     triggerName: item.trigger_name,

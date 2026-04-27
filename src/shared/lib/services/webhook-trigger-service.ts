@@ -6,10 +6,21 @@
  */
 
 import { db } from '@shared/lib/db'
-import { webhookTriggers, type WebhookTrigger, type NewWebhookTrigger } from '@shared/lib/db/schema'
+import {
+  connectedAccounts,
+  webhookTriggers,
+  type WebhookTrigger,
+  type NewWebhookTrigger,
+} from '@shared/lib/db/schema'
 import { eq, and, inArray, sql, count } from 'drizzle-orm'
+import { attribution, type Attribution } from '@shared/lib/attribution'
 import { trackServerEvent } from '../analytics/server-analytics'
-import { deleteComposioTrigger } from '@shared/lib/composio/triggers'
+import {
+  deleteComposioTrigger,
+  enableComposioTrigger,
+  getAvailableTriggers,
+  type AvailableTrigger,
+} from '@shared/lib/composio/triggers'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
 
 export type { WebhookTrigger, NewWebhookTrigger }
@@ -26,6 +37,17 @@ export interface CreateWebhookTriggerParams {
   triggerConfig?: string
   prompt: string
   name?: string
+  createdBySessionId?: string
+  createdByUserId?: string
+}
+
+export interface SetupWebhookTriggerParams {
+  agentSlug: string
+  connectedAccountId: string
+  triggerType: string
+  prompt: string
+  name?: string
+  triggerConfig?: Record<string, unknown>
   createdBySessionId?: string
   createdByUserId?: string
 }
@@ -63,6 +85,41 @@ export async function createWebhookTrigger(params: CreateWebhookTriggerParams): 
   return id
 }
 
+// Composio buckets by connection creator; trigger setup/teardown/poll
+// must all use creator's memberId (NOT agent owner).
+function requireAttributionForConnection(
+  connectedAccountId: string,
+  ownerUserId: string | null,
+): Attribution {
+  const auth = attribution.fromResourceCreator(ownerUserId)
+  if (!auth) {
+    throw new Error(
+      `Outbound auth is not configured for connected account ${connectedAccountId}`,
+    )
+  }
+  return auth
+}
+
+async function getConnectedAccountRecord(connectedAccountId: string): Promise<{
+  id: string
+  composioConnectionId: string
+  toolkitSlug: string
+  userId: string | null
+} | null> {
+  const rows = await db
+    .select({
+      id: connectedAccounts.id,
+      composioConnectionId: connectedAccounts.composioConnectionId,
+      toolkitSlug: connectedAccounts.toolkitSlug,
+      userId: connectedAccounts.userId,
+    })
+    .from(connectedAccounts)
+    .where(eq(connectedAccounts.id, connectedAccountId))
+    .limit(1)
+
+  return rows[0] ?? null
+}
+
 // ============================================================================
 // Read Operations
 // ============================================================================
@@ -79,6 +136,80 @@ export async function getWebhookTrigger(triggerId: string): Promise<WebhookTrigg
 export async function getWebhookTriggerByComposioId(composioTriggerId: string): Promise<WebhookTrigger | null> {
   const results = await getWebhookTriggersByComposioId(composioTriggerId)
   return results[0] || null
+}
+
+export async function getAvailableTriggersForConnectedAccount(
+  connectedAccountId: string,
+): Promise<{
+  toolkitSlug: string
+  triggers: AvailableTrigger[]
+}> {
+  const account = await getConnectedAccountRecord(connectedAccountId)
+  if (!account) {
+    throw new Error(`Connected account ${connectedAccountId} not found`)
+  }
+
+  const triggers = await getAvailableTriggers(
+    account.toolkitSlug,
+    requireAttributionForConnection(account.id, account.userId),
+  )
+
+  return {
+    toolkitSlug: account.toolkitSlug,
+    triggers,
+  }
+}
+
+export async function setupWebhookTriggerForConnectedAccount(
+  params: SetupWebhookTriggerParams,
+): Promise<{ triggerId: string; composioTriggerId: string }> {
+  const account = await getConnectedAccountRecord(params.connectedAccountId)
+  if (!account) {
+    throw new Error(`Connected account ${params.connectedAccountId} not found`)
+  }
+
+  const auth = requireAttributionForConnection(account.id, account.userId)
+  const availableTriggers = await getAvailableTriggers(account.toolkitSlug, auth)
+  const validSlugs = availableTriggers.map((trigger) => trigger.slug)
+  if (!validSlugs.includes(params.triggerType)) {
+    const suggestion = validSlugs.length > 0
+      ? `\n\nAvailable triggers for ${account.toolkitSlug}: ${validSlugs.join(', ')}`
+      : `\n\nNo triggers are available for ${account.toolkitSlug}.`
+    throw new Error(`Invalid trigger type "${params.triggerType}" for this account.${suggestion}`)
+  }
+
+  const composioTriggerId = await enableComposioTrigger(
+    params.triggerType,
+    account.composioConnectionId,
+    auth,
+    params.triggerConfig,
+  )
+
+  try {
+    const triggerId = await createWebhookTrigger({
+      agentSlug: params.agentSlug,
+      composioTriggerId,
+      connectedAccountId: params.connectedAccountId,
+      triggerType: params.triggerType,
+      triggerConfig: params.triggerConfig ? JSON.stringify(params.triggerConfig) : undefined,
+      prompt: params.prompt,
+      name: params.name,
+      createdBySessionId: params.createdBySessionId,
+      createdByUserId: params.createdByUserId,
+    })
+
+    // TriggerManager only initialises lanes at startup; nudge it to
+    // discover the new owner so events fire without a process restart.
+    // Dynamic import avoids the import cycle with the scheduler module.
+    void import('@shared/lib/scheduler/trigger-manager').then(({ triggerManager }) =>
+      triggerManager.ensureLaneForOwner(account.userId),
+    ).catch((err) => console.error('[webhook-trigger-service] ensureLaneForOwner failed:', err))
+
+    return { triggerId, composioTriggerId }
+  } catch (error) {
+    await deleteComposioTrigger(composioTriggerId, auth).catch(console.error)
+    throw error
+  }
 }
 
 export async function getWebhookTriggersByComposioId(composioTriggerId: string): Promise<WebhookTrigger[]> {
@@ -138,6 +269,29 @@ export async function listWebhookTriggers(agentSlug: string): Promise<WebhookTri
     .select()
     .from(webhookTriggers)
     .where(eq(webhookTriggers.agentSlug, agentSlug))
+}
+
+// One lane per distinct connection-creator memberId; events are
+// bucketed that way upstream.
+export async function listWebhookTriggerAuths(): Promise<Attribution[]> {
+  const rows = await db
+    .select({ ownerUserId: connectedAccounts.userId })
+    .from(webhookTriggers)
+    .innerJoin(
+      connectedAccounts,
+      eq(webhookTriggers.connectedAccountId, connectedAccounts.id),
+    )
+    .where(inArray(webhookTriggers.status, ['active', 'paused']))
+
+  const auths = new Map<string, Attribution>()
+  for (const row of rows) {
+    const auth = attribution.fromResourceCreator(row.ownerUserId)
+    if (auth) {
+      auths.set(auth.getKey(), auth)
+    }
+  }
+
+  return [...auths.values()]
 }
 
 export async function listCancelledWebhookTriggers(agentSlug: string): Promise<WebhookTrigger[]> {
@@ -301,7 +455,16 @@ export async function cancelWebhookTriggerWithCleanup(triggerId: string): Promis
     const remaining = await countActiveTriggersForComposioId(trigger.composioTriggerId)
     if (remaining === 0) {
       try {
-        await deleteComposioTrigger(trigger.composioTriggerId)
+        const account = await getConnectedAccountRecord(trigger.connectedAccountId)
+        if (!account) {
+          throw new Error(
+            `Connected account ${trigger.connectedAccountId} not found while cleaning up trigger ${triggerId}`,
+          )
+        }
+        await deleteComposioTrigger(
+          trigger.composioTriggerId,
+          requireAttributionForConnection(account.id, account.userId),
+        )
       } catch (error) {
         console.error('[webhook-trigger-service] Failed to delete Composio trigger:', error)
       }

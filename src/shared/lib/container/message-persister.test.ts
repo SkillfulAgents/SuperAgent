@@ -62,10 +62,20 @@ type MockFn = (...args: any[]) => any
 const mockCreateWebhookTrigger = vi.fn<MockFn>(() => Promise.resolve('trigger_new_id'))
 const mockListActiveWebhookTriggers = vi.fn<MockFn>(() => Promise.resolve([]))
 const mockCancelWebhookTriggerWithCleanup = vi.fn<MockFn>(() => Promise.resolve(true))
+const mockGetAvailableTriggersForConnectedAccount = vi.fn<MockFn>(() =>
+  Promise.resolve({ toolkitSlug: 'gmail', triggers: [] }),
+)
+const mockSetupWebhookTriggerForConnectedAccount = vi.fn<MockFn>(() =>
+  Promise.resolve({ triggerId: 'trigger_new_id', composioTriggerId: 'composio_trigger_id' }),
+)
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   createWebhookTrigger: (...args: unknown[]) => mockCreateWebhookTrigger(...args),
   listActiveWebhookTriggers: (...args: unknown[]) => mockListActiveWebhookTriggers(...args),
   cancelWebhookTriggerWithCleanup: (...args: unknown[]) => mockCancelWebhookTriggerWithCleanup(...args),
+  getAvailableTriggersForConnectedAccount: (...args: unknown[]) =>
+    mockGetAvailableTriggersForConnectedAccount(...args),
+  setupWebhookTriggerForConnectedAccount: (...args: unknown[]) =>
+    mockSetupWebhookTriggerForConnectedAccount(...args),
 }))
 
 const mockGetAvailableTriggers = vi.fn<MockFn>(() => Promise.resolve([]))
@@ -2311,6 +2321,8 @@ describe('MessagePersister', () => {
       mockEnableComposioTrigger.mockClear()
       mockDeleteComposioTrigger.mockClear()
       mockListActiveWebhookTriggers.mockClear()
+      mockGetAvailableTriggersForConnectedAccount.mockReset()
+      mockSetupWebhookTriggerForConnectedAccount.mockReset()
       mockDbSelect.mockClear()
 
       mockIsPlatformComposioActive.mockReturnValue(true)
@@ -2321,6 +2333,21 @@ describe('MessagePersister', () => {
         { slug: 'GMAIL_NEW_EMAIL', name: 'New Email', description: 'Fires on new email', type: 'webhook' },
         { slug: 'SLACK_NEW_MESSAGE', name: 'New Message', description: 'Fires on new Slack message', type: 'webhook' },
       ])
+      // The webhook-trigger-service is now the orchestration boundary that
+      // owns toolkit lookup, validation, and Composio fan-out. The persister
+      // just delegates to it and reports back to the container, so test
+      // doubles drive the service instead of the underlying composio calls.
+      mockGetAvailableTriggersForConnectedAccount.mockResolvedValue({
+        toolkitSlug: 'gmail',
+        triggers: [
+          { slug: 'GMAIL_NEW_EMAIL', name: 'New Email', description: 'Fires on new email', type: 'webhook' },
+          { slug: 'SLACK_NEW_MESSAGE', name: 'New Message', description: 'Fires on new Slack message', type: 'webhook' },
+        ],
+      })
+      mockSetupWebhookTriggerForConnectedAccount.mockResolvedValue({
+        triggerId: 'trigger_new_id',
+        composioTriggerId: 'composio_trigger_id',
+      })
       mockDbSelectAccount({ id: 'ca_1', composioConnectionId: 'composio_ca_1', toolkitSlug: 'gmail' })
     })
 
@@ -2360,6 +2387,9 @@ describe('MessagePersister', () => {
 
       it('validates trigger type against available triggers', async () => {
         sseEvents.length = 0
+        mockSetupWebhookTriggerForConnectedAccount.mockRejectedValueOnce(
+          new Error('Invalid trigger type "NONEXISTENT_TRIGGER" for this account.'),
+        )
 
         simulateToolUse('mcp__user-input__setup_trigger', 'tool-setup-bad', {
           connected_account_id: 'ca_1',
@@ -2369,7 +2399,6 @@ describe('MessagePersister', () => {
 
         await flushHandlers()
 
-        // Should reject with helpful error
         expect(mockContainerClientFetch).toHaveBeenCalledWith(
           '/inputs/tool-setup-bad/reject',
           expect.objectContaining({
@@ -2378,7 +2407,6 @@ describe('MessagePersister', () => {
           }),
         )
 
-        // Should NOT broadcast creation
         const sseCreated = sseEvents.filter(e => e.type === 'webhook_trigger_created')
         expect(sseCreated).toHaveLength(0)
       })
@@ -2405,7 +2433,9 @@ describe('MessagePersister', () => {
       })
 
       it('rejects when connected account not found', async () => {
-        mockDbSelectAccount(null)
+        mockSetupWebhookTriggerForConnectedAccount.mockRejectedValueOnce(
+          new Error('Connected account ca_nonexistent not found'),
+        )
         sseEvents.length = 0
 
         simulateToolUse('mcp__user-input__setup_trigger', 'tool-setup-noaccount', {
@@ -2425,8 +2455,12 @@ describe('MessagePersister', () => {
         )
       })
 
-      it('rolls back Composio trigger if SQLite save fails', async () => {
-        mockCreateWebhookTrigger.mockRejectedValue(new Error('DB write failed'))
+      it('surfaces service-level failure when local persistence rolls back', async () => {
+        // Rollback (delete Composio trigger after local save fails) is owned
+        // by the service now -- the persister just observes the rejection.
+        mockSetupWebhookTriggerForConnectedAccount.mockRejectedValueOnce(
+          new Error('Failed to save trigger locally'),
+        )
         sseEvents.length = 0
 
         simulateToolUse('mcp__user-input__setup_trigger', 'tool-setup-dbfail', {
@@ -2437,9 +2471,7 @@ describe('MessagePersister', () => {
 
         await flushHandlers()
 
-        expect(mockEnableComposioTrigger).toHaveBeenCalled()
-        expect(mockDeleteComposioTrigger).toHaveBeenCalledWith('composio_trigger_id')
-
+        expect(mockSetupWebhookTriggerForConnectedAccount).toHaveBeenCalled()
         expect(mockContainerClientFetch).toHaveBeenCalledWith(
           '/inputs/tool-setup-dbfail/reject',
           expect.objectContaining({
@@ -2585,7 +2617,9 @@ describe('MessagePersister', () => {
       })
 
       it('rejects when connected account not found', async () => {
-        mockDbSelectAccount(null)
+        mockGetAvailableTriggersForConnectedAccount.mockRejectedValueOnce(
+          new Error('Connected account ca_missing not found'),
+        )
 
         simulateToolUse('mcp__user-input__get_available_triggers', 'tool-avail-noaccount', {
           connected_account_id: 'ca_missing',
@@ -2621,7 +2655,10 @@ describe('MessagePersister', () => {
       })
 
       it('resolves with empty message when no triggers available', async () => {
-        mockGetAvailableTriggers.mockResolvedValue([])
+        mockGetAvailableTriggersForConnectedAccount.mockResolvedValueOnce({
+          toolkitSlug: 'gmail',
+          triggers: [],
+        })
 
         simulateToolUse('mcp__user-input__get_available_triggers', 'tool-avail-empty', {
           connected_account_id: 'ca_1',

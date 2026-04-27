@@ -9,15 +9,6 @@ vi.mock('@shared/lib/config/settings', () => ({
   getComposioUserId: () => mockGetComposioUserId(),
 }))
 
-vi.mock('@shared/lib/services/platform-auth-service', () => ({
-  getPlatformAccessToken: () => null,
-  getPlatformBearerWithMember: () => null,
-}))
-
-vi.mock('@shared/lib/platform-auth/agent-owner', () => ({
-  getLatestPlatformAccountId: () => null,
-}))
-
 const mockCaptureMessage = vi.fn()
 vi.mock('@shared/lib/error-reporting', () => ({
   captureMessage: (...args: unknown[]) => mockCaptureMessage(...args),
@@ -27,6 +18,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
 const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
 
+import type { Attribution } from '@shared/lib/attribution'
 import { getConnectionToken, ComposioApiError } from './client'
 
 function makeComposioResponse(
@@ -67,6 +59,25 @@ describe('getConnectionToken', () => {
       status,
       json: async () => body,
     })
+  }
+
+  function makeAttribution(memberId = 'sub_member_123'): Attribution {
+    return {
+      applyTo(headers) {
+        headers.set('Authorization', 'Bearer plat_org_token')
+        headers.set('X-Platform-Member-Id', memberId)
+      },
+      toHeaderEntries() {
+        return [
+          ['Authorization', 'Bearer plat_org_token'],
+          ['X-Platform-Member-Id', memberId],
+        ]
+      },
+      toExtraHeaderEntries() { return this.toHeaderEntries().filter(([n]) => n !== "Authorization") },
+      getKey() {
+        return `member:${memberId}`
+      },
+    }
   }
 
   it('extracts access_token for OAUTH2 scheme', async () => {
@@ -299,5 +310,43 @@ describe('getConnectionToken', () => {
     } catch (e) {
       expect((e as ComposioApiError).statusCode).toBe(401)
     }
+  })
+
+  it('uses the raw platform token and member header for proxy-backed composio calls', async () => {
+    mockGetEffectiveComposioApiKey.mockReturnValue(null)
+    mockFetchOk(makeComposioResponse({
+      authScheme: 'OAUTH2',
+      val: { status: 'ACTIVE', access_token: 'ya29.proxy-token' },
+    }))
+
+    const result = await getConnectionToken('conn-1', makeAttribution())
+
+    expect(result.accessToken).toBe('ya29.proxy-token')
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/v1/composio/connected_accounts/conn-1'),
+      expect.objectContaining({
+        headers: expect.any(Headers),
+      }),
+    )
+    const headers = mockFetch.mock.calls[0][1]?.headers as Headers
+    expect(headers.get('Authorization')).toBe('Bearer plat_org_token')
+    expect(headers.get('X-Platform-Member-Id')).toBe('sub_member_123')
+  })
+
+  it('fails early when auth mode composio proxy calls omit member attribution', async () => {
+    mockGetEffectiveComposioApiKey.mockReturnValue(null)
+
+    await expect(getConnectionToken('conn-1', {
+      applyTo() {
+        throw new Error('Member attribution is required for this request')
+      },
+      getKey() {
+        return 'missing'
+      },
+    toHeaderEntries() { const h = new Headers(); this.applyTo(h); const out: Array<[string,string]> = []; h.forEach((v,k) => out.push([k,v])); return out },
+      toExtraHeaderEntries() { return this.toHeaderEntries().filter(([n]) => n !== "Authorization") },
+    })).rejects.toThrow(
+      'Member attribution is required',
+    )
   })
 })

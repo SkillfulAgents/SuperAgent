@@ -41,7 +41,10 @@ vi.mock('drizzle-orm', () => ({
   desc: (col: string) => `DESC(${col})`,
 }))
 
-import { getOwnerAccountIdForProvider } from './agent-owner'
+import {
+  getOwnerAccountIdForProvider,
+  getPlatformAccountIdForUserId,
+} from './member-lookup'
 
 describe('getOwnerAccountIdForProvider', () => {
   beforeEach(() => {
@@ -76,7 +79,11 @@ describe('getOwnerAccountIdForProvider', () => {
     getOwnerAccountIdForProvider('multi-owner-agent', 'platform')
 
     expect(orderByCalls).toEqual([
-      ['ASC(agent_acl.created_at)', 'DESC(account.updated_at)'],
+      [
+        'ASC(agent_acl.created_at)',
+        'ASC(agent_acl.user_id)',
+        'DESC(account.updated_at)',
+      ],
     ])
   })
 
@@ -90,3 +97,25 @@ describe('getOwnerAccountIdForProvider', () => {
     expect(mockDbAll).toHaveBeenCalledTimes(2)
   })
 })
+
+describe('getPlatformAccountIdForUserId', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    orderByCalls.length = 0
+  })
+
+  it('returns the newest linked platform account for a user', () => {
+    mockDbAll.mockReturnValue([{ accountId: 'sub_platform_user_1' }])
+
+    expect(getPlatformAccountIdForUserId('user_1')).toBe('sub_platform_user_1')
+    expect(mockDbAll).toHaveBeenCalledTimes(1)
+    expect(orderByCalls).toEqual([['DESC(account.updated_at)']])
+  })
+
+  it('returns null when the user has no linked platform account', () => {
+    mockDbAll.mockReturnValue([])
+
+    expect(getPlatformAccountIdForUserId('user_missing')).toBeNull()
+  })
+})
+

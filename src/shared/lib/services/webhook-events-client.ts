@@ -5,7 +5,7 @@
  * polling pending events and acknowledging consumed events.
  */
 
-import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import type { Attribution } from '@shared/lib/attribution'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 
 // ============================================================================
@@ -39,16 +39,12 @@ export interface PollResult {
 async function webhookEventsFetch<T>(
   endpoint: string,
   options: RequestInit = {},
+  auth: Attribution,
 ): Promise<T> {
-  const token = getPlatformAccessToken()
-  if (!token) {
-    throw new Error('Platform access token not available')
-  }
-
   const baseUrl = getPlatformProxyBaseUrl()
   const headers = new Headers(options.headers)
   headers.set('Content-Type', 'application/json')
-  headers.set('Authorization', `Bearer ${token}`)
+  auth.applyTo(headers)
 
   const response = await fetch(`${baseUrl}/v1/webhook-events${endpoint}`, {
     ...options,
@@ -67,17 +63,20 @@ async function webhookEventsFetch<T>(
  * Poll for pending webhook events and get Realtime connection credentials.
  * Events are atomically claimed (status: pending → claimed) on the server side.
  */
-export async function pollAndClaimEvents(): Promise<PollResult> {
-  return webhookEventsFetch<PollResult>('/poll', { method: 'POST' })
+export async function pollAndClaimEvents(auth: Attribution): Promise<PollResult> {
+  return webhookEventsFetch<PollResult>('/poll', { method: 'POST' }, auth)
 }
 
 /**
  * Acknowledge events as consumed so they are not returned in the next poll.
  */
-export async function acknowledgeEvents(eventIds: string[]): Promise<void> {
+export async function acknowledgeEvents(
+  eventIds: string[],
+  auth: Attribution,
+): Promise<void> {
   if (eventIds.length === 0) return
   await webhookEventsFetch('/ack', {
     method: 'POST',
     body: JSON.stringify({ event_ids: eventIds }),
-  })
+  }, auth)
 }
