@@ -82,6 +82,21 @@ vi.mock('@shared/lib/composio/client', () => ({
   isPlatformComposioActive: () => mockIsPlatformComposioActive(),
 }))
 
+// Stub attribution: handlers compute fromResourceCreator(account.userId)
+// but the test doesn't exercise wire format -- a plain stub keeps the
+// non-null check happy and lets the composio mocks below stand in for
+// the actual outbound calls.
+vi.mock('@shared/lib/attribution', () => ({
+  attribution: {
+    fromResourceCreator: () => ({
+      applyTo: () => {},
+      toHeaderEntries: () => [],
+      toExtraHeaderEntries: () => [],
+      getKey: () => 'mock',
+    }),
+  },
+}))
+
 const mockDbSelect = vi.fn<MockFn>()
 vi.mock('@shared/lib/db', () => ({
   db: {
@@ -2438,7 +2453,10 @@ describe('MessagePersister', () => {
         await flushHandlers()
 
         expect(mockEnableComposioTrigger).toHaveBeenCalled()
-        expect(mockDeleteComposioTrigger).toHaveBeenCalledWith('composio_trigger_id')
+        expect(mockDeleteComposioTrigger).toHaveBeenCalledWith(
+          'composio_trigger_id',
+          expect.objectContaining({ getKey: expect.any(Function) }),
+        )
 
         expect(mockContainerClientFetch).toHaveBeenCalledWith(
           '/inputs/tool-setup-dbfail/reject',

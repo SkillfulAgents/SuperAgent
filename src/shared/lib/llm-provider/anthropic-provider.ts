@@ -30,7 +30,7 @@ export class AnthropicLlmProvider extends BaseLlmProvider {
     }
   }
 
-  getContainerEnvVars(): Record<string, string | undefined> {
+  getContainerEnvVars(_agentId: string): Record<string, string | undefined> {
     return {
       ANTHROPIC_API_KEY: this.getEffectiveApiKey(),
     }

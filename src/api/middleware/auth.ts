@@ -1,6 +1,7 @@
 import type { Context, Next, MiddlewareHandler } from 'hono'
 import { and, eq } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
+import { runWithRequestUser } from '@shared/lib/attribution'
 import { db } from '@shared/lib/db'
 import { agentAcl, connectedAccounts, remoteMcpServers, notifications } from '@shared/lib/db/schema'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
@@ -25,14 +26,16 @@ import { type AgentRole, ROLE_HIERARCHY, hasMinRole } from '@shared/lib/types/ag
  */
 export function Authenticated(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
-    if (!isAuthMode()) return next()
+    if (!isAuthMode()) {
+      return runWithRequestUser('local', () => next())
+    }
 
     const auth = await getAuthLazy()
     const session = await auth.api.getSession({ headers: c.req.raw.headers })
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
     c.set('user' as never, session.user as never)
-    return next()
+    return runWithRequestUser(session.user.id, () => next())
   }
 }
 

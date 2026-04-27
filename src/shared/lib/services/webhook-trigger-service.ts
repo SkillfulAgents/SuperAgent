@@ -6,11 +6,12 @@
  */
 
 import { db } from '@shared/lib/db'
-import { webhookTriggers, type WebhookTrigger, type NewWebhookTrigger } from '@shared/lib/db/schema'
+import { connectedAccounts, webhookTriggers, type WebhookTrigger, type NewWebhookTrigger } from '@shared/lib/db/schema'
 import { eq, and, inArray, sql, count } from 'drizzle-orm'
 import { trackServerEvent } from '../analytics/server-analytics'
 import { deleteComposioTrigger } from '@shared/lib/composio/triggers'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
+import { attribution, type Attribution } from '@shared/lib/attribution'
 
 export type { WebhookTrigger, NewWebhookTrigger }
 
@@ -150,6 +151,31 @@ export async function listCancelledWebhookTriggers(agentSlug: string): Promise<W
         eq(webhookTriggers.status, 'cancelled')
       )
     )
+}
+
+/**
+ * One Attribution per distinct connection-creator memberId across all
+ * active/paused triggers. trigger-manager opens one realtime lane per
+ * Attribution; events in the platform proxy are bucketed by the
+ * connection creator's memberId, so we MUST iterate by that, not by
+ * agent owner.
+ */
+export async function listWebhookTriggerAuths(): Promise<Attribution[]> {
+  const rows = await db
+    .select({ ownerUserId: connectedAccounts.userId })
+    .from(webhookTriggers)
+    .innerJoin(
+      connectedAccounts,
+      eq(webhookTriggers.connectedAccountId, connectedAccounts.id),
+    )
+    .where(inArray(webhookTriggers.status, ['active', 'paused']))
+
+  const auths = new Map<string, Attribution>()
+  for (const row of rows) {
+    const auth = attribution.fromResourceCreator(row.ownerUserId)
+    if (auth) auths.set(auth.getKey(), auth)
+  }
+  return [...auths.values()]
 }
 
 /**
@@ -301,7 +327,18 @@ export async function cancelWebhookTriggerWithCleanup(triggerId: string): Promis
     const remaining = await countActiveTriggersForComposioId(trigger.composioTriggerId)
     if (remaining === 0) {
       try {
-        await deleteComposioTrigger(trigger.composioTriggerId)
+        // Composio buckets triggers by connection-creator memberId; resolve
+        // attribution from the connection's stored userId so DELETE matches.
+        const [account] = await db
+          .select({ userId: connectedAccounts.userId })
+          .from(connectedAccounts)
+          .where(eq(connectedAccounts.id, trigger.connectedAccountId))
+          .limit(1)
+        const auth = attribution.fromResourceCreator(account?.userId ?? null)
+        if (!auth) {
+          throw new Error('Outbound auth not configured for Composio cleanup')
+        }
+        await deleteComposioTrigger(trigger.composioTriggerId, auth)
       } catch (error) {
         console.error('[webhook-trigger-service] Failed to delete Composio trigger:', error)
       }
