@@ -2,8 +2,12 @@ import { getSettings, updateSettings, type PlatformAuthSettings } from '@shared/
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { PlatformAuthSettingsSchema } from '@shared/lib/types/skillset-schema'
 import { captureException } from '@shared/lib/error-reporting'
+import { isAuthMode } from '@shared/lib/auth/mode'
 
 export type PlatformAuthRecord = PlatformAuthSettings
+
+// `env` means AUTH_MODE is using an org-managed PLATFORM_TOKEN.
+export type PlatformAuthSource = 'settings' | 'env' | null
 
 export interface PlatformAuthStatus {
   connected: boolean
@@ -15,6 +19,7 @@ export interface PlatformAuthStatus {
   role: string | null
   createdAt: string | null
   updatedAt: string | null
+  source: PlatformAuthSource
 }
 
 interface SavePlatformAuthInput {
@@ -69,32 +74,71 @@ async function reconcileAfterAuthChange(): Promise<void> {
   }
 }
 
-export function getPlatformAuthStatus(_userId?: string): PlatformAuthStatus {
-  const record = readRecord()
-  if (!record) {
-    return {
-      connected: false,
-      tokenPreview: null,
-      email: null,
-      label: null,
-      orgId: null,
-      orgName: null,
-      role: null,
-      createdAt: null,
-      updatedAt: null,
-    }
+// Best-effort decode for the orgId claim used by env-managed UI.
+function decodeOrgIdFromToken(token: string): string | null {
+  const segments = token.split('.')
+  if (segments.length !== 3) return null
+  try {
+    const normalized = segments[1].replace(/-/g, '+').replace(/_/g, '/')
+    const padded = normalized + '='.repeat((4 - (normalized.length % 4 || 4)) % 4)
+    const json = Buffer.from(padded, 'base64').toString('utf8')
+    const parsed = JSON.parse(json) as { orgId?: unknown }
+    return typeof parsed.orgId === 'string' && parsed.orgId.length > 0 ? parsed.orgId : null
+  } catch {
+    return null
   }
+}
+
+function getEnvManagedStatus(): PlatformAuthStatus | null {
+  if (!isAuthMode()) return null
+  const envToken = process.env.PLATFORM_TOKEN?.trim()
+  if (!envToken) return null
 
   return {
     connected: true,
-    tokenPreview: record.tokenPreview,
-    email: record.email,
-    label: record.label,
-    orgId: record.orgId,
-    orgName: record.orgName,
-    role: record.role,
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
+    tokenPreview: buildTokenPreview(envToken),
+    email: null,
+    label: 'Managed by organization',
+    orgId: decodeOrgIdFromToken(envToken),
+    orgName: null,
+    role: null,
+    createdAt: null,
+    updatedAt: null,
+    source: 'env',
+  }
+}
+
+export function getPlatformAuthStatus(_userId?: string): PlatformAuthStatus {
+  const record = readRecord()
+  if (record) {
+    return {
+      connected: true,
+      tokenPreview: record.tokenPreview,
+      email: record.email,
+      label: record.label,
+      orgId: record.orgId,
+      orgName: record.orgName,
+      role: record.role,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+      source: 'settings',
+    }
+  }
+
+  const envManaged = getEnvManagedStatus()
+  if (envManaged) return envManaged
+
+  return {
+    connected: false,
+    tokenPreview: null,
+    email: null,
+    label: null,
+    orgId: null,
+    orgName: null,
+    role: null,
+    createdAt: null,
+    updatedAt: null,
+    source: null,
   }
 }
 
@@ -133,7 +177,19 @@ export async function savePlatformAuth(_userId: string, input: SavePlatformAuthI
 }
 
 export function getPlatformAccessToken(_userId?: string): string | null {
-  return readRecord()?.token ?? null
+  const stored = readRecord()?.token
+  if (stored) return stored
+  if (!isAuthMode()) return null
+  const envToken = process.env.PLATFORM_TOKEN?.trim()
+  return envToken ? envToken : null
+}
+
+// Build a composite bearer `<token>:<memberId>` that the proxy can split.
+// Falls back to raw token when memberId is unavailable.
+export function getPlatformBearerWithMember(memberId: string | null): string | null {
+  const token = getPlatformAccessToken()
+  if (!token) return null
+  return memberId ? `${token}:${memberId}` : token
 }
 
 async function clearPlatformAuth(): Promise<void> {

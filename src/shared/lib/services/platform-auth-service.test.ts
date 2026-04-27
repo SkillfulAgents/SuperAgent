@@ -29,6 +29,25 @@ describe('platform-auth-service', () => {
     delete process.env.SUPERAGENT_DATA_DIR
   })
 
+  it('falls back to PLATFORM_TOKEN env in auth mode when settings have no record', () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = 'env-managed-platform-token'
+
+    expect(getPlatformAccessToken('local')).toBe('env-managed-platform-token')
+
+    delete process.env.PLATFORM_TOKEN
+    delete process.env.AUTH_MODE
+  })
+
+  it('returns null when not in auth mode and no settings record exists', () => {
+    process.env.PLATFORM_TOKEN = 'should-be-ignored-when-auth-mode-off'
+    delete process.env.AUTH_MODE
+
+    expect(getPlatformAccessToken('local')).toBeNull()
+
+    delete process.env.PLATFORM_TOKEN
+  })
+
   it('stores a token and exposes only redacted status', async () => {
     const status = await savePlatformAuth('local', {
       token: 'plat_superagent_token_1234567890abcdef',
