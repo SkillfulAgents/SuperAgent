@@ -1,24 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser use feature successfully enables agents to open browsers, navigate to URLs, and extract information (page titles).",
+  "reason": "Verified that the agent can successfully execute browser commands, navigate to a URL, retrieve the page title, and return the expected response.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully showing Super Agent dashboard with three agents listed in sidebar.",
-    "Clicked on \"QA-20260427-063024-mn51\" agent in sidebar — Agent page opened showing chat interface and agent configuration panels.",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into chat input field — Message displayed in input field.",
-    "Clicked \"Send message\" button — Message was sent and agent began processing (status changed to \"working\").",
-    "Waited for agent response — Agent completed within 7 seconds (well under 3-minute limit). Two tool calls executed: \"Open Browser https://example.com\" and \"Browser Command $ get title\".",
-    "Verified response mentions \"Example Domain\" — Response clearly displayed: \"The page title is **Example Domain**.\" The browser preview panel on the right also showed the Example Domain page, and the Activity log confirmed both browser operations completed successfully."
+    "Navigate to http://localhost:47891 - Successfully loaded the Super Agent interface showing the agents sidebar with three agents listed.",
+    "Find and click \"QA-20260427-063905-bs61\" agent in sidebar - Successfully clicked the agent, which opened the chat interface with the agent's conversation view.",
+    "Send message \"Open a browser and go to https://example.com. Tell me the page title.\" - Successfully typed and sent the message, triggering the agent to begin working (status changed to \"working\").",
+    "Wait up to 3 minutes for response - Agent completed the task in 8 seconds. The page showed a live browser preview on the right displaying the Example Domain page, and tool call cards showing: \"Open Browser https://example.com\", \"Browser Command $ get title\", and \"Close Browser\" (all marked with green checkmarks indicating success).",
+    "Verify response mentions \"Example Domain\" - Response successfully displayed: 'The page title is \"Example Domain\".' Agent status returned to \"idle\" after completion."
   ],
   "bugs": [],
-  "durationMs": 89269,
-  "sessionId": "8dd52d50-bf6d-462e-8fb3-7820342d44c8",
+  "durationMs": 95534,
+  "sessionId": "664f4c46-4d97-4fa1-8ddd-3b5663ea7f27",
   "cost": {
-    "inputTokens": 266,
-    "outputTokens": 6914,
-    "cacheCreationTokens": 49720,
-    "cacheReadTokens": 1021441,
+    "inputTokens": 309,
+    "outputTokens": 7665,
+    "cacheCreationTokens": 125076,
+    "cacheReadTokens": 1139258,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.19913
+    "totalCostUsd": 0.308905
   }
 }

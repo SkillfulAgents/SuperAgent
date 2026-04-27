@@ -1,27 +1,28 @@
 {
   "storyId": "github-whoami",
   "passed": false,
-  "reason": "The agent did not return a GitHub username in its response. Instead, it returned an error message about invalid GitHub OAuth credentials, which means step 7 requirement was not met.\n  Bugs found:\n    - The agent successfully executed all steps and handled permission requests correctly, but the final response did not include a GitHub username. Instead, the response reported: \"The GitHub proxy is returning 'Bad credentials' — the OAuth token attached to the connected account appears to be invalid or expired.\" This indicates the GitHub OAuth token configuration is invalid or expired, preventing the agent from successfully retrieving the GitHub username. While this is not a bug in the application logic itself (the agent correctly identified and reported the problem), it means the test objective was not achieved.",
+  "reason": "Response did not include GitHub username; OAuth token proxy authentication failed with \"401 Bad credentials\"\n  Bugs found:\n    - GitHub OAuth token is not being properly injected through the proxy. When agent attempted to call GitHub API endpoints (GET /user, GET /user/repos, POST /user), all requests returned \"401 Bad credentials\" error. This prevented the agent from retrieving and reporting the GitHub username. The account was connected (ID: dbda4fba-1569-4d95-a78e-0723d94d4f15) but the OAuth token proxy mechanism appears to be broken.",
   "steps": [
-    "Step 1 - Navigated to http://localhost:47891. Result: Page loaded successfully, displaying the Super Agent interface with sidebar agents.",
-    "Step 2 - Found and clicked on \"QA-20260427-063026-zqny\" agent in the sidebar. Result: Agent page opened successfully, showing the agent home with message input area.",
-    "Step 3 - Verified agent status is \"running\" or \"idle\". Result: Agent status displayed as \"idle\" (✓ requirement met).",
-    "Step 4 - Sent message: \"Use the GitHub tool to check who I am. Tell me my GitHub username.\" Result: Message successfully sent, agent status changed to \"working\", session \"GitHub Username Verification Check\" was created.",
-    "Step 5 - GitHub account access request card appeared. Selected GitHub and granted access. Result: GitHub account was already selected in the card, clicked \"Allow Access (1)\" button to grant permission.",
-    "Step 6 - Waited for response. Result: Agent worked for 1 minute 35 seconds (well within the 4-minute limit), executing multiple Bash commands for GitHub authentication and debugging.",
-    "Step 7 - Verified response includes a GitHub username. Result: ✗ FAILED. The response did not include a GitHub username. Instead, the agent returned an error message: \"The GitHub proxy is returning 'Bad credentials' — the OAuth token attached to the connected account appears to be invalid or expired. Could you reconnect the GitHub account? You can disconnect it and re-authenticate via the connected accounts UI, then I'll retry.\" The agent correctly identified the authentication issue but could not retrieve the GitHub username due to the invalid/expired OAuth token."
+    "Navigated to http://localhost:47891 — Page loaded successfully, sidebar visible with agents",
+    "Clicked on \"QA-20260427-063906-yu88\" agent in sidebar — Agent page loaded, status showed \"idle\"",
+    "Verified agent status is \"running\" or \"idle\" — Status was \"idle\" which meets requirement",
+    "Sent message \"Use the GitHub tool to check who I am. Tell me my GitHub username.\" — Message sent successfully, agent began processing",
+    "Granted GitHub account access when card appeared — Account access dialog appeared and was approved",
+    "Allowed multiple GitHub API requests during processing — Allowed GET /user, GET /user/repos, and POST /user requests",
+    "Waited for response — Received response in 1m 46s (within 4-minute limit)",
+    "Verified response includes GitHub username — FAILED: Response showed \"401 Bad credentials\" authentication error instead of GitHub username. Agent reported OAuth token not being injected properly through proxy."
   ],
   "bugs": [
-    "The agent successfully executed all steps and handled permission requests correctly, but the final response did not include a GitHub username. Instead, the response reported: \"The GitHub proxy is returning 'Bad credentials' — the OAuth token attached to the connected account appears to be invalid or expired.\" This indicates the GitHub OAuth token configuration is invalid or expired, preventing the agent from successfully retrieving the GitHub username. While this is not a bug in the application logic itself (the agent correctly identified and reported the problem), it means the test objective was not achieved."
+    "GitHub OAuth token is not being properly injected through the proxy. When agent attempted to call GitHub API endpoints (GET /user, GET /user/repos, POST /user), all requests returned \"401 Bad credentials\" error. This prevented the agent from retrieving and reporting the GitHub username. The account was connected (ID: dbda4fba-1569-4d95-a78e-0723d94d4f15) but the OAuth token proxy mechanism appears to be broken."
   ],
-  "durationMs": 164650,
-  "sessionId": "44c4fdb7-625a-4b1b-b48c-a7ef41284ae1",
+  "durationMs": 163847,
+  "sessionId": "6bb04f7e-cfce-45bb-b191-8fed32897cea",
   "cost": {
-    "inputTokens": 720,
-    "outputTokens": 19320,
-    "cacheCreationTokens": 98405,
-    "cacheReadTokens": 3511529,
+    "inputTokens": 666,
+    "outputTokens": 18614,
+    "cacheCreationTokens": 90404,
+    "cacheReadTokens": 3128410,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.571479
+    "totalCostUsd": 0.519582
   }
 }

@@ -1,24 +1,17 @@
 {
   "storyId": "agent-chat",
-  "passed": true,
-  "reason": "Agent successfully received message, processed it, and returned correct response containing \"4\"",
-  "steps": [
-    "Navigated to http://localhost:47891 — Page loaded with sidebar showing three agents",
-    "Found and clicked \"QA-20260427-063023-zips\" agent in sidebar — Agent opened with idle status",
-    "Verified agent status is \"idle\" — Status badge confirmed \"idle\" in the header",
-    "Sent message \"Hello! What is 2+2?\" — Message typed into input field and sent button clicked, agent transitioned to \"working\" state",
-    "Waited up to 3 minutes for response — Response received within 2 seconds, agent status returned to \"idle\"",
-    "Verified response mentions \"4\" and took screenshot — Response clearly displays \"4\" as the answer, confirming correct behavior"
-  ],
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail:  Agent\".\n\n**[STEP]** Waited up to 3 minutes for a response — Agent processed the request and returned a response in 1 second.\n\n**[STEP]** Verified the response mentions \"4\" and took a screenshot — Response clearly displays \"4\" as the agent's answer to the math question, confirming correct behavior.\n",
+  "steps": [],
   "bugs": [],
-  "durationMs": 85724,
-  "sessionId": "bd68ddab-e255-4e30-a8bd-9dda50d5ebf6",
+  "durationMs": 89764,
+  "sessionId": "1c101292-35e6-4c88-84f4-90ebb8bf7077",
   "cost": {
-    "inputTokens": 261,
-    "outputTokens": 8279,
-    "cacheCreationTokens": 120621,
-    "cacheReadTokens": 883952,
+    "inputTokens": 207,
+    "outputTokens": 7468,
+    "cacheCreationTokens": 108415,
+    "cacheReadTokens": 666283,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.280827
+    "totalCostUsd": 0.239694
   }
 }
