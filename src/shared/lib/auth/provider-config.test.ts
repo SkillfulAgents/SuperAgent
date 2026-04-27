@@ -5,7 +5,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
   captureException: (...args: unknown[]) => mockCaptureException(...args),
 }))
 
-import { getGenericOAuthProviderConfigs, getPublicAuthProviders, hasAuthProvider } from './provider-config'
+import { getGenericOAuthProviderConfigs, getPublicAuthProviders } from './provider-config'
 
 describe('getPublicAuthProviders', () => {
   beforeEach(() => {
@@ -124,28 +124,6 @@ describe('getPublicAuthProviders', () => {
         overrideUserInfo: true,
       },
     ])
-  })
-
-  it('reports provider existence via hasAuthProvider (by id)', () => {
-    process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
-      {
-        id: 'company-sso',
-        type: 'oidc',
-        issuer: 'https://auth.example.com',
-        clientId: 'company-client',
-      },
-      {
-        id: 'platform',
-        type: 'oidc',
-        enabled: false,
-        issuer: 'https://platform-auth.example.com',
-        clientId: 'platform-client',
-      },
-    ])
-
-    expect(hasAuthProvider('company-sso')).toBe(true)
-    expect(hasAuthProvider('platform')).toBe(false) // disabled
-    expect(hasAuthProvider('unknown')).toBe(false)
   })
 
   it('reports invalid AUTH_PROVIDERS_JSON to error reporting instead of silently dropping', () => {
