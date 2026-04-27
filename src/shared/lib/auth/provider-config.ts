@@ -168,3 +168,9 @@ export function getPublicAuthProviders(
 ): PublicAuthProviderConfig[] {
   return getEnabledProviderDefinitions(providers).map((definition) => definition.toPublicConfig())
 }
+
+// Existence check without leaking provider config. Used by LLM providers that
+// know the id of the auth provider they want to attribute usage to.
+export function hasAuthProvider(id: string): boolean {
+  return getEnabledProviderDefinitions().some((definition) => definition.id === id)
+}
