@@ -1,24 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Successfully executed all steps: navigated to localhost:47891, opened the QA-20260427-053402-0xvb agent, sent a message requesting browser navigation to example.com and page title extraction, and verified the agent responded with \"The page title is Example Domain.\"",
+  "reason": "Browser use feature successfully enables agents to open browsers, navigate to URLs, and extract information (page titles).",
   "steps": [
-    "Navigated to http://localhost:47891 - Page loaded successfully showing Super Agent UI with three agents in sidebar",
-    "Located and clicked the \"QA-20260427-053402-0xvb\" agent in the sidebar - Agent chat interface opened successfully",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into the input field - Message appeared correctly in the input box",
-    "Clicked the \"Send message\" button - Message was sent successfully and agent transitioned to \"working\" status",
-    "Waited up to 3 minutes for response - Agent completed the task in 7 seconds with the following actions visible:",
-    "Verified response mentions \"Example Domain\" - Response clearly states \"The page title is Example Domain.\" confirming the browser successfully navigated to https://example.com and extracted the correct page title"
+    "Navigated to http://localhost:47891 — Page loaded successfully showing Super Agent dashboard with three agents listed in sidebar.",
+    "Clicked on \"QA-20260427-063024-mn51\" agent in sidebar — Agent page opened showing chat interface and agent configuration panels.",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into chat input field — Message displayed in input field.",
+    "Clicked \"Send message\" button — Message was sent and agent began processing (status changed to \"working\").",
+    "Waited for agent response — Agent completed within 7 seconds (well under 3-minute limit). Two tool calls executed: \"Open Browser https://example.com\" and \"Browser Command $ get title\".",
+    "Verified response mentions \"Example Domain\" — Response clearly displayed: \"The page title is **Example Domain**.\" The browser preview panel on the right also showed the Example Domain page, and the Activity log confirmed both browser operations completed successfully."
   ],
   "bugs": [],
-  "durationMs": 98531,
-  "sessionId": "77e7a13a-8b65-4d8f-a5ef-4879eaf98469",
+  "durationMs": 89269,
+  "sessionId": "8dd52d50-bf6d-462e-8fb3-7820342d44c8",
   "cost": {
-    "inputTokens": 342,
-    "outputTokens": 10168,
-    "cacheCreationTokens": 57654,
-    "cacheReadTokens": 1318551,
+    "inputTokens": 266,
+    "outputTokens": 6914,
+    "cacheCreationTokens": 49720,
+    "cacheReadTokens": 1021441,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.255105
+    "totalCostUsd": 0.19913
   }
 }
