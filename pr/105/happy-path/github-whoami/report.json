@@ -1,28 +1,28 @@
 {
   "storyId": "github-whoami",
-  "passed": true,
-  "reason": "Successfully executed all steps to verify GitHub tool integration in agent, obtaining and displaying the GitHub username after account access grant.",
+  "passed": false,
+  "reason": "Agent was unable to retrieve GitHub username due to invalid GitHub account credentials (401 error)\n  Bugs found:\n    - The GitHub account connection returned \"401 Bad credentials\" when the agent attempted to fetch the authenticated user. The connected GitHub account showed as \"connected 3 minutes ago\" and marked as \"Protected\", but the GitHub API rejected the token with a 401 error. The response did not include a GitHub username as expected.",
   "steps": [
-    "Navigated to http://localhost:47891 — page loaded successfully with agent list visible in sidebar.",
-    "Found agent \"QA-20260425-014717-6wh4\" in sidebar and clicked it — agent page loaded with status showing \"idle\".",
-    "Verified agent status is \"idle\" — acceptable status per requirements (must be \"running\" or \"idle\").",
-    "Sent message \"Use the GitHub tool to check who I am. Tell me my GitHub username.\" — message submitted successfully, agent status changed to \"working\", new session \"GitHub Username Verification Request\" created.",
-    "GitHub account access request card appeared — card showed \"Allow access to GitHub to look up the authenticated username?\" with GitHub account already connected and checked.",
-    "Clicked \"Allow Access (1)\" button — permission granted, account access card processed.",
-    "API review card appeared for \"GET /user\" endpoint — clicked \"Allow Once\" to permit the GitHub API call.",
-    "Waited for agent response (1m 30s) — agent completed task and returned response.",
-    "Verified response includes GitHub username — response displays \"Your GitHub username is yiw190.\" in the chat message.",
-    "Took screenshot of final response — screenshot saved showing complete chat with GitHub username displayed."
+    "Navigated to http://localhost:47891 — Page loaded successfully with sidebar showing agents including \"QA-20260427-051323-5tuo\" with idle status",
+    "Clicked on \"QA-20260427-051323-5tuo\" agent in sidebar — Agent detail page loaded successfully",
+    "Verified agent status — Status was \"idle\" which meets the requirement of \"running\" or \"idle\"",
+    "Typed and sent message \"Use the GitHub tool to check who I am. Tell me my GitHub username.\" — Message was sent successfully and agent status changed to \"working\"",
+    "Granted GitHub account access when \"Account Access Request\" card appeared — Clicked \"Allow Access (1)\" to grant permission to the checked GitHub account",
+    "Multiple API permission dialogs appeared during processing — Clicked \"Allow Once\" for each GitHub API request dialog (approximately 3-4 times)",
+    "Waited for agent response — Agent completed processing within 3m 51s (within the 4-minute limit)",
+    "Verified response content — Response received but it does NOT include GitHub username. Instead, agent reported: \"I can't retrieve your GitHub username — the connected GitHub account (ID `9cf5f149-961a-4a7c-836a-40661eb7bb63`) is returning 401 Bad credentials from GET /user through the proxy. The token attached to that account is invalid or revoked.\""
   ],
-  "bugs": [],
-  "durationMs": 168755,
-  "sessionId": "227c313d-47fc-4a8c-ab44-fd6918c55bbd",
+  "bugs": [
+    "The GitHub account connection returned \"401 Bad credentials\" when the agent attempted to fetch the authenticated user. The connected GitHub account showed as \"connected 3 minutes ago\" and marked as \"Protected\", but the GitHub API rejected the token with a 401 error. The response did not include a GitHub username as expected."
+  ],
+  "durationMs": 295408,
+  "sessionId": "792682bb-3402-4a25-8f45-f0f8a83d703f",
   "cost": {
-    "inputTokens": 411,
-    "outputTokens": 12344,
-    "cacheCreationTokens": 63633,
-    "cacheReadTokens": 1725348,
+    "inputTokens": 687,
+    "outputTokens": 17688,
+    "cacheCreationTokens": 90434,
+    "cacheReadTokens": 3221731,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.314207
+    "totalCostUsd": 0.524343
   }
 }
