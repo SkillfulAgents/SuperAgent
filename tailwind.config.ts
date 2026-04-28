@@ -50,20 +50,38 @@ const config: Config = {
 				'5': 'hsl(var(--chart-5))'
 			},
 			sidebar: {
-				DEFAULT: 'hsl(var(--sidebar-background))',
-				foreground: 'hsl(var(--sidebar-foreground))',
-				primary: 'hsl(var(--sidebar-primary))',
-				'primary-foreground': 'hsl(var(--sidebar-primary-foreground))',
-				accent: 'hsl(var(--sidebar-accent))',
-				'accent-foreground': 'hsl(var(--sidebar-accent-foreground))',
-				border: 'hsl(var(--sidebar-border))',
-				ring: 'hsl(var(--sidebar-ring))'
+				DEFAULT: 'hsl(var(--sidebar-background) / <alpha-value>)',
+				foreground: 'hsl(var(--sidebar-foreground) / <alpha-value>)',
+				primary: 'hsl(var(--sidebar-primary) / <alpha-value>)',
+				'primary-foreground': 'hsl(var(--sidebar-primary-foreground) / <alpha-value>)',
+				accent: 'hsl(var(--sidebar-accent) / <alpha-value>)',
+				'accent-foreground': 'hsl(var(--sidebar-accent-foreground) / <alpha-value>)',
+				border: 'hsl(var(--sidebar-border) / <alpha-value>)',
+				ring: 'hsl(var(--sidebar-ring) / <alpha-value>)'
 			}
 		},
 		borderRadius: {
 			lg: 'var(--radius)',
 			md: 'calc(var(--radius) - 2px)',
 			sm: 'calc(var(--radius) - 4px)'
+		},
+		fontSize: {
+			// Proportional ~13/14 reduction applied to the default Tailwind scale.
+			// `2xs` is a new micro-label size below Tailwind's defaults for badges/chips.
+			'2xs': ['10px', { lineHeight: '0.875rem' }],
+			xs: ['11px', { lineHeight: '1rem' }],
+			sm: ['13px', { lineHeight: '1.25rem' }],
+			base: ['15px', { lineHeight: '1.5rem' }],
+			lg: ['17px', { lineHeight: '1.75rem' }],
+			xl: ['20px', { lineHeight: '1.75rem' }],
+			'2xl': ['22px', { lineHeight: '2rem' }],
+			'3xl': ['28px', { lineHeight: '2.25rem' }],
+			'4xl': ['34px', { lineHeight: '2.625rem' }],
+			'5xl': ['42px', { lineHeight: '3rem' }],
+			'6xl': ['56px', { lineHeight: '3.75rem' }],
+			'7xl': ['68px', { lineHeight: '4.5rem' }],
+			'8xl': ['88px', { lineHeight: '5.875rem' }],
+			'9xl': ['120px', { lineHeight: '7.75rem' }],
 		},
 		keyframes: {
 			'cobalt-glow': {
@@ -77,9 +95,18 @@ const config: Config = {
 					boxShadow: '0 0 6px 1px rgba(30, 64, 175, 0.25), 0 0 16px 3px rgba(37, 99, 235, 0.12), 0 0 32px 6px rgba(59, 130, 246, 0.06)',
 				},
 			},
+			'dot-wave': {
+				'0%, 40%, 100%': {
+					opacity: '0.25',
+				},
+				'10%': {
+					opacity: '1',
+				},
+			},
 		},
 		animation: {
 			'cobalt-glow': 'cobalt-glow 4s ease-in-out infinite',
+			'dot-wave': 'dot-wave 2s ease-in-out infinite',
 		}
 	}
   },

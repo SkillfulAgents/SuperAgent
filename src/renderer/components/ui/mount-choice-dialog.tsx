@@ -37,7 +37,7 @@ export function MountChoiceDialog({ open, onChoice, folderName }: MountChoiceDia
             <div>
               <div className="flex items-center gap-2">
                 <span className="font-medium text-sm">Upload a copy</span>
-                <span className="rounded-full bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300 px-2 py-0.5 text-[10px] font-semibold leading-none">Read Only</span>
+                <span className="rounded-full bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300 px-2 py-0.5 text-2xs font-semibold leading-none">Read Only</span>
               </div>
               <div className="text-xs text-muted-foreground">
                 Copies files into the agent workspace. Read-only — changes won&apos;t sync back.
@@ -53,7 +53,7 @@ export function MountChoiceDialog({ open, onChoice, folderName }: MountChoiceDia
             <div>
               <div className="flex items-center gap-2">
                 <span className="font-medium text-sm">Mount folder</span>
-                <span className="rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 px-2 py-0.5 text-[10px] font-semibold leading-none">Read &amp; Write</span>
+                <span className="rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 px-2 py-0.5 text-2xs font-semibold leading-none">Read &amp; Write</span>
               </div>
               <div className="text-xs text-muted-foreground">
                 Gives the agent direct read-write access. Requires a container restart if the agent is running.

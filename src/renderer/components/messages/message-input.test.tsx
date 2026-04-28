@@ -4,6 +4,8 @@ import { screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MessageInput } from './message-input'
 import { renderWithProviders } from '@renderer/test/test-utils'
+import { useDraft } from '@renderer/context/drafts-context'
+import { useEffect } from 'react'
 
 // Mock hooks
 const mockSendMessage = {
@@ -583,5 +585,111 @@ describe('MessageInput', () => {
 
     // Should not call when already pending (handleInterrupt checks isPending)
     expect(mockInterruptSession.mutateAsync).not.toHaveBeenCalled()
+  })
+
+  // ---- Draft persistence ----
+
+  describe('draft persistence', () => {
+    /** Writes the given value to the session draft key and self-unmounts. */
+    function DraftSeeder({ sessionId, value }: { sessionId: string; value: string }) {
+      const [, setDraft] = useDraft<string>(`session:${sessionId}`)
+      useEffect(() => { setDraft(value) }, [setDraft, value])
+      return null
+    }
+
+    it('restores the draft when re-mounted in the same provider', async () => {
+      const { rerender } = renderWithProviders(
+        <>
+          <DraftSeeder sessionId="s-1" value="half-written message" />
+          <MessageInput sessionId="s-1" agentSlug="agent-1" />
+        </>
+      )
+
+      // The seeder's effect fires after first paint, then the composer's sync effect
+      // pushes the stored value into the textarea.
+      await waitFor(() => {
+        expect(screen.getByTestId('message-input')).toHaveValue('half-written message')
+      })
+
+      // Simulate navigation: unmount the input entirely (but keep the provider).
+      rerender(<></>)
+      // Navigate back — a fresh MessageInput should pick up the stored draft.
+      rerender(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+
+      await waitFor(() => {
+        expect(screen.getByTestId('message-input')).toHaveValue('half-written message')
+      })
+    })
+
+    it('keeps drafts per-session isolated', async () => {
+      const user = userEvent.setup()
+      // `key={sessionId}` mirrors how the parent mounts MessageInput, forcing a
+      // fresh composer instance per session.
+      const { rerender } = renderWithProviders(
+        <MessageInput key="s-A" sessionId="s-A" agentSlug="agent-1" />
+      )
+
+      await user.type(screen.getByTestId('message-input'), 'draft for A')
+
+      // Switch to a different session.
+      rerender(<MessageInput key="s-B" sessionId="s-B" agentSlug="agent-1" />)
+      expect(screen.getByTestId('message-input')).toHaveValue('')
+
+      // Switch back — A's draft is still there.
+      rerender(<MessageInput key="s-A" sessionId="s-A" agentSlug="agent-1" />)
+      await waitFor(() => {
+        expect(screen.getByTestId('message-input')).toHaveValue('draft for A')
+      })
+    })
+
+    it('clears the stored draft after sending', async () => {
+      const user = userEvent.setup()
+      const { rerender } = renderWithProviders(
+        <MessageInput sessionId="s-1" agentSlug="agent-1" />
+      )
+
+      await user.type(screen.getByTestId('message-input'), 'fire and forget')
+      await user.keyboard('{Enter}')
+
+      // Send clears the composer; remounting should not restore the old draft.
+      await waitFor(() => {
+        expect(mockSendMessage.mutateAsync).toHaveBeenCalled()
+      })
+
+      rerender(<></>)
+      rerender(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByTestId('message-input')).toHaveValue('')
+    })
+
+    it('reflects externally-injected drafts (voice feedback path) into the input', async () => {
+      function VoiceWriter({ sessionId, value }: { sessionId: string; value: string | null }) {
+        const [, setDraft] = useDraft<string>(`session:${sessionId}`)
+        useEffect(() => {
+          if (value !== null) setDraft(value)
+        }, [setDraft, value])
+        return null
+      }
+
+      const { rerender } = renderWithProviders(
+        <>
+          <MessageInput sessionId="s-1" agentSlug="agent-1" />
+          <VoiceWriter sessionId="s-1" value={null} />
+        </>
+      )
+
+      expect(screen.getByTestId('message-input')).toHaveValue('')
+
+      // Simulate voice feedback writing the drafted message.
+      rerender(
+        <>
+          <MessageInput sessionId="s-1" agentSlug="agent-1" />
+          <VoiceWriter sessionId="s-1" value="voice-generated draft" />
+        </>
+      )
+
+      await waitFor(() => {
+        expect(screen.getByTestId('message-input')).toHaveValue('voice-generated draft')
+      })
+    })
   })
 })

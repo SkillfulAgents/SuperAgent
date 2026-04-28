@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import { MessageSquare, ChevronLeft, ChevronRight, MoreVertical, Pencil, ClipboardCopy, Trash2 } from 'lucide-react'
+import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
 import { HighlightMatch } from '@renderer/components/ui/highlight-match'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
@@ -39,6 +40,8 @@ interface SessionItem {
   name: string
   createdAt: string
   isActive?: boolean
+  isAwaitingInput?: boolean
+  hasUnreadNotifications?: boolean
 }
 
 interface RelatedSessionsProps {
@@ -218,12 +221,13 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
         {showIcon && <MessageSquare className="h-4 w-4 text-muted-foreground shrink-0" />}
         <div className="flex-1 min-w-0">
           <div className="text-xs font-medium truncate flex items-center gap-2">
-            {session.isActive && (
-              <span className="relative flex h-2 w-2 shrink-0">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-current opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-current"></span>
-              </span>
-            )}
+            {session.isAwaitingInput ? (
+              <AwaitingDot />
+            ) : session.isActive ? (
+              <WorkingDots />
+            ) : session.hasUnreadNotifications ? (
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500" />
+            ) : null}
             <HighlightMatch text={session.name} query={searchQuery ?? ''} />
           </div>
           <div className="text-xs text-muted-foreground">
@@ -238,6 +242,7 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
                 size="icon"
                 variant="outline"
                 className="h-6 w-6"
+                aria-label={`Actions for ${session.name}`}
                 onClick={(e) => e.stopPropagation()}
               >
                 <MoreVertical className="h-3.5 w-3.5" />

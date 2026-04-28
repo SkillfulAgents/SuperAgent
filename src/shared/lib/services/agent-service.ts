@@ -30,6 +30,7 @@ import {
 import type { ApiAgent } from '@shared/lib/types/api'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { reviewManager } from '@shared/lib/proxy/review-manager'
 import { getSessionSummary } from './session-service'
 
 // ============================================================================
@@ -133,6 +134,9 @@ export async function getAgentWithStatus(slug: string): Promise<ApiAgent | null>
   }
   if (!hasSessionsAwaitingInput) {
     hasSessionsAwaitingInput = messagePersister.hasSessionsAwaitingInputForAgent(slug)
+  }
+  if (reviewManager.getPendingReviewsForAgent(slug).length > 0) {
+    hasSessionsAwaitingInput = true
   }
 
   return {

@@ -9,6 +9,8 @@ import { Hono } from 'hono'
 import {
   getWebhookTrigger,
   cancelWebhookTriggerWithCleanup,
+  pauseWebhookTrigger,
+  resumeWebhookTrigger,
 } from '@shared/lib/services/webhook-trigger-service'
 import {
   getSessionsByWebhookTrigger,
@@ -51,6 +53,38 @@ webhookTriggersRouter.get('/:triggerId/sessions', TriggerAgentRole('viewer'), as
   } catch (error) {
     console.error('Failed to fetch sessions for webhook trigger:', error)
     return c.json({ error: 'Failed to fetch sessions' }, 500)
+  }
+})
+
+// POST /api/webhook-triggers/:triggerId/pause - Pause a trigger (events discarded, subscription kept)
+webhookTriggersRouter.post('/:triggerId/pause', TriggerAgentRole('user'), async (c) => {
+  try {
+    const trigger = c.get('webhookTrigger' as never) as Awaited<ReturnType<typeof getWebhookTrigger>>
+    const paused = await pauseWebhookTrigger(trigger!.id)
+    if (!paused) {
+      return c.json({ error: 'Trigger is not active' }, 400)
+    }
+    const updated = await getWebhookTrigger(trigger!.id)
+    return c.json(updated)
+  } catch (error) {
+    console.error('Failed to pause webhook trigger:', error)
+    return c.json({ error: 'Failed to pause webhook trigger' }, 500)
+  }
+})
+
+// POST /api/webhook-triggers/:triggerId/resume - Resume a paused trigger
+webhookTriggersRouter.post('/:triggerId/resume', TriggerAgentRole('user'), async (c) => {
+  try {
+    const trigger = c.get('webhookTrigger' as never) as Awaited<ReturnType<typeof getWebhookTrigger>>
+    const resumed = await resumeWebhookTrigger(trigger!.id)
+    if (!resumed) {
+      return c.json({ error: 'Trigger is not paused' }, 400)
+    }
+    const updated = await getWebhookTrigger(trigger!.id)
+    return c.json(updated)
+  } catch (error) {
+    console.error('Failed to resume webhook trigger:', error)
+    return c.json({ error: 'Failed to resume webhook trigger' }, 500)
   }
 })
 

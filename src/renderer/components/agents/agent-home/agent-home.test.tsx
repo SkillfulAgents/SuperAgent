@@ -37,8 +37,10 @@ vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
 
 vi.mock('@renderer/context/selection-context', () => ({
   useSelection: () => ({
+    selectAgent: vi.fn(),
     selectScheduledTask: vi.fn(),
     selectSession: vi.fn(),
+    selectConnections: vi.fn(),
     consumePendingDraft: vi.fn(() => null),
   }),
 }))
@@ -337,6 +339,13 @@ describe('AgentHome', () => {
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     expect(capturedComposerOptions.agentSlug).toBe('test-agent')
+  })
+
+  it('passes a namespaced draftKey so the composer persists per agent', () => {
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+    expect(capturedComposerOptions.draftKey).toBe('agent:test-agent')
   })
 
   it('passes submitDisabled based on createSession.isPending and runtime readiness', () => {

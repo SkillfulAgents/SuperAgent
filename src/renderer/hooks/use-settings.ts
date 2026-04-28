@@ -13,8 +13,9 @@ import type {
 } from '@shared/lib/config/settings'
 import type { ComputerUseSettings } from '@shared/lib/computer-use/types'
 import type { RunnerAvailability } from '@shared/lib/container/client-factory'
+import type { RunnerSetupRemediation } from '@shared/lib/container/wsl2-setup-errors'
 
-export type { GlobalSettingsResponse, ContainerSettings, AppPreferences, ModelSettings, AgentLimitsSettings, AuthSettings, VoiceSettings, AnalyticsTarget, LlmProviderId, RunnerAvailability }
+export type { GlobalSettingsResponse, ContainerSettings, AppPreferences, ModelSettings, AgentLimitsSettings, AuthSettings, VoiceSettings, AnalyticsTarget, LlmProviderId, RunnerAvailability, RunnerSetupRemediation }
 
 export function useSettings(options?: { enabled?: boolean }) {
   return useQuery<GlobalSettingsResponse>({
@@ -91,6 +92,17 @@ export interface StartRunnerResponse {
   success: boolean
   message: string
   runnerAvailability?: RunnerAvailability[]
+  setupError?: RunnerSetupRemediation
+}
+
+/** Error thrown by useStartRunner when the server returns a typed setup failure. */
+export class RunnerSetupFailedError extends Error {
+  readonly setupError: RunnerSetupRemediation
+  constructor(setupError: RunnerSetupRemediation) {
+    super(setupError.title)
+    this.name = 'RunnerSetupFailedError'
+    this.setupError = setupError
+  }
 }
 
 export function useFactoryReset() {
@@ -145,6 +157,9 @@ export function useStartRunner() {
       const data = await res.json()
 
       if (!res.ok) {
+        if (data?.setupError) {
+          throw new RunnerSetupFailedError(data.setupError)
+        }
         throw new Error(data.message || data.error || 'Failed to start runner')
       }
 
@@ -173,6 +188,9 @@ export function useRestartRunner() {
       const data = await res.json()
 
       if (!res.ok) {
+        if (data?.setupError) {
+          throw new RunnerSetupFailedError(data.setupError)
+        }
         throw new Error(data.message || data.error || 'Failed to restart runner')
       }
 

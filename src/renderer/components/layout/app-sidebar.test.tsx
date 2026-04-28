@@ -47,6 +47,18 @@ const mockUseAgents = vi.fn(() => ({
 }))
 vi.mock('@renderer/hooks/use-agents', () => ({
   useAgents: () => mockUseAgents(),
+  useCreateAgent: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useDeleteAgent: () => ({ mutate: vi.fn(), isPending: false }),
+  useUpdateAgent: () => ({ mutate: vi.fn(), isPending: false }),
+}))
+
+const mockCreateUntitledAgent = vi.fn()
+vi.mock('@renderer/hooks/use-create-untitled-agent', () => ({
+  useCreateUntitledAgent: () => ({
+    createUntitledAgent: mockCreateUntitledAgent,
+    isPending: false,
+  }),
+  UNTITLED_AGENT_NAME: 'Untitled',
 }))
 
 const mockUseSessions = vi.fn((_slug: string): { data: any[] | undefined } => ({
@@ -117,8 +129,7 @@ const mockDialogContext = {
   settingsOpen: false,
   setSettingsOpen: vi.fn(),
   settingsTab: undefined,
-  createAgentOpen: false,
-  setCreateAgentOpen: vi.fn(),
+  openSettings: vi.fn(),
   openWizard: vi.fn(),
 }
 vi.mock('@renderer/context/dialog-context', () => ({
@@ -140,11 +151,6 @@ const mockSelectionContext = {
 }
 vi.mock('@renderer/context/selection-context', () => ({
   useSelection: () => mockSelectionContext,
-}))
-
-// Mock complex child components
-vi.mock('@renderer/components/agents/create-agent-dialog', () => ({
-  CreateAgentDialog: () => null,
 }))
 
 vi.mock('@renderer/components/agents/agent-status', () => ({
@@ -309,12 +315,12 @@ describe('AppSidebar', () => {
     expect(screen.getByTestId('create-agent-button')).toBeInTheDocument()
   })
 
-  it('opens create agent dialog on button click', async () => {
+  it('creates an untitled agent on button click', async () => {
     const user = userEvent.setup()
     renderWithProviders(<AppSidebar />)
 
     await user.click(screen.getByTestId('create-agent-button'))
-    expect(mockDialogContext.setCreateAgentOpen).toHaveBeenCalledWith(true)
+    expect(mockCreateUntitledAgent).toHaveBeenCalled()
   })
 
   it('renders session sub-items', () => {
@@ -340,10 +346,10 @@ describe('AppSidebar', () => {
   })
 
   // ==========================================================================
-  // Awaiting Input Status Tests
+  // Needs Input Status Tests
   // ==========================================================================
 
-  it('derives awaiting input status from sessions data when available', () => {
+  it('derives needs input status from sessions data when available', () => {
     // Agent data says not awaiting (stale), but sessions data says awaiting (fresh)
     mockUseAgents.mockReturnValue({
       data: [

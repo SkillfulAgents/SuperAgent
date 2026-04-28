@@ -85,7 +85,7 @@ describe('AgentStatus component', () => {
     render(<AgentStatus status="running" hasActiveSessions hasSessionsAwaitingInput />)
     const el = screen.getByTestId('agent-status')
     expect(el).toHaveAttribute('data-status', 'awaiting_input')
-    expect(screen.getByText('awaiting input')).toBeInTheDocument()
+    expect(screen.getByText('needs input')).toBeInTheDocument()
   })
 
   it('data-status attribute matches for each status', () => {

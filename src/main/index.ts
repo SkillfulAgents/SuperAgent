@@ -170,7 +170,7 @@ function processPendingProtocolUrls() {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1200,
+    width: 1280,
     height: 800,
     minWidth: 800,
     minHeight: 600,
@@ -189,11 +189,6 @@ function createWindow() {
     ...(process.platform === 'win32' && {
       backgroundMaterial: 'acrylic' as const,
       titleBarStyle: 'hidden' as const,
-      titleBarOverlay: {
-        height: 48,
-        color: '#00000000',
-        symbolColor: '#888888',
-      },
     }),
   })
 
@@ -272,12 +267,37 @@ function createWindow() {
     mainWindow?.webContents.send('fullscreen-change', false)
   })
 
+  // Emit maximize state so the custom Windows title-bar controls can toggle their icon
+  mainWindow.on('maximize', () => {
+    mainWindow?.webContents.send('window-maximized-change', true)
+  })
+  mainWindow.on('unmaximize', () => {
+    mainWindow?.webContents.send('window-maximized-change', false)
+  })
+
   processPendingProtocolUrls()
 }
 
 // IPC handler for getting full screen state
 ipcMain.handle('get-fullscreen-state', () => {
   return mainWindow?.isFullScreen() ?? false
+})
+
+// Custom Windows title-bar controls (Windows uses titleBarStyle: 'hidden' without overlay,
+// so we draw our own buttons in the renderer and drive them via these IPCs).
+ipcMain.on('window-minimize', () => {
+  mainWindow?.minimize()
+})
+ipcMain.on('window-toggle-maximize', () => {
+  if (!mainWindow) return
+  if (mainWindow.isMaximized()) mainWindow.unmaximize()
+  else mainWindow.maximize()
+})
+ipcMain.on('window-close', () => {
+  mainWindow?.close()
+})
+ipcMain.handle('get-window-maximized-state', () => {
+  return mainWindow?.isMaximized() ?? false
 })
 
 // IPC handler for getting the API URL (port may vary)
@@ -703,6 +723,30 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
     return
   }
 
+  // Agent deep link — navigate to the agent and select its latest session when available.
+  if (url.startsWith(`${PROTOCOL_SCHEME}://agent/`)) {
+    try {
+      const slug = decodeURIComponent(url.replace(`${PROTOCOL_SCHEME}://agent/`, '').split('/')[0])
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.show()
+        mainWindow.focus()
+        fetch(`http://localhost:${actualApiPort}/api/agents/${slug}/sessions`)
+          .then(res => res.ok ? res.json() : [])
+          .then((sessions: Array<{ id: string; isActive: boolean; updatedAt?: string }>) => {
+            const active = sessions.find(s => s.isActive)
+            const latest = active ?? sessions[0]
+            mainWindow!.webContents.send('navigate-to-agent', slug, latest?.id ?? null)
+          })
+          .catch(() => {
+            mainWindow!.webContents.send('navigate-to-agent', slug, null)
+          })
+      }
+    } catch (error) {
+      console.error('Failed to navigate to agent from deep link:', error)
+    }
+    return
+  }
+
   // Dashboard deep links — open in a standalone window (doesn't need mainWindow)
   if (url.startsWith(`${PROTOCOL_SCHEME}://dashboard/`)) {
     try {
@@ -1067,7 +1111,13 @@ app.on('before-quit', async (event) => {
 
     await gracefulShutdown()
     clearTimeout(forceExitTimer)
-    app.quit()
+    // Defer app.quit() by one tick. When launched via `electron-vite dev`, calling
+    // app.quit() synchronously after a preventDefault'd before-quit fails to reach
+    // [NSApp terminate:] on macOS — the process hangs in AppKit's idle event loop.
+    // Does NOT reproduce when Electron is launched directly (without electron-vite),
+    // so the trigger is something electron-vite does to the Electron child process.
+    // See alex8088/electron-vite#899 for the upstream bug (repro + A/B control).
+    setImmediate(() => app.quit())
   }
 })
 
@@ -1077,7 +1127,8 @@ process.on('uncaughtException', async (error) => {
   captureException(error, { tags: { type: 'uncaughtException' }, level: 'fatal' })
   await flushErrorReporting(3000)
   await gracefulShutdown()
-  app.quit()
+  // See before-quit handler above for why this is deferred
+  setImmediate(() => app.quit())
 })
 
 // Handle unhandled promise rejections
@@ -1086,5 +1137,6 @@ process.on('unhandledRejection', async (reason) => {
   captureException(reason instanceof Error ? reason : new Error(String(reason)), { tags: { type: 'unhandledRejection' }, level: 'fatal' })
   await flushErrorReporting(3000)
   await gracefulShutdown()
-  app.quit()
+  // See before-quit handler above for why this is deferred
+  setImmediate(() => app.quit())
 })

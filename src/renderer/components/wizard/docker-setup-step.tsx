@@ -5,9 +5,9 @@ import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { getPlatform } from '@renderer/lib/env'
 import { Wsl2InstallGuide } from './wsl2-install-guide'
 import { RequestError } from '@renderer/components/messages/request-error'
+import { RunnerSetupErrorPanel, getRunnerSetupPayload } from '@renderer/components/settings/runner-setup-error-panel'
 import {
   Loader2,
-  Check,
   Power,
   ArrowUpRight,
   RefreshCw,
@@ -260,7 +260,11 @@ export function DockerSetupStep({ onCanProceedChange }: DockerSetupStepProps) {
         </div>
       )}
 
-      <RequestError message={startRunner.error?.message ?? null} />
+      {startRunner.error && getRunnerSetupPayload(startRunner.error) ? (
+        <RunnerSetupErrorPanel error={startRunner.error} />
+      ) : (
+        <RequestError message={startRunner.error?.message ?? null} />
+      )}
 
       {startRunner.isSuccess && startRunner.data?.message && (
         <p className="text-sm text-green-600 dark:text-green-400">

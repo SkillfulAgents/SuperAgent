@@ -28,6 +28,11 @@ import { createDashboardTool } from './tools/create-dashboard'
 import { startDashboardTool } from './tools/start-dashboard'
 import { listDashboardsTool } from './tools/list-dashboards'
 import { getDashboardLogsTool } from './tools/get-dashboard-logs'
+import { listAgentsTool } from './tools/agents/list-agents'
+import { createAgentTool } from './tools/agents/create-agent'
+import { makeInvokeAgentTool } from './tools/agents/invoke-agent'
+import { getSessionsTool } from './tools/agents/get-sessions'
+import { getSessionTranscriptTool } from './tools/agents/get-session-transcript'
 
 /**
  * Factory functions for MCP servers.
@@ -77,5 +82,25 @@ export function createDashboardsMcpServer() {
     name: 'dashboards',
     version: '1.0.0',
     tools: [createDashboardTool, startDashboardTool, listDashboardsTool, getDashboardLogsTool],
+  })
+}
+
+/**
+ * @param getCallerSessionId - getter that returns the current Claude session ID
+ *   at tool-invocation time. Used by invoke_agent to identify which session is
+ *   calling so the host can enforce per-session policies (e.g. preventing an
+ *   already-invoked session from invoking further agents).
+ */
+export function createAgentsMcpServer(getCallerSessionId: () => string) {
+  return createSdkMcpServer({
+    name: 'agents',
+    version: '1.0.0',
+    tools: [
+      listAgentsTool,
+      createAgentTool,
+      makeInvokeAgentTool(getCallerSessionId),
+      getSessionsTool,
+      getSessionTranscriptTool,
+    ],
   })
 }

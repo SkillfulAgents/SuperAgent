@@ -10,14 +10,15 @@ import {
 
 // Mock containerManager before importing the service
 // Use vi.hoisted to ensure mock variables are available when vi.mock is hoisted
-const { mockGetCachedInfo, mockStopContainer, mockGetClient } = vi.hoisted(() => {
+const { mockGetCachedInfo, mockStopContainer, mockGetClient, mockGetPendingReviewsForAgent } = vi.hoisted(() => {
   const mockGetCachedInfo = vi.fn((): { status: string; port: number | null } => ({ status: 'stopped', port: null }))
   const mockStopContainer = vi.fn(() => Promise.resolve())
   const mockGetInfo = vi.fn(() => Promise.resolve({ status: 'stopped', port: null }))
   const mockGetClient = vi.fn(() => ({
     getInfo: mockGetInfo,
   }))
-  return { mockGetCachedInfo, mockStopContainer, mockGetClient }
+  const mockGetPendingReviewsForAgent = vi.fn((): unknown[] => [])
+  return { mockGetCachedInfo, mockStopContainer, mockGetClient, mockGetPendingReviewsForAgent }
 })
 
 vi.mock('@shared/lib/container/container-manager', () => ({
@@ -26,6 +27,12 @@ vi.mock('@shared/lib/container/container-manager', () => ({
     getCachedInfo: mockGetCachedInfo,
     stopContainer: mockStopContainer,
     getHealthWarnings: vi.fn(() => []),
+  },
+}))
+
+vi.mock('@shared/lib/proxy/review-manager', () => ({
+  reviewManager: {
+    getPendingReviewsForAgent: mockGetPendingReviewsForAgent,
   },
 }))
 
@@ -170,6 +177,17 @@ Instructions
 
       expect(agent?.status).toBe('running')
       expect(agent?.containerPort).toBe(3456)
+    })
+
+    it('surfaces awaiting input when agent has pending proxy reviews and no active sessions', async () => {
+      await createTestAgent('review-agent', SAMPLE_CLAUDE_MD)
+      mockGetPendingReviewsForAgent.mockReturnValueOnce([
+        { id: 'review-1', agentSlug: 'review-agent', accountId: 'acc-1', toolkit: 'gmail', method: 'GET', targetPath: '/messages', matchedScopes: [], scopeDescriptions: {} },
+      ])
+
+      const agent = await getAgentWithStatus('review-agent')
+
+      expect(agent?.hasSessionsAwaitingInput).toBe(true)
     })
   })
 

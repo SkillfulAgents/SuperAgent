@@ -17,6 +17,7 @@ import {
   useDeleteChatIntegration,
   useUpdateChatIntegration,
   useTestChatIntegrationCredentials,
+  ChatIntegrationApiError,
 } from '@renderer/hooks/use-chat-integrations'
 import {
   Plus,
@@ -397,7 +398,7 @@ export function ChatIntegrationsTab({ agentSlug }: ChatIntegrationsTabProps) {
                 <li className="text-xs text-muted-foreground">Install to Workspace (OAuth & Permissions → Install to Workspace) and copy the Bot Token (xoxb-...)</li>
               </ol>
               <div className="relative">
-                <pre className="text-[10px] leading-relaxed bg-background border rounded-md p-2 overflow-x-auto max-h-40 select-all">
+                <pre className="text-2xs leading-relaxed bg-background border rounded-md p-2 overflow-x-auto max-h-40 select-all">
                   {generateSlackManifest(integrationName.trim() || 'SuperAgent Bot')}
                 </pre>
                 <Button
@@ -413,7 +414,7 @@ export function ChatIntegrationsTab({ agentSlug }: ChatIntegrationsTabProps) {
                   {manifestCopied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
                 </Button>
               </div>
-              <p className="text-[10px] text-muted-foreground/70">Tip: set the Name field above first — it will be used in the manifest.</p>
+              <p className="text-2xs text-muted-foreground/70">Tip: set the Name field above first — it will be used in the manifest.</p>
             </div>
           ) : (
             <div className="rounded-md bg-muted/50 p-3">
@@ -485,7 +486,11 @@ export function ChatIntegrationsTab({ agentSlug }: ChatIntegrationsTabProps) {
           )}
 
           {createIntegration.error && (
-            <p className="text-xs text-red-500">{createIntegration.error.message}</p>
+            <p className="text-xs text-red-500">
+              {createIntegration.error instanceof ChatIntegrationApiError && createIntegration.error.code === 'duplicate_bot_token'
+                ? 'This bot is already connected to another integration. Remove the existing one first, or use a different bot.'
+                : createIntegration.error.message}
+            </p>
           )}
 
           {/* Action buttons */}

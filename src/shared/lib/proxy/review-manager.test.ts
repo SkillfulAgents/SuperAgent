@@ -471,4 +471,82 @@ describe('ReviewManager', () => {
     expect(manager.getPendingReviewsForAgent('agent-1').length).toBe(0)
     expect(mockBroadcastReview).not.toHaveBeenCalled()
   })
+
+  describe('requestXAgentReview', () => {
+    it('broadcasts xAgent payload + scope=invoke:target for invoke ops', async () => {
+      const promise = manager.requestXAgentReview('caller', 'target', 'Target Agent', 'invoke', 'hello there')
+
+      expect(mockBroadcastReview).toHaveBeenCalledWith(
+        'caller',
+        expect.objectContaining({
+          type: 'proxy_review_request',
+          toolkit: 'agents',
+          method: 'invoke',
+          targetPath: 'agents:invoke:target',
+          matchedScopes: ['invoke:target'],
+          xAgent: {
+            targetAgentSlug: 'target',
+            targetAgentName: 'Target Agent',
+            operation: 'invoke',
+            preview: 'hello there',
+          },
+        }),
+      )
+
+      const pending = manager.getPendingReviewsForAgent('caller')
+      expect(pending).toHaveLength(1)
+      expect(pending[0].xAgent?.operation).toBe('invoke')
+      expect(pending[0].accountId).toBe('target')
+
+      manager.submitDecision(pending[0].id, 'allow')
+      const result = await promise
+      expect(result).toBe('allow')
+    })
+
+    it('uses scope=list for list operations (no per-target row)', () => {
+      // Swallow rejection — afterEach calls rejectAll which rejects unresolved reviews
+      manager.requestXAgentReview('caller', '', 'all agents', 'list').catch(() => {})
+      expect(mockBroadcastReview).toHaveBeenCalledWith(
+        'caller',
+        expect.objectContaining({
+          method: 'list',
+          matchedScopes: ['list'],
+          xAgent: expect.objectContaining({ operation: 'list' }),
+        }),
+      )
+    })
+
+    it('uses scope=create for create operations', () => {
+      manager.requestXAgentReview('caller', '', 'New Helper', 'create', 'New Helper').catch(() => {})
+      expect(mockBroadcastReview).toHaveBeenCalledWith(
+        'caller',
+        expect.objectContaining({
+          method: 'create',
+          matchedScopes: ['create'],
+          xAgent: expect.objectContaining({ operation: 'create', preview: 'New Helper' }),
+        }),
+      )
+    })
+
+    it('deny resolves with "deny"', async () => {
+      const promise = manager.requestXAgentReview('caller', 'target', 'Target', 'read')
+      const pending = manager.getPendingReviewsForAgent('caller')
+      manager.submitDecision(pending[0].id, 'deny')
+      expect(await promise).toBe('deny')
+    })
+
+    it('non-x-agent reviews do NOT carry xAgent in the broadcast', () => {
+      manager.requestReview({
+        agentSlug: 'agent-1',
+        accountId: 'acc-1',
+        toolkit: 'gmail',
+        method: 'GET',
+        targetPath: '/v1/messages',
+        matchedScopes: ['readonly'],
+        scopeDescriptions: {},
+      }).catch(() => {})
+      const call = mockBroadcastReview.mock.calls[0]
+      expect(call[1]).not.toHaveProperty('xAgent')
+    })
+  })
 })

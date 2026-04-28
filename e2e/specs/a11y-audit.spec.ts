@@ -68,15 +68,16 @@ test.describe('Accessibility Audit', () => {
     await agentPage.deleteAgent()
   })
 
-  test('create agent dialog has no critical a11y violations', async ({ page }) => {
+  test('new agent landing has no critical a11y violations', async ({ page }) => {
     await page.locator('[data-testid="create-agent-button"]').click()
-    await expect(page.locator('[data-testid="create-agent-dialog"]')).toBeVisible()
+    // The new flow lands directly on the AgentHome for a fresh Untitled agent.
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
 
     const results = await new AxeBuilder({ page })
       .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
       .analyze()
 
-    logViolations('Create Agent Dialog', results.violations)
+    logViolations('New Agent Landing', results.violations)
     expect(results.violations.filter(v => v.impact === 'critical')).toEqual([])
   })
 })

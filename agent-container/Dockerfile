@@ -73,21 +73,32 @@ RUN apt-get update && apt-get install -y \
     libxshmfence1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install agent-browser (native Rust binary since v0.20.0) and download Chromium.
-# Chrome for Testing only provides x86_64 Linux builds, so on ARM64 (e.g. Apple
-# Silicon dev) we fall back to Playwright's Chromium which supports both arches.
-# agent-browser auto-discovers Playwright's Chromium via find_playwright_chromium().
+# Install agent-browser (native Rust binary since v0.20.0) and Playwright's
+# Chromium. Both the agent-browser runtime (via find_playwright_chromium) and
+# our dashboard screenshot code (via playwright-core) share a single Chromium
+# install under PLAYWRIGHT_BROWSERS_PATH.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 RUN npm install -g agent-browser@0.25.3 && \
-    if agent-browser install 2>/dev/null; then \
-      true; \
-    else \
-      npx playwright install chromium && \
-      chmod -R o+rx /opt/playwright-browsers && \
-      for d in /opt/playwright-browsers/chromium-*/chrome-linux; do \
-        [ -d "$d" ] && [ ! -d "${d}64" ] && ln -s "$d" "${d}64"; \
-      done; \
-    fi
+    npx playwright install chromium && \
+    chmod -R o+rx /opt/playwright-browsers
+
+# Create a stable symlink to whatever chromium binary got installed, so our
+# runtime code can point at a fixed path rather than globbing. Playwright's
+# layout (chrome-linux vs chrome-linux64 vs chrome-headless-shell-linux64) has
+# shifted between versions, so we use find to locate the binary regardless.
+# Prefer headless_shell (smaller); fall back to full chrome. Build fails loudly
+# if neither is present.
+RUN bin=$(find /opt/playwright-browsers -type f -name headless_shell -perm -u+x 2>/dev/null | head -n 1); \
+    if [ -z "$bin" ]; then \
+      bin=$(find /opt/playwright-browsers -type f -name chrome -perm -u+x 2>/dev/null | head -n 1); \
+    fi; \
+    if [ -z "$bin" ]; then \
+      echo "No chromium binary found under /opt/playwright-browsers" >&2; \
+      ls -laR /opt/playwright-browsers >&2; \
+      exit 1; \
+    fi; \
+    ln -sf "$bin" /opt/playwright-browsers/chromium-current; \
+    echo "Linked /opt/playwright-browsers/chromium-current -> $bin"
 
 # Create workspace directory
 RUN mkdir -p /workspace
@@ -105,6 +116,13 @@ COPY src ./src
 
 # Build TypeScript
 RUN npm run build
+
+# Functional smoke test: the bash step above confirms a binary exists under
+# /opt/playwright-browsers and is marked executable. This step additionally
+# invokes the runtime resolver (catching drift between the TS CHROMIUM_PATH
+# and the symlink above) and runs `--version` on the resolved binary to
+# catch a non-functional install (corrupt file, missing shared libs, etc.).
+RUN node dist/scripts/assert-chromium-available.js
 
 # Create non-root user for running Claude Code
 RUN useradd -m -s /bin/bash claude && \
@@ -131,6 +149,13 @@ ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOME=/home/claude
 ENV AGENT_BROWSER_STREAM_PORT=9223
+# Point agent-browser at the chromium binary installed under PLAYWRIGHT_BROWSERS_PATH.
+# agent-browser's built-in discovery only finds Playwright's chromium at the old
+# chrome-linux64/chrome subpath — newer playwright-core installs to chrome-linux/chrome
+# (and chromium_headless_shell-*/chrome-linux/headless_shell), so its search misses.
+# Rather than fighting the layout with symlinks (brittle across playwright versions),
+# we point agent-browser at the stable chromium-current symlink the Dockerfile sets up.
+ENV AGENT_BROWSER_EXECUTABLE_PATH=/opt/playwright-browsers/chromium-current
 ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-dev-shm-usage,--disable-blink-features=AutomationControlled,--disable-features=AutomationControlled,--disable-infobars,--disable-background-timer-throttling,--disable-popup-blocking,--disable-backgrounding-occluded-windows,--disable-renderer-backgrounding,--disable-component-update"
 ENV AGENT_BROWSER_USER_AGENT="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 ENV AGENT_BROWSER_PROFILE=/workspace/.browser-profile

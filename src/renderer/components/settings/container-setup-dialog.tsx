@@ -11,6 +11,7 @@ import { Button } from '@renderer/components/ui/button'
 import { useSettings, useStartRunner, useRefreshAvailability } from '@renderer/hooks/use-settings'
 import { getPlatform } from '@renderer/lib/env'
 import { Wsl2InstallGuide } from '@renderer/components/wizard/wsl2-install-guide'
+import { RunnerSetupErrorPanel, getRunnerSetupPayload } from '@renderer/components/settings/runner-setup-error-panel'
 import { Play, Loader2, ExternalLink, Check, RefreshCw } from 'lucide-react'
 
 interface ContainerSetupDialogProps {
@@ -200,11 +201,13 @@ export function ContainerSetupDialog({ open, onOpenChange }: ContainerSetupDialo
             </div>
           </div>
 
-          {startRunner.error && (
+          {startRunner.error && getRunnerSetupPayload(startRunner.error) ? (
+            <RunnerSetupErrorPanel error={startRunner.error} />
+          ) : startRunner.error ? (
             <p className="text-sm text-destructive">
               {startRunner.error.message}
             </p>
-          )}
+          ) : null}
 
           {startRunner.isSuccess && startRunner.data?.message && (
             <p className="text-sm text-green-600 dark:text-green-400">

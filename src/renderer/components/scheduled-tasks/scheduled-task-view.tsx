@@ -6,7 +6,7 @@
  */
 
 import { useState } from 'react'
-import { Clock, Calendar, Repeat, Trash2, Globe, Play, Pencil, Loader2 } from 'lucide-react'
+import { Clock, Calendar, Repeat, Trash2, Globe, Play, Pencil, Loader2, Pause, PlayCircle } from 'lucide-react'
 import { RelatedSessions } from '@renderer/components/sessions/related-sessions'
 import { useHumanizedCron } from '@renderer/hooks/use-humanized-cron'
 import { Button } from '@renderer/components/ui/button'
@@ -22,6 +22,8 @@ import {
   useDescribeSchedule,
   useParseSchedule,
   useUpdateSchedule,
+  usePauseScheduledTask,
+  useResumeScheduledTask,
 } from '@renderer/hooks/use-scheduled-tasks'
 import { useSelection } from '@renderer/context/selection-context'
 import { useUser } from '@renderer/context/user-context'
@@ -58,10 +60,14 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const cancelTask = useCancelScheduledTask()
   const updateTimezone = useUpdateScheduledTaskTimezone()
   const runNow = useRunScheduledTaskNow()
+  const pauseTask = usePauseScheduledTask()
+  const resumeTask = useResumeScheduledTask()
   const { handleScheduledTaskDeleted, selectSession } = useSelection()
   const { canUseAgent } = useUser()
   const canCancel = canUseAgent(agentSlug)
   const humanizedCron = useHumanizedCron(task?.isRecurring ? task.scheduleExpression : null)
+  const isActive = task?.status === 'pending' || task?.status === 'paused'
+  const isPaused = task?.status === 'paused'
 
   // Edit schedule modal state
   const [editScheduleOpen, setEditScheduleOpen] = useState(false)
@@ -164,37 +170,15 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Task header */}
-      <div className="p-6 border-b">
-        <div className="flex items-start justify-between">
-          <div>
-            <h2 className="text-xl font-semibold mb-2">
-              {task.name || 'Scheduled Task'}
-            </h2>
-            <div className="flex items-center gap-4 text-sm text-muted-foreground">
-              <div className="flex items-center gap-1">
-                {isRecurring ? (
-                  <Repeat className="h-4 w-4" />
-                ) : (
-                  <Clock className="h-4 w-4" />
-                )}
-                <span>{isRecurring ? 'Recurring' : 'One-time'}</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <Calendar className="h-4 w-4" />
-                <span>{humanizedCron ?? task.scheduleExpression}</span>
-                {humanizedCron && humanizedCron !== task.scheduleExpression && (
-                  <span className="text-xs text-muted-foreground/60">({task.scheduleExpression})</span>
-                )}
-              </div>
-              <div className="flex items-center gap-1">
-                <Globe className="h-4 w-4" />
-                <span>{taskTzLabel}</span>
-              </div>
-            </div>
-          </div>
+      <div className="p-6 border-b space-y-3">
+        {/* Row 1: title + actions */}
+        <div className="flex items-center justify-between gap-4">
+          <h2 className="text-xl font-semibold truncate">
+            {task.name || 'Scheduled Task'}
+          </h2>
 
-          {task.status === 'pending' && canCancel && (
-            <div className="flex items-center gap-2">
+          {isActive && canCancel && (
+            <div className="flex items-center gap-2 shrink-0">
               {/* Run Now button */}
               <Button
                 variant="default"
@@ -210,8 +194,32 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
                 {runNow.isPending ? 'Running...' : 'Run Now'}
               </Button>
 
-              {/* Edit Schedule button (recurring only) */}
-              {isRecurring && (
+              {/* Pause / Resume (recurring only) */}
+              {isRecurring && !isPaused && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => pauseTask.mutate({ taskId, agentSlug })}
+                  disabled={pauseTask.isPending}
+                >
+                  <Pause className="h-4 w-4 mr-2" />
+                  {pauseTask.isPending ? 'Pausing...' : 'Pause'}
+                </Button>
+              )}
+              {isRecurring && isPaused && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => resumeTask.mutate({ taskId, agentSlug })}
+                  disabled={resumeTask.isPending}
+                >
+                  <PlayCircle className="h-4 w-4 mr-2" />
+                  {resumeTask.isPending ? 'Resuming...' : 'Resume'}
+                </Button>
+              )}
+
+              {/* Edit Schedule button (recurring, not paused) */}
+              {isRecurring && !isPaused && (
                 <Button
                   variant="outline"
                   size="sm"
@@ -252,6 +260,29 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
             </div>
           )}
         </div>
+
+        {/* Row 2: details */}
+        <div className="flex items-center gap-4 text-sm text-muted-foreground">
+          <div className="flex items-center gap-1">
+            {isRecurring ? (
+              <Repeat className="h-4 w-4" />
+            ) : (
+              <Clock className="h-4 w-4" />
+            )}
+            <span>{isRecurring ? 'Recurring' : 'One-time'}</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <Calendar className="h-4 w-4" />
+            <span>{humanizedCron ?? task.scheduleExpression}</span>
+            {humanizedCron && humanizedCron !== task.scheduleExpression && (
+              <span className="text-xs text-muted-foreground/60">({task.scheduleExpression})</span>
+            )}
+          </div>
+          <div className="flex items-center gap-1">
+            <Globe className="h-4 w-4" />
+            <span>{taskTzLabel}</span>
+          </div>
+        </div>
       </div>
 
       {/* Task details */}
@@ -265,6 +296,8 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
             <div className="text-lg">
               {formatInTaskTz(nextExecution)}
             </div>
+          ) : task.status === 'paused' ? (
+            <div className="text-lg">Paused</div>
           ) : (
             <div className="text-lg capitalize">{task.status}</div>
           )}
@@ -329,7 +362,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
         </div>
 
         {/* Timezone selector */}
-        {task.status === 'pending' && canCancel && (
+        {isActive && canCancel && (
           <div className="mt-6">
             <h3 className="text-sm font-medium text-muted-foreground mb-2">
               Timezone

@@ -1,5 +1,6 @@
 
-import { ChevronDown, ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard, Loader2, WifiOff, LogOut, User, Users, CircleHelp, Ban, Zap, MessageCircle } from 'lucide-react'
+import { ChevronDown, ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard, Loader2, WifiOff, LogOut, User, Users, Ban, Zap, MessageCircle, Pause } from 'lucide-react'
+import { cn } from '@shared/lib/utils/cn'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
@@ -21,7 +22,6 @@ import {
   SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
-  SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarMenuSkeleton,
@@ -37,8 +37,9 @@ import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
-import { CreateAgentDialog } from '@renderer/components/agents/create-agent-dialog'
+import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
+import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { DashboardContextMenu } from '@renderer/components/dashboards/dashboard-context-menu'
@@ -111,14 +112,11 @@ function SessionSubItem({
         >
           <button onClick={handleClick} className="flex items-center gap-2 w-full" data-testid={`session-item-${session.id}`}>
             {isAwaitingInput ? (
-              <CircleHelp className="h-3 w-3 shrink-0 text-orange-500" />
+              <AwaitingDot />
             ) : isWorking ? (
-              <span className="relative flex h-2 w-2 shrink-0">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-current opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-current"></span>
-              </span>
+              <WorkingDots />
             ) : hasUnread ? (
-              <span className="h-2 w-2 shrink-0 rounded-full bg-blue-500" />
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500" />
             ) : null}
             <span className="truncate">{session.name}</span>
           </button>
@@ -254,7 +252,15 @@ function WebhookTriggerSubItem({
 
   const tooltip = trigger.status === 'cancelled'
     ? `Cancelled trigger: ${trigger.triggerType}`
+    : trigger.status === 'paused'
+    ? `Paused trigger: ${trigger.triggerType}`
     : `Trigger: ${trigger.triggerType}`
+
+  const icon = trigger.status === 'cancelled'
+    ? <Ban className="h-3 w-3 shrink-0" />
+    : trigger.status === 'paused'
+    ? <Pause className="h-3 w-3 shrink-0" />
+    : <Zap className="h-3 w-3 shrink-0" />
 
   return (
     <SidebarMenuSubItem>
@@ -267,7 +273,7 @@ function WebhookTriggerSubItem({
           onClick={handleClick}
           className={`flex items-center gap-2 w-full text-muted-foreground ${trigger.status === 'cancelled' ? 'opacity-50' : 'opacity-70'}`}
         >
-          {trigger.status === 'cancelled' ? <Ban className="h-3 w-3 shrink-0" /> : <Zap className="h-3 w-3 shrink-0" />}
+          {icon}
           <span className="truncate">{trigger.name || trigger.triggerType}</span>
         </button>
       </SidebarMenuSubButton>
@@ -424,7 +430,7 @@ function ChatIntegrationSubItem({
                           {session.displayName || `Chat ${session.externalChatId.slice(-6)}`}
                         </span>
                         {isArchived && (
-                          <span className="ml-auto text-[10px] text-muted-foreground/50 shrink-0">archived</span>
+                          <span className="ml-auto text-2xs text-muted-foreground/50 shrink-0">archived</span>
                         )}
                       </button>
                     </SidebarMenuSubButton>
@@ -719,6 +725,12 @@ export const AgentMenuItem = React.forwardRef<
             data-testid={`agent-item-${agent.slug}`}
           >
             <span className="flex items-center gap-1.5 min-w-0">
+              <ChevronRight
+                className={cn(
+                  'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform',
+                  hasExpandableContent && isOpen && 'rotate-90'
+                )}
+              />
               <span className="truncate">{agent.name}</span>
               {isShared && <Users className="h-3 w-3 shrink-0 text-muted-foreground" />}
             </span>
@@ -726,17 +738,12 @@ export const AgentMenuItem = React.forwardRef<
               status={agent.status}
               hasActiveSessions={sessions?.some((s) => s.isActive) || (agent.hasActiveSessions ?? false)}
               hasSessionsAwaitingInput={sessions?.some((s) => s.isAwaitingInput) || (agent.hasSessionsAwaitingInput ?? false)}
+              iconOnly
             />
           </SidebarMenuButton>
         </AgentContextMenu>
         {hasExpandableContent ? (
           <>
-            <CollapsibleTrigger asChild>
-              <SidebarMenuAction className="data-[state=open]:rotate-90">
-                <ChevronRight />
-                <span className="sr-only">Toggle sessions</span>
-              </SidebarMenuAction>
-            </CollapsibleTrigger>
             <CollapsibleContent>
               <SidebarMenuSub>
                 {isOpen && sessionsLoading && showSkeleton ? (
@@ -899,7 +906,17 @@ function ApiKeyWarning({ onOpenSettings }: { onOpenSettings: () => void }) {
 
 export function AppSidebar() {
   useRenderTracker('AppSidebar')
-  const { settingsOpen, setSettingsOpen, settingsTab, createAgentOpen, setCreateAgentOpen, openWizard } = useDialogs()
+  const { settingsOpen, setSettingsOpen, settingsTab, openWizard } = useDialogs()
+  const { createUntitledAgent, isPending: isCreatingAgent } = useCreateUntitledAgent()
+
+  // Electron menu → New Agent
+  useEffect(() => {
+    if (!window.electronAPI?.onOpenCreateAgent) return
+    window.electronAPI.onOpenCreateAgent(() => { void createUntitledAgent() })
+    return () => {
+      window.electronAPI?.removeOpenCreateAgent?.()
+    }
+  }, [createUntitledAgent])
   const { clearSelection } = useSelection()
   const [containerSetupOpen, setContainerSetupOpen] = useState(false)
   const { data: agents, isLoading, error } = useAgents()
@@ -963,7 +980,7 @@ export function AppSidebar() {
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && !isFullScreen
 
   return (
-    <Sidebar data-testid="app-sidebar">
+    <Sidebar variant="inset" data-testid="app-sidebar">
       <SidebarHeader
         className="h-12 border-b app-drag-region"
         style={{
@@ -1046,7 +1063,12 @@ export function AppSidebar() {
         <SidebarContent>
           <SidebarGroup>
             <SidebarGroupLabel>Agents</SidebarGroupLabel>
-            <SidebarGroupAction onClick={() => setCreateAgentOpen(true)} title="New Agent" data-testid="create-agent-button">
+            <SidebarGroupAction
+              onClick={() => { void createUntitledAgent() }}
+              title="New Agent"
+              data-testid="create-agent-button"
+              disabled={isCreatingAgent}
+            >
               <Plus />
               <span className="sr-only">New Agent</span>
             </SidebarGroupAction>
@@ -1105,11 +1127,6 @@ export function AppSidebar() {
         </SidebarMenu>
         <UserFooter />
       </SidebarFooter>
-
-      <CreateAgentDialog
-        open={createAgentOpen}
-        onOpenChange={setCreateAgentOpen}
-      />
 
       <GlobalSettingsDialog
         open={settingsOpen}

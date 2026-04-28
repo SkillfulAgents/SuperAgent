@@ -6,6 +6,11 @@ import { RuntimeTab } from './runtime-tab'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { getDefaultAgentImage } from '@shared/lib/config/version'
 
+// Shims for Radix Select in jsdom.
+Element.prototype.scrollIntoView = vi.fn()
+Element.prototype.hasPointerCapture = vi.fn(() => false)
+Element.prototype.releasePointerCapture = vi.fn()
+
 const mockSettings = {
   data: {
     container: {
@@ -122,5 +127,51 @@ describe('RuntimeTab', () => {
     await user.click(screen.getByRole('button', { name: 'Use default' }))
 
     expect(screen.getByLabelText('Agent Image')).toHaveValue(getDefaultAgentImage())
+  })
+
+  describe('non-standard resource limits', () => {
+    it('preserves a non-standard CPU value in the dropdown trigger', () => {
+      mockSettings.data.container.resourceLimits = { cpu: 1.5 as number, memory: '1g' }
+
+      renderWithProviders(<RuntimeTab />)
+
+      const cpuTrigger = screen.getByRole('combobox', { name: 'CPU Limit' })
+      expect(cpuTrigger).toHaveTextContent('1.5 cores')
+    })
+
+    it('preserves a non-standard memory value in the dropdown trigger', () => {
+      mockSettings.data.container.resourceLimits = { cpu: 2, memory: '3g' }
+
+      renderWithProviders(<RuntimeTab />)
+
+      const memoryTrigger = screen.getByRole('combobox', { name: 'Memory Limit' })
+      expect(memoryTrigger).toHaveTextContent('3g')
+    })
+
+    it('saves a standard CPU value once the user picks one from the dropdown', async () => {
+      const user = userEvent.setup()
+      mockSettings.data.container.resourceLimits = { cpu: 1.5 as number, memory: '1g' }
+
+      renderWithProviders(<RuntimeTab />)
+
+      const cpuTrigger = screen.getByRole('combobox', { name: 'CPU Limit' })
+      cpuTrigger.focus()
+      // Radix Select in jsdom is unreliable via click; keyboard nav is deterministic.
+      await user.keyboard('[Enter]')
+      const option = await screen.findByRole('option', { name: '4 cores' })
+      await user.click(option)
+
+      expect(cpuTrigger).toHaveTextContent('4 cores')
+
+      await user.click(screen.getByRole('button', { name: 'Save' }))
+
+      expect(mockUpdateSettings.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          container: expect.objectContaining({
+            resourceLimits: { cpu: 4, memory: '1g' },
+          }),
+        })
+      )
+    })
   })
 })

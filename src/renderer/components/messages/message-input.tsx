@@ -23,16 +23,11 @@ interface MessageInputProps {
   sessionId: string
   agentSlug: string
   onMessageSent?: (content: string) => void
-  initialDraft?: string
-  onDraftChange?: (draft: string) => void
-  /** Draft text injected from outside (e.g., voice feedback). Consumed on receipt. */
-  externalDraft?: string | null
-  onExternalDraftConsumed?: () => void
   /** Effort level last used on this session; seeds the composer selector. Defaults to 'high' when absent. */
   initialEffort?: EffortLevel
 }
 
-export function MessageInput({ sessionId, agentSlug, onMessageSent, initialDraft, onDraftChange, externalDraft, onExternalDraftConsumed, initialEffort }: MessageInputProps) {
+export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffort }: MessageInputProps) {
   useRenderTracker('MessageInput')
   const { canUseAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
@@ -70,22 +65,13 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialDraft
       [uploadFolder, sessionId, agentSlug]
     ),
     onSubmit: useCallback(async (content: string) => {
-      onDraftChange?.('')
       onMessageSent?.(content)
       await sendMessage.mutateAsync({ sessionId, agentSlug, content, effort })
       track('message_sent')
-    }, [onDraftChange, onMessageSent, sendMessage, sessionId, agentSlug, track, effort]),
+    }, [onMessageSent, sendMessage, sessionId, agentSlug, track, effort]),
     submitDisabled: sendMessage.isPending || isActive || isOffline,
-    initialMessage: initialDraft,
+    draftKey: `session:${sessionId}`,
   })
-
-  // Consume external draft when injected (e.g., from voice feedback)
-  useEffect(() => {
-    if (externalDraft) {
-      composer.setMessage(externalDraft)
-      onExternalDraftConsumed?.()
-    }
-  }, [externalDraft, composer, onExternalDraftConsumed])
 
   // Extract the slash command prefix being typed (e.g. "co" from "/co")
   const slashFilter = useMemo(() => {
@@ -116,7 +102,6 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialDraft
   const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value
     composer.setMessage(value)
-    onDraftChange?.(value)
 
     // Open slash menu when input is "/" followed by optional non-space chars (still typing command)
     if (/^\/\S*$/.test(value) && slashCommands.length > 0) {
@@ -139,7 +124,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialDraft
         }).catch(() => {})
       }
     }
-  }, [composer, onDraftChange, slashCommands.length, isAuthMode, agentSlug, sessionId])
+  }, [composer, slashCommands.length, isAuthMode, agentSlug, sessionId])
 
   const handleInterrupt = async () => {
     if (interruptSession.isPending) return

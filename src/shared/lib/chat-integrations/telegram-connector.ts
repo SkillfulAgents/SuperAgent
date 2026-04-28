@@ -105,6 +105,7 @@ export class TelegramConnector extends ChatClientConnector {
   private connected = false
   private disconnecting = false
   private hasCompletedFirstPoll = false
+  private startupError: Error | null = null
 
   // First-poll batching: accumulate messages before sending them all at once
   private pendingFirstPollMessages: Map<string, { texts: string[]; timer: ReturnType<typeof setTimeout> | null }> = new Map()
@@ -128,6 +129,7 @@ export class TelegramConnector extends ChatClientConnector {
 
   async connect(): Promise<void> {
     this.disconnecting = false
+    this.startupError = null
     this.bot = new Bot(this.config.botToken)
 
     // Handle text messages
@@ -236,6 +238,9 @@ export class TelegramConnector extends ChatClientConnector {
     // Start long polling
     // Use runner pattern: bot.start() returns a promise that resolves once
     // the first getUpdates succeeds (proving the token is valid)
+    // A rejection here (e.g. grammY 409 Conflict from duplicate pollers) must
+    // be caught — otherwise it bubbles up to process.unhandledRejection and
+    // crashes the Electron app.
     this.bot.start({
       allowed_updates: ['message', 'callback_query'],
       drop_pending_updates: false,
@@ -249,9 +254,20 @@ export class TelegramConnector extends ChatClientConnector {
         }, FIRST_POLL_BATCH_DELAY_MS * 2)
         console.log('[TelegramConnector] Long polling started')
       },
+    }).catch((err) => {
+      if (this.disconnecting) return
+      const error = err instanceof Error ? err : new Error(String(err))
+      this.connected = false
+      this.startupError = error
+      captureException(error, {
+        tags: { component: 'chat-integration', operation: 'telegram-polling' },
+        extra: { provider: 'telegram' },
+      })
+      this.emitError(error)
     })
 
-    // Wait briefly to verify connection
+    // Wait briefly to verify connection. Short-circuit if polling rejected
+    // early (e.g. invalid token, 409 Conflict) — no need to wait 10s in that case.
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Telegram connection timeout')), 10000)
       const check = setInterval(() => {
@@ -259,6 +275,10 @@ export class TelegramConnector extends ChatClientConnector {
           clearInterval(check)
           clearTimeout(timeout)
           resolve()
+        } else if (this.startupError) {
+          clearInterval(check)
+          clearTimeout(timeout)
+          reject(this.startupError)
         }
       }, 100)
     })

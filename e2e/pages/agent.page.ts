@@ -16,22 +16,35 @@ export class AgentPage {
   }
 
   /**
-   * Fill in the agent name and submit the create dialog
+   * Click "New Agent" — this immediately creates an Untitled agent and lands on
+   * its AgentHome. Type the prompt, submit via the Create Agent button, then
+   * click the agent breadcrumb so the caller lands on agent-home (where
+   * agent-settings-button lives) rather than the first session view.
    */
-  async createAgent(name: string) {
+  async createAgent(prompt: string) {
     await this.clickCreateAgent()
 
-    // Wait for dialog to be visible
-    await expect(this.page.locator('[data-testid="create-agent-dialog"]')).toBeVisible()
+    // Wait until we've actually landed on the fresh Untitled agent's AgentHome
+    // (the breadcrumb shows "Untitled") before filling — otherwise fills can
+    // race the A→B remount and end up on the outgoing agent's textbox.
+    await expect(this.page.locator('[data-testid="agent-breadcrumb"]')).toHaveText('Untitled', { timeout: 10000 })
+    await expect(this.page.locator('[data-testid="home-message-input"]')).toBeVisible()
 
-    // Fill in the name
-    await this.page.locator('[data-testid="agent-name-input"]').fill(name)
+    await this.page.locator('[data-testid="home-message-input"]').fill(prompt)
+    await this.page.locator('[data-testid="home-send-button"]').click()
 
-    // Click create
-    await this.page.locator('[data-testid="create-agent-submit"]').click()
+    // First submit creates a session and navigates to it. Wait for the session
+    // message list so we know navigation landed, then go back to agent-home.
+    await expect(this.page.locator('[data-testid="message-list"]')).toBeVisible({ timeout: 15000 })
+    await this.page.locator('[data-testid="agent-breadcrumb"]').click()
+    await expect(this.page.locator('[data-testid="agent-settings-button"]')).toBeVisible()
 
-    // Wait for dialog to close
-    await expect(this.page.locator('[data-testid="create-agent-dialog"]')).not.toBeVisible()
+    // The agent is created as "Untitled" then renamed async after session
+    // creation. Wait for the rename to land so downstream selectAgent(name)
+    // lookups by visible text match. We accept any non-"Untitled" value — in
+    // E2E the LLM is unconfigured so the server fallback yields the prompt's
+    // first ~5 words, matching what the test passed in.
+    await expect(this.page.locator('[data-testid="agent-breadcrumb"]')).not.toHaveText('Untitled', { timeout: 15000 })
   }
 
   /**

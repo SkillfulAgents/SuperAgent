@@ -11,6 +11,16 @@ export interface ReviewDetails {
   targetPath: string
   matchedScopes: string[]
   scopeDescriptions: Record<string, string>
+  // Optional: x-agent review fields.
+  // When present, the UI renders a dedicated "Agent X wants to use Agent Y" prompt
+  // with a read/invoke level selector. targetAgentSlug is the other agent being acted on.
+  xAgent?: {
+    targetAgentSlug: string
+    targetAgentName: string
+    operation: 'list' | 'read' | 'invoke' | 'create'
+    // For 'invoke': the prompt being sent. For 'create': the proposed name.
+    preview?: string
+  }
 }
 
 /**
@@ -131,6 +141,7 @@ export class ReviewManager {
         matchedScopes: details.matchedScopes,
         scopeDescriptions: details.scopeDescriptions,
         displayText,
+        ...(details.xAgent ? { xAgent: details.xAgent } : {}),
       })
     })
   }
@@ -192,6 +203,54 @@ export class ReviewManager {
       }
     }
     return results
+  }
+
+  /**
+   * Convenience helper for x-agent reviews. Wraps requestReview with a stable
+   * scopeDescriptions/displayText that the dedicated UI renderer keys off.
+   */
+  requestXAgentReview(
+    callerAgentSlug: string,
+    targetAgentSlug: string,
+    targetAgentName: string,
+    operation: 'list' | 'read' | 'invoke' | 'create',
+    preview?: string,
+    signal?: AbortSignal,
+  ): Promise<'allow' | 'deny'> {
+    const scope =
+      operation === 'list'
+        ? 'list'
+        : operation === 'create'
+          ? 'create'
+          : `${operation}:${targetAgentSlug}`
+    const description =
+      operation === 'create'
+        ? `Allow agent to create a new agent named "${targetAgentName}"?`
+        : operation === 'list'
+          ? `Allow agent to list other agents in this workspace?`
+          : operation === 'invoke'
+            ? `Allow agent to send a message to "${targetAgentName}"?`
+            : `Allow agent to read sessions of "${targetAgentName}"?`
+
+    return this.requestReview(
+      {
+        agentSlug: callerAgentSlug,
+        // Reuse fields semantically — accountId carries target slug for "always allow X" routing
+        accountId: targetAgentSlug,
+        toolkit: 'agents',
+        method: operation,
+        targetPath: `agents:${operation}:${targetAgentSlug}`,
+        matchedScopes: [scope],
+        scopeDescriptions: { [scope]: description },
+        xAgent: {
+          targetAgentSlug,
+          targetAgentName,
+          operation,
+          preview,
+        },
+      },
+      signal,
+    )
   }
 
   rejectAll(): void {

@@ -1,4 +1,6 @@
 import { test, expect } from '@playwright/test'
+import fs from 'fs'
+import path from 'path'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { WizardPage } from '../pages/wizard.page'
@@ -203,6 +205,60 @@ test.describe('Getting Started Wizard', () => {
     // Reload - wizard should not reappear
     await appPage.reload()
     await wizardPage.expectNotVisible()
+  })
+
+  test('persists auto-selected Chrome as host browser provider', async ({ request }) => {
+    // This test guards against a regression where Chrome is visually auto-selected
+    // on the Browser step (via smartDefault) but never actually persisted to
+    // settings.app.hostBrowserProvider — leaving the user on the container runtime.
+
+    // Clear any prior hostBrowserProvider value so we're starting from the
+    // "never explicitly chose" state this bug targets.
+    await request.put('http://localhost:3000/api/settings', {
+      data: { app: { hostBrowserProvider: null } },
+    })
+
+    // Only meaningful when Chrome is actually detected (smart default picks Chrome).
+    const preRes = await request.get('http://localhost:3000/api/settings')
+    const preSettings = await preRes.json()
+    const chromeProvider = preSettings.hostBrowserStatus?.providers?.find(
+      (p: { id: string; available: boolean }) => p.id === 'chrome',
+    )
+    test.skip(!chromeProvider?.available, 'Chrome not detected on this host — smart default would be container')
+    expect(preSettings.app?.hostBrowserProvider).toBeUndefined()
+
+    // Reset setupCompleted so the wizard auto-opens
+    await request.put('http://localhost:3000/api/user-settings', {
+      data: { setupCompleted: false, onboardingProgress: null },
+    })
+
+    await appPage.goto()
+    await appPage.waitForAppLoaded()
+    await wizardPage.expectVisible()
+    await wizardPage.chooseManualSetup()
+
+    // LLM -> Browser
+    await wizardPage.clickNext()
+    await wizardPage.expectStep(1)
+
+    // Don't click Chrome — the bug is that users rely on the auto-selection.
+    // Just advance through the rest of the wizard.
+    await wizardPage.clickNext()  // Browser -> Composio
+    await wizardPage.clickSkip()  // Composio -> Runtime
+    await wizardPage.clickNext()  // Runtime -> Privacy
+    await wizardPage.clickNext()  // Privacy -> Agent
+    await wizardPage.clickSkip()  // Agent -> finish
+    await wizardPage.expectNotVisible()
+
+    // Assert via API that hostBrowserProvider was persisted as 'chrome'
+    const postRes = await request.get('http://localhost:3000/api/settings')
+    const postSettings = await postRes.json()
+    expect(postSettings.app?.hostBrowserProvider).toBe('chrome')
+
+    // Also validate on-disk settings.json to rule out an API-only illusion
+    const settingsJsonPath = path.join(process.cwd(), '.e2e-data', 'settings.json')
+    const onDisk = JSON.parse(fs.readFileSync(settingsJsonPath, 'utf-8'))
+    expect(onDisk.app?.hostBrowserProvider).toBe('chrome')
   })
 
   test('re-run wizard button opens wizard from settings', async ({ page, request }) => {

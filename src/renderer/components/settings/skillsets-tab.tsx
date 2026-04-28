@@ -130,7 +130,7 @@ export function SkillsetsTab() {
                     {ss.skillCount} {ss.skillCount === 1 ? 'skill' : 'skills'}
                   </span>
                   {ss.badgeLabel && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
+                    <span className="text-2xs px-1.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
                       {ss.badgeLabel}
                     </span>
                   )}

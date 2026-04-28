@@ -5,8 +5,6 @@ interface DialogContextType {
   setSettingsOpen: (open: boolean) => void
   settingsTab: string | undefined
   openSettings: (tab?: string) => void
-  createAgentOpen: boolean
-  setCreateAgentOpen: (open: boolean) => void
   openWizard: () => void
 }
 
@@ -21,7 +19,6 @@ export function DialogProvider({
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<string | undefined>()
-  const [createAgentOpen, setCreateAgentOpen] = useState(false)
 
   const openSettings = useCallback((tab?: string) => {
     setSettingsTab(tab)
@@ -41,13 +38,8 @@ export function DialogProvider({
       setSettingsOpen(true)
     })
 
-    window.electronAPI.onOpenCreateAgent?.(() => {
-      setCreateAgentOpen(true)
-    })
-
     return () => {
       window.electronAPI?.removeOpenSettings?.()
-      window.electronAPI?.removeOpenCreateAgent?.()
     }
   }, [])
 
@@ -58,8 +50,6 @@ export function DialogProvider({
         setSettingsOpen,
         settingsTab,
         openSettings,
-        createAgentOpen,
-        setCreateAgentOpen,
         openWizard,
       }}
     >

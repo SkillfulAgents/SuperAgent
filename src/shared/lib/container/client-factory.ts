@@ -5,6 +5,7 @@ import { PodmanContainerClient } from './podman-container-client'
 import { AppleContainerClient } from './apple-container-client'
 import { LimaContainerClient, getNerdctlWrapperPath, ensureLimaReady, stopLimaVm } from './lima-container-client'
 import { WSL2ContainerClient, getWSL2NerdctlWrapperPath, ensureWSL2Ready, stopWSL2Distro } from './wsl2-container-client'
+import { RunnerSetupError, type RunnerSetupRemediation } from './wsl2-setup-errors'
 import { MockContainerClient } from './mock-container-client'
 import { getSettings } from '@shared/lib/config/settings'
 import { BaseContainerClient, execWithPath, spawnWithPath, AGENT_CONTAINER_PATH } from './base-container-client'
@@ -23,6 +24,13 @@ export interface RunnerAvailability {
   available: boolean
   /** If installed but not running, can we attempt to start it? */
   canStart: boolean
+}
+
+export interface StartRunnerResult {
+  success: boolean
+  message: string
+  /** Structured remediation when a runtime failed to start with a known, user-resolvable cause. */
+  setupError?: RunnerSetupRemediation
 }
 
 /**
@@ -125,7 +133,7 @@ function canAttemptStart(runner: ContainerRunner): boolean {
  * Returns true if start was attempted (not necessarily successful).
  */
 // TODO: disgusting piece of code. The whole idea of having the container client classes is that they should encapsulate all runtime-specific logic, including starting the runtime if needed. We should move this logic into static methods on each client class, e.g., DockerContainerClient.startRuntime(), PodmanContainerClient.startRuntime(), etc. Then this function can just delegate to the appropriate class without needing to know about platform-specific details here. Refactor this in the future to clean up the code and adhere to better separation of concerns.
-export async function startRunner(runner: ContainerRunner): Promise<{ success: boolean; message: string }> {
+export async function startRunner(runner: ContainerRunner): Promise<StartRunnerResult> {
   const os = platform()
 
   if (runner === 'apple-container') {
@@ -158,6 +166,13 @@ export async function startRunner(runner: ContainerRunner): Promise<{ success: b
       await ensureWSL2Ready()
       return { success: true, message: 'Built-in runtime is running.' }
     } catch (error: any) {
+      if (error instanceof RunnerSetupError) {
+        return {
+          success: false,
+          message: error.title,
+          setupError: error.toPayload(),
+        }
+      }
       return { success: false, message: `Failed to start built-in runtime: ${error.message}` }
     }
   }
@@ -233,7 +248,7 @@ export async function startRunner(runner: ContainerRunner): Promise<{ success: b
  * Restart a container runtime. Stops the runtime, then starts it again.
  * Used when runtime-specific settings change (e.g., Lima VM memory).
  */
-export async function restartRunner(runner: ContainerRunner): Promise<{ success: boolean; message: string }> {
+export async function restartRunner(runner: ContainerRunner): Promise<StartRunnerResult> {
   // Clear availability cache immediately so any concurrent polls reflect the stopped state
   clearRunnerAvailabilityCache()
 

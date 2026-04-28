@@ -13,13 +13,6 @@ if (isElectron() && (getPlatform() === 'darwin' || getPlatform() === 'win32')) {
   document.documentElement.classList.add('electron-vibrancy')
   if (getPlatform() === 'win32') {
     document.documentElement.classList.add('electron-vibrancy-win')
-    // Track fullscreen state — Windows reduces acrylic opacity when maximized/fullscreen
-    window.electronAPI?.getFullScreenState().then((fs) => {
-      document.documentElement.classList.toggle('electron-win-fullscreen', fs)
-    })
-    window.electronAPI?.onFullScreenChange((fs) => {
-      document.documentElement.classList.toggle('electron-win-fullscreen', fs)
-    })
   }
 }
 

@@ -4,7 +4,7 @@ import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { EffortLevel } from './types';
-import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer } from './mcp-server';
+import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer, createAgentsMcpServer } from './mcp-server';
 import { browserTools } from './tools/browser';
 import { computerUseTools } from './tools/computer-use';
 import { fileHooks, resolveToolFilePath } from './file-hooks';
@@ -421,6 +421,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           'user-input': createUserInputMcpServer(),
           'browser': createBrowserMcpServer(),
           'dashboards': createDashboardsMcpServer(),
+          'agents': createAgentsMcpServer(() => this.sessionId),
           ...(['darwin', 'win32'].includes(process.env.HOST_PLATFORM || '') ? { 'computer-use': createComputerUseMcpServer() } : {}),
           ...remoteMcpConfigs,
         },

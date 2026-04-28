@@ -434,6 +434,10 @@ class ContainerManager {
       envVars['PROXY_BASE_URL'] = `http://${hostUrl}:${appPort}/api/proxy/${agentId}`
       envVars['PROXY_TOKEN'] = proxyToken
 
+      // X-Agent Work: cross-agent calls. Container POSTs to host with PROXY_TOKEN.
+      envVars['SUPERAGENT_HOST_API_URL'] = `http://${hostUrl}:${appPort}/api`
+      envVars['SUPERAGENT_AGENT_SLUG'] = agentId
+
       // Fetch connected accounts for this agent
       const accountMappings = await db
         .select({

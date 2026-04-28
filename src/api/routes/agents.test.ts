@@ -2200,17 +2200,16 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(body[0].hasSessionsAwaitingInput).toBe(true)
   })
 
-  it('does not set awaiting input from proxy reviews when no sessions are active', async () => {
+  it('surfaces awaiting input from proxy reviews even without active sessions', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
     vi.mocked(getSessionSummary).mockResolvedValue({
       sessionIds: ['sess-idle'],
       sessionCount: 1,
       lastActivityAt: new Date(),
     })
-    // Session is NOT active
+    // Session is NOT active — reviews were triggered by a non-session flow (e.g. dashboard startup)
     vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
     vi.mocked(messagePersister.isSessionAwaitingInput).mockReturnValue(false)
-    // Agent has pending proxy reviews, but no active session to associate them with
     mockGetPendingReviewsForAgent.mockReturnValue([
       { id: 'review-1', agentSlug: 'agent-1', accountId: 'acc-1', toolkit: 'gmail', method: 'GET', targetPath: '/messages', matchedScopes: ['gmail.readonly'], scopeDescriptions: {} },
     ])
@@ -2218,7 +2217,7 @@ describe('GET /api/agents (enriched summary)', () => {
     const res = await getReq(app, '/api/agents')
     const body = await res.json()
 
-    expect(body[0].hasSessionsAwaitingInput).toBe(false)
+    expect(body[0].hasSessionsAwaitingInput).toBe(true)
   })
 
   it('picks the latest lastActivityAt across sessions', async () => {
@@ -2477,5 +2476,66 @@ describe('POST /api/agents/:id/proxy-review/:reviewId/always', () => {
     })
 
     expect(res.status).toBe(400)
+  })
+})
+
+// ============================================================================
+// Dashboard screenshot route — GET /:id/artifacts/:slug/screenshot.png
+// ============================================================================
+
+describe('GET /:id/artifacts/:slug/screenshot.png', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockGetAgentWorkspaceDir.mockReturnValue('/mock/workspace')
+  })
+
+  it('serves the PNG with image/png content-type when the file exists', async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    mockFsReadFile.mockResolvedValueOnce(png)
+
+    const res = await getReq(app, '/api/agents/my-agent/artifacts/my-dash/screenshot.png')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('image/png')
+    expect(res.headers.get('cache-control')).toContain('max-age=60')
+
+    // Read path should be rooted at the agent workspace/artifacts/<slug>.
+    const readPath = mockFsReadFile.mock.calls[0][0] as string
+    expect(readPath).toBe('/mock/workspace/artifacts/my-dash/screenshot.png')
+
+    const body = new Uint8Array(await res.arrayBuffer())
+    expect(body.byteLength).toBe(png.byteLength)
+  })
+
+  it('returns 404 when the screenshot has not been captured yet', async () => {
+    const err = Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+    mockFsReadFile.mockRejectedValueOnce(err)
+
+    const res = await getReq(app, '/api/agents/my-agent/artifacts/my-dash/screenshot.png')
+    expect(res.status).toBe(404)
+  })
+
+  it('returns 400 for a slug that would escape the artifacts dir', async () => {
+    // `..` in the path would resolve above /mock/workspace/artifacts.
+    // Hono may normalize `..` segments before the handler sees them, but the
+    // guard on the resolved path is the authoritative defence. Use an encoded
+    // segment to exercise the resolve-check directly.
+    const res = await getReq(
+      app,
+      `/api/agents/my-agent/artifacts/${encodeURIComponent('../../etc/passwd')}/screenshot.png`
+    )
+    expect([400, 404]).toContain(res.status)
+    // If the route let it through we'd attempt fs.readFile on a traversed path,
+    // which is disallowed. Either a 400 (caught) or a 404 (Hono normalized the
+    // path so the slug stopped matching) is acceptable — both mean we did not
+    // serve a file outside the artifacts tree.
+  })
+
+  it('returns 500 on unexpected read errors', async () => {
+    mockFsReadFile.mockRejectedValueOnce(new Error('EIO disk failure'))
+    const res = await getReq(app, '/api/agents/my-agent/artifacts/my-dash/screenshot.png')
+    expect(res.status).toBe(500)
   })
 })

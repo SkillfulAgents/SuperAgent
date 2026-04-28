@@ -64,26 +64,35 @@ test.describe('Awaiting Input Status', () => {
     await agentPage.waitForStatus('idle', 15000)
   })
 
-  test('parallel requests: status stays awaiting_input until all resolved', async () => {
+  test('parallel requests: status stays awaiting_input until all resolved', async ({ page }) => {
     // "ask parallel" triggers secret + question simultaneously
     await sessionPage.sendMessage('ask parallel')
 
-    // Wait for both requests to appear in the stack
-    await sessionPage.waitForSecretRequest('DATABASE_URL')
-    await sessionPage.waitForQuestionRequest()
+    // Both requests end up stacked (only one visible at a time). Wait for both to exist.
+    const secretReq = page.locator('[data-testid="secret-request"][data-secret-name="DATABASE_URL"]')
+    await expect(secretReq).toBeAttached({ timeout: 15000 })
+    await expect(sessionPage.getQuestionRequests().first()).toBeAttached({ timeout: 15000 })
 
     // Status should be awaiting_input
     await agentPage.waitForStatus('awaiting_input', 15000)
 
-    // Secret is visible first in the stack — provide it (one input remains)
-    await sessionPage.provideSecret('postgres://localhost:5432/db', 'DATABASE_URL')
+    // Whichever request is visible in the stack gets resolved first; order is timing-dependent.
+    const secretVisibleFirst = await secretReq.isVisible()
+    if (secretVisibleFirst) {
+      await sessionPage.provideSecret('postgres://localhost:5432/db', 'DATABASE_URL')
+      await expect(sessionPage.getSecretRequests()).toHaveCount(0, { timeout: 10000 })
+      // Question should now be the active (visible) card
+      await expect(sessionPage.getQuestionRequests().first()).toBeVisible()
+      await sessionPage.answerQuestion('AWS')
+    } else {
+      await sessionPage.answerQuestion('AWS')
+      await expect(sessionPage.getQuestionRequests()).toHaveCount(0, { timeout: 10000 })
+      // Secret should now be the active (visible) card
+      await expect(secretReq).toBeVisible()
+      await sessionPage.provideSecret('postgres://localhost:5432/db', 'DATABASE_URL')
+    }
+
     await expect(sessionPage.getSecretRequests()).toHaveCount(0, { timeout: 10000 })
-
-    // Question should now be visible — still awaiting input
-    await expect(sessionPage.getQuestionRequests().first()).toBeVisible()
-
-    // Now answer the question
-    await sessionPage.answerQuestion('AWS')
     await expect(sessionPage.getQuestionRequests()).toHaveCount(0, { timeout: 10000 })
 
     // Session should complete
@@ -119,9 +128,8 @@ test.describe('Awaiting Input Status', () => {
     // At least one session item should exist
     await expect(sessionItems.first()).toBeVisible({ timeout: 10000 })
 
-    // The session item should contain a CircleHelp SVG (orange question mark)
-    // lucide-react renders SVGs with class "lucide lucide-circle-help"
-    const questionIcon = sessionItems.first().locator('svg.lucide-circle-help')
-    await expect(questionIcon).toBeVisible({ timeout: 10000 })
+    // The session item should contain the "needs input" indicator (orange pulsing dot)
+    const awaitingIndicator = sessionItems.first().getByRole('img', { name: 'needs input' })
+    await expect(awaitingIndicator).toBeVisible({ timeout: 10000 })
   })
 })

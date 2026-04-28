@@ -86,7 +86,7 @@ export function HomeSkills({ agentSlug }: HomeSkillsProps) {
             <div className="border-t my-3" />
           )}
           <div className="flex items-center gap-1.5 mb-2 px-4">
-            <span className="text-[11px] text-muted-foreground">Discover</span>
+            <span className="text-xs text-muted-foreground">Discover</span>
             <div className="ml-auto flex items-center gap-1.5">
               {skillsetList.length > 0 && (
                 <Popover>
@@ -97,6 +97,7 @@ export function HomeSkills({ agentSlug }: HomeSkillsProps) {
                       variant="ghost"
                       className="h-6 w-6 relative"
                       title="Filter by skillset"
+                      aria-label="Filter by skillset"
                     >
                       <Filter className="h-3 w-3 text-muted-foreground" />
                       {selectedSkillsets && selectedSkillsets.size < skillsetList.length && (
@@ -135,7 +136,7 @@ export function HomeSkills({ agentSlug }: HomeSkillsProps) {
                   value={skillSearch}
                   onChange={(e) => setSkillSearch(e.target.value)}
                   placeholder="Search..."
-                  className="h-6 text-[11px] pr-6"
+                  className="h-6 text-xs pr-6"
                 />
                 <Search className="absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground pointer-events-none" />
               </div>
@@ -150,7 +151,7 @@ export function HomeSkills({ agentSlug }: HomeSkillsProps) {
               />
             ))}
             {filteredSkills.length === 0 && skillSearch.trim() && (
-              <p className="text-[11px] text-muted-foreground text-center py-3">
+              <p className="text-xs text-muted-foreground text-center py-3">
                 No skills matching &ldquo;{skillSearch}&rdquo;
               </p>
             )}
@@ -167,7 +168,7 @@ export function HomeSkills({ agentSlug }: HomeSkillsProps) {
               >
                 <ChevronLeft className="h-3.5 w-3.5" />
               </Button>
-              <span className="text-[11px] text-muted-foreground">
+              <span className="text-xs text-muted-foreground">
                 {skillPage + 1} / {totalPages}
               </span>
               <Button
@@ -205,7 +206,7 @@ function SkillRow({ skill, agentSlug }: { skill: ApiSkillWithStatus; agentSlug: 
           <StatusBadge status={skill.status} />
         </div>
         {skill.description && (
-          <div className="text-[11px] text-muted-foreground mt-0.5 line-clamp-1">{skill.description}</div>
+          <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{skill.description}</div>
         )}
         <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
           <Popover>
@@ -215,6 +216,7 @@ function SkillRow({ skill, agentSlug }: { skill: ApiSkillWithStatus; agentSlug: 
                 size="icon"
                 variant="outline"
                 className="h-6 w-6"
+                aria-label={`Actions for ${skill.name ?? 'skill'}`}
                 onClick={(e) => e.stopPropagation()}
               >
                 <MoreVertical className="h-3.5 w-3.5" />
