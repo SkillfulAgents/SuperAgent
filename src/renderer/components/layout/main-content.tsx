@@ -3,6 +3,7 @@ import { MessageList } from '@renderer/components/messages/message-list'
 import { MessageInput } from '@renderer/components/messages/message-input'
 import { AgentActivityIndicator } from '@renderer/components/messages/agent-activity-indicator'
 import { AgentSettingsDialog } from '@renderer/components/agents/agent-settings-dialog'
+import { SystemPromptDialog } from '@renderer/components/agents/system-prompt-dialog'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { AgentHome } from '@renderer/components/agents/agent-home/agent-home'
 import { HomePage } from '@renderer/components/home/home-page'
@@ -54,6 +55,7 @@ export function MainContent() {
   } = useSelection()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined)
+  const [systemPromptOpen, setSystemPromptOpen] = useState(false)
   // Pending user messages per session — survives navigation between sessions
   const pendingMessagesRef = useRef(new Map<string, { text: string; sentAt: number; sender?: { id: string; name: string; email: string } }>())
   const [, forceUpdate] = useState(0)
@@ -469,19 +471,33 @@ export function MainContent() {
               key={agent.slug}
               agent={agent}
               onSessionCreated={handleSessionCreated}
-              onOpenSettings={(tab?: string) => { setSettingsTab(tab); setSettingsOpen(true) }}
+              onOpenSettings={(tab?: string) => {
+                if (tab === 'system-prompt') {
+                  setSystemPromptOpen(true)
+                  return
+                }
+                setSettingsTab(tab)
+                setSettingsOpen(true)
+              }}
             />
           )
         )}
       </ErrorBoundary>
 
       {agent && (
-        <AgentSettingsDialog
-          agent={agent}
-          open={settingsOpen}
-          onOpenChange={(open) => { setSettingsOpen(open); if (!open) setSettingsTab(undefined) }}
-          initialTab={settingsTab}
-        />
+        <>
+          <AgentSettingsDialog
+            agent={agent}
+            open={settingsOpen}
+            onOpenChange={(open) => { setSettingsOpen(open); if (!open) setSettingsTab(undefined) }}
+            initialTab={settingsTab}
+          />
+          <SystemPromptDialog
+            agent={agent}
+            open={systemPromptOpen}
+            onOpenChange={setSystemPromptOpen}
+          />
+        </>
       )}
     </div>
   )
