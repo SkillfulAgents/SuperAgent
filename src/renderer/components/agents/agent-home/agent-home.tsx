@@ -220,9 +220,11 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
     [],
   )
 
+  const showRightColumn = isOwner
+
   return (
     <div className="flex-1 flex flex-col overflow-y-auto px-10 py-10 bg-background">
-      <div className="grid gap-10 items-start grid-cols-1 xl:grid-cols-[1fr_minmax(320px,400px)] w-full max-w-6xl mx-auto">
+      <div className={`grid gap-10 items-start ${showRightColumn ? 'grid-cols-1 xl:grid-cols-[1fr_minmax(320px,400px)] w-full max-w-6xl mx-auto' : 'max-w-2xl mx-auto'}`}>
         {/* Left Column — Chat composer + Sessions */}
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
           <div className="flex items-center justify-between gap-2">
@@ -469,21 +471,21 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
         </div>
 
         {/* Right Column — Crons + Connections + Skills + Volumes */}
-        <div className="space-y-3">
-          {isOwner && (
+        {showRightColumn && (
+          <div className="space-y-3">
             <HomeCrons
               agentSlug={agent.slug}
               scheduledTasks={scheduledTasks}
               formatDate={formatDate}
               onSelectTask={selectScheduledTask}
             />
-          )}
-          <HomeBookmarks agentSlug={agent.slug} isOwner={isOwner} />
-          {isOwner && <HomeConnections agentSlug={agent.slug} />}
-          {isOwner && <HomeSkills agentSlug={agent.slug} />}
-          {isOwner && <HomeVolumes agentSlug={agent.slug} />}
-          {isOwner && <HomeExtras agentSlug={agent.slug} onOpenSettings={onOpenSettings} />}
-        </div>
+            <HomeBookmarks agentSlug={agent.slug} isOwner={isOwner} />
+            <HomeConnections agentSlug={agent.slug} />
+            <HomeSkills agentSlug={agent.slug} />
+            <HomeVolumes agentSlug={agent.slug} />
+            <HomeExtras agentSlug={agent.slug} onOpenSettings={onOpenSettings} />
+          </div>
+        )}
       </div>
     </div>
   )
