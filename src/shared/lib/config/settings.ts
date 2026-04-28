@@ -316,9 +316,16 @@ export function loadSettings(): AppSettings {
         }
       }
 
-      // Migrate useHostBrowser → hostBrowserProvider
+      // Migrate useHostBrowser → hostBrowserProvider. Delete the deprecated
+      // field so the migration doesn't re-fire on every load and clobber a
+      // later user choice of "Container (built-in)" (which leaves
+      // hostBrowserProvider undefined).
+      // TODO legacy migration - delete soon
       if (loaded.app?.useHostBrowser && !loaded.app?.hostBrowserProvider) {
         loaded.app.hostBrowserProvider = 'chrome'
+      }
+      if (loaded.app && 'useHostBrowser' in loaded.app) {
+        delete loaded.app.useHostBrowser
       }
 
       // Merge with defaults to ensure all fields exist

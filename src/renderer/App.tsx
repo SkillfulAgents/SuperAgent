@@ -11,6 +11,7 @@ import { AppSidebar } from './components/layout/app-sidebar'
 import { MainContent } from './components/layout/main-content'
 import { WindowControls } from './components/layout/window-controls'
 import { SidebarProvider, SidebarInset } from './components/ui/sidebar'
+import { Toaster } from './components/ui/sonner'
 import { TrayNavigationHandler } from './components/tray-navigation-handler'
 import { GlobalNotificationHandler } from './components/notifications/global-notification-handler'
 import { GettingStartedWizard } from './components/wizard/getting-started-wizard'
@@ -95,6 +96,7 @@ export default function App() {
                 <DraftsProvider>
                   <ErrorBoundary>
                     <AppContent />
+                    <Toaster />
                   </ErrorBoundary>
                 </DraftsProvider>
               </ConnectivityProvider>

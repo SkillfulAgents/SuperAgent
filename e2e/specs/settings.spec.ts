@@ -388,25 +388,22 @@ test.describe('Settings validation errors', () => {
     await appPage.waitForAgentsLoaded()
   })
 
-  test('Runtime tab: shows error for memory below minimum', async ({ page }) => {
+  test('Runtime tab: memory dropdown does not offer values below 512m', async ({ page }) => {
     await openSettings(page)
     await goToTab(page, 'runtime')
 
-    // Memory input is disabled when agents are running — skip if disabled
-    const memoryInput = page.locator('#memory-limit')
-    const isDisabled = await memoryInput.isDisabled()
-    test.skip(isDisabled, 'Memory input is disabled because agents are running')
+    // Memory dropdown is disabled when agents are running — skip if disabled
+    const memoryTrigger = page.locator('#memory-limit')
+    const isDisabled = await memoryTrigger.isDisabled()
+    test.skip(isDisabled, 'Memory dropdown is disabled because agents are running')
 
-    // Set memory to 100m (below 512m minimum)
-    await memoryInput.fill('100m')
+    await memoryTrigger.click()
 
-    // Error message should appear
-    await expect(page.getByText('Memory limit must be at least 512m.')).toBeVisible()
-
-    // Save button should be disabled (it only appears when hasChanges is true)
-    const saveBtn = page.getByRole('button', { name: 'Save' })
-    await expect(saveBtn).toBeVisible()
-    await expect(saveBtn).toBeDisabled()
+    // The smallest option must be 512 MB — no sub-minimum values like 128 MB / 256 MB.
+    const options = page.getByRole('option')
+    await expect(options.first()).toHaveText('512 MB')
+    await expect(page.getByRole('option', { name: '128 MB' })).toHaveCount(0)
+    await expect(page.getByRole('option', { name: '256 MB' })).toHaveCount(0)
   })
 
   test('Runtime tab: shows error for empty agent image', async ({ page }) => {
@@ -430,17 +427,21 @@ test.describe('Settings validation errors', () => {
     await openSettings(page)
     await goToTab(page, 'runtime')
 
-    // CPU input is disabled when agents are running — skip if disabled
-    const cpuInput = page.locator('#cpu-limit')
-    const isDisabled = await cpuInput.isDisabled()
-    test.skip(isDisabled, 'CPU input is disabled because agents are running')
+    // CPU dropdown is disabled when agents are running — skip if disabled
+    const cpuTrigger = page.locator('#cpu-limit')
+    const isDisabled = await cpuTrigger.isDisabled()
+    test.skip(isDisabled, 'CPU dropdown is disabled because agents are running')
 
     // Initially no save button (no changes)
     await expect(page.getByRole('button', { name: 'Save' })).not.toBeVisible()
 
-    // Make a change
-    const originalValue = await cpuInput.inputValue()
-    await cpuInput.fill('4')
+    // Capture the current selection text ("1 core", "2 cores", etc.) and pick
+    // a different option from the dropdown.
+    const originalText = (await cpuTrigger.textContent())?.trim() ?? ''
+    const targetOption = originalText.startsWith('4') ? '2 cores' : '4 cores'
+
+    await cpuTrigger.click()
+    await page.getByRole('option', { name: targetOption }).click()
 
     // Save and Reset buttons should now appear
     await expect(page.getByRole('button', { name: 'Save' })).toBeVisible()
@@ -448,7 +449,7 @@ test.describe('Settings validation errors', () => {
 
     // Click Reset — buttons should disappear, value restored
     await page.getByRole('button', { name: 'Reset' }).click()
-    await expect(page.locator('#cpu-limit')).toHaveValue(originalValue)
+    await expect(cpuTrigger).toHaveText(originalText)
     await expect(page.getByRole('button', { name: 'Save' })).not.toBeVisible()
   })
 
@@ -456,12 +457,15 @@ test.describe('Settings validation errors', () => {
     await openSettings(page)
     await goToTab(page, 'runtime')
 
-    // CPU input is disabled when agents are running — skip if disabled
-    const cpuInput = page.locator('#cpu-limit')
-    test.skip(await cpuInput.isDisabled(), 'CPU input is disabled because agents are running')
+    // CPU dropdown is disabled when agents are running — skip if disabled
+    const cpuTrigger = page.locator('#cpu-limit')
+    test.skip(await cpuTrigger.isDisabled(), 'CPU dropdown is disabled because agents are running')
 
-    // Make a change so Save button appears
-    await cpuInput.fill('4')
+    // Make a change so Save button appears — pick an option different from the current one
+    const originalText = (await cpuTrigger.textContent())?.trim() ?? ''
+    const targetOption = originalText.startsWith('4') ? '2 cores' : '4 cores'
+    await cpuTrigger.click()
+    await page.getByRole('option', { name: targetOption }).click()
     await expect(page.getByRole('button', { name: 'Save' })).toBeVisible()
 
     // Intercept the next PUT request to simulate server error

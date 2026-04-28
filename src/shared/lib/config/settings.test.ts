@@ -507,6 +507,18 @@ describe('loadSettings', () => {
 
       expect(result.app?.hostBrowserProvider).toBeUndefined()
     })
+
+    it('strips useHostBrowser after migrating so it cannot re-fire', () => {
+      mockSettingsFile(
+        JSON.stringify({
+          app: { useHostBrowser: true },
+        })
+      )
+
+      const result = loadSettings()
+
+      expect(result.app).not.toHaveProperty('useHostBrowser')
+    })
   })
 
   // --------------------------------------------------------------------------
