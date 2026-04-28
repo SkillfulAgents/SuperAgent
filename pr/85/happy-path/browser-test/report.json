@@ -1,25 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified browser-use feature allows agents to execute browser tools, navigate to URLs, retrieve page information, and display live browser previews with tool call cards in the chat interface.",
+  "reason": "Verified that the agent can execute browser commands and report page titles correctly",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded Super Agent dashboard with three agents listed in sidebar",
-    "Clicked on \"QA-20260417-040701-yf5v\" agent in sidebar — Agent chat interface opened successfully",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in input field — Message accepted in textbox",
-    "Pressed Cmd+Enter to send message — Message sent successfully, agent status changed to \"working\"",
-    "Waited up to 180 seconds for response with \"Example Domain\" text — Agent completed work in ~6 seconds and returned response",
-    "Verified response mentions \"Example Domain\" — Response clearly states: \"The page title is \\\"Example Domain\\\"\"",
-    "Took full page screenshot — Screenshot captured showing chat view with tool cards, response message, and live browser preview panel displaying Example Domain webpage"
+    "Navigated to http://localhost:47891 — Page loaded successfully showing Super Agent home with three agents in the sidebar and main content area",
+    "Found and clicked on agent \"QA-20260428-165641-tnw1\" in the main content area — Agent chat page opened, showing the agent name, idle status, and empty chat input field",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into the input field — Message appeared in the input field, ready to send",
+    "Pressed Cmd+Enter to send the message — Message sent successfully, agent status changed to \"working\", session created with \"New Session\" label",
+    "Waited up to 3 minutes for response using browser_wait_for with text \"Example Domain\" — Response received within 8 seconds, agent executed two browser operations and returned result",
+    "Verified response mentions \"Example Domain\" — Response clearly states \"The page title is Example Domain.\" with working browser preview panel on right side showing the actual page"
   ],
   "bugs": [],
-  "durationMs": 82372,
-  "sessionId": "ed2c3ec1-7405-48ca-88c4-8715ab75baeb",
+  "durationMs": 114417,
+  "sessionId": "c9baddab-b5ca-4569-aac0-7c38d915c975",
   "cost": {
-    "inputTokens": 207,
-    "outputTokens": 8482,
-    "cacheCreationTokens": 108890,
-    "cacheReadTokens": 619107,
+    "inputTokens": 284,
+    "outputTokens": 9018,
+    "cacheCreationTokens": 120945,
+    "cacheReadTokens": 1011805,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.24064
+    "totalCostUsd": 0.297736
   }
 }
