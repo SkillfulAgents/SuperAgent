@@ -102,64 +102,77 @@ test.describe('User Input Requests', () => {
     // "ask parallel" triggers UserInputRequestScenario with both a secret and a question
     await sessionPage.sendMessage('ask parallel')
 
-    // Both requests should appear (in a paginated stack — only one visible at a time)
+    // Both requests should be in the DOM (in a paginated stack — only one visible at a time).
+    // Arrival order is non-deterministic in mock SSE, so we don't assume which is on top.
     await sessionPage.waitForSecretRequest('DATABASE_URL')
     await sessionPage.waitForQuestionRequest()
 
-    // Verify both are in the DOM
     const secretRequests = sessionPage.getSecretRequests()
     const questionRequests = sessionPage.getQuestionRequests()
     await expect(secretRequests).toHaveCount(1)
     await expect(questionRequests).toHaveCount(1)
 
-    // Verify content (toContainText works on hidden elements in the stack)
+    // Content assertions don't care about visibility — toContainText reads hidden DOM too.
     await expect(secretRequests.first()).toContainText('Connection string for the database')
     await expect(questionRequests.first()).toContainText('Which cloud provider do you prefer?')
     await expect(questionRequests.first()).toContainText('AWS')
     await expect(questionRequests.first()).toContainText('GCP')
+
+    // Pagination control should show "1 of 2" since two cards are stacked.
+    await expect(
+      page.locator('[data-testid="request-stack-pagination"]:visible').first()
+    ).toHaveAttribute('data-count', '2')
   })
 
   test('parallel requests: answer both independently', async ({ page }) => {
     await sessionPage.sendMessage('ask parallel')
 
-    // Wait for both to appear in the stack
+    // Wait for both to appear in the stack (order is non-deterministic).
     await sessionPage.waitForSecretRequest('DATABASE_URL')
     await sessionPage.waitForQuestionRequest()
 
-    // Secret is visible first in the stack — provide it
-    await sessionPage.provideSecret('postgres://localhost:5432/db', 'DATABASE_URL')
-    await expect(sessionPage.getSecretRequests()).toHaveCount(0, { timeout: 10000 })
+    // Resolve whichever card is on top first, then the other. After each
+    // resolution we wait for that card type to drain to zero before asking
+    // for the next active card — otherwise we can race the optimistic
+    // "disabled-input" state that briefly keeps the same testid attached.
+    for (let i = 0; i < 2; i++) {
+      const active = await sessionPage.getActiveRequestType()
+      if (active === 'secret') {
+        await sessionPage.provideSecret('postgres://localhost:5432/db', 'DATABASE_URL')
+        await expect(sessionPage.getSecretRequests()).toHaveCount(0, { timeout: 10000 })
+      } else if (active === 'question') {
+        await sessionPage.answerQuestion('AWS')
+        await expect(sessionPage.getQuestionRequests()).toHaveCount(0, { timeout: 10000 })
+      } else {
+        throw new Error(`Expected an active request card on iteration ${i}, found none`)
+      }
+    }
 
-    // Question should now be visible (only remaining card in stack)
-    await expect(sessionPage.getQuestionRequests().first()).toBeVisible()
-
-    // Answer the question
-    await sessionPage.answerQuestion('AWS')
-    await expect(sessionPage.getQuestionRequests()).toHaveCount(0, { timeout: 10000 })
-
-    // Session should complete after both inputs are resolved
+    // Session should complete after both inputs are resolved.
     await sessionPage.waitForInputEnabled(15000)
   })
 
   test('parallel requests: decline secret, answer question', async ({ page }) => {
     await sessionPage.sendMessage('ask parallel')
 
-    // Wait for both to appear in the stack
     await sessionPage.waitForSecretRequest('DATABASE_URL')
     await sessionPage.waitForQuestionRequest()
 
-    // Secret is visible first in the stack — decline it
-    await sessionPage.declineSecret('DATABASE_URL')
-    await expect(sessionPage.getSecretRequests()).toHaveCount(0, { timeout: 10000 })
+    // Decline the secret and answer the question, in whatever order they're stacked.
+    for (let i = 0; i < 2; i++) {
+      const active = await sessionPage.getActiveRequestType()
+      if (active === 'secret') {
+        await sessionPage.declineSecret('DATABASE_URL')
+        await expect(sessionPage.getSecretRequests()).toHaveCount(0, { timeout: 10000 })
+      } else if (active === 'question') {
+        await sessionPage.answerQuestion('GCP')
+        await expect(sessionPage.getQuestionRequests()).toHaveCount(0, { timeout: 10000 })
+      } else {
+        throw new Error(`Expected an active request card on iteration ${i}, found none`)
+      }
+    }
 
-    // Question should now be visible (only remaining card in stack)
-    await expect(sessionPage.getQuestionRequests().first()).toBeVisible()
-
-    // Answer the question
-    await sessionPage.answerQuestion('GCP')
-    await expect(sessionPage.getQuestionRequests()).toHaveCount(0, { timeout: 10000 })
-
-    // Session should complete
+    // Session should complete.
     await sessionPage.waitForInputEnabled(15000)
   })
 
