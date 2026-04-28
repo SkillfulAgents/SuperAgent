@@ -116,14 +116,16 @@ function SessionSubItem({
             )}
             data-testid={`session-item-${session.id}`}
           >
-            {isAwaitingInput ? (
-              <AwaitingDot />
-            ) : isWorking ? (
-              <WorkingDots />
-            ) : hasUnread ? (
-              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500" />
-            ) : null}
-            <span className="truncate">{session.name}</span>
+            <span className="flex-1 min-w-0 truncate text-left">{session.name}</span>
+            <span className="flex items-center justify-center w-4 shrink-0">
+              {isAwaitingInput ? (
+                <AwaitingDot size="default" />
+              ) : isWorking ? (
+                <WorkingDots />
+              ) : hasUnread ? (
+                <span className="h-2 w-2 rounded-full bg-blue-500" />
+              ) : null}
+            </span>
           </button>
         </SidebarMenuSubButton>
       </SessionContextMenu>
@@ -423,7 +425,7 @@ function DashboardSubItem({
             onDoubleClick={handleDoubleClick}
             className="flex items-center gap-2 w-full"
           >
-            <SquareMousePointer className="!h-3.5 !w-3.5 shrink-0 !text-muted-foreground" />
+            <SquareMousePointer className="!h-3.5 !w-3.5 shrink-0" />
             {isRenaming ? (
               <InlineRenameInput
                 agentSlug={agentSlug}
@@ -716,7 +718,7 @@ function NotificationsMenuButton() {
           <Bell className="h-4 w-4" />
           <span>Notifications</span>
           {unreadCount > 0 && (
-            <span className="ml-auto h-4 min-w-4 px-1 rounded-full bg-red-500 text-2xs font-medium text-white flex items-center justify-center">
+            <span className="ml-auto h-4 min-w-4 px-1 rounded-full bg-foreground text-2xs font-medium text-background flex items-center justify-center">
               {unreadCount > 99 ? '99+' : unreadCount}
             </span>
           )}
