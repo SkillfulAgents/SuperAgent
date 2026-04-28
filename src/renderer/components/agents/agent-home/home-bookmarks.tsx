@@ -84,31 +84,20 @@ function BookmarkRow({
 
   if (!href) return null
 
-  const handleOpen = () => {
-    window.open(href, '_blank', 'noopener,noreferrer')
-  }
-
   const icon = bookmark.link ? (
     <LinkIcon link={bookmark.link} />
-  ) : bookmark.file ? (
+  ) : (
     <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-  ) : null
+  )
 
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      className="group relative py-3 px-4 hover:bg-muted/50 transition-colors cursor-pointer"
-      onClick={handleOpen}
-      onKeyDown={(e) => {
-        if (e.target !== e.currentTarget) return
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          handleOpen()
-        }
-      }}
-    >
-      <div className="flex items-center gap-2 min-w-0">
+    <div className="group relative">
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="flex items-center gap-2 py-3 px-4 hover:bg-muted/50 transition-colors min-w-0"
+      >
         {icon}
         <span className="text-xs font-medium truncate shrink-0">{bookmark.name}</span>
         <span className="text-[11px] text-muted-foreground truncate min-w-0">
@@ -119,7 +108,7 @@ function BookmarkRow({
         ) : (
           <ArrowDownToLine className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
         )}
-      </div>
+      </a>
       {isOwner && (
         <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
           <Popover open={menuOpen} onOpenChange={setMenuOpen}>
@@ -130,7 +119,6 @@ function BookmarkRow({
                 variant="outline"
                 className="h-6 w-6"
                 aria-label="Bookmark actions"
-                onClick={(e) => e.stopPropagation()}
               >
                 <MoreVertical className="h-3.5 w-3.5" />
               </Button>
@@ -138,8 +126,7 @@ function BookmarkRow({
             <PopoverContent align="end" className="w-36 p-1">
               <button
                 className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
-                onClick={(e) => {
-                  e.stopPropagation()
+                onClick={() => {
                   setMenuOpen(false)
                   onRename()
                 }}
@@ -149,8 +136,7 @@ function BookmarkRow({
               </button>
               <button
                 className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition-colors"
-                onClick={(e) => {
-                  e.stopPropagation()
+                onClick={() => {
                   setMenuOpen(false)
                   onDelete()
                 }}

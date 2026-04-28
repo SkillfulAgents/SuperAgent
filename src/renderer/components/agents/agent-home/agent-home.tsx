@@ -220,7 +220,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
     [],
   )
 
-  const showRightColumn = isOwner
+  const showRightColumn = !isViewOnly
 
   return (
     <div className="flex-1 flex flex-col overflow-y-auto px-10 py-10 bg-background">
@@ -473,17 +473,19 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
         {/* Right Column — Crons + Connections + Skills + Volumes */}
         {showRightColumn && (
           <div className="space-y-3">
-            <HomeCrons
-              agentSlug={agent.slug}
-              scheduledTasks={scheduledTasks}
-              formatDate={formatDate}
-              onSelectTask={selectScheduledTask}
-            />
+            {isOwner && (
+              <HomeCrons
+                agentSlug={agent.slug}
+                scheduledTasks={scheduledTasks}
+                formatDate={formatDate}
+                onSelectTask={selectScheduledTask}
+              />
+            )}
             <HomeBookmarks agentSlug={agent.slug} isOwner={isOwner} />
-            <HomeConnections agentSlug={agent.slug} />
-            <HomeSkills agentSlug={agent.slug} />
-            <HomeVolumes agentSlug={agent.slug} />
-            <HomeExtras agentSlug={agent.slug} onOpenSettings={onOpenSettings} />
+            {isOwner && <HomeConnections agentSlug={agent.slug} />}
+            {isOwner && <HomeSkills agentSlug={agent.slug} />}
+            {isOwner && <HomeVolumes agentSlug={agent.slug} />}
+            {isOwner && <HomeExtras agentSlug={agent.slug} onOpenSettings={onOpenSettings} />}
           </div>
         )}
       </div>
