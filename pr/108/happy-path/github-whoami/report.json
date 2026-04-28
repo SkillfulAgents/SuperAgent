@@ -1,0 +1,35 @@
+{
+  "storyId": "github-whoami",
+  "passed": false,
+  "reason": "Agent attempted to retrieve GitHub username but failed due to invalid/expired OAuth token for the connected GitHub account\n  Bugs found:\n    - The connected GitHub account OAuth token is invalid or expired, preventing the agent from successfully authenticating and retrieving the user's GitHub username. The agent received a 401 \"Bad credentials\" error and was unable to complete the task despite multiple retry attempts.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully with SuperAgent interface showing agent list in sidebar",
+    "Clicked on agent \"QA-20260428-180010-pjv3\" in sidebar — Agent detail page loaded, showing agent information and message input field",
+    "Verified agent status — Agent status was \"idle\" (meets requirement of \"running\" or \"idle\")",
+    "Typed message \"Use the GitHub tool to check who I am. Tell me my GitHub username.\" into input field — Message successfully entered",
+    "Clicked Send message button — Message was sent and agent began processing, status changed to \"working\"",
+    "Waited for GitHub account access request card — Card appeared after ~5 seconds asking to grant GitHub account access",
+    "Clicked Allow Access button to grant GitHub permission — Permission was granted, agent continued working",
+    "Agent executed multiple API calls requesting authenticated user data — Activity indicator showed \"Working...\" with elapsed time reaching 1m 9s",
+    "Multiple GitHub API requests appeared requesting permission to GET /user endpoint — Clicked \"Allow\" multiple times to permit the API calls",
+    "Agent reported bad credentials error — After 2m 11s, agent displayed message: \"The connected account returned bad credentials — the OAuth token may not be valid.\"",
+    "Agent requested fresh GitHub connection — Another GitHub account access request card appeared",
+    "Granted fresh connection access — Agent continued attempting to retrieve user data",
+    "Agent executed \"Retry with explicit Accept header\" command — Agent tried additional approach to fetch user data",
+    "Agent completed with authentication failure — After 2m 57s total, agent displayed final response: \"The connected GitHub account is returning 'Bad credentials' (401) — the stored OAuth token appears to be invalid or expired. The account ID is `b1b13ca7-b9c1-4344-95fe-d3b4c82331a4` but the proxy can't authenticate to GitHub with it.\"",
+    "Verified final response — Response did NOT include a GitHub username; instead contained error message requesting to reconnect the GitHub account"
+  ],
+  "bugs": [
+    "The connected GitHub account OAuth token is invalid or expired, preventing the agent from successfully authenticating and retrieving the user's GitHub username. The agent received a 401 \"Bad credentials\" error and was unable to complete the task despite multiple retry attempts."
+  ],
+  "durationMs": 262124,
+  "sessionId": "3a2e675a-8b66-4c9d-abc8-3af132114bef",
+  "cost": {
+    "inputTokens": 666,
+    "outputTokens": 17935,
+    "cacheCreationTokens": 86479,
+    "cacheReadTokens": 3066238,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.505064
+  }
+}
