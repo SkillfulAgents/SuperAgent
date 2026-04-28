@@ -10,6 +10,7 @@ import { HomePage } from '@renderer/components/home/home-page'
 import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/scheduled-task-view'
 import { WebhookTriggerView } from '@renderer/components/webhook-triggers/webhook-trigger-view'
 import { ChatIntegrationView } from '@renderer/components/chat-integrations/chat-integration-view'
+import { ConnectionsView } from '@renderer/components/connections/connections-view'
 import { BrowserDrawerPanel } from '@renderer/components/browser/browser-drawer-panel'
 import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
@@ -47,6 +48,7 @@ export function MainContent() {
     selectedWebhookTriggerId: webhookTriggerId,
     selectedChatIntegrationId: chatIntegrationId,
     selectedDashboardSlug: dashboardSlug,
+    selectedConnections: connectionsOpen,
     selectSession,
     selectScheduledTask,
     selectWebhookTrigger,
@@ -154,7 +156,8 @@ export function MainContent() {
 
   const showSessionCrumb = !!(sessionId && session?.agentSlug === agentSlug)
   const showTaskCrumb = !!(scheduledTaskId && scheduledTask)
-  const isAgentLeaf = !showSessionCrumb && !showTaskCrumb
+  const showConnectionsCrumb = !!connectionsOpen
+  const isAgentLeaf = !showSessionCrumb && !showTaskCrumb && !showConnectionsCrumb
 
   return (
     <div className="h-full flex flex-col" data-testid="main-content">
@@ -200,6 +203,12 @@ export function MainContent() {
                   {scheduledTask.name || 'Scheduled Task'}
                 </span>
               </div>
+            </div>
+          )}
+          {showConnectionsCrumb && (
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span aria-hidden="true" className="text-[13px] font-light text-muted-foreground shrink-0 hidden md:block">/</span>
+              <span className="truncate text-[13px] font-light text-foreground">Connections</span>
             </div>
           )}
         </div>
@@ -385,6 +394,8 @@ export function MainContent() {
       <ErrorBoundary>
         {dashboardSlug ? (
           <DashboardView agentSlug={agentSlug} dashboardSlug={dashboardSlug} />
+        ) : connectionsOpen ? (
+          <ConnectionsView agentSlug={agentSlug} />
         ) : /* Show scheduled task view when a scheduled task is selected */
         scheduledTaskId ? (
           <ScheduledTaskView taskId={scheduledTaskId} agentSlug={agentSlug} />

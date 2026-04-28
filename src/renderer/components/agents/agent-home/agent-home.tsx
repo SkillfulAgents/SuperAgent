@@ -45,7 +45,7 @@ interface AgentHomeProps {
 
 export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHomeProps) {
   useRenderTracker('AgentHome')
-  const { selectScheduledTask, selectAgent } = useSelection()
+  const { selectScheduledTask, selectAgent, consumePendingDraft } = useSelection()
   const { canUseAgent, canAdminAgent } = useUser()
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)
@@ -159,6 +159,15 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
     keepMessageUntilComplete: true,
     draftKey: `agent:${agent.slug}`,
   })
+
+  // Consume any pending draft from voice agent flow
+  useEffect(() => {
+    const draft = consumePendingDraft()
+    if (draft) {
+      composer.setMessage(draft)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- only run on mount
+  }, [])
 
   // Auto-expand when message gets long (5+ lines)
   useEffect(() => {
@@ -473,7 +482,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
               formatDate={formatDate}
               onSelectTask={selectScheduledTask}
             />
-            <HomeConnections agentSlug={agent.slug} onOpenSettings={onOpenSettings} />
+            <HomeConnections agentSlug={agent.slug} />
             <HomeSkills agentSlug={agent.slug} />
             <HomeVolumes agentSlug={agent.slug} />
             <HomeExtras agentSlug={agent.slug} onOpenSettings={onOpenSettings} />
