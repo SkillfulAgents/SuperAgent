@@ -400,7 +400,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
               <HomeBookmarks agentSlug={agent.slug} isOwner={isOwner} />
 
               {/* Sessions list / creation aids */}
-              <div className="pt-2">
+              <div className={sessions.length > 0 ? 'pt-2' : '-mt-5'}>
                 {sessions.length > 0 ? (
                   <>
                     <div className="flex items-center gap-2">

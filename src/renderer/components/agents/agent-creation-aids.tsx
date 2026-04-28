@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
-import { Phone, Upload, FileArchive, Loader2 } from 'lucide-react'
+import { AudioLines, Upload, ArrowUpFromLine, FileArchive, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@renderer/components/ui/button'
 import { OptionCard } from '@renderer/components/ui/option-card'
@@ -213,36 +213,25 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
 
   return (
     <div className={className}>
-      <div className="flex items-center gap-4 pt-2 px-6 mb-4">
-        <div className="h-px flex-1 bg-border" />
-        <span className="text-xs text-muted-foreground">OR</span>
-        <div className="h-px flex-1 bg-border" />
-      </div>
-      <div className="space-y-4">
+      <div className="flex flex-wrap items-start gap-3">
         {hasVoiceConfigured && (
           <OptionCard
-            title="Try Talking to SuperAgent for Ideas."
-            description={(
-              <>
-                Answer a few questions about your job — get a detailed<br />
-                prompt for your agent. Takes less than five minutes.
-              </>
-            )}
-            icon={<Phone className="h-4 w-4" />}
+            title="Talk to SuperAgent for Ideas"
+            description="Answer a few questions about your job — get a detailed prompt for your agent."
+            icon={<AudioLines className="h-3 w-3" />}
+            iconTone="neutral"
+            pill="5 min"
             buttonLabel="Start talking"
             onClick={startVoiceAgent}
           />
         )}
 
         <OptionCard
-          title="Import an agent or agent template."
-          description={(
-            <>
-              Bring in a pre-built agent from a .zip template,<br />
-              including skills and optional environment variables.
-            </>
-          )}
-          icon={<Upload className="h-4 w-4" />}
+          title="Import an Agent"
+          description="Bring in a pre-built agent from a .zip template, including skills and optional environment variables."
+          icon={<ArrowUpFromLine className="h-3 w-3" />}
+          iconTone="neutral"
+          pill="30 sec"
           buttonLabel="Import agent"
           onClick={() => setShowImportDialog(true)}
         />
