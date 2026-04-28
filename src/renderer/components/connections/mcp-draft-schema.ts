@@ -4,9 +4,9 @@ export const mcpAuthTypeSchema = z.enum(['none', 'oauth', 'bearer'])
 export type McpAuthType = z.infer<typeof mcpAuthTypeSchema>
 
 /**
- * The shape of the MCP add form, validated at submit time. URLs must parse as
- * `https:` — the draft is filled from common-servers (where every entry is
- * https) or from custom user input.
+ * The shape of the MCP add form, validated at submit time. URLs must be https,
+ * with a carve-out for http://localhost / http://127.0.0.1 — devs commonly run
+ * local MCPs on a loopback http port during development.
  */
 export const mcpDraftSchema = z
   .object({
@@ -18,11 +18,13 @@ export const mcpDraftSchema = z
       .min(1, 'URL is required')
       .refine((value) => {
         try {
-          return new URL(value).protocol === 'https:'
+          const u = new URL(value)
+          if (u.protocol === 'https:') return true
+          return u.protocol === 'http:' && (u.hostname === 'localhost' || u.hostname === '127.0.0.1')
         } catch {
           return false
         }
-      }, 'URL must be a valid https:// URL'),
+      }, 'URL must be https:// (http:// is allowed only for localhost)'),
     authType: mcpAuthTypeSchema,
     token: z.string().default(''),
   })

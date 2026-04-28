@@ -389,6 +389,7 @@ function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void })
             onChange={(e) => setDraft({ ...draft, name: e.target.value })}
             placeholder="e.g., Granola Meetings"
             className="mt-1"
+            data-testid="mcp-form-name"
           />
         </div>
         <div>
@@ -414,6 +415,7 @@ function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void })
             onChange={(e) => setDraft({ ...draft, url: e.target.value })}
             placeholder="e.g., https://mcp.granola.ai/mcp"
             className="mt-1"
+            data-testid="mcp-form-url"
           />
         </div>
         {draft.authType === 'bearer' && (
@@ -425,6 +427,7 @@ function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void })
               onChange={(e) => setDraft({ ...draft, token: e.target.value })}
               placeholder="Enter bearer token"
               className="mt-1"
+              data-testid="mcp-form-token"
             />
           </div>
         )}
@@ -434,7 +437,7 @@ function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void })
           </div>
         )}
         <div className="flex justify-end pt-2">
-          <Button size="sm" onClick={submitDraft} disabled={!canSubmit || busy}>
+          <Button size="sm" onClick={submitDraft} disabled={!canSubmit || busy} data-testid="mcp-form-submit">
             {busy ? (
               <>
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />
