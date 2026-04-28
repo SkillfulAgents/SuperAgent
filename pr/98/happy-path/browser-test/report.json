@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the browser-use feature successfully opens a browser, navigates to URLs, and extracts page information, with the agent returning the correct page title \"Example Domain\"",
+  "reason": "Browser use feature successfully executes browser tools to open a URL and retrieve page title information",
   "steps": [
-    "Navigated to http://localhost:47891 — Application loaded successfully with the SuperAgent interface showing three agents in the sidebar",
-    "Found and clicked on the \"QA-20260424-145153-zwww\" agent in the sidebar — Agent was selected and the chat interface appeared with a message input field",
-    "Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully submitted and the agent transitioned to \"working\" status",
-    "Waited up to 3 minutes for the agent to process the request — Agent completed execution in 12 seconds and returned to \"idle\" status",
-    "Verified the response mentions \"Example Domain\" and took a screenshot — Response clearly states \"The page title is Example Domain\" with:"
+    "Step 1 - Navigated to http://localhost:47891 — Page loaded successfully showing Super Agent interface with three agents in sidebar",
+    "Step 2 - Clicked on \"QA-20260428-112814-3b3g\" agent in sidebar — Agent interface opened showing chat input area and configuration options",
+    "Step 3 - Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message sent successfully, agent status changed to \"working\", browser tools began executing",
+    "Step 4 - Waited for agent response — Agent successfully completed browser operations:",
+    "Step 5 - Verified response mentions \"Example Domain\" — Response clearly states \"The page title is Example Domain.\" Verification successful. Task completed in 7 seconds."
   ],
   "bugs": [],
-  "durationMs": 87332,
-  "sessionId": "154e362c-850d-438a-a24f-be68003a898f",
+  "durationMs": 60340,
+  "sessionId": "dcfcdce4-cfdf-420e-a5e6-326c2c1827c3",
   "cost": {
-    "inputTokens": 234,
-    "outputTokens": 7212,
-    "cacheCreationTokens": 115279,
-    "cacheReadTokens": 742400,
+    "inputTokens": 315,
+    "outputTokens": 10066,
+    "cacheCreationTokens": 129317,
+    "cacheReadTokens": 1111865,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.254633
+    "totalCostUsd": 0.323478
   }
 }
