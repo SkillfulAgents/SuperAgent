@@ -396,9 +396,6 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                 />
               </form>
 
-              {/* Bookmarks */}
-              <HomeBookmarks agentSlug={agent.slug} isOwner={isOwner} />
-
               {/* Sessions list / creation aids */}
               <div className="pt-2">
                 {sessions.length > 0 ? (
@@ -482,6 +479,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
               formatDate={formatDate}
               onSelectTask={selectScheduledTask}
             />
+            <HomeBookmarks agentSlug={agent.slug} isOwner={isOwner} />
             <HomeConnections agentSlug={agent.slug} />
             <HomeSkills agentSlug={agent.slug} />
             <HomeVolumes agentSlug={agent.slug} />
