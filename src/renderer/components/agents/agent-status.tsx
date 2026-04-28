@@ -1,4 +1,4 @@
-import { Moon, Circle } from 'lucide-react'
+import { Moon, CircleDashed } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import type { ContainerStatus } from '@shared/lib/container/types'
 import { WorkingDots, AwaitingDot } from './status-indicators'
@@ -58,7 +58,7 @@ export function AgentStatus({ status, hasActiveSessions = false, hasSessionsAwai
       ) : activityStatus === 'working' ? (
         <WorkingDots dotClassName={workingDotClassName} />
       ) : (
-        <Circle className={cn(iconSize, 'text-muted-foreground')} />
+        <CircleDashed className={cn(iconSize, 'text-muted-foreground')} />
       )}
       {!iconOnly && (
         <span

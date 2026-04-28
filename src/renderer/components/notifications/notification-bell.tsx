@@ -66,12 +66,60 @@ function NotificationItem({
   )
 }
 
-export function NotificationBell() {
-  useRenderTracker('NotificationBell')
+export function NotificationsPopoverContent() {
   const { data: notifications, isLoading } = useNotifications(20)
   const { data: countData } = useUnreadNotificationCount()
   const markAllRead = useMarkAllNotificationsRead()
+  const unreadCount = countData?.count ?? 0
 
+  return (
+    <>
+      <div className="flex items-center justify-between px-3 py-2 border-b">
+        <h4 className="text-sm font-medium">Notifications</h4>
+        {unreadCount > 0 && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-xs"
+            onClick={() => markAllRead.mutate()}
+            disabled={markAllRead.isPending}
+          >
+            <CheckCheck className="h-3 w-3 mr-1" />
+            Mark all read
+          </Button>
+        )}
+      </div>
+      <ScrollArea className="h-[300px]">
+        {isLoading ? (
+          <div className="p-4 text-center text-sm text-muted-foreground">
+            Loading...
+          </div>
+        ) : !notifications?.length ? (
+          <div className="p-4 text-center text-sm text-muted-foreground">
+            <Bell className="h-8 w-8 mx-auto mb-2 opacity-20" />
+            No notifications yet
+          </div>
+        ) : (
+          <div className="py-1">
+            {notifications.map((notification) => (
+              <NotificationItem
+                key={notification.id}
+                notification={notification}
+                onNavigate={() => {
+                  // Close popover by clicking outside or via state management
+                }}
+              />
+            ))}
+          </div>
+        )}
+      </ScrollArea>
+    </>
+  )
+}
+
+export function NotificationBell() {
+  useRenderTracker('NotificationBell')
+  const { data: countData } = useUnreadNotificationCount()
   const unreadCount = countData?.count ?? 0
 
   return (
@@ -93,45 +141,7 @@ export function NotificationBell() {
         side="top"
         sideOffset={8}
       >
-        <div className="flex items-center justify-between px-3 py-2 border-b">
-          <h4 className="text-sm font-medium">Notifications</h4>
-          {unreadCount > 0 && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 text-xs"
-              onClick={() => markAllRead.mutate()}
-              disabled={markAllRead.isPending}
-            >
-              <CheckCheck className="h-3 w-3 mr-1" />
-              Mark all read
-            </Button>
-          )}
-        </div>
-        <ScrollArea className="h-[300px]">
-          {isLoading ? (
-            <div className="p-4 text-center text-sm text-muted-foreground">
-              Loading...
-            </div>
-          ) : !notifications?.length ? (
-            <div className="p-4 text-center text-sm text-muted-foreground">
-              <Bell className="h-8 w-8 mx-auto mb-2 opacity-20" />
-              No notifications yet
-            </div>
-          ) : (
-            <div className="py-1">
-              {notifications.map((notification) => (
-                <NotificationItem
-                  key={notification.id}
-                  notification={notification}
-                  onNavigate={() => {
-                    // Close popover by clicking outside or via state management
-                  }}
-                />
-              ))}
-            </div>
-          )}
-        </ScrollArea>
+        <NotificationsPopoverContent />
       </PopoverContent>
     </Popover>
   )
