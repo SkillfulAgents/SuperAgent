@@ -1,10 +1,5 @@
 import { Bell, CheckCheck } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@renderer/components/ui/popover'
 import { Button } from '@renderer/components/ui/button'
 import { ScrollArea } from '@renderer/components/ui/scroll-area'
 import {
@@ -66,73 +61,54 @@ function NotificationItem({
   )
 }
 
-export function NotificationBell() {
-  useRenderTracker('NotificationBell')
+export function NotificationsPopoverContent() {
   const { data: notifications, isLoading } = useNotifications(20)
   const { data: countData } = useUnreadNotificationCount()
   const markAllRead = useMarkAllNotificationsRead()
-
   const unreadCount = countData?.count ?? 0
 
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button variant="ghost" size="sm" className="relative h-8 w-8 p-0">
-          <Bell className="h-4 w-4" />
-          {unreadCount > 0 && (
-            <span className="absolute -top-0.5 -right-0.5 h-4 min-w-4 px-1 rounded-full bg-red-500 text-2xs font-medium text-white flex items-center justify-center">
-              {unreadCount > 99 ? '99+' : unreadCount}
-            </span>
-          )}
-          <span className="sr-only">Notifications</span>
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent
-        className="w-80 p-0"
-        align="end"
-        side="top"
-        sideOffset={8}
-      >
-        <div className="flex items-center justify-between px-3 py-2 border-b">
-          <h4 className="text-sm font-medium">Notifications</h4>
-          {unreadCount > 0 && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 text-xs"
-              onClick={() => markAllRead.mutate()}
-              disabled={markAllRead.isPending}
-            >
-              <CheckCheck className="h-3 w-3 mr-1" />
-              Mark all read
-            </Button>
-          )}
-        </div>
-        <ScrollArea className="h-[300px]">
-          {isLoading ? (
-            <div className="p-4 text-center text-sm text-muted-foreground">
-              Loading...
-            </div>
-          ) : !notifications?.length ? (
-            <div className="p-4 text-center text-sm text-muted-foreground">
-              <Bell className="h-8 w-8 mx-auto mb-2 opacity-20" />
-              No notifications yet
-            </div>
-          ) : (
-            <div className="py-1">
-              {notifications.map((notification) => (
-                <NotificationItem
-                  key={notification.id}
-                  notification={notification}
-                  onNavigate={() => {
-                    // Close popover by clicking outside or via state management
-                  }}
-                />
-              ))}
-            </div>
-          )}
-        </ScrollArea>
-      </PopoverContent>
-    </Popover>
+    <>
+      <div className="flex items-center justify-between px-3 py-2 border-b">
+        <h4 className="text-sm font-medium">Notifications</h4>
+        {unreadCount > 0 && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-xs"
+            onClick={() => markAllRead.mutate()}
+            disabled={markAllRead.isPending}
+          >
+            <CheckCheck className="h-3 w-3 mr-1" />
+            Mark all read
+          </Button>
+        )}
+      </div>
+      <ScrollArea className="h-[300px]">
+        {isLoading ? (
+          <div className="p-4 text-center text-sm text-muted-foreground">
+            Loading...
+          </div>
+        ) : !notifications?.length ? (
+          <div className="p-4 text-center text-sm text-muted-foreground">
+            <Bell className="h-8 w-8 mx-auto mb-2 opacity-20" />
+            No notifications yet
+          </div>
+        ) : (
+          <div className="py-1">
+            {notifications.map((notification) => (
+              <NotificationItem
+                key={notification.id}
+                notification={notification}
+                onNavigate={() => {
+                  // Close popover by clicking outside or via state management
+                }}
+              />
+            ))}
+          </div>
+        )}
+      </ScrollArea>
+    </>
   )
 }
+

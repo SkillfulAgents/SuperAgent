@@ -100,6 +100,14 @@ export async function listNotifications(limit: number = 50, userId?: string): Pr
 }
 
 /**
+ * Notification types that drive the sidebar "unread" indicator.
+ * We deliberately exclude lifecycle events like `session_scheduled`,
+ * `session_chat_integration`, and `session_webhook` — those don't
+ * represent an unread reply the user needs to read.
+ */
+const SIDEBAR_UNREAD_TYPES = ['session_complete', 'session_waiting'] as const
+
+/**
  * Get session IDs that have unread notifications for a given agent.
  * Useful for showing "unseen" indicators in the sidebar.
  */
@@ -107,6 +115,7 @@ export async function getSessionIdsWithUnreadNotifications(agentSlug: string, us
   const conditions = [
     eq(notifications.agentSlug, agentSlug),
     eq(notifications.isRead, false),
+    inArray(notifications.type, [...SIDEBAR_UNREAD_TYPES]),
   ]
 
   if (userId) {
@@ -134,7 +143,8 @@ export async function getUnreadNotificationsByAgents(agentSlugs: string[]): Prom
     .from(notifications)
     .where(and(
       inArray(notifications.agentSlug, agentSlugs),
-      eq(notifications.isRead, false)
+      eq(notifications.isRead, false),
+      inArray(notifications.type, [...SIDEBAR_UNREAD_TYPES]),
     ))
 
   const result = new Map<string, Set<string>>()

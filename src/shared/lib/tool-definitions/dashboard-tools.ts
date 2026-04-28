@@ -13,7 +13,7 @@ export interface DashboardSlugInput {
 }
 
 export const createDashboardDef: ToolDefinition = {
-  displayName: 'Create Dashboard', iconName: 'LayoutDashboard',
+  displayName: 'Create Dashboard', iconName: 'SquareMousePointer',
   getSummary: (input) => {
     const { name, framework } = input as CreateDashboardInput
     if (!name) return null

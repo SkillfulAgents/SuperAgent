@@ -95,6 +95,22 @@ export async function getSessionMetadata(
 }
 
 /**
+ * Get the set of session IDs that are automated (scheduled / webhook / chat integration).
+ * These sessions are hidden from the sidebar's per-agent session list, so callers that
+ * derive UI flags (e.g. unread badges) for the visible list should exclude them.
+ */
+export async function getAutomatedSessionIds(agentSlug: string): Promise<Set<string>> {
+  const metadata = await readSessionMetadata(agentSlug)
+  const ids = new Set<string>()
+  for (const [sessionId, meta] of Object.entries(metadata)) {
+    if (meta?.isScheduledExecution || meta?.isWebhookExecution || meta?.isChatIntegrationSession) {
+      ids.add(sessionId)
+    }
+  }
+  return ids
+}
+
+/**
  * Register a new session (called immediately when session is created)
  * This ensures the session appears in listings before the JSONL file exists
  */
