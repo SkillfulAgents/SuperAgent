@@ -36,7 +36,6 @@ export function getAgentActivityStatus(
 export function AgentStatus({ status, hasActiveSessions = false, hasSessionsAwaitingInput = false, size = 'default', iconOnly = false, workingDotClassName, className }: AgentStatusProps) {
   const activityStatus = getAgentActivityStatus(status, hasActiveSessions, hasSessionsAwaitingInput)
   const isSmall = size === 'sm'
-  const iconSize = isSmall ? 'h-2.5 w-2.5' : 'h-3 w-3'
 
   return (
     <div
@@ -52,13 +51,13 @@ export function AgentStatus({ status, hasActiveSessions = false, hasSessionsAwai
       title={iconOnly ? statusLabels[activityStatus] : undefined}
     >
       {activityStatus === 'sleeping' ? (
-        <Moon className={cn(iconSize, 'text-muted-foreground')} />
+        <Moon className={cn('h-2.5 w-2.5', 'text-muted-foreground/70')} />
       ) : activityStatus === 'awaiting_input' ? (
         <AwaitingDot size={size} />
       ) : activityStatus === 'working' ? (
         <WorkingDots dotClassName={workingDotClassName} />
       ) : (
-        <CircleDashed className={cn(iconSize, 'text-muted-foreground')} />
+        <CircleDashed className={cn('h-2.5 w-2.5', 'text-muted-foreground')} />
       )}
       {!iconOnly && (
         <span

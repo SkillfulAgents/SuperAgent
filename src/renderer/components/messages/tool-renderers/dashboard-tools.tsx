@@ -1,5 +1,5 @@
 
-import { LayoutDashboard, Play, List, ScrollText } from 'lucide-react'
+import { SquareMousePointer, Play, List, ScrollText } from 'lucide-react'
 import type { ToolRenderer, ToolRendererProps } from './types'
 import {
   createDashboardDef, startDashboardDef, listDashboardsDef, getDashboardLogsDef,
@@ -49,7 +49,7 @@ function CreateDashboardExpandedView({ input, result, isError }: ToolRendererPro
 
 export const createDashboardRenderer: ToolRenderer = {
   displayName: createDashboardDef.displayName,
-  icon: LayoutDashboard,
+  icon: SquareMousePointer,
   getSummary: createDashboardDef.getSummary,
   ExpandedView: CreateDashboardExpandedView,
 }

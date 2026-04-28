@@ -29,6 +29,7 @@ import { messagePersister } from '@shared/lib/container/message-persister'
 import {
   listSessions,
   getSessionSummary,
+  getAutomatedSessionIds,
   updateSessionName,
   registerSession,
   getSessionMessagesWithCompact,
@@ -151,15 +152,19 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
   return Promise.all(
     agents.map((agent) => limit(async () => {
       // Only FS operations remain per-agent (parallelized)
-      const [sessionSummary, artifacts] = await Promise.all([
+      const [sessionSummary, artifacts, automatedSessionIds] = await Promise.all([
         getSessionSummary(agent.slug),
         listArtifactsFromFilesystem(agent.slug),
+        getAutomatedSessionIds(agent.slug),
       ])
 
       const unreadSessionIds = unreadByAgent.get(agent.slug) ?? new Set<string>()
       const pendingTasks = tasksByAgent.get(agent.slug) ?? []
 
-      // Compute session flags from in-memory state (no I/O needed)
+      // Compute session flags from in-memory state (no I/O needed).
+      // Unread notifications only count for non-automated sessions: automated sessions
+      // (scheduled / webhook / chat integration) are hidden from the sidebar's per-agent
+      // session list, so an unread on one of them shouldn't surface a sidebar badge.
       let hasActiveSessions = false
       let hasSessionsAwaitingInput = false
       let hasUnreadNotifications = false
@@ -172,7 +177,7 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
         if (messagePersister.isSessionAwaitingInput(sessionId)) {
           hasSessionsAwaitingInput = true
         }
-        if (unreadSessionIds.has(sessionId)) {
+        if (unreadSessionIds.has(sessionId) && !automatedSessionIds.has(sessionId)) {
           hasUnreadNotifications = true
         }
       }

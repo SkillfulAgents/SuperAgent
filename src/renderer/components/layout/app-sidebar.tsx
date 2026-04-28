@@ -110,20 +110,17 @@ function SessionSubItem({
         >
           <button
             onClick={handleClick}
-            className={cn(
-              'flex items-center gap-2 w-full',
-              (isAwaitingInput || hasUnread) && '!text-sidebar-foreground'
-            )}
+            className="flex items-center gap-2 w-full"
             data-testid={`session-item-${session.id}`}
           >
             <span className="flex-1 min-w-0 truncate text-left">{session.name}</span>
             <span className="flex items-center justify-center w-4 shrink-0">
               {isAwaitingInput ? (
-                <AwaitingDot size="default" />
+                <AwaitingDot size="sm" />
               ) : isWorking ? (
                 <WorkingDots />
               ) : hasUnread ? (
-                <span className="h-2 w-2 rounded-full bg-blue-500" />
+                <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
               ) : null}
             </span>
           </button>
@@ -591,6 +588,10 @@ export const AgentMenuItem = React.forwardRef<
 
   const handleClick = () => {
     selectAgent(agent.slug)
+  }
+
+  const handleChevronClick = (e: React.MouseEvent) => {
+    e.stopPropagation()
     setIsOpen((prev) => !prev)
   }
 
@@ -605,23 +606,55 @@ export const AgentMenuItem = React.forwardRef<
             data-testid={`agent-item-${agent.slug}`}
           >
             <span className="flex items-center gap-1.5 min-w-0">
-              <span className="truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
-              {hasExpandableContent && (
+              {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={handleChevronClick}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    setIsOpen((prev) => !prev)
+                  }
+                }}
+                aria-label={isOpen ? 'Collapse' : 'Expand'}
+                aria-expanded={isOpen}
+                className="-ml-0.5 p-0.5 rounded shrink-0 hover:bg-sidebar-accent cursor-pointer"
+              >
                 <ChevronRight
                   className={cn(
-                    'h-4 w-4 shrink-0 text-sidebar-foreground opacity-0 transition-[opacity,transform] group-hover/menu-item:opacity-100',
+                    'h-3.5 w-3.5 text-muted-foreground/60 transition-[color,transform] group-hover/menu-item:text-sidebar-foreground',
                     isOpen && 'rotate-90'
                   )}
                 />
-              )}
+              </span>
+              <span className="truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
               {isShared && <Users className="h-3 w-3 shrink-0 text-muted-foreground" />}
             </span>
-            <AgentStatus
-              status={agent.status}
-              hasActiveSessions={sessions?.some((s) => s.isActive) || (agent.hasActiveSessions ?? false)}
-              hasSessionsAwaitingInput={sessions?.some((s) => s.isAwaitingInput) || (agent.hasSessionsAwaitingInput ?? false)}
-              iconOnly
-            />
+            {(() => {
+              // When expanded, suppress all session-derived states (awaiting / working / unread);
+              // the individual session rows already show those. Keep agent-level
+              // sleeping / idle states which describe the container itself.
+              const isAwaiting = !isOpen && (sessions?.some((s) => s.isAwaitingInput) || (agent.hasSessionsAwaitingInput ?? false))
+              const isWorking = !isOpen && !isAwaiting && (sessions?.some((s) => s.isActive) || (agent.hasActiveSessions ?? false))
+              const isUnread = !isOpen && !isAwaiting && !isWorking && (agent.hasUnreadNotifications ?? false)
+              if (isUnread) {
+                return (
+                  <span className="flex items-center w-4 justify-center" role="img" aria-label="unread notifications">
+                    <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+                  </span>
+                )
+              }
+              return (
+                <AgentStatus
+                  status={agent.status}
+                  hasActiveSessions={isWorking}
+                  hasSessionsAwaitingInput={isAwaiting}
+                  iconOnly
+                />
+              )
+            })()}
           </SidebarMenuButton>
         </AgentContextMenu>
         {hasExpandableContent ? (
@@ -718,9 +751,7 @@ function NotificationsMenuButton() {
           <Bell className="h-4 w-4" />
           <span>Notifications</span>
           {unreadCount > 0 && (
-            <span className="ml-auto h-4 min-w-4 px-1 rounded-full bg-foreground text-2xs font-medium text-background flex items-center justify-center">
-              {unreadCount > 99 ? '99+' : unreadCount}
-            </span>
+            <span className="ml-auto h-1.5 w-1.5 rounded-full bg-blue-500" aria-label={`${unreadCount} unread`} />
           )}
         </SidebarMenuButton>
       </PopoverTrigger>
@@ -736,19 +767,11 @@ function NotificationsMenuButton() {
   )
 }
 
-function UserFooter() {
+function UserMenu() {
   const { isAuthMode, user, signOut } = useUser()
-
-  if (!isAuthMode || !user) {
-    return (
-      <div className="px-2 text-xs text-muted-foreground">
-        Version: {__APP_VERSION__}
-      </div>
-    )
-  }
-
+  if (!isAuthMode || !user) return null
   return (
-    <div className="px-2 flex items-center justify-between">
+    <div className="px-2">
       <Popover>
         <PopoverTrigger asChild>
           <button className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors" data-testid="user-menu-trigger">
@@ -767,7 +790,6 @@ function UserFooter() {
           </button>
         </PopoverContent>
       </Popover>
-      <span className="text-xs text-muted-foreground">v{__APP_VERSION__}</span>
     </div>
   )
 }
@@ -986,10 +1008,10 @@ export function AppSidebar() {
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
-          <SidebarGroup className="flex-1 min-h-0 overflow-y-auto">
-            <SidebarGroupLabel>Your Agents</SidebarGroupLabel>
+          <SidebarGroup className="flex-1 min-h-0 overflow-y-auto [scrollbar-width:thin] [scrollbar-color:hsl(var(--muted-foreground)/0.2)_transparent] [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/20">
+            <SidebarGroupLabel className="mt-2 font-normal text-sidebar-foreground/50">Your Agents</SidebarGroupLabel>
             <SidebarGroupContent>
-              <SidebarMenu className="gap-px">
+              <SidebarMenu className="gap-1">
                 {isLoading ? (
                   <>
                     {Array.from({ length: 3 }).map((_, index) => (
@@ -1029,16 +1051,19 @@ export function AppSidebar() {
         </SidebarContent>
       </ErrorBoundary>
 
-      <SidebarFooter className="border-t">
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton onClick={() => setSettingsOpen(true)} data-testid="settings-button">
-              <Settings className="h-4 w-4" />
-              <span>Settings</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
-        <UserFooter />
+      <SidebarFooter className="border-t pt-4">
+        <UserMenu />
+        <div className="flex items-center justify-between gap-2">
+          <SidebarMenuButton
+            onClick={() => setSettingsOpen(true)}
+            className="w-auto"
+            data-testid="settings-button"
+          >
+            <Settings className="h-4 w-4" />
+            <span>Settings</span>
+          </SidebarMenuButton>
+          <span className="px-2 text-xs text-muted-foreground shrink-0">v{__APP_VERSION__}</span>
+        </div>
       </SidebarFooter>
 
       <GlobalSettingsDialog

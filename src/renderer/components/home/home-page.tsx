@@ -24,7 +24,7 @@ import {
   deriveForegroundColor,
 } from './dashboard-card-colors'
 import { isElectron, getPlatform, getApiBaseUrl } from '@renderer/lib/env'
-import { Plus, Bot, Loader2, Clock, CalendarClock, LayoutDashboard } from 'lucide-react'
+import { Plus, Bot, Loader2, Clock, CalendarClock, SquareMousePointer } from 'lucide-react'
 import { AreaChart, Area, ResponsiveContainer, Tooltip } from 'recharts'
 import type { ApiAgent, ApiAgentDashboard } from '@shared/lib/types/api'
 import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
@@ -225,7 +225,7 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
               {/* Dashboard count (each dashboard also gets its own card below) */}
               {dashboardCount > 0 && (
                 <span className="flex items-center gap-1">
-                  <LayoutDashboard className="h-3 w-3" />
+                  <SquareMousePointer className="h-3 w-3" />
                   {dashboardCount} dashboard{dashboardCount !== 1 ? 's' : ''}
                 </span>
               )}
@@ -349,7 +349,7 @@ function DashboardCard({
           />
         ) : (
           <div className="absolute inset-0 flex items-center justify-center bg-muted/40">
-            <LayoutDashboard className="h-8 w-8 text-muted-foreground/50" />
+            <SquareMousePointer className="h-8 w-8 text-muted-foreground/50" />
           </div>
         )}
         {overlayReady && (
@@ -363,7 +363,7 @@ function DashboardCard({
               style={swatch ? { color: deriveForegroundColor(swatch) } : undefined}
             >
               <div className="flex items-center gap-1.5 min-w-0">
-                <LayoutDashboard className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                <SquareMousePointer className="h-3.5 w-3.5 shrink-0 opacity-70" />
                 <span className="font-medium text-sm truncate">{dashboard.name}</span>
               </div>
             </div>
