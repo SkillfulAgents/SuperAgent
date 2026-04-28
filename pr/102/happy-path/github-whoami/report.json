@@ -1,0 +1,17 @@
+{
+  "storyId": "github-whoami",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail:  returned 401 Bad credentials when calling GET /user, and CONNECTED_ACCOUNTS is empty despite the connection request reporting success. The OAuth token doesn't appear to be properly attached to the granted account in this environment.\" This did NOT include a GitHub username as required by the test.\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 204205,
+  "sessionId": "eab1d7d9-6f47-450b-a927-6aee5a02b42d",
+  "cost": {
+    "inputTokens": 720,
+    "outputTokens": 24600,
+    "cacheCreationTokens": 103353,
+    "cacheReadTokens": 3492799,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.602191
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "storyId": "agent-chat",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: STEP]** Waited for response - Agent responded within 1 second with \"Worked for 1s\" indicator\n\n**[STEP]** Verified response mentions \"4\" - Agent response clearly displays \"4\" in the chat message list, confirming correct calculation of 2+2=4\n\nAll test steps completed without any issues or bugs found.\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 65019,
+  "sessionId": "aa824c16-8f7a-4371-bd64-695ee0afcba2",
+  "cost": {
+    "inputTokens": 315,
+    "outputTokens": 9759,
+    "cacheCreationTokens": 132682,
+    "cacheReadTokens": 1142327,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.329195
+  }
+}

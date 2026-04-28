@@ -1,0 +1,147 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - button "Super Agent" [ref=e9] [cursor=pointer]
+      - generic [ref=e11]:
+        - generic [ref=e12]: Agents
+        - button "New Agent" [ref=e13] [cursor=pointer]:
+          - img [ref=e14]
+          - generic [ref=e15]: New Agent
+        - list [ref=e17]:
+          - button "QA-20260428-162434-yrde idle" [ref=e18] [cursor=pointer]:
+            - button "QA-20260428-162434-yrde idle" [ref=e19]:
+              - generic [ref=e20]:
+                - img [ref=e21]
+                - generic [ref=e23]: QA-20260428-162434-yrde
+              - img "idle" [ref=e24]:
+                - img [ref=e25]
+            - list [ref=e102]
+          - button "QA-20260428-162432-kp0x idle" [ref=e27] [cursor=pointer]:
+            - button "QA-20260428-162432-kp0x idle" [ref=e28]:
+              - generic [ref=e29]:
+                - img [ref=e30]
+                - generic [ref=e32]: QA-20260428-162432-kp0x
+              - img "idle" [ref=e33]:
+                - img [ref=e34]
+          - button "QA-20260428-162431-2dgh idle" [ref=e36] [cursor=pointer]:
+            - button "QA-20260428-162431-2dgh idle" [ref=e37]:
+              - generic [ref=e38]:
+                - img [ref=e39]
+                - generic [ref=e41]: QA-20260428-162431-2dgh
+              - img "idle" [ref=e42]:
+                - img [ref=e43]
+          - status [ref=e45]
+      - generic [ref=e46]:
+        - list [ref=e47]:
+          - listitem [ref=e48]:
+            - generic [ref=e49]:
+              - button "Settings" [ref=e50] [cursor=pointer]:
+                - img [ref=e51]
+                - generic [ref=e54]: Settings
+              - button "Notifications" [ref=e55] [cursor=pointer]:
+                - img
+                - generic [ref=e56]: Notifications
+        - generic [ref=e57]: "Version: 0.3.18"
+      - button "Toggle Sidebar" [ref=e58]
+    - main [ref=e59]:
+      - generic [ref=e103]:
+        - generic [ref=e104]:
+          - button "Toggle Sidebar" [ref=e105] [cursor=pointer]:
+            - img
+            - generic [ref=e106]: Toggle Sidebar
+          - button "QA-20260428-162434-yrde" [ref=e109] [cursor=pointer]
+          - generic [ref=e110]:
+            - generic [ref=e111]:
+              - img [ref=e112]
+              - generic [ref=e114]: idle
+            - button "Stop Agent" [ref=e116] [cursor=pointer]:
+              - img
+        - generic [ref=e118]:
+          - generic [ref=e119]:
+            - generic [ref=e120]:
+              - button "QA-20260428-162434-yrde" [ref=e121] [cursor=pointer]
+              - button "Agent settings" [ref=e122] [cursor=pointer]:
+                - img
+            - generic [ref=e124]:
+              - button "Expand input" [ref=e126] [cursor=pointer]:
+                - img
+              - textbox "How can I help? Press cmd+enter to send" [active] [ref=e128]: Use the GitHub tool to check who I am. Tell me my GitHub username.
+              - generic [ref=e129]:
+                - generic [ref=e130]:
+                  - button "Add files" [ref=e131] [cursor=pointer]:
+                    - img
+                    - text: Add files
+                  - 'button "Effort: High. Click to change." [ref=e132] [cursor=pointer]':
+                    - img
+                    - generic [ref=e133]: High
+                - generic [ref=e134]:
+                  - button "Set up voice input" [ref=e135] [cursor=pointer]:
+                    - img
+                  - button "Send message" [ref=e232] [cursor=pointer]:
+                    - img
+            - generic [ref=e138]:
+              - generic [ref=e141]: OR
+              - button "Import an agent or agent template. — Import agent" [ref=e144] [cursor=pointer]:
+                - generic [ref=e145]:
+                  - paragraph [ref=e146]: Import an agent or agent template.
+                  - paragraph [ref=e147]:
+                    - text: Bring in a pre-built agent from a .zip template,
+                    - text: including skills and optional environment variables.
+                - generic [ref=e148]:
+                  - img [ref=e149]
+                  - text: Import agent
+          - generic [ref=e152]:
+            - generic [ref=e154]:
+              - button "Crons" [expanded] [ref=e155] [cursor=pointer]:
+                - generic [ref=e156]: Crons
+                - img [ref=e157]
+              - generic [ref=e160]:
+                - paragraph [ref=e161]: No crons yet
+                - paragraph [ref=e162]: Crons trigger your agent to do work for you on a schedule. Your agent will create crons for you as needed.
+            - generic [ref=e164]:
+              - button "Connections" [expanded] [ref=e165] [cursor=pointer]:
+                - generic [ref=e166]: Connections
+                - img [ref=e167]
+              - generic [ref=e169]:
+                - generic [ref=e170]:
+                  - paragraph [ref=e171]: No connections yet
+                  - paragraph [ref=e172]: Connect APIs or MCP servers to give your agent access to external services like Gmail or Slack.
+                - generic [ref=e173]:
+                  - generic [ref=e183]: 70+
+                  - button "Add Connection" [ref=e185] [cursor=pointer]:
+                    - img
+                    - text: Add Connection
+            - generic [ref=e187]:
+              - button "Skills" [expanded] [ref=e188] [cursor=pointer]:
+                - generic [ref=e189]: Skills
+                - img [ref=e190]
+              - generic [ref=e193]:
+                - paragraph [ref=e194]: No skills yet
+                - paragraph [ref=e195]: Skills teach your agent how to do specific tasks, like triaging emails. Your agent builds skills for you as it works.
+            - generic [ref=e197]:
+              - button "Volumes" [expanded] [ref=e198] [cursor=pointer]:
+                - generic [ref=e199]: Volumes
+                - img [ref=e200]
+              - generic [ref=e202]:
+                - generic [ref=e203]:
+                  - paragraph [ref=e204]: No volumes yet
+                  - paragraph [ref=e205]: Mount a folder from your computer to give your agents direct read/write access to the files in it.
+                - button "Add Mount" [ref=e208] [cursor=pointer]:
+                  - img
+                  - text: Add Mount
+            - generic [ref=e210]:
+              - button "System Prompt" [ref=e211] [cursor=pointer]:
+                - generic [ref=e212]: System Prompt
+                - img [ref=e213]
+              - button "Copy Agent Path" [ref=e215] [cursor=pointer]:
+                - generic [ref=e216]: Copy Agent Path
+                - generic [ref=e217]:
+                  - img [ref=e218]
+                  - img [ref=e221]
+              - button "Secrets" [ref=e224] [cursor=pointer]:
+                - generic [ref=e225]: Secrets
+                - img [ref=e226]
+              - button "API Logs" [ref=e228] [cursor=pointer]:
+                - generic [ref=e229]: API Logs
+                - img [ref=e230]
+  - region "Notifications alt+T"
