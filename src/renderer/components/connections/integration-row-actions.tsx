@@ -357,10 +357,10 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agent
                 ) : mcpStatus?.kind === 'success' ? (
                   'Connected'
                 ) : mcpStatus?.kind === 'error' ? (
-                  <span className="inline-flex items-center gap-1">
+                  <>
                     Reconnect
-                    <ArrowUpRight className="h-3 w-3" />
-                  </span>
+                    <ArrowUpRight className="h-3 w-3" aria-hidden="true" />
+                  </>
                 ) : (
                   'Test connection'
                 )}
@@ -553,7 +553,10 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agent
                 </p>
               )}
             </div>
-            <div className="flex items-center justify-start">
+            {toolsError && (
+              <p className="text-xs text-destructive" role="alert">{toolsError}</p>
+            )}
+            <DialogFooter className="sm:justify-start">
               <Button
                 type="button"
                 size="sm"
@@ -568,10 +571,7 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agent
                 )}
                 Check for new tools
               </Button>
-            </div>
-            {toolsError && (
-              <p className="text-xs text-destructive" role="alert">{toolsError}</p>
-            )}
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       )}

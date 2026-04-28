@@ -88,11 +88,7 @@ export function HomeConnections({ agentSlug }: HomeConnectionsProps) {
               iconSlug={conn.iconSlug}
               iconFallback={conn.iconFallback}
               name={conn.name}
-              nameBadge={
-                conn.type === 'mcp' && conn.mcpStatus && conn.mcpStatus !== 'active' ? (
-                  <McpStatusPill status={conn.mcpStatus} errorMessage={conn.mcpErrorMessage} />
-                ) : undefined
-              }
+              nameBadge={<McpStatusPill status={conn.mcpStatus} errorMessage={conn.mcpErrorMessage} />}
               subtitle={
                 <>
                   <span className="shrink-0">{conn.type === 'oauth' ? 'API' : 'MCP'}</span>

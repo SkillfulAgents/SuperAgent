@@ -240,11 +240,7 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
         iconSlug={row.iconSlug}
         iconFallback={row.iconFallback}
         name={row.name}
-        nameBadge={
-          row.type === 'mcp' && row.mcpStatus && row.mcpStatus !== 'active' ? (
-            <McpStatusPill status={row.mcpStatus} errorMessage={row.mcpErrorMessage} />
-          ) : undefined
-        }
+        nameBadge={<McpStatusPill status={row.mcpStatus} errorMessage={row.mcpErrorMessage} />}
         subtitle={
           <>
             <span className="shrink-0">{row.type === 'oauth' ? 'API' : 'MCP'}</span>
