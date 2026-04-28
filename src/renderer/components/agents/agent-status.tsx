@@ -53,7 +53,7 @@ export function AgentStatus({ status, hasActiveSessions = false, hasSessionsAwai
       {activityStatus === 'sleeping' ? (
         <Moon className={cn('h-2.5 w-2.5', 'text-muted-foreground/70')} />
       ) : activityStatus === 'awaiting_input' ? (
-        <AwaitingDot size={size} />
+        <AwaitingDot />
       ) : activityStatus === 'working' ? (
         <WorkingDots dotClassName={workingDotClassName} />
       ) : (

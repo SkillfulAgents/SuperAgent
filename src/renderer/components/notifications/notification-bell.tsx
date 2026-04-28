@@ -1,10 +1,5 @@
 import { Bell, CheckCheck } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@renderer/components/ui/popover'
 import { Button } from '@renderer/components/ui/button'
 import { ScrollArea } from '@renderer/components/ui/scroll-area'
 import {
@@ -117,32 +112,3 @@ export function NotificationsPopoverContent() {
   )
 }
 
-export function NotificationBell() {
-  useRenderTracker('NotificationBell')
-  const { data: countData } = useUnreadNotificationCount()
-  const unreadCount = countData?.count ?? 0
-
-  return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button variant="ghost" size="sm" className="relative h-8 w-8 p-0">
-          <Bell className="h-4 w-4" />
-          {unreadCount > 0 && (
-            <span className="absolute -top-0.5 -right-0.5 h-4 min-w-4 px-1 rounded-full bg-foreground text-2xs font-medium text-background flex items-center justify-center">
-              {unreadCount > 99 ? '99+' : unreadCount}
-            </span>
-          )}
-          <span className="sr-only">Notifications</span>
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent
-        className="w-80 p-0"
-        align="end"
-        side="top"
-        sideOffset={8}
-      >
-        <NotificationsPopoverContent />
-      </PopoverContent>
-    </Popover>
-  )
-}

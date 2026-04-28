@@ -8,7 +8,7 @@ export function WorkingDots({ dotClassName = 'bg-green-500' }: { dotClassName?: 
   )
 }
 
-export function AwaitingDot(_props: { size?: 'sm' | 'default' } = {}) {
+export function AwaitingDot() {
   // Outer span is 12px so the ping (scales 2× from 6px → 12px) has room
   // without being clipped by the parent row's `overflow-hidden`.
   return (

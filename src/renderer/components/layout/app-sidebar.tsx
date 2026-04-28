@@ -116,7 +116,7 @@ function SessionSubItem({
             <span className="flex-1 min-w-0 truncate text-left">{session.name}</span>
             <span className="flex items-center justify-center w-4 shrink-0">
               {isAwaitingInput ? (
-                <AwaitingDot size="sm" />
+                <AwaitingDot />
               ) : isWorking ? (
                 <WorkingDots />
               ) : hasUnread ? (
@@ -521,6 +521,40 @@ function SessionsSkeleton() {
   )
 }
 
+// Right-side indicator on the agent row.
+// When expanded, suppress session-derived states (awaiting / working / unread)
+// since the individual session rows already surface those. Keep agent-level
+// sleeping / idle states which describe the container itself.
+// Priority when collapsed: awaiting > working > unread > sleeping/idle.
+function AgentRowIndicator({
+  agent,
+  sessions,
+  isOpen,
+}: {
+  agent: ApiAgent
+  sessions: ApiSession[] | undefined
+  isOpen: boolean
+}) {
+  const isAwaiting = !isOpen && (sessions?.some((s) => s.isAwaitingInput) || (agent.hasSessionsAwaitingInput ?? false))
+  const isWorking = !isOpen && !isAwaiting && (sessions?.some((s) => s.isActive) || (agent.hasActiveSessions ?? false))
+  const isUnread = !isOpen && !isAwaiting && !isWorking && (agent.hasUnreadNotifications ?? false)
+  if (isUnread) {
+    return (
+      <span className="flex items-center w-4 justify-center" role="img" aria-label="unread notifications">
+        <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+      </span>
+    )
+  }
+  return (
+    <AgentStatus
+      status={agent.status}
+      hasActiveSessions={isWorking}
+      hasSessionsAwaitingInput={isAwaiting}
+      iconOnly
+    />
+  )
+}
+
 // Agent menu item with expandable sessions
 export const AgentMenuItem = React.forwardRef<
   HTMLLIElement,
@@ -632,29 +666,7 @@ export const AgentMenuItem = React.forwardRef<
               <span className="truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
               {isShared && <Users className="h-3 w-3 shrink-0 text-muted-foreground" />}
             </span>
-            {(() => {
-              // When expanded, suppress all session-derived states (awaiting / working / unread);
-              // the individual session rows already show those. Keep agent-level
-              // sleeping / idle states which describe the container itself.
-              const isAwaiting = !isOpen && (sessions?.some((s) => s.isAwaitingInput) || (agent.hasSessionsAwaitingInput ?? false))
-              const isWorking = !isOpen && !isAwaiting && (sessions?.some((s) => s.isActive) || (agent.hasActiveSessions ?? false))
-              const isUnread = !isOpen && !isAwaiting && !isWorking && (agent.hasUnreadNotifications ?? false)
-              if (isUnread) {
-                return (
-                  <span className="flex items-center w-4 justify-center" role="img" aria-label="unread notifications">
-                    <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
-                  </span>
-                )
-              }
-              return (
-                <AgentStatus
-                  status={agent.status}
-                  hasActiveSessions={isWorking}
-                  hasSessionsAwaitingInput={isAwaiting}
-                  iconOnly
-                />
-              )
-            })()}
+            <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
           </SidebarMenuButton>
         </AgentContextMenu>
         {hasExpandableContent ? (
