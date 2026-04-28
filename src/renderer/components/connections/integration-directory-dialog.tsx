@@ -257,7 +257,11 @@ function ApisPanel({ filter, onConnected }: { filter: string; onConnected: () =>
 
 // --- MCPs panel ---
 
-type DraftState = Omit<McpDraft, 'authType' | 'token'> & { authType: McpAuthType; token: string }
+type DraftState = Omit<McpDraft, 'authType' | 'token' | 'clientName'> & {
+  authType: McpAuthType
+  token: string
+  clientName: string
+}
 
 function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void }) {
   const addMcp = useAddRemoteMcp()
@@ -309,12 +313,13 @@ function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void })
       url: server.url,
       authType: server.authType,
       token: '',
+      clientName: '',
     })
   }
 
   const handlePickCustom = () => {
     setError(null)
-    setDraft({ sourceSlug: 'custom', name: '', url: '', authType: 'none', token: '' })
+    setDraft({ sourceSlug: 'custom', name: '', url: '', authType: 'none', token: '', clientName: '' })
   }
 
   const cancelDraft = () => {
@@ -339,10 +344,12 @@ function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void })
         const popup = prepareOAuthPopup()
         try {
           const isElectron = !!window.electronAPI
+          const clientNameOverride = valid.clientName.trim()
           const result = await initiateOAuth.mutateAsync({
             name: valid.name,
             url: valid.url,
             electron: isElectron,
+            clientName: clientNameOverride.length > 0 ? clientNameOverride : undefined,
           })
           if (result.redirectUrl) {
             setOauthPending(true)
@@ -430,6 +437,24 @@ function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void })
               data-testid="mcp-form-token"
             />
           </div>
+        )}
+        {draft.authType === 'oauth' && (
+          <details className="group rounded-md pt-2">
+            <summary className="cursor-pointer list-none text-xs text-muted-foreground/70 hover:text-muted-foreground select-none">
+              <span className="inline-block transition-transform group-open:rotate-90">›</span>
+              <span className="ml-1">Advanced</span>
+            </summary>
+            <div className="mt-2">
+              <Label className="text-xs font-normal text-muted-foreground/70">Client Name</Label>
+              <Input
+                value={draft.clientName}
+                onChange={(e) => setDraft({ ...draft, clientName: e.target.value })}
+                placeholder="Override OAuth client_name (optional)"
+                className="mt-1"
+                data-testid="mcp-form-client-name"
+              />
+            </div>
+          </details>
         )}
         {error && (
           <div className="rounded-md border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">

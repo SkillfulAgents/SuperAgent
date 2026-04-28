@@ -241,7 +241,7 @@ export function useInvalidateRemoteMcps() {
  * Initiate OAuth flow for an MCP server
  */
 export function useInitiateMcpOAuth() {
-  return useMutation<{ redirectUrl: string; state: string }, Error, { mcpId?: string; name?: string; url?: string; electron?: boolean }>({
+  return useMutation<{ redirectUrl: string; state: string }, Error, { mcpId?: string; name?: string; url?: string; electron?: boolean; clientName?: string }>({
     mutationFn: async (data) => {
       const res = await apiFetch('/api/remote-mcps/initiate-oauth', {
         method: 'POST',

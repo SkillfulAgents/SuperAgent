@@ -225,7 +225,13 @@ remoteMcps.post('/initiate-oauth', async (c) => {
     name?: string
     url?: string
     electron?: boolean
+    clientName?: string
   }>()
+
+  const clientNameOverride =
+    typeof body.clientName === 'string' && body.clientName.trim().length > 0
+      ? body.clientName.trim()
+      : undefined
 
   const protocol = process.env.SUPERAGENT_PROTOCOL || 'superagent'
   const redirectUri = body.electron
@@ -248,7 +254,7 @@ remoteMcps.post('/initiate-oauth', async (c) => {
       return c.json({ error: 'MCP server not found' }, 404)
     }
 
-    const result = await initiateOAuthFlow(body.mcpId, server.url, redirectUri)
+    const result = await initiateOAuthFlow(body.mcpId, server.url, redirectUri, clientNameOverride)
 
     if (!result) {
       const discoveryResult = await discoverOAuthMetadata(server.url)
@@ -261,7 +267,7 @@ remoteMcps.post('/initiate-oauth', async (c) => {
     return c.json({ redirectUrl: result.authorizationUrl, state: result.state })
   } else if (body.name && body.url) {
     // New server: OAuth-first flow (no DB insert yet)
-    const result = await initiateNewServerOAuth(body.url.trim(), body.name.trim(), redirectUri, getCurrentUserId(c))
+    const result = await initiateNewServerOAuth(body.url.trim(), body.name.trim(), redirectUri, getCurrentUserId(c), clientNameOverride)
 
     if (!result) {
       const discoveryResult = await discoverOAuthMetadata(body.url.trim())

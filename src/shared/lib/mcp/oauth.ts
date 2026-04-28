@@ -160,6 +160,7 @@ export async function initiateOAuthFlow(
   mcpId: string,
   mcpUrl: string,
   redirectUri: string,
+  clientNameOverride?: string,
 ): Promise<{
   authorizationUrl: string
   state: string
@@ -196,7 +197,7 @@ export async function initiateOAuthFlow(
     const registration = await registerDynamicClient(
       metadata.registration_endpoint,
       redirectUri,
-      'Superagent',
+      clientNameOverride && clientNameOverride.length > 0 ? clientNameOverride : 'Superagent',
     )
     if (registration) {
       clientId = registration.clientId
@@ -270,6 +271,7 @@ export async function initiateNewServerOAuth(
   name: string,
   redirectUri: string,
   userId?: string,
+  clientNameOverride?: string,
 ): Promise<{
   authorizationUrl: string
   state: string
@@ -293,7 +295,7 @@ export async function initiateNewServerOAuth(
     const registration = await registerDynamicClient(
       metadata.registration_endpoint,
       redirectUri,
-      'Superagent',
+      clientNameOverride && clientNameOverride.length > 0 ? clientNameOverride : 'Superagent',
     )
     if (registration) {
       clientId = registration.clientId

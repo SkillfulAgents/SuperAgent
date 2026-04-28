@@ -27,6 +27,7 @@ export const mcpDraftSchema = z
       }, 'URL must be https:// (http:// is allowed only for localhost)'),
     authType: mcpAuthTypeSchema,
     token: z.string().default(''),
+    clientName: z.string().default(''),
   })
   .superRefine((draft, ctx) => {
     if (draft.authType === 'bearer' && draft.token.trim().length === 0) {
