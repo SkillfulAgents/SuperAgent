@@ -32,8 +32,8 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
             {isError ? 'Error' : 'Content'}
           </div>
           <pre
-            className={`rounded p-2 text-xs overflow-x-auto max-h-60 overflow-y-auto font-mono ${
-              isError ? 'bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200' : 'bg-background'
+            className={`bg-background rounded p-2 text-xs overflow-x-auto max-h-60 overflow-y-auto font-mono ${
+              isError ? 'text-red-800 dark:text-red-200' : ''
             }`}
           >
             {result}

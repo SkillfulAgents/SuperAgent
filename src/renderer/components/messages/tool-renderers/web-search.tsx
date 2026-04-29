@@ -55,7 +55,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
           </div>
         )}
         {result && (
-          <pre className="bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200 rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto">
+          <pre className="bg-background text-red-800 dark:text-red-200 rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto">
             {result}
           </pre>
         )}
@@ -92,7 +92,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
 
       {/* Markdown content */}
       {markdown && (
-        <div className="prose prose-sm max-w-none dark:prose-invert">
+        <div className="prose prose-sm max-w-none dark:prose-invert text-xs prose-p:text-xs prose-li:text-xs prose-headings:text-xs">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>
             {markdown}
           </ReactMarkdown>

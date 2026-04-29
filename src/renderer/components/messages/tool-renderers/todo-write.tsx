@@ -12,17 +12,17 @@ function ExpandedView({ input }: ToolRendererProps) {
   }
 
   return (
-    <ul className="space-y-1 text-sm">
+    <ul className="space-y-1 text-xs">
       {todos.map((todo, index) => (
         <li
           key={index}
           className={cn(
             'flex items-center gap-2',
             todo.status === 'completed' && 'text-muted-foreground line-through',
-            todo.status === 'in_progress' && 'font-semibold'
+            todo.status === 'in_progress' && 'font-medium'
           )}
         >
-          <span className="text-xs">
+          <span className="text-muted-foreground">
             {todo.status === 'completed' && '✓'}
             {todo.status === 'in_progress' && '→'}
             {todo.status === 'pending' && '○'}

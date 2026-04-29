@@ -153,7 +153,8 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
               {/* Text content */}
               {hasText && !isSlashCommand && !isProviderErrorMessage && (
                 <div dir="auto" className={cn(
-                  'prose prose-sm max-w-none min-w-0 break-words font-medium dark:prose-invert'
+                  'prose prose-sm max-w-none min-w-0 break-words font-normal dark:prose-invert',
+                  'prose-strong:font-medium'
                 )}>
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
