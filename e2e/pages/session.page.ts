@@ -1,4 +1,4 @@
-import { Page, expect } from '@playwright/test'
+import { Page, Locator, expect } from '@playwright/test'
 
 /**
  * Page object for session/chat operations
@@ -173,82 +173,123 @@ export class SessionPage {
   // --- User Input Request Helpers ---
 
   /**
-   * Wait for a secret request to appear in the UI
+   * Walk the pending-request stack (clicking next/prev) until the given card
+   * becomes the active (visible) one. The stack's non-active cards are kept
+   * mounted with visibility:hidden, so we can't interact with them until they
+   * are paginated to the front.
    */
-  async waitForSecretRequest(secretName?: string, timeout = 15000) {
-    if (secretName) {
-      await expect(
-        this.page.locator(`[data-testid="secret-request"][data-secret-name="${secretName}"]`)
-      ).toBeVisible({ timeout })
-    } else {
-      await expect(this.page.locator('[data-testid="secret-request"]').first()).toBeVisible({ timeout })
+  async paginateToCard(target: Locator, timeout = 5000) {
+    if (await target.isVisible()) return
+
+    const deadline = Date.now() + timeout
+    // Rewind to the first card so we can walk forward deterministically.
+    const prev = this.page.locator('[data-testid="request-stack-prev"]:visible')
+    while (Date.now() < deadline) {
+      if (await prev.count() === 0) break
+      const disabled = await prev.first().isDisabled()
+      if (disabled) break
+      await prev.first().click()
+    }
+
+    const next = this.page.locator('[data-testid="request-stack-next"]:visible')
+    while (Date.now() < deadline) {
+      if (await target.isVisible()) return
+      if (await next.count() === 0) break
+      const disabled = await next.first().isDisabled()
+      if (disabled) break
+      await next.first().click()
+    }
+
+    if (!(await target.isVisible())) {
+      throw new Error('paginateToCard: target never became visible in the stack')
     }
   }
 
   /**
-   * Get all visible secret request items
+   * Wait for a secret request to appear in the DOM. Cards in the pending-request
+   * stack may be mounted but hidden, so we check attachment, not visibility.
+   */
+  async waitForSecretRequest(secretName?: string, timeout = 15000) {
+    const locator = secretName
+      ? this.page.locator(`[data-testid="secret-request"][data-secret-name="${secretName}"]`)
+      : this.page.locator('[data-testid="secret-request"]').first()
+    await expect(locator).toBeAttached({ timeout })
+  }
+
+  /**
+   * Get all secret request items (visible and stacked).
    */
   getSecretRequests() {
     return this.page.locator('[data-testid="secret-request"]')
   }
 
   /**
-   * Fill in and provide a secret value
+   * Fill in and provide a secret value. Paginates the stack to the target card
+   * if it isn't currently the active one.
    */
   async provideSecret(value: string, secretName?: string) {
     const container = secretName
       ? this.page.locator(`[data-testid="secret-request"][data-secret-name="${secretName}"]`)
       : this.page.locator('[data-testid="secret-request"]').first()
 
+    await this.paginateToCard(container)
     await container.locator('input[placeholder^="Paste "]').fill(value)
     await container.locator('[data-testid="secret-provide-btn"]').click()
   }
 
   /**
-   * Decline a secret request
+   * Decline a secret request. Paginates the stack first if needed.
    */
   async declineSecret(secretName?: string) {
     const container = secretName
       ? this.page.locator(`[data-testid="secret-request"][data-secret-name="${secretName}"]`)
       : this.page.locator('[data-testid="secret-request"]').first()
 
+    await this.paginateToCard(container)
     await container.locator('[data-testid="secret-decline-btn"]').click()
   }
 
   /**
-   * Wait for a question request to appear in the UI
+   * Wait for a question request to appear in the DOM (may be stacked/hidden).
    */
   async waitForQuestionRequest(timeout = 15000) {
-    // Question may be hidden inside PendingRequestStack (visibility:hidden) — check DOM presence
     await expect(this.page.locator('[data-testid="question-request"]').first()).toBeAttached({ timeout })
   }
 
   /**
-   * Get all visible question request items
+   * Get all question request items (visible and stacked).
    */
   getQuestionRequests() {
     return this.page.locator('[data-testid="question-request"]')
   }
 
   /**
-   * Select a question option by its label text and submit
+   * Select a question option by its label text and submit. Paginates first.
    */
   async answerQuestion(optionLabel: string) {
     const container = this.page.locator('[data-testid="question-request"]').first()
-
-    // Click the label containing the option text (the label wraps both radio/checkbox and text)
+    await this.paginateToCard(container)
     await container.locator('label').filter({ hasText: optionLabel }).click()
-
-    // Click submit
     await container.locator('[data-testid="question-submit-btn"]').click()
   }
 
   /**
-   * Decline a question request
+   * Decline a question request. Paginates first.
    */
   async declineQuestion() {
     const container = this.page.locator('[data-testid="question-request"]').first()
+    await this.paginateToCard(container)
     await container.locator('[data-testid="question-decline-btn"]').click()
+  }
+
+  /**
+   * Returns the type of the currently active (visible) card in the
+   * pending-request stack, or null if no input request is pending.
+   */
+  async getActiveRequestType(): Promise<'secret' | 'question' | null> {
+    if (await this.page.locator('[data-testid="secret-request"]:visible').count() > 0) return 'secret'
+    if (await this.page.locator('[data-testid="question-request"]:visible').count() > 0) return 'question'
+    return null
   }
 
   /**

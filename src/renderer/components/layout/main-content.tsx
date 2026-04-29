@@ -3,12 +3,14 @@ import { MessageList } from '@renderer/components/messages/message-list'
 import { MessageInput } from '@renderer/components/messages/message-input'
 import { AgentActivityIndicator } from '@renderer/components/messages/agent-activity-indicator'
 import { AgentSettingsDialog } from '@renderer/components/agents/agent-settings-dialog'
+import { SystemPromptDialog } from '@renderer/components/agents/system-prompt-dialog'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { AgentHome } from '@renderer/components/agents/agent-home/agent-home'
 import { HomePage } from '@renderer/components/home/home-page'
 import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/scheduled-task-view'
 import { WebhookTriggerView } from '@renderer/components/webhook-triggers/webhook-trigger-view'
 import { ChatIntegrationView } from '@renderer/components/chat-integrations/chat-integration-view'
+import { ConnectionsView } from '@renderer/components/connections/connections-view'
 import { BrowserDrawerPanel } from '@renderer/components/browser/browser-drawer-panel'
 import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
@@ -46,12 +48,14 @@ export function MainContent() {
     selectedWebhookTriggerId: webhookTriggerId,
     selectedChatIntegrationId: chatIntegrationId,
     selectedDashboardSlug: dashboardSlug,
+    selectedConnections: connectionsOpen,
     selectSession,
     selectScheduledTask,
     selectWebhookTrigger,
   } = useSelection()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined)
+  const [systemPromptOpen, setSystemPromptOpen] = useState(false)
   // Pending user messages per session — survives navigation between sessions
   const pendingMessagesRef = useRef(new Map<string, { text: string; sentAt: number; sender?: { id: string; name: string; email: string } }>())
   const [, forceUpdate] = useState(0)
@@ -152,7 +156,8 @@ export function MainContent() {
 
   const showSessionCrumb = !!(sessionId && session?.agentSlug === agentSlug)
   const showTaskCrumb = !!(scheduledTaskId && scheduledTask)
-  const isAgentLeaf = !showSessionCrumb && !showTaskCrumb
+  const showConnectionsCrumb = !!connectionsOpen
+  const isAgentLeaf = !showSessionCrumb && !showTaskCrumb && !showConnectionsCrumb
 
   return (
     <div className="h-full flex flex-col" data-testid="main-content">
@@ -198,6 +203,12 @@ export function MainContent() {
                   {scheduledTask.name || 'Scheduled Task'}
                 </span>
               </div>
+            </div>
+          )}
+          {showConnectionsCrumb && (
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span aria-hidden="true" className="text-[13px] font-light text-muted-foreground shrink-0 hidden md:block">/</span>
+              <span className="truncate text-[13px] font-light text-foreground">Connections</span>
             </div>
           )}
         </div>
@@ -383,6 +394,8 @@ export function MainContent() {
       <ErrorBoundary>
         {dashboardSlug ? (
           <DashboardView agentSlug={agentSlug} dashboardSlug={dashboardSlug} />
+        ) : connectionsOpen ? (
+          <ConnectionsView agentSlug={agentSlug} />
         ) : /* Show scheduled task view when a scheduled task is selected */
         scheduledTaskId ? (
           <ScheduledTaskView taskId={scheduledTaskId} agentSlug={agentSlug} />
@@ -458,19 +471,33 @@ export function MainContent() {
               key={agent.slug}
               agent={agent}
               onSessionCreated={handleSessionCreated}
-              onOpenSettings={(tab?: string) => { setSettingsTab(tab); setSettingsOpen(true) }}
+              onOpenSettings={(tab?: string) => {
+                if (tab === 'system-prompt') {
+                  setSystemPromptOpen(true)
+                  return
+                }
+                setSettingsTab(tab)
+                setSettingsOpen(true)
+              }}
             />
           )
         )}
       </ErrorBoundary>
 
       {agent && (
-        <AgentSettingsDialog
-          agent={agent}
-          open={settingsOpen}
-          onOpenChange={(open) => { setSettingsOpen(open); if (!open) setSettingsTab(undefined) }}
-          initialTab={settingsTab}
-        />
+        <>
+          <AgentSettingsDialog
+            agent={agent}
+            open={settingsOpen}
+            onOpenChange={(open) => { setSettingsOpen(open); if (!open) setSettingsTab(undefined) }}
+            initialTab={settingsTab}
+          />
+          <SystemPromptDialog
+            agent={agent}
+            open={systemPromptOpen}
+            onOpenChange={setSystemPromptOpen}
+          />
+        </>
       )}
     </div>
   )

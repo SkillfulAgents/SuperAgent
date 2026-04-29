@@ -37,9 +37,11 @@ vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
 
 vi.mock('@renderer/context/selection-context', () => ({
   useSelection: () => ({
+    selectAgent: vi.fn(),
     selectScheduledTask: vi.fn(),
     selectSession: vi.fn(),
-    selectAgent: vi.fn(),
+    selectConnections: vi.fn(),
+    consumePendingDraft: vi.fn(() => null),
   }),
 }))
 
