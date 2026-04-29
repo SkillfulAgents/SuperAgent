@@ -16,7 +16,7 @@ function getDisplayPath(filePath: string): string {
 
 function getSummary(input: unknown): string | null {
   const { file_path } = parseInput(input)
-  return file_path ? `→ ${getDisplayPath(file_path)}` : null
+  return file_path ? getDisplayPath(file_path) : null
 }
 
 export const writeDef = { displayName: 'Write', iconName: 'FilePlus', parseInput, getSummary } as const

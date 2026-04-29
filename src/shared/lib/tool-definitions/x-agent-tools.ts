@@ -61,7 +61,7 @@ export const invokeAgentDef = {
   getSummary: (i: unknown) => {
     const { slug, session_id, sync, prompt } = asObj<InvokeAgentInput>(i)
     if (!slug) return 'Invoke agent'
-    const action = session_id ? `→ ${slug}/${session_id.slice(0, 8)}…` : `→ ${slug} (new session)`
+    const action = session_id ? `${slug}/${session_id.slice(0, 8)}…` : `${slug} (new session)`
     const preview = truncate(prompt, 50)
     const syncLabel = sync ? ' [sync]' : ''
     return preview ? `${action}${syncLabel}: ${preview}` : `${action}${syncLabel}`

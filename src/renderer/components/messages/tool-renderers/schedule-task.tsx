@@ -43,12 +43,12 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
   return (
     <div className="space-y-3">
       {/* Schedule info header */}
-      <div className="flex items-center gap-4 text-sm">
+      <div className="flex items-center gap-4 text-xs">
         <div className="flex items-center gap-1.5">
           {isRecurring ? (
-            <Repeat className="h-4 w-4 text-blue-500" />
+            <Repeat className="h-3.5 w-3.5 text-blue-500" />
           ) : (
-            <CalendarClock className="h-4 w-4 text-amber-500" />
+            <CalendarClock className="h-3.5 w-3.5 text-amber-500" />
           )}
           <span className="font-medium">
             {isRecurring ? 'Recurring' : 'One-time'}
@@ -61,7 +61,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
         )}
         {timezone && (
           <div className="flex items-center gap-1 text-muted-foreground">
-            <Globe className="h-3.5 w-3.5" />
+            <Globe className="h-3 w-3" />
             <span>{timezone.replace(/_/g, ' ')}</span>
           </div>
         )}
@@ -71,7 +71,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {name && (
         <div>
           <div className="text-xs font-medium text-muted-foreground mb-1">Task Name</div>
-          <div className="bg-background rounded p-2 text-sm font-medium">
+          <div className="bg-background rounded p-2 text-xs font-medium">
             {name}
           </div>
         </div>
@@ -81,9 +81,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {prompt && (
         <div>
           <div className="text-xs font-medium text-muted-foreground mb-1">Prompt</div>
-          <div className="border-2 border-dashed border-muted rounded-lg p-3 bg-muted/20">
-            <div className="text-sm whitespace-pre-wrap">{prompt}</div>
-          </div>
+          <div className="bg-background rounded p-2 text-xs whitespace-pre-wrap">{prompt}</div>
         </div>
       )}
 
@@ -94,10 +92,10 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
             {isError ? 'Error' : 'Result'}
           </div>
           <div
-            className={`rounded p-2 text-xs ${
+            className={`bg-background rounded p-2 text-xs ${
               isError
-                ? 'bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200'
-                : 'bg-green-50 text-green-800 dark:bg-green-950 dark:text-green-200'
+                ? 'text-red-800 dark:text-red-200'
+                : 'text-green-800 dark:text-green-200'
             }`}
           >
             {displayResult}
@@ -121,13 +119,13 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
   return (
     <div className="space-y-3">
       {/* Schedule type indicator */}
-      <div className="flex items-center gap-2 text-sm">
+      <div className="flex items-center gap-2 text-xs">
         {parsed.scheduleType ? (
           <>
             {isRecurring ? (
-              <Repeat className="h-4 w-4 text-blue-500" />
+              <Repeat className="h-3.5 w-3.5 text-blue-500" />
             ) : (
-              <CalendarClock className="h-4 w-4 text-amber-500" />
+              <CalendarClock className="h-3.5 w-3.5 text-amber-500" />
             )}
             <span className="font-medium">
               {isRecurring ? 'Recurring' : 'One-time'}
@@ -147,7 +145,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
       {parsed.name && (
         <div>
           <div className="text-xs font-medium text-muted-foreground mb-1">Task Name</div>
-          <div className="bg-background rounded p-2 text-sm font-medium">
+          <div className="bg-background rounded p-2 text-xs font-medium">
             {parsed.name}
           </div>
         </div>
@@ -157,11 +155,9 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
       {parsed.prompt && (
         <div>
           <div className="text-xs font-medium text-muted-foreground mb-1">Prompt</div>
-          <div className="border-2 border-dashed border-muted rounded-lg p-3 bg-muted/20">
-            <div className="text-sm whitespace-pre-wrap">
-              {parsed.prompt}
-              <span className="animate-pulse">|</span>
-            </div>
+          <div className="bg-background rounded p-2 text-xs whitespace-pre-wrap">
+            {parsed.prompt}
+            <span className="animate-pulse">|</span>
           </div>
         </div>
       )}
