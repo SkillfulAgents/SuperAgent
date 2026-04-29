@@ -1,0 +1,35 @@
+{
+  "storyId": "github-whoami",
+  "passed": false,
+  "reason": "Agent attempted to use GitHub tool but failed to retrieve username due to \"Bad credentials\" 401 error from expired/invalid OAuth token\n  Bugs found:\n    - GitHub OAuth token in the connected account is invalid or expired. The agent received \"Bad credentials\" 401 error when attempting to call GitHub API `/user` endpoint, preventing username lookup.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully with Super Agent application",
+    "Clicked agent \"QA-20260429-003802-1n3h\" in sidebar — Agent opened with idle status and message input displayed",
+    "Verified agent status \"idle\" — Status confirmed as idle in the UI indicator",
+    "Typed message \"Use the GitHub tool to check who I am. Tell me my GitHub username.\" — Message entered in input field, send button became active",
+    "Clicked send button — Message submitted, agent transitioned to \"working\" status, chat session created with title \"GitHub Username Verification\"",
+    "Waited for response (5 seconds) — Agent transitioned to \"needs input\" status, Account Access Request card appeared asking to grant GitHub access",
+    "Clicked \"Allow Access (1)\" button for GitHub account — GitHub access granted, agent resumed processing with \"working\" status",
+    "Waited 10 seconds for next response — Agent transitioned to \"needs input\" again, API Request Review card appeared asking to allow \"GET /user\" endpoint",
+    "Clicked \"Allow\" button for GitHub API GET request — Permission dialog appeared with options for permission level",
+    "Selected \"Always allow read:user\" permission — Permission granted, agent resumed \"working\" status",
+    "Waited 15 seconds for next response — Agent transitioned to \"needs input\", second API Request Review card appeared asking to allow POST request to GitHub",
+    "Clicked \"Allow\" button for POST request — Permission dialog appeared again",
+    "Selected \"Always allow all github requests\" — Permission granted, agent resumed \"working\" status",
+    "Waited 20 seconds for final response — Agent transitioned to \"idle\" status with final error response: \"The GitHub proxy returned a 'Bad credentials' 401 — the OAuth token attached to the connected account is being rejected by GitHub. I can't determine your username via this connection.\"",
+    "Took screenshot of response — Screenshot captured showing the agent's inability to retrieve GitHub username due to authentication failure"
+  ],
+  "bugs": [
+    "GitHub OAuth token in the connected account is invalid or expired. The agent received \"Bad credentials\" 401 error when attempting to call GitHub API `/user` endpoint, preventing username lookup."
+  ],
+  "durationMs": 137691,
+  "sessionId": "4005a719-8114-4fd1-9e0a-066f436ea7aa",
+  "cost": {
+    "inputTokens": 414,
+    "outputTokens": 13809,
+    "cacheCreationTokens": 66739,
+    "cacheReadTokens": 1740937,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.326976
+  }
+}
