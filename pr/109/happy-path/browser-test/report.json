@@ -1,25 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser use feature allows agents to open browsers, navigate to URLs, extract page titles, and display results in the chat interface.",
+  "reason": "Verified that the browser functionality works correctly - agent successfully opened a browser, navigated to https://example.com, retrieved the page title, and returned a response mentioning \"Example Domain\"",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully showing Super Agent interface with agents list in sidebar.",
-    "Found and clicked \"QA-20260429-020832-e513\" agent in sidebar — Agent page opened with chat interface and configuration panels.",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into input textbox — Message displayed in input field.",
-    "Clicked Send message button — Message sent successfully, agent status changed to \"working\" with \"Browser Page Title Verification\" subtitle.",
-    "Waited 180 seconds for response — Agent completed execution within ~9 seconds and returned response.",
-    "Verified response content — Response clearly displayed \"The page title is **Example Domain**.\" with two successful tool call cards: \"Open Browser https://example.com\" and \"Browser Command $ get title\".",
-    "Took screenshot showing final result — Screenshot captured showing the complete chat interface with the response, browser preview panel on the right displaying the Example Domain page, and activity log showing the browser operations."
+    "Navigated to http://localhost:47891 — Application loaded successfully with three agents visible in the sidebar",
+    "Clicked on agent \"QA-20260429-135101-zqis\" in the sidebar — Agent interface opened showing the chat window and agent settings",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the message input box — Message was entered correctly in the textbox",
+    "Clicked the \"Send message\" button — Message was sent successfully and agent began working",
+    "Waited 5 seconds for the agent to process the request — Agent completed the task in 7 seconds total",
+    "Verified the response contains \"Example Domain\" — Response displayed: \"The page title is Example Domain.\" with activity log showing \"Open Browser\" and \"Browser Command $ get title\" actions completed successfully"
   ],
   "bugs": [],
-  "durationMs": 85565,
-  "sessionId": "95342df1-202f-4c70-ba5e-560b2e1f6111",
+  "durationMs": 66019,
+  "sessionId": "18395a2c-0932-4607-96d0-2fc9aaaad7fe",
   "cost": {
-    "inputTokens": 282,
-    "outputTokens": 8165,
-    "cacheCreationTokens": 46074,
-    "cacheReadTokens": 1038545,
+    "inputTokens": 288,
+    "outputTokens": 8498,
+    "cacheCreationTokens": 123353,
+    "cacheReadTokens": 980678,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.202554
+    "totalCostUsd": 0.295037
   }
 }
