@@ -5,11 +5,12 @@ import { AnalyticsProvider } from './context/analytics-context'
 import { AuthGate } from './components/auth/auth-gate'
 import { SelectionProvider } from './context/selection-context'
 import { ConnectivityProvider } from './context/connectivity-context'
-import { DialogProvider } from './context/dialog-context'
+import { DialogProvider, useDialogs } from './context/dialog-context'
 import { DraftsProvider } from './context/drafts-context'
 import { AppSidebar } from './components/layout/app-sidebar'
 import { MainContent } from './components/layout/main-content'
 import { WindowControls } from './components/layout/window-controls'
+import { GlobalSettingsPage } from './components/settings/global-settings-page'
 import { SidebarProvider, SidebarInset } from './components/ui/sidebar'
 import { Toaster } from './components/ui/sonner'
 import { TrayNavigationHandler } from './components/tray-navigation-handler'
@@ -71,17 +72,33 @@ function AppContent() {
       {wizardOpen ? (
         <GettingStartedWizard onClose={() => setWizardOpen(false)} />
       ) : (
-        <TrayNavigationHandler>
-          <GlobalNotificationHandler />
-          <SidebarProvider className="h-screen">
-            <AppSidebar />
-            <SidebarInset className="min-w-0">
-              <MainContent />
-            </SidebarInset>
-          </SidebarProvider>
-        </TrayNavigationHandler>
+        <AppShell />
       )}
     </DialogProvider>
+  )
+}
+
+function AppShell() {
+  const { settingsOpen, setSettingsOpen, settingsTab, openWizard } = useDialogs()
+
+  return (
+    <TrayNavigationHandler>
+      <GlobalNotificationHandler />
+      {settingsOpen ? (
+        <GlobalSettingsPage
+          onClose={() => setSettingsOpen(false)}
+          onOpenWizard={openWizard}
+          initialSection={settingsTab}
+        />
+      ) : (
+        <SidebarProvider className="h-screen">
+          <AppSidebar />
+          <SidebarInset className="min-w-0">
+            <MainContent />
+          </SidebarInset>
+        </SidebarProvider>
+      )}
+    </TrayNavigationHandler>
   )
 }
 

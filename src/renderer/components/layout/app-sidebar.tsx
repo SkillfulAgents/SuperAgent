@@ -52,7 +52,6 @@ import { useArtifacts, type ArtifactInfo } from '@renderer/hooks/use-artifacts'
 import { useChatIntegrations, useChatIntegrationSessions, type ChatIntegration } from '@renderer/hooks/use-chat-integrations'
 import { formatProviderName } from '@shared/lib/chat-integrations/utils'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
-import { GlobalSettingsDialog } from '@renderer/components/settings/global-settings-dialog'
 import { ContainerSetupDialog } from '@renderer/components/settings/container-setup-dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { useUser } from '@renderer/context/user-context'
@@ -906,7 +905,7 @@ function ApiKeyWarning({ onOpenSettings }: { onOpenSettings: () => void }) {
 
 export function AppSidebar() {
   useRenderTracker('AppSidebar')
-  const { settingsOpen, setSettingsOpen, settingsTab, openWizard } = useDialogs()
+  const { setSettingsOpen } = useDialogs()
   const { createUntitledAgent, isPending: isCreatingAgent } = useCreateUntitledAgent()
 
   // Electron menu → New Agent
@@ -1127,13 +1126,6 @@ export function AppSidebar() {
         </SidebarMenu>
         <UserFooter />
       </SidebarFooter>
-
-      <GlobalSettingsDialog
-        open={settingsOpen}
-        onOpenChange={setSettingsOpen}
-        onOpenWizard={openWizard}
-        initialTab={settingsTab}
-      />
 
       <ContainerSetupDialog
         open={containerSetupOpen}
