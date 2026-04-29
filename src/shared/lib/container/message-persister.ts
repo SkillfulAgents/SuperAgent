@@ -468,10 +468,6 @@ class MessagePersister {
     this.broadcastToSSE(sessionId, { type: 'session_updated' })
   }
 
-  broadcastMessagesUpdated(sessionId: string): void {
-    this.broadcastToSSE(sessionId, { type: 'messages_updated' })
-  }
-
   // Mark session as active (when user sends a message)
   markSessionActive(sessionId: string, agentSlug?: string): void {
     let state = this.streamingStates.get(sessionId)
