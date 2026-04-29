@@ -20,6 +20,11 @@ const ICON_TONES = {
   neutral: 'bg-muted text-foreground dark:bg-muted dark:text-foreground',
 } as const
 
+const animStyle = {
+  transitionDuration: '750ms',
+  transitionTimingFunction: 'cubic-bezier(0.16, 1, 0.3, 1)',
+} as const
+
 export function OptionCard({
   title,
   description,
@@ -35,7 +40,8 @@ export function OptionCard({
       type="button"
       onClick={onClick}
       aria-label={`${title} — ${buttonLabel}`}
-      className={`group text-left rounded-2xl border border-border/50 p-4 flex flex-col items-stretch cursor-pointer w-fit hover:w-[280px] focus-visible:w-[280px] hover:border-foreground/30 hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring transition-[width,background-color,border-color] duration-200 ease-out ${className ?? ''}`}
+      style={animStyle}
+      className={`group text-left rounded-2xl border border-border/50 p-4 flex flex-col items-stretch cursor-pointer w-fit hover:w-[280px] focus-visible:w-[280px] hover:border-foreground/30 hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring transition-[width,background-color,border-color] ${className ?? ''}`}
     >
       <div className="flex items-center gap-2">
         <span className={`inline-flex h-6 w-6 items-center justify-center rounded-full ${ICON_TONES[iconTone]}`}>
@@ -43,16 +49,16 @@ export function OptionCard({
         </span>
         <span className="text-xs font-medium whitespace-nowrap">{title}</span>
       </div>
-      <div className="w-0 min-w-full grid grid-rows-[0fr] group-hover:grid-rows-[1fr] group-focus-visible:grid-rows-[1fr] mt-0 group-hover:mt-1.5 group-focus-visible:mt-1.5 transition-[grid-template-rows,margin] duration-200 ease-out">
+      <div style={animStyle} className="w-0 min-w-full grid grid-rows-[0fr] group-hover:grid-rows-[1fr] group-focus-visible:grid-rows-[1fr] mt-0 group-hover:mt-1.5 group-focus-visible:mt-1.5 transition-[grid-template-rows,margin]">
         <div className="overflow-hidden">
-          <p className="text-xs text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity duration-200">
+          <p style={animStyle} className="text-xs text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity">
             {description}
           </p>
         </div>
       </div>
-      <div className="w-0 min-w-full grid grid-rows-[0fr] group-hover:grid-rows-[1fr] group-focus-visible:grid-rows-[1fr] mt-0 group-hover:mt-4 group-focus-visible:mt-4 transition-[grid-template-rows,margin] duration-200 ease-out">
+      <div style={animStyle} className="w-0 min-w-full grid grid-rows-[0fr] group-hover:grid-rows-[1fr] group-focus-visible:grid-rows-[1fr] mt-0 group-hover:mt-4 group-focus-visible:mt-4 transition-[grid-template-rows,margin]">
         <div className="overflow-hidden">
-          <div className="flex items-center justify-between gap-2 opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity duration-200">
+          <div style={animStyle} className="flex items-center justify-between gap-2 opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity">
             {pill ? (
               <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[11px] text-foreground">
                 {pill}
