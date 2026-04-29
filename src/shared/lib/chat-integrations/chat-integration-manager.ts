@@ -271,7 +271,13 @@ class ChatIntegrationManager {
 
     this.connections.set(integration.id, conn)
 
-    await connector.connect()
+    try {
+      await connector.connect()
+    } catch (err) {
+      this.disconnectConnection(conn)
+      this.connections.delete(integration.id)
+      throw err
+    }
     this.disconnectedSince.delete(integration.id)
     breadcrumb('Integration connected', { integrationId: integration.id, provider: integration.provider })
     this.emitNotification(integration, 'connected')
