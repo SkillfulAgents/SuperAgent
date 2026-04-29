@@ -1,9 +1,8 @@
 import { useCallback, useRef, useState } from 'react'
-import { Phone, Upload, FileArchive, Loader2 } from 'lucide-react'
+import { AudioLines, Upload, ArrowUpFromLine, FileArchive, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@renderer/components/ui/button'
 import { OptionCard } from '@renderer/components/ui/option-card'
-import { Input } from '@renderer/components/ui/input'
 import { Checkbox } from '@renderer/components/ui/checkbox'
 import {
   Dialog,
@@ -26,6 +25,8 @@ export interface ImportResult {
   agent: ApiAgent
   hasOnboarding?: boolean
 }
+
+export const ONBOARDING_MESSAGE = 'This agent was just set up from a template. Please run the agent-onboarding skill to help me configure it.'
 
 export interface AgentCreationAidsProps {
   /** Called after the voice agent interview completes with its tool-call args. */
@@ -103,7 +104,6 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
   // --- Import flow ---
   const [showImportDialog, setShowImportDialog] = useState(false)
   const [importFile, setImportFile] = useState<File | null>(null)
-  const [importName, setImportName] = useState('')
   const [importFull, setImportFull] = useState(false)
   const [uploadProgress, setUploadProgress] = useState<ImportProgress | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -126,7 +126,6 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
 
   const resetImport = useCallback(() => {
     setImportFile(null)
-    setImportName('')
     setImportFull(false)
     setUploadProgress(null)
     importTemplate.reset()
@@ -153,7 +152,6 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
         setUploadProgress({ phase: 'uploading', percent: 0 })
         const result = await importTemplate.mutateAsync({
           file: importFile,
-          nameOverride: importName.trim() || undefined,
           mode: importFull ? 'full' : 'template',
           onProgress: setUploadProgress,
         })
@@ -176,7 +174,7 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
         console.error('Failed to import template:', error)
       }
     },
-    [importFile, importName, importFull, importTemplate, resetImport, finishImport],
+    [importFile, importFull, importTemplate, resetImport, finishImport],
   )
 
   const handleTemplateSecretsSubmit = useCallback(
@@ -213,37 +211,26 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
 
   return (
     <div className={className}>
-      <div className="flex items-center gap-4 pt-2 px-6 mb-4">
-        <div className="h-px flex-1 bg-border" />
-        <span className="text-xs text-muted-foreground">OR</span>
-        <div className="h-px flex-1 bg-border" />
-      </div>
-      <div className="space-y-4">
+      <div className="flex flex-wrap items-start gap-3">
         {hasVoiceConfigured && (
           <OptionCard
-            title="Try Talking to SuperAgent for Ideas."
-            description={(
-              <>
-                Answer a few questions about your job — get a detailed<br />
-                prompt for your agent. Takes less than five minutes.
-              </>
-            )}
-            icon={<Phone className="h-4 w-4" />}
-            buttonLabel="Start talking"
+            title="Talk to SuperAgent for Ideas"
+            description="Answer a few questions about your job — get a detailed prompt for your agent."
+            icon={<AudioLines className="h-3 w-3" />}
+            iconTone="neutral"
+            pill="5 min"
+            buttonLabel="Start"
             onClick={startVoiceAgent}
           />
         )}
 
         <OptionCard
-          title="Import an agent or agent template."
-          description={(
-            <>
-              Bring in a pre-built agent from a .zip template,<br />
-              including skills and optional environment variables.
-            </>
-          )}
-          icon={<Upload className="h-4 w-4" />}
-          buttonLabel="Import agent"
+          title="Import an Agent"
+          description="Import an agent via a .zip file with bundled skills and optional env. variables."
+          icon={<ArrowUpFromLine className="h-3 w-3" />}
+          iconTone="neutral"
+          pill="30 sec"
+          buttonLabel="Import"
           onClick={() => setShowImportDialog(true)}
         />
       </div>
@@ -270,18 +257,18 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
       <Dialog open={showImportDialog} onOpenChange={(open) => { if (!open) closeImportDialog() }}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Import an agent</DialogTitle>
-            <DialogDescription>
+            <DialogTitle className="font-medium">Import an agent</DialogTitle>
+            <DialogDescription className="sr-only">
               Upload a .zip template to create a new agent.
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleImport}>
             <div className="py-4 space-y-4">
               <div
-                className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
+                className={`border border-dashed rounded-lg p-6 text-center transition-colors bg-muted/50 ${
                   importTemplate.isPending
                     ? 'opacity-50 pointer-events-none'
-                    : 'cursor-pointer hover:bg-muted/50'
+                    : 'cursor-pointer'
                 }`}
                 role="button"
                 tabIndex={0}
@@ -327,20 +314,14 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
                   </div>
                 ) : (
                   <>
-                    <Upload className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
+                    <Upload className="h-5 w-5 mx-auto text-muted-foreground mb-2" />
                     <p className="text-sm text-muted-foreground">
-                      Drop a .zip template file here or click to browse
+                      Drop a .zip template file here<br />
+                      or click to browse
                     </p>
                   </>
                 )}
               </div>
-
-              <Input
-                placeholder="Name override (optional)"
-                value={importName}
-                onChange={(e) => setImportName(e.target.value)}
-                disabled={importTemplate.isPending}
-              />
 
               <div className="flex items-center gap-2">
                 <Checkbox
@@ -353,7 +334,7 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
                   htmlFor="creation-aids-import-full"
                   className="text-sm text-muted-foreground cursor-pointer select-none"
                 >
-                  Full import (includes environment variables and data)
+                  Import includes env. variables and session data
                 </label>
               </div>
 
@@ -388,7 +369,7 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
               )}
             </div>
 
-            <DialogFooter>
+            <DialogFooter className="mt-4">
               <Button
                 type="button"
                 variant="outline"
@@ -397,7 +378,7 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
               >
                 Cancel
               </Button>
-              <Button type="submit" disabled={!importFile || importTemplate.isPending}>
+              <Button type="submit" disabled={importTemplate.isPending}>
                 {importTemplate.isPending ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
