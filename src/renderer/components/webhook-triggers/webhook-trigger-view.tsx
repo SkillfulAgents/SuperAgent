@@ -9,6 +9,7 @@
 
 import { Zap, Trash2, Loader2, Settings2, Pause, PlayCircle, AlertTriangle } from 'lucide-react'
 import { RelatedSessions } from '@renderer/components/sessions/related-sessions'
+import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Button } from '@renderer/components/ui/button'
 import {
   useWebhookTrigger,
@@ -179,22 +180,22 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
 
       {/* Warning when using personal Composio key */}
       {hasLocalComposioKey && isActive && (
-        <div className="mx-6 mt-4 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-900 dark:bg-amber-950/30">
-          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
-          <p className="text-xs text-amber-700 dark:text-amber-400">
+        <Alert className="mx-6 mt-4 border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-400">
+          <AlertTriangle className="h-4 w-4 !text-amber-600 dark:!text-amber-400" />
+          <AlertDescription>
             Webhook triggers require platform-managed Composio and will not fire while using a personal Composio API key.
             Remove your personal key in Settings → Account Provider to restore trigger functionality.
-          </p>
-        </div>
+          </AlertDescription>
+        </Alert>
       )}
 
       {!isPlatformConnected && isActive && (
-        <div className="mx-6 mt-4 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-900 dark:bg-amber-950/30">
-          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
-          <p className="text-xs text-amber-700 dark:text-amber-400">
+        <Alert className="mx-6 mt-4 border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-400">
+          <AlertTriangle className="h-4 w-4 !text-amber-600 dark:!text-amber-400" />
+          <AlertDescription>
             Webhook triggers require a platform connection. Connect to the platform in Settings to enable triggers.
-          </p>
-        </div>
+          </AlertDescription>
+        </Alert>
       )}
 
       {/* Trigger details */}
