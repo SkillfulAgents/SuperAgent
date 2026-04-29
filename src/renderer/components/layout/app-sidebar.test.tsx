@@ -167,10 +167,6 @@ vi.mock('@renderer/components/sessions/session-context-menu', () => ({
   SessionContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
-vi.mock('@renderer/components/settings/global-settings-dialog', () => ({
-  GlobalSettingsDialog: () => null,
-}))
-
 vi.mock('@renderer/components/settings/container-setup-dialog', () => ({
   ContainerSetupDialog: () => null,
 }))
