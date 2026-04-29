@@ -1,0 +1,31 @@
+{
+  "storyId": "github-whoami",
+  "passed": false,
+  "reason": "Agent responded with authentication error instead of GitHub username\n  Bugs found:\n    - Agent attempted to retrieve GitHub username but received \"401 Bad credentials\" error from GitHub API. The connected GitHub account's OAuth token is not being accepted by GitHub's API. While the agent successfully used the GitHub tool and made multiple API calls to the GitHub `/user` endpoint, it could not complete the task due to invalid credentials. Response states: \"The GitHub connection returned 401 Bad credentials through the proxy on both attempts. The OAuth token isn't being accepted by GitHub's API. This looks like a platform-side issue with the connected account.\"",
+  "steps": [
+    "Navigated to http://localhost:47891 - Page loaded with agent list showing three agents including the target agent \"QA-20260429-171527-c465\"",
+    "Clicked on \"QA-20260429-171527-c465\" agent in sidebar - Agent detail page loaded successfully",
+    "Verified agent status shows \"idle\" - Status indicator in top-right confirmed agent is idle",
+    "Typed and sent message \"Use the GitHub tool to check who I am. Tell me my GitHub username.\" - Message entered in input field and sent successfully",
+    "Account access request card appeared asking to grant GitHub access - GitHub was already connected (showing \"connected 1 minute ago\"), selected and clicked \"Allow Access (1)\"",
+    "Approved first GitHub API request review - Clicked \"Allow Once\" to permit GET /user API call",
+    "Agent continued processing and requested approval for second API call - Clicked \"Allow\" and confirmed with \"Allow Once\"",
+    "Agent continued processing and requested approval for third API call - Clicked \"Allow\" and confirmed with \"Allow Once\"",
+    "Agent continued processing and requested approval for fourth API call - Clicked \"Allow\" and confirmed with \"Allow Once\"",
+    "Waited approximately 20 seconds and agent completed processing - Agent status changed to \"idle\" after 2m 59s total elapsed time",
+    "Verified final response - Agent returned error message explaining that GitHub API returned 401 Bad Credentials error. Response does NOT include a GitHub username, instead explaining authentication failure with the OAuth token and suggesting reconnection or alternative approaches"
+  ],
+  "bugs": [
+    "Agent attempted to retrieve GitHub username but received \"401 Bad credentials\" error from GitHub API. The connected GitHub account's OAuth token is not being accepted by GitHub's API. While the agent successfully used the GitHub tool and made multiple API calls to the GitHub `/user` endpoint, it could not complete the task due to invalid credentials. Response states: \"The GitHub connection returned 401 Bad credentials through the proxy on both attempts. The OAuth token isn't being accepted by GitHub's API. This looks like a platform-side issue with the connected account.\""
+  ],
+  "durationMs": 247855,
+  "sessionId": "0084bac8-2bc5-4a9a-9b55-e4f4aa3d9005",
+  "cost": {
+    "inputTokens": 711,
+    "outputTokens": 17665,
+    "cacheCreationTokens": 110726,
+    "cacheReadTokens": 3728772,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.600321
+  }
+}

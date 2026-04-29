@@ -1,0 +1,25 @@
+{
+  "storyId": "agent-chat",
+  "passed": true,
+  "reason": "Successfully sent a math question to agent QA-20260429-171524-wvwo and verified the response contains \"4\"",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully with Super Agent app and sidebar showing agents",
+    "Found and clicked agent \"QA-20260429-171524-wvwo\" in the sidebar — Agent page loaded, showing the agent detail view with status indicator and message input",
+    "Verified agent status is \"idle\" — Status indicator showed \"idle\" status before sending message",
+    "Typed message \"Hello! What is 2+2?\" in the input field — Message text entered into the message input field (ref=e128)",
+    "Clicked Send message button — Message sent successfully, conversation transitioned to chat view with activity indicator showing \"Working...\"",
+    "Waited up to 3 minutes for agent response — Agent responded within 1 second, displaying the answer \"4\" in the chat",
+    "Verified response mentions \"4\" and took screenshot — Screenshot captured showing the conversation with user message \"Hello! What is 2+2?\" and agent response \"4\", with agent status returned to \"idle\" and timing showing \"Worked for 1s\""
+  ],
+  "bugs": [],
+  "durationMs": 70781,
+  "sessionId": "aea76c99-8397-45a8-b960-f047f73b62a8",
+  "cost": {
+    "inputTokens": 225,
+    "outputTokens": 6289,
+    "cacheCreationTokens": 38982,
+    "cacheReadTokens": 801643,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.160562
+  }
+}

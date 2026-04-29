@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser use feature allows agent to navigate to a URL, retrieve the page title, and return the result in chat",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully with Super Agent interface showing agents in sidebar",
+    "Clicked on \"QA-20260429-171526-vd7v\" agent in the sidebar — Agent chat interface opened with message input field",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message appeared in the textbox and Send button became enabled",
+    "Clicked Send message button — Message was sent and agent status changed to \"working\" with task title \"Browser Navigation and Title Retrieval\"",
+    "Waited up to 3 minutes for response — Agent completed within 12 seconds and returned response message",
+    "Verified response mentions \"Example Domain\" — Response clearly shows: \"The page title is \"Example Domain\".\" with three successful tool calls: Open Browser (https://example.com), Browser Command (get title), and Close Browser"
+  ],
+  "bugs": [],
+  "durationMs": 83308,
+  "sessionId": "853b94dc-5ce2-4fa7-b552-d0306c835132",
+  "cost": {
+    "inputTokens": 207,
+    "outputTokens": 6299,
+    "cacheCreationTokens": 36987,
+    "cacheReadTokens": 718618,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.149798
+  }
+}
