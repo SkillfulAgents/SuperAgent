@@ -1,6 +1,6 @@
 import { betterAuth } from 'better-auth'
 import { drizzleAdapter } from 'better-auth/adapters/drizzle'
-import { admin } from 'better-auth/plugins'
+import { admin, genericOAuth } from 'better-auth/plugins'
 import { and, eq, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import * as schema from '@shared/lib/db/schema'
@@ -8,6 +8,8 @@ import { getOrCreateAuthSecret } from './secret'
 import { getAppBaseUrl, getTrustedOrigins } from './config'
 import { getSettings, DEFAULT_AUTH_SETTINGS } from '@shared/lib/config/settings'
 import { enforceMaxConcurrentSessions } from './session-enforcement'
+import { getGenericOAuthProviderConfigs } from './provider-config'
+import { isAuthMode } from './mode'
 
 // Re-export isAuthMode from its own file (no better-auth imports)
 // so consumers that only need the check don't pull in ESM deps.
@@ -33,6 +35,12 @@ export function getAuth() {
     const trustedOrigins = getTrustedOrigins()
     const settings = getSettings()
     const authSettings = { ...DEFAULT_AUTH_SETTINGS, ...settings.auth }
+    const oauthProviders = getGenericOAuthProviderConfigs()
+    const oauthPlugin = oauthProviders.length > 0
+      ? genericOAuth({
+          config: oauthProviders,
+        })
+      : null
 
     _auth = betterAuth({
       database: drizzleAdapter(db, {
@@ -67,6 +75,7 @@ export function getAuth() {
         admin({
           defaultRole: authSettings.defaultUserRole === 'admin' ? 'admin' : 'user',
         }),
+        ...(oauthPlugin ? [oauthPlugin] : []),
       ],
       secret: getOrCreateAuthSecret(),
       baseURL: getAppBaseUrl(),
@@ -98,13 +107,14 @@ export function getAuth() {
                   console.log(`First user ${createdUser.email} promoted to admin`)
                 }
 
-                // If admin approval is required and this is NOT the first user,
-                // auto-ban them pending admin review.
-                // Read fresh settings so runtime changes are picked up without
-                // needing to recreate the Better Auth singleton.
+                // Auto-ban-pending-approval is only meaningful for standalone
+                // installs where SuperAgent owns the user list. In auth-mode
+                // the platform's `subscribed_member` table is the gatekeeper
+                // -- if the user reached this hook they were already vouched
+                // by platform OIDC, and there's no local admin to "approve".
                 const currentSettings = getSettings()
                 const currentAuth = { ...DEFAULT_AUTH_SETTINGS, ...currentSettings.auth }
-                if (result.changes === 0 && currentAuth.requireAdminApproval) {
+                if (result.changes === 0 && currentAuth.requireAdminApproval && !isAuthMode()) {
                   db.update(schema.user)
                     .set({ banned: true, banReason: 'Pending admin approval' })
                     .where(eq(schema.user.id, createdUser.id))
