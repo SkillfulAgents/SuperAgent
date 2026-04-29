@@ -1,26 +1,24 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "Successfully navigated to the application, found and clicked the target agent \"QA-20260428-213009-swya\", verified its status was \"idle\", sent the message \"Hello! What is 2+2?\", and received a response containing the correct answer \"4\" within 2 seconds.",
+  "reason": "Successfully navigated to the agent, verified status, sent a math question, and received correct response.",
   "steps": [
-    "Navigated to http://localhost:47891 - Application loaded successfully with sidebar showing three agents and main area displaying \"Your Agents\" landing page.",
-    "Clicked on agent \"QA-20260428-213009-swya\" in the sidebar - Agent detail page loaded showing the agent's configuration and message input field.",
-    "Verified agent status - Agent status displayed as \"idle\" in the top right corner, which is one of the expected states (running or idle).",
-    "Clicked on message input field - Input field became active and focused, ready for text input.",
-    "Typed message \"Hello! What is 2+2?\" - Message was successfully entered into the input field.",
-    "Clicked \"Send message\" button - Message was sent successfully; agent status changed to \"working\" and a processing indicator appeared showing \"Working...\" with timer.",
-    "Waited for agent response - Agent responded within 2 seconds, displaying the correct answer \"4\" in the chat view with timestamp \"Worked for 2s\".",
-    "Verified response contains \"4\" - Agent's response clearly displays \"4\" as the answer to the 2+2 math question. The session was automatically named \"Math Question About Basic Addition\" based on the conversation context."
+    "Navigated to http://localhost:47891 - Application loaded successfully with sidebar showing three agents.",
+    "Clicked on agent \"QA-20260429-020830-5pjm\" in the sidebar - Agent detail page loaded, showing the chat interface.",
+    "Verified agent status is \"running\" or \"idle\" - Status confirmed as \"idle\" (displayed in the top status indicator).",
+    "Typed message \"Hello! What is 2+2?\" in the message input field - Message was successfully entered in the textbox.",
+    "Clicked Send button - Message was sent, agent status changed to \"working\", and a new session \"Math Basics Question Session\" was created.",
+    "Waited for response and verified it mentions \"4\" - Agent responded with \"4\" within 1 second. Response is displayed clearly in the chat view showing the correct answer to 2+2."
   ],
   "bugs": [],
-  "durationMs": 84388,
-  "sessionId": "2f0ee92a-c1db-43be-ba96-11a2d4490a12",
+  "durationMs": 47136,
+  "sessionId": "d69c042f-9f47-4c59-8cb0-80b82776594c",
   "cost": {
-    "inputTokens": 279,
-    "outputTokens": 9547,
-    "cacheCreationTokens": 126342,
-    "cacheReadTokens": 987111,
+    "inputTokens": 207,
+    "outputTokens": 5633,
+    "cacheCreationTokens": 113488,
+    "cacheReadTokens": 648954,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.304653
+    "totalCostUsd": 0.235127
   }
 }

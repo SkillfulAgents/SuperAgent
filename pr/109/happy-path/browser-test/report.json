@@ -1,24 +1,25 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser use feature enables agents to open browsers, navigate to URLs, and retrieve page information successfully",
+  "reason": "Browser use feature allows agents to open browsers, navigate to URLs, extract page titles, and display results in the chat interface.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully showing Super Agent interface with three agents listed in sidebar",
-    "Clicked on \"QA-20260428-213011-srpo\" agent in the sidebar — Agent page opened displaying chat interface and agent configuration options",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message appeared in the input field with proper formatting",
-    "Clicked the \"Send message\" button — Message was sent successfully, agent began processing with status showing \"working\"",
-    "Waited up to 3 minutes for response — Agent completed work in 7 seconds and returned response",
-    "Verified response mentions \"Example Domain\" — Response clearly states \"The page title is \"Example Domain\".\" with two completed tool calls: \"Open Browser https://example.com\" and \"Browser Command $ get title\""
+    "Navigated to http://localhost:47891 — Page loaded successfully showing Super Agent interface with agents list in sidebar.",
+    "Found and clicked \"QA-20260429-020832-e513\" agent in sidebar — Agent page opened with chat interface and configuration panels.",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into input textbox — Message displayed in input field.",
+    "Clicked Send message button — Message sent successfully, agent status changed to \"working\" with \"Browser Page Title Verification\" subtitle.",
+    "Waited 180 seconds for response — Agent completed execution within ~9 seconds and returned response.",
+    "Verified response content — Response clearly displayed \"The page title is **Example Domain**.\" with two successful tool call cards: \"Open Browser https://example.com\" and \"Browser Command $ get title\".",
+    "Took screenshot showing final result — Screenshot captured showing the complete chat interface with the response, browser preview panel on the right displaying the Example Domain page, and activity log showing the browser operations."
   ],
   "bugs": [],
-  "durationMs": 117027,
-  "sessionId": "75124e7f-ffa1-425d-9841-ed5fdfce5e3c",
+  "durationMs": 85565,
+  "sessionId": "95342df1-202f-4c70-ba5e-560b2e1f6111",
   "cost": {
-    "inputTokens": 342,
-    "outputTokens": 10041,
-    "cacheCreationTokens": 132951,
-    "cacheReadTokens": 1275333,
+    "inputTokens": 282,
+    "outputTokens": 8165,
+    "cacheCreationTokens": 46074,
+    "cacheReadTokens": 1038545,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.344269
+    "totalCostUsd": 0.202554
   }
 }
