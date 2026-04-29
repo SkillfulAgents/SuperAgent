@@ -1,0 +1,27 @@
+{
+  "storyId": "github-whoami",
+  "passed": false,
+  "reason": "Agent attempted to use GitHub tool but failed to retrieve username due to OAuth authentication error\n  Bugs found:\n    - GitHub OAuth Authentication Failed - The agent attempted to fetch the GitHub username using the GitHub tool, but the OAuth token returned \"401 Bad credentials\" error. The agent went through multiple troubleshooting steps including testing unauthenticated endpoints and attempting to reconnect, but ultimately reported: \"I'm unable to retrieve your GitHub username — the proxy returns 401 'Bad credentials' for the connected GitHub account (ID 90ec7f0e-ba36-4257-bffb-ca78ec832165), even after reconnecting. The OAuth token attached to the account isn't being accepted by GitHub.\"",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 — Page loaded successfully with Super Agent interface",
+    "Step 2: Clicked agent \"QA-20260429-171251-z18i\" in sidebar — Agent detail page opened",
+    "Step 3: Verified agent status is \"running\" or \"idle\" — Confirmed status is \"idle\" (screenshot: step3-agent-idle-status.png)",
+    "Step 4: Sent message \"Use the GitHub tool to check who I am. Tell me my GitHub username.\" — Message sent successfully",
+    "Step 5: Account Access Request card appeared asking to grant GitHub access — Selected GitHub account (already checked) and clicked \"Allow Access (1)\" to grant it",
+    "Step 6: Waited for response with multiple API permission approvals required — Agent worked for 2m 38s, requiring approval for multiple GitHub API requests including GET /user and other endpoints",
+    "Step 7: Verified response includes GitHub username — Response received but does NOT contain username; instead contains error message: \"I'm unable to retrieve your GitHub username — the proxy returns 401 'Bad credentials' for the connected GitHub account (ID 90ec7f0e-ba36-4257-bffb-ca78ec832165)\" (screenshot: step7-final-response.png)"
+  ],
+  "bugs": [
+    "GitHub OAuth Authentication Failed - The agent attempted to fetch the GitHub username using the GitHub tool, but the OAuth token returned \"401 Bad credentials\" error. The agent went through multiple troubleshooting steps including testing unauthenticated endpoints and attempting to reconnect, but ultimately reported: \"I'm unable to retrieve your GitHub username — the proxy returns 401 'Bad credentials' for the connected GitHub account (ID 90ec7f0e-ba36-4257-bffb-ca78ec832165), even after reconnecting. The OAuth token attached to the account isn't being accepted by GitHub.\""
+  ],
+  "durationMs": 225707,
+  "sessionId": "a384e3f4-450d-490d-9e44-b7d8fc99955e",
+  "cost": {
+    "inputTokens": 855,
+    "outputTokens": 20237,
+    "cacheCreationTokens": 113752,
+    "cacheReadTokens": 4400347,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.684265
+  }
+}
