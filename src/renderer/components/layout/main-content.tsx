@@ -1,7 +1,5 @@
 
-import { MessageList } from '@renderer/components/messages/message-list'
-import { MessageInput } from '@renderer/components/messages/message-input'
-import { AgentActivityIndicator } from '@renderer/components/messages/agent-activity-indicator'
+import { SessionChatColumn } from './session-chat-column'
 import { AgentSettingsDialog } from '@renderer/components/agents/agent-settings-dialog'
 import { SystemPromptDialog } from '@renderer/components/agents/system-prompt-dialog'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
@@ -16,7 +14,6 @@ import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Separator } from '@renderer/components/ui/separator'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
-import { DonutChart } from '@renderer/components/ui/donut-chart'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { Power, Square, ChevronLeft, Clock, Loader2, AlertCircle, AlertTriangle, X, CalendarClock, Webhook } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
@@ -411,55 +408,17 @@ export function MainContent() {
             <SessionSearchBar search={search} />
             <div className="relative flex-1 flex min-h-0">
             {/* Chat column */}
-            <div className="flex-1 min-w-0 grid grid-rows-[1fr_auto] min-h-0">
-              <MessageList
-                sessionId={sessionId}
-                agentSlug={agentSlug}
-                pendingUserMessage={pendingUserMessage}
-                onPendingMessageAppeared={handlePendingMessageAppeared}
-              />
-              <div className="bg-background max-w-[740px] mx-auto w-full">
-                <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
-                <MessageInput
-                  key={sessionId}
-                  sessionId={sessionId}
-                  agentSlug={agentSlug}
-                  onMessageSent={handleMessageSent}
-                  initialEffort={session?.effort}
-                />
-                <div className="flex justify-between items-center gap-1.5 px-6 py-3">
-                  {contextPercent != null ? (
-                    <TooltipProvider delayDuration={0}>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <div className="flex items-center gap-1.5 cursor-default">
-                            <span className="text-xs text-muted-foreground">Context Usage</span>
-                            <DonutChart
-                              percent={contextPercent}
-                              animated={isActive}
-                              size="sm"
-                              showLabel={false}
-                            />
-                          </div>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <p>{contextPercent}%</p>
-                        </TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
-                  ) : (
-                    <span />
-                  )}
-                  <span className="text-xs text-muted-foreground flex items-center gap-1">
-                    <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">↵</kbd>
-                    <span>Send</span>
-                    <span className="mx-1">·</span>
-                    <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">⇧↵</kbd>
-                    <span>New line</span>
-                  </span>
-                </div>
-              </div>
-            </div>
+            <SessionChatColumn
+              sessionId={sessionId}
+              agentSlug={agentSlug}
+              pendingUserMessage={pendingUserMessage}
+              isViewOnly={isViewOnly}
+              isActive={isActive}
+              contextPercent={contextPercent}
+              effort={session?.effort}
+              onPendingMessageAppeared={handlePendingMessageAppeared}
+              onMessageSent={handleMessageSent}
+            />
             {/* Browser drawer panel */}
             <BrowserDrawerPanel agentSlug={agentSlug} sessionId={sessionId} browserActive={browserActive} isActive={isActive} />
           </div>
