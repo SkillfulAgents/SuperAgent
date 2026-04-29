@@ -1,0 +1,17 @@
+{
+  "storyId": "browser-test",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: **[STEP]** Step 6 - Verified response mentions \"Example Domain\" and took screenshot — Response clearly states \"The page title is \\\"Example Domain\\\".\" confirming successful page title retrieval. Screenshot captured showing the complete interaction with tool call cards and the expected response text.\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 83717,
+  "sessionId": "d9f9d770-972a-4984-a1e0-c0f696d67cd5",
+  "cost": {
+    "inputTokens": 207,
+    "outputTokens": 6934,
+    "cacheCreationTokens": 113128,
+    "cacheReadTokens": 643556,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.240643
+  }
+}

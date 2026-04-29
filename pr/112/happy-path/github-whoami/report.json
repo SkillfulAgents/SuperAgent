@@ -1,0 +1,42 @@
+{
+  "storyId": "github-whoami",
+  "passed": false,
+  "reason": "Agent attempted to use GitHub tool but response did not include a GitHub username due to connection propagation issue\n  Bugs found:\n    - GitHub account access was granted through the UI, but the OAuth token did not fully propagate to the session - the agent reported \"CONNECTED_ACCOUNTS is empty\" and \"Bad credentials\" error when attempting the GET /user API call",
+  "steps": [
+    "Navigated to http://localhost:47891 — page loaded successfully with agents list visible",
+    "Clicked agent \"QA-20260429-162032-crq1\" in sidebar — agent detail view opened, showing status \"idle\"",
+    "Verified agent status — status indicator showed \"idle\" (confirmed)",
+    "Typed message \"Use the GitHub tool to check who I am. Tell me my GitHub username.\" — message input field populated with text",
+    "Clicked Send button — message sent successfully, agent status changed to \"working\", session \"GitHub Username Verification Request\" created",
+    "Account Access Request card appeared — card displayed with GitHub account already selected",
+    "Clicked \"Allow Access (1)\" button — GitHub account access granted, agent resumed \"working\"",
+    "API Request Review card appeared (GET /user) — card showed GitHub service and permission request",
+    "Clicked \"Allow\" button first time — permission dialog appeared with \"Allow Once\" option active",
+    "Clicked \"Allow Once\" button first time — dialog closed, agent resumed \"working\"",
+    "Second API Request Review card appeared — card showed same GitHub GET /user request",
+    "Clicked \"Allow\" button second time — permission dialog appeared again",
+    "Clicked \"Allow Once\" button second time — dialog closed, agent resumed \"working\"",
+    "Third API Request Review card appeared — card showed third attempt at GET /user API call",
+    "Clicked \"Allow\" button third time — permission dialog appeared again",
+    "Clicked \"Allow Once\" button third time — dialog closed, agent resumed \"working\"",
+    "Fourth API Request Review card appeared — card showed fourth attempt at GET /user API call",
+    "Clicked \"Allow\" button fourth time — permission dialog appeared again",
+    "Clicked \"Allow Once\" button fourth time — dialog closed, agent resumed \"working\"",
+    "Waited for response — agent completed after 2m 11s, status changed back to \"idle\"",
+    "Verified response content — response states \"GitHub connection didn't fully propagate - CONNECTED_ACCOUNTS is empty and proxy returns Bad credentials\" - NO GitHub username was returned",
+    "Took screenshot — captured final chat state showing error message instead of GitHub username"
+  ],
+  "bugs": [
+    "GitHub account access was granted through the UI, but the OAuth token did not fully propagate to the session - the agent reported \"CONNECTED_ACCOUNTS is empty\" and \"Bad credentials\" error when attempting the GET /user API call"
+  ],
+  "durationMs": 205371,
+  "sessionId": "6f13e3af-f2a5-44f9-99aa-d764cda08fda",
+  "cost": {
+    "inputTokens": 585,
+    "outputTokens": 17340,
+    "cacheCreationTokens": 83384,
+    "cacheReadTokens": 2657941,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.457309
+  }
+}
