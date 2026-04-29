@@ -274,8 +274,7 @@ class ChatIntegrationManager {
     try {
       await connector.connect()
     } catch (err) {
-      this.disconnectConnection(conn)
-      this.connections.delete(integration.id)
+      await this.removeIntegration(integration.id)
       throw err
     }
     this.disconnectedSince.delete(integration.id)
