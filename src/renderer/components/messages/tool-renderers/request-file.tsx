@@ -10,18 +10,18 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {description && (
         <div>
           <div className="text-xs font-medium text-muted-foreground">Description</div>
-          <p className="text-sm">{description}</p>
+          <p className="text-xs">{description}</p>
         </div>
       )}
       {fileTypes && (
         <div>
           <div className="text-xs font-medium text-muted-foreground">File types</div>
-          <p className="text-sm">{fileTypes}</p>
+          <p className="text-xs">{fileTypes}</p>
         </div>
       )}
       {result && (
         <div
-          className={`text-xs rounded p-2 ${isError ? 'bg-red-50 dark:bg-red-950/50 text-red-700 dark:text-red-300' : 'bg-green-50 dark:bg-green-950/50 text-green-700 dark:text-green-300'}`}
+          className={`bg-background text-xs rounded p-2 ${isError ? 'text-red-700 dark:text-red-300' : 'text-green-700 dark:text-green-300'}`}
         >
           {typeof result === 'string' ? result : JSON.stringify(result, null, 2)}
         </div>
@@ -35,7 +35,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
     const partial = JSON.parse(partialInput)
     if (partial.description) {
       return (
-        <div className="text-sm text-muted-foreground">
+        <div className="text-xs text-muted-foreground">
           Requesting: {partial.description}
         </div>
       )
@@ -43,7 +43,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
   } catch {
     // partial JSON, ignore
   }
-  return <div className="text-sm text-muted-foreground">Requesting file...</div>
+  return <div className="text-xs text-muted-foreground">Requesting file...</div>
 }
 
 export const requestFileRenderer: ToolRenderer = {
