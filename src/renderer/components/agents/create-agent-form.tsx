@@ -5,7 +5,7 @@ import { Button } from '@renderer/components/ui/button'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
-import { AgentCreationAids, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
+import { AgentCreationAids, ONBOARDING_MESSAGE, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
 import { TemplateInstallDialog } from '@renderer/components/agents/template-install-dialog'
 import { TemplateCard } from '@renderer/components/agents/template-card'
 import { useCreateAgent } from '@renderer/hooks/use-agents'
@@ -20,8 +20,6 @@ import {
 } from '@renderer/hooks/use-typewriter-placeholder'
 import { deriveAgentName } from '@renderer/lib/derive-agent-name'
 import type { ApiAgent, ApiDiscoverableAgent } from '@shared/lib/types/api'
-
-const ONBOARDING_MESSAGE = 'This agent was just set up from a template. Please run the agent-onboarding skill to help me configure it.'
 
 export interface CreateAgentFormProps {
   /** Fires after an agent is successfully created (via any path). Parent uses this to close the overlay/wizard. */

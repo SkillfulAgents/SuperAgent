@@ -26,6 +26,8 @@ export interface ImportResult {
   hasOnboarding?: boolean
 }
 
+export const ONBOARDING_MESSAGE = 'This agent was just set up from a template. Please run the agent-onboarding skill to help me configure it.'
+
 export interface AgentCreationAidsProps {
   /** Called after the voice agent interview completes with its tool-call args. */
   onVoiceResult: (args: { name: string; prompt: string }) => void

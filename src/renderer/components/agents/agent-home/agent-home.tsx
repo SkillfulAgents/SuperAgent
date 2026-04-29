@@ -26,7 +26,7 @@ import { HomeConnections } from './home-connections'
 import { HomeVolumes } from './home-volumes'
 import { HomeBookmarks } from './home-bookmarks'
 import { useUpdateAgent, useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
-import { AgentCreationAids } from '@renderer/components/agents/agent-creation-aids'
+import { AgentCreationAids, ONBOARDING_MESSAGE, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
 import {
   useTypewriterPlaceholder,
   DEFAULT_AGENT_PROMPT_EXAMPLES,
@@ -45,7 +45,7 @@ interface AgentHomeProps {
 
 export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHomeProps) {
   useRenderTracker('AgentHome')
-  const { selectScheduledTask, selectAgent, consumePendingDraft } = useSelection()
+  const { selectScheduledTask, selectAgent, selectSession, consumePendingDraft } = useSelection()
   const { canUseAgent, canAdminAgent } = useUser()
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)
@@ -206,13 +206,24 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   )
 
   const handleImportComplete = useCallback(
-    async ({ agent: imported }: { agent: ApiAgent }) => {
+    async ({ agent: imported, hasOnboarding }: ImportResult) => {
       selectAgent(imported.slug)
       if (agent.name === UNTITLED_AGENT_NAME && sessions.length === 0 && agent.slug !== imported.slug) {
         deleteAgent.mutate(agent.slug)
       }
+      if (hasOnboarding) {
+        try {
+          const session = await createSession.mutateAsync({
+            agentSlug: imported.slug,
+            message: ONBOARDING_MESSAGE,
+          })
+          selectSession(session.id)
+        } catch {
+          // Onboarding session creation failed — user can still use agent normally
+        }
+      }
     },
-    [selectAgent, agent.slug, agent.name, sessions.length, deleteAgent],
+    [selectAgent, selectSession, agent.slug, agent.name, sessions.length, deleteAgent, createSession],
   )
 
   const formatDate = useCallback(
