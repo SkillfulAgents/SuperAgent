@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser use feature successfully executed browser navigation and page title retrieval, confirming the agent can use browser tools to visit URLs and extract page information.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Successfully loaded the Super Agent application home page with agent list displayed.",
+    "Found and clicked the \"QA-20260429-204634-otnh\" agent in the sidebar — Successfully opened the agent's chat interface with message input field ready.",
+    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully transmitted; agent transitioned to \"working\" status.",
+    "Waited up to 3 minutes for response — Agent completed the task in approximately 10 seconds, well within the timeout limit.",
+    "Verified response mentions \"Example Domain\" — Response clearly states: \"The page title is \"Example Domain\".\" Two tool calls were executed successfully: (1) \"Open Browser https://example.com\" and (2) \"Browser Command $ get title\". The live browser preview panel on the right also displays the Example Domain page content."
+  ],
+  "bugs": [],
+  "durationMs": 96503,
+  "sessionId": "91d243e6-6ac9-4c12-b9c5-bab206f67f74",
+  "cost": {
+    "inputTokens": 315,
+    "outputTokens": 8455,
+    "cacheCreationTokens": 53158,
+    "cacheReadTokens": 1187754,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.227813
+  }
+}
