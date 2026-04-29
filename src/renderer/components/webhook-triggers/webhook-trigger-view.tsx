@@ -7,7 +7,7 @@
 
 
 
-import { Zap, Trash2, Loader2, Settings2, Pause, PlayCircle } from 'lucide-react'
+import { Zap, Trash2, Loader2, Settings2, Pause, PlayCircle, AlertTriangle } from 'lucide-react'
 import { RelatedSessions } from '@renderer/components/sessions/related-sessions'
 import { Button } from '@renderer/components/ui/button'
 import {
@@ -19,6 +19,8 @@ import {
 } from '@renderer/hooks/use-webhook-triggers'
 import { useSelection } from '@renderer/context/selection-context'
 import { useUser } from '@renderer/context/user-context'
+import { useSettings } from '@renderer/hooks/use-settings'
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -44,9 +46,13 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
   const resumeTrigger = useResumeWebhookTrigger()
   const { handleWebhookTriggerDeleted } = useSelection()
   const { canUseAgent } = useUser()
+  const { data: settings } = useSettings()
+  const { data: platformAuth } = usePlatformAuthStatus()
   const canCancel = canUseAgent(agentSlug)
   const isActive = trigger?.status === 'active' || trigger?.status === 'paused'
   const isPaused = trigger?.status === 'paused'
+  const hasLocalComposioKey = settings?.apiKeyStatus?.composio?.isConfigured ?? false
+  const isPlatformConnected = platformAuth?.connected ?? false
 
   const handleCancel = async () => {
     try {
@@ -170,6 +176,26 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
           </div>
         </div>
       </div>
+
+      {/* Warning when using personal Composio key */}
+      {hasLocalComposioKey && isActive && (
+        <div className="mx-6 mt-4 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-900 dark:bg-amber-950/30">
+          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+          <p className="text-xs text-amber-700 dark:text-amber-400">
+            Webhook triggers require platform-managed Composio and will not fire while using a personal Composio API key.
+            Remove your personal key in Settings → Account Provider to restore trigger functionality.
+          </p>
+        </div>
+      )}
+
+      {!isPlatformConnected && isActive && (
+        <div className="mx-6 mt-4 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-900 dark:bg-amber-950/30">
+          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+          <p className="text-xs text-amber-700 dark:text-amber-400">
+            Webhook triggers require a platform connection. Connect to the platform in Settings to enable triggers.
+          </p>
+        </div>
+      )}
 
       {/* Trigger details */}
       <div className="flex-1 overflow-auto p-6">
