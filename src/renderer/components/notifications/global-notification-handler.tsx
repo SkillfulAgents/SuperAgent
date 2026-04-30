@@ -133,6 +133,16 @@ export function GlobalNotificationHandler() {
             queryClient.invalidateQueries({ queryKey: ['artifacts'] })
             break
 
+          case 'agent_updated': {
+            // Agent metadata changed server-side (e.g. async auto-name).
+            const agentSlug = data.agentSlug as string | undefined
+            queryClient.invalidateQueries({ queryKey: ['agents'] })
+            if (agentSlug) {
+              queryClient.invalidateQueries({ queryKey: ['agents', agentSlug] })
+            }
+            break
+          }
+
           case 'container_health_changed':
             // Container health warnings changed - update agent list
             queryClient.invalidateQueries({ queryKey: ['agents'] })

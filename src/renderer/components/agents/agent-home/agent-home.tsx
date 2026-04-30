@@ -33,7 +33,6 @@ import {
   DISABLED as TYPEWRITER_DISABLED,
 } from '@renderer/hooks/use-typewriter-placeholder'
 import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
-import { useRenameUntitledAgent } from '@renderer/hooks/use-rename-untitled-agent'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { formatDistanceToNow } from 'date-fns'
 
@@ -59,9 +58,8 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const createSession = useCreateSession()
   const updateAgent = useUpdateAgent()
   const deleteAgent = useDeleteAgent()
-  const renameUntitledAgent = useRenameUntitledAgent()
   // Tracks whether a name has already been assigned (e.g. by the voice agent)
-  // so the post-submit deriveAgentName fallback doesn't clobber it.
+  // so the initial-prompt auto-name doesn't clobber it.
   const nameAssignedRef = useRef(false)
   const [isEditingName, setIsEditingName] = useState(false)
   const [editedName, setEditedName] = useState(agent.name)
@@ -140,21 +138,17 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
       return res.json() as Promise<{ path: string }>
     }, [agent.slug]),
     onSubmit: useCallback(async (content: string) => {
-      const shouldRename =
-        agent.name === UNTITLED_AGENT_NAME && sessions.length === 0 && !nameAssignedRef.current
+      // Agent auto-naming for Untitled agents is handled server-side in
+      // POST /api/agents/:id/sessions — the only place that has the initial
+      // creation prompt. The server broadcasts `agent_updated` after renaming
+      // so the sidebar/title update without a renderer round-trip.
       const session = await createSession.mutateAsync({
         agentSlug: agent.slug,
         message: content,
         effort,
       })
       onSessionCreated(session.id, content)
-      // Fire rename after the session is created + navigated — the mutation
-      // survives AgentHome unmounting since the queryClient is app-scoped.
-      if (shouldRename) {
-        nameAssignedRef.current = true
-        renameUntitledAgent.mutate({ slug: agent.slug, prompt: content })
-      }
-    }, [createSession, agent.slug, agent.name, onSessionCreated, effort, sessions.length, renameUntitledAgent]),
+    }, [agent.slug, createSession, effort, onSessionCreated]),
     submitDisabled: createSession.isPending || !isRuntimeReady,
     keepMessageUntilComplete: true,
     draftKey: `agent:${agent.slug}`,
