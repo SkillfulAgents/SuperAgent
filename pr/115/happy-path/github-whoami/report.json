@@ -1,0 +1,30 @@
+{
+  "storyId": "github-whoami",
+  "passed": false,
+  "reason": "Agent attempted to use GitHub tool but failed due to authentication error; response included error message instead of GitHub username\n  Bugs found:\n    - Agent unable to retrieve GitHub username - GitHub API returns \"401 Bad credentials\" error even after fresh connection grant. The authentication token injected appears invalid or expired (account ID: 7541ed45-2745-43cc-a04f-aee8750f7031). Agent requests user to disconnect and reconnect GitHub account via OAuth.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully showing agent list in sidebar",
+    "Clicked on agent \"QA-20260430-004445-h1ih\" in sidebar — Agent opened and displayed in main view with status \"idle\"",
+    "Verified agent status — Status confirmed as \"idle\" (meets requirement of \"running\" or \"idle\")",
+    "Typed message \"Use the GitHub tool to check who I am. Tell me my GitHub username.\" — Message entered in input field",
+    "Clicked send button — Message sent and agent changed status to \"working\"",
+    "Handled GitHub account access request card — A card appeared asking to grant GitHub access; GitHub account was already selected; clicked \"Allow Access\" button",
+    "Allowed multiple API requests (GET /user) during execution — Dialog appeared 4 times asking for permission to make GitHub API requests; clicked \"Allow Once\" each time",
+    "Waited approximately 1 minute 47 seconds for response — Agent completed with status changed to \"idle\"",
+    "Agent provided response — Response is error message stating \"The GitHub proxy keeps returning `401 Bad credentials` from GitHub even after a fresh connection grant — the token being injected appears invalid or expired\" and requesting user to reconnect GitHub account. No GitHub username was provided.",
+    "Took screenshot of final response — Screenshot shows agent's error response rather than GitHub username verification"
+  ],
+  "bugs": [
+    "Agent unable to retrieve GitHub username - GitHub API returns \"401 Bad credentials\" error even after fresh connection grant. The authentication token injected appears invalid or expired (account ID: 7541ed45-2745-43cc-a04f-aee8750f7031). Agent requests user to disconnect and reconnect GitHub account via OAuth."
+  ],
+  "durationMs": 173982,
+  "sessionId": "f0d1ed2f-4e3f-41ba-9bb5-c83437eb00c7",
+  "cost": {
+    "inputTokens": 747,
+    "outputTokens": 15948,
+    "cacheCreationTokens": 95709,
+    "cacheReadTokens": 3545436,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.554667
+  }
+}
