@@ -1,25 +1,25 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "Successfully navigated to the app, found and clicked the \"QA-20260424-191439-jvzr\" agent, verified its status was \"idle\", sent a math question, and received the correct response \"4\".",
+  "reason": "Agent communication test: verified agent \"QA-20260501-172822-1kg3\" can receive and respond to a simple math question with the correct answer.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully with sidebar showing three agents.",
-    "Clicked on \"QA-20260424-191439-jvzr\" agent in the sidebar — Agent page opened, displaying the agent name and status indicator.",
-    "Verified agent status is \"running\" or \"idle\" — Status shows \"idle\" (satisfies requirement).",
-    "Typed message \"Hello! What is 2+2?\" in the message input field — Text entered successfully in the input field.",
-    "Clicked Send button to submit the message — Message was sent, agent transitioned to \"working\" status, and a new session \"Math Basics Question Session\" was created.",
-    "Waited up to 3 minutes for a response — Response arrived within 2 seconds, agent returned to \"idle\" status.",
-    "Verified the response mentions \"4\" and took screenshot — Response displays \"4\" in the chat. Screenshot confirms correct response."
+    "Navigated to http://localhost:47891 — Application loaded successfully with sidebar showing three agents",
+    "Clicked agent \"QA-20260501-172822-1kg3\" in sidebar — Agent page loaded, status showed \"idle\", message input available",
+    "Verified agent status is \"running\" or \"idle\" — Status confirmed as \"idle\" in the agent detail panel",
+    "Typed \"Hello! What is 2+2?\" in message input — Message text entered successfully in the input field",
+    "Clicked Send button — Message sent, agent status changed to \"working\", session created as \"Math Question Quick Check\"",
+    "Waited up to 3 minutes for response — Response received within 2 seconds",
+    "Verified response mentions \"4\" — Agent correctly responded with \"4\", matching screenshot shows the complete exchange"
   ],
   "bugs": [],
-  "durationMs": 82549,
-  "sessionId": "13aea8e9-6eb9-4620-b11c-d15c7c52450c",
+  "durationMs": 79950,
+  "sessionId": "d00b2604-fb7b-4d00-9a41-c7a5e2e744c6",
   "cost": {
-    "inputTokens": 255,
-    "outputTokens": 7642,
-    "cacheCreationTokens": 117112,
-    "cacheReadTokens": 869692,
+    "inputTokens": 207,
+    "outputTokens": 6898,
+    "cacheCreationTokens": 114344,
+    "cacheReadTokens": 659322,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.271824
+    "totalCostUsd": 0.243559
   }
 }

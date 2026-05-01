@@ -1,23 +1,25 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified browser-use feature: agent successfully opened a browser, navigated to example.com, retrieved the page title, and reported \"The page title is Example Domain\"",
+  "reason": "Browser use feature: Agent successfully opens browser, navigates to example.com, retrieves page title, and reports \"Example Domain\" in response.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully showing Super Agent interface with three agents in sidebar",
-    "Clicked on agent \"QA-20260424-191440-yvvx\" in sidebar — Agent chat interface opened with message input box ready",
-    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was transmitted to agent and agent status changed to \"working\"",
-    "Waited up to 3 minutes for response — Agent completed task in 11 seconds",
-    "Verified response mentions \"Example Domain\" — Response shows \"The page title is Example Domain.\" with completed tool calls (Open Browser, Browser Command get title, Close Browser) all marked with green checkmarks"
+    "Navigated to http://localhost:47891 - Page loaded successfully showing Super Agent interface with agent list in sidebar",
+    "Found agent \"QA-20260501-172823-x9tu\" in sidebar and clicked it - Agent chat interface opened with message input field",
+    "Typed message into input field: \"Open a browser and go to https://example.com. Tell me the page title.\" - Message appeared in input field",
+    "Sent message using Cmd+Enter - Message was transmitted to agent",
+    "Waited for agent response (2 seconds initial wait) - Agent status changed to \"working\" with task \"Browser Page Title Lookup\"",
+    "Verified agent response within 3 minutes - Agent completed work in 7 seconds and provided response: \"The page title is \"Example Domain\".\"",
+    "Confirmed response mentions \"Example Domain\" and took final screenshot - Response clearly displayed \"The page title is \"Example Domain\".\" with successful tool execution cards showing \"Open Browser\" and \"Browser Command $ get title\" both with checkmarks, and live browser preview panel on right showing the actual Example Domain website content"
   ],
   "bugs": [],
-  "durationMs": 108589,
-  "sessionId": "c6fe0a3f-f29d-411f-b742-953283737172",
+  "durationMs": 63535,
+  "sessionId": "dd65a602-0dc3-4655-a3e5-9caa8147303c",
   "cost": {
-    "inputTokens": 243,
-    "outputTokens": 12862,
-    "cacheCreationTokens": 119991,
-    "cacheReadTokens": 845614,
+    "inputTokens": 261,
+    "outputTokens": 7462,
+    "cacheCreationTokens": 46492,
+    "cacheReadTokens": 961221,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.299103
+    "totalCostUsd": 0.191808
   }
 }
