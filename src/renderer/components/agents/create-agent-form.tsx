@@ -169,6 +169,7 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
             rows={3}
             autoFocus
             dataTestId="create-agent-prompt"
+            textareaClassName="min-h-[60px]"
             leftActions={(
               <AttachmentPicker
                 onFileSelect={composer.handleFileSelect}
