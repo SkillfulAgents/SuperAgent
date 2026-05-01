@@ -1,30 +1,28 @@
 {
   "storyId": "github-whoami",
   "passed": false,
-  "reason": "Agent attempted to use GitHub tool but failed due to authentication error; response included error message instead of GitHub username\n  Bugs found:\n    - Agent unable to retrieve GitHub username - GitHub API returns \"401 Bad credentials\" error even after fresh connection grant. The authentication token injected appears invalid or expired (account ID: 7541ed45-2745-43cc-a04f-aee8750f7031). Agent requests user to disconnect and reconnect GitHub account via OAuth.",
+  "reason": "Agent attempted to use GitHub tool but failed to retrieve username due to OAuth authentication failure\n  Bugs found:\n    - OAuth Account Access Flow Incomplete - When granting GitHub account access (step 5), the system marked access as granted, but the account was not properly linked for API usage. The agent received a 401 \"Bad credentials\" error when attempting to call GitHub's GET /user endpoint, and the CONNECTED_ACCOUNTS environment variable remained empty despite the access grant. The agent failed to retrieve the GitHub username as requested.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully showing agent list in sidebar",
-    "Clicked on agent \"QA-20260430-004445-h1ih\" in sidebar — Agent opened and displayed in main view with status \"idle\"",
-    "Verified agent status — Status confirmed as \"idle\" (meets requirement of \"running\" or \"idle\")",
-    "Typed message \"Use the GitHub tool to check who I am. Tell me my GitHub username.\" — Message entered in input field",
-    "Clicked send button — Message sent and agent changed status to \"working\"",
-    "Handled GitHub account access request card — A card appeared asking to grant GitHub access; GitHub account was already selected; clicked \"Allow Access\" button",
-    "Allowed multiple API requests (GET /user) during execution — Dialog appeared 4 times asking for permission to make GitHub API requests; clicked \"Allow Once\" each time",
-    "Waited approximately 1 minute 47 seconds for response — Agent completed with status changed to \"idle\"",
-    "Agent provided response — Response is error message stating \"The GitHub proxy keeps returning `401 Bad credentials` from GitHub even after a fresh connection grant — the token being injected appears invalid or expired\" and requesting user to reconnect GitHub account. No GitHub username was provided.",
-    "Took screenshot of final response — Screenshot shows agent's error response rather than GitHub username verification"
+    "Step 1 - Navigated to http://localhost:47891 - SUCCESS: Page loaded, sidebar visible with agent list",
+    "Step 2 - Found \"QA-20260501-024117-1jvm\" agent in sidebar and clicked it - SUCCESS: Agent page opened, session \"GitHub Username Verification\" was created",
+    "Step 3 - Verified agent status is \"running\" or \"idle\" - SUCCESS: Agent status showed \"idle\" in the top-right panel",
+    "Step 4 - Sent message \"Use the GitHub tool to check who I am. Tell me my GitHub username.\" - SUCCESS: Message was sent and appeared in chat",
+    "Step 5a - Account Access Request card appeared asking for GitHub access - SUCCESS: Card appeared with GitHub account already connected",
+    "Step 5b - Clicked \"Allow Access\" to grant GitHub account access - SUCCESS: Access was granted and agent resumed processing",
+    "Step 6 - Waited for agent response (4 minutes max) - SUCCESS: Agent completed processing in 1 minute 10 seconds, status changed to \"idle\"",
+    "Step 7 - Verified response includes GitHub username - FAILED: Response does NOT include a GitHub username. Instead, response is: \"The GitHub proxy is returning 401 Bad credentials, and `CONNECTED_ACCOUNTS` is empty even though access was reported as granted — the OAuth flow doesn't seem to have completed. Could you re-authorize the GitHub connection, or confirm whether the account is fully linked?\""
   ],
   "bugs": [
-    "Agent unable to retrieve GitHub username - GitHub API returns \"401 Bad credentials\" error even after fresh connection grant. The authentication token injected appears invalid or expired (account ID: 7541ed45-2745-43cc-a04f-aee8750f7031). Agent requests user to disconnect and reconnect GitHub account via OAuth."
+    "OAuth Account Access Flow Incomplete - When granting GitHub account access (step 5), the system marked access as granted, but the account was not properly linked for API usage. The agent received a 401 \"Bad credentials\" error when attempting to call GitHub's GET /user endpoint, and the CONNECTED_ACCOUNTS environment variable remained empty despite the access grant. The agent failed to retrieve the GitHub username as requested."
   ],
-  "durationMs": 173982,
-  "sessionId": "f0d1ed2f-4e3f-41ba-9bb5-c83437eb00c7",
+  "durationMs": 146082,
+  "sessionId": "6dbc4ce9-d61a-4ae2-94c2-a1a5c56e82c6",
   "cost": {
-    "inputTokens": 747,
-    "outputTokens": 15948,
-    "cacheCreationTokens": 95709,
-    "cacheReadTokens": 3545436,
+    "inputTokens": 572,
+    "outputTokens": 13973,
+    "cacheCreationTokens": 85099,
+    "cacheReadTokens": 2711839,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.554667
+    "totalCostUsd": 0.447995
   }
 }

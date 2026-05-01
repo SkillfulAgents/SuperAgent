@@ -1,24 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the SuperAgent application can execute browser tasks, navigate to external URLs, retrieve page titles, and display the results correctly in the chat interface.",
+  "reason": "Successfully tested browser use feature: agent opened browser, navigated to example.com, retrieved page title, and returned \"Example Domain\" in response.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully with agent list displayed",
-    "Found and clicked \"QA-20260430-004444-u48z\" agent in the sidebar — Agent interface opened with chat input ready",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into the input box — Message entered successfully",
-    "Clicked the \"Send message\" button — Message sent and agent began processing task",
-    "Waited up to 3 minutes for response containing \"Example Domain\" — Agent completed task in 7 seconds and returned response: \"The page title is \"Example Domain\".\"",
-    "Verified response mentions \"Example Domain\" and took screenshot — Screenshot confirmed browser panel displayed the actual webpage and response text clearly showed the correct page title"
+    "Navigated to http://localhost:47891 - The Super Agent application loaded successfully with the agents list visible in the sidebar.",
+    "Found \"QA-20260501-024116-ak2a\" agent in sidebar and clicked it - The agent interface opened, showing the chat input and agent configuration panels.",
+    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - The message was successfully typed into the input box and sent by clicking the Send button.",
+    "Waited for response - The agent executed the request within 7 seconds, performing browser navigation and title retrieval actions.",
+    "Verified response mentions \"Example Domain\" - The agent returned: \"The page title is \"Example Domain\".\" The browser preview panel on the right displayed the actual Example Domain website, and both browser actions (Open Browser and Browser Command) showed green checkmarks indicating successful execution."
   ],
   "bugs": [],
-  "durationMs": 88197,
-  "sessionId": "9a9beddd-1867-40bd-a8a2-81789c8b3411",
+  "durationMs": 91603,
+  "sessionId": "f859dfe2-7c6a-4071-9c76-8fb2d6bf7b9f",
   "cost": {
-    "inputTokens": 234,
-    "outputTokens": 7835,
-    "cacheCreationTokens": 39632,
-    "cacheReadTokens": 820457,
+    "inputTokens": 336,
+    "outputTokens": 9327,
+    "cacheCreationTokens": 51256,
+    "cacheReadTokens": 1262884,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.170995
+    "totalCostUsd": 0.237329
   }
 }
