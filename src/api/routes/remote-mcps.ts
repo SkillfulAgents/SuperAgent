@@ -178,13 +178,25 @@ remoteMcps.post('/', async (c) => {
   try {
     tools = await discoverTools(body.url.trim(), body.accessToken || null)
   } catch (error: any) {
-    // Check if the failure is a 401 — the server likely requires authentication
+    // 401 means either auth is needed or the supplied token was rejected.
     if (error.message?.includes('401')) {
       const discovery = await discoverOAuthMetadata(body.url.trim())
+      if (body.accessToken) {
+        if (discovery) {
+          return c.json({
+            error: 'The bearer token was rejected by this MCP server (401). This server supports OAuth — connect via OAuth instead.',
+            needsOAuth: true,
+            tokenRejected: true,
+          }, 401)
+        }
+        return c.json({
+          error: 'The bearer token was rejected by this MCP server (401). Verify it is valid and has access to this server.',
+          tokenRejected: true,
+        }, 401)
+      }
       if (discovery) {
         return c.json({ error: 'This MCP server requires OAuth authentication', needsOAuth: true }, 400)
       }
-      // No OAuth metadata — server likely needs a bearer token
       return c.json({ error: 'This MCP server requires authentication. Try adding a bearer token.', needsAuth: true }, 400)
     }
     return c.json({ error: `Failed to connect to MCP server: ${error.message}` }, 502)
@@ -225,7 +237,23 @@ remoteMcps.post('/initiate-oauth', async (c) => {
     name?: string
     url?: string
     electron?: boolean
+    clientName?: string
+    clientId?: string
+    clientSecret?: string
   }>()
+
+  const clientNameOverride =
+    typeof body.clientName === 'string' && body.clientName.trim().length > 0
+      ? body.clientName.trim()
+      : undefined
+  const clientIdOverride =
+    typeof body.clientId === 'string' && body.clientId.trim().length > 0
+      ? body.clientId.trim()
+      : undefined
+  const clientSecretOverride =
+    typeof body.clientSecret === 'string' && body.clientSecret.trim().length > 0
+      ? body.clientSecret.trim()
+      : undefined
 
   const protocol = process.env.SUPERAGENT_PROTOCOL || 'superagent'
   const redirectUri = body.electron
@@ -248,7 +276,7 @@ remoteMcps.post('/initiate-oauth', async (c) => {
       return c.json({ error: 'MCP server not found' }, 404)
     }
 
-    const result = await initiateOAuthFlow(body.mcpId, server.url, redirectUri)
+    const result = await initiateOAuthFlow(body.mcpId, server.url, redirectUri, clientNameOverride, clientIdOverride, clientSecretOverride)
 
     if (!result) {
       const discoveryResult = await discoverOAuthMetadata(server.url)
@@ -261,7 +289,7 @@ remoteMcps.post('/initiate-oauth', async (c) => {
     return c.json({ redirectUrl: result.authorizationUrl, state: result.state })
   } else if (body.name && body.url) {
     // New server: OAuth-first flow (no DB insert yet)
-    const result = await initiateNewServerOAuth(body.url.trim(), body.name.trim(), redirectUri, getCurrentUserId(c))
+    const result = await initiateNewServerOAuth(body.url.trim(), body.name.trim(), redirectUri, getCurrentUserId(c), clientNameOverride, clientIdOverride, clientSecretOverride)
 
     if (!result) {
       const discoveryResult = await discoverOAuthMetadata(body.url.trim())

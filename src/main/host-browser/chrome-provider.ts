@@ -13,18 +13,35 @@ interface BrowserCandidate {
   paths: string[]
 }
 
+const WIN_LOCAL_APP_DATA = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')
+
 const BROWSER_CANDIDATES: Record<string, BrowserCandidate> = {
   darwin: {
     browser: 'chrome',
-    paths: ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'],
+    paths: [
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      path.join(os.homedir(), 'Applications', 'Google Chrome.app', 'Contents', 'MacOS', 'Google Chrome'),
+    ],
   },
   linux: {
     browser: 'chrome',
-    paths: ['/usr/bin/google-chrome', '/usr/bin/chromium-browser'],
+    paths: [
+      '/usr/bin/google-chrome',
+      '/usr/bin/chromium-browser',
+      '/usr/bin/google-chrome-stable',
+      '/usr/bin/chromium',
+      '/opt/google/chrome/chrome',
+      '/snap/bin/google-chrome',
+      '/snap/bin/chromium',
+    ],
   },
   win32: {
     browser: 'chrome',
-    paths: ['C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'],
+    paths: [
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      path.join(WIN_LOCAL_APP_DATA, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    ],
   },
 }
 

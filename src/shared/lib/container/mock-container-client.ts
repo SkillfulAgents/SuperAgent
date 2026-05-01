@@ -14,6 +14,31 @@ import type {
 } from './types'
 import { getSessionJsonlPath } from '../utils/file-storage'
 import { reviewManager } from '../proxy/review-manager'
+import { db } from '../db'
+import { connectedAccounts } from '../db/schema'
+
+export const MOCK_ACCOUNT_ID = 'mock-account-id'
+
+// E2E mock scenarios reference a fake connected account by id. The
+// /proxy-review/.../always endpoint persists an apiScopePolicies row whose
+// account_id has a FK on connected_accounts; without this seed the insert
+// fails and the route returns 500, breaking the "always allow" test.
+let mockAccountSeeded = false
+async function seedMockConnectedAccount(): Promise<void> {
+  if (mockAccountSeeded) return
+  const now = new Date()
+  await db.insert(connectedAccounts).values({
+    id: MOCK_ACCOUNT_ID,
+    composioConnectionId: MOCK_ACCOUNT_ID,
+    toolkitSlug: 'slack',
+    displayName: 'Mock Account',
+    status: 'active',
+    userId: null,
+    createdAt: now,
+    updatedAt: now,
+  }).onConflictDoNothing()
+  mockAccountSeeded = true
+}
 
 /**
  * Mock scenario interface for simulating different response patterns
@@ -533,10 +558,11 @@ export class ProxyReviewScenario implements MockScenario {
     // Now trigger the proxy review via ReviewManager
     const capturedDelay = delay
     setTimeout(async () => {
+      await seedMockConnectedAccount()
       // Fire-and-forget — the promise resolves when the user decides
       reviewManager.requestReview({
         agentSlug,
-        accountId: 'mock-account-id',
+        accountId: MOCK_ACCOUNT_ID,
         toolkit: this.toolkit,
         method: this.method,
         targetPath: this.targetPath,
