@@ -2,12 +2,12 @@
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { ArrowUp, Loader2, Eye, Settings2, Maximize2, Minimize2, Search, ArrowUpDown, Check } from 'lucide-react'
-import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import { ArrowUp, Loader2, Eye, Settings2, Maximize2, Minimize2, Search, Check } from 'lucide-react'
 import { useCreateSession, useSessions } from '@renderer/hooks/use-sessions'
 import { useScheduledTasks } from '@renderer/hooks/use-scheduled-tasks'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { RelatedSessions, type SortOrder } from '@renderer/components/sessions/related-sessions'
+import { SortPopover } from '@renderer/components/sessions/sort-popover'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { useSelection } from '@renderer/context/selection-context'
 import { useUser } from '@renderer/context/user-context'
@@ -53,7 +53,6 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false)
   const [sessionSearch, setSessionSearch] = useState('')
   const [sessionSort, setSessionSort] = useState<SortOrder>('newest')
-  const [sortPopoverOpen, setSortPopoverOpen] = useState(false)
   const [effort, setEffort] = useState<EffortLevel>('high')
   const sessionSearchRef = useRef<HTMLInputElement>(null)
   const createSession = useCreateSession()
@@ -396,27 +395,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                   <>
                     <div className="flex items-center gap-2">
                       <h2 className="text-sm font-medium text-muted-foreground flex-1">Sessions</h2>
-                      <Popover open={sortPopoverOpen} onOpenChange={setSortPopoverOpen}>
-                        <PopoverTrigger asChild>
-                          <Button type="button" size="icon" variant="ghost" className="h-6 w-6 shrink-0" aria-label="Sort sessions">
-                            <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground" />
-                          </Button>
-                        </PopoverTrigger>
-                        <PopoverContent align="end" className="w-40 p-1">
-                          <button
-                            className={`flex w-full items-center rounded-sm px-2 py-1.5 text-xs transition-colors ${sessionSort === 'newest' ? 'bg-muted font-medium' : 'hover:bg-muted'}`}
-                            onClick={() => { setSessionSort('newest'); setSortPopoverOpen(false) }}
-                          >
-                            Newest first
-                          </button>
-                          <button
-                            className={`flex w-full items-center rounded-sm px-2 py-1.5 text-xs transition-colors ${sessionSort === 'oldest' ? 'bg-muted font-medium' : 'hover:bg-muted'}`}
-                            onClick={() => { setSessionSort('oldest'); setSortPopoverOpen(false) }}
-                          >
-                            Oldest first
-                          </button>
-                        </PopoverContent>
-                      </Popover>
+                      <SortPopover value={sessionSort} onChange={setSessionSort} ariaLabel="Sort sessions" />
                       <Button
                         type="button"
                         size="icon"

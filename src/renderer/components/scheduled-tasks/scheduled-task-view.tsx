@@ -6,8 +6,9 @@
  */
 
 import { useState } from 'react'
-import { Trash2, Play, Pencil, Loader2, Settings, Pause, ArrowUpDown } from 'lucide-react'
+import { Trash2, Play, Pencil, Loader2, Settings as SettingsIcon, Pause } from 'lucide-react'
 import { RelatedSessions, type SortOrder } from '@renderer/components/sessions/related-sessions'
+import { SortPopover } from '@renderer/components/sessions/sort-popover'
 import { useHumanizedCron } from '@renderer/hooks/use-humanized-cron'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
@@ -76,13 +77,13 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
 
   // Run history sort
   const [runSort, setRunSort] = useState<SortOrder>('newest')
-  const [runSortPopoverOpen, setRunSortPopoverOpen] = useState(false)
 
   // Edit schedule modal state
   const [editScheduleOpen, setEditScheduleOpen] = useState(false)
   const [scheduleDescription, setScheduleDescription] = useState('')
   const [parsedExpression, setParsedExpression] = useState<string | null>(null)
   const [parseError, setParseError] = useState<string | null>(null)
+  const [pendingTimezone, setPendingTimezone] = useState<string>('UTC')
   const describeSchedule = useDescribeSchedule()
   const parseSchedule = useParseSchedule()
   const updateSchedule = useUpdateSchedule()
@@ -130,6 +131,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
     setParsedExpression(null)
     setParseError(null)
     setScheduleDescription('')
+    setPendingTimezone(task?.timezone || 'UTC')
 
     try {
       const result = await describeSchedule.mutateAsync({ taskId })
@@ -155,14 +157,22 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
     }
   }
 
+  const timezoneChanged = pendingTimezone !== (task?.timezone || 'UTC')
+  const canSaveSchedule = !!parsedExpression || timezoneChanged
+
   const handleSaveSchedule = async () => {
-    if (!parsedExpression) return
+    if (!canSaveSchedule) return
 
     try {
-      await updateSchedule.mutateAsync({
-        taskId,
-        scheduleExpression: parsedExpression,
-      })
+      if (parsedExpression) {
+        await updateSchedule.mutateAsync({
+          taskId,
+          scheduleExpression: parsedExpression,
+        })
+      }
+      if (timezoneChanged) {
+        await updateTimezone.mutateAsync({ taskId, timezone: pendingTimezone })
+      }
       setEditScheduleOpen(false)
     } catch (err) {
       console.error('Failed to update schedule:', err)
@@ -208,11 +218,11 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
                     aria-label="Cron settings"
                     className="text-muted-foreground"
                   >
-                    <Settings className="h-4 w-4" />
+                    <SettingsIcon className="h-4 w-4" />
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent align="end" className="w-44 p-1">
-                  {isRecurring && !isPaused && (
+                  {isRecurring && (
                     <button
                       className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-muted transition-colors"
                       onClick={() => {
@@ -283,29 +293,9 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
         {/* Run History (left, 2/3) */}
         <div className="pb-6 order-2 lg:order-1">
           <div className="flex items-center gap-2">
-            <h2 className="text-sm font-medium text-muted-foreground flex-1">Run History</h2>
+            <h3 className="text-sm font-medium text-muted-foreground flex-1">Run History</h3>
             {sessions.length > 0 && (
-              <Popover open={runSortPopoverOpen} onOpenChange={setRunSortPopoverOpen}>
-                <PopoverTrigger asChild>
-                  <Button type="button" size="icon" variant="ghost" className="h-6 w-6 shrink-0" aria-label="Sort runs">
-                    <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent align="end" className="w-40 p-1">
-                  <button
-                    className={`flex w-full items-center rounded-sm px-2 py-1.5 text-xs transition-colors ${runSort === 'newest' ? 'bg-muted font-medium' : 'hover:bg-muted'}`}
-                    onClick={() => { setRunSort('newest'); setRunSortPopoverOpen(false) }}
-                  >
-                    Newest first
-                  </button>
-                  <button
-                    className={`flex w-full items-center rounded-sm px-2 py-1.5 text-xs transition-colors ${runSort === 'oldest' ? 'bg-muted font-medium' : 'hover:bg-muted'}`}
-                    onClick={() => { setRunSort('oldest'); setRunSortPopoverOpen(false) }}
-                  >
-                    Oldest first
-                  </button>
-                </PopoverContent>
-              </Popover>
+              <SortPopover value={runSort} onChange={setRunSort} ariaLabel="Sort runs" />
             )}
           </div>
           <div className="border-b mt-2" />
@@ -432,7 +422,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
           <DialogHeader>
             <DialogTitle>Edit Schedule</DialogTitle>
             <DialogDescription>
-              Modify the schedule description below and convert it to a new cron expression.
+              Update the run schedule or timezone for this cron. Describe the schedule in plain English and convert it to a cron expression before saving.
             </DialogDescription>
           </DialogHeader>
 
@@ -493,11 +483,8 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
               <div className="space-y-2 pt-2 border-t">
                 <Label htmlFor="timezone-picker">Timezone</Label>
                 <TimezonePicker
-                  value={task.timezone || 'UTC'}
-                  onValueChange={(value) => {
-                    updateTimezone.mutate({ taskId: task.id, timezone: value })
-                  }}
-                  disabled={updateTimezone.isPending}
+                  value={pendingTimezone}
+                  onValueChange={setPendingTimezone}
                   className="w-full"
                 />
                 <p className="text-xs text-muted-foreground">
@@ -513,9 +500,9 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
             </Button>
             <Button
               onClick={handleSaveSchedule}
-              disabled={!parsedExpression || updateSchedule.isPending}
+              disabled={!canSaveSchedule || updateSchedule.isPending || updateTimezone.isPending}
             >
-              {updateSchedule.isPending ? (
+              {updateSchedule.isPending || updateTimezone.isPending ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                   Saving...
