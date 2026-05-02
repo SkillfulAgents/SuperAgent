@@ -3,7 +3,7 @@ import { Bell, ChevronDown, ChevronRight, Plus, Settings, AlertTriangle, LayoutG
 import { cn } from '@shared/lib/utils/cn'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
+import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
 import { useDialogs } from '@renderer/context/dialog-context'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
@@ -49,8 +49,7 @@ import { useWebhookTriggers } from '@renderer/hooks/use-webhook-triggers'
 import { useArtifacts, type ArtifactInfo } from '@renderer/hooks/use-artifacts'
 import { useChatIntegrations, useChatIntegrationSessions, type ChatIntegration } from '@renderer/hooks/use-chat-integrations'
 import { formatProviderName } from '@shared/lib/chat-integrations/utils'
-import { GlobalSettingsDialog } from '@renderer/components/settings/global-settings-dialog'
-import { ContainerSetupDialog } from '@renderer/components/settings/container-setup-dialog'
+import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { useUser } from '@renderer/context/user-context'
 import { NotificationsPopoverContent } from '@renderer/components/notifications/notifications-popover'
@@ -848,7 +847,7 @@ function ApiKeyWarning({ onOpenSettings }: { onOpenSettings: () => void }) {
 
 export function AppSidebar() {
   useRenderTracker('AppSidebar')
-  const { settingsOpen, setSettingsOpen, settingsTab, openWizard } = useDialogs()
+  const { setSettingsOpen, openSettings } = useDialogs()
   const { createUntitledAgent, isPending: isCreatingAgent } = useCreateUntitledAgent()
 
   // Electron menu → New Agent
@@ -860,7 +859,6 @@ export function AppSidebar() {
     }
   }, [createUntitledAgent])
   const { clearSelection, selectedAgentSlug } = useSelection()
-  const [containerSetupOpen, setContainerSetupOpen] = useState(false)
   const { data: agents, isLoading, error } = useAgents()
   const { data: userSettings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()
@@ -915,18 +913,6 @@ export function AppSidebar() {
   const isRuntimeUnavailable = readiness?.status === 'RUNTIME_UNAVAILABLE' || readiness?.status === 'ERROR'
   const isPullingOrBuilding = readiness?.status === 'PULLING_IMAGE'
   const isChecking = readiness?.status === 'CHECKING'
-
-  // Track if we've shown the initial container setup dialog
-  const hasShownInitialSetup = useRef(false)
-
-  // Automatically show the container setup dialog on first load if runtime is unavailable
-  // Skip if setup wizard hasn't been completed yet — it already covers runtime setup
-  useEffect(() => {
-    if (isRuntimeUnavailable && !hasShownInitialSetup.current && userSettings?.setupCompleted) {
-      hasShownInitialSetup.current = true
-      setContainerSetupOpen(true)
-    }
-  }, [isRuntimeUnavailable, userSettings?.setupCompleted])
 
   // The header bar exists only to (a) leave room for macOS traffic lights when
   // windowed, or (b) host the Windows app-menu chevron. In every other case
@@ -1002,7 +988,7 @@ export function AppSidebar() {
                 <Alert
                   variant="destructive"
                   className="py-2 [&>svg]:top-2.5 cursor-pointer hover:bg-destructive/20 transition-colors"
-                  onClick={() => setSettingsOpen(true)}
+                  onClick={() => openSettings('runtime')}
                 >
                   <AlertTriangle className="h-4 w-4" />
                   <AlertDescription className="text-xs">
@@ -1038,7 +1024,7 @@ export function AppSidebar() {
               </div>
             )}
 
-            <ApiKeyWarning onOpenSettings={() => setSettingsOpen(true)} />
+            <ApiKeyWarning onOpenSettings={() => openSettings('llm')} />
             <SidebarGroupContent>
               <SidebarMenu>
                 <SidebarMenuItem>
@@ -1124,18 +1110,6 @@ export function AppSidebar() {
           <span className="px-2 text-xs text-muted-foreground shrink-0">v{__APP_VERSION__}</span>
         </div>
       </SidebarFooter>
-
-      <GlobalSettingsDialog
-        open={settingsOpen}
-        onOpenChange={setSettingsOpen}
-        onOpenWizard={openWizard}
-        initialTab={settingsTab}
-      />
-
-      <ContainerSetupDialog
-        open={containerSetupOpen}
-        onOpenChange={setContainerSetupOpen}
-      />
 
       <SidebarRail />
     </Sidebar>

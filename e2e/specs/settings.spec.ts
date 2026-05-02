@@ -9,12 +9,12 @@ test.describe.configure({ mode: 'serial' })
 
 async function openSettings(page: Page) {
   await page.locator('[data-testid="settings-button"]').click()
-  await expect(page.locator('[data-testid="global-settings-dialog"]')).toBeVisible()
+  await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
 }
 
 async function closeSettings(page: Page) {
-  await page.keyboard.press('Escape')
-  await expect(page.locator('[data-testid="global-settings-dialog"]')).not.toBeVisible()
+  await page.locator('[data-testid="settings-back"]').click()
+  await expect(page.locator('[data-testid="global-settings-page"]')).not.toBeVisible()
 }
 
 async function goToTab(page: Page, tabId: string) {
@@ -38,7 +38,7 @@ async function waitForSettingsSave(page: Page) {
 // Existing tests: navigation & structure
 // ---------------------------------------------------------------------------
 
-test.describe('Settings Dialog', () => {
+test.describe('Settings Page', () => {
   let appPage: AppPage
 
   test.beforeEach(async ({ page }) => {
@@ -47,7 +47,7 @@ test.describe('Settings Dialog', () => {
     await appPage.waitForAgentsLoaded()
   })
 
-  test('opens settings dialog via sidebar button', async ({ page }) => {
+  test('opens settings page via sidebar button', async ({ page }) => {
     await openSettings(page)
   })
 
@@ -126,10 +126,33 @@ test.describe('Settings Dialog', () => {
     await expect(page.locator('#browser-host')).toBeVisible()
   })
 
-  test('closes settings dialog', async ({ page }) => {
+  test('closes settings page', async ({ page }) => {
     await openSettings(page)
-    await page.keyboard.press('Escape')
-    await expect(page.locator('[data-testid="global-settings-dialog"]')).not.toBeVisible()
+    await page.locator('[data-testid="settings-back"]').click()
+    await expect(page.locator('[data-testid="global-settings-page"]')).not.toBeVisible()
+  })
+
+  test('app shell unmounts while settings is open and returns on close', async ({ page }) => {
+    // App sidebar visible before opening settings
+    await expect(page.locator('[data-testid="app-sidebar"]')).toBeVisible()
+
+    await openSettings(page)
+    // App sidebar (and its Settings button) is gone; the settings sidebar replaces it
+    await expect(page.locator('[data-testid="app-sidebar"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid="settings-button"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid="settings-sidebar"]')).toBeVisible()
+
+    await page.locator('[data-testid="settings-back"]').click()
+    // App sidebar returns
+    await expect(page.locator('[data-testid="app-sidebar"]')).toBeVisible()
+    await expect(page.locator('[data-testid="settings-button"]')).toBeVisible()
+    await expect(page.locator('[data-testid="settings-sidebar"]')).not.toBeVisible()
+  })
+
+  test('non-auth mode shows ungrouped sections (no group labels)', async ({ page }) => {
+    await openSettings(page)
+    // Group labels are only rendered in auth+admin mode; in non-auth mode the sidebar is flat.
+    await expect(page.locator('[data-sidebar="group-label"]')).toHaveCount(0)
   })
 })
 
@@ -489,5 +512,47 @@ test.describe('Settings validation errors', () => {
 
     // Remove the route intercept so subsequent tests work
     await page.unroute('**/api/settings')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Deep-link reset: tab targets clear when settings closes so the next plain
+// open lands on the default section.
+// ---------------------------------------------------------------------------
+
+test.describe('Settings deep-link reset', () => {
+  test('voice-button deep link does not stick after close', async ({ page, request }) => {
+    // Skip the first-launch wizard so the app renders straight to the agent view.
+    await request.put('http://localhost:3000/api/user-settings', {
+      data: { setupCompleted: true },
+    })
+    // Seed an agent via API so the home message-input (which hosts the voice button) renders.
+    const createRes = await request.post('http://localhost:3000/api/agents', {
+      data: { name: 'Voice Deep Link Test' },
+    })
+    const agent = await createRes.json() as { slug: string }
+
+    const appPage = new AppPage(page)
+    await appPage.goto()
+    await appPage.waitForAgentsLoaded()
+    await page.locator(`[data-testid="agent-item-${agent.slug}"]`).click()
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
+
+    // Voice provider is unconfigured in mock mode → clicking the mic deep-links to the Voice section.
+    await page.locator('[data-testid="voice-input-button"]').click()
+    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
+    await expect(page.locator('[data-testid="settings-nav-voice"]')).toHaveAttribute('data-active', 'true')
+
+    // Close, then reopen via the plain Settings button (no tab argument).
+    await page.locator('[data-testid="settings-back"]').click()
+    await page.locator('[data-testid="settings-button"]').click()
+    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
+
+    // Should land on the default first section, NOT remember 'voice'.
+    await expect(page.locator('[data-testid="settings-nav-general"]')).toHaveAttribute('data-active', 'true')
+    await expect(page.locator('[data-testid="settings-nav-voice"]')).toHaveAttribute('data-active', 'false')
+
+    // Clean up: delete the seeded agent via API so other tests aren't affected.
+    await request.delete(`http://localhost:3000/api/agents/${agent.slug}`)
   })
 })

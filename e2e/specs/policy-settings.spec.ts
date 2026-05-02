@@ -27,7 +27,7 @@ test.describe('Policy Settings', () => {
 
     // Open global settings
     await page.locator('[data-testid="settings-button"]').click()
-    await expect(page.locator('[data-testid="global-settings-dialog"]')).toBeVisible()
+    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
 
     // Navigate to Accounts tab
     await page.locator('[data-testid="settings-nav-accounts"]').click()
@@ -45,7 +45,7 @@ test.describe('Policy Settings', () => {
 
     // Open settings → Accounts
     await page.locator('[data-testid="settings-button"]').click()
-    await expect(page.locator('[data-testid="global-settings-dialog"]')).toBeVisible()
+    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
     await page.locator('[data-testid="settings-nav-accounts"]').click()
 
     // Click the policy pill to open scope editor
@@ -85,7 +85,7 @@ test.describe('Policy Settings', () => {
 
     // Open settings → Accounts
     await page.locator('[data-testid="settings-button"]').click()
-    await expect(page.locator('[data-testid="global-settings-dialog"]')).toBeVisible()
+    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
     await page.locator('[data-testid="settings-nav-accounts"]').click()
 
     // Open the policy editor again
@@ -109,7 +109,7 @@ test.describe('Policy Settings', () => {
 
     // Open settings → Accounts → scope editor
     await page.locator('[data-testid="settings-button"]').click()
-    await expect(page.locator('[data-testid="global-settings-dialog"]')).toBeVisible()
+    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
     await page.locator('[data-testid="settings-nav-accounts"]').click()
 
     const pill = page.locator(`[data-testid="policy-pill-${accountId}"]`)
@@ -144,7 +144,7 @@ test.describe('Policy Settings', () => {
 
     // Open settings → Accounts → scope editor
     await page.locator('[data-testid="settings-button"]').click()
-    await expect(page.locator('[data-testid="global-settings-dialog"]')).toBeVisible()
+    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
     await page.locator('[data-testid="settings-nav-accounts"]').click()
 
     const pill = page.locator(`[data-testid="policy-pill-${accountId}"]`)
@@ -181,7 +181,7 @@ test.describe('Policy Settings', () => {
 
     // Open settings → Accounts
     await page.locator('[data-testid="settings-button"]').click()
-    await expect(page.locator('[data-testid="global-settings-dialog"]')).toBeVisible()
+    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
     await page.locator('[data-testid="settings-nav-accounts"]').click()
 
     // Find the global default policy section — the border div containing the label

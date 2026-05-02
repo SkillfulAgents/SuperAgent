@@ -17,25 +17,31 @@ export function DialogProvider({
   children: React.ReactNode
   onOpenWizard: () => void
 }) {
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsOpen, setSettingsOpenRaw] = useState(false)
   const [settingsTab, setSettingsTab] = useState<string | undefined>()
+
+  // Clear deep-link tab when closing so the next plain open lands on the default section.
+  const setSettingsOpen = useCallback((open: boolean) => {
+    if (!open) setSettingsTab(undefined)
+    setSettingsOpenRaw(open)
+  }, [])
 
   const openSettings = useCallback((tab?: string) => {
     setSettingsTab(tab)
-    setSettingsOpen(true)
+    setSettingsOpenRaw(true)
   }, [])
 
   const openWizard = useCallback(() => {
     setSettingsOpen(false)
     onOpenWizard()
-  }, [onOpenWizard])
+  }, [onOpenWizard, setSettingsOpen])
 
   // Listen for menu commands from Electron main process
   useEffect(() => {
     if (!window.electronAPI) return
 
     window.electronAPI.onOpenSettings?.(() => {
-      setSettingsOpen(true)
+      setSettingsOpenRaw(true)
     })
 
     return () => {

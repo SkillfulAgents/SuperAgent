@@ -154,10 +154,6 @@ vi.mock('@renderer/components/dashboards/dashboard-context-menu', () => ({
   DashboardContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
-vi.mock('@renderer/components/settings/global-settings-dialog', () => ({
-  GlobalSettingsDialog: () => null,
-}))
-
 vi.mock('@renderer/components/settings/container-setup-dialog', () => ({
   ContainerSetupDialog: () => null,
 }))
