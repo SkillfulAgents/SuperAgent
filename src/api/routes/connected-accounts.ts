@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { db } from '@shared/lib/db'
-import { connectedAccounts } from '@shared/lib/db/schema'
+import { connectedAccounts, agentConnectedAccounts } from '@shared/lib/db/schema'
 import { desc, eq } from 'drizzle-orm'
 import { getProvider, isProviderSupported } from '@shared/lib/composio/providers'
 import {
@@ -336,6 +336,21 @@ connectedAccountsRouter.get('/trigger-counts', async (c) => {
   } catch (error) {
     console.error('Failed to fetch trigger counts:', error)
     return c.json({}, 200) // gracefully return empty on error
+  }
+})
+
+// GET /api/connected-accounts/:id/agents - List agent slugs that have this account mapped
+connectedAccountsRouter.get('/:id/agents', Or(OwnsAccount(), IsAdmin()), async (c) => {
+  try {
+    const id = c.req.param('id')
+    const mappings = await db
+      .select({ agentSlug: agentConnectedAccounts.agentSlug })
+      .from(agentConnectedAccounts)
+      .where(eq(agentConnectedAccounts.connectedAccountId, id))
+    return c.json({ agentSlugs: mappings.map((m) => m.agentSlug) })
+  } catch (error) {
+    console.error('Failed to list agents for connected account:', error)
+    return c.json({ error: 'Failed to list agents' }, 500)
   }
 })
 

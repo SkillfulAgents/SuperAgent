@@ -1,4 +1,4 @@
-import { Settings, Link2, Container, Bell, Globe, Library, BarChart3, Plug, Brain, Users, Shield, ShieldEllipsis, User, Mic, Activity, Terminal, Waypoints } from 'lucide-react'
+import { Settings, Container, Bell, Globe, Library, BarChart3, Plug, Brain, Users, Shield, ShieldEllipsis, User, Mic, Activity, Terminal, Waypoints } from 'lucide-react'
 import { SettingsPage, type SettingsPageSection, type SettingsPageSectionGroup } from '@renderer/components/settings/settings-page'
 import { ProfileTab } from './profile-tab'
 import { GeneralTab } from './general-tab'
@@ -8,9 +8,9 @@ import { NotificationsTab } from './notifications-tab'
 import { BrowserTab } from './browser-tab'
 import { SkillsetsTab } from './skillsets-tab'
 import { UsageTab } from './usage-tab'
-import { RemoteMcpsTab } from './remote-mcps-tab'
+import { ConnectionsTab } from './connections-tab'
+import { NewIntegrationButton } from '@renderer/components/connections/connections-list'
 import { LlmTab } from './llm-tab'
-import { AccountsTab } from './accounts-tab'
 import { UsersTab } from './users-tab'
 import { AuthTab } from './auth-tab'
 import { AdminTab } from './admin-tab'
@@ -38,8 +38,7 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection }: Gl
     { id: 'general', label: 'General', icon: <Settings className="h-4 w-4" />, render: () => <GeneralTab onOpenWizard={onOpenWizard} /> },
     { id: 'notifications', label: 'Notifications', icon: <Bell className="h-4 w-4" />, render: () => <NotificationsTab /> },
     { id: 'platform', label: 'Platform', icon: <Waypoints className="h-4 w-4" />, render: () => <PlatformTab /> },
-    { id: 'accounts', label: 'Accounts', icon: <Link2 className="h-4 w-4" />, render: () => <AccountsTab /> },
-    { id: 'remote-mcps', label: 'MCPs', icon: <Plug className="h-4 w-4" />, render: () => <RemoteMcpsTab /> },
+    { id: 'connections', label: 'Connections', icon: <Plug className="h-4 w-4" />, render: () => <ConnectionsTab />, headerActions: <NewIntegrationButton /> },
     { id: 'usage', label: 'Usage', icon: <BarChart3 className="h-4 w-4" />, render: () => <UsageTab /> },
   ]
 

@@ -57,8 +57,7 @@ test.describe('Settings Page', () => {
     // User tabs (visible to all)
     await expect(page.locator('[data-testid="settings-nav-general"]')).toBeVisible()
     await expect(page.locator('[data-testid="settings-nav-notifications"]')).toBeVisible()
-    await expect(page.locator('[data-testid="settings-nav-accounts"]')).toBeVisible()
-    await expect(page.locator('[data-testid="settings-nav-remote-mcps"]')).toBeVisible()
+    await expect(page.locator('[data-testid="settings-nav-connections"]')).toBeVisible()
     await expect(page.locator('[data-testid="settings-nav-usage"]')).toBeVisible()
 
     // Admin tabs (visible in non-auth mode)

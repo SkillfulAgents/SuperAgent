@@ -117,9 +117,11 @@ export function useDeleteConnectedAccount() {
         throw new Error(error.error || 'Failed to delete account')
       }
     },
-    onSuccess: () => {
+    onSuccess: (_, accountId) => {
       queryClient.invalidateQueries({ queryKey: ['connected-accounts'] })
       queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts'] })
+      queryClient.removeQueries({ queryKey: ['account-agents', accountId] })
+      queryClient.removeQueries({ queryKey: ['scope-policies', accountId] })
     },
   })
 }
@@ -171,9 +173,12 @@ export function useAssignAccountsToAgent() {
         throw new Error(error.error || 'Failed to assign accounts to agent')
       }
     },
-    onSuccess: (_, { agentSlug }) => {
+    onSuccess: (_, { agentSlug, accountIds }) => {
       queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts', agentSlug] })
       queryClient.invalidateQueries({ queryKey: ['connected-accounts'] })
+      for (const id of accountIds) {
+        queryClient.invalidateQueries({ queryKey: ['account-agents', id] })
+      }
     },
   })
 }
@@ -191,10 +196,26 @@ export function useRemoveAgentConnectedAccount() {
       })
       if (!res.ok) throw new Error('Failed to remove account from agent')
     },
-    onSuccess: (_, { agentSlug }) => {
+    onSuccess: (_, { agentSlug, accountId }) => {
       queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts', agentSlug] })
       queryClient.invalidateQueries({ queryKey: ['connected-accounts'] })
+      queryClient.invalidateQueries({ queryKey: ['account-agents', accountId] })
     },
+  })
+}
+
+/**
+ * Hook to fetch agent slugs that have a connected account mapped
+ */
+export function useAccountAgents(accountId: string) {
+  return useQuery<{ agentSlugs: string[] }>({
+    queryKey: ['account-agents', accountId],
+    queryFn: async () => {
+      const res = await apiFetch(`/api/connected-accounts/${accountId}/agents`)
+      if (!res.ok) throw new Error('Failed to fetch account agents')
+      return res.json()
+    },
+    enabled: !!accountId,
   })
 }
 

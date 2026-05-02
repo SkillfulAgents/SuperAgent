@@ -20,7 +20,7 @@ test.describe('Policy Settings', () => {
     accountId = body.account.id
   })
 
-  test('settings: accounts tab shows policy pill for connected account', async ({ page }) => {
+  test('settings: connections tab shows policy pill for connected account', async ({ page }) => {
     appPage = new AppPage(page)
     await appPage.goto()
     await appPage.waitForAgentsLoaded()
@@ -29,8 +29,8 @@ test.describe('Policy Settings', () => {
     await page.locator('[data-testid="settings-button"]').click()
     await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
 
-    // Navigate to Accounts tab
-    await page.locator('[data-testid="settings-nav-accounts"]').click()
+    // Navigate to Connections tab
+    await page.locator('[data-testid="settings-nav-connections"]').click()
 
     // Should see the policy pill for our account (no policies yet)
     const pill = page.locator(`[data-testid="policy-pill-${accountId}"]`)
@@ -46,7 +46,7 @@ test.describe('Policy Settings', () => {
     // Open settings → Accounts
     await page.locator('[data-testid="settings-button"]').click()
     await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
-    await page.locator('[data-testid="settings-nav-accounts"]').click()
+    await page.locator('[data-testid="settings-nav-connections"]').click()
 
     // Click the policy pill to open scope editor
     const pill = page.locator(`[data-testid="policy-pill-${accountId}"]`)
@@ -86,7 +86,7 @@ test.describe('Policy Settings', () => {
     // Open settings → Accounts
     await page.locator('[data-testid="settings-button"]').click()
     await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
-    await page.locator('[data-testid="settings-nav-accounts"]').click()
+    await page.locator('[data-testid="settings-nav-connections"]').click()
 
     // Open the policy editor again
     const pill = page.locator(`[data-testid="policy-pill-${accountId}"]`)
@@ -110,7 +110,7 @@ test.describe('Policy Settings', () => {
     // Open settings → Accounts → scope editor
     await page.locator('[data-testid="settings-button"]').click()
     await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
-    await page.locator('[data-testid="settings-nav-accounts"]').click()
+    await page.locator('[data-testid="settings-nav-connections"]').click()
 
     const pill = page.locator(`[data-testid="policy-pill-${accountId}"]`)
     await expect(pill).toBeVisible({ timeout: 5000 })
@@ -145,7 +145,7 @@ test.describe('Policy Settings', () => {
     // Open settings → Accounts → scope editor
     await page.locator('[data-testid="settings-button"]').click()
     await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
-    await page.locator('[data-testid="settings-nav-accounts"]').click()
+    await page.locator('[data-testid="settings-nav-connections"]').click()
 
     const pill = page.locator(`[data-testid="policy-pill-${accountId}"]`)
     await expect(pill).toBeVisible({ timeout: 5000 })
@@ -182,7 +182,7 @@ test.describe('Policy Settings', () => {
     // Open settings → Accounts
     await page.locator('[data-testid="settings-button"]').click()
     await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
-    await page.locator('[data-testid="settings-nav-accounts"]').click()
+    await page.locator('[data-testid="settings-nav-connections"]').click()
 
     // Find the global default policy section — the border div containing the label
     const globalSection = page.locator('div.border').filter({ hasText: 'Default API Request Policy' })

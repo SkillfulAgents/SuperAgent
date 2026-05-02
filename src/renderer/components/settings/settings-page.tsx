@@ -23,6 +23,8 @@ export interface SettingsPageSection {
   icon: React.ReactNode
   /** Returns the content for this section. Lazy so unrelated sections don't render. */
   render: () => React.ReactNode
+  /** Optional actions rendered next to the page title (e.g. an "Add" button). */
+  headerActions?: React.ReactNode
 }
 
 export interface SettingsPageSectionGroup {
@@ -109,7 +111,10 @@ export function SettingsPage({
       <SidebarInset className="min-w-0">
         <div className="h-12 shrink-0 app-drag-region" />
         <SettingsPageContainer>
-          <PageTitle title={activeSection?.label ?? 'Settings'} />
+          <PageTitle
+            title={activeSection?.label ?? 'Settings'}
+            actions={activeSection?.headerActions}
+          />
           {activeSection?.render()}
         </SettingsPageContainer>
       </SidebarInset>

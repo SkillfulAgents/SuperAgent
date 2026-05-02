@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import crypto from 'crypto'
 import { db } from '@shared/lib/db'
-import { remoteMcpServers } from '@shared/lib/db/schema'
+import { remoteMcpServers, agentRemoteMcps } from '@shared/lib/db/schema'
 import { eq, and } from 'drizzle-orm'
 import { initiateOAuthFlow, initiateNewServerOAuth, completeOAuthFlow, discoverOAuthMetadata } from '@shared/lib/mcp/oauth'
 import type { McpToolInfo } from '@shared/lib/mcp/types'
@@ -398,6 +398,21 @@ remoteMcps.get('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
   return c.json({
     server: sanitizeServer(server),
   })
+})
+
+// List agent slugs that have this MCP server mapped
+remoteMcps.get('/:id/agents', Or(UsersMcpServer(), IsAdmin()), async (c) => {
+  try {
+    const id = c.req.param('id')
+    const mappings = await db
+      .select({ agentSlug: agentRemoteMcps.agentSlug })
+      .from(agentRemoteMcps)
+      .where(eq(agentRemoteMcps.remoteMcpId, id))
+    return c.json({ agentSlugs: mappings.map((m) => m.agentSlug) })
+  } catch (error) {
+    console.error('Failed to list agents for MCP server:', error)
+    return c.json({ error: 'Failed to list agents' }, 500)
+  }
 })
 
 // Update an MCP server
