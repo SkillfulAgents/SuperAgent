@@ -10,6 +10,7 @@ import { HomePage } from '@renderer/components/home/home-page'
 import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/scheduled-task-view'
 import { WebhookTriggerView } from '@renderer/components/webhook-triggers/webhook-trigger-view'
 import { ChatIntegrationView } from '@renderer/components/chat-integrations/chat-integration-view'
+import { ApiLogsView } from '@renderer/components/api-logs/api-logs-view'
 import { ConnectionsView } from '@renderer/components/connections/connections-view'
 import { BrowserDrawerPanel } from '@renderer/components/browser/browser-drawer-panel'
 import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
@@ -48,6 +49,7 @@ export function MainContent() {
     selectedWebhookTriggerId: webhookTriggerId,
     selectedChatIntegrationId: chatIntegrationId,
     selectedDashboardSlug: dashboardSlug,
+    selectedApiLogs: apiLogsOpen,
     selectedConnections: connectionsOpen,
     selectSession,
     selectScheduledTask,
@@ -156,8 +158,9 @@ export function MainContent() {
 
   const showSessionCrumb = !!(sessionId && session?.agentSlug === agentSlug)
   const showTaskCrumb = !!(scheduledTaskId && scheduledTask)
+  const showApiLogsCrumb = !!apiLogsOpen
   const showConnectionsCrumb = !!connectionsOpen
-  const isAgentLeaf = !showSessionCrumb && !showTaskCrumb && !showConnectionsCrumb
+  const isAgentLeaf = !showSessionCrumb && !showTaskCrumb && !showApiLogsCrumb && !showConnectionsCrumb
 
   return (
     <div className="h-full flex flex-col" data-testid="main-content">
@@ -205,10 +208,16 @@ export function MainContent() {
               </div>
             </div>
           )}
+          {showApiLogsCrumb && (
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
+              <span className="truncate text-sm font-light text-foreground">API Logs</span>
+            </div>
+          )}
           {showConnectionsCrumb && (
             <div className="flex items-center gap-1.5 min-w-0">
-              <span aria-hidden="true" className="text-[13px] font-light text-muted-foreground shrink-0 hidden md:block">/</span>
-              <span className="truncate text-[13px] font-light text-foreground">Connections</span>
+              <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
+              <span className="truncate text-sm font-light text-foreground">Connections</span>
             </div>
           )}
         </div>
@@ -394,6 +403,8 @@ export function MainContent() {
       <ErrorBoundary>
         {dashboardSlug ? (
           <DashboardView agentSlug={agentSlug} dashboardSlug={dashboardSlug} />
+        ) : apiLogsOpen ? (
+          <ApiLogsView agentSlug={agentSlug} />
         ) : connectionsOpen ? (
           <ConnectionsView agentSlug={agentSlug} />
         ) : /* Show scheduled task view when a scheduled task is selected */

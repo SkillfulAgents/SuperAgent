@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { Button } from '@renderer/components/ui/button'
-import { Play, RefreshCw, LayoutDashboard, ExternalLink, Dock, Loader2 } from 'lucide-react'
+import { Play, RefreshCw, SquareMousePointer, ExternalLink, Dock, Loader2 } from 'lucide-react'
 import { useAgent, useStartAgent } from '@renderer/hooks/use-agents'
 import { useArtifacts } from '@renderer/hooks/use-artifacts'
 import { useUser } from '@renderer/context/user-context'
@@ -98,7 +98,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   return (
     <div className="flex-1 flex flex-col min-h-0">
       <div className="shrink-0 flex items-center gap-2 px-4 py-2 border-b bg-muted/30">
-        <LayoutDashboard className="h-4 w-4 text-muted-foreground" />
+        <SquareMousePointer className="h-4 w-4 text-muted-foreground" />
         <span className="text-sm font-medium">{dashboard?.name || dashboardSlug}</span>
         {dashboard?.description && (
           <span className="text-xs text-muted-foreground truncate">

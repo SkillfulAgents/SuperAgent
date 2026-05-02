@@ -9,6 +9,7 @@ interface SelectionContextType {
   selectedChatIntegrationId: string | null
   selectedChatSessionId: string | null // session within a chat integration
   selectedDashboardSlug: string | null
+  selectedApiLogs: boolean
   selectedConnections: boolean
   /** One-shot draft text to pre-fill the agent home composer. Consumed on read. */
   pendingDraft: string | null
@@ -21,6 +22,7 @@ interface SelectionContextType {
   selectChatIntegration: (integrationId: string | null) => void
   selectChatSession: (integrationId: string, sessionId: string) => void
   selectDashboard: (slug: string | null) => void
+  selectApiLogs: (on: boolean) => void
   selectConnections: (on: boolean) => void
   clearSelection: () => void
   handleAgentDeleted: (agentSlug: string) => void
@@ -41,6 +43,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
   const [selectedChatIntegrationId, setSelectedChatIntegrationId] = useState<string | null>(null)
   const [selectedChatSessionId, setSelectedChatSessionId] = useState<string | null>(null)
   const [selectedDashboardSlug, setSelectedDashboardSlug] = useState<string | null>(null)
+  const [selectedApiLogs, setSelectedApiLogs] = useState(false)
   const [selectedConnections, setSelectedConnections] = useState(false)
   const [pendingDraft, setPendingDraft] = useState<string | null>(null)
 
@@ -52,6 +55,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedChatIntegrationId(null)
     setSelectedChatSessionId(null)
     setSelectedDashboardSlug(null)
+    setSelectedApiLogs(false)
     setSelectedConnections(false)
   }, [])
 
@@ -64,6 +68,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedChatIntegrationId(null)
     setSelectedChatSessionId(null)
     setSelectedDashboardSlug(null)
+    setSelectedApiLogs(false)
     setSelectedConnections(false)
   }, [])
 
@@ -80,6 +85,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedChatIntegrationId(null)
     setSelectedChatSessionId(null)
     setSelectedDashboardSlug(null)
+    setSelectedApiLogs(false)
     setSelectedConnections(false)
   }, [])
 
@@ -90,6 +96,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedChatIntegrationId(null)
     setSelectedChatSessionId(null)
     setSelectedDashboardSlug(null)
+    setSelectedApiLogs(false)
     setSelectedConnections(false)
   }, [])
 
@@ -100,6 +107,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedChatIntegrationId(null)
     setSelectedChatSessionId(null)
     setSelectedDashboardSlug(null)
+    setSelectedApiLogs(false)
     setSelectedConnections(false)
   }, [])
 
@@ -110,6 +118,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedScheduledTaskId(null)
     setSelectedWebhookTriggerId(null)
     setSelectedDashboardSlug(null)
+    setSelectedApiLogs(false)
     setSelectedConnections(false)
   }, [])
 
@@ -120,6 +129,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedScheduledTaskId(null)
     setSelectedWebhookTriggerId(null)
     setSelectedDashboardSlug(null)
+    setSelectedApiLogs(false)
     setSelectedConnections(false)
   }, [])
 
@@ -130,7 +140,21 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedWebhookTriggerId(null)
     setSelectedChatIntegrationId(null)
     setSelectedChatSessionId(null)
+    setSelectedApiLogs(false)
     setSelectedConnections(false)
+  }, [])
+
+  const selectApiLogs = useCallback((on: boolean) => {
+    setSelectedApiLogs(on)
+    if (on) {
+      setSelectedSessionId(null)
+      setSelectedScheduledTaskId(null)
+      setSelectedWebhookTriggerId(null)
+      setSelectedChatIntegrationId(null)
+      setSelectedChatSessionId(null)
+      setSelectedDashboardSlug(null)
+      setSelectedConnections(false)
+    }
   }, [])
 
   const selectConnections = useCallback((on: boolean) => {
@@ -142,6 +166,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
       setSelectedChatIntegrationId(null)
       setSelectedChatSessionId(null)
       setSelectedDashboardSlug(null)
+      setSelectedApiLogs(false)
     }
   }, [])
 
@@ -153,6 +178,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedChatIntegrationId(null)
     setSelectedChatSessionId(null)
     setSelectedDashboardSlug(null)
+    setSelectedApiLogs(false)
     setSelectedConnections(false)
   }, [])
 
@@ -165,6 +191,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
       setSelectedChatIntegrationId(null)
       setSelectedChatSessionId(null)
       setSelectedDashboardSlug(null)
+      setSelectedApiLogs(false)
       setSelectedConnections(false)
     }
   }, [selectedAgentSlug])
@@ -210,6 +237,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
         selectedChatIntegrationId,
         selectedChatSessionId,
         selectedDashboardSlug,
+        selectedApiLogs,
         selectedConnections,
         pendingDraft,
         selectAgent,
@@ -221,6 +249,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
         selectChatIntegration,
         selectChatSession,
         selectDashboard,
+        selectApiLogs,
         selectConnections,
         clearSelection,
         handleAgentDeleted,

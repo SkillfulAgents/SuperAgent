@@ -26,7 +26,8 @@ import { HomeConnections } from './home-connections'
 import { HomeVolumes } from './home-volumes'
 import { HomeBookmarks } from './home-bookmarks'
 import { useUpdateAgent, useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
-import { AgentCreationAids } from '@renderer/components/agents/agent-creation-aids'
+import { AgentCreationAids, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
+import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
 import {
   useTypewriterPlaceholder,
   DEFAULT_AGENT_PROMPT_EXAMPLES,
@@ -46,6 +47,7 @@ interface AgentHomeProps {
 export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHomeProps) {
   useRenderTracker('AgentHome')
   const { selectScheduledTask, selectAgent, consumePendingDraft } = useSelection()
+  const startOnboardingSession = useStartOnboardingSession()
   const { canUseAgent, canAdminAgent } = useUser()
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)
@@ -56,6 +58,10 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const [sortPopoverOpen, setSortPopoverOpen] = useState(false)
   const [effort, setEffort] = useState<EffortLevel>('high')
   const sessionSearchRef = useRef<HTMLInputElement>(null)
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
+  // Tracks an explicit user collapse so the auto-expand effect doesn't fight it.
+  // Reset when the message clears (e.g. after submit).
+  const userCollapsedRef = useRef(false)
   const createSession = useCreateSession()
   const updateAgent = useUpdateAgent()
   const deleteAgent = useDeleteAgent()
@@ -169,10 +175,18 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   // eslint-disable-next-line react-hooks/exhaustive-deps -- only run on mount
   }, [])
 
-  // Auto-expand when message gets long (5+ lines)
+  // Reset the manual-collapse flag once the message clears.
   useEffect(() => {
-    const lineCount = composer.message.split('\n').length
-    if (lineCount >= 5 && !isExpanded) {
+    if (composer.message.trim() === '') userCollapsedRef.current = false
+  }, [composer.message])
+
+  // Auto-flip to expanded when the textarea content overflows its max-height
+  // (CSS-driven 6-line cap). field-sizing handles the actual sizing — this only
+  // decides whether to switch into the full-view layout.
+  useEffect(() => {
+    const el = composerTextareaRef.current
+    if (!el || isExpanded || userCollapsedRef.current) return
+    if (el.scrollHeight > el.clientHeight) {
       setIsExpanded(true)
     }
   }, [composer.message, isExpanded])
@@ -206,13 +220,16 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   )
 
   const handleImportComplete = useCallback(
-    async ({ agent: imported }: { agent: ApiAgent }) => {
+    async ({ agent: imported, hasOnboarding }: ImportResult) => {
       selectAgent(imported.slug)
       if (agent.name === UNTITLED_AGENT_NAME && sessions.length === 0 && agent.slug !== imported.slug) {
         deleteAgent.mutate(agent.slug)
       }
+      if (hasOnboarding) {
+        await startOnboardingSession(imported.slug)
+      }
     },
-    [selectAgent, agent.slug, agent.name, sessions.length, deleteAgent],
+    [selectAgent, agent.slug, agent.name, sessions.length, deleteAgent, startOnboardingSession],
   )
 
   const formatDate = useCallback(
@@ -315,6 +332,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                 {...composer.dragHandlers}
               >
                 <ChatComposerBox
+                  textareaRef={composerTextareaRef}
                   attachments={composer.attachments}
                   onRemoveAttachment={composer.removeAttachment}
                   value={composer.message}
@@ -326,7 +344,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                   rows={2}
                   autoFocus
                   dataTestId="home-message-input"
-                  textareaClassName={`transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh]' : 'min-h-[60px]'}`}
+                  textareaClassName={`transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh] max-h-[50vh]' : 'min-h-[60px] max-h-[120px]'}`}
                   leftActions={(
                     <>
                       <AttachmentPicker
@@ -348,7 +366,12 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                       size="icon"
                       variant="ghost"
                       className="h-6 w-6 text-muted-foreground/50 hover:text-foreground"
-                      onClick={() => setIsExpanded((v) => !v)}
+                      onClick={() => setIsExpanded((v) => {
+                        // If user is collapsing, remember it so the auto-expand
+                        // effect doesn't immediately re-flip a still-overflowing message.
+                        userCollapsedRef.current = v
+                        return !v
+                      })}
                       aria-label={isExpanded ? 'Shrink input' : 'Expand input'}
                     >
                       {isExpanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
@@ -361,6 +384,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                         <Button
                           type="submit"
                           size="sm"
+                          disabled={!composer.canSubmit}
                           data-testid="home-send-button"
                         >
                           {isDisabled ? (
@@ -400,7 +424,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
               <HomeBookmarks agentSlug={agent.slug} isOwner={isOwner} />
 
               {/* Sessions list / creation aids */}
-              <div className="pt-2">
+              <div className={sessions.length > 0 ? 'pt-2' : '-mt-5'}>
                 {sessions.length > 0 ? (
                   <>
                     <div className="flex items-center gap-2">

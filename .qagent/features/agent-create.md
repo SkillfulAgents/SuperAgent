@@ -9,7 +9,7 @@ This feature covers creating an agent, starting its container, and deleting it f
 ## Sidebar - Create Agent
 
 ### Components
-- **Create Agent button** (`data-testid='create-agent-button'`) - immediately creates an Untitled agent and lands on its AgentHome.
+- **New Agent button** (`data-testid='new-agent-button'`) - immediately creates an Untitled agent and lands on its AgentHome.
 - **Prompt composer** (`data-testid='home-message-input'`) - textarea for the agent's first instruction; the agent's name auto-updates from the prompt after the first send.
 - **Create Agent / Send button** (`data-testid='home-send-button'`) - submits the prompt. Labeled "Create Agent" on a fresh Untitled agent, the normal send icon thereafter.
 - **Voice / Import cards** - below the composer in the empty-session state. Voice fills the composer with an AI-drafted prompt; Import creates a new agent from a .zip template (the Untitled agent is removed on success).

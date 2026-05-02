@@ -6,6 +6,8 @@ import { cn } from '@shared/lib/utils/cn'
 interface SettingsPageContainerProps {
   children: ReactNode
   className?: string
+  /** Use a wider, less padded frame for content like tables. */
+  fullScreen?: boolean
 }
 
 /**
@@ -13,10 +15,16 @@ interface SettingsPageContainerProps {
  * sibling pages). Centers content at 720px, adds vertical rhythm, and scrolls
  * independently of the app shell.
  */
-export function SettingsPageContainer({ children, className }: SettingsPageContainerProps) {
+export function SettingsPageContainer({ children, className, fullScreen }: SettingsPageContainerProps) {
   return (
     <div className="flex-1 overflow-auto">
-      <div className={cn('mx-auto w-full max-w-[720px] px-6 pt-10 pb-6 space-y-10', className)}>
+      <div
+        className={cn(
+          'mx-auto w-full max-w-[720px] px-6 pt-10 pb-6 space-y-10',
+          fullScreen && 'max-w-5xl pt-4 space-y-6',
+          className,
+        )}
+      >
         {children}
       </div>
     </div>

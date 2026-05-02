@@ -16,6 +16,7 @@ import {
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getAgent } from '@shared/lib/services/agent-service'
+import { getSessionMetadata } from '@shared/lib/services/session-service'
 
 class NotificationManager {
   /**
@@ -102,13 +103,21 @@ class NotificationManager {
   }
 
   /**
-   * Trigger notification when a session completes successfully
+   * Trigger notification when a session completes successfully.
+   * Suppressed for automated sessions (scheduled / webhook / chat integration) —
+   * the user didn't kick those off and shouldn't be pinged when they finish.
+   * `session_waiting` for the same sessions is intentionally NOT suppressed: a
+   * blocked automated session still needs the user's attention.
    */
   async triggerSessionComplete(
     sessionId: string,
     agentSlug: string,
     agentName?: string
   ): Promise<void> {
+    const meta = await getSessionMetadata(agentSlug, sessionId)
+    if (meta?.isScheduledExecution || meta?.isWebhookExecution || meta?.isChatIntegrationSession) {
+      return
+    }
     const displayName = agentName || await this.getAgentDisplayName(agentSlug)
     await this.triggerNotification({
       type: 'session_complete',

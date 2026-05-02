@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { ArrowUpRight, ChevronRight, Copy } from 'lucide-react'
 import { apiFetch } from '@renderer/lib/api'
 import { isElectron } from '@renderer/lib/env'
+import { useSelection } from '@renderer/context/selection-context'
 
 interface HomeExtrasProps {
   agentSlug: string
@@ -10,6 +11,7 @@ interface HomeExtrasProps {
 
 export function HomeExtras({ agentSlug, onOpenSettings }: HomeExtrasProps) {
   const [error, setError] = useState<string | null>(null)
+  const { selectApiLogs } = useSelection()
 
   const handleOpenDirectory = async () => {
     setError(null)
@@ -46,7 +48,7 @@ export function HomeExtras({ agentSlug, onOpenSettings }: HomeExtrasProps) {
         <ExtrasButton label="System Prompt" onClick={() => onOpenSettings?.('system-prompt')} />
         <ExtrasButton label={directoryLabel} onClick={handleOpenDirectory} hoverIcon={directoryHoverIcon} />
         <ExtrasButton label="Secrets" onClick={() => onOpenSettings?.('secrets')} />
-        <ExtrasButton label="API Logs" onClick={() => onOpenSettings?.('audit-log')} />
+        <ExtrasButton label="API Logs" onClick={() => selectApiLogs(true)} />
       </div>
       {error && (
         <p className="px-4 pt-2 text-xs text-destructive" role="alert">{error}</p>

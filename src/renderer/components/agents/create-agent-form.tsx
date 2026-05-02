@@ -6,6 +6,7 @@ import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { AgentCreationAids, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
+import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
 import { TemplateInstallDialog } from '@renderer/components/agents/template-install-dialog'
 import { TemplateCard } from '@renderer/components/agents/template-card'
 import { useCreateAgent } from '@renderer/hooks/use-agents'
@@ -20,8 +21,6 @@ import {
 } from '@renderer/hooks/use-typewriter-placeholder'
 import { deriveAgentName } from '@renderer/lib/derive-agent-name'
 import type { ApiAgent, ApiDiscoverableAgent } from '@shared/lib/types/api'
-
-const ONBOARDING_MESSAGE = 'This agent was just set up from a template. Please run the agent-onboarding skill to help me configure it.'
 
 export interface CreateAgentFormProps {
   /** Fires after an agent is successfully created (via any path). Parent uses this to close the overlay/wizard. */
@@ -56,25 +55,18 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
   const createSession = useCreateSession()
   const { selectAgent, selectSession } = useSelection()
   const { track } = useAnalyticsTracking()
+  const startOnboardingSession = useStartOnboardingSession()
 
   const finishCreatedAgent = useCallback(
     async (agent: ApiAgent, source: 'new' | 'import' | 'skillset', hasOnboarding?: boolean) => {
       track('agent_created', { source, num_skills_added_at_creation: 0 })
       selectAgent(agent.slug)
       if (hasOnboarding) {
-        try {
-          const session = await createSession.mutateAsync({
-            agentSlug: agent.slug,
-            message: ONBOARDING_MESSAGE,
-          })
-          selectSession(session.id)
-        } catch {
-          // Onboarding session creation failed — user can still use agent normally
-        }
+        await startOnboardingSession(agent.slug)
       }
       await onAgentCreated?.()
     },
-    [track, selectAgent, selectSession, createSession, onAgentCreated],
+    [track, selectAgent, startOnboardingSession, onAgentCreated],
   )
 
   const composer = useMessageComposer({
@@ -169,6 +161,7 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
             rows={3}
             autoFocus
             dataTestId="create-agent-prompt"
+            textareaClassName="min-h-[60px]"
             leftActions={(
               <AttachmentPicker
                 onFileSelect={composer.handleFileSelect}

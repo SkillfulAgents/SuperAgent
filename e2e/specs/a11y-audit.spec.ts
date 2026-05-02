@@ -69,7 +69,7 @@ test.describe('Accessibility Audit', () => {
   })
 
   test('new agent landing has no critical a11y violations', async ({ page }) => {
-    await page.locator('[data-testid="create-agent-button"]').click()
+    await page.locator('[data-testid="new-agent-button"]').click()
     // The new flow lands directly on the AgentHome for a fresh Untitled agent.
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
 

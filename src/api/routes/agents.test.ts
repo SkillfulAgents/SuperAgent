@@ -292,7 +292,20 @@ vi.mock('@shared/lib/services/agent-template-service', () => ({
 }))
 
 vi.mock('@shared/lib/utils/retry', () => ({
-  withRetry: vi.fn(),
+  withRetry: vi.fn((fn: () => unknown) => fn()),
+}))
+
+const mockLlmMessagesCreate = vi.fn().mockResolvedValue({
+  content: [{ type: 'text', text: 'Generated Agent Name' }],
+})
+vi.mock('@shared/lib/llm-provider/helpers', () => ({
+  getConfiguredLlmClient: () => ({
+    messages: {
+      create: (...args: unknown[]) => mockLlmMessagesCreate(...args),
+    },
+  }),
+  extractTextFromLlmResponse: (response: unknown) =>
+    (response as { content?: Array<{ text?: string }> })?.content?.[0]?.text ?? null,
 }))
 
 const mockTransformMessages = vi.fn()
@@ -386,6 +399,29 @@ async function postFormData(app: Hono, url: string, body: FormData): Promise<Res
 // ============================================================================
 // Import Template Tests
 // ============================================================================
+
+describe('POST /api/agents/generate-name', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockLlmMessagesCreate.mockResolvedValue({
+      content: [{ type: 'text', text: 'Generated Agent Name' }],
+    })
+  })
+
+  it('is handled before the agent-slug existence middleware', async () => {
+    const res = await postJson(app, '/api/agents/generate-name', {
+      prompt: 'Build a lead generation agent',
+    })
+
+    expect(res.status).toBe(200)
+    await expect(res.json()).resolves.toEqual({ name: 'Generated Agent Name' })
+    expect(mockAgentExists).not.toHaveBeenCalledWith('generate-name')
+    expect(mockLlmMessagesCreate).toHaveBeenCalled()
+  })
+})
 
 describe('POST /api/agents/import-template', () => {
   let app: ReturnType<typeof createApp>

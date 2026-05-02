@@ -1,5 +1,5 @@
 
-import { ChevronDown, ChevronRight, Plus, Settings, AlertTriangle, Clock, LayoutDashboard, Loader2, WifiOff, LogOut, User, Users, Ban, Zap, MessageCircle, Pause } from 'lucide-react'
+import { Bell, ChevronDown, ChevronRight, Plus, Settings, AlertTriangle, LayoutGrid, Loader2, SquareMousePointer, WifiOff, LogOut, User, Users } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
@@ -17,7 +17,6 @@ import {
   SidebarContent,
   SidebarFooter,
   SidebarGroup,
-  SidebarGroupAction,
   SidebarGroupContent,
   SidebarGroupLabel,
   SidebarHeader,
@@ -46,7 +45,6 @@ import { DashboardContextMenu } from '@renderer/components/dashboards/dashboard-
 import { useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
 import { useSelection } from '@renderer/context/selection-context'
-import { useScheduledTasks, type ApiScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { useWebhookTriggers } from '@renderer/hooks/use-webhook-triggers'
 import { useArtifacts, type ArtifactInfo } from '@renderer/hooks/use-artifacts'
 import { useChatIntegrations, useChatIntegrationSessions, type ChatIntegration } from '@renderer/hooks/use-chat-integrations'
@@ -54,7 +52,8 @@ import { formatProviderName } from '@shared/lib/chat-integrations/utils'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { useUser } from '@renderer/context/user-context'
-import { NotificationBell } from '@renderer/components/notifications/notification-bell'
+import { NotificationsPopoverContent } from '@renderer/components/notifications/notifications-popover'
+import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import {
   DndContext,
@@ -75,6 +74,13 @@ import { restrictToVerticalAxis } from '@dnd-kit/modifiers'
 import { SortableAgentMenuItem } from './sortable-agent-item'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
 import { useRenderTracker } from '@renderer/lib/perf'
+
+// 4px-wide thin scrollbar with a muted-foreground/20 thumb. Reused on the
+// agents-list group; pull out as a constant so the call site stays readable.
+const THIN_SCROLLBAR =
+  '[scrollbar-width:thin] [scrollbar-color:hsl(var(--muted-foreground)/0.2)_transparent] ' +
+  '[&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent ' +
+  '[&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/20'
 
 // Session sub-item that tracks its streaming state
 function SessionSubItem({
@@ -108,126 +114,24 @@ function SessionSubItem({
           asChild
           isActive={isSelected}
         >
-          <button onClick={handleClick} className="flex items-center gap-2 w-full" data-testid={`session-item-${session.id}`}>
-            {isAwaitingInput ? (
-              <AwaitingDot />
-            ) : isWorking ? (
-              <WorkingDots />
-            ) : hasUnread ? (
-              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500" />
-            ) : null}
-            <span className="truncate">{session.name}</span>
+          <button
+            onClick={handleClick}
+            className="flex items-center gap-2 w-full"
+            data-testid={`session-item-${session.id}`}
+          >
+            <span className="flex-1 min-w-0 truncate text-left">{session.name}</span>
+            <span className="flex items-center justify-center w-4 shrink-0">
+              {isAwaitingInput ? (
+                <AwaitingDot />
+              ) : isWorking ? (
+                <WorkingDots />
+              ) : hasUnread ? (
+                <span className="h-1.5 w-1.5 rounded-full bg-blue-500" role="img" aria-label="unread notifications" />
+              ) : null}
+            </span>
           </button>
         </SidebarMenuSubButton>
       </SessionContextMenu>
-    </SidebarMenuSubItem>
-  )
-}
-
-// Scheduled task sub-item
-function ScheduledTaskSubItem({
-  task,
-  agentSlug,
-}: {
-  task: ApiScheduledTask
-  agentSlug: string
-}) {
-  const { selectedScheduledTaskId, selectAgent, selectScheduledTask } = useSelection()
-  const isSelected = task.id === selectedScheduledTaskId
-
-  const handleClick = () => {
-    selectAgent(agentSlug)
-    selectScheduledTask(task.id)
-  }
-
-  // Format tooltip based on task status
-  const tooltip = task.status === 'cancelled'
-    ? `Cancelled${task.cancelledAt ? ': ' + new Date(task.cancelledAt).toLocaleString() : ''}`
-    : `Scheduled for: ${new Date(task.nextExecutionAt).toLocaleString()}`
-
-  return (
-    <SidebarMenuSubItem>
-      <SidebarMenuSubButton
-        asChild
-        isActive={isSelected}
-        title={tooltip}
-      >
-        <button
-          onClick={handleClick}
-          className={`flex items-center gap-2 w-full text-muted-foreground ${task.status === 'cancelled' ? 'opacity-50' : 'opacity-70'}`}
-        >
-          {task.status === 'cancelled' ? <Ban className="h-3 w-3 shrink-0" /> : <Clock className="h-3 w-3 shrink-0" />}
-          <span className="truncate">{task.name || 'Scheduled Task'}</span>
-        </button>
-      </SidebarMenuSubButton>
-    </SidebarMenuSubItem>
-  )
-}
-
-// Collapsible group for multiple scheduled tasks
-function ScheduledTasksGroup({
-  pendingTasks,
-  cancelledTasks,
-  agentSlug,
-}: {
-  pendingTasks: ApiScheduledTask[]
-  cancelledTasks: ApiScheduledTask[]
-  agentSlug: string
-}) {
-  const [isOpen, setIsOpen] = useState(false)
-  const [cancelledOpen, setCancelledOpen] = useState(false)
-  const totalCount = pendingTasks.length + cancelledTasks.length
-
-  return (
-    <SidebarMenuSubItem>
-      <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-        <CollapsibleTrigger asChild>
-          <SidebarMenuSubButton asChild>
-            <button className="flex items-center gap-2 w-full text-muted-foreground opacity-70">
-              <Clock className="h-3 w-3 shrink-0" />
-              <span className="truncate">Scheduled Jobs ({totalCount})</span>
-              <ChevronRight className="ml-auto h-3 w-3 shrink-0 transition-transform duration-200 data-[state=open]:rotate-90" data-state={isOpen ? 'open' : 'closed'} />
-            </button>
-          </SidebarMenuSubButton>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <SidebarMenuSub>
-            {pendingTasks.map((task) => (
-              <ScheduledTaskSubItem
-                key={task.id}
-                task={task}
-                agentSlug={agentSlug}
-              />
-            ))}
-            {cancelledTasks.length > 0 && (
-              <SidebarMenuSubItem>
-                <Collapsible open={cancelledOpen} onOpenChange={setCancelledOpen}>
-                  <CollapsibleTrigger asChild>
-                    <SidebarMenuSubButton asChild>
-                      <button className="flex items-center gap-2 w-full text-muted-foreground opacity-50">
-                        <Ban className="h-3 w-3 shrink-0" />
-                        <span className="truncate">Cancelled ({cancelledTasks.length})</span>
-                        <ChevronRight className="ml-auto h-3 w-3 shrink-0 transition-transform duration-200 data-[state=open]:rotate-90" data-state={cancelledOpen ? 'open' : 'closed'} />
-                      </button>
-                    </SidebarMenuSubButton>
-                  </CollapsibleTrigger>
-                  <CollapsibleContent>
-                    <SidebarMenuSub>
-                      {cancelledTasks.map((task) => (
-                        <ScheduledTaskSubItem
-                          key={task.id}
-                          task={task}
-                          agentSlug={agentSlug}
-                        />
-                      ))}
-                    </SidebarMenuSub>
-                  </CollapsibleContent>
-                </Collapsible>
-              </SidebarMenuSubItem>
-            )}
-          </SidebarMenuSub>
-        </CollapsibleContent>
-      </Collapsible>
     </SidebarMenuSubItem>
   )
 }
@@ -254,12 +158,6 @@ function WebhookTriggerSubItem({
     ? `Paused trigger: ${trigger.triggerType}`
     : `Trigger: ${trigger.triggerType}`
 
-  const icon = trigger.status === 'cancelled'
-    ? <Ban className="h-3 w-3 shrink-0" />
-    : trigger.status === 'paused'
-    ? <Pause className="h-3 w-3 shrink-0" />
-    : <Zap className="h-3 w-3 shrink-0" />
-
   return (
     <SidebarMenuSubItem>
       <SidebarMenuSubButton
@@ -271,7 +169,6 @@ function WebhookTriggerSubItem({
           onClick={handleClick}
           className={`flex items-center gap-2 w-full text-muted-foreground ${trigger.status === 'cancelled' ? 'opacity-50' : 'opacity-70'}`}
         >
-          {icon}
           <span className="truncate">{trigger.name || trigger.triggerType}</span>
         </button>
       </SidebarMenuSubButton>
@@ -299,7 +196,6 @@ function WebhookTriggersGroup({
         <CollapsibleTrigger asChild>
           <SidebarMenuSubButton asChild>
             <button className="flex items-center gap-2 w-full text-muted-foreground opacity-70">
-              <Zap className="h-3 w-3 shrink-0" />
               <span className="truncate">Webhook Triggers ({totalCount})</span>
               <ChevronRight className="ml-auto h-3 w-3 shrink-0 transition-transform duration-200 data-[state=open]:rotate-90" data-state={isOpen ? 'open' : 'closed'} />
             </button>
@@ -320,7 +216,6 @@ function WebhookTriggersGroup({
                   <CollapsibleTrigger asChild>
                     <SidebarMenuSubButton asChild>
                       <button className="flex items-center gap-2 w-full text-muted-foreground opacity-50">
-                        <Ban className="h-3 w-3 shrink-0" />
                         <span className="truncate">Cancelled ({cancelledTriggers.length})</span>
                         <ChevronRight className="ml-auto h-3 w-3 shrink-0 transition-transform duration-200 data-[state=open]:rotate-90" data-state={cancelledOpen ? 'open' : 'closed'} />
                       </button>
@@ -393,7 +288,6 @@ function ChatIntegrationSubItem({
                 onClick={handleClick}
                 className={`flex items-center gap-2 w-full text-muted-foreground ${integration.status === 'paused' ? 'opacity-50' : 'opacity-70'}`}
               >
-                <ServiceIcon slug={integration.provider} fallback="mcp" className="h-3 w-3 shrink-0" />
                 <span className="truncate">
                   {integration.name || formatProviderName(integration.provider)}
                 </span>
@@ -423,7 +317,6 @@ function ChatIntegrationSubItem({
                         onClick={() => handleSessionClick(session.sessionId)}
                         className={`flex items-center gap-2 w-full text-muted-foreground ${isArchived ? 'opacity-40' : 'opacity-70'}`}
                       >
-                        <MessageCircle className="h-3 w-3 shrink-0" />
                         <span className="truncate text-xs">
                           {session.displayName || `Chat ${session.externalChatId.slice(-6)}`}
                         </span>
@@ -448,7 +341,6 @@ function ChatIntegrationSubItem({
             onClick={handleClick}
             className={`flex items-center gap-2 w-full text-muted-foreground ${integration.status === 'paused' ? 'opacity-50' : 'opacity-70'}`}
           >
-            <ServiceIcon slug={integration.provider} fallback="mcp" className="h-3 w-3 shrink-0" />
             <span className="truncate">
               {integration.name || formatProviderName(integration.provider)}
             </span>
@@ -476,7 +368,6 @@ function ChatIntegrationsGroup({
         <CollapsibleTrigger asChild>
           <SidebarMenuSubButton asChild>
             <button className="flex items-center gap-2 w-full text-muted-foreground opacity-70">
-              <MessageCircle className="h-3 w-3 shrink-0" />
               <span className="truncate">Chat Integrations ({integrations.length})</span>
               <ChevronRight className="ml-auto h-3 w-3 shrink-0 transition-transform duration-200 data-[state=open]:rotate-90" data-state={isOpen ? 'open' : 'closed'} />
             </button>
@@ -537,7 +428,7 @@ function DashboardSubItem({
             onDoubleClick={handleDoubleClick}
             className="flex items-center gap-2 w-full"
           >
-            <LayoutDashboard className="h-3 w-3 shrink-0" />
+            <SquareMousePointer className="!h-3.5 !w-3.5 shrink-0" />
             {isRenaming ? (
               <InlineRenameInput
                 agentSlug={agentSlug}
@@ -636,6 +527,40 @@ function SessionsSkeleton() {
   )
 }
 
+// Right-side indicator on the agent row.
+// When expanded, suppress session-derived states (awaiting / working / unread)
+// since the individual session rows already surface those. Keep agent-level
+// sleeping / idle states which describe the container itself.
+// Priority when collapsed: awaiting > working > unread > sleeping/idle.
+function AgentRowIndicator({
+  agent,
+  sessions,
+  isOpen,
+}: {
+  agent: ApiAgent
+  sessions: ApiSession[] | undefined
+  isOpen: boolean
+}) {
+  const isAwaiting = !isOpen && (sessions?.some((s) => s.isAwaitingInput) || (agent.hasSessionsAwaitingInput ?? false))
+  const isWorking = !isOpen && !isAwaiting && (sessions?.some((s) => s.isActive) || (agent.hasActiveSessions ?? false))
+  const isUnread = !isOpen && !isAwaiting && !isWorking && (agent.hasUnreadNotifications ?? false)
+  if (isUnread) {
+    return (
+      <span className="flex items-center w-4 justify-center" role="img" aria-label="unread notifications">
+        <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+      </span>
+    )
+  }
+  return (
+    <AgentStatus
+      status={agent.status}
+      hasActiveSessions={isWorking}
+      hasSessionsAwaitingInput={isAwaiting}
+      iconOnly
+    />
+  )
+}
+
 // Agent menu item with expandable sessions
 export const AgentMenuItem = React.forwardRef<
   HTMLLIElement,
@@ -653,8 +578,6 @@ export const AgentMenuItem = React.forwardRef<
 
   // Lazy-load detail data only when expanded
   const { data: sessions, isLoading: sessionsLoading } = useSessions(isOpen ? agent.slug : null)
-  const { data: scheduledTasks } = useScheduledTasks(isOpen ? agent.slug : null, 'pending')
-  const { data: cancelledScheduledTasks } = useScheduledTasks(isOpen ? agent.slug : null, 'cancelled')
   const { data: webhookTriggersData } = useWebhookTriggers(isOpen ? agent.slug : null, 'active')
   const { data: cancelledWebhookTriggersData } = useWebhookTriggers(isOpen ? agent.slug : null, 'cancelled')
   const { data: artifacts } = useArtifacts(isOpen ? agent.slug : null)
@@ -662,9 +585,6 @@ export const AgentMenuItem = React.forwardRef<
 
   const visibleSessions = showAll ? sessions : sessions?.slice(0, 5)
   const hasMore = (sessions?.length ?? 0) > 5
-  const pendingTasks = scheduledTasks || []
-  const cancelledTasks = cancelledScheduledTasks || []
-  const allScheduledTasks = pendingTasks.length + cancelledTasks.length
   const activeWebhookTriggers = webhookTriggersData || []
   const cancelledWebhookTriggers = cancelledWebhookTriggersData || []
   const allWebhookTriggers = activeWebhookTriggers.length + cancelledWebhookTriggers.length
@@ -677,7 +597,6 @@ export const AgentMenuItem = React.forwardRef<
   const hasExpandableContent =
     isOpen ||
     (agent.sessionCount ?? 0) > 0 ||
-    (agent.scheduledTaskCount ?? 0) > 0 ||
     (agent.chatIntegrationCount ?? 0) > 0 ||
     (agent.dashboardCount ?? 0) > 0 ||
     activeWebhookTriggers.length > 0
@@ -709,46 +628,64 @@ export const AgentMenuItem = React.forwardRef<
 
   const handleClick = () => {
     selectAgent(agent.slug)
+  }
+
+  const handleChevronClick = (e: React.MouseEvent) => {
+    e.stopPropagation()
     setIsOpen((prev) => !prev)
   }
 
   return (
     <Collapsible asChild open={isOpen} onOpenChange={setIsOpen}>
       <SidebarMenuItem ref={ref} style={style} {...rest} onMouseEnter={handleMouseEnter}>
-        <AgentContextMenu agent={agent}>
-          <SidebarMenuButton
-            onClick={handleClick}
-            isActive={isSelected}
-            className="justify-between"
-            data-testid={`agent-item-${agent.slug}`}
+        {/*
+          Wrap the row + chevron in a relative box so the absolutely-positioned
+          chevron tracks the row height, not the (potentially expanded) menu
+          item that also contains CollapsibleContent below.
+        */}
+        <div className="relative">
+          <AgentContextMenu agent={agent}>
+            <SidebarMenuButton
+              onClick={handleClick}
+              isActive={isSelected}
+              className="justify-between pl-7"
+              data-testid={`agent-item-${agent.slug}`}
+            >
+              <span className="flex items-center gap-1.5 min-w-0">
+                <span className="truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
+                {isShared && <Users className="h-3 w-3 shrink-0 text-muted-foreground" />}
+              </span>
+              <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
+            </SidebarMenuButton>
+          </AgentContextMenu>
+          {/*
+            Sibling chevron button overlays its slot in the row so the row stays a
+            single <button> (no nested interactive controls).
+          */}
+          <button
+            type="button"
+            onClick={handleChevronClick}
+            aria-label={isOpen ? 'Collapse' : 'Expand'}
+            aria-expanded={isOpen}
+            className="absolute left-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded focus-visible:ring-2 focus-visible:ring-sidebar-ring outline-none"
           >
-            <span className="flex items-center gap-1.5 min-w-0">
-              <ChevronRight
-                className={cn(
-                  'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform',
-                  hasExpandableContent && isOpen && 'rotate-90'
-                )}
-              />
-              <span className="truncate">{agent.name}</span>
-              {isShared && <Users className="h-3 w-3 shrink-0 text-muted-foreground" />}
-            </span>
-            <AgentStatus
-              status={agent.status}
-              hasActiveSessions={sessions?.some((s) => s.isActive) || (agent.hasActiveSessions ?? false)}
-              hasSessionsAwaitingInput={sessions?.some((s) => s.isAwaitingInput) || (agent.hasSessionsAwaitingInput ?? false)}
-              iconOnly
+            <ChevronRight
+              className={cn(
+                'h-3.5 w-3.5 text-muted-foreground/60 transition-[color,transform] group-hover/menu-item:text-sidebar-foreground',
+                isOpen && 'rotate-90'
+              )}
             />
-          </SidebarMenuButton>
-        </AgentContextMenu>
+          </button>
+        </div>
         {hasExpandableContent ? (
           <>
             <CollapsibleContent>
-              <SidebarMenuSub>
+              <SidebarMenuSub className="pb-2">
                 {isOpen && sessionsLoading && showSkeleton ? (
                   <SessionsSkeleton />
                 ) : (
                   <>
-                    {/* Dashboards at the top */}
+                    {/* Dashboards */}
                     {dashboards.map((artifact) => (
                       <DashboardSubItem
                         key={artifact.slug}
@@ -756,19 +693,6 @@ export const AgentMenuItem = React.forwardRef<
                         agentSlug={agent.slug}
                       />
                     ))}
-                    {/* Scheduled tasks */}
-                    {cancelledTasks.length > 0 || allScheduledTasks > 1 ? (
-                      <ScheduledTasksGroup
-                        pendingTasks={pendingTasks}
-                        cancelledTasks={cancelledTasks}
-                        agentSlug={agent.slug}
-                      />
-                    ) : pendingTasks.length === 1 ? (
-                      <ScheduledTaskSubItem
-                        task={pendingTasks[0]}
-                        agentSlug={agent.slug}
-                      />
-                    ) : null}
                     {/* Webhook triggers */}
                     {cancelledWebhookTriggers.length > 0 || allWebhookTriggers > 1 ? (
                       <WebhookTriggersGroup
@@ -836,19 +760,39 @@ if (__RENDER_TRACKING__) {
   (AgentMenuItem as any).whyDidYouRender = true
 }
 
-function UserFooter() {
-  const { isAuthMode, user, signOut } = useUser()
-
-  if (!isAuthMode || !user) {
-    return (
-      <div className="px-2 text-xs text-muted-foreground">
-        Version: {__APP_VERSION__}
-      </div>
-    )
-  }
+function NotificationsMenuButton() {
+  const { data: countData } = useUnreadNotificationCount()
+  const unreadCount = countData?.count ?? 0
+  const [open, setOpen] = useState(false)
 
   return (
-    <div className="px-2 flex items-center justify-between">
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <SidebarMenuButton data-testid="notifications-button">
+          <Bell className="h-4 w-4" />
+          <span>Notifications</span>
+          {unreadCount > 0 && (
+            <span className="ml-auto h-1.5 w-1.5 rounded-full bg-blue-500" aria-label={`${unreadCount} unread`} />
+          )}
+        </SidebarMenuButton>
+      </PopoverTrigger>
+      <PopoverContent
+        className="w-80 p-0"
+        align="start"
+        side="right"
+        sideOffset={8}
+      >
+        <NotificationsPopoverContent onNavigate={() => setOpen(false)} />
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+function UserMenu() {
+  const { isAuthMode, user, signOut } = useUser()
+  if (!isAuthMode || !user) return null
+  return (
+    <div className="px-2">
       <Popover>
         <PopoverTrigger asChild>
           <button className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors" data-testid="user-menu-trigger">
@@ -867,7 +811,6 @@ function UserFooter() {
           </button>
         </PopoverContent>
       </Popover>
-      <span className="text-xs text-muted-foreground">v{__APP_VERSION__}</span>
     </div>
   )
 }
@@ -886,7 +829,7 @@ function ApiKeyWarning({ onOpenSettings }: { onOpenSettings: () => void }) {
   if (!activeKeyStatus || activeKeyStatus.isConfigured) return null
 
   return (
-    <div className="px-2 pt-2">
+    <div className="px-2 pb-2">
       <Alert
         variant="destructive"
         className="py-2 cursor-pointer hover:bg-destructive/20 transition-colors"
@@ -915,12 +858,22 @@ export function AppSidebar() {
       window.electronAPI?.removeOpenCreateAgent?.()
     }
   }, [createUntitledAgent])
-  const { clearSelection } = useSelection()
+  const { clearSelection, selectedAgentSlug } = useSelection()
   const { data: agents, isLoading, error } = useAgents()
   const { data: userSettings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()
   const { data: runtimeStatus } = useRuntimeStatus()
   const isFullScreen = useFullScreen()
+
+  // macOS fires `enter-full-screen` only after its ~700ms zoom animation completes;
+  // by that frame, React + the CSS transition would both kick on the same paint and
+  // the collapse goes invisible. Lag the value by one rAF so the renderer paints the
+  // pre-transition state first, giving the browser a real "from" frame to animate from.
+  const [animatedFullScreen, setAnimatedFullScreen] = useState(isFullScreen)
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setAnimatedFullScreen(isFullScreen))
+    return () => cancelAnimationFrame(id)
+  }, [isFullScreen])
 
   // Drag-and-drop sensors: distance threshold prevents click conflicts
   const sensors = useSensors(
@@ -961,22 +914,33 @@ export function AppSidebar() {
   const isPullingOrBuilding = readiness?.status === 'PULLING_IMAGE'
   const isChecking = readiness?.status === 'CHECKING'
 
-  // Add left padding for macOS traffic lights in Electron (not in full screen)
-  const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && !isFullScreen
+  // The header bar exists only to (a) leave room for macOS traffic lights when
+  // windowed, or (b) host the Windows app-menu chevron. In every other case
+  // (mac fullscreen, web) it collapses to 0 height so the wordmark sits flush
+  // with the top of the sidebar.
+  const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && !animatedFullScreen
+  const isWindowsElectron = isElectron() && getPlatform() === 'win32'
+  const showHeaderBar = needsTrafficLightPadding || isWindowsElectron
 
   return (
     <Sidebar variant="inset" data-testid="app-sidebar">
+      {/*
+        Always rendered so height/border can transition smoothly when entering
+        or leaving fullscreen on macOS. Collapses to 0 height (with no border)
+        when there's no traffic-light spacer to make room for and no Windows
+        menu chevron to host.
+      */}
       <SidebarHeader
-        className="h-12 border-b app-drag-region"
+        className={cn(
+          'app-drag-region p-0 overflow-hidden transition-[height,border-bottom-width] duration-200 ease-out',
+          showHeaderBar ? 'h-12 border-b' : 'h-0 border-b-0'
+        )}
         style={{
           paddingLeft: needsTrafficLightPadding ? '80px' : undefined,
         }}
       >
-        <div className="flex items-center h-full px-2 gap-1">
-          <button onClick={clearSelection} className="text-lg font-bold app-no-drag cursor-pointer hover:opacity-80 transition-opacity">
-            Super Agent
-          </button>
-          {isElectron() && getPlatform() === 'win32' && (
+        <div className="flex items-center h-12 px-2 gap-1">
+          {isWindowsElectron && (
             <button
               className="app-no-drag p-0.5 rounded hover:bg-foreground/10 transition-colors cursor-default"
               onClick={(e) => {
@@ -990,75 +954,109 @@ export function AppSidebar() {
         </div>
       </SidebarHeader>
 
-      {!isOnline && (
-        <div className="px-2 pt-2">
-          <Alert variant="destructive" className="py-2 [&>svg]:top-2.5">
-            <WifiOff className="h-4 w-4" />
-            <AlertDescription className="text-xs">
-              No internet connection. Some features may be unavailable.
-            </AlertDescription>
-          </Alert>
-        </div>
-      )}
-
-      {isRuntimeUnavailable && (
-        <div className="px-2 pt-2">
-          <Alert
-            variant="destructive"
-            className="py-2 [&>svg]:top-2.5 cursor-pointer hover:bg-destructive/20 transition-colors"
-            onClick={() => openSettings('runtime')}
-          >
-            <AlertTriangle className="h-4 w-4" />
-            <AlertDescription className="text-xs">
-              {readiness?.message || 'Container runtime not available.'}{' '}
-              <span className="underline">Open settings</span>
-            </AlertDescription>
-          </Alert>
-        </div>
-      )}
-
-      {isChecking && (
-        <div className="px-2 pt-2">
-          <Alert className="py-2 [&>svg]:top-2.5">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            <AlertDescription className="text-xs">
-              {readiness?.message || 'Starting runtime...'}
-            </AlertDescription>
-          </Alert>
-        </div>
-      )}
-
-      {isPullingOrBuilding && (
-        <div className="px-2 pt-2">
-          <Alert className="py-2 [&>svg]:top-2.5">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            <AlertDescription className="text-xs">
-              {readiness?.message || 'Preparing agent image...'}
-              {readiness?.pullProgress?.percent != null && (
-                <span className="ml-1">({readiness.pullProgress.percent}%)</span>
-              )}
-            </AlertDescription>
-          </Alert>
-        </div>
-      )}
-
-      <ApiKeyWarning onOpenSettings={() => openSettings('llm')} />
-
       <ErrorBoundary compact>
-        <SidebarContent>
-          <SidebarGroup>
-            <SidebarGroupLabel>Agents</SidebarGroupLabel>
-            <SidebarGroupAction
-              onClick={() => { void createUntitledAgent() }}
-              title="New Agent"
-              data-testid="create-agent-button"
-              disabled={isCreatingAgent}
+        <SidebarContent className="overflow-visible">
+          <SidebarGroup className="shrink-0 p-0">
+            {/*
+              When the header bar is present its 48px sit above the wordmark
+              (small `-4px` pull-up tightens the gap). When it's collapsed the
+              wordmark needs its own breathing room. Animated via marginTop so
+              the transition matches the header collapse on fullscreen toggle.
+            */}
+            <div
+              className="px-2 pb-4 text-base font-semibold select-none transition-[margin-top] duration-200 ease-out"
+              style={{ marginTop: showHeaderBar ? '-4px' : '12px' }}
             >
-              <Plus />
-              <span className="sr-only">New Agent</span>
-            </SidebarGroupAction>
+              SuperAgent
+            </div>
+
+            {/* Status banners — render under the wordmark so they sit inside the
+                sidebar's content area rather than pushing the wordmark down. */}
+            {!isOnline && (
+              <div className="px-2 pb-2">
+                <Alert variant="destructive" className="py-2 [&>svg]:top-2.5">
+                  <WifiOff className="h-4 w-4" />
+                  <AlertDescription className="text-xs">
+                    No internet connection. Some features may be unavailable.
+                  </AlertDescription>
+                </Alert>
+              </div>
+            )}
+
+            {isRuntimeUnavailable && (
+              <div className="px-2 pb-2">
+                <Alert
+                  variant="destructive"
+                  className="py-2 [&>svg]:top-2.5 cursor-pointer hover:bg-destructive/20 transition-colors"
+                  onClick={() => openSettings('runtime')}
+                >
+                  <AlertTriangle className="h-4 w-4" />
+                  <AlertDescription className="text-xs">
+                    {readiness?.message || 'Container runtime not available.'}{' '}
+                    <span className="underline">Open settings</span>
+                  </AlertDescription>
+                </Alert>
+              </div>
+            )}
+
+            {isChecking && (
+              <div className="px-2 pb-2">
+                <Alert className="py-2 [&>svg]:top-2.5">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <AlertDescription className="text-xs">
+                    {readiness?.message || 'Starting runtime...'}
+                  </AlertDescription>
+                </Alert>
+              </div>
+            )}
+
+            {isPullingOrBuilding && (
+              <div className="px-2 pb-2">
+                <Alert className="py-2 [&>svg]:top-2.5">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <AlertDescription className="text-xs">
+                    {readiness?.message || 'Preparing agent image...'}
+                    {readiness?.pullProgress?.percent != null && (
+                      <span className="ml-1">({readiness.pullProgress.percent}%)</span>
+                    )}
+                  </AlertDescription>
+                </Alert>
+              </div>
+            )}
+
+            <ApiKeyWarning onOpenSettings={() => openSettings('llm')} />
             <SidebarGroupContent>
               <SidebarMenu>
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    onClick={clearSelection}
+                    isActive={!selectedAgentSlug}
+                    data-testid="home-button"
+                  >
+                    <LayoutGrid className="h-4 w-4" />
+                    <span>Home</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+                <SidebarMenuItem>
+                  <NotificationsMenuButton />
+                </SidebarMenuItem>
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    onClick={() => { void createUntitledAgent() }}
+                    disabled={isCreatingAgent}
+                    data-testid="new-agent-button"
+                  >
+                    <Plus className="h-4 w-4" />
+                    <span>New Agent</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+          <SidebarGroup className={cn('flex-1 min-h-0 overflow-y-auto p-0', THIN_SCROLLBAR)}>
+            <SidebarGroupLabel className="mt-2 font-normal text-sidebar-foreground/50">Your Agents</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu className="gap-1">
                 {isLoading ? (
                   <>
                     {Array.from({ length: 3 }).map((_, index) => (
@@ -1098,19 +1096,19 @@ export function AppSidebar() {
         </SidebarContent>
       </ErrorBoundary>
 
-      <SidebarFooter className="border-t">
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <div className="flex items-center justify-between w-full">
-              <SidebarMenuButton onClick={() => setSettingsOpen(true)} className="flex-1" data-testid="settings-button">
-                <Settings className="h-4 w-4" />
-                <span>Settings</span>
-              </SidebarMenuButton>
-              <NotificationBell />
-            </div>
-          </SidebarMenuItem>
-        </SidebarMenu>
-        <UserFooter />
+      <SidebarFooter className="border-t p-0 px-2 pt-4">
+        <UserMenu />
+        <div className="flex items-center justify-between gap-2">
+          <SidebarMenuButton
+            onClick={() => setSettingsOpen(true)}
+            className="w-auto"
+            data-testid="settings-button"
+          >
+            <Settings className="h-4 w-4" />
+            <span>Settings</span>
+          </SidebarMenuButton>
+          <span className="px-2 text-xs text-muted-foreground shrink-0">v{__APP_VERSION__}</span>
+        </div>
       </SidebarFooter>
 
       <SidebarRail />

@@ -56,7 +56,7 @@ test.describe('Cross-Session Message Isolation', () => {
     // 4. Switch back to Agent A and select its session
     await agentPage.selectAgent(agentAName)
     // Need to click on the session in the sidebar since switching agent deselects it
-    await sessionPage.selectFirstSessionInSidebar(agentPage.getSlugFromName(agentAName))
+    await sessionPage.selectFirstSessionInSidebar(agentPage.getAgentLi(agentAName))
 
     // Wait for message list to appear
     const messageAList = sessionPage.getMessageList()
@@ -108,7 +108,7 @@ test.describe('Cross-Session Message Isolation', () => {
 
     // Switch back to Agent A and select session
     await agentPage.selectAgent(agentAName)
-    await sessionPage.selectFirstSessionInSidebar(agentPage.getSlugFromName(agentAName))
+    await sessionPage.selectFirstSessionInSidebar(agentPage.getAgentLi(agentAName))
 
     // Agent A should show its message
     await sessionPage.waitForUserMessageCount(1)

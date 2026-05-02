@@ -28,6 +28,8 @@ export const mcpDraftSchema = z
     authType: mcpAuthTypeSchema,
     token: z.string().default(''),
     clientName: z.string().default(''),
+    clientId: z.string().default(''),
+    clientSecret: z.string().default(''),
   })
   .superRefine((draft, ctx) => {
     if (draft.authType === 'bearer' && draft.token.trim().length === 0) {
@@ -35,6 +37,17 @@ export const mcpDraftSchema = z
         code: z.ZodIssueCode.custom,
         message: 'Bearer token is required',
         path: ['token'],
+      })
+    }
+    if (
+      draft.authType === 'oauth' &&
+      draft.clientSecret.trim().length > 0 &&
+      draft.clientId.trim().length === 0
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Client ID is required when a Client Secret is provided',
+        path: ['clientId'],
       })
     }
   })

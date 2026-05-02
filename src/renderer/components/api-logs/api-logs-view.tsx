@@ -1,10 +1,21 @@
-import { apiFetch } from '@renderer/lib/api'
-import { useState, useEffect } from 'react'
+import { Loader2, RefreshCw, ChevronLeft, ChevronRight, ChevronDown, ChevronUp } from 'lucide-react'
+import { Fragment, useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { format } from 'date-fns'
+import { apiFetch } from '@renderer/lib/api'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
-import { Loader2, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react'
+import { useSelection } from '@renderer/context/selection-context'
 import { Button } from '@renderer/components/ui/button'
-import { formatDistanceToNow, format } from 'date-fns'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@renderer/components/ui/table'
+import { PageTitle, SettingsPageContainer } from '@renderer/components/layout/settings-page'
+import { useRenderTracker } from '@renderer/lib/perf'
 
 interface AuditLogEntry {
   id: string
@@ -21,11 +32,11 @@ interface AuditLogEntry {
   createdAt: string
 }
 
-interface AuditLogTabProps {
+interface ApiLogsViewProps {
   agentSlug: string
 }
 
-const PAGE_SIZE = 20
+const PAGE_SIZE = 15
 
 function MethodBadge({ method }: { method: string }) {
   const colors: Record<string, string> = {
@@ -108,7 +119,7 @@ function EntryDetails({ entry }: { entry: AuditLogEntry }) {
   const ts = new Date(entry.createdAt)
 
   return (
-    <div className="text-xs space-y-1.5 pt-2 mt-2 border-t border-dashed">
+    <div className="text-xs space-y-1.5 pt-1">
       <DetailRow label="Full path" value={<span className="font-mono">{entry.targetUrl}</span>} />
       <DetailRow label="Source" value={entry.source === 'mcp' ? 'MCP Proxy' : 'API Proxy'} />
       <DetailRow label="Toolkit / MCP" value={entry.label} />
@@ -140,12 +151,13 @@ function EntryDetails({ entry }: { entry: AuditLogEntry }) {
   )
 }
 
-export function AuditLogTab({ agentSlug }: AuditLogTabProps) {
+export function ApiLogsView({ agentSlug }: ApiLogsViewProps) {
+  useRenderTracker('ApiLogsView')
+  const { selectApiLogs } = useSelection()
   const [page, setPage] = useState(0)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const { track } = useAnalyticsTracking()
 
-  // Track when the user views the API logs tab
   useEffect(() => {
     track('api_logs_viewed')
   }, [track])
@@ -164,23 +176,25 @@ export function AuditLogTab({ agentSlug }: AuditLogTabProps) {
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-sm font-medium">Request Log</h3>
-          <p className="text-xs text-muted-foreground mt-1">
-            Recent API and MCP proxy requests made by this agent.
-          </p>
-        </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => refetch()}
-          disabled={isRefetching}
-        >
-          <RefreshCw className={`h-3.5 w-3.5 ${isRefetching ? 'animate-spin' : ''}`} />
-        </Button>
-      </div>
+    <SettingsPageContainer fullScreen>
+      <PageTitle
+        title="API Logs"
+        back={{
+          onClick: () => selectApiLogs(false),
+          testId: 'api-logs-back-button',
+        }}
+        actions={
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => refetch()}
+            disabled={isRefetching}
+          >
+            <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${isRefetching ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
+        }
+      />
 
       {isLoading ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -188,71 +202,109 @@ export function AuditLogTab({ agentSlug }: AuditLogTabProps) {
           Loading log...
         </div>
       ) : entries.length === 0 && page === 0 ? (
-        <p className="text-sm text-muted-foreground">
+        <div className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground">
           No requests logged yet.
-        </p>
+        </div>
       ) : (
         <>
-          <div className="space-y-1.5">
-            {entries.map((entry) => {
-              const time = formatDistanceToNow(new Date(entry.createdAt), { addSuffix: true })
-              const isExpanded = expandedId === entry.id
+          <Table className="min-w-[900px] text-xs [&_th]:px-3 [&_td]:px-3">
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead className="whitespace-nowrap">Timestamp</TableHead>
+                <TableHead className="whitespace-nowrap">Duration</TableHead>
+                <TableHead>Source</TableHead>
+                <TableHead>Method</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="whitespace-nowrap">Policy</TableHead>
+                <TableHead>Toolkit</TableHead>
+                <TableHead className="w-full min-w-[240px]">Path (error)</TableHead>
+                <TableHead className="w-[88px]" aria-label="Toggle details" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {entries.map((entry) => {
+                const time = format(new Date(entry.createdAt), 'MM/dd/yy, HH:mm:ss')
+                const isExpanded = expandedId === entry.id
 
-              return (
-                <div
-                  key={entry.id}
-                  role="button"
-                  tabIndex={0}
-                  className="rounded-md border bg-muted/30 px-3 py-2 text-xs cursor-pointer hover:bg-muted/50 transition-colors"
-                  onClick={() => setExpandedId(isExpanded ? null : entry.id)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault()
-                      setExpandedId(isExpanded ? null : entry.id)
-                    }
-                  }}
-                >
-                  <div className="grid grid-cols-[auto_auto_auto_auto_auto_1fr_auto] items-center gap-2">
-                    <SourceBadge source={entry.source} />
-                    <MethodBadge method={entry.method} />
-                    <StatusBadge status={entry.statusCode} />
-                    {entry.policyDecision ? (
-                      <PolicyBadge decision={entry.policyDecision} />
-                    ) : (
-                      <span />
-                    )}
-                    <span className="text-muted-foreground font-medium truncate max-w-[80px]" title={entry.label}>
-                      {entry.label}
-                    </span>
-                    <div className="min-w-0">
-                      <p
-                        className="font-mono text-xs truncate"
-                        title={entry.targetUrl}
-                      >
-                        {entry.targetUrl}
-                      </p>
-                      {!isExpanded && entry.errorMessage && (
-                        <p className="text-red-600 dark:text-red-400 mt-0.5 truncate" title={entry.errorMessage}>
-                          {entry.errorMessage}
+                return (
+                  <Fragment key={entry.id}>
+                    <TableRow
+                      role="button"
+                      tabIndex={0}
+                      data-state={isExpanded ? 'selected' : undefined}
+                      className={`group cursor-pointer hover:bg-muted/30 ${isExpanded ? 'bg-muted/30 border-b-0' : ''}`}
+                      onClick={() => setExpandedId(isExpanded ? null : entry.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          setExpandedId(isExpanded ? null : entry.id)
+                        }
+                      }}
+                    >
+                      <TableCell className="text-muted-foreground whitespace-nowrap">{time}</TableCell>
+                      <TableCell className="text-muted-foreground tabular-nums whitespace-nowrap">
+                        {entry.durationMs !== null ? `${entry.durationMs}ms` : '—'}
+                      </TableCell>
+                      <TableCell><SourceBadge source={entry.source} /></TableCell>
+                      <TableCell><MethodBadge method={entry.method} /></TableCell>
+                      <TableCell><StatusBadge status={entry.statusCode} /></TableCell>
+                      <TableCell className="whitespace-nowrap">
+                        {entry.policyDecision ? <PolicyBadge decision={entry.policyDecision} /> : null}
+                      </TableCell>
+                      <TableCell className="max-w-[120px]">
+                        <span className="text-muted-foreground font-medium truncate block" title={entry.label}>
+                          {entry.label}
+                        </span>
+                      </TableCell>
+                      <TableCell className="min-w-0 w-full">
+                        <p
+                          className="font-mono truncate"
+                          title={entry.errorMessage ? `${entry.targetUrl} (${entry.errorMessage})` : entry.targetUrl}
+                        >
+                          {entry.targetUrl}
+                          {entry.errorMessage && (
+                            <span className="text-red-600 dark:text-red-400"> ({entry.errorMessage})</span>
+                          )}
                         </p>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      {entry.durationMs !== null && (
-                        <span className="text-muted-foreground tabular-nums">{entry.durationMs}ms</span>
-                      )}
-                      <span className="text-muted-foreground whitespace-nowrap">
-                        {time}
-                      </span>
-                    </div>
-                  </div>
-                  {isExpanded && <EntryDetails entry={entry} />}
-                </div>
-              )
-            })}
-          </div>
+                      </TableCell>
+                      <TableCell className="w-[88px] text-right">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className={`h-7 px-2 text-xs transition-opacity ${isExpanded ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'}`}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setExpandedId(isExpanded ? null : entry.id)
+                          }}
+                        >
+                          {isExpanded ? (
+                            <>
+                              Less
+                              <ChevronUp className="h-3.5 w-3.5" />
+                            </>
+                          ) : (
+                            <>
+                              More
+                              <ChevronDown className="h-3.5 w-3.5" />
+                            </>
+                          )}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                    {isExpanded && (
+                      <TableRow className="bg-muted/30 hover:bg-muted/30">
+                        <TableCell colSpan={9} className="pb-3">
+                          <EntryDetails entry={entry} />
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </Fragment>
+                )
+              })}
+            </TableBody>
+          </Table>
 
-          {/* Pagination */}
           {totalPages > 1 && (
             <div className="flex items-center justify-between pt-2">
               <span className="text-xs text-muted-foreground">
@@ -285,6 +337,6 @@ export function AuditLogTab({ agentSlug }: AuditLogTabProps) {
           )}
         </>
       )}
-    </div>
+    </SettingsPageContainer>
   )
 }
