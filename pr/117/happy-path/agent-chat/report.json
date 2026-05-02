@@ -1,0 +1,27 @@
+{
+  "storyId": "agent-chat",
+  "passed": true,
+  "reason": "Verified agent communication - sent \"Hello! What is 2+2?\" to the QA-20260502-190148-c1g8 agent and confirmed it responded with \"4\" within the timeout period.",
+  "steps": [
+    "Navigated to http://localhost:47891 - App loaded successfully, sidebar with agent list visible.",
+    "Clicked on \"QA-20260502-190148-c1g8\" agent in sidebar - Agent detail page opened, showing agent controls and empty chat session.",
+    "Verified agent status indicator - Status shows \"idle\" which meets requirement (running or idle).",
+    "Clicked message input field - Input field became active and focused.",
+    "Typed message \"Hello! What is 2+2?\" - Message text entered in input field.",
+    "Clicked send button - Message submitted successfully, agent status changed to \"working\", activity indicator appeared showing \"Working...\" and \"0s\".",
+    "Waited for agent response with 3-minute timeout - Agent completed response within ~2 seconds, status returned to \"idle\".",
+    "Verified response contains \"4\" - Response clearly displayed in chat as a standalone message \"4\" with \"Worked for 2s\" indicator below it.",
+    "Took screenshot of final state - Full page screenshot captured showing chat history with both user message and agent response containing \"4\"."
+  ],
+  "bugs": [],
+  "durationMs": 87206,
+  "sessionId": "fa3d6471-fdd8-41ab-b781-55946a1b9934",
+  "cost": {
+    "inputTokens": 234,
+    "outputTokens": 6814,
+    "cacheCreationTokens": 116190,
+    "cacheReadTokens": 761080,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.255649
+  }
+}
