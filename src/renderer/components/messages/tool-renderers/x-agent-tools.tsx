@@ -16,11 +16,11 @@ import {
 // ── shared helpers ────────────────────────────────────────────
 
 function AgentLink({ slug, label }: { slug: string; label?: string }) {
-  const { selectAgent } = useSelection()
+  const { setAgent } = useSelection()
   return (
     <button
       type="button"
-      onClick={() => selectAgent(slug)}
+      onClick={() => setAgent(slug)}
       className="inline-flex items-center gap-1 text-primary hover:underline"
     >
       {label ?? slug}
@@ -30,14 +30,11 @@ function AgentLink({ slug, label }: { slug: string; label?: string }) {
 }
 
 function SessionLink({ slug, sessionId }: { slug: string; sessionId: string }) {
-  const { selectAgent, selectSession } = useSelection()
+  const { setAgent } = useSelection()
   return (
     <button
       type="button"
-      onClick={() => {
-        selectAgent(slug)
-        selectSession(sessionId)
-      }}
+      onClick={() => setAgent(slug, { kind: 'session', id: sessionId })}
       className="inline-flex items-center gap-1 font-mono text-xs text-primary hover:underline"
     >
       {sessionId.slice(0, 12)}…

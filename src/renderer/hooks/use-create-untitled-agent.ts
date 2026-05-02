@@ -13,14 +13,14 @@ export const UNTITLED_AGENT_NAME = 'Untitled'
  */
 export function useCreateUntitledAgent() {
   const createAgent = useCreateAgent()
-  const { selectAgent } = useSelection()
+  const { setAgent } = useSelection()
   const { track } = useAnalyticsTracking()
 
   const createUntitledAgent = useCallback(async () => {
     try {
       const agent = await createAgent.mutateAsync({ name: UNTITLED_AGENT_NAME })
       track('agent_created', { source: 'new', num_skills_added_at_creation: 0 })
-      selectAgent(agent.slug)
+      setAgent(agent.slug)
       return agent
     } catch (error) {
       console.error('Failed to create untitled agent:', error)
@@ -29,7 +29,7 @@ export function useCreateUntitledAgent() {
       })
       return null
     }
-  }, [createAgent, selectAgent, track])
+  }, [createAgent, setAgent, track])
 
   return {
     createUntitledAgent,

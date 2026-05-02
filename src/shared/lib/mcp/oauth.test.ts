@@ -239,6 +239,94 @@ describe('oauth', () => {
       expect(result).toBeNull()
     })
 
+    it('discovers metadata at RFC 8414 path-aware well-known URL', async () => {
+      // Mirrors Meta's MCP: auth server is https://mcp.facebook.com/ads but
+      // metadata only lives at https://mcp.facebook.com/.well-known/oauth-authorization-server/ads.
+      // Probe: 401
+      mockFetch.mockResolvedValueOnce(
+        new Response(null, {
+          status: 401,
+          headers: {
+            'WWW-Authenticate':
+              'Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/ads"',
+          },
+        })
+      )
+      // Resource metadata: auth server URL has a path
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            resource: 'https://mcp.example.com/ads',
+            authorization_servers: ['https://mcp.example.com/ads'],
+          }),
+          { status: 200 }
+        )
+      )
+      // First well-known (RFC 8414 path-aware) succeeds
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            authorization_endpoint: 'https://mcp.example.com/oauth/authorize',
+            token_endpoint: 'https://mcp.example.com/oauth/token',
+          }),
+          { status: 200 }
+        )
+      )
+
+      const result = await discoverOAuthMetadata('https://mcp.example.com/ads')
+      expect(result).not.toBeNull()
+      expect(result!.metadata.authorization_endpoint).toBe(
+        'https://mcp.example.com/oauth/authorize'
+      )
+      // Verify the path-aware URL was tried first
+      const wellKnownCall = mockFetch.mock.calls[2][0]
+      expect(wellKnownCall).toBe(
+        'https://mcp.example.com/.well-known/oauth-authorization-server/ads'
+      )
+    })
+
+    it('falls back to appended-path well-known URL when path-aware variant fails', async () => {
+      mockFetch.mockResolvedValueOnce(
+        new Response(null, {
+          status: 401,
+          headers: {
+            'WWW-Authenticate':
+              'Bearer resource_metadata="https://mcp.example.com/.well-known/res"',
+          },
+        })
+      )
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            resource: 'https://mcp.example.com/srv',
+            authorization_servers: ['https://mcp.example.com/srv'],
+          }),
+          { status: 200 }
+        )
+      )
+      // Path-aware: 404
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
+      // Appended: 200
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            authorization_endpoint: 'https://mcp.example.com/srv/authorize',
+            token_endpoint: 'https://mcp.example.com/srv/token',
+          }),
+          { status: 200 }
+        )
+      )
+
+      const result = await discoverOAuthMetadata('https://mcp.example.com/srv')
+      expect(result).not.toBeNull()
+      expect(mockFetch.mock.calls[2][0]).toBe(
+        'https://mcp.example.com/.well-known/oauth-authorization-server/srv'
+      )
+      expect(mockFetch.mock.calls[3][0]).toBe(
+        'https://mcp.example.com/srv/.well-known/oauth-authorization-server'
+      )
+    })
+
     it('returns null when resource metadata fetch fails', async () => {
       // Probe: 401 with resource_metadata
       mockFetch.mockResolvedValueOnce(
@@ -397,6 +485,41 @@ describe('oauth', () => {
       expect(result).toBeNull()
     })
 
+    it('uses provided clientId/clientSecret over stored credentials and skips dynamic registration', async () => {
+      setupDiscoveryMocks()
+
+      // DB: existing server has different stored credentials
+      mockDbFrom.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ limit: mockLimit })
+      mockLimit.mockResolvedValue([
+        { oauthClientId: 'stored-client-id', oauthClientSecret: 'stored-secret' },
+      ])
+      mockSet.mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+
+      const fetchCallCountBefore = mockFetch.mock.calls.length
+
+      const result = await initiateOAuthFlow(
+        'mcp-1',
+        'https://mcp.example.com/mcp',
+        'http://localhost:3000/callback',
+        undefined,
+        'override-client-id',
+        'override-client-secret'
+      )
+
+      expect(result).not.toBeNull()
+      const url = new URL(result!.authorizationUrl)
+      expect(url.searchParams.get('client_id')).toBe('override-client-id')
+
+      // Verify no dynamic registration call was issued (only the 3 discovery fetches)
+      expect(mockFetch.mock.calls.length).toBe(fetchCallCountBefore + 3)
+
+      // Verify the override credentials get persisted to the DB record
+      const updateArgs = mockSet.mock.calls[mockSet.mock.calls.length - 1][0]
+      expect(updateArgs.oauthClientId).toBe('override-client-id')
+      expect(updateArgs.oauthClientSecret).toBe('override-client-secret')
+    })
+
     it('returns null when S256 is not supported and methods are specified', async () => {
       // Probe: 401
       mockFetch.mockResolvedValueOnce(
@@ -512,6 +635,74 @@ describe('oauth', () => {
       expect(url.searchParams.get('scope')).toBe('mcp:read mcp:write')
       expect(result!.state).toBeTruthy()
       expect(result!.state).toHaveLength(32) // 16 bytes hex
+    })
+
+    it('uses provided clientId/clientSecret without dynamic registration', async () => {
+      // Discovery succeeds but registration_endpoint is not used.
+      mockFetch.mockResolvedValueOnce(
+        new Response(null, {
+          status: 401,
+          headers: { 'WWW-Authenticate': 'Bearer' },
+        })
+      )
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            authorization_endpoint: 'https://auth.example.com/authorize',
+            token_endpoint: 'https://auth.example.com/token',
+            registration_endpoint: 'https://auth.example.com/register',
+          }),
+          { status: 200 }
+        )
+      )
+
+      const result = await initiateNewServerOAuth(
+        'https://mcp.example.com/mcp',
+        'New MCP',
+        'http://localhost/callback',
+        'user-1',
+        undefined,
+        'byo-client-id',
+        'byo-client-secret'
+      )
+
+      expect(result).not.toBeNull()
+      const url = new URL(result!.authorizationUrl)
+      expect(url.searchParams.get('client_id')).toBe('byo-client-id')
+      // No registration request should have been made
+      expect(mockFetch).toHaveBeenCalledTimes(2)
+    })
+
+    it('succeeds with provided clientId even when registration_endpoint is absent', async () => {
+      // Mirrors the Meta case: server has no usable dynamic registration.
+      mockFetch.mockResolvedValueOnce(
+        new Response(null, {
+          status: 401,
+          headers: { 'WWW-Authenticate': 'Bearer' },
+        })
+      )
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            authorization_endpoint: 'https://auth.example.com/authorize',
+            token_endpoint: 'https://auth.example.com/token',
+          }),
+          { status: 200 }
+        )
+      )
+
+      const result = await initiateNewServerOAuth(
+        'https://mcp.example.com/mcp',
+        'New MCP',
+        'http://localhost/callback',
+        'user-1',
+        undefined,
+        'manual-client-id'
+      )
+
+      expect(result).not.toBeNull()
+      const url = new URL(result!.authorizationUrl)
+      expect(url.searchParams.get('client_id')).toBe('manual-client-id')
     })
 
     it('returns null when dynamic registration is not available', async () => {

@@ -49,6 +49,7 @@ import {
   DialogTitle,
 } from '@renderer/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import { SettingsPageContainer, PageTitle } from '@renderer/components/layout/settings-page'
 
 interface ScheduledTaskViewProps {
   taskId: string
@@ -64,7 +65,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const runNow = useRunScheduledTaskNow()
   const pauseTask = usePauseScheduledTask()
   const resumeTask = useResumeScheduledTask()
-  const { handleScheduledTaskDeleted, selectSession } = useSelection()
+  const { handleScheduledTaskDeleted, setView } = useSelection()
   const { canUseAgent } = useUser()
   const canCancel = canUseAgent(agentSlug)
   const humanizedCron = useHumanizedCron(task?.isRecurring ? task.scheduleExpression : null)
@@ -120,7 +121,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const handleRunNow = async () => {
     try {
       const result = await runNow.mutateAsync({ taskId, agentSlug })
-      selectSession(result.sessionId)
+      setView({ kind: 'session', id: result.sessionId })
     } catch (err) {
       console.error('Failed to run scheduled task:', err)
     }
@@ -198,95 +199,88 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const nextExecution = new Date(task.nextExecutionAt)
   const isRecurring = task.isRecurring
 
-  return (
-    <div className="flex-1 flex flex-col overflow-y-auto max-w-4xl w-full mx-auto px-10">
-      {/* Task header */}
-      <div className="pt-6 pb-10">
-        <div className="flex items-center justify-between gap-4">
-          <h2 className="text-xl font-medium truncate">
-            {task.name || 'Scheduled Task'}
-          </h2>
-
-          {isActive && canCancel && (
-            <div className="flex items-center gap-2 shrink-0">
-              {/* Settings popover */}
-              <Popover open={settingsOpen} onOpenChange={setSettingsOpen}>
-                <PopoverTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label="Cron settings"
-                    className="text-muted-foreground"
-                  >
-                    <SettingsIcon className="h-4 w-4" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent align="end" className="w-44 p-1">
-                  {isRecurring && (
-                    <button
-                      className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-muted transition-colors"
-                      onClick={() => {
-                        setSettingsOpen(false)
-                        handleOpenEditSchedule()
-                      }}
-                    >
-                      <Pencil className="h-4 w-4" />
-                      Edit Schedule
-                    </button>
-                  )}
-                  <button
-                    className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-destructive hover:bg-destructive/10 transition-colors"
-                    onClick={() => {
-                      setSettingsOpen(false)
-                      setDeleteDialogOpen(true)
-                    }}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                    Delete Cron
-                  </button>
-                </PopoverContent>
-              </Popover>
-
-              {/* Run Now button (far right) */}
-              <Button
-                variant="default"
-                size="sm"
-                onClick={handleRunNow}
-                disabled={runNow.isPending}
-              >
-                {runNow.isPending ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <Play className="h-4 w-4 mr-2" />
-                )}
-                {runNow.isPending ? 'Running...' : 'Run Now'}
-              </Button>
-
-              {/* Delete confirmation dialog */}
-              <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Delete Cron</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      Are you sure you want to delete this cron? This action cannot be undone.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Keep Cron</AlertDialogCancel>
-                    <AlertDialogAction
-                      onClick={handleCancel}
-                      disabled={cancelTask.isPending}
-                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                    >
-                      {cancelTask.isPending ? 'Deleting...' : 'Delete Cron'}
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-            </div>
+  const headerActions = isActive && canCancel ? (
+    <div className="flex items-center gap-2">
+      {/* Settings popover */}
+      <Popover open={settingsOpen} onOpenChange={setSettingsOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Cron settings"
+            className="text-muted-foreground"
+          >
+            <SettingsIcon className="h-4 w-4" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="end" className="w-44 p-1">
+          {isRecurring && (
+            <button
+              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-muted transition-colors"
+              onClick={() => {
+                setSettingsOpen(false)
+                handleOpenEditSchedule()
+              }}
+            >
+              <Pencil className="h-4 w-4" />
+              Edit Schedule
+            </button>
           )}
-        </div>
-      </div>
+          <button
+            className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-destructive hover:bg-destructive/10 transition-colors"
+            onClick={() => {
+              setSettingsOpen(false)
+              setDeleteDialogOpen(true)
+            }}
+          >
+            <Trash2 className="h-4 w-4" />
+            Delete Cron
+          </button>
+        </PopoverContent>
+      </Popover>
+
+      {/* Run Now button */}
+      <Button
+        variant="default"
+        size="sm"
+        onClick={handleRunNow}
+        disabled={runNow.isPending}
+      >
+        {runNow.isPending ? (
+          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+        ) : (
+          <Play className="h-4 w-4 mr-2" />
+        )}
+        {runNow.isPending ? 'Running...' : 'Run Now'}
+      </Button>
+
+      {/* Delete confirmation dialog */}
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Cron</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete this cron? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep Cron</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleCancel}
+              disabled={cancelTask.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {cancelTask.isPending ? 'Deleting...' : 'Delete Cron'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  ) : null
+
+  return (
+    <SettingsPageContainer fullScreen>
+      <PageTitle title={task.name || 'Scheduled Task'} actions={headerActions} />
 
       {/* Two-column body */}
       <div className="grid grid-cols-1 lg:grid-cols-[3fr_2fr] gap-y-6 lg:gap-x-10 lg:gap-y-0">
@@ -514,6 +508,6 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </SettingsPageContainer>
   )
 }

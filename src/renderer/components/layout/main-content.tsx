@@ -3,12 +3,15 @@ import { MessageList } from '@renderer/components/messages/message-list'
 import { MessageInput } from '@renderer/components/messages/message-input'
 import { AgentActivityIndicator } from '@renderer/components/messages/agent-activity-indicator'
 import { AgentSettingsDialog } from '@renderer/components/agents/agent-settings-dialog'
+import { SystemPromptDialog } from '@renderer/components/agents/system-prompt-dialog'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { AgentHome } from '@renderer/components/agents/agent-home/agent-home'
 import { HomePage } from '@renderer/components/home/home-page'
 import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/scheduled-task-view'
 import { WebhookTriggerView } from '@renderer/components/webhook-triggers/webhook-trigger-view'
 import { ChatIntegrationView } from '@renderer/components/chat-integrations/chat-integration-view'
+import { ApiLogsView } from '@renderer/components/api-logs/api-logs-view'
+import { ConnectionsView } from '@renderer/components/connections/connections-view'
 import { BrowserDrawerPanel } from '@renderer/components/browser/browser-drawer-panel'
 import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
@@ -39,19 +42,17 @@ import { SessionSearchBar } from '@renderer/components/messages/session-search-b
 
 export function MainContent() {
   useRenderTracker('MainContent')
-  const {
-    selectedAgentSlug: agentSlug,
-    selectedSessionId: sessionId,
-    selectedScheduledTaskId: scheduledTaskId,
-    selectedWebhookTriggerId: webhookTriggerId,
-    selectedChatIntegrationId: chatIntegrationId,
-    selectedDashboardSlug: dashboardSlug,
-    selectSession,
-    selectScheduledTask,
-    selectWebhookTrigger,
-  } = useSelection()
+  const { selectedAgentSlug: agentSlug, view, setView } = useSelection()
+  const sessionId = view.kind === 'session' ? view.id : null
+  const scheduledTaskId = view.kind === 'task' ? view.id : null
+  const webhookTriggerId = view.kind === 'webhook' ? view.id : null
+  const chatIntegrationId = view.kind === 'chat' ? view.integrationId : null
+  const dashboardSlug = view.kind === 'dashboard' ? view.slug : null
+  const apiLogsOpen = view.kind === 'apiLogs'
+  const connectionsOpen = view.kind === 'connections'
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined)
+  const [systemPromptOpen, setSystemPromptOpen] = useState(false)
   // Pending user messages per session — survives navigation between sessions
   const pendingMessagesRef = useRef(new Map<string, { text: string; sentAt: number; sender?: { id: string; name: string; email: string } }>())
   const [, forceUpdate] = useState(0)
@@ -143,8 +144,8 @@ export function MainContent() {
       sentAt: Date.now(),
       sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email } : undefined,
     })
-    selectSession(newSessionId)
-  }, [selectSession, isAuthMode, user])
+    setView({ kind: 'session', id: newSessionId })
+  }, [setView, isAuthMode, user])
 
   if (!agentSlug) {
     return <HomePage />
@@ -152,7 +153,9 @@ export function MainContent() {
 
   const showSessionCrumb = !!(sessionId && session?.agentSlug === agentSlug)
   const showTaskCrumb = !!(scheduledTaskId && scheduledTask)
-  const isAgentLeaf = !showSessionCrumb && !showTaskCrumb
+  const showApiLogsCrumb = !!apiLogsOpen
+  const showConnectionsCrumb = !!connectionsOpen
+  const isAgentLeaf = !showSessionCrumb && !showTaskCrumb && !showApiLogsCrumb && !showConnectionsCrumb
 
   return (
     <div className="h-full flex flex-col" data-testid="main-content">
@@ -169,7 +172,7 @@ export function MainContent() {
             <button
               type="button"
               className={`text-sm font-light truncate transition-colors app-no-drag ${isAgentLeaf ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-              onClick={() => selectSession(null)}
+              onClick={() => setView({ kind: 'home' })}
               data-testid="agent-breadcrumb"
             >
               {agent?.name || 'Loading...'}
@@ -198,6 +201,18 @@ export function MainContent() {
                   {scheduledTask.name || 'Scheduled Task'}
                 </span>
               </div>
+            </div>
+          )}
+          {showApiLogsCrumb && (
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
+              <span className="truncate text-sm font-light text-foreground">API Logs</span>
+            </div>
+          )}
+          {showConnectionsCrumb && (
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
+              <span className="truncate text-sm font-light text-foreground">Connections</span>
             </div>
           )}
         </div>
@@ -346,7 +361,7 @@ export function MainContent() {
         <div className="shrink-0 border-b bg-background px-4 py-2">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <button
-              onClick={() => selectScheduledTask(session.scheduledTaskId!)}
+              onClick={() => setView({ kind: 'task', id: session.scheduledTaskId! })}
               className="inline-flex items-center gap-1 text-primary hover:underline shrink-0"
             >
               <ChevronLeft className="h-3 w-3" />
@@ -364,7 +379,7 @@ export function MainContent() {
         <div className="shrink-0 border-b bg-background px-4 py-2">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <button
-              onClick={() => selectWebhookTrigger(session.webhookTriggerId!)}
+              onClick={() => setView({ kind: 'webhook', id: session.webhookTriggerId! })}
               className="inline-flex items-center gap-1 text-primary hover:underline shrink-0"
             >
               <ChevronLeft className="h-3 w-3" />
@@ -379,37 +394,36 @@ export function MainContent() {
         </div>
       )}
 
-      {/* Show dashboard view when a dashboard is selected */}
       <ErrorBoundary>
-        {dashboardSlug ? (
-          <DashboardView agentSlug={agentSlug} dashboardSlug={dashboardSlug} />
-        ) : /* Show scheduled task view when a scheduled task is selected */
-        scheduledTaskId ? (
-          <ScheduledTaskView taskId={scheduledTaskId} agentSlug={agentSlug} />
-        ) : /* Show webhook trigger view when a webhook trigger is selected */
-        webhookTriggerId ? (
-          <WebhookTriggerView triggerId={webhookTriggerId} agentSlug={agentSlug} />
-        ) : /* Show chat integration view when a chat integration is selected */
-        chatIntegrationId ? (
-          <ChatIntegrationView integrationId={chatIntegrationId} agentSlug={agentSlug} />
-        ) : sessionId ? (
-          /* Show messages when a session is selected */
+        {view.kind === 'dashboard' ? (
+          <DashboardView agentSlug={agentSlug} dashboardSlug={view.slug} />
+        ) : view.kind === 'apiLogs' ? (
+          <ApiLogsView agentSlug={agentSlug} />
+        ) : view.kind === 'connections' ? (
+          <ConnectionsView agentSlug={agentSlug} />
+        ) : view.kind === 'task' ? (
+          <ScheduledTaskView taskId={view.id} agentSlug={agentSlug} />
+        ) : view.kind === 'webhook' ? (
+          <WebhookTriggerView triggerId={view.id} agentSlug={agentSlug} />
+        ) : view.kind === 'chat' ? (
+          <ChatIntegrationView integrationId={view.integrationId} agentSlug={agentSlug} />
+        ) : view.kind === 'session' ? (
           <div className="flex-1 flex flex-col min-h-0">
             <SessionSearchBar search={search} />
             <div className="relative flex-1 flex min-h-0">
             {/* Chat column */}
             <div className="flex-1 min-w-0 grid grid-rows-[1fr_auto] min-h-0">
               <MessageList
-                sessionId={sessionId}
+                sessionId={view.id}
                 agentSlug={agentSlug}
                 pendingUserMessage={pendingUserMessage}
                 onPendingMessageAppeared={handlePendingMessageAppeared}
               />
               <div className="bg-background max-w-[740px] mx-auto w-full">
-                <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
+                <AgentActivityIndicator sessionId={view.id} agentSlug={agentSlug} />
                 <MessageInput
-                  key={sessionId}
-                  sessionId={sessionId}
+                  key={view.id}
+                  sessionId={view.id}
                   agentSlug={agentSlug}
                   onMessageSent={handleMessageSent}
                   initialEffort={session?.effort}
@@ -448,7 +462,7 @@ export function MainContent() {
               </div>
             </div>
             {/* Browser drawer panel */}
-            <BrowserDrawerPanel agentSlug={agentSlug} sessionId={sessionId} browserActive={browserActive} isActive={isActive} />
+            <BrowserDrawerPanel agentSlug={agentSlug} sessionId={view.id} browserActive={browserActive} isActive={isActive} />
           </div>
           </div>
         ) : (
@@ -458,19 +472,33 @@ export function MainContent() {
               key={agent.slug}
               agent={agent}
               onSessionCreated={handleSessionCreated}
-              onOpenSettings={(tab?: string) => { setSettingsTab(tab); setSettingsOpen(true) }}
+              onOpenSettings={(tab?: string) => {
+                if (tab === 'system-prompt') {
+                  setSystemPromptOpen(true)
+                  return
+                }
+                setSettingsTab(tab)
+                setSettingsOpen(true)
+              }}
             />
           )
         )}
       </ErrorBoundary>
 
       {agent && (
-        <AgentSettingsDialog
-          agent={agent}
-          open={settingsOpen}
-          onOpenChange={(open) => { setSettingsOpen(open); if (!open) setSettingsTab(undefined) }}
-          initialTab={settingsTab}
-        />
+        <>
+          <AgentSettingsDialog
+            agent={agent}
+            open={settingsOpen}
+            onOpenChange={(open) => { setSettingsOpen(open); if (!open) setSettingsTab(undefined) }}
+            initialTab={settingsTab}
+          />
+          <SystemPromptDialog
+            agent={agent}
+            open={systemPromptOpen}
+            onOpenChange={setSystemPromptOpen}
+          />
+        </>
       )}
     </div>
   )

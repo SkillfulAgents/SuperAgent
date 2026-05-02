@@ -39,6 +39,15 @@ test.describe('Auth Settings Enforcement', () => {
     await appPage.dismissWizardIfVisible()
   })
 
+  test('admin sees grouped "My Settings" / "Admin Settings" sections', async ({ user1Page }) => {
+    const settingsPage = new SettingsPage(user1Page)
+    await settingsPage.open()
+    // Both group labels should render in admin auth mode.
+    await expect(user1Page.locator('[data-sidebar="group-label"]', { hasText: 'My Settings' })).toBeVisible()
+    await expect(user1Page.locator('[data-sidebar="group-label"]', { hasText: 'Admin Settings' })).toBeVisible()
+    await settingsPage.close()
+  })
+
   // ── Signup Mode: closed ─────────────────────────────────────────────
 
   test('admin sets signup mode to closed', async ({ user1Page }) => {

@@ -37,9 +37,9 @@ vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
 
 vi.mock('@renderer/context/selection-context', () => ({
   useSelection: () => ({
-    selectScheduledTask: vi.fn(),
-    selectSession: vi.fn(),
-    selectAgent: vi.fn(),
+    setAgent: vi.fn(),
+    setView: vi.fn(),
+    consumePendingDraft: vi.fn(() => null),
   }),
 }))
 
@@ -256,13 +256,24 @@ describe('AgentHome', () => {
 
   // --- Auto-expand ---
 
-  it('auto-expands when the message is very long', () => {
-    mockComposer.message = 'one\ntwo\nthree\nfour\nfive'
-    renderWithProviders(
-      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
-    )
+  it('auto-expands to full view when the textarea overflows its max-height', () => {
+    // jsdom doesn't compute layout, so stub scrollHeight > clientHeight to
+    // simulate content overflowing the CSS-driven 6-line cap.
+    const origScroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight')
+    const origClient = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight')
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', { configurable: true, get: () => 200 })
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => 120 })
+    try {
+      mockComposer.message = 'this message would overflow six lines in a real browser'
+      renderWithProviders(
+        <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+      )
 
-    expect(screen.getByTestId('home-message-input').className).toContain('min-h-[50vh]')
+      expect(screen.getByTestId('home-message-input').className).toContain('min-h-[50vh]')
+    } finally {
+      if (origScroll) Object.defineProperty(HTMLElement.prototype, 'scrollHeight', origScroll)
+      if (origClient) Object.defineProperty(HTMLElement.prototype, 'clientHeight', origClient)
+    }
   })
 
   // --- View-only mode ---
