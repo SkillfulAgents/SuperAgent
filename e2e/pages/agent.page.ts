@@ -63,6 +63,34 @@ export class AgentPage {
   }
 
   /**
+   * Get the SidebarMenuItem `<li>` that contains the agent row — useful for
+   * scoping subsequent locators (chevron, session sub-items) to that agent.
+   * Resolves via the row's testid first, falling back to text match because
+   * agents are created as "Untitled" + random slug; the display name is
+   * renamed asynchronously but the slug never changes.
+   */
+  getAgentLi(name: string) {
+    return this.getAgentItem(name).locator('xpath=ancestor::li[1]')
+  }
+
+  /**
+   * Expand the agent's submenu (sessions / dashboards / etc.) by clicking its
+   * chevron in the sidebar. The post-glow-up sidebar uses a "click split"
+   * where the row click only selects and the chevron alone toggles
+   * expansion — so callers that need to reach session sub-items must
+   * expand explicitly.
+   *
+   * No-op if the agent is already expanded.
+   */
+  async expandAgent(name: string) {
+    const li = this.getAgentLi(name)
+    const expandChevron = li.locator('button[aria-label="Expand"]').first()
+    if (await expandChevron.isVisible({ timeout: 500 }).catch(() => false)) {
+      await expandChevron.click()
+    }
+  }
+
+  /**
    * Check if an agent exists in the sidebar
    */
   async agentExists(name: string): Promise<boolean> {

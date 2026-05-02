@@ -1,4 +1,4 @@
-import { Page, expect } from '@playwright/test'
+import { Page, Locator, expect } from '@playwright/test'
 
 /**
  * Page object for session/chat operations
@@ -139,13 +139,20 @@ export class SessionPage {
   }
 
   /**
-   * Click the first session in the sidebar for a given agent
+   * Click the first session in the sidebar for a given agent (by display name,
+   * which lets us fall back to text match since agent slugs aren't derived from
+   * the user-visible name).
+   *
+   * Post-glow-up the sidebar uses a click split — selecting an agent doesn't
+   * auto-expand its submenu — so this helper expands the agent's chevron first
+   * if needed before clicking the first session sub-item.
    */
-  async selectFirstSessionInSidebar(agentSlug: string) {
-    // Sessions are sub-items under the agent's collapsible section
-    // Find session items with data-testid pattern
-    const sessionItem = this.page.locator(`[data-testid^="session-item-"]`).first()
-    await sessionItem.click()
+  async selectFirstSessionInSidebar(agentLi: Locator) {
+    const expandChevron = agentLi.locator('button[aria-label="Expand"]').first()
+    if (await expandChevron.isVisible({ timeout: 500 }).catch(() => false)) {
+      await expandChevron.click()
+    }
+    await agentLi.locator(`[data-testid^="session-item-"]`).first().click()
   }
 
   /**

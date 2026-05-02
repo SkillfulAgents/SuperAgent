@@ -287,9 +287,10 @@ test.describe('Auth Flow', () => {
 
   test('user3 can view existing session history', async ({ user3Page }) => {
     const sessionPage = new SessionPage(user3Page)
+    const agentPage = new AgentPage(user3Page)
 
-    // Click the first session in the sidebar
-    await sessionPage.selectFirstSessionInSidebar('')
+    // Click the first session in the sidebar (helper expands the agent first)
+    await sessionPage.selectFirstSessionInSidebar(agentPage.getAgentLi(agentName))
 
     // Messages should be visible
     await expect(sessionPage.getUserMessages().first()).toBeVisible({ timeout: 5000 })
