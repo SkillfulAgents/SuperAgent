@@ -61,7 +61,7 @@ function NotificationItem({
   )
 }
 
-export function NotificationsPopoverContent() {
+export function NotificationsPopoverContent({ onNavigate }: { onNavigate: () => void }) {
   const { data: notifications, isLoading } = useNotifications(20)
   const { data: countData } = useUnreadNotificationCount()
   const markAllRead = useMarkAllNotificationsRead()
@@ -100,9 +100,7 @@ export function NotificationsPopoverContent() {
               <NotificationItem
                 key={notification.id}
                 notification={notification}
-                onNavigate={() => {
-                  // Close popover by clicking outside or via state management
-                }}
+                onNavigate={onNavigate}
               />
             ))}
           </div>

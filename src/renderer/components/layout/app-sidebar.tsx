@@ -53,7 +53,7 @@ import { GlobalSettingsDialog } from '@renderer/components/settings/global-setti
 import { ContainerSetupDialog } from '@renderer/components/settings/container-setup-dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { useUser } from '@renderer/context/user-context'
-import { NotificationsPopoverContent } from '@renderer/components/notifications/notification-bell'
+import { NotificationsPopoverContent } from '@renderer/components/notifications/notifications-popover'
 import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import {
@@ -75,6 +75,13 @@ import { restrictToVerticalAxis } from '@dnd-kit/modifiers'
 import { SortableAgentMenuItem } from './sortable-agent-item'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
 import { useRenderTracker } from '@renderer/lib/perf'
+
+// 4px-wide thin scrollbar with a muted-foreground/20 thumb. Reused on the
+// agents-list group; pull out as a constant so the call site stays readable.
+const THIN_SCROLLBAR =
+  '[scrollbar-width:thin] [scrollbar-color:hsl(var(--muted-foreground)/0.2)_transparent] ' +
+  '[&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent ' +
+  '[&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/20'
 
 // Session sub-item that tracks its streaming state
 function SessionSubItem({
@@ -120,7 +127,7 @@ function SessionSubItem({
               ) : isWorking ? (
                 <WorkingDots />
               ) : hasUnread ? (
-                <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+                <span className="h-1.5 w-1.5 rounded-full bg-blue-500" role="img" aria-label="unread notifications" />
               ) : null}
             </span>
           </button>
@@ -632,43 +639,45 @@ export const AgentMenuItem = React.forwardRef<
   return (
     <Collapsible asChild open={isOpen} onOpenChange={setIsOpen}>
       <SidebarMenuItem ref={ref} style={style} {...rest} onMouseEnter={handleMouseEnter}>
-        <AgentContextMenu agent={agent}>
-          <SidebarMenuButton
-            onClick={handleClick}
-            isActive={isSelected}
-            className="justify-between"
-            data-testid={`agent-item-${agent.slug}`}
-          >
-            <span className="flex items-center gap-1.5 min-w-0">
-              {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
-              <span
-                role="button"
-                tabIndex={0}
-                onClick={handleChevronClick}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault()
-                    e.stopPropagation()
-                    setIsOpen((prev) => !prev)
-                  }
-                }}
-                aria-label={isOpen ? 'Collapse' : 'Expand'}
-                aria-expanded={isOpen}
-                className="-ml-0.5 p-0.5 rounded shrink-0 hover:bg-sidebar-accent cursor-pointer"
-              >
-                <ChevronRight
-                  className={cn(
-                    'h-3.5 w-3.5 text-muted-foreground/60 transition-[color,transform] group-hover/menu-item:text-sidebar-foreground',
-                    isOpen && 'rotate-90'
-                  )}
-                />
+        {/*
+          Wrap the row + chevron in a relative box so the absolutely-positioned
+          chevron tracks the row height, not the (potentially expanded) menu
+          item that also contains CollapsibleContent below.
+        */}
+        <div className="relative">
+          <AgentContextMenu agent={agent}>
+            <SidebarMenuButton
+              onClick={handleClick}
+              isActive={isSelected}
+              className="justify-between pl-7"
+              data-testid={`agent-item-${agent.slug}`}
+            >
+              <span className="flex items-center gap-1.5 min-w-0">
+                <span className="truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
+                {isShared && <Users className="h-3 w-3 shrink-0 text-muted-foreground" />}
               </span>
-              <span className="truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
-              {isShared && <Users className="h-3 w-3 shrink-0 text-muted-foreground" />}
-            </span>
-            <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
-          </SidebarMenuButton>
-        </AgentContextMenu>
+              <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
+            </SidebarMenuButton>
+          </AgentContextMenu>
+          {/*
+            Sibling chevron button overlays its slot in the row so the row stays a
+            single <button> (no nested interactive controls).
+          */}
+          <button
+            type="button"
+            onClick={handleChevronClick}
+            aria-label={isOpen ? 'Collapse' : 'Expand'}
+            aria-expanded={isOpen}
+            className="absolute left-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded focus-visible:ring-2 focus-visible:ring-sidebar-ring outline-none"
+          >
+            <ChevronRight
+              className={cn(
+                'h-3.5 w-3.5 text-muted-foreground/60 transition-[color,transform] group-hover/menu-item:text-sidebar-foreground',
+                isOpen && 'rotate-90'
+              )}
+            />
+          </button>
+        </div>
         {hasExpandableContent ? (
           <>
             <CollapsibleContent>
@@ -755,9 +764,10 @@ if (__RENDER_TRACKING__) {
 function NotificationsMenuButton() {
   const { data: countData } = useUnreadNotificationCount()
   const unreadCount = countData?.count ?? 0
+  const [open, setOpen] = useState(false)
 
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <SidebarMenuButton data-testid="notifications-button">
           <Bell className="h-4 w-4" />
@@ -773,7 +783,7 @@ function NotificationsMenuButton() {
         side="right"
         sideOffset={8}
       >
-        <NotificationsPopoverContent />
+        <NotificationsPopoverContent onNavigate={() => setOpen(false)} />
       </PopoverContent>
     </Popover>
   )
@@ -914,7 +924,7 @@ export function AppSidebar() {
   return (
     <Sidebar variant="inset" data-testid="app-sidebar">
       <SidebarHeader
-        className="h-12 border-b app-drag-region"
+        className="h-12 border-b app-drag-region p-0"
         style={{
           paddingLeft: needsTrafficLightPadding ? '80px' : undefined,
         }}
@@ -990,7 +1000,7 @@ export function AppSidebar() {
 
       <ErrorBoundary compact>
         <SidebarContent className="overflow-visible">
-          <SidebarGroup className="shrink-0">
+          <SidebarGroup className="shrink-0 p-0">
             <div className="-mt-1 px-2 pb-4 text-base font-semibold select-none">SuperAgent</div>
             <SidebarGroupContent>
               <SidebarMenu>
@@ -1020,7 +1030,7 @@ export function AppSidebar() {
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
-          <SidebarGroup className="flex-1 min-h-0 overflow-y-auto [scrollbar-width:thin] [scrollbar-color:hsl(var(--muted-foreground)/0.2)_transparent] [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/20">
+          <SidebarGroup className={cn('flex-1 min-h-0 overflow-y-auto p-0', THIN_SCROLLBAR)}>
             <SidebarGroupLabel className="mt-2 font-normal text-sidebar-foreground/50">Your Agents</SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu className="gap-1">
@@ -1063,7 +1073,7 @@ export function AppSidebar() {
         </SidebarContent>
       </ErrorBoundary>
 
-      <SidebarFooter className="border-t pt-4">
+      <SidebarFooter className="border-t p-0 px-2 pt-4">
         <UserMenu />
         <div className="flex items-center justify-between gap-2">
           <SidebarMenuButton

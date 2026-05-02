@@ -100,12 +100,12 @@ export async function listNotifications(limit: number = 50, userId?: string): Pr
 }
 
 /**
- * Notification types that drive the sidebar "unread" indicator.
- * We deliberately exclude lifecycle events like `session_scheduled`,
- * `session_chat_integration`, and `session_webhook` — those don't
- * represent an unread reply the user needs to read.
+ * Notification types that drive any unread dot or count in the UI.
+ * Lifecycle events (`session_scheduled`, `session_chat_integration`,
+ * `session_webhook`) live in the popover history but do not contribute
+ * to badges — the user didn't take an action that requires their attention.
  */
-const SIDEBAR_UNREAD_TYPES = ['session_complete', 'session_waiting'] as const
+export const USER_ACTIONABLE_NOTIFICATION_TYPES = ['session_complete', 'session_waiting'] as const
 
 /**
  * Get session IDs that have unread notifications for a given agent.
@@ -115,7 +115,7 @@ export async function getSessionIdsWithUnreadNotifications(agentSlug: string, us
   const conditions = [
     eq(notifications.agentSlug, agentSlug),
     eq(notifications.isRead, false),
-    inArray(notifications.type, [...SIDEBAR_UNREAD_TYPES]),
+    inArray(notifications.type, [...USER_ACTIONABLE_NOTIFICATION_TYPES]),
   ]
 
   if (userId) {
@@ -144,7 +144,7 @@ export async function getUnreadNotificationsByAgents(agentSlugs: string[]): Prom
     .where(and(
       inArray(notifications.agentSlug, agentSlugs),
       eq(notifications.isRead, false),
-      inArray(notifications.type, [...SIDEBAR_UNREAD_TYPES]),
+      inArray(notifications.type, [...USER_ACTIONABLE_NOTIFICATION_TYPES]),
     ))
 
   const result = new Map<string, Set<string>>()
@@ -184,19 +184,20 @@ export async function listUnreadNotifications(limit: number = 50, userId?: strin
  * When userId is provided, only counts notifications for agents the user has access to.
  */
 export async function getUnreadCount(userId?: string): Promise<number> {
+  const actionable = inArray(notifications.type, [...USER_ACTIONABLE_NOTIFICATION_TYPES])
   if (userId) {
     const slugs = await getAccessibleAgentSlugs(userId)
     if (slugs.length === 0) return 0
     const result = await db
       .select({ count: count() })
       .from(notifications)
-      .where(and(eq(notifications.isRead, false), inArray(notifications.agentSlug, slugs)))
+      .where(and(eq(notifications.isRead, false), inArray(notifications.agentSlug, slugs), actionable))
     return result[0]?.count ?? 0
   }
   const result = await db
     .select({ count: count() })
     .from(notifications)
-    .where(eq(notifications.isRead, false))
+    .where(and(eq(notifications.isRead, false), actionable))
 
   return result[0]?.count ?? 0
 }

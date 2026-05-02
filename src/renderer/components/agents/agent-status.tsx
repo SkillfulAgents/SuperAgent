@@ -51,13 +51,13 @@ export function AgentStatus({ status, hasActiveSessions = false, hasSessionsAwai
       title={iconOnly ? statusLabels[activityStatus] : undefined}
     >
       {activityStatus === 'sleeping' ? (
-        <Moon className={cn('h-2.5 w-2.5', 'text-muted-foreground/70')} />
+        <Moon className="h-2.5 w-2.5 text-muted-foreground/70" />
       ) : activityStatus === 'awaiting_input' ? (
         <AwaitingDot />
       ) : activityStatus === 'working' ? (
         <WorkingDots dotClassName={workingDotClassName} />
       ) : (
-        <CircleDashed className={cn('h-2.5 w-2.5', 'text-muted-foreground')} />
+        <CircleDashed className="h-2.5 w-2.5 text-muted-foreground" />
       )}
       {!iconOnly && (
         <span
