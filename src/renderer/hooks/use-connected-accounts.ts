@@ -119,6 +119,7 @@ export function useDeleteConnectedAccount() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['connected-accounts'] })
+      queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts'] })
     },
   })
 }
