@@ -1,24 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser Use feature: Agent successfully opens browser, navigates to URL, retrieves page title, and reports result in chat",
+  "reason": "Verified that the SuperAgent browser-use feature can successfully open a browser, navigate to a URL, retrieve the page title, and display results in the chat interface with matching live browser preview.",
   "steps": [
-    "Navigated to http://localhost:47891 - Page loaded successfully showing \"Super Agent\" application with list of agents in sidebar",
-    "Clicked on agent \"QA-20260424-025829-ry2e\" in sidebar - Agent interface opened showing empty chat window with message input field",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into the input field - Message text successfully entered in textbox",
-    "Clicked Send message button - Message was sent and agent status changed to \"working\" with subtitle \"Browser Navigation and Page Title Retrieval\"",
-    "Waited for response (30 seconds) - Agent completed task after 11 seconds and returned response: \"The page title is Example Domain.\"",
-    "Verified response mentions \"Example Domain\" - Response clearly states \"The page title is Example Domain.\" in bold text"
+    "Navigated to http://localhost:47891 - Page loaded successfully displaying the SuperAgent interface with three agents in the sidebar.",
+    "Found and clicked the \"QA-20260502-224147-4vlz\" agent in the agents list - Agent chat view opened with message input field and configuration panels visible.",
+    "Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message successfully entered into input field and sent via Cmd+Enter.",
+    "Waited up to 3 minutes for the agent response - Agent completed task in 5 seconds, status changed from \"working\" to \"idle\".",
+    "Verified the response mentions \"Example Domain\" - Response clearly displays \"The page title is Example Domain.\" with two completed tool calls (Open Browser and Browser Command $ get title). Live browser preview panel on the right shows the actual Example Domain webpage. Test requirement met successfully."
   ],
   "bugs": [],
-  "durationMs": 114090,
-  "sessionId": "bed9ad47-998e-4b46-bd08-b47ce3033017",
+  "durationMs": 100237,
+  "sessionId": "a0f18a89-81ed-4cc5-8edc-c2bb1d333b9b",
   "cost": {
-    "inputTokens": 363,
-    "outputTokens": 9477,
-    "cacheCreationTokens": 132107,
-    "cacheReadTokens": 1324102,
+    "inputTokens": 315,
+    "outputTokens": 9828,
+    "cacheCreationTokens": 49457,
+    "cacheReadTokens": 1181330,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.345292
+    "totalCostUsd": 0.229409
   }
 }
