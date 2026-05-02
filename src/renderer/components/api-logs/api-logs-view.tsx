@@ -190,9 +190,7 @@ export function ApiLogsView({ agentSlug }: ApiLogsViewProps) {
             Back
           </Button>
           <div className="flex items-end justify-between gap-4">
-            <div>
-              <h2 className="text-xl font-medium">API Logs</h2>
-            </div>
+            <h2 className="text-xl font-medium">API Logs</h2>
             <div className="shrink-0">
               <Button
                 variant="outline"
@@ -218,7 +216,7 @@ export function ApiLogsView({ agentSlug }: ApiLogsViewProps) {
           </div>
         ) : (
           <>
-            <Table className="text-xs [&_th]:px-3 [&_td]:px-3">
+            <Table className="min-w-[900px] text-xs [&_th]:px-3 [&_td]:px-3">
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   <TableHead className="whitespace-nowrap">Timestamp</TableHead>
@@ -228,7 +226,8 @@ export function ApiLogsView({ agentSlug }: ApiLogsViewProps) {
                   <TableHead>Status</TableHead>
                   <TableHead className="whitespace-nowrap">Policy</TableHead>
                   <TableHead>Toolkit</TableHead>
-                  <TableHead className="w-full">Path (error)</TableHead>
+                  <TableHead className="w-full min-w-[240px]">Path (error)</TableHead>
+                  <TableHead className="w-[88px]" aria-label="Toggle details" />
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -266,7 +265,7 @@ export function ApiLogsView({ agentSlug }: ApiLogsViewProps) {
                             {entry.label}
                           </span>
                         </TableCell>
-                        <TableCell className="min-w-0 w-full relative">
+                        <TableCell className="min-w-0 w-full">
                           <p
                             className="font-mono truncate"
                             title={entry.errorMessage ? `${entry.targetUrl} (${entry.errorMessage})` : entry.targetUrl}
@@ -276,35 +275,35 @@ export function ApiLogsView({ agentSlug }: ApiLogsViewProps) {
                               <span className="text-red-600 dark:text-red-400"> ({entry.errorMessage})</span>
                             )}
                           </p>
-                          <div className={`pointer-events-none absolute inset-y-0 right-2 flex items-center transition-opacity ${isExpanded ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              className="pointer-events-auto h-7 px-2 text-xs"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                setExpandedId(isExpanded ? null : entry.id)
-                              }}
-                            >
-                              {isExpanded ? (
-                                <>
-                                  Less
-                                  <ChevronUp className="h-3.5 w-3.5" />
-                                </>
-                              ) : (
-                                <>
-                                  More
-                                  <ChevronDown className="h-3.5 w-3.5" />
-                                </>
-                              )}
-                            </Button>
-                          </div>
+                        </TableCell>
+                        <TableCell className="w-[88px] text-right">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className={`h-7 px-2 text-xs transition-opacity ${isExpanded ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'}`}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setExpandedId(isExpanded ? null : entry.id)
+                            }}
+                          >
+                            {isExpanded ? (
+                              <>
+                                Less
+                                <ChevronUp className="h-3.5 w-3.5" />
+                              </>
+                            ) : (
+                              <>
+                                More
+                                <ChevronDown className="h-3.5 w-3.5" />
+                              </>
+                            )}
+                          </Button>
                         </TableCell>
                       </TableRow>
                       {isExpanded && (
                         <TableRow className="bg-muted/30 hover:bg-muted/30">
-                          <TableCell colSpan={8} className="pb-3">
+                          <TableCell colSpan={9} className="pb-3">
                             <EntryDetails entry={entry} />
                           </TableCell>
                         </TableRow>

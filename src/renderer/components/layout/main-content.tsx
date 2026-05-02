@@ -205,8 +205,8 @@ export function MainContent() {
           )}
           {showApiLogsCrumb && (
             <div className="flex items-center gap-1.5 min-w-0">
-              <span aria-hidden="true" className="text-[13px] font-light text-muted-foreground shrink-0 hidden md:block">/</span>
-              <span className="truncate text-[13px] font-light text-foreground">API Logs</span>
+              <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
+              <span className="truncate text-sm font-light text-foreground">API Logs</span>
             </div>
           )}
         </div>
