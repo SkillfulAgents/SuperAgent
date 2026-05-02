@@ -1,24 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser use feature test: agent successfully opened browser, navigated to example.com, and returned page title \"Example Domain\"",
+  "reason": "Successfully verified that the agent can open a browser, navigate to https://example.com, and return the page title \"Example Domain\"",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded with SuperAgent dashboard showing three agents in sidebar",
-    "Found and clicked on agent \"QA-20260502-174722-evw0\" in the main area — Agent configuration page opened with message input field ready",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in input textbox — Message text entered correctly in active input field",
-    "Clicked \"Send message\" button — Message sent successfully, agent status changed to \"working\" with timer starting at 0s",
-    "Waited up to 3 minutes for response mentioning \"Example Domain\" — Response arrived within 7 seconds showing \"The page title is \"Example Domain\"\"",
-    "Took screenshot showing the complete response — Final screenshot captured showing agent response with browser tool calls (Open Browser and Browser Command), the retrieved page title, browser preview panel on right side with \"Example Domain\" tab, and activity log of executed commands"
+    "Navigated to http://localhost:47891 — page loaded successfully showing the SuperAgent home page with a list of agents in the sidebar",
+    "Located and clicked on the \"QA-20260502-180143-92sq\" agent in the sidebar — agent page opened showing the chat interface and agent configuration panel",
+    "Clicked on the message input box and typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" — message was typed into the textbox successfully",
+    "Clicked the \"Send message\" button to send the message — message was sent and the agent status changed to \"working\"",
+    "Waited up to 3 minutes (180 seconds) for a response — agent completed the task in 6 seconds and returned a response",
+    "Verified the response content — the agent response clearly states \"The page title is Example Domain.\" with two successful browser tool calls (Open Browser and Browser Command $ get title), and a live browser preview panel showing the Example Domain webpage on the right side of the screen"
   ],
   "bugs": [],
-  "durationMs": 85239,
-  "sessionId": "34c0296c-cad1-4c14-a8f9-ccbe80d7556b",
+  "durationMs": 88881,
+  "sessionId": "9f347bda-c4b8-44e4-835c-5bc62c949500",
   "cost": {
-    "inputTokens": 300,
-    "outputTokens": 7880,
-    "cacheCreationTokens": 45630,
-    "cacheReadTokens": 1116730,
+    "inputTokens": 327,
+    "outputTokens": 8534,
+    "cacheCreationTokens": 128397,
+    "cacheReadTokens": 1169594,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.208411
+    "totalCostUsd": 0.320453
   }
 }
