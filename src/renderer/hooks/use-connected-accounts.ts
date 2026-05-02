@@ -119,6 +119,7 @@ export function useDeleteConnectedAccount() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['connected-accounts'] })
+      queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts'] })
     },
   })
 }
@@ -148,6 +149,31 @@ export function useRenameConnectedAccount() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['connected-accounts'] })
       queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts'] })
+    },
+  })
+}
+
+/**
+ * Hook to assign connected account(s) to an agent
+ */
+export function useAssignAccountsToAgent() {
+  const queryClient = useQueryClient()
+
+  return useMutation<void, Error, { agentSlug: string; accountIds: string[] }>({
+    mutationFn: async ({ agentSlug, accountIds }) => {
+      const res = await apiFetch(`/api/agents/${agentSlug}/connected-accounts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountIds }),
+      })
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({}))
+        throw new Error(error.error || 'Failed to assign accounts to agent')
+      }
+    },
+    onSuccess: (_, { agentSlug }) => {
+      queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts', agentSlug] })
+      queryClient.invalidateQueries({ queryKey: ['connected-accounts'] })
     },
   })
 }

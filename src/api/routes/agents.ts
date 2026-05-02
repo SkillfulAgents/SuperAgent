@@ -493,6 +493,48 @@ agents.get('/my-roles', async (c) => {
   }
 })
 
+// POST /api/agents/generate-name - Generate an agent name from a prompt using a lightweight LLM
+// Collection-level route: keep this before the /:id/* agent-existence middleware.
+// TODO: Migrate remaining route handlers to use zValidator for consistent request validation
+const generateNameBodySchema = z.object({
+  prompt: z.string().min(1, 'Prompt is required'),
+})
+
+agents.post('/generate-name', zValidator('json', generateNameBodySchema), async (c) => {
+  try {
+    const { prompt } = c.req.valid('json')
+    const truncatedPrompt = prompt.trim().substring(0, 10_000)
+
+    const anthropic = getLlmClient()
+    const response = await withRetry(() =>
+      anthropic.messages.create({
+        model: getSummarizerModel(),
+        max_tokens: 50,
+        messages: [
+          {
+            role: 'user',
+            content: `Generate a short, descriptive agent name (2-4 words max) based on what the user wants the agent to do. The user's description is:
+
+"${truncatedPrompt}"
+
+Respond with ONLY the agent name, nothing else. No quotes, no explanation.`,
+          },
+        ],
+      })
+    )
+
+    const name = extractTextFromLlmResponse(response)?.trim()
+    if (!name) {
+      return c.json({ error: 'Failed to generate name' }, 500)
+    }
+
+    return c.json({ name })
+  } catch (error) {
+    console.error('Failed to generate agent name:', error)
+    return c.json({ error: 'Failed to generate name' }, 500)
+  }
+})
+
 // Middleware: verify agent exists for all /:id/* routes
 agents.use('/:id/*', async (c, next) => {
   const slug = c.req.param('id')
@@ -615,47 +657,6 @@ agents.post('/', async (c) => {
   } catch (error) {
     console.error('Failed to create agent:', error)
     return c.json({ error: 'Failed to create agent' }, 500)
-  }
-})
-
-// POST /api/agents/generate-name - Generate an agent name from a prompt using a lightweight LLM
-// TODO: Migrate remaining route handlers to use zValidator for consistent request validation
-const generateNameBodySchema = z.object({
-  prompt: z.string().min(1, 'Prompt is required'),
-})
-
-agents.post('/generate-name', zValidator('json', generateNameBodySchema), async (c) => {
-  try {
-    const { prompt } = c.req.valid('json')
-    const truncatedPrompt = prompt.trim().substring(0, 10_000)
-
-    const anthropic = getLlmClient()
-    const response = await withRetry(() =>
-      anthropic.messages.create({
-        model: getSummarizerModel(),
-        max_tokens: 50,
-        messages: [
-          {
-            role: 'user',
-            content: `Generate a short, descriptive agent name (2-4 words max) based on what the user wants the agent to do. The user's description is:
-
-"${truncatedPrompt}"
-
-Respond with ONLY the agent name, nothing else. No quotes, no explanation.`,
-          },
-        ],
-      })
-    )
-
-    const name = extractTextFromLlmResponse(response)?.trim()
-    if (!name) {
-      return c.json({ error: 'Failed to generate name' }, 500)
-    }
-
-    return c.json({ name })
-  } catch (error) {
-    console.error('Failed to generate agent name:', error)
-    return c.json({ error: 'Failed to generate name' }, 500)
   }
 })
 

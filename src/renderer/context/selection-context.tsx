@@ -10,14 +10,20 @@ interface SelectionContextType {
   selectedChatSessionId: string | null // session within a chat integration
   selectedDashboardSlug: string | null
   selectedApiLogs: boolean
+  selectedConnections: boolean
+  /** One-shot draft text to pre-fill the agent home composer. Consumed on read. */
+  pendingDraft: string | null
   selectAgent: (agentSlug: string | null) => void
+  selectAgentWithDraft: (agentSlug: string, draft: string) => void
   selectSession: (sessionId: string | null) => void
+  consumePendingDraft: () => string | null
   selectScheduledTask: (taskId: string | null) => void
   selectWebhookTrigger: (triggerId: string | null) => void
   selectChatIntegration: (integrationId: string | null) => void
   selectChatSession: (integrationId: string, sessionId: string) => void
   selectDashboard: (slug: string | null) => void
   selectApiLogs: (on: boolean) => void
+  selectConnections: (on: boolean) => void
   clearSelection: () => void
   handleAgentDeleted: (agentSlug: string) => void
   handleSessionDeleted: (sessionId: string) => void
@@ -38,6 +44,8 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
   const [selectedChatSessionId, setSelectedChatSessionId] = useState<string | null>(null)
   const [selectedDashboardSlug, setSelectedDashboardSlug] = useState<string | null>(null)
   const [selectedApiLogs, setSelectedApiLogs] = useState(false)
+  const [selectedConnections, setSelectedConnections] = useState(false)
+  const [pendingDraft, setPendingDraft] = useState<string | null>(null)
 
   const selectAgent = useCallback((agentSlug: string | null) => {
     setSelectedAgentSlug(agentSlug)
@@ -48,7 +56,27 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedChatSessionId(null)
     setSelectedDashboardSlug(null)
     setSelectedApiLogs(false)
+    setSelectedConnections(false)
   }, [])
+
+  const selectAgentWithDraft = useCallback((agentSlug: string, draft: string) => {
+    setPendingDraft(draft)
+    setSelectedAgentSlug(agentSlug)
+    setSelectedSessionId(null)
+    setSelectedScheduledTaskId(null)
+    setSelectedWebhookTriggerId(null)
+    setSelectedChatIntegrationId(null)
+    setSelectedChatSessionId(null)
+    setSelectedDashboardSlug(null)
+    setSelectedApiLogs(false)
+    setSelectedConnections(false)
+  }, [])
+
+  const consumePendingDraft = useCallback(() => {
+    const draft = pendingDraft
+    setPendingDraft(null)
+    return draft
+  }, [pendingDraft])
 
   const selectSession = useCallback((sessionId: string | null) => {
     setSelectedSessionId(sessionId)
@@ -58,6 +86,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedChatSessionId(null)
     setSelectedDashboardSlug(null)
     setSelectedApiLogs(false)
+    setSelectedConnections(false)
   }, [])
 
   const selectScheduledTask = useCallback((taskId: string | null) => {
@@ -68,6 +97,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedChatSessionId(null)
     setSelectedDashboardSlug(null)
     setSelectedApiLogs(false)
+    setSelectedConnections(false)
   }, [])
 
   const selectWebhookTrigger = useCallback((triggerId: string | null) => {
@@ -78,6 +108,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedChatSessionId(null)
     setSelectedDashboardSlug(null)
     setSelectedApiLogs(false)
+    setSelectedConnections(false)
   }, [])
 
   const selectChatIntegration = useCallback((integrationId: string | null) => {
@@ -88,6 +119,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedWebhookTriggerId(null)
     setSelectedDashboardSlug(null)
     setSelectedApiLogs(false)
+    setSelectedConnections(false)
   }, [])
 
   const selectChatSession = useCallback((integrationId: string, sessionId: string) => {
@@ -98,6 +130,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedWebhookTriggerId(null)
     setSelectedDashboardSlug(null)
     setSelectedApiLogs(false)
+    setSelectedConnections(false)
   }, [])
 
   const selectDashboard = useCallback((slug: string | null) => {
@@ -108,6 +141,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedChatIntegrationId(null)
     setSelectedChatSessionId(null)
     setSelectedApiLogs(false)
+    setSelectedConnections(false)
   }, [])
 
   const selectApiLogs = useCallback((on: boolean) => {
@@ -119,6 +153,20 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
       setSelectedChatIntegrationId(null)
       setSelectedChatSessionId(null)
       setSelectedDashboardSlug(null)
+      setSelectedConnections(false)
+    }
+  }, [])
+
+  const selectConnections = useCallback((on: boolean) => {
+    setSelectedConnections(on)
+    if (on) {
+      setSelectedSessionId(null)
+      setSelectedScheduledTaskId(null)
+      setSelectedWebhookTriggerId(null)
+      setSelectedChatIntegrationId(null)
+      setSelectedChatSessionId(null)
+      setSelectedDashboardSlug(null)
+      setSelectedApiLogs(false)
     }
   }, [])
 
@@ -131,6 +179,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     setSelectedChatSessionId(null)
     setSelectedDashboardSlug(null)
     setSelectedApiLogs(false)
+    setSelectedConnections(false)
   }, [])
 
   const handleAgentDeleted = useCallback((agentSlug: string) => {
@@ -143,6 +192,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
       setSelectedChatSessionId(null)
       setSelectedDashboardSlug(null)
       setSelectedApiLogs(false)
+      setSelectedConnections(false)
     }
   }, [selectedAgentSlug])
 
@@ -188,14 +238,19 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
         selectedChatSessionId,
         selectedDashboardSlug,
         selectedApiLogs,
+        selectedConnections,
+        pendingDraft,
         selectAgent,
+        selectAgentWithDraft,
         selectSession,
+        consumePendingDraft,
         selectScheduledTask,
         selectWebhookTrigger,
         selectChatIntegration,
         selectChatSession,
         selectDashboard,
         selectApiLogs,
+        selectConnections,
         clearSelection,
         handleAgentDeleted,
         handleSessionDeleted,

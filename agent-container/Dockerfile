@@ -1,3 +1,6 @@
+# Base image is glibc-based. If this ever changes to a musl distro (e.g. Alpine),
+# the Agent SDK native-binary cleanup step below must flip: delete the `-glibc`
+# variant instead of the `-musl` one, or the Claude subprocess will fail to spawn.
 FROM ubuntu:22.04
 
 # Prevent interactive prompts during installation
@@ -47,11 +50,6 @@ RUN apt-get update && apt-get install -y \
 
 # Install UV (Universal Virtualenv)
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
-
-# Install Claude Code CLI (native binary, pinned version)
-RUN curl -fsSL https://claude.ai/install.sh | bash -s 2.1.111 && \
-    cp /root/.local/bin/claude /usr/local/bin/claude && \
-    chmod 755 /usr/local/bin/claude
 
 # Install TypeScript and ts-node globally
 RUN npm install -g typescript ts-node
@@ -107,8 +105,33 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies
+# Install dependencies. The Agent SDK ships per-platform native Claude Code
+# binaries as optional dependencies; npm picks the matching one for this arch
+# (e.g. @anthropic-ai/claude-agent-sdk-linux-arm64/claude).
 RUN npm install
+
+# Drop the musl variant if npm installed it alongside the glibc one. Our base
+# image is glibc-based Ubuntu (see note at top of file), but npm sometimes
+# ignores the package's `libc` field and installs both. The SDK's resolver
+# prefers the musl binary when present, which then fails at runtime with
+# "binary not found" (the kernel can't load it because ld-musl-<arch>.so isn't
+# on the image). If the base image ever switches to musl (Alpine), invert this:
+# delete the non-musl variants instead.
+RUN rm -rf /app/node_modules/@anthropic-ai/claude-agent-sdk-linux-*-musl
+
+# Expose the SDK-bundled claude binary on PATH so shell invocations
+# (`claude -p ...`) inside the container still work. Find-based resolution
+# keeps this portable across platforms — the matching optional dep name
+# varies by os/arch.
+RUN bin=$(find /app/node_modules/@anthropic-ai -maxdepth 2 -type d -name 'claude-agent-sdk-*' 2>/dev/null | head -n 1)/claude; \
+    if [ -x "$bin" ]; then \
+      ln -sf "$bin" /usr/local/bin/claude; \
+      echo "Symlinked /usr/local/bin/claude -> $bin"; \
+    else \
+      echo "No SDK-bundled claude binary found under /app/node_modules/@anthropic-ai/" >&2; \
+      ls -la /app/node_modules/@anthropic-ai/ >&2; \
+      exit 1; \
+    fi
 
 # Copy source code
 COPY tsconfig.json ./

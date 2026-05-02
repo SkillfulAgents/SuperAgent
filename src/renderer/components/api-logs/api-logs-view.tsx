@@ -1,4 +1,4 @@
-import { ArrowLeft, Loader2, RefreshCw, ChevronLeft, ChevronRight, ChevronDown, ChevronUp } from 'lucide-react'
+import { Loader2, RefreshCw, ChevronLeft, ChevronRight, ChevronDown, ChevronUp } from 'lucide-react'
 import { Fragment, useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { format } from 'date-fns'
@@ -14,6 +14,7 @@ import {
   TableHeader,
   TableRow,
 } from '@renderer/components/ui/table'
+import { PageTitle, SettingsPageContainer } from '@renderer/components/layout/settings-page'
 import { useRenderTracker } from '@renderer/lib/perf'
 
 interface AuditLogEntry {
@@ -175,178 +176,167 @@ export function ApiLogsView({ agentSlug }: ApiLogsViewProps) {
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
   return (
-    <div className="flex-1 overflow-auto">
-      <div className="mx-auto w-full max-w-5xl px-10 pt-6 pb-10 space-y-6">
-        <div>
+    <SettingsPageContainer className="max-w-5xl">
+      <PageTitle
+        title="API Logs"
+        back={{
+          onClick: () => selectApiLogs(false),
+          testId: 'api-logs-back-button',
+        }}
+        actions={
           <Button
-            type="button"
-            variant="ghost"
+            variant="outline"
             size="sm"
-            className="-ml-2 mb-2 h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
-            onClick={() => selectApiLogs(false)}
-            data-testid="api-logs-back-button"
+            onClick={() => refetch()}
+            disabled={isRefetching}
           >
-            <ArrowLeft className="h-3.5 w-3.5 mr-1" />
-            Back
+            <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${isRefetching ? 'animate-spin' : ''}`} />
+            Refresh
           </Button>
-          <div className="flex items-end justify-between gap-4">
-            <h2 className="text-xl font-medium">API Logs</h2>
-            <div className="shrink-0">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => refetch()}
-                disabled={isRefetching}
-              >
-                <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${isRefetching ? 'animate-spin' : ''}`} />
-                Refresh
-              </Button>
-            </div>
-          </div>
+        }
+      />
+
+      {isLoading ? (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading log...
         </div>
+      ) : entries.length === 0 && page === 0 ? (
+        <div className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground">
+          No requests logged yet.
+        </div>
+      ) : (
+        <>
+          <Table className="min-w-[900px] text-xs [&_th]:px-3 [&_td]:px-3">
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead className="whitespace-nowrap">Timestamp</TableHead>
+                <TableHead className="whitespace-nowrap">Duration</TableHead>
+                <TableHead>Source</TableHead>
+                <TableHead>Method</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="whitespace-nowrap">Policy</TableHead>
+                <TableHead>Toolkit</TableHead>
+                <TableHead className="w-full min-w-[240px]">Path (error)</TableHead>
+                <TableHead className="w-[88px]" aria-label="Toggle details" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {entries.map((entry) => {
+                const time = format(new Date(entry.createdAt), 'MM/dd/yy, HH:mm:ss')
+                const isExpanded = expandedId === entry.id
 
-        {isLoading ? (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Loading log...
-          </div>
-        ) : entries.length === 0 && page === 0 ? (
-          <div className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground">
-            No requests logged yet.
-          </div>
-        ) : (
-          <>
-            <Table className="min-w-[900px] text-xs [&_th]:px-3 [&_td]:px-3">
-              <TableHeader>
-                <TableRow className="hover:bg-transparent">
-                  <TableHead className="whitespace-nowrap">Timestamp</TableHead>
-                  <TableHead className="whitespace-nowrap">Duration</TableHead>
-                  <TableHead>Source</TableHead>
-                  <TableHead>Method</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="whitespace-nowrap">Policy</TableHead>
-                  <TableHead>Toolkit</TableHead>
-                  <TableHead className="w-full min-w-[240px]">Path (error)</TableHead>
-                  <TableHead className="w-[88px]" aria-label="Toggle details" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {entries.map((entry) => {
-                  const time = format(new Date(entry.createdAt), 'MM/dd/yy, HH:mm:ss')
-                  const isExpanded = expandedId === entry.id
-
-                  return (
-                    <Fragment key={entry.id}>
-                      <TableRow
-                        role="button"
-                        tabIndex={0}
-                        data-state={isExpanded ? 'selected' : undefined}
-                        className={`group cursor-pointer hover:bg-muted/30 ${isExpanded ? 'bg-muted/30 border-b-0' : ''}`}
-                        onClick={() => setExpandedId(isExpanded ? null : entry.id)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault()
+                return (
+                  <Fragment key={entry.id}>
+                    <TableRow
+                      role="button"
+                      tabIndex={0}
+                      data-state={isExpanded ? 'selected' : undefined}
+                      className={`group cursor-pointer hover:bg-muted/30 ${isExpanded ? 'bg-muted/30 border-b-0' : ''}`}
+                      onClick={() => setExpandedId(isExpanded ? null : entry.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          setExpandedId(isExpanded ? null : entry.id)
+                        }
+                      }}
+                    >
+                      <TableCell className="text-muted-foreground whitespace-nowrap">{time}</TableCell>
+                      <TableCell className="text-muted-foreground tabular-nums whitespace-nowrap">
+                        {entry.durationMs !== null ? `${entry.durationMs}ms` : '—'}
+                      </TableCell>
+                      <TableCell><SourceBadge source={entry.source} /></TableCell>
+                      <TableCell><MethodBadge method={entry.method} /></TableCell>
+                      <TableCell><StatusBadge status={entry.statusCode} /></TableCell>
+                      <TableCell className="whitespace-nowrap">
+                        {entry.policyDecision ? <PolicyBadge decision={entry.policyDecision} /> : null}
+                      </TableCell>
+                      <TableCell className="max-w-[120px]">
+                        <span className="text-muted-foreground font-medium truncate block" title={entry.label}>
+                          {entry.label}
+                        </span>
+                      </TableCell>
+                      <TableCell className="min-w-0 w-full">
+                        <p
+                          className="font-mono truncate"
+                          title={entry.errorMessage ? `${entry.targetUrl} (${entry.errorMessage})` : entry.targetUrl}
+                        >
+                          {entry.targetUrl}
+                          {entry.errorMessage && (
+                            <span className="text-red-600 dark:text-red-400"> ({entry.errorMessage})</span>
+                          )}
+                        </p>
+                      </TableCell>
+                      <TableCell className="w-[88px] text-right">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className={`h-7 px-2 text-xs transition-opacity ${isExpanded ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'}`}
+                          onClick={(e) => {
+                            e.stopPropagation()
                             setExpandedId(isExpanded ? null : entry.id)
-                          }
-                        }}
-                      >
-                        <TableCell className="text-muted-foreground whitespace-nowrap">{time}</TableCell>
-                        <TableCell className="text-muted-foreground tabular-nums whitespace-nowrap">
-                          {entry.durationMs !== null ? `${entry.durationMs}ms` : '—'}
-                        </TableCell>
-                        <TableCell><SourceBadge source={entry.source} /></TableCell>
-                        <TableCell><MethodBadge method={entry.method} /></TableCell>
-                        <TableCell><StatusBadge status={entry.statusCode} /></TableCell>
-                        <TableCell className="whitespace-nowrap">
-                          {entry.policyDecision ? <PolicyBadge decision={entry.policyDecision} /> : null}
-                        </TableCell>
-                        <TableCell className="max-w-[120px]">
-                          <span className="text-muted-foreground font-medium truncate block" title={entry.label}>
-                            {entry.label}
-                          </span>
-                        </TableCell>
-                        <TableCell className="min-w-0 w-full">
-                          <p
-                            className="font-mono truncate"
-                            title={entry.errorMessage ? `${entry.targetUrl} (${entry.errorMessage})` : entry.targetUrl}
-                          >
-                            {entry.targetUrl}
-                            {entry.errorMessage && (
-                              <span className="text-red-600 dark:text-red-400"> ({entry.errorMessage})</span>
-                            )}
-                          </p>
-                        </TableCell>
-                        <TableCell className="w-[88px] text-right">
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            className={`h-7 px-2 text-xs transition-opacity ${isExpanded ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'}`}
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              setExpandedId(isExpanded ? null : entry.id)
-                            }}
-                          >
-                            {isExpanded ? (
-                              <>
-                                Less
-                                <ChevronUp className="h-3.5 w-3.5" />
-                              </>
-                            ) : (
-                              <>
-                                More
-                                <ChevronDown className="h-3.5 w-3.5" />
-                              </>
-                            )}
-                          </Button>
+                          }}
+                        >
+                          {isExpanded ? (
+                            <>
+                              Less
+                              <ChevronUp className="h-3.5 w-3.5" />
+                            </>
+                          ) : (
+                            <>
+                              More
+                              <ChevronDown className="h-3.5 w-3.5" />
+                            </>
+                          )}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                    {isExpanded && (
+                      <TableRow className="bg-muted/30 hover:bg-muted/30">
+                        <TableCell colSpan={9} className="pb-3">
+                          <EntryDetails entry={entry} />
                         </TableCell>
                       </TableRow>
-                      {isExpanded && (
-                        <TableRow className="bg-muted/30 hover:bg-muted/30">
-                          <TableCell colSpan={9} className="pb-3">
-                            <EntryDetails entry={entry} />
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </Fragment>
-                  )
-                })}
-              </TableBody>
-            </Table>
+                    )}
+                  </Fragment>
+                )
+              })}
+            </TableBody>
+          </Table>
 
-            {totalPages > 1 && (
-              <div className="flex items-center justify-between pt-2">
-                <span className="text-xs text-muted-foreground">
-                  {total} total entries
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between pt-2">
+              <span className="text-xs text-muted-foreground">
+                {total} total entries
+              </span>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 w-7 p-0"
+                  onClick={() => setPage((p) => p - 1)}
+                  disabled={page === 0}
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                </Button>
+                <span className="text-xs text-muted-foreground px-2">
+                  {page + 1} / {totalPages}
                 </span>
-                <div className="flex items-center gap-1">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 w-7 p-0"
-                    onClick={() => setPage((p) => p - 1)}
-                    disabled={page === 0}
-                  >
-                    <ChevronLeft className="h-3.5 w-3.5" />
-                  </Button>
-                  <span className="text-xs text-muted-foreground px-2">
-                    {page + 1} / {totalPages}
-                  </span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 w-7 p-0"
-                    onClick={() => setPage((p) => p + 1)}
-                    disabled={page >= totalPages - 1}
-                  >
-                    <ChevronRight className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 w-7 p-0"
+                  onClick={() => setPage((p) => p + 1)}
+                  disabled={page >= totalPages - 1}
+                >
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </Button>
               </div>
-            )}
-          </>
-        )}
-      </div>
-    </div>
+            </div>
+          )}
+        </>
+      )}
+    </SettingsPageContainer>
   )
 }
