@@ -80,4 +80,12 @@ export class SessionPersistence {
       this.save();
     }
   }
+
+  updateModel(sessionId: string, model: string | undefined): void {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.model = model;
+      this.save();
+    }
+  }
 }

@@ -117,6 +117,12 @@ export function MainContent() {
   // Add left padding for macOS traffic lights when sidebar is collapsed in Electron (not in full screen)
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && sidebarState === 'collapsed' && !isFullScreen
 
+  // Re-center macOS traffic lights vertically with the 48px header when sidebar is collapsed.
+  useEffect(() => {
+    if (!isElectron() || getPlatform() !== 'darwin') return
+    window.electronAPI?.setSidebarCollapsed(sidebarState === 'collapsed' && !isFullScreen)
+  }, [sidebarState, isFullScreen])
+
   const pendingUserMessage = sessionId ? (pendingMessagesRef.current.get(sessionId) ?? null) : null
 
   const handleMessageSent = useCallback((content: string) => {
@@ -427,6 +433,7 @@ export function MainContent() {
                   agentSlug={agentSlug}
                   onMessageSent={handleMessageSent}
                   initialEffort={session?.effort}
+                  initialModel={session?.model}
                 />
                 <div className="flex justify-between items-center gap-1.5 px-6 py-3">
                   {contextPercent != null ? (

@@ -1,3 +1,5 @@
+import type { RuntimeOptions } from './runtime-options'
+
 export type ContainerStatus = 'stopped' | 'running'
 
 // Effort levels supported by Claude Agent SDK v0.2.111+.
@@ -110,7 +112,7 @@ export interface ContainerClient {
   deleteSession(sessionId: string): Promise<boolean>
 
   // Message operations
-  sendMessage(sessionId: string, content: string, uuid?: string, effort?: EffortLevel): Promise<void>
+  sendMessage(sessionId: string, content: string, uuid?: string, options?: RuntimeOptions): Promise<void>
   getMessages(sessionId: string): Promise<any[]>
   interruptSession(sessionId: string): Promise<boolean>
 

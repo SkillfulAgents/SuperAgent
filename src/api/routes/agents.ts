@@ -15,13 +15,7 @@ import {
   agentExists,
 } from '@shared/lib/services/agent-service'
 import { containerManager } from '@shared/lib/container/container-manager'
-import { EFFORT_LEVELS, type EffortLevel } from '@shared/lib/container/types'
-
-const effortSchema = z.enum(EFFORT_LEVELS).optional()
-
-function parseEffort(raw: unknown): EffortLevel | undefined {
-  return effortSchema.safeParse(raw).data
-}
+import { parseRuntimeOptions } from '@shared/lib/container/runtime-options'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { listChatIntegrations, listChatIntegrationsByAgents } from '@shared/lib/services/chat-integration-service'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
@@ -1113,13 +1107,13 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
   try {
     const slug = c.req.param('id')
     const body = await c.req.json()
-    const { message, effort } = body
+    const { message } = body
 
     if (!message?.trim()) {
       return c.json({ error: 'Message is required' }, 400)
     }
 
-    const parsedEffort = parseEffort(effort)
+    const runtimeOptions = parseRuntimeOptions(body)
 
     const agent = await getAgent(slug)
     if (!agent) {
@@ -1138,11 +1132,13 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       initialMessageUuid = randomUUID()
     }
 
+    const sessionModel = runtimeOptions.model ?? getEffectiveModels().agentModel
+
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: message.trim(),
       initialMessageUuid,
-      model: getEffectiveModels().agentModel,
+      model: sessionModel,
       browserModel: getEffectiveModels().browserModel,
       maxOutputTokens: agentLimits.maxOutputTokens,
       maxThinkingTokens: agentLimits.maxThinkingTokens,
@@ -1150,7 +1146,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       maxBudgetUsd: agentLimits.maxBudgetUsd,
       customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
       maxBrowserTabs: getSettings().app?.maxBrowserTabs,
-      effort: parsedEffort,
+      effort: runtimeOptions.effort,
     })
     const sessionId = containerSession.id
 
@@ -1166,8 +1162,15 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     }
 
     await registerSession(slug, sessionId, 'New Session')
-    if (parsedEffort) {
-      updateSessionMetadata(slug, sessionId, { effort: parsedEffort }).catch(console.error)
+    // Persist only what the user explicitly chose. The server-side fallback is
+    // applied at session creation but should not masquerade as a user choice in
+    // metadata — otherwise a later change to the global default wouldn't be
+    // reflected when the composer reloads.
+    const initialMetadata: Parameters<typeof updateSessionMetadata>[2] = {}
+    if (runtimeOptions.effort) initialMetadata.effort = runtimeOptions.effort
+    if (runtimeOptions.model) initialMetadata.model = runtimeOptions.model
+    if (Object.keys(initialMetadata).length > 0) {
+      updateSessionMetadata(slug, sessionId, initialMetadata).catch(console.error)
     }
     await messagePersister.subscribeToSession(sessionId, client, sessionId, slug)
     // Store slash commands from container's init event (captured during session creation)
@@ -1346,13 +1349,13 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     const agentSlug = c.req.param('id')
     const sessionId = c.req.param('sessionId')
     const body = await c.req.json()
-    const { content, effort } = body
+    const { content } = body
 
     if (!content?.trim()) {
       return c.json({ error: 'Content is required' }, 400)
     }
 
-    const parsedEffort = parseEffort(effort)
+    const runtimeOptions = parseRuntimeOptions(body)
 
     const agent = await getAgent(agentSlug)
     if (!agent) {
@@ -1398,9 +1401,12 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       })
     }
 
-    await client.sendMessage(sessionId, content.trim(), messageUuid, parsedEffort)
-    if (parsedEffort) {
-      updateSessionMetadata(agentSlug, sessionId, { effort: parsedEffort }).catch(console.error)
+    await client.sendMessage(sessionId, content.trim(), messageUuid, runtimeOptions)
+    const updates: Parameters<typeof updateSessionMetadata>[2] = {}
+    if (runtimeOptions.effort) updates.effort = runtimeOptions.effort
+    if (runtimeOptions.model) updates.model = runtimeOptions.model
+    if (Object.keys(updates).length > 0) {
+      updateSessionMetadata(agentSlug, sessionId, updates).catch(console.error)
     }
 
     return c.json({ success: true }, 201)
@@ -1455,6 +1461,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       webhookTriggerId: metadata?.webhookTriggerId,
       webhookTriggerName: metadata?.webhookTriggerName,
       effort: metadata?.effort,
+      model: metadata?.model,
     })
   } catch (error) {
     console.error('Failed to fetch session:', error)

@@ -118,7 +118,7 @@ export function LlmTab() {
       <div className="pt-4 border-t space-y-4">
         <h3 className="text-sm font-medium">Models</h3>
         <div className="space-y-2">
-          <Label htmlFor="agent-model">Agent Model</Label>
+          <Label htmlFor="agent-model">Default Model</Label>
           <Select
             value={settings?.models?.agentModel ?? modelOptions[0]?.value ?? ''}
             onValueChange={(value) => {
@@ -138,7 +138,7 @@ export function LlmTab() {
             </SelectContent>
           </Select>
           <p className="text-xs text-muted-foreground">
-            Model used for agent sessions
+            Used for new sessions when no per-message model is selected.
           </p>
         </div>
         <div className="space-y-2">

@@ -17,8 +17,7 @@ import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
-import { EffortSelector } from '@renderer/components/messages/effort-selector'
-import type { EffortLevel } from '@shared/lib/container/types'
+import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
 import { HomeCrons } from './home-crons'
 import { HomeSkills } from './home-skills'
 import { HomeExtras } from './home-extras'
@@ -55,7 +54,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false)
   const [sessionSearch, setSessionSearch] = useState('')
   const [sessionSort, setSessionSort] = useState<SortOrder>('newest')
-  const [effort, setEffort] = useState<EffortLevel>('high')
+  const composerOptions = useComposerOptions()
   const sessionSearchRef = useRef<HTMLInputElement>(null)
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
   // Tracks an explicit user collapse so the auto-expand effect doesn't fight it.
@@ -150,7 +149,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
       const session = await createSession.mutateAsync({
         agentSlug: agent.slug,
         message: content,
-        effort,
+        ...composerOptions.toRuntimeOptions(),
       })
       onSessionCreated(session.id, content)
       // Fire rename after the session is created + navigated — the mutation
@@ -159,7 +158,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
         nameAssignedRef.current = true
         renameUntitledAgent.mutate({ slug: agent.slug, prompt: content })
       }
-    }, [createSession, agent.slug, agent.name, onSessionCreated, effort, sessions.length, renameUntitledAgent]),
+    }, [createSession, agent.slug, agent.name, onSessionCreated, composerOptions, sessions.length, renameUntitledAgent]),
     submitDisabled: createSession.isPending || !isRuntimeReady,
     keepMessageUntilComplete: true,
     draftKey: `agent:${agent.slug}`,
@@ -352,11 +351,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                         onRecentFileAttach={(file) => composer.addFiles([{ file }])}
                         disabled={isDisabled}
                       />
-                      <EffortSelector
-                        value={effort}
-                        onChange={setEffort}
-                        disabled={isDisabled}
-                      />
+                      <ComposerOptions state={composerOptions} disabled={isDisabled} />
                     </>
                   )}
                   topRightActions={(

@@ -207,7 +207,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
   getSessionMessagesWithCompact: vi.fn(),
   getSession: vi.fn(),
   getSessionMetadata: vi.fn(),
-  updateSessionMetadata: vi.fn(),
+  updateSessionMetadata: vi.fn().mockResolvedValue(undefined),
   deleteSession: vi.fn(),
   removeMessage: vi.fn(),
   removeToolCall: vi.fn(),
@@ -1944,8 +1944,8 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     const res = await postJson(app, URL, { content: 'hello' })
     expect(res.status).toBe(201)
 
-    // sendMessage called with only sessionId and content (no uuid, no effort)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', undefined, undefined)
+    // sendMessage called with only sessionId and content (no uuid, no runtime options)
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', undefined, {})
 
     // No DB insert for message author
     expect(mockDbInsertValues).not.toHaveBeenCalled()
@@ -1968,8 +1968,55 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(insertedValues.id).toBeDefined()
     expect(typeof insertedValues.id).toBe('string')
 
-    // sendMessage should receive the same UUID and no effort (not provided in test payload)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello from user', insertedValues.id, undefined)
+    // sendMessage should receive the same UUID and empty runtime options (not provided in test payload)
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello from user', insertedValues.id, {})
+  })
+
+  // ---- Runtime options forwarding ----
+
+  it('forwards effort to sendMessage when present in body', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+
+    const res = await postJson(app, URL, { content: 'hello', effort: 'low' })
+    expect(res.status).toBe(201)
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', undefined, { effort: 'low' })
+  })
+
+  it('forwards model to sendMessage when present in body', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+
+    const res = await postJson(app, URL, { content: 'hello', model: 'claude-haiku-4-5' })
+    expect(res.status).toBe(201)
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', undefined, { model: 'claude-haiku-4-5' })
+  })
+
+  it('forwards both effort and model when both are present', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+
+    const res = await postJson(app, URL, {
+      content: 'hello',
+      effort: 'medium',
+      model: 'claude-opus-4-7',
+    })
+    expect(res.status).toBe(201)
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', undefined, {
+      effort: 'medium',
+      model: 'claude-opus-4-7',
+    })
+  })
+
+  it('drops invalid effort silently and forwards only the valid model', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+
+    const res = await postJson(app, URL, {
+      content: 'hello',
+      effort: 'turbo',
+      model: 'claude-sonnet-4-6',
+    })
+    expect(res.status).toBe(201)
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', undefined, {
+      model: 'claude-sonnet-4-6',
+    })
   })
 })
 

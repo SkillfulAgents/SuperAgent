@@ -152,7 +152,7 @@ export interface AnalyticsTarget {
 }
 
 export type { LlmProviderId } from '../llm-provider/base-llm-provider'
-import type { LlmProviderId } from '../llm-provider/base-llm-provider'
+import type { LlmProviderId, ComposerModel } from '../llm-provider/base-llm-provider'
 
 export interface PlatformAuthSettings {
   token: string
@@ -215,6 +215,7 @@ export interface LlmProviderInfo {
   name: string
   isConfigured: boolean
   availableModels: { value: string; label: string }[]
+  composerModels: ComposerModel[]
 }
 
 export interface GlobalSettingsResponse {
