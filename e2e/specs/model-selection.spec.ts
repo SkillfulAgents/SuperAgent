@@ -74,8 +74,8 @@ test.describe('Model selection', () => {
     await agentPage.clickCreateAgent()
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
 
-    // Pick Opus in the model selector.
-    await page.locator('[data-testid="model-selector-trigger"]').click()
+    // Pick Opus in the composer options popover.
+    await page.locator('[data-testid="composer-options-trigger"]').click()
     await page.locator('[data-testid="model-option-opus"]').click()
 
     // Send.
@@ -116,12 +116,13 @@ test.describe('Model selection', () => {
     )
     expect(initialCreate.model).toBe('opus')
 
-    // Switch to Haiku in the in-session composer.
-    await page.locator('[data-testid="model-selector-trigger"]').click()
+    // Switch to Haiku in the in-session composer. The popover closes after a
+    // pick, so reopen it to switch effort.
+    await page.locator('[data-testid="composer-options-trigger"]').click()
     await page.locator('[data-testid="model-option-haiku"]').click()
 
     // Also switch effort to 'low' so we can assert both flow through.
-    await page.locator('[data-testid="effort-selector-trigger"]').click()
+    await page.locator('[data-testid="composer-options-trigger"]').click()
     await page.locator('[data-testid="effort-option-low"]').click()
 
     // Send a follow-up — content tag makes this record uniquely identifiable.

@@ -567,13 +567,13 @@ describe('MessageInput', () => {
     expect(mockSendMessage.mutateAsync).not.toHaveBeenCalled()
   })
 
-  // ---- Effort selector ----
+  // ---- Composer options (combined model + effort popover) ----
 
-  it('seeds the effort selector from initialEffort prop', () => {
+  it('seeds the effort on the trigger from initialEffort prop', () => {
     renderWithProviders(
       <MessageInput sessionId="s-1" agentSlug="agent-1" initialEffort="low" />
     )
-    expect(screen.getByTestId('effort-selector-trigger')).toHaveAccessibleName(/Effort: Low/)
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent(/Low/)
   })
 
   it('sends the newly-picked effort on submit', async () => {
@@ -582,8 +582,7 @@ describe('MessageInput', () => {
       <MessageInput sessionId="s-1" agentSlug="agent-1" />
     )
 
-    // Open the effort popover and pick Medium.
-    await user.click(screen.getByTestId('effort-selector-trigger'))
+    await user.click(screen.getByTestId('composer-options-trigger'))
     await user.click(await screen.findByTestId('effort-option-medium'))
 
     const input = screen.getByTestId('message-input')
@@ -602,19 +601,17 @@ describe('MessageInput', () => {
     })
   })
 
-  // ---- Model selector ----
-
-  it('seeds the model selector from initialModel prop', () => {
+  it('seeds the model on the trigger from initialModel prop', () => {
     renderWithProviders(
       <MessageInput sessionId="s-1" agentSlug="agent-1" initialModel="haiku" />
     )
-    expect(screen.getByTestId('model-selector-trigger')).toHaveTextContent('Haiku')
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Haiku')
   })
 
   it('falls back to settings.models.agentModel when initialModel is absent', () => {
     renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
     // mockSettings.data.models.agentModel is 'opus'
-    expect(screen.getByTestId('model-selector-trigger')).toHaveTextContent('Opus')
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus')
   })
 
   it('sends the newly-picked model on submit', async () => {
@@ -623,7 +620,7 @@ describe('MessageInput', () => {
       <MessageInput sessionId="s-1" agentSlug="agent-1" initialModel="opus" />
     )
 
-    await user.click(screen.getByTestId('model-selector-trigger'))
+    await user.click(screen.getByTestId('composer-options-trigger'))
     await user.click(await screen.findByTestId('model-option-haiku'))
 
     const input = screen.getByTestId('message-input')
@@ -646,9 +643,10 @@ describe('MessageInput', () => {
       <MessageInput sessionId="s-1" agentSlug="agent-1" />
     )
 
-    await user.click(screen.getByTestId('effort-selector-trigger'))
+    // Picking an option closes the popover, so reopen between picks.
+    await user.click(screen.getByTestId('composer-options-trigger'))
     await user.click(await screen.findByTestId('effort-option-low'))
-    await user.click(screen.getByTestId('model-selector-trigger'))
+    await user.click(screen.getByTestId('composer-options-trigger'))
     await user.click(await screen.findByTestId('model-option-sonnet'))
 
     const input = screen.getByTestId('message-input')

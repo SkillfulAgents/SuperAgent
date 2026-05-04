@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSettings } from '@renderer/hooks/use-settings'
-import { EffortSelector } from './effort-selector'
-import { ModelSelector } from './model-selector'
+import { ComposerOptionsPopover } from './composer-options-popover'
 import type { EffortLevel } from '@shared/lib/container/types'
 import type { ComposerModel, ComposerModelFamily } from '@shared/lib/llm-provider'
 import type { LlmProviderId } from '@shared/lib/config/settings'
@@ -97,14 +96,15 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     }
   }, [model, fallbackModel])
 
-  return {
-    effort,
-    setEffort,
-    model,
-    setModel,
-    composerModels,
-    toRuntimeOptions: () => ({ effort, ...(model ? { model } : {}) }),
-  }
+  const toRuntimeOptions = useCallback(
+    () => ({ effort, ...(model ? { model } : {}) }),
+    [effort, model]
+  )
+
+  return useMemo(
+    () => ({ effort, setEffort, model, setModel, composerModels, toRuntimeOptions }),
+    [effort, model, composerModels, toRuntimeOptions]
+  )
 }
 
 interface ComposerOptionsProps {
@@ -113,20 +113,10 @@ interface ComposerOptionsProps {
 }
 
 /**
- * The two-button toolbar (effort + model) rendered next to the textarea in
+ * Single combined model + effort popover rendered next to the textarea in
  * both the AgentHome and in-session composers. Stateless — owned by the
  * `useComposerOptions` hook above so the parent can read the values at submit.
  */
 export function ComposerOptions({ state, disabled }: ComposerOptionsProps) {
-  return (
-    <>
-      <EffortSelector value={state.effort} onChange={state.setEffort} disabled={disabled} />
-      <ModelSelector
-        value={state.model}
-        onChange={state.setModel}
-        options={state.composerModels}
-        disabled={disabled}
-      />
-    </>
-  )
+  return <ComposerOptionsPopover state={state} disabled={disabled} />
 }
