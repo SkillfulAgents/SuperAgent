@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { BaseLlmProvider, type ModelOption, type ModelPurpose } from './base-llm-provider'
+import { attribution } from '@shared/lib/platform-attribution'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import type { ApiKeyStatus } from '../config/settings'
@@ -57,10 +58,23 @@ export class PlatformLlmProvider extends BaseLlmProvider {
   getContainerEnvVars(): Record<string, string | undefined> {
     const proxyUrl = getPlatformProxyBaseUrl()
     const containerUrl = proxyUrl.replace('://localhost', '://host.docker.internal')
+
+    // The agent container's Anthropic SDK fetches go directly to the proxy
+    // and don't pass through SuperAgent's `globalThis.fetch` interceptor —
+    // so member attribution has to ride in via env. The SDK forwards
+    // `ANTHROPIC_CUSTOM_HEADERS` on every outgoing request.
+    const auth = attribution.current()
+    const customHeaderEntries = auth?.toExtraHeaderEntries() ?? []
+    const customHeaders =
+      customHeaderEntries.length > 0
+        ? customHeaderEntries.map(([name, value]) => `${name}: ${value}`).join('\n')
+        : undefined
+
     return {
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_BASE_URL: containerUrl,
       ANTHROPIC_AUTH_TOKEN: this.getEffectiveApiKey(),
+      ANTHROPIC_CUSTOM_HEADERS: customHeaders,
     }
   }
 
