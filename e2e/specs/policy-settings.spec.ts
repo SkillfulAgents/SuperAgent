@@ -8,10 +8,12 @@ test.describe('Policy Settings', () => {
   let accountId: string
 
   test.beforeAll(async ({ request }) => {
-    // Seed a connected account via API so the settings tab has something to show
+    // Unique per run so a retry (which re-runs beforeAll in a new worker) does
+    // not collide with the previously-seeded row on the unique connectionId.
+    const composioConnectionId = `e2e-test-connection-${Date.now()}`
     const res = await request.post('/api/connected-accounts', {
       data: {
-        composioConnectionId: 'e2e-test-connection',
+        composioConnectionId,
         toolkitSlug: 'slack',
         displayName: 'E2E Slack Account',
       },
@@ -20,17 +22,17 @@ test.describe('Policy Settings', () => {
     accountId = body.account.id
   })
 
-  test('settings: accounts tab shows policy pill for connected account', async ({ page }) => {
+  test('settings: connections tab shows policy pill for connected account', async ({ page }) => {
     appPage = new AppPage(page)
     await appPage.goto()
     await appPage.waitForAgentsLoaded()
 
     // Open global settings
     await page.locator('[data-testid="settings-button"]').click()
-    await expect(page.locator('[data-testid="global-settings-dialog"]')).toBeVisible()
+    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
 
-    // Navigate to Accounts tab
-    await page.locator('[data-testid="settings-nav-accounts"]').click()
+    // Navigate to Connections tab
+    await page.locator('[data-testid="settings-nav-connections"]').click()
 
     // Should see the policy pill for our account (no policies yet)
     const pill = page.locator(`[data-testid="policy-pill-${accountId}"]`)
@@ -45,8 +47,8 @@ test.describe('Policy Settings', () => {
 
     // Open settings → Accounts
     await page.locator('[data-testid="settings-button"]').click()
-    await expect(page.locator('[data-testid="global-settings-dialog"]')).toBeVisible()
-    await page.locator('[data-testid="settings-nav-accounts"]').click()
+    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
+    await page.locator('[data-testid="settings-nav-connections"]').click()
 
     // Click the policy pill to open scope editor
     const pill = page.locator(`[data-testid="policy-pill-${accountId}"]`)
@@ -74,8 +76,8 @@ test.describe('Policy Settings', () => {
     // Dialog should close
     await expect(page.getByText('Scope Policies')).not.toBeVisible({ timeout: 5000 })
 
-    // The pill should now show "1" for the allow count (no longer "Protected")
-    await expect(pill).not.toContainText('Protected', { timeout: 5000 })
+    // The pill flips from "Protected" to "Protected • Custom" once a policy is set.
+    await expect(pill).toContainText('Custom', { timeout: 5000 })
   })
 
   test('settings: saved policy persists after reopening editor', async ({ page }) => {
@@ -85,8 +87,8 @@ test.describe('Policy Settings', () => {
 
     // Open settings → Accounts
     await page.locator('[data-testid="settings-button"]').click()
-    await expect(page.locator('[data-testid="global-settings-dialog"]')).toBeVisible()
-    await page.locator('[data-testid="settings-nav-accounts"]').click()
+    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
+    await page.locator('[data-testid="settings-nav-connections"]').click()
 
     // Open the policy editor again
     const pill = page.locator(`[data-testid="policy-pill-${accountId}"]`)
@@ -109,8 +111,8 @@ test.describe('Policy Settings', () => {
 
     // Open settings → Accounts → scope editor
     await page.locator('[data-testid="settings-button"]').click()
-    await expect(page.locator('[data-testid="global-settings-dialog"]')).toBeVisible()
-    await page.locator('[data-testid="settings-nav-accounts"]').click()
+    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
+    await page.locator('[data-testid="settings-nav-connections"]').click()
 
     const pill = page.locator(`[data-testid="policy-pill-${accountId}"]`)
     await expect(pill).toBeVisible({ timeout: 5000 })
@@ -144,8 +146,8 @@ test.describe('Policy Settings', () => {
 
     // Open settings → Accounts → scope editor
     await page.locator('[data-testid="settings-button"]').click()
-    await expect(page.locator('[data-testid="global-settings-dialog"]')).toBeVisible()
-    await page.locator('[data-testid="settings-nav-accounts"]').click()
+    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
+    await page.locator('[data-testid="settings-nav-connections"]').click()
 
     const pill = page.locator(`[data-testid="policy-pill-${accountId}"]`)
     await expect(pill).toBeVisible({ timeout: 5000 })
@@ -168,9 +170,10 @@ test.describe('Policy Settings', () => {
     await expect(chatWriteRow.locator('[data-testid="policy-toggle-review"]')).toHaveAttribute('data-active', 'false')
     await expect(chatWriteRow.locator('[data-testid="policy-toggle-block"]')).toHaveAttribute('data-active', 'false')
 
-    // Save and verify pill goes back to "Protected"
+    // Save and verify pill drops the "Custom" suffix (= no policies set).
     await page.locator('[data-testid="scope-policy-save"]').click()
     await expect(page.getByText('Scope Policies')).not.toBeVisible({ timeout: 5000 })
+    await expect(pill).not.toContainText('Custom', { timeout: 5000 })
     await expect(pill).toContainText('Protected', { timeout: 5000 })
   })
 
@@ -181,8 +184,8 @@ test.describe('Policy Settings', () => {
 
     // Open settings → Accounts
     await page.locator('[data-testid="settings-button"]').click()
-    await expect(page.locator('[data-testid="global-settings-dialog"]')).toBeVisible()
-    await page.locator('[data-testid="settings-nav-accounts"]').click()
+    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
+    await page.locator('[data-testid="settings-nav-connections"]').click()
 
     // Find the global default policy section — the border div containing the label
     const globalSection = page.locator('div.border').filter({ hasText: 'Default API Request Policy' })

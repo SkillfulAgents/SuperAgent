@@ -8,12 +8,37 @@ import type {
   ContainerSession,
   ContainerStats,
   CreateSessionOptions,
-  EffortLevel,
   StartOptions,
   StreamMessage,
 } from './types'
+import type { RuntimeOptions } from './runtime-options'
 import { getSessionJsonlPath } from '../utils/file-storage'
 import { reviewManager } from '../proxy/review-manager'
+import { db } from '../db'
+import { connectedAccounts } from '../db/schema'
+
+export const MOCK_ACCOUNT_ID = 'mock-account-id'
+
+// E2E mock scenarios reference a fake connected account by id. The
+// /proxy-review/.../always endpoint persists an apiScopePolicies row whose
+// account_id has a FK on connected_accounts; without this seed the insert
+// fails and the route returns 500, breaking the "always allow" test.
+let mockAccountSeeded = false
+async function seedMockConnectedAccount(): Promise<void> {
+  if (mockAccountSeeded) return
+  const now = new Date()
+  await db.insert(connectedAccounts).values({
+    id: MOCK_ACCOUNT_ID,
+    composioConnectionId: MOCK_ACCOUNT_ID,
+    toolkitSlug: 'slack',
+    displayName: 'Mock Account',
+    status: 'active',
+    userId: null,
+    createdAt: now,
+    updatedAt: now,
+  }).onConflictDoNothing()
+  mockAccountSeeded = true
+}
 
 /**
  * Mock scenario interface for simulating different response patterns
@@ -533,10 +558,11 @@ export class ProxyReviewScenario implements MockScenario {
     // Now trigger the proxy review via ReviewManager
     const capturedDelay = delay
     setTimeout(async () => {
+      await seedMockConnectedAccount()
       // Fire-and-forget — the promise resolves when the user decides
       reviewManager.requestReview({
         agentSlug,
-        accountId: 'mock-account-id',
+        accountId: MOCK_ACCOUNT_ID,
         toolkit: this.toolkit,
         method: this.method,
         targetPath: this.targetPath,
@@ -729,6 +755,56 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   static defaultScenario: MockScenario = new SimpleTextResponseScenario(
     'This is a mock response from the E2E test container.'
   )
+
+  // Test recorders — capture composer options sent with each call so E2E specs
+  // can assert on them. Cleared via resetCallRecords().
+  static lastSendMessageCall: {
+    sessionId: string
+    content: string
+    effort?: string
+    model?: string
+  } | null = null
+  static sendMessageCalls: Array<{
+    sessionId: string
+    content: string
+    effort?: string
+    model?: string
+  }> = []
+  static lastCreateSessionCall: {
+    effort?: string
+    model?: string
+    initialMessage?: string
+  } | null = null
+  static createSessionCalls: Array<{
+    effort?: string
+    model?: string
+    initialMessage?: string
+  }> = []
+
+  static resetCallRecords(): void {
+    MockContainerClient.lastSendMessageCall = null
+    MockContainerClient.sendMessageCalls = []
+    MockContainerClient.lastCreateSessionCall = null
+    MockContainerClient.createSessionCalls = []
+  }
+
+  /**
+   * Append a record to a per-data-dir JSONL file for E2E test inspection.
+   * Tests read this file with `fs` to assert the runtime options the renderer
+   * sent through the full API path. No-op outside E2E mode.
+   */
+  private writeMockRecord(record: Record<string, unknown>): void {
+    if (process.env.E2E_MOCK !== 'true') return
+    try {
+      const dir = process.env.SUPERAGENT_DATA_DIR
+      if (!dir) return
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+      const file = path.join(dir, '.e2e-mock-recorder.jsonl')
+      fs.appendFileSync(file, JSON.stringify(record) + '\n')
+    } catch {
+      // Recording is best-effort — don't break the mock if the FS write fails.
+    }
+  }
 
   private config: ContainerConfig
   private running: boolean = false
@@ -958,6 +1034,26 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   // Session management
 
   async createSession(options: CreateSessionOptions): Promise<ContainerSession> {
+    // Record for E2E test assertions
+    MockContainerClient.lastCreateSessionCall = {
+      effort: options.effort,
+      model: options.model,
+      initialMessage: options.initialMessage,
+    }
+    MockContainerClient.createSessionCalls.push({
+      effort: options.effort,
+      model: options.model,
+      initialMessage: options.initialMessage,
+    })
+    this.writeMockRecord({
+      type: 'createSession',
+      agentSlug: this.config.agentId,
+      effort: options.effort,
+      model: options.model,
+      initialMessage: options.initialMessage,
+      timestamp: new Date().toISOString(),
+    })
+
     const sessionId = `session_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
     const now = new Date().toISOString()
 
@@ -1026,7 +1122,29 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   // Message operations
 
-  async sendMessage(sessionId: string, content: string, _uuid?: string, _effort?: EffortLevel): Promise<void> {
+  async sendMessage(sessionId: string, content: string, _uuid?: string, options?: RuntimeOptions): Promise<void> {
+    // Record for E2E test assertions
+    MockContainerClient.lastSendMessageCall = {
+      sessionId,
+      content,
+      effort: options?.effort,
+      model: options?.model,
+    }
+    MockContainerClient.sendMessageCalls.push({
+      sessionId,
+      content,
+      effort: options?.effort,
+      model: options?.model,
+    })
+    this.writeMockRecord({
+      type: 'sendMessage',
+      agentSlug: this.config.agentId,
+      sessionId,
+      content,
+      effort: options?.effort,
+      model: options?.model,
+      timestamp: new Date().toISOString(),
+    })
     const session = this.sessions.get(sessionId)
     if (!session) {
       throw new Error(`Session ${sessionId} not found`)

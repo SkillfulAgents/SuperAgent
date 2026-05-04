@@ -300,6 +300,15 @@ ipcMain.handle('get-window-maximized-state', () => {
   return mainWindow?.isMaximized() ?? false
 })
 
+// Reposition macOS traffic-light buttons to vertically center them in the
+// 48px top bar when the sidebar is collapsed (no sidebar header to align with).
+ipcMain.on('set-sidebar-collapsed', (_event, collapsed: boolean) => {
+  if (process.platform !== 'darwin' || !mainWindow) return
+  const y = collapsed ? 23 : 16
+  const x = collapsed ? 21 : 16
+  mainWindow.setWindowButtonPosition({ x, y })
+})
+
 // IPC handler for getting the API URL (port may vary)
 ipcMain.handle('get-api-url', () => {
   return `http://localhost:${actualApiPort}`

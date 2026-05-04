@@ -37,7 +37,7 @@ test.describe('Agent Lifecycle', () => {
     await agentPage.createAgent(agentName)
 
     // Click somewhere else (the sidebar header), then select the agent again
-    await page.locator('text=Super Agent').click()
+    await page.locator('text=SuperAgent').click()
     await agentPage.selectAgent(agentName)
 
     // Verify main content shows the agent

@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { useSendMessage, useUploadFile, useUploadFolder, useInterruptSession } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
-import { ArrowUp, Loader2, StopCircle, WifiOff } from 'lucide-react'
+import { ArrowUp, Loader2, Square, WifiOff } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
@@ -15,7 +15,7 @@ import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from './chat-composer-box'
-import { EffortSelector } from './effort-selector'
+import { ComposerOptions, useComposerOptions } from './composer-options'
 import { useRenderTracker } from '@renderer/lib/perf'
 import type { EffortLevel } from '@shared/lib/container/types'
 
@@ -25,25 +25,18 @@ interface MessageInputProps {
   onMessageSent?: (content: string) => void
   /** Effort level last used on this session; seeds the composer selector. Defaults to 'high' when absent. */
   initialEffort?: EffortLevel
+  /** Model last used on this session; seeds the composer selector. Defaults to provider's agent default. */
+  initialModel?: string
 }
 
-export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffort }: MessageInputProps) {
+export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffort, initialModel }: MessageInputProps) {
   useRenderTracker('MessageInput')
   const { canUseAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
   const lastTypingNotification = useRef(0)
   const [slashMenuOpen, setSlashMenuOpen] = useState(false)
   const [slashMenuIndex, setSlashMenuIndex] = useState(0)
-  const [effort, setEffort] = useState<EffortLevel>(initialEffort ?? 'high')
-  // If session data loads after this component mounts, seed effort from it once.
-  // After the first seed, user edits via setEffort take precedence.
-  const effortSeededRef = useRef(initialEffort !== undefined)
-  useEffect(() => {
-    if (!effortSeededRef.current && initialEffort !== undefined) {
-      setEffort(initialEffort)
-      effortSeededRef.current = true
-    }
-  }, [initialEffort])
+  const composerOptions = useComposerOptions({ initialEffort, initialModel })
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const sendMessage = useSendMessage()
   const uploadFile = useUploadFile()
@@ -66,9 +59,9 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffor
     ),
     onSubmit: useCallback(async (content: string) => {
       onMessageSent?.(content)
-      await sendMessage.mutateAsync({ sessionId, agentSlug, content, effort })
+      await sendMessage.mutateAsync({ sessionId, agentSlug, content, ...composerOptions.toRuntimeOptions() })
       track('message_sent')
-    }, [onMessageSent, sendMessage, sessionId, agentSlug, track, effort]),
+    }, [onMessageSent, sendMessage, sessionId, agentSlug, track, composerOptions]),
     submitDisabled: sendMessage.isPending || isActive || isOffline,
     draftKey: `session:${sessionId}`,
   })
@@ -134,15 +127,6 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffor
       console.error('Failed to interrupt session:', error)
     }
   }
-
-  // Auto-resize textarea
-  useEffect(() => {
-    const textarea = textareaRef.current
-    if (textarea) {
-      textarea.style.height = 'auto'
-      textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`
-    }
-  }, [composer.message])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Slash command menu keyboard navigation
@@ -228,11 +212,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffor
               onRecentFileAttach={(file) => composer.addFiles([{ file }])}
               disabled={isDisabled}
             />
-            <EffortSelector
-              value={effort}
-              onChange={setEffort}
-              disabled={isDisabled}
-            />
+            <ComposerOptions state={composerOptions} disabled={isDisabled} />
           </>
         )}
         rightActions={(
@@ -240,19 +220,18 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffor
             {isActive && (
               <Button
                 type="button"
-                variant="destructive"
-                className="h-[34px] px-3"
+                variant="outline"
+                size="icon"
+                className="h-[34px] w-[34px]"
                 onClick={handleInterrupt}
                 disabled={interruptSession.isPending}
                 data-testid="stop-button"
+                aria-label="Stop message"
               >
                 {interruptSession.isPending ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
-                  <>
-                    <StopCircle className="mr-2 h-4 w-4" />
-                    Stop
-                  </>
+                  <Square className="h-3.5 w-3.5 fill-current" />
                 )}
               </Button>
             )}
@@ -271,6 +250,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffor
                       className="h-[34px] w-[34px]"
                       disabled={!composer.canSubmit || sendMessage.isPending}
                       data-testid="send-button"
+                      aria-label="Send message"
                     >
                       {sendMessage.isPending || composer.isUploading ? (
                         <Loader2 className="h-4 w-4 animate-spin" />

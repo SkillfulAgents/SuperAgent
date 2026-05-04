@@ -99,6 +99,8 @@ export interface ApiSession {
   webhookTriggerName?: string
   // Last effort level used on this session (seeds the composer selector)
   effort?: EffortLevel
+  // Last model used on this session (seeds the composer selector)
+  model?: string
 }
 
 // ============================================================================

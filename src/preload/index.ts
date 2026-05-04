@@ -127,6 +127,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.send('focus-window')
   },
 
+  // Notify main of sidebar collapsed state so it can reposition macOS traffic lights
+  setSidebarCollapsed: (collapsed: boolean) => {
+    ipcRenderer.send('set-sidebar-collapsed', collapsed)
+  },
+
   // Tray visibility control
   setTrayVisible: (visible: boolean): Promise<void> => {
     return ipcRenderer.invoke('set-tray-visible', visible)
@@ -261,6 +266,7 @@ declare global {
       removeOpenSettings: () => void
       onOpenCreateAgent: (callback: () => void) => void
       removeOpenCreateAgent: () => void
+      setSidebarCollapsed: (collapsed: boolean) => void
       setTrayVisible: (visible: boolean) => Promise<void>
       showNotification: (title: string, body: string) => Promise<void>
       setBadgeCount: (count: number) => Promise<void>

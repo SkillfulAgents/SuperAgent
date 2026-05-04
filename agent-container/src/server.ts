@@ -141,7 +141,10 @@ app.post('/sessions/:id/messages', async (c) => {
     const body = await c.req.json<SendMessageRequest>();
     const content = typeof body.content === 'string' ? body.content : JSON.stringify(body.content);
 
-    await sessionManager.sendMessage(sessionId, content, body.uuid, body.effort);
+    await sessionManager.sendMessage(sessionId, content, body.uuid, {
+      effort: body.effort,
+      model: body.model,
+    });
 
     return c.json({ success: true }, 201);
   } catch (error: any) {
@@ -1401,7 +1404,10 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
       const payload = JSON.parse(data.toString());
       const content = typeof payload.content === 'string' ? payload.content : JSON.stringify(payload.content);
 
-      await sessionManager.sendMessage(sessionId, content, payload.uuid, payload.effort);
+      await sessionManager.sendMessage(sessionId, content, payload.uuid, {
+        effort: payload.effort,
+        model: payload.model,
+      });
     } catch (error: any) {
       console.error('Error handling WebSocket message:', error);
       ws.send(JSON.stringify({

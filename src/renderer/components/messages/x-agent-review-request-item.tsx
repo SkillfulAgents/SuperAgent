@@ -53,7 +53,7 @@ export function XAgentReviewRequestItem({
   const [allowMenuOpen, setAllowMenuOpen] = useState(false)
   const completeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isMountedRef = useRef(true)
-  const { selectAgent } = useSelection()
+  const { setAgent } = useSelection()
 
   useEffect(() => {
     isMountedRef.current = true
@@ -144,7 +144,7 @@ export function XAgentReviewRequestItem({
   const targetButton = targetIsActionable ? (
     <button
       type="button"
-      onClick={() => selectAgent(xAgent.targetAgentSlug)}
+      onClick={() => setAgent(xAgent.targetAgentSlug)}
       className="font-medium text-foreground hover:underline"
     >
       {xAgent.targetAgentName}

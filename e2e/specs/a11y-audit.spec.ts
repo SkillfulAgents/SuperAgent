@@ -38,9 +38,9 @@ test.describe('Accessibility Audit', () => {
     await agentPage.deleteAgent()
   })
 
-  test('global settings dialog has no critical a11y violations', async ({ page }) => {
+  test('global settings page has no critical a11y violations', async ({ page }) => {
     await page.locator('[data-testid="settings-button"]').click()
-    await expect(page.locator('[data-testid="global-settings-dialog"]')).toBeVisible()
+    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
 
     const results = await new AxeBuilder({ page })
       .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
@@ -69,7 +69,7 @@ test.describe('Accessibility Audit', () => {
   })
 
   test('new agent landing has no critical a11y violations', async ({ page }) => {
-    await page.locator('[data-testid="create-agent-button"]').click()
+    await page.locator('[data-testid="new-agent-button"]').click()
     // The new flow lands directly on the AgentHome for a fresh Untitled agent.
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
 

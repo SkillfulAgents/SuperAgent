@@ -42,6 +42,29 @@ vi.mock('@renderer/context/connectivity-context', () => ({
   ConnectivityProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
+const mockSettings = {
+  data: {
+    llmProvider: 'anthropic',
+    models: { agentModel: 'opus' },
+    llmProviderStatus: [
+      {
+        id: 'anthropic',
+        name: 'Anthropic',
+        isConfigured: true,
+        availableModels: [],
+        composerModels: [
+          { family: 'haiku', modelId: 'haiku', label: 'Haiku' },
+          { family: 'sonnet', modelId: 'sonnet', label: 'Sonnet' },
+          { family: 'opus', modelId: 'opus', label: 'Opus' },
+        ],
+      },
+    ],
+  },
+}
+vi.mock('@renderer/hooks/use-settings', () => ({
+  useSettings: () => mockSettings,
+}))
+
 describe('MessageInput', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -129,12 +152,14 @@ describe('MessageInput', () => {
       expect(onMessageSent).toHaveBeenCalledWith('Hello world')
     })
     await waitFor(() => {
-      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith({
-        sessionId: 's-1',
-        agentSlug: 'agent-1',
-        content: 'Hello world',
-        effort: 'high',
-      })
+      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: 's-1',
+          agentSlug: 'agent-1',
+          content: 'Hello world',
+          effort: 'high',
+        })
+      )
     })
   })
 
@@ -189,12 +214,14 @@ describe('MessageInput', () => {
     await user.click(screen.getByTestId('send-button'))
 
     await waitFor(() => {
-      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith({
-        sessionId: 's-1',
-        agentSlug: 'agent-1',
-        content: 'Hello by button',
-        effort: 'high',
-      })
+      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: 's-1',
+          agentSlug: 'agent-1',
+          content: 'Hello by button',
+          effort: 'high',
+        })
+      )
     })
   })
 
@@ -513,12 +540,14 @@ describe('MessageInput', () => {
       expect(onMessageSent).toHaveBeenCalledWith('Hello')
     })
     await waitFor(() => {
-      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith({
-        sessionId: 's-1',
-        agentSlug: 'agent-1',
-        content: 'Hello',
-        effort: 'high',
-      })
+      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: 's-1',
+          agentSlug: 'agent-1',
+          content: 'Hello',
+          effort: 'high',
+        })
+      )
     })
   })
 
@@ -562,12 +591,78 @@ describe('MessageInput', () => {
     await user.keyboard('{Enter}')
 
     await waitFor(() => {
-      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith({
-        sessionId: 's-1',
-        agentSlug: 'agent-1',
-        content: 'Run with medium effort',
-        effort: 'medium',
-      })
+      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: 's-1',
+          agentSlug: 'agent-1',
+          content: 'Run with medium effort',
+          effort: 'medium',
+        })
+      )
+    })
+  })
+
+  // ---- Model selector ----
+
+  it('seeds the model selector from initialModel prop', () => {
+    renderWithProviders(
+      <MessageInput sessionId="s-1" agentSlug="agent-1" initialModel="haiku" />
+    )
+    expect(screen.getByTestId('model-selector-trigger')).toHaveTextContent('Haiku')
+  })
+
+  it('falls back to settings.models.agentModel when initialModel is absent', () => {
+    renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+    // mockSettings.data.models.agentModel is 'opus'
+    expect(screen.getByTestId('model-selector-trigger')).toHaveTextContent('Opus')
+  })
+
+  it('sends the newly-picked model on submit', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(
+      <MessageInput sessionId="s-1" agentSlug="agent-1" initialModel="opus" />
+    )
+
+    await user.click(screen.getByTestId('model-selector-trigger'))
+    await user.click(await screen.findByTestId('model-option-haiku'))
+
+    const input = screen.getByTestId('message-input')
+    await user.type(input, 'Switch to haiku')
+    await user.keyboard('{Enter}')
+
+    await waitFor(() => {
+      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: 'haiku',
+          content: 'Switch to haiku',
+        })
+      )
+    })
+  })
+
+  it('sends both effort and model on submit', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(
+      <MessageInput sessionId="s-1" agentSlug="agent-1" />
+    )
+
+    await user.click(screen.getByTestId('effort-selector-trigger'))
+    await user.click(await screen.findByTestId('effort-option-low'))
+    await user.click(screen.getByTestId('model-selector-trigger'))
+    await user.click(await screen.findByTestId('model-option-sonnet'))
+
+    const input = screen.getByTestId('message-input')
+    await user.type(input, 'Combined')
+    await user.keyboard('{Enter}')
+
+    await waitFor(() => {
+      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          effort: 'low',
+          model: 'sonnet',
+          content: 'Combined',
+        })
+      )
     })
   })
 

@@ -67,6 +67,11 @@ vi.mock('@shared/lib/db/schema', () => ({
     userId: 'user_id',
     createdAt: 'created_at',
   },
+  agentRemoteMcps: {
+    id: 'id',
+    agentSlug: 'agent_slug',
+    remoteMcpId: 'remote_mcp_id',
+  },
 }))
 
 vi.mock('drizzle-orm', () => ({
@@ -734,5 +739,49 @@ describe('POST / — validation', () => {
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.error).toContain('initiate-oauth')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// GET /:id/agents — list agent slugs that have this MCP server mapped
+// ---------------------------------------------------------------------------
+describe('GET /:id/agents', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+  })
+
+  it('returns an empty list when the MCP has no agent mappings', async () => {
+    // GET /:id/agents calls .select(...).from(table).where(eq(...)) and awaits.
+    mockDbFrom.mockReturnValue({ where: vi.fn().mockResolvedValue([]) })
+
+    const res = await app.request('http://localhost/api/remote-mcps/m-1/agents')
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ agentSlugs: [] })
+  })
+
+  it('returns the slugs of every agent that has the MCP mapped', async () => {
+    mockDbFrom.mockReturnValue({
+      where: vi.fn().mockResolvedValue([
+        { agentSlug: 'alpha' },
+        { agentSlug: 'beta' },
+        { agentSlug: 'gamma' },
+      ]),
+    })
+
+    const res = await app.request('http://localhost/api/remote-mcps/m-2/agents')
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ agentSlugs: ['alpha', 'beta', 'gamma'] })
+  })
+
+  it('returns 500 when the DB query throws', async () => {
+    mockDbFrom.mockReturnValue({
+      where: vi.fn().mockRejectedValue(new Error('boom')),
+    })
+
+    const res = await app.request('http://localhost/api/remote-mcps/m-3/agents')
+    expect(res.status).toBe(500)
   })
 })
