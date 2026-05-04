@@ -8,6 +8,12 @@ import { EFFORT_LEVELS, type EffortLevel } from '@shared/lib/container/types'
 import type { ComposerModelFamily } from '@shared/lib/llm-provider'
 import type { ComposerOptionsState } from './composer-options'
 
+const FAMILY_LABEL: Record<ComposerModelFamily, string> = {
+  opus: 'Opus 4.7',
+  sonnet: 'Sonnet 4.6',
+  haiku: 'Haiku 4.5',
+}
+
 const FAMILY_BLURB: Record<ComposerModelFamily, string> = {
   haiku: 'Fastest and cheapest. Good for quick or simple tasks.',
   sonnet: 'Balanced speed and capability.',
@@ -112,8 +118,9 @@ function ComposerOptionsPopoverImpl({ state, disabled }: ComposerOptionsPopoverP
   )
 
   const effortLabel = EFFORT_META[effort].label
-  const triggerAriaLabel = selectedModel
-    ? `${selectedModel.label} · ${effortLabel}`
+  const selectedModelLabel = selectedModel ? FAMILY_LABEL[selectedModel.family] : undefined
+  const triggerAriaLabel = selectedModelLabel
+    ? `${selectedModelLabel} · ${effortLabel}`
     : effortLabel
 
   return (
@@ -129,9 +136,9 @@ function ComposerOptionsPopoverImpl({ state, disabled }: ComposerOptionsPopoverP
           data-testid="composer-options-trigger"
         >
           <span>
-            {selectedModel?.label}
+            {selectedModelLabel}
             <span className="text-muted-foreground">
-              {selectedModel ? ' · ' : ''}{effortLabel}
+              {selectedModelLabel ? ' · ' : ''}{effortLabel}
             </span>
           </span>
           <ChevronDown className="h-3.5 w-3.5" />
@@ -145,7 +152,7 @@ function ComposerOptionsPopoverImpl({ state, disabled }: ComposerOptionsPopoverP
               {composerModels.map((option) => (
                 <OptionRow
                   key={option.family}
-                  label={option.label}
+                  label={FAMILY_LABEL[option.family]}
                   blurb={FAMILY_BLURB[option.family]}
                   isSelected={option.modelId === selectedModel.modelId}
                   onClick={() => {

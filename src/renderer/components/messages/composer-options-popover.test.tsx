@@ -48,12 +48,12 @@ function Harness({
 describe('ComposerOptionsPopover', () => {
   it('renders the combined "Model · Effort" label on the trigger', () => {
     render(<Harness initialModel="opus" initialEffort="high" />)
-    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus · High')
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus 4.7 · High')
   })
 
   it('falls back to Sonnet on the trigger when no model is set', () => {
     render(<Harness initialModel={undefined} initialEffort="medium" />)
-    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Sonnet · Medium')
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Sonnet 4.6 · Medium')
   })
 
   it('opens the popover and shows both section headers and all model rows', async () => {
@@ -131,10 +131,10 @@ describe('ComposerOptionsPopover', () => {
   it('auto-resets effort to High when switching from Opus+xhigh to Sonnet', async () => {
     const user = userEvent.setup()
     render(<Harness initialModel="opus" initialEffort="xhigh" />)
-    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus · Extra High')
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus 4.7 · Extra High')
     await user.click(screen.getByTestId('composer-options-trigger'))
     await user.click(await screen.findByTestId('model-option-sonnet'))
-    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Sonnet · High')
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Sonnet 4.6 · High')
   })
 
   it('hides the Models section when composerModels is empty', async () => {
