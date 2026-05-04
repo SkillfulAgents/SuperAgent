@@ -18,7 +18,7 @@ import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
 import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
-import { HomeCrons } from './home-crons'
+import { HomeTriggers } from './home-triggers'
 import { HomeSkills } from './home-skills'
 import { HomeExtras } from './home-extras'
 import { HomeConnections } from './home-connections'
@@ -478,14 +478,14 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
           )}
         </div>
 
-        {/* Right Column — Crons + Connections + Skills + Volumes */}
+        {/* Right Column — Triggers + Connections + Skills + Volumes */}
         {showRightColumn && (
           <div className="space-y-3">
-            <HomeCrons
+            <HomeTriggers
               agentSlug={agent.slug}
               scheduledTasks={scheduledTasks}
-              formatDate={formatDate}
               onSelectTask={(taskId: string) => setView({ kind: 'task', id: taskId })}
+              onSelectWebhook={(webhookId: string) => setView({ kind: 'webhook', id: webhookId })}
             />
             <HomeConnections agentSlug={agent.slug} />
             <HomeSkills agentSlug={agent.slug} />
