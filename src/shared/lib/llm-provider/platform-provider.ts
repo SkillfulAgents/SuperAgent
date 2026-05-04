@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
-import { BaseLlmProvider, type ComposerModel, type ModelOption, type ModelPurpose } from './base-llm-provider'
+import { BaseLlmProvider, type ModelOption, type ModelPurpose } from './base-llm-provider'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import type { ApiKeyStatus } from '../config/settings'
@@ -52,14 +52,6 @@ export class PlatformLlmProvider extends BaseLlmProvider {
       case 'agent': return 'claude-opus-4-7'
       case 'browser': return 'claude-sonnet-4-6'
     }
-  }
-
-  getComposerModels(): ComposerModel[] {
-    return [
-      { family: 'opus', modelId: 'claude-opus-4-7', label: 'Opus' },
-      { family: 'sonnet', modelId: 'claude-sonnet-4-6', label: 'Sonnet' },
-      { family: 'haiku', modelId: 'claude-haiku-4-5', label: 'Haiku' },
-    ]
   }
 
   getContainerEnvVars(): Record<string, string | undefined> {

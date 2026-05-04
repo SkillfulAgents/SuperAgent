@@ -45,7 +45,7 @@ vi.mock('@renderer/context/connectivity-context', () => ({
 const mockSettings = {
   data: {
     llmProvider: 'anthropic',
-    models: { agentModel: 'claude-opus-4-7' },
+    models: { agentModel: 'opus' },
     llmProviderStatus: [
       {
         id: 'anthropic',
@@ -53,9 +53,9 @@ const mockSettings = {
         isConfigured: true,
         availableModels: [],
         composerModels: [
-          { family: 'haiku', modelId: 'claude-haiku-4-5', label: 'Haiku' },
-          { family: 'sonnet', modelId: 'claude-sonnet-4-6', label: 'Sonnet' },
-          { family: 'opus', modelId: 'claude-opus-4-7', label: 'Opus' },
+          { family: 'haiku', modelId: 'haiku', label: 'Haiku' },
+          { family: 'sonnet', modelId: 'sonnet', label: 'Sonnet' },
+          { family: 'opus', modelId: 'opus', label: 'Opus' },
         ],
       },
     ],
@@ -606,21 +606,21 @@ describe('MessageInput', () => {
 
   it('seeds the model selector from initialModel prop', () => {
     renderWithProviders(
-      <MessageInput sessionId="s-1" agentSlug="agent-1" initialModel="claude-haiku-4-5" />
+      <MessageInput sessionId="s-1" agentSlug="agent-1" initialModel="haiku" />
     )
     expect(screen.getByTestId('model-selector-trigger')).toHaveTextContent('Haiku')
   })
 
   it('falls back to settings.models.agentModel when initialModel is absent', () => {
     renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
-    // mockSettings.data.models.agentModel is claude-opus-4-7
+    // mockSettings.data.models.agentModel is 'opus'
     expect(screen.getByTestId('model-selector-trigger')).toHaveTextContent('Opus')
   })
 
   it('sends the newly-picked model on submit', async () => {
     const user = userEvent.setup()
     renderWithProviders(
-      <MessageInput sessionId="s-1" agentSlug="agent-1" initialModel="claude-opus-4-7" />
+      <MessageInput sessionId="s-1" agentSlug="agent-1" initialModel="opus" />
     )
 
     await user.click(screen.getByTestId('model-selector-trigger'))
@@ -633,7 +633,7 @@ describe('MessageInput', () => {
     await waitFor(() => {
       expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(
         expect.objectContaining({
-          model: 'claude-haiku-4-5',
+          model: 'haiku',
           content: 'Switch to haiku',
         })
       )
@@ -659,7 +659,7 @@ describe('MessageInput', () => {
       expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(
         expect.objectContaining({
           effort: 'low',
-          model: 'claude-sonnet-4-6',
+          model: 'sonnet',
           content: 'Combined',
         })
       )

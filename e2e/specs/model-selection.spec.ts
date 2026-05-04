@@ -88,7 +88,7 @@ test.describe('Model selection', () => {
     const record = await waitForRecord(
       (r) => r.type === 'createSession' && r.initialMessage === initialMessage
     )
-    expect(record.model).toBe('claude-opus-4-7')
+    expect(record.model).toBe('opus')
   })
 
   test('switching the model mid-session sends the new model on the next message', async ({ page }, testInfo) => {
@@ -108,13 +108,13 @@ test.describe('Model selection', () => {
     await sessionLink.click()
     await expect(page.locator('[data-testid="message-list"]')).toBeVisible()
 
-    // Initial createSession recorded with default model (claude-opus-4-7 from settings).
+    // Initial createSession recorded with first-session Opus default.
     // Filter on initialMessage — agentSlug stays as `untitled-XXXXX` even after
     // the display-name rename, so it isn't a stable test-unique key.
     const initialCreate = await waitForRecord(
       (r) => r.type === 'createSession' && r.initialMessage === testAgentName
     )
-    expect(initialCreate.model).toBe('claude-opus-4-7')
+    expect(initialCreate.model).toBe('opus')
 
     // Switch to Haiku in the in-session composer.
     await page.locator('[data-testid="model-selector-trigger"]').click()
@@ -130,7 +130,7 @@ test.describe('Model selection', () => {
     const sendRecord = await waitForRecord(
       (r) => r.type === 'sendMessage' && r.content === followUp
     )
-    expect(sendRecord.model).toBe('claude-haiku-4-5')
+    expect(sendRecord.model).toBe('haiku')
     expect(sendRecord.effort).toBe('low')
   })
 })

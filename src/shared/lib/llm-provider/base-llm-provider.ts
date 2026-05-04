@@ -60,10 +60,21 @@ export abstract class BaseLlmProvider {
 
   /**
    * Models surfaced in the composer's per-message family selector
-   * (Haiku / Sonnet / Opus). One entry per family, resolved to the
-   * provider's latest pinned model ID. Empty array hides the selector.
+   * (Haiku / Sonnet / Opus). The wire format is the family alias because
+   * the agent container's toModelAlias() collapses every pinned or
+   * region-prefixed ID to the alias before the SDK call — so all providers
+   * we support today (Anthropic, OpenRouter, Platform, Bedrock) share the
+   * same three options. Override only if a provider needs different
+   * families or wants to hide the selector by returning [].
+   * See agent-container/src/claude-code.ts:263.
    */
-  abstract getComposerModels(): ComposerModel[]
+  getComposerModels(): ComposerModel[] {
+    return [
+      { family: 'opus', modelId: 'opus', label: 'Opus' },
+      { family: 'sonnet', modelId: 'sonnet', label: 'Sonnet' },
+      { family: 'haiku', modelId: 'haiku', label: 'Haiku' },
+    ]
+  }
 
   /** Get env vars to inject into agent containers. */
   abstract getContainerEnvVars(): Record<string, string | undefined>

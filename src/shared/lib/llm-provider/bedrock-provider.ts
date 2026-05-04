@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import AnthropicBedrock from '@anthropic-ai/bedrock-sdk'
 import { getSettings, type ApiKeyStatus } from '../config/settings'
-import { BaseLlmProvider, type ComposerModel, type ModelOption, type ModelPurpose } from './base-llm-provider'
+import { BaseLlmProvider, type ModelOption, type ModelPurpose } from './base-llm-provider'
 
 export class BedrockLlmProvider extends BaseLlmProvider {
   readonly id = 'bedrock' as const
@@ -85,14 +85,6 @@ export class BedrockLlmProvider extends BaseLlmProvider {
       case 'agent': return 'us.anthropic.claude-sonnet-4-6'
       case 'browser': return 'us.anthropic.claude-sonnet-4-6'
     }
-  }
-
-  getComposerModels(): ComposerModel[] {
-    return [
-      { family: 'opus', modelId: 'us.anthropic.claude-opus-4-7', label: 'Opus' },
-      { family: 'sonnet', modelId: 'us.anthropic.claude-sonnet-4-6', label: 'Sonnet' },
-      { family: 'haiku', modelId: 'us.anthropic.claude-haiku-4-5-20251001-v1:0', label: 'Haiku' },
-    ]
   }
 
   getContainerEnvVars(): Record<string, string | undefined> {

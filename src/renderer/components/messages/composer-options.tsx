@@ -3,7 +3,7 @@ import { useSettings } from '@renderer/hooks/use-settings'
 import { EffortSelector } from './effort-selector'
 import { ModelSelector } from './model-selector'
 import type { EffortLevel } from '@shared/lib/container/types'
-import type { ComposerModel } from '@shared/lib/llm-provider'
+import type { ComposerModel, ComposerModelFamily } from '@shared/lib/llm-provider'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 
 /**
@@ -24,7 +24,7 @@ const DEFAULT_EFFORT: EffortLevel = 'high'
 export interface ComposerOptionsState {
   effort: EffortLevel
   setEffort: (e: EffortLevel) => void
-  /** Pinned model ID (e.g. "claude-opus-4-7"), or undefined while settings load. */
+  /** Family alias ("opus" | "sonnet" | "haiku"), or undefined while settings load. */
   model: string | undefined
   setModel: (m: string) => void
   /** Family options for the active provider; empty for providers with no family UX. */
@@ -38,10 +38,18 @@ export interface UseComposerOptionsArgs {
   initialEffort?: EffortLevel
   /** Model last used on this session, seeds the selector once if provided. */
   initialModel?: string
+  /**
+   * Preferred family for the initial model when neither `initialModel` nor a
+   * prior user selection applies. Wins over the user's "Default Model"
+   * setting. Used by AgentHome to start brand-new agents on Opus.
+   * Only consulted while the selector hasn't been seeded yet — once the user
+   * picks a model, their choice takes over.
+   */
+  preferredFamily?: ComposerModelFamily
 }
 
 export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerOptionsState {
-  const { initialEffort, initialModel } = args
+  const { initialEffort, initialModel, preferredFamily } = args
 
   // ---- Effort ----
   const [effort, setEffort] = useState<EffortLevel>(initialEffort ?? DEFAULT_EFFORT)
@@ -60,12 +68,17 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     () => settings?.llmProviderStatus?.find(p => p.id === activeProvider)?.composerModels ?? [],
     [settings, activeProvider]
   )
-  // Fallback hierarchy: user's "Default Model" → provider's Sonnet → first option.
+  // Fallback hierarchy: preferred family → user's "Default Model" → provider's
+  // Sonnet → first option. Preferred family wins over the user's "Default
+  // Model" setting (used for the first-session-Opus default in AgentHome).
+  // Family aliases are valid wire values (the container normalizes pinned
+  // IDs to aliases), so `preferredFamily` itself is a usable model string.
   const fallbackModel = useMemo(() => (
-    settings?.models?.agentModel
+    preferredFamily
+    ?? settings?.models?.agentModel
     ?? composerModels.find(m => m.family === 'sonnet')?.modelId
     ?? composerModels[0]?.modelId
-  ), [settings, composerModels])
+  ), [preferredFamily, settings, composerModels])
 
   // ---- Model ----
   const [model, setModel] = useState<string | undefined>(initialModel ?? fallbackModel)
