@@ -113,14 +113,13 @@ describe('MessageInput', () => {
     expect(screen.getByTestId('message-input')).not.toBeDisabled()
   })
 
-  it('shows both send and stop buttons when active, with send disabled', () => {
+  it('shows only the stop button when active', () => {
     mockStreamState.isActive = true
     renderWithProviders(
       <MessageInput sessionId="s-1" agentSlug="agent-1" />
     )
     expect(screen.getByTestId('stop-button')).toBeInTheDocument()
-    expect(screen.getByTestId('send-button')).toBeInTheDocument()
-    expect(screen.getByTestId('send-button')).toBeDisabled()
+    expect(screen.queryByTestId('send-button')).not.toBeInTheDocument()
   })
 
   it('does not submit message while agent is active', async () => {
