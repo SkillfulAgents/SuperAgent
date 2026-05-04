@@ -42,11 +42,16 @@ function getPlatformAccountIdForUserId(userId: string): string | null {
 }
 
 // ---- Attribution wire envelope --------------------------------------------
+//
+// Attribution is carried entirely via the bearer token. Org-scoped tokens
+// with a resolved acting member are encoded as `<token>::<memberId>`; the
+// platform proxy splits on `::` before JWT verification (JWT and access
+// keys never contain `:`, so the separator is unambiguous). Single-user
+// access keys pass through unchanged.
 
 export interface Attribution {
   applyTo(headers: Headers): void
-  toHeaderEntries(): Array<[string, string]>
-  toExtraHeaderEntries(): Array<[string, string]>
+  bearerToken(): string
   getKey(): string
 }
 
@@ -58,15 +63,13 @@ class PlatformAttribution implements Attribution {
   ) {}
 
   applyTo(headers: Headers): void {
-    for (const [name, value] of this.toHeaderEntries()) headers.set(name, value)
+    headers.set('Authorization', `Bearer ${this.bearerToken()}`)
   }
 
-  toHeaderEntries(): Array<[string, string]> {
-    return [['Authorization', `Bearer ${this.token}`], ...this.toExtraHeaderEntries()]
-  }
-
-  toExtraHeaderEntries(): Array<[string, string]> {
-    return this.orgScoped && this.memberId ? [['X-Platform-Member-Id', this.memberId]] : []
+  bearerToken(): string {
+    return this.orgScoped && this.memberId
+      ? `${this.token}::${this.memberId}`
+      : this.token
   }
 
   getKey(): string {

@@ -59,31 +59,13 @@ export class PlatformLlmProvider extends BaseLlmProvider {
     const proxyUrl = getPlatformProxyBaseUrl()
     const containerUrl = proxyUrl.replace('://localhost', '://host.docker.internal')
 
-    const baseToken = this.getEffectiveApiKey()
     const auth = attribution.current()
-    const customHeaderEntries = auth?.toExtraHeaderEntries() ?? []
-    const customHeaders =
-      customHeaderEntries.length > 0
-        ? customHeaderEntries.map(([name, value]) => `${name}: ${value}`).join('\n')
-        : undefined
-
-    // The container's `@anthropic-ai/claude-agent-sdk` chain doesn't honor
-    // `ANTHROPIC_CUSTOM_HEADERS` for SDK-driven outbound requests, so the
-    // X-Platform-Member-Id header alone won't reach the platform proxy.
-    // Embed the member id into the bearer token with `::` as a separator;
-    // the proxy splits on it before JWT verification. The custom header is
-    // still set as belt-and-suspenders for any code path that does honor it.
-    const memberHeaderEntry = customHeaderEntries.find(
-      ([name]) => name.toLowerCase() === 'x-platform-member-id'
-    )
-    const memberId = memberHeaderEntry?.[1]
-    const authToken = baseToken && memberId ? `${baseToken}::${memberId}` : baseToken
+    const authToken = auth?.bearerToken() ?? this.getEffectiveApiKey()
 
     return {
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_BASE_URL: containerUrl,
       ANTHROPIC_AUTH_TOKEN: authToken,
-      ANTHROPIC_CUSTOM_HEADERS: customHeaders,
     }
   }
 

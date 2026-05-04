@@ -5,7 +5,8 @@ import { attribution } from './index'
 /**
  * Wraps `globalThis.fetch` so any request whose URL starts with the
  * platform-proxy base URL automatically picks up the active attribution
- * (Authorization bearer + X-Platform-Member-Id) from the ALS scope.
+ * (Authorization bearer with the acting member encoded into the token)
+ * from the ALS scope.
  *
  * Other fetches pass through untouched. Idempotent — second call is a no-op.
  */
@@ -34,11 +35,10 @@ export function installPlatformFetchInterceptor(): void {
       attribution.current()?.applyTo(headers)
       if (debug) {
         const t0 = Date.now()
-        const memberId = headers.get('x-platform-member-id')
         const method = init?.method ?? 'GET'
         const res = await realFetch!(input, { ...init, headers })
         console.log(
-          `[platform-fetch] ${method} ${url} member=${memberId ?? '-'} -> ${res.status} (${Date.now() - t0}ms)`
+          `[platform-fetch] ${method} ${url} -> ${res.status} (${Date.now() - t0}ms)`
         )
         return res
       }

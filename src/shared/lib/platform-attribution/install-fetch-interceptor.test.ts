@@ -57,15 +57,14 @@ afterEach(() => {
 })
 
 describe('installPlatformFetchInterceptor', () => {
-  it('injects Authorization + X-Platform-Member-Id on platform-proxy URLs', async () => {
+  it('rewrites Authorization with the member-encoded bearer on platform-proxy URLs', async () => {
     await runWithRequestUser('user_alice', async () => {
       await fetch('https://proxy.test/v1/foo', { method: 'POST' })
     })
     expect(realFetchMock).toHaveBeenCalledTimes(1)
     const [, init] = realFetchMock.mock.calls[0]
     const headers = new Headers((init as RequestInit).headers)
-    expect(headers.get('Authorization')).toBe(`Bearer ${ORG_TOKEN}`)
-    expect(headers.get('X-Platform-Member-Id')).toBe('sub_alice')
+    expect(headers.get('Authorization')).toBe(`Bearer ${ORG_TOKEN}::sub_alice`)
   })
 
   it('passes through non-proxy URLs unchanged', async () => {
@@ -77,7 +76,6 @@ describe('installPlatformFetchInterceptor', () => {
     expect(url).toBe('https://api.anthropic.com/v1/messages')
     const headers = new Headers((init as RequestInit).headers)
     expect(headers.get('Authorization')).toBeNull()
-    expect(headers.get('X-Platform-Member-Id')).toBeNull()
     expect(headers.get('content-type')).toBe('application/json')
   })
 
@@ -86,7 +84,6 @@ describe('installPlatformFetchInterceptor', () => {
     const [, init] = realFetchMock.mock.calls[0]
     const headers = new Headers((init as RequestInit).headers)
     expect(headers.get('Authorization')).toBeNull()
-    expect(headers.get('X-Platform-Member-Id')).toBeNull()
   })
 
   it('preserves caller-supplied headers and init fields', async () => {
@@ -103,7 +100,7 @@ describe('installPlatformFetchInterceptor', () => {
     expect((init as RequestInit).body).toBe('{"k":1}')
     expect(headers.get('content-type')).toBe('application/json')
     expect(headers.get('x-custom')).toBe('1')
-    expect(headers.get('Authorization')).toBe(`Bearer ${ORG_TOKEN}`)
+    expect(headers.get('Authorization')).toBe(`Bearer ${ORG_TOKEN}::sub_alice`)
   })
 
   it('is idempotent — second install call does nothing', async () => {

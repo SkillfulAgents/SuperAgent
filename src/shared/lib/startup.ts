@@ -72,10 +72,10 @@ export async function initializeServices() {
   }
 
   // When running with an org-scoped platform JWT, install a global fetch
-  // interceptor that auto-injects the active attribution headers
-  // (Authorization + X-Platform-Member-Id) on every outbound request to the
-  // platform proxy. Opaque access keys (single-user installs) don't need
-  // member attribution, so we skip the interceptor entirely.
+  // interceptor that rewrites outbound platform-proxy requests to carry
+  // the active attribution (Authorization bearer with the acting member
+  // encoded into the token). Opaque access keys (single-user installs)
+  // don't need attribution, so we skip the interceptor entirely.
   try {
     const platformToken = getPlatformAccessToken()
     if (platformToken && decodeOrgIdFromToken(platformToken) !== null) {

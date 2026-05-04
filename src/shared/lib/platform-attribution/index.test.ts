@@ -84,7 +84,8 @@ describe('attribution.fromCurrentRequest', () => {
       const headers = new Headers()
       auth?.applyTo(headers)
 
-      expect(headers.get('X-Platform-Member-Id')).toBe('sub_user_123')
+      expect(headers.get('Authorization')).toBe(`Bearer ${ORG_TOKEN}::sub_user_123`)
+      expect(auth?.bearerToken()).toBe(`${ORG_TOKEN}::sub_user_123`)
       expect(auth?.getKey()).toBe('member:sub_user_123')
     })
   })
@@ -99,7 +100,7 @@ describe('attribution.fromUserId', () => {
     const auth = attribution.fromUserId('user_alice')
     const headers = new Headers()
     auth?.applyTo(headers)
-    expect(headers.get('X-Platform-Member-Id')).toBe('sub_user_123')
+    expect(headers.get('Authorization')).toBe(`Bearer ${ORG_TOKEN}::sub_user_123`)
   })
 })
 
@@ -136,13 +137,13 @@ describe('attribution.current', () => {
 describe('access-key path', () => {
   beforeEach(() => mockGetPlatformAccessToken.mockReturnValue(ACCESS_KEY))
 
-  it('omits X-Platform-Member-Id and uses the access_key cache key', () => {
+  it('passes the access key through unchanged and uses the access_key cache key', () => {
     const auth = attribution.fromUserId('user_alice')
     const headers = new Headers()
     auth?.applyTo(headers)
 
     expect(headers.get('Authorization')).toBe(`Bearer ${ACCESS_KEY}`)
-    expect(headers.get('X-Platform-Member-Id')).toBeNull()
+    expect(auth?.bearerToken()).toBe(ACCESS_KEY)
     expect(auth?.getKey()).toBe('access_key')
   })
 
