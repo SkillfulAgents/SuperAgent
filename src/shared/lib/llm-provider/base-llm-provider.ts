@@ -70,9 +70,9 @@ export abstract class BaseLlmProvider {
    */
   getComposerModels(): ComposerModel[] {
     return [
-      { family: 'opus', modelId: 'opus', label: 'Opus' },
-      { family: 'sonnet', modelId: 'sonnet', label: 'Sonnet' },
-      { family: 'haiku', modelId: 'haiku', label: 'Haiku' },
+      { family: 'opus', modelId: 'opus', label: 'Opus 4.7' },
+      { family: 'sonnet', modelId: 'sonnet', label: 'Sonnet 4.6' },
+      { family: 'haiku', modelId: 'haiku', label: 'Haiku 4.5' },
     ]
   }
 
