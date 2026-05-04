@@ -12,6 +12,11 @@ import { getActiveProvider, stopAllProviders } from '../../main/host-browser'
 import { listAgents } from './services/agent-service'
 import { isAuthMode } from './auth/mode'
 import { validateAuthModeStartup } from './auth/startup-validation'
+import {
+  decodeOrgIdFromToken,
+  installPlatformFetchInterceptor,
+} from './platform-attribution'
+import { getPlatformAccessToken } from './services/platform-auth-service'
 import { setupBrowserStreamProxy } from '../../main/browser-stream-proxy'
 import { setServerAnalyticsVersion } from './analytics/server-analytics'
 import { APP_VERSION } from './config/version'
@@ -65,6 +70,21 @@ export async function initializeServices() {
   if (isAuthMode()) {
     await validateAuthModeStartup()
   }
+
+  // When running with an org-scoped platform JWT, install a global fetch
+  // interceptor that auto-injects the active attribution headers
+  // (Authorization + X-Platform-Member-Id) on every outbound request to the
+  // platform proxy. Opaque access keys (single-user installs) don't need
+  // member attribution, so we skip the interceptor entirely.
+  try {
+    const platformToken = getPlatformAccessToken()
+    if (platformToken && decodeOrgIdFromToken(platformToken) !== null) {
+      installPlatformFetchInterceptor()
+    }
+  } catch (error) {
+    captureException(error, { tags: { component: 'startup', operation: 'install-fetch-interceptor' } })
+  }
+
   // Initialize container manager with all agents
   const agents = await listAgents()
   const slugs = agents.map((a) => a.slug)

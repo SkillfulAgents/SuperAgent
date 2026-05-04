@@ -118,3 +118,5 @@ export const attribution = {
     return attributionContext.getStore()?.auth ?? fromCurrentRequest()
   },
 } as const
+
+export { installPlatformFetchInterceptor } from './install-fetch-interceptor'
