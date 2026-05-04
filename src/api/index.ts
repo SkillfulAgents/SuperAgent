@@ -46,6 +46,17 @@ if (process.type !== 'browser') {
 const trustedOrigins = process.env.TRUSTED_ORIGINS?.split(',').map(o => o.trim()).filter(Boolean)
 app.use('*', cors(trustedOrigins?.length ? { origin: trustedOrigins } : undefined))
 
+// Diagnostic: when DEBUG_PLATFORM_API=1, log every API request with method,
+// path, status, and duration. Disabled by default — zero runtime cost.
+if (process.env.DEBUG_PLATFORM_API === '1') {
+  app.use('/api/*', async (c, next) => {
+    const t0 = Date.now()
+    await next()
+    const ms = Date.now() - t0
+    console.log(`[api] ${c.req.method} ${c.req.path} -> ${c.res.status} (${ms}ms)`)
+  })
+}
+
 // Local mode: localhost IP restriction for all API endpoints (except container-facing endpoints)
 if (!isAuthMode()) {
   const localModeAuth = LocalModeAuth()
