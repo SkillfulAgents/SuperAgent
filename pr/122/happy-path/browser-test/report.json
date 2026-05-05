@@ -1,0 +1,26 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Agent successfully executed browser navigation to https://example.com, retrieved the page title, and returned \"Example Domain\" in the response as expected.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully with SuperAgent interface showing three agents in the sidebar.",
+    "Found agent \"QA-20260505-011212-wb7u\" in the sidebar and clicked it — Agent opened successfully showing the chat interface with empty message history.",
+    "Clicked on message input textbox — Textbox became focused and active.",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was entered in the input field.",
+    "Clicked Send message button — Message was sent successfully, agent status changed to \"working\", and a task \"Browser Navigation to Example.com\" appeared in the sidebar.",
+    "Waited up to 3 minutes for response with \"Example Domain\" text — Response arrived within 7 seconds. Agent executed two browser tool calls: \"Open Browser https://example.com\" and \"Browser Command $ get title\".",
+    "Verified response mentions \"Example Domain\" — Response clearly states \"The page title is Example Domain.\" Browser preview panel shows the actual Example Domain page loaded on the right side.",
+    "Took final screenshot — Screenshot captured showing the complete chat interface with the agent's response, browser tool cards, and live browser preview panel displaying the Example Domain page."
+  ],
+  "bugs": [],
+  "durationMs": 80177,
+  "sessionId": "32a28dca-dee9-4dd6-a41a-17e4d9892de0",
+  "cost": {
+    "inputTokens": 234,
+    "outputTokens": 8010,
+    "cacheCreationTokens": 39844,
+    "cacheReadTokens": 825072,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.172596
+  }
+}
