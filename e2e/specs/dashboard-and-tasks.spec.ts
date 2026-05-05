@@ -64,13 +64,13 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
     // Wait for the tool call to complete
     await sessionPage.expectToolCall('mcp__user-input__schedule_task', 15000)
 
-    // Scheduled tasks now live on the agent home page (under the "Crons"
+    // Scheduled tasks now live on the agent home page (under the "Triggers"
     // section), not in the sidebar. Click the agent row to clear the session
     // selection and land on AgentHome.
     await agentPage.selectAgent(agentName)
 
     const main = appPage.getMainContent()
-    await expect(main.getByText('Crons')).toBeVisible({ timeout: 5000 })
+    await expect(main.getByText('Triggers')).toBeVisible({ timeout: 5000 })
     await expect(main.getByText('Daily Issue Summary')).toBeVisible({ timeout: 10000 })
   })
 })
