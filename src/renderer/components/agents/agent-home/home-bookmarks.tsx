@@ -1,15 +1,8 @@
 import { useState } from 'react'
-import { ExternalLink, FileDown, Pencil, Trash2 } from 'lucide-react'
-import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
+import { ArrowDownToLine, ArrowUpRight, File, Globe, MoreVertical, Pencil, Trash2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuTrigger,
-  ContextMenuSeparator,
-} from '@renderer/components/ui/context-menu'
+import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import {
   Dialog,
   DialogContent,
@@ -29,15 +22,12 @@ import {
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
 import { getApiBaseUrl } from '@renderer/lib/env'
+import { HomeCollapsible } from './home-collapsible'
 import { useBookmarks, useUpdateBookmarks, type Bookmark } from '@renderer/hooks/use-bookmarks'
 
 interface HomeBookmarksProps {
   agentSlug: string
   isOwner?: boolean
-}
-
-function getFilename(filePath: string): string {
-  return filePath.split('/').pop() || filePath
 }
 
 function getRelativePath(filePath: string): string {
@@ -58,14 +48,14 @@ function LinkIcon({ link }: { link: string }) {
   const [failed, setFailed] = useState(false)
 
   if (!favicon || failed) {
-    return <ExternalLink className="h-4 w-4 shrink-0 text-muted-foreground" />
+    return <Globe className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
   }
 
   return (
     <img
       src={favicon}
       alt=""
-      className="h-4 w-4 shrink-0 rounded-sm"
+      className="h-3.5 w-3.5 shrink-0 rounded-sm"
       onError={() => setFailed(true)}
     />
   )
@@ -84,51 +74,81 @@ function BookmarkRow({
   onRename: () => void
   onDelete: () => void
 }) {
-  const inner = bookmark.link ? (
-    <a
-      href={bookmark.link}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="group flex items-center gap-3 py-2.5 px-1 hover:bg-muted/50 transition-colors"
-    >
-      <LinkIcon link={bookmark.link} />
-      <span className="text-xs font-medium truncate">{bookmark.name}</span>
-      <ExternalLink className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity ml-auto" />
-    </a>
-  ) : bookmark.file ? (
-    <a
-      href={`${getApiBaseUrl()}/api/agents/${agentSlug}/files/${getRelativePath(bookmark.file)}`}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="group flex items-center gap-3 py-2.5 px-1 hover:bg-muted/50 transition-colors"
-    >
-      <FileTypeIcon filename={getFilename(bookmark.file)} size={16} />
-      <span className="text-xs font-medium truncate">{bookmark.name}</span>
-      <FileDown className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity ml-auto" />
-    </a>
-  ) : null
+  const [menuOpen, setMenuOpen] = useState(false)
 
-  if (!inner) return null
+  const href = bookmark.link
+    ? bookmark.link
+    : bookmark.file
+      ? `${getApiBaseUrl()}/api/agents/${agentSlug}/files/${getRelativePath(bookmark.file)}`
+      : null
 
-  if (!isOwner) return inner
+  if (!href) return null
+
+  const icon = bookmark.link ? (
+    <LinkIcon link={bookmark.link} />
+  ) : (
+    <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+  )
 
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
-        {inner}
-      </ContextMenuTrigger>
-      <ContextMenuContent className="w-44">
-        <ContextMenuItem onClick={onRename}>
-          <Pencil className="h-3.5 w-3.5 mr-2" />
-          Rename
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem className="text-destructive focus:text-destructive" onClick={onDelete}>
-          <Trash2 className="h-3.5 w-3.5 mr-2" />
-          Delete
-        </ContextMenuItem>
-      </ContextMenuContent>
-    </ContextMenu>
+    <div className="group relative">
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="flex items-center gap-2 py-3 px-4 hover:bg-muted/50 transition-colors min-w-0"
+      >
+        {icon}
+        <span className="text-xs font-medium truncate shrink-0">{bookmark.name}</span>
+        <span className="text-[11px] text-muted-foreground truncate min-w-0">
+          {bookmark.link ?? (bookmark.file ? getRelativePath(bookmark.file) : '')}
+        </span>
+        {bookmark.link ? (
+          <ArrowUpRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+        ) : (
+          <ArrowDownToLine className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+        )}
+      </a>
+      {isOwner && (
+        <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+          <Popover open={menuOpen} onOpenChange={setMenuOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                size="icon"
+                variant="outline"
+                className="h-6 w-6"
+                aria-label="Bookmark actions"
+              >
+                <MoreVertical className="h-3.5 w-3.5" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-36 p-1">
+              <button
+                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                onClick={() => {
+                  setMenuOpen(false)
+                  onRename()
+                }}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+                Rename
+              </button>
+              <button
+                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition-colors"
+                onClick={() => {
+                  setMenuOpen(false)
+                  onDelete()
+                }}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Delete
+              </button>
+            </PopoverContent>
+          </Popover>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -138,8 +158,6 @@ export function HomeBookmarks({ agentSlug, isOwner = false }: HomeBookmarksProps
   const [renameIndex, setRenameIndex] = useState<number | null>(null)
   const [deleteIndex, setDeleteIndex] = useState<number | null>(null)
   const [newName, setNewName] = useState('')
-
-  if (!bookmarks || bookmarks.length === 0) return null
 
   const handleRename = async () => {
     if (renameIndex == null || !bookmarks) return
@@ -161,21 +179,26 @@ export function HomeBookmarks({ agentSlug, isOwner = false }: HomeBookmarksProps
   }
 
   return (
-    <div>
-      <h2 className="text-sm font-medium text-muted-foreground mb-1">Bookmarks</h2>
-      <div className="border-b mb-1" />
-      <div className="divide-y divide-border/50">
-        {bookmarks.map((bookmark, i) => (
-          <BookmarkRow
-            key={bookmark.link ?? bookmark.file ?? i}
-            bookmark={bookmark}
-            agentSlug={agentSlug}
-            isOwner={isOwner}
-            onRename={() => { setNewName(bookmark.name); setRenameIndex(i) }}
-            onDelete={() => setDeleteIndex(i)}
-          />
-        ))}
-      </div>
+    <HomeCollapsible title="Bookmarks">
+      {bookmarks && bookmarks.length > 0 ? (
+        <div className="mt-2 divide-y divide-border/50">
+          {bookmarks.map((bookmark, i) => (
+            <BookmarkRow
+              key={bookmark.link ?? bookmark.file ?? i}
+              bookmark={bookmark}
+              agentSlug={agentSlug}
+              isOwner={isOwner}
+              onRename={() => { setNewName(bookmark.name); setRenameIndex(i) }}
+              onDelete={() => setDeleteIndex(i)}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
+          <p className="text-xs font-medium text-foreground">No bookmarks yet</p>
+          <p className="text-xs mt-1">Your agent automatically saves links and files here for quick access. You can also ask it to bookmark something for you.</p>
+        </div>
+      )}
 
       <Dialog open={renameIndex != null} onOpenChange={(open) => { if (!open) setRenameIndex(null) }}>
         <DialogContent className="overflow-hidden">
@@ -205,7 +228,7 @@ export function HomeBookmarks({ agentSlug, isOwner = false }: HomeBookmarksProps
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Bookmark</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete &quot;{deleteIndex != null ? bookmarks[deleteIndex]?.name : ''}&quot;?
+              Are you sure you want to delete &quot;{deleteIndex != null && bookmarks ? bookmarks[deleteIndex]?.name : ''}&quot;?
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -220,6 +243,6 @@ export function HomeBookmarks({ agentSlug, isOwner = false }: HomeBookmarksProps
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </HomeCollapsible>
   )
 }

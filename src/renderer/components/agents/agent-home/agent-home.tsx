@@ -421,9 +421,6 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                 />
               </form>
 
-              {/* Bookmarks */}
-              <HomeBookmarks agentSlug={agent.slug} isOwner={isOwner} />
-
               {/* Sessions list / creation aids */}
               <div className={sessions.length > 0 ? 'pt-2' : '-mt-5'}>
                 {sessions.length > 0 ? (
@@ -487,6 +484,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
               onSelectTask={(taskId: string) => setView({ kind: 'task', id: taskId })}
               onSelectWebhook={(webhookId: string) => setView({ kind: 'webhook', id: webhookId })}
             />
+            <HomeBookmarks agentSlug={agent.slug} isOwner={isOwner} />
             <HomeConnections agentSlug={agent.slug} />
             <HomeSkills agentSlug={agent.slug} />
             <HomeVolumes agentSlug={agent.slug} />
