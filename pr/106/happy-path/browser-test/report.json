@@ -1,25 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the SuperAgent can successfully execute browser tasks by requesting it to open a browser, navigate to example.com, retrieve the page title, and confirm it returns \"Example Domain\"",
+  "reason": "Verified that the browser-use feature successfully allows an agent to open a browser, navigate to a URL, retrieve page information, and display the results in the chat interface with browser tool call cards and live preview.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully showing SuperAgent interface with agent list in sidebar",
-    "Located and clicked the \"QA-20260504-195057-wvgk\" agent in sidebar — Agent page opened, showing chat interface with message input box and agent configuration options",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into input box — Message was entered correctly in the textbox",
-    "Clicked Send message button — Message was sent successfully, agent status changed to \"working\", and a new subtask \"Browser Page Title Check\" appeared in the sidebar",
-    "Waited up to 3 minutes for response — Agent completed the task in 6 seconds and returned response: \"The page title is \"Example Domain\".\"",
-    "Verified response mentions \"Example Domain\" — Response clearly contains \"Example Domain\" as the page title, confirming successful browser navigation and page title retrieval",
-    "Took full page screenshot — Screenshot captured showing the complete interaction including the user message, browser tool calls (Open Browser and Browser Command), the response text with \"Example Domain\", and the live browser preview panel on the right showing the Example Domain webpage"
+    "Step 1 - Navigated to http://localhost:47891 — Page loaded successfully showing the SuperAgent interface with three agents in the sidebar and main area.",
+    "Step 2 - Found and clicked the \"QA-20260505-015542-2w0l\" agent button in the main area — Agent interface opened with chat input field and configuration options visible.",
+    "Step 3 - Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully entered in the chat input field and sent by clicking the send button. Agent status changed to \"working\".",
+    "Step 4 - Waited up to 3 minutes for agent response — Agent completed the task within 7 seconds. Two browser tool calls were executed and displayed: \"Open Browser https://example.com\" and \"Browser Command $ get title\", both showing success status with green checkmarks.",
+    "Step 5 - Verified response mentions \"Example Domain\" — Response clearly states \"The page title is Example Domain.\" The browser preview panel on the right displays the example.com page with the title \"Example Domain\" visible. Activity log shows both browser operations that were performed."
   ],
   "bugs": [],
-  "durationMs": 86252,
-  "sessionId": "906f7fe0-9954-49aa-861e-0f5f8b97b2fa",
+  "durationMs": 91939,
+  "sessionId": "cd0702cb-90b7-45c7-8e84-1aefc0935ea7",
   "cost": {
-    "inputTokens": 234,
-    "outputTokens": 8098,
-    "cacheCreationTokens": 40091,
-    "cacheReadTokens": 824341,
+    "inputTokens": 288,
+    "outputTokens": 9081,
+    "cacheCreationTokens": 126301,
+    "cacheReadTokens": 997670,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.173272
+    "totalCostUsd": 0.303336
   }
 }

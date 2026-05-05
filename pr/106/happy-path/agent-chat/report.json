@@ -1,24 +1,25 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "Agent successfully received and responded to a simple math question with the correct answer.",
+  "reason": "Agent responded correctly to a math question within seconds, confirming agent is functional and responsive.",
   "steps": [
-    "Navigated to http://localhost:47891 - Application loaded successfully with sidebar showing three agents.",
-    "Clicked on \"QA-20260504-195056-j50q\" agent in sidebar - Agent detail page loaded with status \"idle\" and message input visible.",
-    "Verified agent status is \"running\" or \"idle\" - Status indicator confirmed agent was \"idle\".",
-    "Sent message \"Hello! What is 2+2?\" - Message was typed into the input box and sent via send button.",
-    "Waited up to 3 minutes for a response - Response was received within seconds, showing a new session \"Quick Math Question Session\" was created.",
-    "Verified the response mentions \"4\" - Agent response displayed \"4\" in the chat view, confirming the correct answer was provided."
+    "Navigated to http://localhost:47891 — Page loaded successfully with agent list visible in sidebar",
+    "Found \"QA-20260505-015541-kc1h\" agent in sidebar and clicked it — Agent page opened and loaded successfully",
+    "Verified agent status is \"running\" or \"idle\" — Status showed \"idle\" before message, then \"working\" while processing response",
+    "Clicked message input field and typed \"Hello! What is 2+2?\" — Message typed successfully into input field",
+    "Clicked Send message button — Message sent successfully and chat view appeared",
+    "Waited for response (received within 1 second, well under 3-minute timeout) — Agent responded with \"4\"",
+    "Verified response mentions \"4\" and took screenshot — Response clearly shows \"4\" as the answer to the math question"
   ],
   "bugs": [],
-  "durationMs": 58225,
-  "sessionId": "c92d4162-2566-4812-b1ba-d06bd69d0523",
+  "durationMs": 61338,
+  "sessionId": "a358994c-1ff0-4746-892f-34b70f4cab74",
   "cost": {
-    "inputTokens": 234,
-    "outputTokens": 7516,
-    "cacheCreationTokens": 118867,
-    "cacheReadTokens": 775783,
+    "inputTokens": 309,
+    "outputTokens": 8465,
+    "cacheCreationTokens": 126950,
+    "cacheReadTokens": 1108271,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.263976
+    "totalCostUsd": 0.312149
   }
 }
