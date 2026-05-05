@@ -11,6 +11,7 @@
  */
 const fs = require('fs')
 const path = require('path')
+const { execFileSync } = require('child_process')
 
 const dataDir = process.env.SUPERAGENT_DATA_DIR
 if (!dataDir) {
@@ -31,14 +32,20 @@ for (const file of ['superagent.db', 'superagent.db-wal', 'superagent.db-shm']) 
 // Remove agents directory
 try { fs.rmSync(path.join(resolvedDir, 'agents'), { recursive: true }) } catch {}
 
-// Seed a fake skillset on disk so /discoverable-skills returns content without
-// needing a real git remote. The skillset-service treats a directory as a
-// cached skillset whenever it contains a `.git/` subfolder; install copies
-// files locally without invoking git, so this is enough.
+// Seed a fake skillset on disk so /discoverable-skills returns content
+// without needing a real git remote.
+//
+// IMPORTANT: this MUST be a real `git init` repo, not just an empty `.git/`
+// stub. The skillset-service runs `git remote set-url origin …` and
+// `git pull` against this directory — and if `.git/` is malformed, git walks
+// up the directory tree and operates on the project's repo instead, silently
+// rewriting our actual origin URL. Real `git init` keeps git scoped here.
 const SKILLSET_ID = 'e2e-test-skillset'
 const SKILLSET_REPO_DIR = path.join(resolvedDir, 'skillset-cache', SKILLSET_ID)
+const SKILLSET_FAKE_URL = 'https://localhost.invalid/e2e-test-skillset'
 fs.rmSync(SKILLSET_REPO_DIR, { recursive: true, force: true })
-fs.mkdirSync(path.join(SKILLSET_REPO_DIR, '.git'), { recursive: true })
+fs.mkdirSync(SKILLSET_REPO_DIR, { recursive: true })
+execFileSync('git', ['init', '-q'], { cwd: SKILLSET_REPO_DIR })
 
 const SKILLSET_INDEX = {
   skillset_name: 'E2E Test Skillset',
@@ -101,6 +108,14 @@ This skill requires an environment variable to be configured.
 `,
 )
 
+// Commit the seed and add a fake origin. The commit makes this a valid git
+// repo so subsequent `git remote set-url` / `git fetch` calls stay scoped to
+// this directory rather than walking up to the host project.
+const GIT_AUTHOR = ['-c', 'user.email=e2e@local', '-c', 'user.name=E2E Setup', '-c', 'commit.gpgsign=false']
+execFileSync('git', [...GIT_AUTHOR, 'add', '.'], { cwd: SKILLSET_REPO_DIR, stdio: 'pipe' })
+execFileSync('git', [...GIT_AUTHOR, 'commit', '-q', '-m', 'seed'], { cwd: SKILLSET_REPO_DIR, stdio: 'pipe' })
+execFileSync('git', ['remote', 'add', 'origin', SKILLSET_FAKE_URL], { cwd: SKILLSET_REPO_DIR, stdio: 'pipe' })
+
 // Build settings
 const settings = {
   container: {
@@ -112,7 +127,7 @@ const settings = {
   skillsets: [
     {
       id: SKILLSET_ID,
-      url: 'https://github.com/example/e2e-test-skillset',
+      url: SKILLSET_FAKE_URL,
       name: 'E2E Test Skillset',
       description: 'Fake skillset seeded for Playwright tests',
       addedAt: new Date().toISOString(),
