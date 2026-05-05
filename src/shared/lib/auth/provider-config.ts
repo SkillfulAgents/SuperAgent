@@ -152,25 +152,12 @@ function resolveEnvAuthProviders(): AuthProviderSettings[] {
 
   try {
     const parsed = JSON.parse(raw) as unknown
-    if (!Array.isArray(parsed)) {
-      reportProviderConfigError(
-        new Error('AUTH_PROVIDERS_JSON must be a JSON array'),
-        'schema-env-providers',
-      )
+    const result = z.array(AuthProviderSettingsSchema).safeParse(parsed)
+    if (!result.success) {
+      reportProviderConfigError(result.error, 'schema-env-providers')
       return cacheResolvedAuthProviders(raw, [])
     }
-
-    const providers: AuthProviderSettings[] = []
-    parsed.forEach((provider, index) => {
-      const result = AuthProviderSettingsSchema.safeParse(provider)
-      if (result.success) {
-        providers.push(result.data)
-        return
-      }
-      reportProviderConfigError(result.error, 'schema-env-provider', { index })
-    })
-
-    return cacheResolvedAuthProviders(raw, providers)
+    return cacheResolvedAuthProviders(raw, result.data)
   } catch (error) {
     reportProviderConfigError(error, 'parse-env-providers')
     return cacheResolvedAuthProviders(raw, [])

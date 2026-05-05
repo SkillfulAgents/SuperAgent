@@ -120,7 +120,7 @@ describe('getPublicAuthProviders', () => {
     expect(getGenericOAuthProviderConfigs().map((provider) => provider.providerId)).toEqual(['enabled-sso'])
   })
 
-  it('drops malformed entries while preserving valid providers', () => {
+  it('rejects the whole AUTH_PROVIDERS_JSON when any entry is malformed', () => {
     process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
       {
         id: 'company-sso',
@@ -134,12 +134,11 @@ describe('getPublicAuthProviders', () => {
       },
     ])
 
-    expect(getPublicAuthProviders().map((provider) => provider.id)).toEqual(['company-sso'])
+    expect(getPublicAuthProviders()).toEqual([])
     expect(mockCaptureException).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
-        tags: expect.objectContaining({ area: 'auth', op: 'schema-env-provider' }),
-        extra: expect.objectContaining({ index: 1 }),
+        tags: expect.objectContaining({ area: 'auth', op: 'schema-env-providers' }),
       }),
     )
   })
