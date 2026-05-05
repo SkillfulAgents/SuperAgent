@@ -6,15 +6,17 @@
  */
 
 import { useState } from 'react'
-import { Trash2, Play, Pencil, Loader2, Settings as SettingsIcon, Pause } from 'lucide-react'
-import { RelatedSessions, type SortOrder } from '@renderer/components/sessions/related-sessions'
-import { SortPopover } from '@renderer/components/sessions/sort-popover'
+import { Trash2, Play, Pencil, Loader2, Settings as SettingsIcon } from 'lucide-react'
 import { useHumanizedCron } from '@renderer/hooks/use-humanized-cron'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
-import { Switch } from '@renderer/components/ui/switch'
 import { TimezonePicker } from '@renderer/components/ui/timezone-picker'
+import { DetailCard } from '@renderer/components/triggers/detail-card'
+import { StatusToggle } from '@renderer/components/triggers/status-toggle'
+import { RunHistorySection } from '@renderer/components/triggers/run-history-section'
+import { CollapsiblePromptText } from '@renderer/components/triggers/collapsible-prompt-text'
+import { EditPromptDialog } from '@renderer/components/triggers/edit-prompt-dialog'
 import {
   useScheduledTask,
   useCancelScheduledTask,
@@ -24,6 +26,7 @@ import {
   useDescribeSchedule,
   useParseSchedule,
   useUpdateSchedule,
+  useUpdateScheduledTaskPrompt,
   usePauseScheduledTask,
   useResumeScheduledTask,
 } from '@renderer/hooks/use-scheduled-tasks'
@@ -65,6 +68,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const runNow = useRunScheduledTaskNow()
   const pauseTask = usePauseScheduledTask()
   const resumeTask = useResumeScheduledTask()
+  const updatePrompt = useUpdateScheduledTaskPrompt()
   const { handleScheduledTaskDeleted, setView } = useSelection()
   const { canUseAgent } = useUser()
   const canCancel = canUseAgent(agentSlug)
@@ -75,9 +79,8 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   // Settings popover / delete dialog state
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
-
-  // Run history sort
-  const [runSort, setRunSort] = useState<SortOrder>('newest')
+  const [editPromptOpen, setEditPromptOpen] = useState(false)
+  const [editPromptError, setEditPromptError] = useState<string | null>(null)
 
   // Edit schedule modal state
   const [editScheduleOpen, setEditScheduleOpen] = useState(false)
@@ -292,76 +295,58 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
       {/* Two-column body */}
       <div className="grid grid-cols-1 lg:grid-cols-[3fr_2fr] gap-y-6 lg:gap-x-10 lg:gap-y-0">
         {/* Run History (left, 2/3) */}
-        <div className="pb-6 order-2 lg:order-1">
-          <div className="flex items-center gap-2">
-            <h3 className="text-sm font-medium text-muted-foreground flex-1">Run History</h3>
-            {sessions.length > 0 && (
-              <SortPopover value={runSort} onChange={setRunSort} ariaLabel="Sort runs" />
-            )}
-          </div>
-          <div className="border-b mt-2" />
-          {sessions.length > 0 ? (
-            <RelatedSessions
-              sessions={sessions}
-              formatDate={formatDateOnlyInTaskTz}
-              formatSubtext={formatTimeOnlyInTaskTz}
-              agentSlug={agentSlug}
-              showIcon={false}
-              showHeader={false}
-              sortOrder={runSort}
-              dateAsTitle
-              pageSize={15}
-            />
-          ) : (
-            <div className="rounded-lg border border-dashed p-4 mt-3 text-sm text-muted-foreground">
-              No runs yet. Sessions will appear here once this cron runs.
-            </div>
-          )}
+        <div className="order-2 lg:order-1">
+          <RunHistorySection
+            sessions={sessions}
+            agentSlug={agentSlug}
+            formatDate={formatDateOnlyInTaskTz}
+            formatSubtext={formatTimeOnlyInTaskTz}
+            emptyMessage="No runs yet. Sessions will appear here once this cron runs."
+          />
         </div>
 
         {/* Details card (right, 1/3) */}
         <div className="space-y-3 order-1 lg:order-2">
-          {/* Instructions card */}
-          <div className="rounded-xl border bg-background py-4">
-            <div className="px-4">
-              <span className="text-sm font-medium text-muted-foreground">Task Prompt</span>
-            </div>
-            <div className="px-4 pt-3 whitespace-pre-wrap text-xs">{task.prompt}</div>
-          </div>
+          <DetailCard
+            label="Instructions"
+            headerActions={canCancel && (task.status === 'pending' || task.status === 'paused') ? (
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="Edit instructions"
+                className="h-7 w-7 text-muted-foreground"
+                onClick={() => setEditPromptOpen(true)}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </Button>
+            ) : undefined}
+          >
+            <CollapsiblePromptText text={task.prompt} />
+          </DetailCard>
 
-          {/* Details + toggle card */}
-          <div className="rounded-xl border bg-background py-4">
-            <div className="px-4 flex items-center justify-between gap-4">
-              <span className="text-sm font-medium text-muted-foreground">Details</span>
-              {isRecurring && isActive && canCancel ? (
-                <div className="flex items-center gap-2">
-                  <div className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-xs font-medium ${isPaused ? 'bg-muted text-muted-foreground' : 'bg-green-500/10 text-green-700 dark:text-green-400'}`}>
-                    {isPaused ? (
-                      <Pause className="h-2.5 w-2.5 fill-current" />
-                    ) : (
-                      <span className="h-1.5 w-1.5 rounded-full bg-green-500" />
-                    )}
-                    {isPaused ? 'Paused' : 'Active'}
-                  </div>
-                  <Switch
-                    checked={!isPaused}
-                    disabled={pauseTask.isPending || resumeTask.isPending}
-                    onCheckedChange={(checked) => {
-                      if (checked) {
-                        resumeTask.mutate({ taskId, agentSlug })
-                      } else {
-                        pauseTask.mutate({ taskId, agentSlug })
-                      }
-                    }}
-                    aria-label={isPaused ? 'Resume cron' : 'Pause cron'}
-                  />
-                </div>
-              ) : (
-                <span className="text-xs text-muted-foreground capitalize">{task.status}</span>
-              )}
-            </div>
-
-            <dl className="px-4 pt-3 space-y-4">
+          <DetailCard
+            label="Details"
+            headerActions={
+              <StatusToggle
+                status={task.status}
+                isActive={Boolean(isRecurring && isActive)}
+                isPaused={isPaused}
+                disabled={pauseTask.isPending || resumeTask.isPending}
+                canToggle={canCancel}
+                onToggle={(next) => {
+                  if (next) {
+                    resumeTask.mutate({ taskId, agentSlug })
+                  } else {
+                    pauseTask.mutate({ taskId, agentSlug })
+                  }
+                }}
+                ariaLabelResume="Resume cron"
+                ariaLabelPause="Pause cron"
+              />
+            }
+            footer={<>Created {formatInTaskTz(task.createdAt)}</>}
+          >
+            <dl className="space-y-4">
               <div>
                 <dt className="text-xs text-muted-foreground">Schedule</dt>
                 <dd className="text-xs font-normal">
@@ -391,11 +376,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
                 </div>
               ) : null}
             </dl>
-
-            <div className="px-4 pt-6 text-xs text-muted-foreground">
-              Created {formatInTaskTz(task.createdAt)}
-            </div>
-          </div>
+          </DetailCard>
 
           {/* Last execution info */}
           {task.lastExecutedAt && sessions.length === 0 && (
@@ -416,6 +397,30 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
 
         </div>
       </div>
+
+      <EditPromptDialog
+        open={editPromptOpen}
+        onOpenChange={(open) => {
+          setEditPromptOpen(open)
+          if (!open) setEditPromptError(null)
+        }}
+        initialPrompt={task.prompt}
+        title="Edit Instructions"
+        description="Update the instructions executed when this cron runs."
+        isSaving={updatePrompt.isPending}
+        errorMessage={editPromptError}
+        onSave={(newPrompt) => {
+          setEditPromptError(null)
+          updatePrompt.mutate(
+            { taskId, agentSlug, prompt: newPrompt },
+            {
+              onSuccess: () => setEditPromptOpen(false),
+              onError: (err) =>
+                setEditPromptError(err instanceof Error ? err.message : 'Failed to update prompt'),
+            },
+          )
+        }}
+      />
 
       {/* Edit Schedule Modal */}
       <Dialog open={editScheduleOpen} onOpenChange={setEditScheduleOpen}>
