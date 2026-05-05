@@ -44,7 +44,7 @@ export function SkillInstallDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent data-testid="skill-install-dialog">
         <form onSubmit={handleSubmit}>
           <DialogHeader>
             <DialogTitle>Install {skillName}</DialogTitle>

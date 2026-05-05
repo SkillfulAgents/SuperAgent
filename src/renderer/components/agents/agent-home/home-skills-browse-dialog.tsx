@@ -28,8 +28,14 @@ export function HomeSkillsBrowseDialog({
   discoverableSkills,
 }: HomeSkillsBrowseDialogProps) {
   const [skillSearch, setSkillSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
   const [skillPage, setSkillPage] = useState(0)
   const [selectedSkillsets, setSelectedSkillsets] = useState<Set<string> | null>(null)
+
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedSearch(skillSearch), 150)
+    return () => clearTimeout(id)
+  }, [skillSearch])
 
   const skillsetList = useMemo(() => {
     const seen = new Map<string, string>()
@@ -47,11 +53,11 @@ export function HomeSkillsBrowseDialog({
   const filteredSkills = useMemo(() => {
     return discoverableSkills.filter((s) => {
       if (!activeSkillsets.has(s.skillsetId)) return false
-      if (!skillSearch.trim()) return true
-      const q = skillSearch.toLowerCase()
+      if (!debouncedSearch.trim()) return true
+      const q = debouncedSearch.toLowerCase()
       return s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q)
     })
-  }, [discoverableSkills, skillSearch, activeSkillsets])
+  }, [discoverableSkills, debouncedSearch, activeSkillsets])
 
   const totalPages = Math.ceil(filteredSkills.length / SKILLS_PER_PAGE)
   const pagedSkills = filteredSkills.slice(
@@ -61,11 +67,12 @@ export function HomeSkillsBrowseDialog({
 
   useEffect(() => {
     setSkillPage(0)
-  }, [skillSearch, selectedSkillsets])
+  }, [debouncedSearch, selectedSkillsets])
 
   useEffect(() => {
     if (!open) {
       setSkillSearch('')
+      setDebouncedSearch('')
       setSkillPage(0)
       setSelectedSkillsets(null)
     }
@@ -73,12 +80,12 @@ export function HomeSkillsBrowseDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl" onOpenAutoFocus={(e) => e.preventDefault()}>
+      <DialogContent className="max-w-3xl" onOpenAutoFocus={(e) => e.preventDefault()} data-testid="skills-browse-dialog">
         <DialogHeader>
           <DialogTitle>Browse & add skills from your team</DialogTitle>
         </DialogHeader>
 
-        <div className="flex items-center gap-2 mt-4">
+        <div className="flex items-center justify-between gap-2 mt-4">
           <div className="relative w-56">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
@@ -95,7 +102,7 @@ export function HomeSkillsBrowseDialog({
                   type="button"
                   size="icon"
                   variant="outline"
-                  className="h-9 w-9 relative ml-auto"
+                  className="h-9 w-9 relative"
                   title="Filter by skillset"
                   aria-label="Filter by skillset"
                 >
@@ -140,8 +147,8 @@ export function HomeSkillsBrowseDialog({
         <div className="min-h-[60vh]">
           {filteredSkills.length === 0 ? (
             <p className="text-xs text-muted-foreground text-center py-6">
-              {skillSearch.trim()
-                ? `No skills matching "${skillSearch}"`
+              {debouncedSearch.trim()
+                ? `No skills matching "${debouncedSearch}"`
                 : 'No skills available'}
             </p>
           ) : (

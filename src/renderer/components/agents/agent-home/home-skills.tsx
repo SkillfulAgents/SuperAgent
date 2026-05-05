@@ -38,7 +38,7 @@ export function HomeSkills({ agentSlug }: HomeSkillsProps) {
           <p className="text-xs mt-1">Skills teach your agent how to do specific tasks, like triaging emails. Your agent builds skills for you as it works.</p>
         </div>
       ) : (
-        <div className="mt-2 divide-y divide-border/50">
+        <div className="mt-2 divide-y divide-border/50" data-testid="installed-skills-list">
           {skills.map((skill) => (
             <SkillRow key={skill.path} skill={skill} agentSlug={agentSlug} />
           ))}
@@ -52,6 +52,7 @@ export function HomeSkills({ agentSlug }: HomeSkillsProps) {
             variant="ghost"
             size="sm"
             onClick={() => setBrowseOpen(true)}
+            data-testid="add-skill-button"
           >
             <Plus />
             Add Skill
@@ -80,7 +81,7 @@ function SkillRow({ skill, agentSlug }: { skill: ApiSkillWithStatus; agentSlug: 
 
   return (
     <>
-      <div role="button" tabIndex={0} className="group relative py-3 px-4 hover:bg-muted/50 transition-colors cursor-pointer" onClick={() => setFilesOpen(true)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setFilesOpen(true) } }}>
+      <div role="button" tabIndex={0} data-testid="installed-skill-row" data-skill-path={skill.path} className="group relative py-3 px-4 hover:bg-muted/50 transition-colors cursor-pointer" onClick={() => setFilesOpen(true)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setFilesOpen(true) } }}>
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium truncate">{skill.name ?? skill.path}</span>
           <StatusBadge status={skill.status} />

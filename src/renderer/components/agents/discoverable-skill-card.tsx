@@ -42,14 +42,14 @@ export function DiscoverableSkillCard({ skill, agentSlug }: DiscoverableSkillCar
 
   return (
     <>
-      <div className="rounded-lg border bg-background p-3">
+      <div className="rounded-lg border bg-background p-3" data-testid="discoverable-skill-card" data-skill-name={skill.name}>
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
             <div className="text-xs font-medium truncate">{skill.name}</div>
             <div className="flex items-center gap-1.5 min-w-0 mt-0.5">
-              <span className="text-[11px] text-muted-foreground truncate">{skill.skillsetName}</span>
-              <span className="text-[11px] text-muted-foreground shrink-0">·</span>
-              <span className="text-[11px] text-muted-foreground shrink-0">v{skill.version}</span>
+              <span className="text-xs text-muted-foreground truncate">{skill.skillsetName}</span>
+              <span className="text-xs text-muted-foreground shrink-0">·</span>
+              <span className="text-xs text-muted-foreground shrink-0">v{skill.version}</span>
             </div>
           </div>
           <Button
@@ -69,7 +69,7 @@ export function DiscoverableSkillCard({ skill, agentSlug }: DiscoverableSkillCar
             )}
           </Button>
         </div>
-        <p className="text-[11px] text-muted-foreground mt-3 line-clamp-2">
+        <p className="text-xs text-muted-foreground mt-3 line-clamp-2">
           {skill.description}
         </p>
       </div>
