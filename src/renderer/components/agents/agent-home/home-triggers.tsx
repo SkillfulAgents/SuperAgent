@@ -289,7 +289,10 @@ function CronRow({
       subtitleLeft={<span>cron · {humanizedCron ?? 'One-time'}</span>}
       subtitleRight={
         task.nextExecutionAt && !isPaused ? (
-          <span className="shrink-0">{formatRelativeTime(task.nextExecutionAt)}</span>
+          <span className="shrink-0">
+            <span className="text-muted-foreground">next run </span>
+            {formatRelativeTime(task.nextExecutionAt)}
+          </span>
         ) : null
       }
       isPaused={isPaused}
@@ -333,7 +336,14 @@ function WebhookRow({
       subtitleLeft={<span className="truncate lowercase">webhook · {trigger.triggerType}</span>}
       subtitleRight={
         <span className="shrink-0">
-          {formatRelativeTime(trigger.lastFiredAt) ?? 'Never fired'}
+          {formatRelativeTime(trigger.lastFiredAt) ? (
+            <>
+              <span className="text-muted-foreground">last run </span>
+              {formatRelativeTime(trigger.lastFiredAt)}
+            </>
+          ) : (
+            'No runs yet'
+          )}
         </span>
       }
       isPaused={isPaused}
