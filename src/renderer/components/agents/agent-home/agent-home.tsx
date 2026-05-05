@@ -1,5 +1,6 @@
 
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react'
+import { cn } from '@shared/lib/utils/cn'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { ArrowUp, Loader2, Eye, Settings2, Maximize2, Minimize2, Search, Check } from 'lucide-react'
@@ -47,7 +48,11 @@ interface AgentHomeProps {
 
 export function AgentHome({ agent, onSessionCreated, onOpenSettings, style }: AgentHomeProps) {
   useRenderTracker('AgentHome')
-  const { setView, setAgent, consumePendingDraft } = useSelection()
+  const { setView, setAgent, consumePendingDraft, justCreatedSlug } = useSelection()
+  // Snapshot at mount: is this the freshly-created agent landing? Captured
+  // once so the stagger animation isn't cancelled when justCreatedSlug is
+  // cleared mid-animation by the view-transition cleanup.
+  const [introStagger] = useState(() => justCreatedSlug === agent.slug)
   const startOnboardingSession = useStartOnboardingSession()
   const { canUseAgent, canAdminAgent } = useUser()
   const isViewOnly = !canUseAgent(agent.slug)
@@ -247,11 +252,17 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings, style }: Ag
   const showRightColumn = isOwner
 
   return (
-    <div className="flex-1 flex flex-col overflow-y-auto px-10 py-10 bg-background" style={style}>
+    <div
+      className={cn(
+        'flex-1 flex flex-col overflow-y-auto px-10 py-10 bg-background',
+        introStagger && 'agent-home-intro'
+      )}
+      style={style}
+    >
       <div className={`grid gap-10 items-start ${showRightColumn ? 'grid-cols-1 xl:grid-cols-[1fr_minmax(320px,400px)] w-full max-w-6xl mx-auto' : 'max-w-2xl mx-auto'}`}>
         {/* Left Column — Chat composer + Sessions */}
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center justify-between gap-2" data-intro-step="1">
             {isEditingName && isOwner ? (
               <div className="flex items-center gap-2 flex-1 min-w-0">
                 <Input
@@ -336,6 +347,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings, style }: Ag
               <form
                 onSubmit={composer.handleSubmit}
                 className={composer.isDragOver ? 'rounded-2xl ring-2 ring-primary ring-inset' : ''}
+                data-intro-step="2"
                 {...composer.dragHandlers}
               >
                 <ChatComposerBox
@@ -423,6 +435,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings, style }: Ag
                 />
               </form>
 
+              <div className="space-y-6" data-intro-step="3">
               {/* Bookmarks */}
               <HomeBookmarks agentSlug={agent.slug} isOwner={isOwner} />
 
@@ -476,13 +489,14 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings, style }: Ag
                   />
                 )}
               </div>
+              </div>
             </>
           )}
         </div>
 
         {/* Right Column — Triggers + Connections + Skills + Volumes */}
         {showRightColumn && (
-          <div className="space-y-3">
+          <div className="space-y-3" data-intro-step="4">
             <HomeTriggers
               agentSlug={agent.slug}
               scheduledTasks={scheduledTasks}

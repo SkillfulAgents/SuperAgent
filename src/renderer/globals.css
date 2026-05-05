@@ -346,13 +346,13 @@
 
 ::view-transition-image-pair(new-agent-arrival) {
   animation-duration: 720ms;
-  animation-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  animation-timing-function: cubic-bezier(0.33, 1, 0.68, 1);
 }
 ::view-transition-new(new-agent-arrival) {
   animation-name: new-agent-arrival-fade-in;
   animation-duration: 720ms;
   animation-delay: 60ms;
-  animation-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  animation-timing-function: cubic-bezier(0.33, 1, 0.68, 1);
 }
 /*
   Default UA behavior cross-fades the old snapshot (here, the New Agent
@@ -364,6 +364,29 @@
 ::view-transition-old(new-agent-arrival) {
   animation: none;
   opacity: 0;
+}
+
+/*
+  Stagger-fade-in for AgentHome sections after the New Agent morph lands.
+  Base delay (~600ms) overlaps the tail of the 720ms view transition so the
+  motion feels continuous rather than two discrete phases. Steps then fan
+  out at +100ms each: title → composer → cards → right column.
+*/
+@keyframes agent-home-intro {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.agent-home-intro [data-intro-step] {
+  animation: agent-home-intro 360ms cubic-bezier(0.33, 1, 0.68, 1) both;
+}
+.agent-home-intro [data-intro-step="1"] { animation-delay: 480ms; }
+.agent-home-intro [data-intro-step="2"] { animation-delay: 680ms; }
+.agent-home-intro [data-intro-step="3"] { animation-delay: 880ms; }
+.agent-home-intro [data-intro-step="4"] { animation-delay: 1080ms; }
+@media (prefers-reduced-motion: reduce) {
+  .agent-home-intro [data-intro-step] {
+    animation: none;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   ::view-transition-old(new-agent-arrival),
