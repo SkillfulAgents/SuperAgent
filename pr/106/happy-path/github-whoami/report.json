@@ -1,30 +1,27 @@
 {
   "storyId": "github-whoami",
   "passed": false,
-  "reason": "Agent attempted to retrieve GitHub username but was unable to complete due to a 502 error from the OAuth token proxy\n  Bugs found:\n    - Backend OAuth token proxy is returning HTTP 502 Bad Gateway error with message \"Failed to fetch access token\" when the agent attempts to fetch the OAuth access token. This prevents the agent from calling the GitHub /user API endpoint to retrieve the authenticated username.",
+  "reason": "Agent responded but with proxy error instead of GitHub username\n  Bugs found:\n    - Agent unable to retrieve GitHub username due to proxy error. Response states: \"The GitHub account was granted but the proxy is returning a 502 'Failed to fetch access token' error when trying to call the GitHub API. This usually means the OAuth flow didn't fully complete on the connection side.\" Expected a GitHub username in the response, but received an error message about proxy/OAuth failure instead.",
   "steps": [
-    "1 - Navigated to http://localhost:47891 — Page loaded successfully with sidebar showing available agents",
-    "2 - Found and clicked agent \"QA-20260505-172958-9fyp\" in sidebar — Agent opened successfully and landing page displayed",
-    "3 - Verified agent status — Status indicator showed \"idle\" which meets requirement (should be \"running\" or \"idle\")",
-    "4 - Typed and sent message \"Use the GitHub tool to check who I am. Tell me my GitHub username.\" — Message sent successfully, agent transitioned to \"working\" status",
-    "5 - GitHub account access request card appeared — Selected GitHub account (already checked) and clicked \"Allow Access\" button",
-    "6 - Granted GitHub account access — Access granted, agent resumed working",
-    "6b - Agent requested API permission for GET /user — Clicked \"Allow\" on API request review dialog",
-    "6c - Second GitHub access request appeared (token failed) — Granted access again for retry",
-    "6d - Multiple subsequent API permission requests appeared — Continued granting permissions as agent retried the operation",
-    "7 - Agent completed work after 2m 7s (within 4-minute limit) — Response received but did NOT include GitHub username. Instead, agent reported: \"The GitHub access was granted but the proxy is returning a 502 error when fetching the OAuth access token, so I can't actually call the GitHub API right now.\" Error details: HTTP/1.1 502 Bad Gateway {\"error\":\"Failed to fetch access token\"}"
+    "Step 1: Navigate to http://localhost:47891 — Successfully loaded the SuperAgent application with sidebar visible",
+    "Step 2: Find and click \"QA-20260505-175638-0uem\" agent — Successfully clicked the agent in the sidebar and opened the agent detail page",
+    "Step 3: Verify agent status is \"running\" or \"idle\" — Verified status was \"idle\" (shown in header and sidebar)",
+    "Step 4: Send message \"Use the GitHub tool to check who I am. Tell me my GitHub username.\" — Successfully typed and sent the message using the send button",
+    "Step 5: Grant GitHub account access when card appears — Account Access Request card appeared asking to grant GitHub access. GitHub account was already checked. Clicked \"Allow Access (1)\" button to grant access.",
+    "Step 6: Wait up to 4 minutes for response — Agent worked for 2 minutes 4 seconds and completed response within the timeout period. Agent made 6 bash tool calls attempting different approaches to fetch the GitHub user.",
+    "Step 7: Verify response includes GitHub username and take screenshot — Response received but did NOT include a GitHub username. Instead received error message: \"The GitHub account was granted but the proxy is returning a 502 'Failed to fetch access token' error when trying to call the GitHub API. This usually means the OAuth flow didn't fully complete on the connection side. Could you check the GitHub connection in your UI and re-authorize it? Once that's done, I can retry the call to fetch your username from `/user`.\" Screenshot taken showing the error response."
   ],
   "bugs": [
-    "Backend OAuth token proxy is returning HTTP 502 Bad Gateway error with message \"Failed to fetch access token\" when the agent attempts to fetch the OAuth access token. This prevents the agent from calling the GitHub /user API endpoint to retrieve the authenticated username."
+    "Agent unable to retrieve GitHub username due to proxy error. Response states: \"The GitHub account was granted but the proxy is returning a 502 'Failed to fetch access token' error when trying to call the GitHub API. This usually means the OAuth flow didn't fully complete on the connection side.\" Expected a GitHub username in the response, but received an error message about proxy/OAuth failure instead."
   ],
-  "durationMs": 192330,
-  "sessionId": "1195607b-a2e4-456b-ad68-8cd258414e9f",
+  "durationMs": 179722,
+  "sessionId": "c112c7bb-b4f0-4d5d-9ca7-536842e8cfc3",
   "cost": {
     "inputTokens": 693,
-    "outputTokens": 16665,
-    "cacheCreationTokens": 88442,
-    "cacheReadTokens": 3284867,
+    "outputTokens": 16087,
+    "cacheCreationTokens": 104293,
+    "cacheReadTokens": 3227229,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.523057
+    "totalCostUsd": 0.534217
   }
 }

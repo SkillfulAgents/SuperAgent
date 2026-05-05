@@ -1,23 +1,26 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser use feature successfully executed browser navigation and page title extraction",
+  "reason": "Verified that the agent can execute browser commands, navigate to example.com, and retrieve the page title correctly, with the response mentioning \"Example Domain\" as expected.",
   "steps": [
-    "Navigated to http://localhost:47891 - SuperAgent home page loaded successfully with agent list visible",
-    "Clicked on \"QA-20260505-172956-1tsa\" agent in the sidebar - Agent chat interface opened successfully",
-    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message sent successfully with working indicator appearing",
-    "Waited up to 3 minutes for response - Agent completed within 6 seconds",
-    "Verified response mentions \"Example Domain\" - Final response clearly shows \"The page title is Example Domain.\" with browser preview panel displaying the Example Domain page"
+    "Navigated to http://localhost:47891 — Page loaded successfully showing SuperAgent UI with sidebar containing multiple agents including \"QA-20260505-175637-5ft0\"",
+    "Clicked on agent \"QA-20260505-175637-5ft0\" in the sidebar — Agent view opened with chat interface and message input field",
+    "Clicked on the message input field — Text input became active and ready for input",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message appeared in the input field",
+    "Clicked the \"Send message\" button — Message was sent, agent status changed to \"working\", and a \"Browser Title Verification Task\" subtask was created",
+    "Waited 5 seconds for agent response — Agent completed the task in 7 seconds and returned response stating \"The page title is \"Example Domain\".\"",
+    "Verified response mentions \"Example Domain\" — Response clearly states the page title is \"Example Domain\" with tool activity showing the browser was opened to https://example.com and the page title was retrieved",
+    "Took a screenshot showing the final state — Screenshot captured showing the complete response with browser preview panel displaying the Example Domain page"
   ],
   "bugs": [],
-  "durationMs": 91483,
-  "sessionId": "0926c946-8b56-4d6b-9cab-382e23f73a52",
+  "durationMs": 63820,
+  "sessionId": "f2bed9b8-7faa-4940-9287-4951b96d0d7b",
   "cost": {
-    "inputTokens": 329,
-    "outputTokens": 9090,
-    "cacheCreationTokens": 54534,
-    "cacheReadTokens": 1268906,
+    "inputTokens": 234,
+    "outputTokens": 7859,
+    "cacheCreationTokens": 43668,
+    "cacheReadTokens": 822663,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.240837
+    "totalCostUsd": 0.17638
   }
 }
