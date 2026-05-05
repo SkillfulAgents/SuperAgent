@@ -20,6 +20,8 @@ export interface InvokeAgentInput {
 
 export interface GetAgentSessionsInput {
   slug?: string
+  limit?: number
+  offset?: number
 }
 
 export interface GetAgentSessionTranscriptInput {
