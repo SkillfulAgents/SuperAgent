@@ -42,33 +42,36 @@ export function DiscoverableSkillCard({ skill, agentSlug }: DiscoverableSkillCar
 
   return (
     <>
-      <div className="flex items-start gap-3 p-3 rounded-lg bg-muted/50 hover:bg-muted transition-colors">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <p className="text-sm font-medium truncate">{skill.name}</p>
-            <span className="text-xs text-muted-foreground">v{skill.version}</span>
+      <div className="rounded-lg border bg-background p-3" data-testid="discoverable-skill-card" data-skill-name={skill.name}>
+        <div className="flex items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="text-xs font-medium truncate">{skill.name}</div>
+            <div className="flex items-center gap-1.5 min-w-0 mt-0.5">
+              <span className="text-xs text-muted-foreground truncate">{skill.skillsetName}</span>
+              <span className="text-xs text-muted-foreground shrink-0">·</span>
+              <span className="text-xs text-muted-foreground shrink-0">v{skill.version}</span>
+            </div>
           </div>
-          <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">
-            {skill.description}
-          </p>
-          <p className="text-xs text-muted-foreground mt-1">
-            From: {skill.skillsetName}
-          </p>
+          <Button
+            type="button"
+            size="icon"
+            variant="outline"
+            className="h-7 w-7 shrink-0"
+            onClick={handleInstall}
+            disabled={installSkill.isPending}
+            aria-label={`Install ${skill.name}`}
+            title="Install skill"
+          >
+            {installSkill.isPending ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Plus className="h-3.5 w-3.5" />
+            )}
+          </Button>
         </div>
-        <Button
-          size="icon"
-          variant="ghost"
-          className="h-7 w-7 shrink-0"
-          onClick={handleInstall}
-          disabled={installSkill.isPending}
-          title="Install skill"
-        >
-          {installSkill.isPending ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Plus className="h-4 w-4" />
-          )}
-        </Button>
+        <p className="text-xs text-muted-foreground mt-3 line-clamp-2">
+          {skill.description}
+        </p>
       </div>
 
       {showInstallDialog && skill.requiredEnvVars && (
