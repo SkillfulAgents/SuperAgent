@@ -40,6 +40,19 @@ function isEffortAllowed(level: EffortLevel, family: ComposerModelFamily | undef
   return required.includes(family)
 }
 
+// Mirror of agent-container's toModelAlias: collapses pinned IDs (e.g.
+// "claude-opus-4-7", "us.anthropic.claude-opus-4-6-v1") to the family alias.
+// Used so the trigger displays the right family when the model state is a
+// pinned ID (the user's "Default Model" setting stores pinned IDs while the
+// composer's `composerModels` are keyed by alias).
+function inferFamily(model: string | undefined): ComposerModelFamily | undefined {
+  if (!model) return undefined
+  if (model.includes('opus')) return 'opus'
+  if (model.includes('sonnet')) return 'sonnet'
+  if (model.includes('haiku')) return 'haiku'
+  return undefined
+}
+
 function SectionHeader({ children }: { children: ReactNode }) {
   return (
     <div className="px-2 pt-1 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
@@ -97,10 +110,12 @@ function ComposerOptionsPopoverImpl({ state, disabled }: ComposerOptionsPopoverP
   const [open, setOpen] = useState(false)
 
   // Trigger display fallback for the brief window before useComposerOptions
-  // seeds `model`. Prefer Sonnet (the codebase-wide default) over the first
-  // option so we don't flash Haiku on initial mount.
+  // seeds `model`. Order: exact `modelId` match → family inferred from pinned
+  // model string (so `claude-opus-4-7` resolves to the Opus row) → Sonnet
+  // (codebase-wide default, beats falling through to Haiku at index 0).
   const selectedModel =
     composerModels.find((m) => m.modelId === model)
+    ?? composerModels.find((m) => m.family === inferFamily(model))
     ?? composerModels.find((m) => m.family === 'sonnet')
     ?? composerModels[0]
   const selectedFamily = selectedModel?.family

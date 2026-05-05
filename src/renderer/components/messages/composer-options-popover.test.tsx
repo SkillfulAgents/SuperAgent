@@ -56,6 +56,20 @@ describe('ComposerOptionsPopover', () => {
     expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Sonnet 4.6 · Medium')
   })
 
+  it('resolves a pinned model ID to the right family on the trigger', () => {
+    // Real settings stores pinned IDs (e.g. "claude-opus-4-7") while
+    // composerModels are keyed by alias. The trigger must still display the
+    // correct family — otherwise the user sees one model in the UI while the
+    // pinned ID gets sent on the wire.
+    render(<Harness initialModel="claude-opus-4-7" initialEffort="high" />)
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus 4.7 · High')
+  })
+
+  it('resolves a region-prefixed Bedrock pinned ID to the right family', () => {
+    render(<Harness initialModel="us.anthropic.claude-opus-4-6-v1" initialEffort="high" />)
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus 4.7 · High')
+  })
+
   it('opens the popover and shows both section headers and all model rows', async () => {
     const user = userEvent.setup()
     render(<Harness initialModel="sonnet" />)

@@ -134,4 +134,91 @@ test.describe('Model selection', () => {
     expect(sendRecord.model).toBe('haiku')
     expect(sendRecord.effort).toBe('low')
   })
+
+  test('switching from Opus+ExtraHigh to Sonnet auto-resets effort to High on the next send', async ({ page }, testInfo) => {
+    const tag = `${testInfo.workerIndex}-${Date.now()}`
+    const initialMessage = `xhigh→sonnet auto-reset ${tag}`
+
+    await agentPage.clickCreateAgent()
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
+
+    // Pick Opus, then Extra High (Opus-only effort).
+    await page.locator('[data-testid="composer-options-trigger"]').click()
+    await page.locator('[data-testid="model-option-opus"]').click()
+    await page.locator('[data-testid="composer-options-trigger"]').click()
+    await page.locator('[data-testid="effort-option-xhigh"]').click()
+
+    // Switch to Sonnet — popover's auto-reset effect should clamp effort back
+    // to High since Sonnet doesn't allow xhigh.
+    await page.locator('[data-testid="composer-options-trigger"]').click()
+    await page.locator('[data-testid="model-option-sonnet"]').click()
+
+    // Trigger should now read "Sonnet · High" (effort was auto-reset).
+    await expect(page.locator('[data-testid="composer-options-trigger"]')).toContainText('High')
+    await expect(page.locator('[data-testid="composer-options-trigger"]')).not.toContainText('Extra High')
+
+    await page.locator('[data-testid="home-message-input"]').fill(initialMessage)
+    await page.locator('[data-testid="home-send-button"]').click()
+    await expect(page.locator('[data-testid="message-list"]')).toBeVisible({ timeout: 15000 })
+
+    const record = await waitForRecord(
+      (r) => r.type === 'createSession' && r.initialMessage === initialMessage
+    )
+    expect(record.model).toBe('sonnet')
+    expect(record.effort).toBe('high')
+  })
+
+  test('AgentHome trigger displays the family of the user pinned default model', async ({ page }, testInfo) => {
+    // Regression: settings stores `agentModel` as a pinned ID
+    // ('claude-opus-4-7') while composer's `composerModels` are keyed by
+    // family alias. When AgentHome falls back to settings (i.e. the agent
+    // already has at least one session, so isFirstSession is false), the
+    // popover trigger must still resolve to the right family — otherwise the
+    // user sees one model in the UI while a different one goes out on the
+    // wire.
+    const tag = `${testInfo.workerIndex}-${Date.now()}`
+
+    // Create one session so AgentHome's `isFirstSession` becomes false on the
+    // next visit — that's what triggers the settings-fallback codepath.
+    await agentPage.createAgent(`First message ${tag}`)
+
+    // We're back on agent-home. With the default `agentModel:
+    // "claude-opus-4-7"` setting, the trigger must show Opus, not Sonnet.
+    await expect(page.locator('[data-testid="composer-options-trigger"]')).toContainText('Opus 4.7')
+    await expect(page.locator('[data-testid="composer-options-trigger"]')).not.toContainText('Sonnet')
+
+    // Send a message without touching the popover — assert the wire model
+    // matches the family the trigger displayed.
+    const followUp = `Default-pinned message ${tag}`
+    await page.locator('[data-testid="home-message-input"]').fill(followUp)
+    await page.locator('[data-testid="home-send-button"]').click()
+
+    const record = await waitForRecord(
+      (r) => r.type === 'createSession' && r.initialMessage === followUp
+    )
+    // Match family-shape rather than the exact pinned ID so the test stays
+    // robust to future agentModel default bumps.
+    expect(record.model).toContain('opus')
+  })
+
+  test('Extra High and Max effort options are hidden for non-Opus families', async ({ page }) => {
+    await agentPage.clickCreateAgent()
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
+
+    // Default starts on Opus (preferredFamily for AgentHome) — confirm xhigh/max
+    // are visible there first so the assertion has a meaningful contrast.
+    await page.locator('[data-testid="composer-options-trigger"]').click()
+    await expect(page.locator('[data-testid="effort-option-xhigh"]')).toBeVisible()
+    await expect(page.locator('[data-testid="effort-option-max"]')).toBeVisible()
+
+    // Switch to Sonnet, reopen the popover, and confirm xhigh/max disappear
+    // while low/medium/high stay.
+    await page.locator('[data-testid="model-option-sonnet"]').click()
+    await page.locator('[data-testid="composer-options-trigger"]').click()
+    await expect(page.locator('[data-testid="effort-option-low"]')).toBeVisible()
+    await expect(page.locator('[data-testid="effort-option-medium"]')).toBeVisible()
+    await expect(page.locator('[data-testid="effort-option-high"]')).toBeVisible()
+    await expect(page.locator('[data-testid="effort-option-xhigh"]')).toHaveCount(0)
+    await expect(page.locator('[data-testid="effort-option-max"]')).toHaveCount(0)
+  })
 })

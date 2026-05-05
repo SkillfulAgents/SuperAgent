@@ -51,14 +51,21 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   const { initialEffort, initialModel, preferredFamily } = args
 
   // ---- Effort ----
-  const [effort, setEffort] = useState<EffortLevel>(initialEffort ?? DEFAULT_EFFORT)
+  const [effort, setEffortState] = useState<EffortLevel>(initialEffort ?? DEFAULT_EFFORT)
   const effortSeededRef = useRef(initialEffort !== undefined)
   useEffect(() => {
     if (!effortSeededRef.current && initialEffort !== undefined) {
-      setEffort(initialEffort)
+      setEffortState(initialEffort)
       effortSeededRef.current = true
     }
   }, [initialEffort])
+  // Wrap the setter so an explicit user pick locks out the late-arriving
+  // initial-seed effect — otherwise a slow `useSession` resolution can clobber
+  // the user's choice if they pick before session data lands.
+  const setEffort = useCallback((e: EffortLevel) => {
+    effortSeededRef.current = true
+    setEffortState(e)
+  }, [])
 
   // ---- Composer models from active provider ----
   const { data: settings } = useSettings()
@@ -80,21 +87,25 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   ), [preferredFamily, settings, composerModels])
 
   // ---- Model ----
-  const [model, setModel] = useState<string | undefined>(initialModel ?? fallbackModel)
+  const [model, setModelState] = useState<string | undefined>(initialModel ?? fallbackModel)
   const modelSeededRef = useRef(initialModel !== undefined)
   // Seed once when session data loads after mount.
   useEffect(() => {
     if (!modelSeededRef.current && initialModel !== undefined) {
-      setModel(initialModel)
+      setModelState(initialModel)
       modelSeededRef.current = true
     }
   }, [initialModel])
   // Adopt provider default if the selector is still empty by the time settings load.
   useEffect(() => {
     if (!modelSeededRef.current && model === undefined && fallbackModel) {
-      setModel(fallbackModel)
+      setModelState(fallbackModel)
     }
   }, [model, fallbackModel])
+  const setModel = useCallback((m: string) => {
+    modelSeededRef.current = true
+    setModelState(m)
+  }, [])
 
   const toRuntimeOptions = useCallback(
     () => ({ effort, ...(model ? { model } : {}) }),
@@ -103,7 +114,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
 
   return useMemo(
     () => ({ effort, setEffort, model, setModel, composerModels, toRuntimeOptions }),
-    [effort, model, composerModels, toRuntimeOptions]
+    [effort, setEffort, model, setModel, composerModels, toRuntimeOptions]
   )
 }
 
