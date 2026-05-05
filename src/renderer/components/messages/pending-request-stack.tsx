@@ -28,29 +28,6 @@ export function PendingRequestStack({ children }: PendingRequestStackProps) {
   const prevKeysRef = useRef<string[]>([])
   const [revealing, setRevealing] = useState(false)
 
-  // High-water mark: container only grows while stack is non-empty, resets when empty.
-  const containerRef = useRef<HTMLDivElement>(null)
-  const highWaterHeight = useRef(0)
-  const [minHeight, setMinHeight] = useState(0)
-  const prevCount = useRef(count)
-
-  // Reset high-water mark when children reappear after being empty
-  if (count > 0 && prevCount.current === 0) {
-    highWaterHeight.current = 0
-  }
-  prevCount.current = count
-
-  // Update high-water mark after every render (only while there are children and not revealing)
-  useEffect(() => {
-    if (containerRef.current && count > 0 && !revealing) {
-      const h = containerRef.current.offsetHeight
-      if (h > highWaterHeight.current) {
-        highWaterHeight.current = h
-        setMinHeight(h)
-      }
-    }
-  })
-
   // Detect child removal → trigger reveal animation
   const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -98,11 +75,7 @@ export function PendingRequestStack({ children }: PendingRequestStackProps) {
 
   return (
     <PaginationContext.Provider value={{ currentIndex: idx, count, goNext, goPrev }}>
-      <div
-        ref={containerRef}
-        className="relative"
-        style={minHeight > 0 ? { minHeight } : undefined}
-      >
+      <div className="relative">
         {/* Stacked placeholder cards peeking out above */}
         {Array.from({ length: stackDepth }, (_, i) => {
           const depth = stackDepth - i

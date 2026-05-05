@@ -83,6 +83,26 @@ test.describe('User Input Requests', () => {
     await sessionPage.waitForInputEnabled(15000)
   })
 
+  test('composer is replaced by the request card while a question is pending', async ({ page }) => {
+    // Composer should be visible before the request arrives
+    await expect(sessionPage.getMessageInput()).toBeVisible()
+    await expect(page.locator('[data-testid="pending-request-slot"]')).toHaveCount(0)
+
+    await sessionPage.sendMessage('ask question')
+    await sessionPage.waitForQuestionRequest()
+
+    // While the question is pending, the composer is unmounted and the
+    // pending-request slot occupies its position.
+    await expect(sessionPage.getMessageInput()).toHaveCount(0)
+    await expect(page.locator('[data-testid="pending-request-slot"]')).toBeVisible()
+
+    // Answer the question and verify the composer returns and the slot is gone.
+    await sessionPage.answerQuestion('PostgreSQL')
+
+    await expect(sessionPage.getMessageInput()).toBeVisible({ timeout: 15000 })
+    await expect(page.locator('[data-testid="pending-request-slot"]')).toHaveCount(0)
+  })
+
   test('question request: decline a question', async ({ page }) => {
     await sessionPage.sendMessage('ask question')
 
