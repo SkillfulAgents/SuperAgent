@@ -99,6 +99,11 @@ vi.mock('@renderer/context/selection-context', () => ({
   useSelection: () => mockSelectionContext,
 }))
 
+vi.mock('@renderer/context/search-context', () => ({
+  useSearch: () => ({ open: false, openSearch: vi.fn(), closeSearch: vi.fn() }),
+  SearchProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}))
+
 const mockUserContext = {
   isAuthMode: false,
   isAdmin: true,

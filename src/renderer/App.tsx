@@ -7,6 +7,7 @@ import { SelectionProvider } from './context/selection-context'
 import { ConnectivityProvider } from './context/connectivity-context'
 import { DialogProvider, useDialogs } from './context/dialog-context'
 import { DraftsProvider } from './context/drafts-context'
+import { SearchProvider } from './context/search-context'
 import { AppSidebar } from './components/layout/app-sidebar'
 import { MainContent } from './components/layout/main-content'
 import { WindowControls } from './components/layout/window-controls'
@@ -113,10 +114,12 @@ export default function App() {
             <SelectionProvider>
               <ConnectivityProvider>
                 <DraftsProvider>
-                  <ErrorBoundary>
-                    <AppContent />
-                    <Toaster />
-                  </ErrorBoundary>
+                  <SearchProvider>
+                    <ErrorBoundary>
+                      <AppContent />
+                      <Toaster />
+                    </ErrorBoundary>
+                  </SearchProvider>
                 </DraftsProvider>
               </ConnectivityProvider>
             </SelectionProvider>

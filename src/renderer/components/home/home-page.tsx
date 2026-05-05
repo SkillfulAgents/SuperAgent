@@ -24,7 +24,8 @@ import {
   deriveForegroundColor,
 } from './dashboard-card-colors'
 import { isElectron, getPlatform, getApiBaseUrl } from '@renderer/lib/env'
-import { Plus, Bot, Loader2, Clock, CalendarClock, SquareMousePointer } from 'lucide-react'
+import { Plus, Bot, Loader2, Clock, CalendarClock, SquareMousePointer, Search } from 'lucide-react'
+import { useSearch } from '@renderer/context/search-context'
 import { AreaChart, Area, ResponsiveContainer, Tooltip } from 'recharts'
 import type { ApiAgent, ApiAgentDashboard } from '@shared/lib/types/api'
 import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
@@ -392,6 +393,8 @@ export function HomePage() {
 
   const hasAgents = orderedAgents.length > 0
   const hasTemplates = discoverableAgents && discoverableAgents.length > 0
+  const { openSearch } = useSearch()
+  const isMac = getPlatform() === 'darwin'
 
   return (
     <div className="h-full flex flex-col">
@@ -401,6 +404,20 @@ export function HomePage() {
         <SidebarTrigger
           className={`app-no-drag ${needsTrafficLightPadding ? 'ml-16' : '-ml-1'}`}
         />
+        <div className="flex-1 flex justify-center">
+          <button
+            type="button"
+            onClick={openSearch}
+            className="flex items-center gap-2 w-full max-w-md h-7 rounded-md border bg-muted/30 hover:bg-muted/60 transition-colors px-3 text-xs text-muted-foreground app-no-drag"
+            data-testid="header-search-trigger"
+          >
+            <Search className="h-3.5 w-3.5 shrink-0" />
+            <span className="flex-1 text-left truncate">Search agents and sessions...</span>
+            <kbd className="shrink-0 font-mono text-[11px] text-muted-foreground/70">
+              {isMac ? '⌘K' : 'Ctrl+K'}
+            </kbd>
+          </button>
+        </div>
       </header>
 
       <div className="flex-1 overflow-y-auto p-6">
