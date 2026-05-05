@@ -45,6 +45,7 @@ export function ComposerActionButton({
       className="h-[34px] w-[34px]"
       disabled={!canSubmit || isSending}
       aria-label="Send message"
+      title="Send message"
       data-testid="send-button"
     >
       {isSending ? (
