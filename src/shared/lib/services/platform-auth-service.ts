@@ -72,7 +72,13 @@ function getJwksResolverForIssuer(issuer: string): RemoteJwksResolver {
   if (injectedJwksResolver) return injectedJwksResolver
   let resolver = jwksByIssuer.get(issuer)
   if (!resolver) {
-    resolver = createRemoteJWKSet(new URL('/jwks', issuer))
+    let jwksUrl: URL
+    try {
+      jwksUrl = new URL('/jwks', issuer)
+    } catch (error) {
+      throw new Error(`Invalid issuer URL for JWKS: ${issuer}`, { cause: error })
+    }
+    resolver = createRemoteJWKSet(jwksUrl)
     jwksByIssuer.set(issuer, resolver)
   }
   return resolver
