@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
-import { Loader2, Search, AlertCircle, Users } from 'lucide-react'
+import { Loader2, Search, AlertCircle, Users, ScrollText, Send } from 'lucide-react'
 import { Input } from '@renderer/components/ui/input'
 import { PolicyDecisionToggle } from '@renderer/components/ui/policy-decision-toggle'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
@@ -158,23 +158,62 @@ export function XAgentPoliciesTab({ agentSlug }: XAgentPoliciesTabProps) {
         </div>
       )}
 
-      {/* List Agents global toggle */}
-      <div className="rounded-md border p-3">
-        <div className="flex items-center justify-between">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <Users className="h-3.5 w-3.5 text-muted-foreground" />
-              <span className="text-sm font-medium">List Agents</span>
+      {/* Global toggles (apply to every agent in the workspace) */}
+      <div className="space-y-2">
+        <h4 className="text-xs font-medium uppercase text-muted-foreground">Global permissions</h4>
+        <div className="rounded-md border p-3">
+          <div className="flex items-center justify-between">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <Users className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-sm font-medium">List Agents</span>
+              </div>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Whether this agent can call <code className="font-mono">list_agents</code> to see other workspace agents.
+              </p>
             </div>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              Whether this agent can call <code className="font-mono">list_agents</code> to see other workspace agents.
-            </p>
+            <PolicyDecisionToggle
+              value={getDecision('list', null)}
+              onChange={handleChange('list', null)}
+              size="md"
+            />
           </div>
-          <PolicyDecisionToggle
-            value={getDecision('list', null)}
-            onChange={handleChange('list', null)}
-            size="md"
-          />
+        </div>
+        <div className="rounded-md border p-3" data-testid="x-agent-policy-global-read">
+          <div className="flex items-center justify-between">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <ScrollText className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-sm font-medium">Read sessions of all agents</span>
+              </div>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Default for any agent without a specific Read setting below. Per-agent rows override this.
+              </p>
+            </div>
+            <PolicyDecisionToggle
+              value={getDecision('read', null)}
+              onChange={handleChange('read', null)}
+              size="md"
+            />
+          </div>
+        </div>
+        <div className="rounded-md border p-3" data-testid="x-agent-policy-global-invoke">
+          <div className="flex items-center justify-between">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <Send className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-sm font-medium">Send messages to all agents</span>
+              </div>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Default for any agent without a specific Send setting below. Per-agent rows override this.
+              </p>
+            </div>
+            <PolicyDecisionToggle
+              value={getDecision('invoke', null)}
+              onChange={handleChange('invoke', null)}
+              size="md"
+            />
+          </div>
         </div>
       </div>
 

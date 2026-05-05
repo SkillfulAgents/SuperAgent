@@ -103,10 +103,20 @@ export function XAgentReviewRequestItem({
     }
   }
 
-  const handleAlways = async (operation: 'list' | 'read' | 'invoke') => {
-    // 'list' → null target; 'read'/'invoke' → target slug
-    const targetSlug = operation === 'list' ? null : xAgent.targetAgentSlug
-    const scope = operation === 'list' ? 'list' : `${operation}:${xAgent.targetAgentSlug}`
+  const handleAlways = async (
+    operation: 'list' | 'read' | 'invoke',
+    scopeChoice: 'this' | 'all' = 'this',
+  ) => {
+    // 'list' has no target. For 'read'/'invoke', scopeChoice='all' applies the
+    // policy globally (target=null), 'this' applies to xAgent.targetAgentSlug only.
+    const targetSlug =
+      operation === 'list' || scopeChoice === 'all' ? null : xAgent.targetAgentSlug
+    const scope =
+      operation === 'list'
+        ? 'list'
+        : scopeChoice === 'all'
+          ? `${operation}:*`
+          : `${operation}:${xAgent.targetAgentSlug}`
 
     setStatus('submitting')
     setError(null)
@@ -121,7 +131,7 @@ export function XAgentReviewRequestItem({
             scope,
             // accountId is unused by the /always handler when reviewType='xagent'
             // (target lives in xAgent.targetSlug below) — pass it as null for 'list'
-            // so server-side audit logs don't get a meaningless empty string.
+            // and for "all agents" so server-side audit logs don't get a meaningless empty string.
             accountId: targetSlug,
             reviewType: 'xagent',
             xAgent: { operation, targetSlug },
@@ -288,49 +298,81 @@ export function XAgentReviewRequestItem({
                     </Button>
                   )}
                   {xAgent.operation === 'read' && (
-                    <Button
-                      data-testid="xagent-review-always-read"
-                      onClick={() => { setAllowMenuOpen(false); handleAlways('read') }}
-                      disabled={status === 'submitting'}
-                      variant="ghost"
-                      size="sm"
-                      className="h-auto justify-start py-2 text-foreground hover:bg-muted"
-                    >
-                      <span className="flex flex-col items-start text-left">
-                        <span>Always allow reading <span className="font-medium">{xAgent.targetAgentName}</span></span>
-                        <span className="text-xs font-normal text-muted-foreground/80">
-                          Lets this agent read sessions and transcripts (no message-sending)
-                        </span>
-                      </span>
-                    </Button>
-                  )}
-                  {xAgent.operation === 'invoke' && (
                     <>
                       <Button
-                        data-testid="xagent-review-always-invoke"
-                        onClick={() => { setAllowMenuOpen(false); handleAlways('invoke') }}
+                        data-testid="xagent-review-always-read"
+                        onClick={() => { setAllowMenuOpen(false); handleAlways('read', 'this') }}
                         disabled={status === 'submitting'}
                         variant="ghost"
                         size="sm"
                         className="h-auto justify-start py-2 text-foreground hover:bg-muted"
                       >
                         <span className="flex flex-col items-start text-left">
-                          <span>Always allow messaging <span className="font-medium">{xAgent.targetAgentName}</span></span>
+                          <span>Always allow reading <span className="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/70">{xAgent.targetAgentName}</span></span>
+                          <span className="text-xs font-normal text-muted-foreground/80">
+                            Lets this agent read sessions and transcripts (no message-sending)
+                          </span>
+                        </span>
+                      </Button>
+                      <Button
+                        data-testid="xagent-review-always-read-all"
+                        onClick={() => { setAllowMenuOpen(false); handleAlways('read', 'all') }}
+                        disabled={status === 'submitting'}
+                        variant="ghost"
+                        size="sm"
+                        className="h-auto justify-start py-2 text-foreground hover:bg-muted"
+                      >
+                        <span className="flex flex-col items-start text-left">
+                          <span>Always allow reading <span className="font-medium">all agents</span></span>
+                          <span className="text-xs font-normal text-muted-foreground/80">
+                            Skip read prompts for every agent in this workspace
+                          </span>
+                        </span>
+                      </Button>
+                    </>
+                  )}
+                  {xAgent.operation === 'invoke' && (
+                    <>
+                      <Button
+                        data-testid="xagent-review-always-invoke"
+                        onClick={() => { setAllowMenuOpen(false); handleAlways('invoke', 'this') }}
+                        disabled={status === 'submitting'}
+                        variant="ghost"
+                        size="sm"
+                        className="h-auto justify-start py-2 text-foreground hover:bg-muted"
+                      >
+                        <span className="flex flex-col items-start text-left">
+                          <span>Always allow messaging <span className="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/70">{xAgent.targetAgentName}</span></span>
                           <span className="text-xs font-normal text-muted-foreground/80">
                             Send-only — sync responses are returned, but browsing history still prompts
                           </span>
                         </span>
                       </Button>
                       <Button
-                        data-testid="xagent-review-always-read-only"
-                        onClick={() => { setAllowMenuOpen(false); handleAlways('read') }}
+                        data-testid="xagent-review-always-invoke-all"
+                        onClick={() => { setAllowMenuOpen(false); handleAlways('invoke', 'all') }}
                         disabled={status === 'submitting'}
                         variant="ghost"
                         size="sm"
                         className="h-auto justify-start py-2 text-foreground hover:bg-muted"
                       >
                         <span className="flex flex-col items-start text-left">
-                          <span>Always allow reading <span className="font-medium">{xAgent.targetAgentName}</span> (this time only)</span>
+                          <span>Always allow messaging <span className="font-medium">all agents</span></span>
+                          <span className="text-xs font-normal text-muted-foreground/80">
+                            Skip send prompts for every agent in this workspace
+                          </span>
+                        </span>
+                      </Button>
+                      <Button
+                        data-testid="xagent-review-always-read-only"
+                        onClick={() => { setAllowMenuOpen(false); handleAlways('read', 'this') }}
+                        disabled={status === 'submitting'}
+                        variant="ghost"
+                        size="sm"
+                        className="h-auto justify-start py-2 text-foreground hover:bg-muted"
+                      >
+                        <span className="flex flex-col items-start text-left">
+                          <span>Always allow reading <span className="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/70">{xAgent.targetAgentName}</span> (this time only)</span>
                           <span className="text-xs font-normal text-muted-foreground/80">
                             View-only access to history; future <code className="font-mono">invoke</code> calls still prompt
                           </span>

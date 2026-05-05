@@ -113,6 +113,34 @@ describe('x-agent-policy-service', () => {
       expect(evaluate('caller-a', 'list', null)).toBe('allow')
       expect(evaluate('caller-b', 'list', null)).toBe('review')
     })
+
+    it('falls back to global (target=null) policy for read when no specific row exists', async () => {
+      await setPolicy('caller', 'read', null, 'allow')
+      // No specific-target row → fall back to global → allow
+      expect(evaluate('caller', 'read', 'any-target')).toBe('allow')
+      expect(evaluate('caller', 'read', 'another-target')).toBe('allow')
+      // Different operation should still default to review
+      expect(evaluate('caller', 'invoke', 'any-target')).toBe('review')
+    })
+
+    it('falls back to global (target=null) policy for invoke when no specific row exists', async () => {
+      await setPolicy('caller', 'invoke', null, 'allow')
+      expect(evaluate('caller', 'invoke', 'any-target')).toBe('allow')
+      expect(evaluate('caller', 'read', 'any-target')).toBe('review')
+    })
+
+    it('specific-target row wins over global — block on a single agent overrides allow-all', async () => {
+      await setPolicy('caller', 'read', null, 'allow')
+      await setPolicy('caller', 'read', 'sensitive', 'block')
+      expect(evaluate('caller', 'read', 'normal-agent')).toBe('allow')
+      expect(evaluate('caller', 'read', 'sensitive')).toBe('block')
+    })
+
+    it('specific allow on one agent does not leak to others when no global is set', async () => {
+      await setPolicy('caller', 'invoke', 'alice', 'allow')
+      expect(evaluate('caller', 'invoke', 'alice')).toBe('allow')
+      expect(evaluate('caller', 'invoke', 'bob')).toBe('review')
+    })
   })
 
   describe('deletePoliciesForAgent', () => {

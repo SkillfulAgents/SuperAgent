@@ -4323,6 +4323,15 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   reviewManager.submitDecision(reviewId, body.decision)
   reviewManager.resolveMatchingPending(slug, body.scope, body.decision)
 
+  // For x-agent "always allow for all agents" (targetSlug=null on read/invoke),
+  // the per-scope match above only resolves prompts for the same exact target.
+  // Sweep every pending review of the same operation so sibling prompts
+  // (e.g. an in-flight read:bob when the user just allowed read:* globally)
+  // also resolve immediately instead of timing out.
+  if (body.reviewType === 'xagent' && body.xAgent && body.xAgent.targetSlug === null) {
+    reviewManager.resolveMatchingXAgentByOperation(slug, body.xAgent.operation, body.decision)
+  }
+
   return c.json({ ok: true })
 })
 

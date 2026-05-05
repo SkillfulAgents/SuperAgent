@@ -665,6 +665,23 @@ describe('/get-sessions', () => {
     expect(res.status).toBe(200)
   })
 
+  it('global read=allow (target=null) lets get-sessions through with no per-target policy', async () => {
+    const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+    await setPolicy(CALLER_SLUG, 'read', null, 'allow')
+    mockListSessions.mockResolvedValue([])
+    const res = await authedFetch('/x-agent/get-sessions', { slug: TARGET_SLUG })
+    expect(res.status).toBe(200)
+  })
+
+  it('per-target block overrides a global read=allow', async () => {
+    const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+    await setPolicy(CALLER_SLUG, 'read', null, 'allow')
+    await setPolicy(CALLER_SLUG, 'read', TARGET_SLUG, 'block')
+    mockListSessions.mockResolvedValue([])
+    const res = await authedFetch('/x-agent/get-sessions', { slug: TARGET_SLUG })
+    expect(res.status).toBe(403)
+  })
+
   it('paginates with limit and offset, returns total', async () => {
     const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
     await setPolicy(CALLER_SLUG, 'read', TARGET_SLUG, 'allow')

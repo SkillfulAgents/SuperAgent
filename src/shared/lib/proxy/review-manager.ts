@@ -187,6 +187,35 @@ export class ReviewManager {
     }
   }
 
+  /**
+   * Resolve every pending x-agent review for `agentSlug` whose operation matches.
+   * Used when the user picks "always allow for all agents" — the saved policy has
+   * targetSlug=null, so the per-target scope match in resolveMatchingPending
+   * wouldn't catch sibling pending prompts (e.g. read:bob while saving global read).
+   */
+  resolveMatchingXAgentByOperation(
+    agentSlug: string,
+    operation: 'list' | 'read' | 'invoke' | 'create',
+    decision: 'allow' | 'deny',
+  ): void {
+    for (const [id, review] of this.pending) {
+      if (
+        review.details.agentSlug === agentSlug &&
+        review.details.xAgent?.operation === operation
+      ) {
+        clearTimeout(review.timer)
+        this.pending.delete(id)
+        review.resolve(decision)
+
+        broadcastReview(agentSlug, {
+          type: 'proxy_review_resolved',
+          reviewId: id,
+          decision,
+        })
+      }
+    }
+  }
+
   getPendingReviewsForAgent(
     agentSlug: string
   ): Array<{ id: string; displayText: string } & ReviewDetails> {
