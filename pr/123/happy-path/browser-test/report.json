@@ -1,0 +1,27 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser use feature test - agent successfully opened browser, navigated to example.com, retrieved page title, and reported \"Example Domain\"",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully showing SuperAgent interface with sidebar listing agents",
+    "Found and clicked agent \"QA-20260505-183509-0ugq\" in sidebar — Agent view opened with chat interface and configuration panels visible",
+    "Clicked message input textbox — Textbox became focused and ready for input",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message appeared in textbox",
+    "Clicked Send message button — Message was submitted and agent status changed from \"idle\" to \"working\"",
+    "Waited up to 3 minutes for response containing \"Example Domain\" — Agent completed task in 7 seconds with success",
+    "Verified response content — Response displayed \"The page title is \"Example Domain\".\" with two successful tool call cards visible: \"Open Browser https://example.com\" and \"Browser Command $ get title\"",
+    "Verified browser preview panel — Live browser preview on right side showed \"Example Domain\" page content",
+    "Took screenshot — Final screenshot captured showing complete successful response with browser preview panel"
+  ],
+  "bugs": [],
+  "durationMs": 93667,
+  "sessionId": "bd377b65-1523-4ab0-b8a3-b6b37a232576",
+  "cost": {
+    "inputTokens": 234,
+    "outputTokens": 7447,
+    "cacheCreationTokens": 40006,
+    "cacheReadTokens": 825396,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.170016
+  }
+}
