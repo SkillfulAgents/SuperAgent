@@ -280,7 +280,14 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
 
   return (
     <SettingsPageContainer fullScreen>
-      <PageTitle title={task.name || 'Scheduled Task'} actions={headerActions} />
+      <PageTitle
+        title={task.name || 'Scheduled Task'}
+        back={{
+          onClick: () => setView({ kind: 'home' }),
+          testId: 'scheduled-task-back-button',
+        }}
+        actions={headerActions}
+      />
 
       {/* Two-column body */}
       <div className="grid grid-cols-1 lg:grid-cols-[3fr_2fr] gap-y-6 lg:gap-x-10 lg:gap-y-0">

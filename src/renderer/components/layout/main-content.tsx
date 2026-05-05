@@ -184,6 +184,28 @@ export function MainContent() {
               {agent?.name || 'Loading...'}
             </button>
           </div>
+          {(() => {
+            const taskCrumbId = scheduledTaskId ?? (sessionId ? session?.scheduledTaskId ?? null : null)
+            const taskCrumbName = scheduledTask?.name ?? (sessionId ? session?.scheduledTaskName : null)
+            if (!taskCrumbId) return null
+            const isLeaf = !!scheduledTaskId
+            return (
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
+                <button
+                  type="button"
+                  className={`flex items-center gap-1 transition-colors app-no-drag ${isLeaf ? 'text-muted-foreground cursor-default' : 'text-muted-foreground hover:text-foreground'}`}
+                  onClick={() => setView({ kind: 'task', id: taskCrumbId })}
+                  disabled={isLeaf}
+                >
+                  <Clock className="h-4 w-4" />
+                  <span className={`truncate text-sm font-light ${isLeaf ? 'text-foreground' : ''}`}>
+                    {taskCrumbName || 'Scheduled Task'}
+                  </span>
+                </button>
+              </div>
+            )
+          })()}
           {sessionId && session?.agentSlug === agentSlug && (
             <div className="flex items-center gap-1.5 min-w-0">
               <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
@@ -196,17 +218,6 @@ export function MainContent() {
                   {session?.name || 'Loading...'}
                 </span>
               </SessionContextMenu>
-            </div>
-          )}
-          {scheduledTaskId && scheduledTask && (
-            <div className="flex items-center gap-1.5 min-w-0">
-              <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
-              <div className="flex items-center gap-1 text-muted-foreground">
-                <Clock className="h-4 w-4" />
-                <span className="truncate text-sm font-light text-foreground">
-                  {scheduledTask.name || 'Scheduled Task'}
-                </span>
-              </div>
             </div>
           )}
           {showApiLogsCrumb && (
