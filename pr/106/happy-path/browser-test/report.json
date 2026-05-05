@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the browser-use feature successfully allows an agent to open a browser, navigate to a URL, retrieve page information, and display the results in the chat interface with browser tool call cards and live preview.",
+  "reason": "Browser use feature successfully executed browser navigation and page title extraction",
   "steps": [
-    "Step 1 - Navigated to http://localhost:47891 — Page loaded successfully showing the SuperAgent interface with three agents in the sidebar and main area.",
-    "Step 2 - Found and clicked the \"QA-20260505-015542-2w0l\" agent button in the main area — Agent interface opened with chat input field and configuration options visible.",
-    "Step 3 - Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully entered in the chat input field and sent by clicking the send button. Agent status changed to \"working\".",
-    "Step 4 - Waited up to 3 minutes for agent response — Agent completed the task within 7 seconds. Two browser tool calls were executed and displayed: \"Open Browser https://example.com\" and \"Browser Command $ get title\", both showing success status with green checkmarks.",
-    "Step 5 - Verified response mentions \"Example Domain\" — Response clearly states \"The page title is Example Domain.\" The browser preview panel on the right displays the example.com page with the title \"Example Domain\" visible. Activity log shows both browser operations that were performed."
+    "Navigated to http://localhost:47891 - SuperAgent home page loaded successfully with agent list visible",
+    "Clicked on \"QA-20260505-172956-1tsa\" agent in the sidebar - Agent chat interface opened successfully",
+    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message sent successfully with working indicator appearing",
+    "Waited up to 3 minutes for response - Agent completed within 6 seconds",
+    "Verified response mentions \"Example Domain\" - Final response clearly shows \"The page title is Example Domain.\" with browser preview panel displaying the Example Domain page"
   ],
   "bugs": [],
-  "durationMs": 91939,
-  "sessionId": "cd0702cb-90b7-45c7-8e84-1aefc0935ea7",
+  "durationMs": 91483,
+  "sessionId": "0926c946-8b56-4d6b-9cab-382e23f73a52",
   "cost": {
-    "inputTokens": 288,
-    "outputTokens": 9081,
-    "cacheCreationTokens": 126301,
-    "cacheReadTokens": 997670,
+    "inputTokens": 329,
+    "outputTokens": 9090,
+    "cacheCreationTokens": 54534,
+    "cacheReadTokens": 1268906,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.303336
+    "totalCostUsd": 0.240837
   }
 }
