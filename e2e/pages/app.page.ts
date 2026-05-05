@@ -73,7 +73,7 @@ export class AppPage {
     // Wait for the app to be interactive (create agent button visible).
     // If the wizard appeared after our check (race with parallel tests),
     // try dismissing it once more.
-    const createBtn = this.page.locator('[data-testid="create-agent-button"]')
+    const createBtn = this.page.locator('[data-testid="new-agent-button"]')
     try {
       await expect(createBtn).toBeVisible({ timeout: 3000 })
     } catch {

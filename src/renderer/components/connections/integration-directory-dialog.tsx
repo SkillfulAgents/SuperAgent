@@ -257,10 +257,12 @@ function ApisPanel({ filter, onConnected }: { filter: string; onConnected: () =>
 
 // --- MCPs panel ---
 
-type DraftState = Omit<McpDraft, 'authType' | 'token' | 'clientName'> & {
+type DraftState = Omit<McpDraft, 'authType' | 'token' | 'clientName' | 'clientId' | 'clientSecret'> & {
   authType: McpAuthType
   token: string
   clientName: string
+  clientId: string
+  clientSecret: string
 }
 
 function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void }) {
@@ -314,12 +316,14 @@ function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void })
       authType: server.authType,
       token: '',
       clientName: '',
+      clientId: '',
+      clientSecret: '',
     })
   }
 
   const handlePickCustom = () => {
     setError(null)
-    setDraft({ sourceSlug: 'custom', name: '', url: '', authType: 'none', token: '', clientName: '' })
+    setDraft({ sourceSlug: 'custom', name: '', url: '', authType: 'none', token: '', clientName: '', clientId: '', clientSecret: '' })
   }
 
   const cancelDraft = () => {
@@ -345,11 +349,15 @@ function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void })
         try {
           const isElectron = !!window.electronAPI
           const clientNameOverride = valid.clientName.trim()
+          const clientIdOverride = valid.clientId.trim()
+          const clientSecretOverride = valid.clientSecret.trim()
           const result = await initiateOAuth.mutateAsync({
             name: valid.name,
             url: valid.url,
             electron: isElectron,
             clientName: clientNameOverride.length > 0 ? clientNameOverride : undefined,
+            clientId: clientIdOverride.length > 0 ? clientIdOverride : undefined,
+            clientSecret: clientSecretOverride.length > 0 ? clientSecretOverride : undefined,
           })
           if (result.redirectUrl) {
             setOauthPending(true)
@@ -444,15 +452,41 @@ function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void })
               <span className="inline-block transition-transform group-open:rotate-90">›</span>
               <span className="ml-1">Advanced</span>
             </summary>
-            <div className="mt-2">
-              <Label className="text-xs font-normal text-muted-foreground/70">Client Name</Label>
-              <Input
-                value={draft.clientName}
-                onChange={(e) => setDraft({ ...draft, clientName: e.target.value })}
-                placeholder="Override OAuth client_name (optional)"
-                className="mt-1"
-                data-testid="mcp-form-client-name"
-              />
+            <div className="mt-2 space-y-2">
+              <div>
+                <Label className="text-xs font-normal text-muted-foreground/70">Client Name</Label>
+                <Input
+                  value={draft.clientName}
+                  onChange={(e) => setDraft({ ...draft, clientName: e.target.value })}
+                  placeholder="Override OAuth client_name (optional)"
+                  className="mt-1"
+                  data-testid="mcp-form-client-name"
+                />
+              </div>
+              <div>
+                <Label className="text-xs font-normal text-muted-foreground/70">Client ID</Label>
+                <Input
+                  value={draft.clientId}
+                  onChange={(e) => setDraft({ ...draft, clientId: e.target.value })}
+                  placeholder="Provide your own OAuth client_id (optional)"
+                  className="mt-1"
+                  data-testid="mcp-form-client-id"
+                />
+                <p className="mt-1 text-[11px] text-muted-foreground/70">
+                  For servers that don&apos;t support open dynamic client registration and have issued you a client ID directly.
+                </p>
+              </div>
+              <div>
+                <Label className="text-xs font-normal text-muted-foreground/70">Client Secret</Label>
+                <Input
+                  type="password"
+                  value={draft.clientSecret}
+                  onChange={(e) => setDraft({ ...draft, clientSecret: e.target.value })}
+                  placeholder="OAuth client_secret (optional, only if your provider requires one)"
+                  className="mt-1"
+                  data-testid="mcp-form-client-secret"
+                />
+              </div>
             </div>
           </details>
         )}

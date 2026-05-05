@@ -32,7 +32,7 @@ vi.mock('@renderer/lib/os-notifications', () => ({
 }))
 
 vi.mock('@renderer/context/selection-context', () => ({
-  useSelection: () => ({ selectedSessionId: null }),
+  useSelection: () => ({ view: { kind: 'home' } }),
 }))
 
 vi.mock('@renderer/context/user-context', () => ({

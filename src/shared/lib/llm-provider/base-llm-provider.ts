@@ -10,6 +10,16 @@ export interface ModelOption {
 
 export type ModelPurpose = 'agent' | 'summarizer' | 'browser'
 
+/** Three Claude families exposed in the per-message model selector. */
+export const COMPOSER_MODEL_FAMILIES = ['opus', 'sonnet', 'haiku'] as const
+export type ComposerModelFamily = typeof COMPOSER_MODEL_FAMILIES[number]
+
+export interface ComposerModel {
+  family: ComposerModelFamily
+  modelId: string
+  label: string
+}
+
 export abstract class BaseLlmProvider {
   abstract readonly id: LlmProviderId
   abstract readonly name: string
@@ -47,6 +57,24 @@ export abstract class BaseLlmProvider {
 
   /** Get the default model for a given purpose. */
   abstract getDefaultModel(purpose: ModelPurpose): string
+
+  /**
+   * Models surfaced in the composer's per-message family selector
+   * (Haiku / Sonnet / Opus). The wire format is the family alias because
+   * the agent container's toModelAlias() collapses every pinned or
+   * region-prefixed ID to the alias before the SDK call — so all providers
+   * we support today (Anthropic, OpenRouter, Platform, Bedrock) share the
+   * same three options. Override only if a provider needs different
+   * families or wants to hide the selector by returning [].
+   * See agent-container/src/claude-code.ts:263.
+   */
+  getComposerModels(): ComposerModel[] {
+    return [
+      { family: 'opus', modelId: 'opus', label: 'Opus' },
+      { family: 'sonnet', modelId: 'sonnet', label: 'Sonnet' },
+      { family: 'haiku', modelId: 'haiku', label: 'Haiku' },
+    ]
+  }
 
   /** Get env vars to inject into agent containers. */
   abstract getContainerEnvVars(): Record<string, string | undefined>

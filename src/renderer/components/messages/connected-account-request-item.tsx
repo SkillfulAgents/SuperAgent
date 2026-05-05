@@ -612,8 +612,6 @@ function AccountOption({
         <span onClick={(e) => e.stopPropagation()}>
           <PolicySummaryPill
             accountId={account.id}
-            toolkit={account.toolkitSlug}
-            compact
             onClick={onOpenPolicies}
           />
         </span>

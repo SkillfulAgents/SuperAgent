@@ -5,6 +5,38 @@ import { eq } from 'drizzle-orm'
 import type { OAuthMetadata, OAuthTokenResponse } from './types'
 
 /**
+ * Build the candidate well-known metadata URLs for an authorization server.
+ *
+ * For issuers with a path, RFC 8414 inserts /.well-known/<name> between origin
+ * and path; OpenID Connect appends to the issuer. We try both, in the order
+ * most likely to succeed for MCP servers.
+ */
+export function buildAuthServerMetadataUrls(authServerUrl: string): string[] {
+  let parsed: URL
+  try {
+    parsed = new URL(authServerUrl)
+  } catch {
+    return []
+  }
+  const origin = parsed.origin
+  const path = parsed.pathname.replace(/\/+$/, '')
+  const appendBase = `${origin}${path}`
+
+  if (path === '' || path === '/') {
+    return [
+      `${origin}/.well-known/oauth-authorization-server`,
+      `${origin}/.well-known/openid-configuration`,
+    ]
+  }
+  return [
+    `${origin}/.well-known/oauth-authorization-server${path}`,
+    `${appendBase}/.well-known/oauth-authorization-server`,
+    `${origin}/.well-known/openid-configuration${path}`,
+    `${appendBase}/.well-known/openid-configuration`,
+  ]
+}
+
+/**
  * Generate PKCE code verifier and challenge.
  */
 function generatePKCE(): { codeVerifier: string; codeChallenge: string } {
@@ -73,13 +105,13 @@ export async function discoverOAuthMetadata(mcpUrl: string): Promise<{
       authServerUrl = origin
     }
 
-    // Step 3: Fetch Authorization Server Metadata
-    // Try RFC 8414 first, then OpenID Connect Discovery
-    const normalizedAuthServer = authServerUrl.replace(/\/+$/, '')
-    const wellKnownUrls = [
-      `${normalizedAuthServer}/.well-known/oauth-authorization-server`,
-      `${normalizedAuthServer}/.well-known/openid-configuration`,
-    ]
+    // Step 3: Fetch Authorization Server Metadata.
+    // RFC 8414 §3.1 specifies that when the issuer URL has a path component,
+    // the well-known segment is inserted between origin and path (e.g.
+    // https://host/.well-known/oauth-authorization-server/path), not appended.
+    // Some servers (e.g. Meta's MCP) only expose the path-aware form.
+    // OpenID Connect Discovery 1.0 instead appends to the issuer.
+    const wellKnownUrls = buildAuthServerMetadataUrls(authServerUrl)
 
     for (const url of wellKnownUrls) {
       try {
@@ -161,6 +193,8 @@ export async function initiateOAuthFlow(
   mcpUrl: string,
   redirectUri: string,
   clientNameOverride?: string,
+  clientIdOverride?: string,
+  clientSecretOverride?: string,
 ): Promise<{
   authorizationUrl: string
   state: string
@@ -178,7 +212,7 @@ export async function initiateOAuthFlow(
     return null
   }
 
-  // Try dynamic client registration if available
+  // Resolve client credentials: explicit override > stored > dynamic registration.
   let clientId: string | undefined
   let clientSecret: string | undefined
   let registeredScope: string | undefined
@@ -190,7 +224,10 @@ export async function initiateOAuthFlow(
     .where(eq(remoteMcpServers.id, mcpId))
     .limit(1)
 
-  if (existing?.oauthClientId) {
+  if (clientIdOverride) {
+    clientId = clientIdOverride
+    clientSecret = clientSecretOverride || undefined
+  } else if (existing?.oauthClientId) {
     clientId = existing.oauthClientId
     clientSecret = existing.oauthClientSecret || undefined
   } else if (metadata.registration_endpoint) {
@@ -272,6 +309,8 @@ export async function initiateNewServerOAuth(
   redirectUri: string,
   userId?: string,
   clientNameOverride?: string,
+  clientIdOverride?: string,
+  clientSecretOverride?: string,
 ): Promise<{
   authorizationUrl: string
   state: string
@@ -291,7 +330,10 @@ export async function initiateNewServerOAuth(
   let clientSecret: string | undefined
   let registeredScope: string | undefined
 
-  if (metadata.registration_endpoint) {
+  if (clientIdOverride) {
+    clientId = clientIdOverride
+    clientSecret = clientSecretOverride || undefined
+  } else if (metadata.registration_endpoint) {
     const registration = await registerDynamicClient(
       metadata.registration_endpoint,
       redirectUri,
@@ -305,7 +347,7 @@ export async function initiateNewServerOAuth(
   }
 
   if (!clientId) {
-    console.error('[mcp/oauth] No client_id available (dynamic registration required for new servers)')
+    console.error('[mcp/oauth] No client_id available — provide an OAuth Client ID or use a server that supports dynamic registration')
     return null
   }
 

@@ -10,7 +10,7 @@ interface TrayNavigationHandlerProps {
  * Must be rendered inside SelectionProvider.
  */
 export function TrayNavigationHandler({ children }: TrayNavigationHandlerProps) {
-  const { selectAgent, selectSession } = useSelection()
+  const { setAgent } = useSelection()
 
   useEffect(() => {
     if (!window.electronAPI?.onNavigateToAgent) {
@@ -18,16 +18,13 @@ export function TrayNavigationHandler({ children }: TrayNavigationHandlerProps) 
     }
 
     window.electronAPI.onNavigateToAgent((agentSlug, sessionId) => {
-      selectAgent(agentSlug)
-      if (sessionId !== undefined) {
-        selectSession(sessionId)
-      }
+      setAgent(agentSlug, sessionId ? { kind: 'session', id: sessionId } : { kind: 'home' })
     })
 
     return () => {
       window.electronAPI?.removeNavigateToAgent?.()
     }
-  }, [selectAgent, selectSession])
+  }, [setAgent])
 
   return <>{children}</>
 }

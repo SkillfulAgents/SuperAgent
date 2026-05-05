@@ -263,7 +263,7 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agent
             type="button"
             size="icon"
             variant="ghost"
-            className="h-7 w-7 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 transition-opacity"
+            className="h-7 overflow-hidden w-0 -ml-2 opacity-0 group-hover:w-7 group-hover:ml-0 group-hover:opacity-100 focus-visible:w-7 focus-visible:ml-0 focus-visible:opacity-100 data-[state=open]:w-7 data-[state=open]:ml-0 data-[state=open]:opacity-100 transition-[width,margin,opacity] duration-200"
             aria-label={`Actions for ${name}`}
             onClick={(e) => e.stopPropagation()}
             data-testid={`integration-row-actions-${type}-${id}`}

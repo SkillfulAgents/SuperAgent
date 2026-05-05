@@ -37,7 +37,8 @@ function isNotificationTypeEnabled(
 export function GlobalNotificationHandler() {
   useRenderTracker('GlobalNotificationHandler')
   const queryClient = useQueryClient()
-  const { selectedSessionId } = useSelection()
+  const { view } = useSelection()
+  const selectedSessionId = view.kind === 'session' ? view.id : null
   const { data: unreadData } = useUnreadNotificationCount()
   const { data: userSettings } = useUserSettings()
   const { canAccessAgent } = useUser()

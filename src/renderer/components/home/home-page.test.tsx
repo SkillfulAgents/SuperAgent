@@ -108,11 +108,9 @@ vi.mock('@shared/lib/utils/cn', () => ({
   },
 }))
 
-const mockSelectAgent = vi.fn()
-const mockSelectSession = vi.fn()
-const mockSelectDashboard = vi.fn()
+const mockSetAgent = vi.fn()
 vi.mock('@renderer/context/selection-context', () => ({
-  useSelection: () => ({ selectAgent: mockSelectAgent, selectSession: mockSelectSession, selectDashboard: mockSelectDashboard, selectedAgent: null }),
+  useSelection: () => ({ setAgent: mockSetAgent, view: { kind: 'home' }, selectedAgentSlug: null }),
 }))
 
 vi.mock('@renderer/hooks/use-sessions', () => ({

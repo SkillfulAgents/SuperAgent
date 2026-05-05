@@ -410,13 +410,16 @@ export class ClaudeCodeProcess extends EventEmitter {
         ...(this.maxTurns && { maxTurns: this.maxTurns }),
         ...(this.maxBudgetUsd && { maxBudgetUsd: this.maxBudgetUsd }),
         ...(this.effort && { effort: this.effort }),
-        ...((this.customEnvVars || this.maxOutputTokens) && {
-          env: {
-            ...this.customEnvVars,
-            // Explicit maxOutputTokens setting takes precedence over custom env var
-            ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
-          },
-        }),
+        env: {
+          // Agent SDK 0.2.113+ replaces process.env with options.env instead of
+          // overlaying it, so we must spread process.env explicitly or the Claude
+          // subprocess loses PATH, HOME, ANTHROPIC_API_KEY, connected-account env
+          // vars, and anything else set on the container.
+          ...process.env,
+          ...this.customEnvVars,
+          // Explicit maxOutputTokens setting takes precedence over custom env var
+          ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
+        },
         mcpServers: {
           'user-input': createUserInputMcpServer(),
           'browser': createBrowserMcpServer(),
@@ -738,25 +741,52 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
   }
 
-  async sendMessage(content: string, uuid?: UUID, effort?: EffortLevel): Promise<void> {
+  async sendMessage(content: string, uuid?: UUID, options?: { effort?: EffortLevel; model?: string }): Promise<void> {
+    const effort = options?.effort;
+    const model = options?.model;
+
     // Treat undefined stored effort as 'high' so pre-existing sessions (created before
     // this feature) don't trigger a spurious restart on their first post-upgrade message.
     const currentEffort: EffortLevel = this.effort ?? 'high';
     const effortChanged = effort !== undefined && effort !== currentEffort;
 
+    // For model: compare on the SDK alias so two pinned versions of the same family
+    // (e.g. opus-4-6 vs opus-4-7) don't trigger a spurious switch.
+    const incomingModelAlias = toModelAlias(model);
+    const modelChanged = model !== undefined && incomingModelAlias !== this.model;
+
     if (effortChanged) {
       this.effort = effort;
     }
+    if (modelChanged) {
+      this.model = incomingModelAlias || model;
+    }
 
     if (!this.messageQueue || !this.isReady) {
-      // Cold session — first init will pick up the (possibly new) effort value.
+      // Cold session — first init will pick up the (possibly new) effort/model values.
       console.log(`[Session ${this.sessionId}] Session not running, restarting...`);
       await this.restart();
     } else if (effortChanged) {
-      // Warm session with a changed effort — interrupt so createQuery() re-runs with the new level.
-      // Context is preserved via resume (claudeSessionId).
-      console.log(`[Session ${this.sessionId}] Effort change: ${currentEffort} -> ${effort}, restarting query`);
+      // Effort can only be set at query creation time — the SDK has no setEffort
+      // facility — so any effort change forces an interrupt + re-query. The new
+      // model (if also changed) is picked up by the same restart.
+      const reasons: string[] = [`effort ${currentEffort} -> ${effort}`];
+      if (modelChanged) reasons.push(`model -> ${this.model}`);
+      console.log(`[Session ${this.sessionId}] Restarting query (${reasons.join(', ')})`);
       await this.interrupt();
+    } else if (modelChanged && this.queryInstance) {
+      // Model-only change — use the SDK's dynamic setModel() so the running query
+      // is reused and only subsequent turns are served by the new model. No
+      // interrupt, no resume replay.
+      console.log(`[Session ${this.sessionId}] Switching model dynamically -> ${this.model}`);
+      try {
+        await this.queryInstance.setModel(this.model);
+      } catch (err) {
+        // setModel can fail (e.g. transport not in streaming mode). Fall back to
+        // the conservative restart path so the new model still takes effect.
+        console.warn(`[Session ${this.sessionId}] setModel failed, falling back to restart:`, err);
+        await this.interrupt();
+      }
     }
 
     // Create SDK user message format

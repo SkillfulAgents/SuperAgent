@@ -273,7 +273,12 @@ export class SessionManager extends EventEmitter {
     return true;
   }
 
-  async sendMessage(sessionId: string, content: string, uuid?: UUID, effort?: EffortLevel): Promise<void> {
+  async sendMessage(
+    sessionId: string,
+    content: string,
+    uuid?: UUID,
+    options?: { effort?: EffortLevel; model?: string }
+  ): Promise<void> {
     let sessionData = this.sessions.get(sessionId);
 
     // Try to resume if not in memory
@@ -288,13 +293,16 @@ export class SessionManager extends EventEmitter {
     sessionData.session.lastActivity = new Date();
     this.persistence.updateLastActivity(sessionId);
 
-    // Persist effort change so resume after eviction uses the latest level
-    if (effort !== undefined) {
-      this.persistence.updateEffort(sessionId, effort);
+    // Persist runtime-options changes so resume after eviction uses the latest values
+    if (options?.effort !== undefined) {
+      this.persistence.updateEffort(sessionId, options.effort);
+    }
+    if (options?.model !== undefined) {
+      this.persistence.updateModel(sessionId, options.model);
     }
 
     // Send to Claude Code process (messages are stored via handleMessage)
-    await sessionData.process.sendMessage(content, uuid, effort);
+    await sessionData.process.sendMessage(content, uuid, options);
   }
 
   getMessages(sessionId: string): SDKMessage[] {

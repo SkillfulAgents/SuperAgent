@@ -2,12 +2,12 @@
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { ArrowUp, Loader2, Eye, Settings2, Maximize2, Minimize2, Search, ArrowUpDown, Check } from 'lucide-react'
-import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import { ArrowUp, Loader2, Eye, Settings2, Maximize2, Minimize2, Search, Check } from 'lucide-react'
 import { useCreateSession, useSessions } from '@renderer/hooks/use-sessions'
 import { useScheduledTasks } from '@renderer/hooks/use-scheduled-tasks'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { RelatedSessions, type SortOrder } from '@renderer/components/sessions/related-sessions'
+import { SortPopover } from '@renderer/components/sessions/sort-popover'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { useSelection } from '@renderer/context/selection-context'
 import { useUser } from '@renderer/context/user-context'
@@ -17,16 +17,16 @@ import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
-import { EffortSelector } from '@renderer/components/messages/effort-selector'
-import type { EffortLevel } from '@shared/lib/container/types'
-import { HomeCrons } from './home-crons'
+import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
+import { HomeTriggers } from './home-triggers'
 import { HomeSkills } from './home-skills'
 import { HomeExtras } from './home-extras'
 import { HomeConnections } from './home-connections'
 import { HomeVolumes } from './home-volumes'
 import { HomeBookmarks } from './home-bookmarks'
 import { useUpdateAgent, useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
-import { AgentCreationAids } from '@renderer/components/agents/agent-creation-aids'
+import { AgentCreationAids, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
+import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
 import {
   useTypewriterPlaceholder,
   DEFAULT_AGENT_PROMPT_EXAMPLES,
@@ -45,7 +45,8 @@ interface AgentHomeProps {
 
 export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHomeProps) {
   useRenderTracker('AgentHome')
-  const { selectScheduledTask, selectAgent, consumePendingDraft } = useSelection()
+  const { setView, setAgent, consumePendingDraft } = useSelection()
+  const startOnboardingSession = useStartOnboardingSession()
   const { canUseAgent, canAdminAgent } = useUser()
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)
@@ -53,9 +54,20 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false)
   const [sessionSearch, setSessionSearch] = useState('')
   const [sessionSort, setSessionSort] = useState<SortOrder>('newest')
-  const [sortPopoverOpen, setSortPopoverOpen] = useState(false)
-  const [effort, setEffort] = useState<EffortLevel>('high')
+  const { data: sessionsData } = useSessions(agent.slug)
+  // First-session Opus default: when the session list has finished loading
+  // and is empty, the brand-new agent's first session should default to Opus
+  // regardless of the user's "Default Model" setting. Passed as a preferred
+  // family — the user can still pick a different model in the dropdown.
+  const isFirstSession = Array.isArray(sessionsData) && sessionsData.length === 0
+  const composerOptions = useComposerOptions(
+    isFirstSession ? { preferredFamily: 'opus' } : {}
+  )
   const sessionSearchRef = useRef<HTMLInputElement>(null)
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
+  // Tracks an explicit user collapse so the auto-expand effect doesn't fight it.
+  // Reset when the message clears (e.g. after submit).
+  const userCollapsedRef = useRef(false)
   const createSession = useCreateSession()
   const updateAgent = useUpdateAgent()
   const deleteAgent = useDeleteAgent()
@@ -93,7 +105,6 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
     }
   }
 
-  const { data: sessionsData } = useSessions(agent.slug)
   const sessions = useMemo(() => {
     if (!Array.isArray(sessionsData)) return []
     return sessionsData.map((s) => ({
@@ -145,7 +156,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
       const session = await createSession.mutateAsync({
         agentSlug: agent.slug,
         message: content,
-        effort,
+        ...composerOptions.toRuntimeOptions(),
       })
       onSessionCreated(session.id, content)
       // Fire rename after the session is created + navigated — the mutation
@@ -154,7 +165,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
         nameAssignedRef.current = true
         renameUntitledAgent.mutate({ slug: agent.slug, prompt: content })
       }
-    }, [createSession, agent.slug, agent.name, onSessionCreated, effort, sessions.length, renameUntitledAgent]),
+    }, [createSession, agent.slug, agent.name, onSessionCreated, composerOptions, sessions.length, renameUntitledAgent]),
     submitDisabled: createSession.isPending || !isRuntimeReady,
     keepMessageUntilComplete: true,
     draftKey: `agent:${agent.slug}`,
@@ -169,10 +180,18 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   // eslint-disable-next-line react-hooks/exhaustive-deps -- only run on mount
   }, [])
 
-  // Auto-expand when message gets long (5+ lines)
+  // Reset the manual-collapse flag once the message clears.
   useEffect(() => {
-    const lineCount = composer.message.split('\n').length
-    if (lineCount >= 5 && !isExpanded) {
+    if (composer.message.trim() === '') userCollapsedRef.current = false
+  }, [composer.message])
+
+  // Auto-flip to expanded when the textarea content overflows its max-height
+  // (CSS-driven 6-line cap). field-sizing handles the actual sizing — this only
+  // decides whether to switch into the full-view layout.
+  useEffect(() => {
+    const el = composerTextareaRef.current
+    if (!el || isExpanded || userCollapsedRef.current) return
+    if (el.scrollHeight > el.clientHeight) {
       setIsExpanded(true)
     }
   }, [composer.message, isExpanded])
@@ -206,13 +225,16 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   )
 
   const handleImportComplete = useCallback(
-    async ({ agent: imported }: { agent: ApiAgent }) => {
-      selectAgent(imported.slug)
+    async ({ agent: imported, hasOnboarding }: ImportResult) => {
+      setAgent(imported.slug)
       if (agent.name === UNTITLED_AGENT_NAME && sessions.length === 0 && agent.slug !== imported.slug) {
         deleteAgent.mutate(agent.slug)
       }
+      if (hasOnboarding) {
+        await startOnboardingSession(imported.slug)
+      }
     },
-    [selectAgent, agent.slug, agent.name, sessions.length, deleteAgent],
+    [setAgent, agent.slug, agent.name, sessions.length, deleteAgent, startOnboardingSession],
   )
 
   const formatDate = useCallback(
@@ -315,6 +337,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                 {...composer.dragHandlers}
               >
                 <ChatComposerBox
+                  textareaRef={composerTextareaRef}
                   attachments={composer.attachments}
                   onRemoveAttachment={composer.removeAttachment}
                   value={composer.message}
@@ -326,7 +349,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                   rows={2}
                   autoFocus
                   dataTestId="home-message-input"
-                  textareaClassName={`transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh]' : 'min-h-[60px]'}`}
+                  textareaClassName={`transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh] max-h-[50vh]' : 'min-h-[60px] max-h-[120px]'}`}
                   leftActions={(
                     <>
                       <AttachmentPicker
@@ -335,11 +358,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                         onRecentFileAttach={(file) => composer.addFiles([{ file }])}
                         disabled={isDisabled}
                       />
-                      <EffortSelector
-                        value={effort}
-                        onChange={setEffort}
-                        disabled={isDisabled}
-                      />
+                      <ComposerOptions state={composerOptions} disabled={isDisabled} />
                     </>
                   )}
                   topRightActions={(
@@ -348,7 +367,12 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                       size="icon"
                       variant="ghost"
                       className="h-6 w-6 text-muted-foreground/50 hover:text-foreground"
-                      onClick={() => setIsExpanded((v) => !v)}
+                      onClick={() => setIsExpanded((v) => {
+                        // If user is collapsing, remember it so the auto-expand
+                        // effect doesn't immediately re-flip a still-overflowing message.
+                        userCollapsedRef.current = v
+                        return !v
+                      })}
                       aria-label={isExpanded ? 'Shrink input' : 'Expand input'}
                     >
                       {isExpanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
@@ -361,6 +385,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                         <Button
                           type="submit"
                           size="sm"
+                          disabled={!composer.canSubmit}
                           data-testid="home-send-button"
                         >
                           {isDisabled ? (
@@ -400,32 +425,12 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
               <HomeBookmarks agentSlug={agent.slug} isOwner={isOwner} />
 
               {/* Sessions list / creation aids */}
-              <div className="pt-2">
+              <div className={sessions.length > 0 ? 'pt-2' : '-mt-5'}>
                 {sessions.length > 0 ? (
                   <>
                     <div className="flex items-center gap-2">
                       <h2 className="text-sm font-medium text-muted-foreground flex-1">Sessions</h2>
-                      <Popover open={sortPopoverOpen} onOpenChange={setSortPopoverOpen}>
-                        <PopoverTrigger asChild>
-                          <Button type="button" size="icon" variant="ghost" className="h-6 w-6 shrink-0" aria-label="Sort sessions">
-                            <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground" />
-                          </Button>
-                        </PopoverTrigger>
-                        <PopoverContent align="end" className="w-40 p-1">
-                          <button
-                            className={`flex w-full items-center rounded-sm px-2 py-1.5 text-xs transition-colors ${sessionSort === 'newest' ? 'bg-muted font-medium' : 'hover:bg-muted'}`}
-                            onClick={() => { setSessionSort('newest'); setSortPopoverOpen(false) }}
-                          >
-                            Newest first
-                          </button>
-                          <button
-                            className={`flex w-full items-center rounded-sm px-2 py-1.5 text-xs transition-colors ${sessionSort === 'oldest' ? 'bg-muted font-medium' : 'hover:bg-muted'}`}
-                            onClick={() => { setSessionSort('oldest'); setSortPopoverOpen(false) }}
-                          >
-                            Oldest first
-                          </button>
-                        </PopoverContent>
-                      </Popover>
+                      <SortPopover value={sessionSort} onChange={setSessionSort} ariaLabel="Sort sessions" />
                       <Button
                         type="button"
                         size="icon"
@@ -473,14 +478,14 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
           )}
         </div>
 
-        {/* Right Column — Crons + Connections + Skills + Volumes */}
+        {/* Right Column — Triggers + Connections + Skills + Volumes */}
         {showRightColumn && (
           <div className="space-y-3">
-            <HomeCrons
+            <HomeTriggers
               agentSlug={agent.slug}
               scheduledTasks={scheduledTasks}
-              formatDate={formatDate}
-              onSelectTask={selectScheduledTask}
+              onSelectTask={(taskId: string) => setView({ kind: 'task', id: taskId })}
+              onSelectWebhook={(webhookId: string) => setView({ kind: 'webhook', id: webhookId })}
             />
             <HomeConnections agentSlug={agent.slug} />
             <HomeSkills agentSlug={agent.slug} />

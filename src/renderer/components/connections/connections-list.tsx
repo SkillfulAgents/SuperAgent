@@ -3,11 +3,10 @@ import { flushSync } from 'react-dom'
 import { Switch } from '@renderer/components/ui/switch'
 import { Button } from '@renderer/components/ui/button'
 import { Loader2, Plus } from 'lucide-react'
-import { formatDistanceToNow } from 'date-fns'
 import { IntegrationDirectoryDialog } from '@renderer/components/connections/integration-directory-dialog'
-import { IntegrationList, IntegrationRow } from '@renderer/components/connections/integration-row'
+import { IntegrationList } from '@renderer/components/connections/integration-row'
 import { IntegrationRowActions } from '@renderer/components/connections/integration-row-actions'
-import { McpStatusPill } from '@renderer/components/connections/mcp-status-pill'
+import { ConnectionRow } from '@renderer/components/connections/connection-row'
 import {
   useConnectedAccounts,
   useAgentConnectedAccounts,
@@ -19,10 +18,8 @@ import {
   useAgentRemoteMcps,
   useAssignMcpToAgent,
   useRemoveMcpFromAgent,
-  type RemoteMcpServer,
 } from '@renderer/hooks/use-remote-mcps'
-import { COMMON_MCP_SERVERS } from '@shared/lib/mcp/common-servers'
-import { safeDate } from '@renderer/components/connections/utils'
+import { buildUnifiedRows, type UnifiedRow } from '@renderer/components/connections/unified-rows'
 import { startViewTransition } from '@renderer/lib/view-transition'
 
 interface ConnectionsListProps {
@@ -60,22 +57,6 @@ export function NewIntegrationButton() {
   )
 }
 
-interface UnifiedRow {
-  key: string
-  id: string
-  name: string
-  subtitle?: string
-  iconSlug?: string
-  iconFallback: 'oauth' | 'mcp' | 'blocks'
-  type: 'oauth' | 'mcp'
-  date: string | number
-  granted: boolean
-  toolkit?: string
-  mcpTools?: Array<{ name: string; description?: string }>
-  mcpStatus?: RemoteMcpServer['status']
-  mcpErrorMessage?: string | null
-}
-
 interface AllConnectionsListProps {
   agentSlug: string
 }
@@ -100,57 +81,22 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
     grantedRows: UnifiedRow[]
     notGrantedRows: UnifiedRow[]
   }>(() => {
-    const out: UnifiedRow[] = []
-
     const agentAccounts = Array.isArray(agentAccountsData?.accounts) ? agentAccountsData.accounts : []
     const allAccounts = Array.isArray(allAccountsData?.accounts) ? allAccountsData.accounts : []
     const agentMcps = Array.isArray(agentMcpsData?.mcps) ? agentMcpsData.mcps : []
     const allMcps = Array.isArray(allMcpsData?.servers) ? allMcpsData.servers : []
 
-    const agentAccountIds = new Set(agentAccounts.map((a) => a.id))
-    for (const account of allAccounts) {
-      const key = `account-${account.id}`
-      const serverGranted = agentAccountIds.has(account.id)
-      out.push({
-        key,
-        id: account.id,
-        name: account.displayName,
-        subtitle: account.provider?.displayName ?? account.toolkitSlug,
-        iconSlug: account.toolkitSlug,
-        iconFallback: 'oauth',
-        type: 'oauth',
-        date: account.createdAt,
-        granted: grantOverrides[key] ?? serverGranted,
-        toolkit: account.toolkitSlug,
-      })
-    }
-
-    const agentMcpIds = new Set(agentMcps.map((m) => m.id))
-    for (const mcp of allMcps) {
-      const key = `mcp-${mcp.id}`
-      const serverGranted = agentMcpIds.has(mcp.id)
-      out.push({
-        key,
-        id: mcp.id,
-        name: mcp.name,
-        subtitle: mcp.url,
-        iconSlug: COMMON_MCP_SERVERS.find((cs) => cs.url === mcp.url)?.slug,
-        iconFallback: 'blocks',
-        type: 'mcp',
-        date: mcp.createdAt,
-        granted: grantOverrides[key] ?? serverGranted,
-        mcpTools: mcp.tools,
-        mcpStatus: mcp.status,
-        mcpErrorMessage: mcp.errorMessage,
-      })
-    }
-
-    const byDateDesc = (a: UnifiedRow, b: UnifiedRow) =>
-      safeDate(b.date).getTime() - safeDate(a.date).getTime()
+    const rows = buildUnifiedRows({
+      allAccounts,
+      allMcps,
+      agentAccountIds: new Set(agentAccounts.map((a) => a.id)),
+      agentMcpIds: new Set(agentMcps.map((m) => m.id)),
+      grantOverrides,
+    })
 
     return {
-      grantedRows: out.filter((r) => r.granted).sort(byDateDesc),
-      notGrantedRows: out.filter((r) => !r.granted).sort(byDateDesc),
+      grantedRows: rows.filter((r) => r.granted),
+      notGrantedRows: rows.filter((r) => !r.granted),
     }
   }, [allAccountsData, agentAccountsData, allMcpsData, agentMcpsData, grantOverrides])
 
@@ -234,28 +180,10 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
   const renderRow = (row: UnifiedRow) => {
     const pending = isRowPending(row)
     return (
-      <IntegrationRow
+      <ConnectionRow
         key={row.key}
+        row={row}
         viewTransitionName={`integration-${row.key}`}
-        iconSlug={row.iconSlug}
-        iconFallback={row.iconFallback}
-        name={row.name}
-        nameBadge={<McpStatusPill status={row.mcpStatus} errorMessage={row.mcpErrorMessage} />}
-        subtitle={
-          <>
-            <span className="shrink-0">{row.type === 'oauth' ? 'API' : 'MCP'}</span>
-            {row.subtitle && (
-              <>
-                <span className="shrink-0">·</span>
-                <span className="truncate">{row.subtitle}</span>
-              </>
-            )}
-            <span className="shrink-0">·</span>
-            <span className="whitespace-nowrap shrink-0">
-              {formatDistanceToNow(safeDate(row.date), { addSuffix: true })}
-            </span>
-          </>
-        }
         right={
           <>
             <IntegrationRowActions

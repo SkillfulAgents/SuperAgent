@@ -89,6 +89,7 @@ export function VoiceInputButton({ voiceInput, message, disabled, size = 'defaul
       type="button"
       onClick={handleToggle}
       disabled={disabled && !isRecording && !isConnecting}
+      data-testid="voice-input-button"
       className={cn(
         buttonVariants({ variant: 'outline', size: 'icon' }),
         'overflow-hidden px-0 transition-[width,padding,background-color,border-color,color,border-radius] duration-200 ease-out',

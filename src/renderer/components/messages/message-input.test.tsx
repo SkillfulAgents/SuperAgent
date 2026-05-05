@@ -42,6 +42,29 @@ vi.mock('@renderer/context/connectivity-context', () => ({
   ConnectivityProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
+const mockSettings = {
+  data: {
+    llmProvider: 'anthropic',
+    models: { agentModel: 'opus' },
+    llmProviderStatus: [
+      {
+        id: 'anthropic',
+        name: 'Anthropic',
+        isConfigured: true,
+        availableModels: [],
+        composerModels: [
+          { family: 'haiku', modelId: 'haiku', label: 'Haiku' },
+          { family: 'sonnet', modelId: 'sonnet', label: 'Sonnet' },
+          { family: 'opus', modelId: 'opus', label: 'Opus' },
+        ],
+      },
+    ],
+  },
+}
+vi.mock('@renderer/hooks/use-settings', () => ({
+  useSettings: () => mockSettings,
+}))
+
 describe('MessageInput', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -90,14 +113,13 @@ describe('MessageInput', () => {
     expect(screen.getByTestId('message-input')).not.toBeDisabled()
   })
 
-  it('shows both send and stop buttons when active, with send disabled', () => {
+  it('shows only the stop button when active', () => {
     mockStreamState.isActive = true
     renderWithProviders(
       <MessageInput sessionId="s-1" agentSlug="agent-1" />
     )
     expect(screen.getByTestId('stop-button')).toBeInTheDocument()
-    expect(screen.getByTestId('send-button')).toBeInTheDocument()
-    expect(screen.getByTestId('send-button')).toBeDisabled()
+    expect(screen.queryByTestId('send-button')).not.toBeInTheDocument()
   })
 
   it('does not submit message while agent is active', async () => {
@@ -129,12 +151,14 @@ describe('MessageInput', () => {
       expect(onMessageSent).toHaveBeenCalledWith('Hello world')
     })
     await waitFor(() => {
-      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith({
-        sessionId: 's-1',
-        agentSlug: 'agent-1',
-        content: 'Hello world',
-        effort: 'high',
-      })
+      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: 's-1',
+          agentSlug: 'agent-1',
+          content: 'Hello world',
+          effort: 'high',
+        })
+      )
     })
   })
 
@@ -189,12 +213,14 @@ describe('MessageInput', () => {
     await user.click(screen.getByTestId('send-button'))
 
     await waitFor(() => {
-      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith({
-        sessionId: 's-1',
-        agentSlug: 'agent-1',
-        content: 'Hello by button',
-        effort: 'high',
-      })
+      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: 's-1',
+          agentSlug: 'agent-1',
+          content: 'Hello by button',
+          effort: 'high',
+        })
+      )
     })
   })
 
@@ -513,12 +539,14 @@ describe('MessageInput', () => {
       expect(onMessageSent).toHaveBeenCalledWith('Hello')
     })
     await waitFor(() => {
-      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith({
-        sessionId: 's-1',
-        agentSlug: 'agent-1',
-        content: 'Hello',
-        effort: 'high',
-      })
+      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: 's-1',
+          agentSlug: 'agent-1',
+          content: 'Hello',
+          effort: 'high',
+        })
+      )
     })
   })
 
@@ -538,13 +566,13 @@ describe('MessageInput', () => {
     expect(mockSendMessage.mutateAsync).not.toHaveBeenCalled()
   })
 
-  // ---- Effort selector ----
+  // ---- Composer options (combined model + effort popover) ----
 
-  it('seeds the effort selector from initialEffort prop', () => {
+  it('seeds the effort on the trigger from initialEffort prop', () => {
     renderWithProviders(
       <MessageInput sessionId="s-1" agentSlug="agent-1" initialEffort="low" />
     )
-    expect(screen.getByTestId('effort-selector-trigger')).toHaveAccessibleName(/Effort: Low/)
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent(/Low/)
   })
 
   it('sends the newly-picked effort on submit', async () => {
@@ -553,8 +581,7 @@ describe('MessageInput', () => {
       <MessageInput sessionId="s-1" agentSlug="agent-1" />
     )
 
-    // Open the effort popover and pick Medium.
-    await user.click(screen.getByTestId('effort-selector-trigger'))
+    await user.click(screen.getByTestId('composer-options-trigger'))
     await user.click(await screen.findByTestId('effort-option-medium'))
 
     const input = screen.getByTestId('message-input')
@@ -562,12 +589,77 @@ describe('MessageInput', () => {
     await user.keyboard('{Enter}')
 
     await waitFor(() => {
-      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith({
-        sessionId: 's-1',
-        agentSlug: 'agent-1',
-        content: 'Run with medium effort',
-        effort: 'medium',
-      })
+      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: 's-1',
+          agentSlug: 'agent-1',
+          content: 'Run with medium effort',
+          effort: 'medium',
+        })
+      )
+    })
+  })
+
+  it('seeds the model on the trigger from initialModel prop', () => {
+    renderWithProviders(
+      <MessageInput sessionId="s-1" agentSlug="agent-1" initialModel="haiku" />
+    )
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Haiku')
+  })
+
+  it('falls back to settings.models.agentModel when initialModel is absent', () => {
+    renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+    // mockSettings.data.models.agentModel is 'opus'
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus')
+  })
+
+  it('sends the newly-picked model on submit', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(
+      <MessageInput sessionId="s-1" agentSlug="agent-1" initialModel="opus" />
+    )
+
+    await user.click(screen.getByTestId('composer-options-trigger'))
+    await user.click(await screen.findByTestId('model-option-haiku'))
+
+    const input = screen.getByTestId('message-input')
+    await user.type(input, 'Switch to haiku')
+    await user.keyboard('{Enter}')
+
+    await waitFor(() => {
+      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: 'haiku',
+          content: 'Switch to haiku',
+        })
+      )
+    })
+  })
+
+  it('sends both effort and model on submit', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(
+      <MessageInput sessionId="s-1" agentSlug="agent-1" />
+    )
+
+    // Picking an option closes the popover, so reopen between picks.
+    await user.click(screen.getByTestId('composer-options-trigger'))
+    await user.click(await screen.findByTestId('effort-option-low'))
+    await user.click(screen.getByTestId('composer-options-trigger'))
+    await user.click(await screen.findByTestId('model-option-sonnet'))
+
+    const input = screen.getByTestId('message-input')
+    await user.type(input, 'Combined')
+    await user.keyboard('{Enter}')
+
+    await waitFor(() => {
+      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          effort: 'low',
+          model: 'sonnet',
+          content: 'Combined',
+        })
+      )
     })
   })
 

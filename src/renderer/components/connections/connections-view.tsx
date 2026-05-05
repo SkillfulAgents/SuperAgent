@@ -9,14 +9,14 @@ interface ConnectionsViewProps {
 
 export function ConnectionsView({ agentSlug }: ConnectionsViewProps) {
   useRenderTracker('ConnectionsView')
-  const { selectConnections } = useSelection()
+  const { setView } = useSelection()
 
   return (
     <SettingsPageContainer>
       <PageTitle
         title="Agent Connections"
         back={{
-          onClick: () => selectConnections(false),
+          onClick: () => setView({ kind: 'home' }),
           testId: 'connections-back-button',
         }}
         actions={<NewIntegrationButton />}

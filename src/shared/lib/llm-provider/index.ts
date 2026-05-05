@@ -1,5 +1,11 @@
-export { BaseLlmProvider } from './base-llm-provider'
-export type { LlmProviderId, ModelOption, ModelPurpose } from './base-llm-provider'
+export { BaseLlmProvider, COMPOSER_MODEL_FAMILIES } from './base-llm-provider'
+export type {
+  LlmProviderId,
+  ModelOption,
+  ModelPurpose,
+  ComposerModel,
+  ComposerModelFamily,
+} from './base-llm-provider'
 export { AnthropicLlmProvider } from './anthropic-provider'
 export { OpenRouterLlmProvider } from './openrouter-provider'
 export { BedrockLlmProvider } from './bedrock-provider'
@@ -39,6 +45,7 @@ export interface LlmProviderInfo {
   name: string
   isConfigured: boolean
   availableModels: { value: string; label: string }[]
+  composerModels: import('./base-llm-provider').ComposerModel[]
 }
 
 /** Get info about all providers (for settings UI). */
@@ -48,5 +55,6 @@ export function getAllProviderInfo(): LlmProviderInfo[] {
     name: p.name,
     isConfigured: p.getApiKeyStatus().isConfigured,
     availableModels: p.getAvailableModels(),
+    composerModels: p.getComposerModels(),
   }))
 }

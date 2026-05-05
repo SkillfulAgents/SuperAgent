@@ -39,6 +39,38 @@ describe('mcpDraftSchema', () => {
     expect(r.success).toBe(false)
   })
 
+  it('accepts an oauth draft with both clientId and clientSecret', () => {
+    const r = mcpDraftSchema.safeParse({
+      ...valid,
+      authType: 'oauth',
+      clientId: 'my-app-id',
+      clientSecret: 'my-app-secret',
+    })
+    expect(r.success).toBe(true)
+  })
+
+  it('accepts an oauth draft with only clientId (no secret)', () => {
+    const r = mcpDraftSchema.safeParse({
+      ...valid,
+      authType: 'oauth',
+      clientId: 'my-app-id',
+    })
+    expect(r.success).toBe(true)
+  })
+
+  it('rejects an oauth draft with a clientSecret but no clientId', () => {
+    const r = mcpDraftSchema.safeParse({
+      ...valid,
+      authType: 'oauth',
+      clientSecret: 'orphan-secret',
+    })
+    expect(r.success).toBe(false)
+    if (!r.success) {
+      expect(r.error.issues[0].path).toEqual(['clientId'])
+      expect(r.error.issues[0].message).toMatch(/client id/i)
+    }
+  })
+
   it('rejects an http:// URL on a non-loopback host (must be https)', () => {
     const r = mcpDraftSchema.safeParse({ ...valid, url: 'http://mcp.granola.ai/mcp' })
     expect(r.success).toBe(false)

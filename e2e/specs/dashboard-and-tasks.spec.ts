@@ -54,7 +54,7 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
     await expect(toolCall).toContainText('America/New York')
   })
 
-  test('scheduled task is created in the database and appears in sidebar', async ({ page }) => {
+  test('scheduled task is created in the database and appears on agent home', async ({ page: _page }) => {
     const agentName = `Schedule DB ${Date.now()}`
     await agentPage.createAgent(agentName)
 
@@ -64,12 +64,13 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
     // Wait for the tool call to complete
     await sessionPage.expectToolCall('mcp__user-input__schedule_task', 15000)
 
-    // The sidebar agent item should now have a scheduled task sub-item
-    // The collapsible should expand to show the task
-    const sidebar = appPage.getSidebar()
+    // Scheduled tasks now live on the agent home page (under the "Triggers"
+    // section), not in the sidebar. Click the agent row to clear the session
+    // selection and land on AgentHome.
+    await agentPage.selectAgent(agentName)
 
-    // Look for the scheduled task in the sidebar (may need to expand the agent)
-    // Scheduled tasks show a clock icon and task name
-    await expect(sidebar.getByText('Daily Issue Summary')).toBeVisible({ timeout: 10000 })
+    const main = appPage.getMainContent()
+    await expect(main.getByText('Triggers')).toBeVisible({ timeout: 5000 })
+    await expect(main.getByText('Daily Issue Summary')).toBeVisible({ timeout: 10000 })
   })
 })

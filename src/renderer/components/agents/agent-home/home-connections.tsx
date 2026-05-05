@@ -11,6 +11,7 @@ import { HomeCollapsible } from './home-collapsible'
 import { formatDistanceToNow } from 'date-fns'
 import { safeDate } from '@renderer/components/connections/utils'
 import { COMMON_MCP_SERVERS } from '@shared/lib/mcp/common-servers'
+import { FeaturedServicesStack } from '@renderer/components/connections/featured-services-stack'
 
 interface HomeConnectionsProps {
   agentSlug: string
@@ -31,12 +32,10 @@ interface ConnectionRow {
   mcpErrorMessage?: string | null
 }
 
-const FEATURED_SERVICE_SLUGS = ['atlassian', 'slack', 'notion', 'github', 'linear', 'figma', 'gmail']
-
 export function HomeConnections({ agentSlug }: HomeConnectionsProps) {
   const { data: accountsData } = useAgentConnectedAccounts(agentSlug)
   const { data: mcpsData } = useAgentRemoteMcps(agentSlug)
-  const { selectConnections } = useSelection()
+  const { setView } = useSelection()
 
   const connections = useMemo<ConnectionRow[]>(() => {
     const rows: ConnectionRow[] = []
@@ -126,35 +125,13 @@ export function HomeConnections({ agentSlug }: HomeConnectionsProps) {
         </div>
       )}
       <div className="flex items-center justify-between mt-3 px-4 pb-1">
-        {connections.length === 0 && (
-          <div className="flex items-center" aria-hidden="true">
-            {FEATURED_SERVICE_SLUGS.map((slug, i) => (
-              <div
-                key={slug}
-                className="h-8 w-8 rounded-lg border border-border bg-background flex items-center justify-center shadow-sm transition-transform duration-100 ease-out hover:scale-110 hover:z-10"
-                style={{ marginLeft: i === 0 ? 0 : -8, zIndex: i }}
-              >
-                <img
-                  src={`${import.meta.env.BASE_URL}service-icons/${slug}.svg`}
-                  alt=""
-                  className="h-4 w-4 object-contain"
-                />
-              </div>
-            ))}
-            <div
-              className="h-8 w-8 rounded-lg border border-border bg-background flex items-center justify-center shadow-sm transition-transform duration-100 ease-out hover:scale-110 hover:z-10"
-              style={{ marginLeft: -8, zIndex: FEATURED_SERVICE_SLUGS.length }}
-            >
-              <span className="text-2xs font-medium text-muted-foreground/70">70+</span>
-            </div>
-          </div>
-        )}
+        {connections.length === 0 && <FeaturedServicesStack />}
         <div className="ml-auto">
           <Button
             type="button"
             variant="ghost"
             size="sm"
-            onClick={() => selectConnections(true)}
+            onClick={() => setView({ kind: 'connections' })}
             data-testid="home-connections-open-page"
           >
             {connections.length > 0 ? <Settings2 /> : <Plus />}
