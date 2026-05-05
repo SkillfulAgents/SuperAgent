@@ -71,11 +71,7 @@ export async function initializeServices() {
     await validateAuthModeStartup()
   }
 
-  // When running with an org-scoped platform JWT, install a global fetch
-  // interceptor that rewrites outbound platform-proxy requests to carry
-  // the active attribution (Authorization bearer with the acting member
-  // encoded into the token). Opaque access keys (single-user installs)
-  // don't need attribution, so we skip the interceptor entirely.
+  // Install fetch interceptor for org JWTs (opaque keys don't need attribution).
   try {
     const platformToken = getPlatformAccessToken()
     if (platformToken && decodeOrgIdFromToken(platformToken) !== null) {

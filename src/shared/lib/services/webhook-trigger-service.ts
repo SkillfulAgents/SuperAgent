@@ -31,16 +31,7 @@ function lookupPlatformMemberId(userId: string): string | null {
   return rows[0]?.accountId ?? null
 }
 
-/**
- * Distinct platform member IDs (`sub_...`) for users who own at least one
- * active or paused webhook trigger. Used by TriggerManager to poll
- * `/v1/webhook-events/poll` per-member with `Bearer <orgJwt>::<memberId>`,
- * since the platform claims pending events by `member_id`.
- *
- * Resolution order per trigger: `webhook_triggers.createdByUserId`, then
- * fallback to `connected_accounts.userId`. Owners without a linked
- * platform account row are skipped.
- */
+/** Distinct member IDs of active/paused trigger owners; used by TriggerManager to poll per-member. */
 export function getDistinctPlatformMemberIdsForActiveTriggers(): string[] {
   const rows = db
     .select({

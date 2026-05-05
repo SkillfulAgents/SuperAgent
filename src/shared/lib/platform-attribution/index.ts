@@ -8,9 +8,7 @@ import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-servi
 
 const PLATFORM_PROVIDER_ID = 'platform'
 
-// ---- Token shape (routing only; not a trust check) ------------------------
-
-/** Returns the unverified `orgId` claim, or null for opaque access keys. */
+/** Unverified `orgId` claim, or null for opaque access keys. Used only for routing. */
 export function decodeOrgIdFromToken(token: string): string | null {
   const segments = token.split('.')
   if (segments.length !== 3) return null
@@ -28,8 +26,6 @@ function decodeBase64Url(value: string): string {
   return Buffer.from(padded, 'base64').toString('utf8')
 }
 
-// ---- Member lookup --------------------------------------------------------
-
 function getPlatformAccountIdForUserId(userId: string): string | null {
   const rows = db
     .select({ accountId: authAccount.accountId })
@@ -41,14 +37,8 @@ function getPlatformAccountIdForUserId(userId: string): string | null {
   return rows[0]?.accountId ?? null
 }
 
-// ---- Attribution wire envelope --------------------------------------------
-//
-// Attribution is carried entirely via the bearer token. Org-scoped tokens
-// with a resolved acting member are encoded as `<token>::<memberId>`; the
-// platform proxy splits on `::` before JWT verification (JWT and access
-// keys never contain `:`, so the separator is unambiguous). Single-user
-// access keys pass through unchanged.
-
+// Org JWTs carry the acting member as `<token>::<memberId>` (proxy splits
+// on `::` pre-verification). Opaque access keys pass through unchanged.
 export interface Attribution {
   applyTo(headers: Headers): void
   bearerToken(): string
@@ -86,8 +76,6 @@ function buildAttribution(memberId: string | null): Attribution | null {
   return new PlatformAttribution(token, memberId, orgScoped)
 }
 
-// ---- ALS scopes -----------------------------------------------------------
-
 const userContext = new AsyncLocalStorage<{ userId: string }>()
 const attributionContext = new AsyncLocalStorage<{ auth: Attribution }>()
 
@@ -101,8 +89,6 @@ export function runWithAttribution<T>(
 ): Promise<T> | T {
   return auth ? attributionContext.run({ auth }, fn) : fn()
 }
-
-// ---- Public factories -----------------------------------------------------
 
 function fromCurrentRequest(): Attribution | null {
   const userId = userContext.getStore()?.userId

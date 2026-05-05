@@ -115,11 +115,8 @@ class TriggerManager {
     this.isProcessing = true
 
     try {
-      // Org JWTs need an acting member to claim per-member rows from the
-      // platform's `webhook_events` table. Iterate over distinct owners of
-      // active/paused triggers and poll each. The first realtime config
-      // returned wins — Supabase RLS scopes inserts to that member, but
-      // any missed events are picked up on the next pollAndProcess() call.
+      // Poll once per distinct trigger owner; first realtime config wins
+      // (other members are picked up on the next pollAndProcess()).
       const memberIds = getDistinctPlatformMemberIdsForActiveTriggers()
       if (memberIds.length === 0) return
 
@@ -170,9 +167,7 @@ class TriggerManager {
         },
       )
 
-      // Refresh JWT every 50 minutes (token lasts 1 hour). Reuses the same
-      // memberId that established the subscription; other members are
-      // covered by the next pollAndProcess() iteration.
+      // Refresh JWT every 50 minutes (token lasts 1 hour).
       this.jwtRefreshInterval = setInterval(async () => {
         try {
           const freshResult = await pollAndClaimEvents(memberId)
@@ -257,9 +252,7 @@ class TriggerManager {
     trigger: WebhookTrigger,
     events: WebhookEvent[]
   ): Promise<void> {
-    // Run under the trigger creator's attribution (cold container starts
-    // bake this into the container's ANTHROPIC token). Fall back to the
-    // connected_account owner for legacy triggers without createdByUserId.
+    // Attribute to trigger creator; fall back to the connected_account owner.
     const ownerUserId = trigger.createdByUserId ?? resolveConnectedAccountOwner(trigger.connectedAccountId)
     const run = ownerUserId
       ? <T,>(fn: () => Promise<T>) => runWithRequestUser(ownerUserId, fn) as Promise<T>

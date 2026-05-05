@@ -23,7 +23,7 @@ export interface PlatformAuthCallbackParams {
   error?: string | null
 }
 
-// Once-per-process guard for the env-managed auto-sync.
+// Run env-managed auto-sync at most once per process.
 let envSkillsetSyncFired = false
 
 function triggerPlatformSkillsetSync(queryClient: QueryClient): void {
@@ -49,7 +49,7 @@ export function usePlatformAuthStatus() {
     },
   })
 
-  // AUTH_MODE skips OAuth complete; mirror its auto-sync once on first connect.
+  // AUTH_MODE skips OAuth complete; mirror auto-sync once on first connect.
   useEffect(() => {
     if (envSkillsetSyncFired) return
     const status = query.data

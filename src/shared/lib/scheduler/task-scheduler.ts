@@ -139,8 +139,7 @@ class TaskScheduler {
    * Execute a single scheduled task.
    */
   private async executeTask(task: ScheduledTask): Promise<void> {
-    // Run under the task creator's attribution (cold container starts bake
-    // this into the container's ANTHROPIC token).
+    // Attribute to task creator (baked into ANTHROPIC token on cold start).
     const run = task.createdByUserId
       ? <T,>(fn: () => Promise<T>) => runWithRequestUser(task.createdByUserId!, fn) as Promise<T>
       : <T,>(fn: () => Promise<T>) => fn()

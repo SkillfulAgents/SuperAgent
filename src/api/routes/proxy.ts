@@ -266,8 +266,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
 
   // resolvedPolicyDecision is now 'allow' (auto) or 'approved_by_user' (manual)
 
-  // 4. Fetch real token (with cache). Wrap in the connected_account
-  // owner's attribution so the platform proxy resolves the acting member.
+  // 4. Fetch real token (with cache), attributed to the connected_account owner.
   let realToken: string
   try {
     realToken = await runWithAttribution(

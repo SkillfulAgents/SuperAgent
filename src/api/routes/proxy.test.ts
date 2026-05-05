@@ -46,16 +46,8 @@ vi.mock('drizzle-orm', () => ({
   and: (...args: unknown[]) => args,
 }))
 
-// The proxy route wraps the platform-bound `getCachedToken` call in
-// `runWithAttribution(attribution.fromResourceCreator(account.userId), ...)`.
-// In production that resolves the connected_account owner's platform member
-// id via a second DB lookup; here we don't care about attribution and the
-// shared db mock only covers the connected_accounts chain, so short-circuit
-// the module to a no-op that just runs the inner fn.
 vi.mock('@shared/lib/platform-attribution', () => ({
-  attribution: {
-    fromResourceCreator: () => null,
-  },
+  attribution: { fromResourceCreator: () => null },
   runWithAttribution: <T,>(_auth: unknown, fn: () => T): T => fn(),
 }))
 

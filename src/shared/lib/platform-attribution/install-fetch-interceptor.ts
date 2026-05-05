@@ -2,14 +2,7 @@ import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 
 import { attribution } from './index'
 
-/**
- * Wraps `globalThis.fetch` so any request whose URL starts with the
- * platform-proxy base URL automatically picks up the active attribution
- * (Authorization bearer with the acting member encoded into the token)
- * from the ALS scope.
- *
- * Other fetches pass through untouched. Idempotent — second call is a no-op.
- */
+/** Wrap `globalThis.fetch` so platform-proxy requests pick up active attribution from ALS. Idempotent. */
 
 let installed = false
 let realFetch: typeof globalThis.fetch | null = null
