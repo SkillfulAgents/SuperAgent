@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { cn } from '@shared/lib/utils/cn'
 
 interface DetailCardProps {
-  label?: ReactNode
+  label?: string
   headerActions?: ReactNode
   footer?: ReactNode
   className?: string

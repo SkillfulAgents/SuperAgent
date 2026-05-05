@@ -2,17 +2,10 @@ import { useState } from 'react'
 import { RelatedSessions, type SortOrder } from '@renderer/components/sessions/related-sessions'
 import { SortPopover } from '@renderer/components/sessions/sort-popover'
 
-interface SessionItem {
-  id: string
-  name: string
-  createdAt: string
-  isActive?: boolean
-  isAwaitingInput?: boolean
-  hasUnreadNotifications?: boolean
-}
+type RelatedSessionItem = Parameters<typeof RelatedSessions>[0]['sessions'][number]
 
 interface RunHistorySectionProps {
-  sessions: SessionItem[]
+  sessions: RelatedSessionItem[]
   agentSlug: string
   formatDate: (date: string) => string
   formatSubtext?: (date: string) => string

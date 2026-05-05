@@ -16,6 +16,7 @@ import { DetailCard } from '@renderer/components/triggers/detail-card'
 import { StatusToggle } from '@renderer/components/triggers/status-toggle'
 import { RunHistorySection } from '@renderer/components/triggers/run-history-section'
 import { CollapsiblePromptText } from '@renderer/components/triggers/collapsible-prompt-text'
+import { EditPromptDialog } from '@renderer/components/triggers/edit-prompt-dialog'
 import {
   useScheduledTask,
   useCancelScheduledTask,
@@ -25,6 +26,7 @@ import {
   useDescribeSchedule,
   useParseSchedule,
   useUpdateSchedule,
+  useUpdateScheduledTaskPrompt,
   usePauseScheduledTask,
   useResumeScheduledTask,
 } from '@renderer/hooks/use-scheduled-tasks'
@@ -66,6 +68,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const runNow = useRunScheduledTaskNow()
   const pauseTask = usePauseScheduledTask()
   const resumeTask = useResumeScheduledTask()
+  const updatePrompt = useUpdateScheduledTaskPrompt()
   const { handleScheduledTaskDeleted, setView } = useSelection()
   const { canUseAgent } = useUser()
   const canCancel = canUseAgent(agentSlug)
@@ -76,6 +79,8 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   // Settings popover / delete dialog state
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [editPromptOpen, setEditPromptOpen] = useState(false)
+  const [editPromptError, setEditPromptError] = useState<string | null>(null)
 
   // Edit schedule modal state
   const [editScheduleOpen, setEditScheduleOpen] = useState(false)
@@ -295,7 +300,20 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
 
         {/* Details card (right, 1/3) */}
         <div className="space-y-3 order-1 lg:order-2">
-          <DetailCard label="Instructions">
+          <DetailCard
+            label="Instructions"
+            headerActions={canCancel && (task.status === 'pending' || task.status === 'paused') ? (
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="Edit instructions"
+                className="h-7 w-7 text-muted-foreground"
+                onClick={() => setEditPromptOpen(true)}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </Button>
+            ) : undefined}
+          >
             <CollapsiblePromptText text={task.prompt} />
           </DetailCard>
 
@@ -372,6 +390,30 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
 
         </div>
       </div>
+
+      <EditPromptDialog
+        open={editPromptOpen}
+        onOpenChange={(open) => {
+          setEditPromptOpen(open)
+          if (!open) setEditPromptError(null)
+        }}
+        initialPrompt={task.prompt}
+        title="Edit Instructions"
+        description="Update the instructions executed when this cron runs."
+        isSaving={updatePrompt.isPending}
+        errorMessage={editPromptError}
+        onSave={(newPrompt) => {
+          setEditPromptError(null)
+          updatePrompt.mutate(
+            { taskId, agentSlug, prompt: newPrompt },
+            {
+              onSuccess: () => setEditPromptOpen(false),
+              onError: (err) =>
+                setEditPromptError(err instanceof Error ? err.message : 'Failed to update prompt'),
+            },
+          )
+        }}
+      />
 
       {/* Edit Schedule Modal */}
       <Dialog open={editScheduleOpen} onOpenChange={setEditScheduleOpen}>

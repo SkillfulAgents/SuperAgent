@@ -6,7 +6,7 @@
  */
 
 import { useMemo, useState } from 'react'
-import { Trash2, Loader2, AlertTriangle, Settings as SettingsIcon } from 'lucide-react'
+import { Trash2, Loader2, AlertTriangle, Settings as SettingsIcon, Pencil } from 'lucide-react'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
@@ -16,6 +16,7 @@ import {
   useWebhookTriggerSessions,
   usePauseWebhookTrigger,
   useResumeWebhookTrigger,
+  useUpdateWebhookTriggerPrompt,
 } from '@renderer/hooks/use-webhook-triggers'
 import { useSelection } from '@renderer/context/selection-context'
 import { useUser } from '@renderer/context/user-context'
@@ -36,6 +37,7 @@ import { DetailCard } from '@renderer/components/triggers/detail-card'
 import { StatusToggle } from '@renderer/components/triggers/status-toggle'
 import { RunHistorySection } from '@renderer/components/triggers/run-history-section'
 import { CollapsiblePromptText } from '@renderer/components/triggers/collapsible-prompt-text'
+import { EditPromptDialog } from '@renderer/components/triggers/edit-prompt-dialog'
 
 interface WebhookTriggerViewProps {
   triggerId: string
@@ -48,7 +50,8 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
   const cancelTrigger = useCancelWebhookTrigger()
   const pauseTrigger = usePauseWebhookTrigger()
   const resumeTrigger = useResumeWebhookTrigger()
-  const { handleWebhookTriggerDeleted } = useSelection()
+  const updatePrompt = useUpdateWebhookTriggerPrompt()
+  const { handleWebhookTriggerDeleted, setView } = useSelection()
   const { canUseAgent } = useUser()
   const { data: settings } = useSettings()
   const { data: platformAuth } = usePlatformAuthStatus()
@@ -60,6 +63,21 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [editPromptOpen, setEditPromptOpen] = useState(false)
+  const [editPromptError, setEditPromptError] = useState<string | null>(null)
+  const canEditPrompt = canCancel && trigger?.status !== 'cancelled'
+
+  const handleSavePrompt = (newPrompt: string) => {
+    if (!trigger) return
+    setEditPromptError(null)
+    updatePrompt.mutate(
+      { triggerId: trigger.id, agentSlug, prompt: newPrompt },
+      {
+        onSuccess: () => setEditPromptOpen(false),
+        onError: (err) => setEditPromptError(err instanceof Error ? err.message : 'Failed to update prompt'),
+      },
+    )
+  }
 
   const parsedConfigEntries = useMemo<[string, unknown][]>(() => {
     if (!trigger?.triggerConfig) return []
@@ -166,23 +184,30 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
 
   return (
     <SettingsPageContainer fullScreen>
-      <PageTitle title={trigger.name || trigger.triggerType} actions={headerActions} />
+      <PageTitle
+        title={trigger.name || trigger.triggerType}
+        back={{
+          onClick: () => setView({ kind: 'home' }),
+          testId: 'webhook-trigger-back-button',
+        }}
+        actions={headerActions}
+      />
 
-      {hasLocalComposioKey && isActive && (
+      {isActive && !isPlatformConnected && (
+        <Alert className="border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-400">
+          <AlertTriangle className="h-4 w-4 !text-amber-600 dark:!text-amber-400" />
+          <AlertDescription>
+            Webhook triggers require a platform connection. Connect to the platform in Settings to enable triggers.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {isActive && isPlatformConnected && hasLocalComposioKey && (
         <Alert className="border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-400">
           <AlertTriangle className="h-4 w-4 !text-amber-600 dark:!text-amber-400" />
           <AlertDescription>
             Webhook triggers require platform-managed Composio and will not fire while using a personal Composio API key.
             Remove your personal key in Settings → Account Provider to restore trigger functionality.
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {!isPlatformConnected && isActive && (
-        <Alert className="border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-400">
-          <AlertTriangle className="h-4 w-4 !text-amber-600 dark:!text-amber-400" />
-          <AlertDescription>
-            Webhook triggers require a platform connection. Connect to the platform in Settings to enable triggers.
           </AlertDescription>
         </Alert>
       )}
@@ -201,7 +226,20 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
 
         {/* Detail cards (right, 1/3) */}
         <div className="space-y-3 order-1 lg:order-2">
-          <DetailCard label="Instructions">
+          <DetailCard
+            label="Instructions"
+            headerActions={canEditPrompt ? (
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="Edit instructions"
+                className="h-7 w-7 text-muted-foreground"
+                onClick={() => setEditPromptOpen(true)}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </Button>
+            ) : undefined}
+          >
             <CollapsiblePromptText text={trigger.prompt} />
           </DetailCard>
 
@@ -271,6 +309,20 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
           )}
         </div>
       </div>
+
+      <EditPromptDialog
+        open={editPromptOpen}
+        onOpenChange={(open) => {
+          setEditPromptOpen(open)
+          if (!open) setEditPromptError(null)
+        }}
+        initialPrompt={trigger.prompt}
+        title="Edit Instructions"
+        description="Update the instructions sent to the agent when this trigger fires."
+        isSaving={updatePrompt.isPending}
+        errorMessage={editPromptError}
+        onSave={handleSavePrompt}
+      />
     </SettingsPageContainer>
   )
 }

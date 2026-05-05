@@ -320,3 +320,22 @@ export async function updateComposioTriggerId(
     .set({ composioTriggerId })
     .where(eq(webhookTriggers.id, triggerId))
 }
+
+/**
+ * Update a webhook trigger's prompt (the instructions sent when the trigger fires).
+ * Allowed in any non-cancelled state.
+ */
+export async function updateWebhookTriggerPrompt(
+  triggerId: string,
+  prompt: string,
+): Promise<boolean> {
+  const trigger = await getWebhookTrigger(triggerId)
+  if (!trigger || trigger.status === 'cancelled') return false
+
+  const result = await db
+    .update(webhookTriggers)
+    .set({ prompt })
+    .where(eq(webhookTriggers.id, triggerId))
+
+  return (result.changes ?? 0) > 0
+}

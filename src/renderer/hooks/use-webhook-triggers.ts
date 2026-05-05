@@ -55,6 +55,29 @@ export function usePauseWebhookTrigger() {
   })
 }
 
+export function useUpdateWebhookTriggerPrompt() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ triggerId, prompt }: { triggerId: string; agentSlug: string; prompt: string }) => {
+      const res = await apiFetch(`/api/webhook-triggers/${triggerId}/prompt`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.error || 'Failed to update prompt')
+      }
+      return res.json() as Promise<WebhookTrigger>
+    },
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['webhook-trigger', variables.triggerId] })
+      queryClient.invalidateQueries({ queryKey: ['webhook-triggers', variables.agentSlug] })
+    },
+  })
+}
+
 export function useResumeWebhookTrigger() {
   const queryClient = useQueryClient()
 

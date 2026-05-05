@@ -15,9 +15,11 @@ import {
   markTaskExecuted,
   recordManualExecution,
   updateScheduleExpression,
+  updateTaskPrompt,
   pauseScheduledTask,
   resumeScheduledTask,
 } from '@shared/lib/services/scheduled-task-service'
+import { promptUpdateSchema } from './trigger-prompt-schema'
 import {
   getSessionsByScheduledTask,
   registerSession,
@@ -139,6 +141,29 @@ scheduledTasksRouter.post('/:taskId/reset', TaskAgentRole('user'), async (c) => 
   } catch (error) {
     console.error('Failed to reset scheduled task:', error)
     return c.json({ error: 'Failed to reset scheduled task' }, 500)
+  }
+})
+
+// PATCH /api/scheduled-tasks/:taskId/prompt - Edit the task's instructions
+scheduledTasksRouter.patch('/:taskId/prompt', TaskAgentRole('user'), async (c) => {
+  try {
+    const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
+    const body = await c.req.json().catch(() => ({}))
+    const parsed = promptUpdateSchema.safeParse(body)
+    if (!parsed.success) {
+      return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid prompt' }, 400)
+    }
+
+    const updated = await updateTaskPrompt(task!.id, parsed.data.prompt)
+    if (!updated) {
+      return c.json({ error: 'Task not found or not editable' }, 404)
+    }
+
+    const refreshed = await getScheduledTask(task!.id)
+    return c.json(refreshed)
+  } catch (error) {
+    console.error('Failed to update scheduled task prompt:', error)
+    return c.json({ error: 'Failed to update prompt' }, 500)
   }
 })
 

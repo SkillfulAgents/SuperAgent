@@ -19,12 +19,13 @@ import { Separator } from '@renderer/components/ui/separator'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { DonutChart } from '@renderer/components/ui/donut-chart'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
-import { Power, Square, ChevronLeft, Clock, Loader2, AlertCircle, AlertTriangle, X, CalendarClock, Webhook } from 'lucide-react'
+import { Power, Square, ChevronLeft, Clock, Loader2, AlertCircle, AlertTriangle, X, CalendarClock, Zap } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useAgent, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
 import { useSessions, useSession } from '@renderer/hooks/use-sessions'
 import { useScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
+import { useWebhookTrigger } from '@renderer/hooks/use-webhook-triggers'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { useSelection } from '@renderer/context/selection-context'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
@@ -60,6 +61,7 @@ export function MainContent() {
   const { data: sessions } = useSessions(agentSlug)
   const { data: session } = useSession(sessionId, agentSlug)
   const { data: scheduledTask } = useScheduledTask(scheduledTaskId)
+  const { data: webhookTrigger } = useWebhookTrigger(webhookTriggerId)
   const startAgent = useStartAgent()
   const stopAgent = useStopAgent()
   const hasActiveSessions = sessions?.some((s) => s.isActive) || (agent?.hasActiveSessions ?? false)
@@ -159,9 +161,10 @@ export function MainContent() {
 
   const showSessionCrumb = !!(sessionId && session?.agentSlug === agentSlug)
   const showTaskCrumb = !!(scheduledTaskId && scheduledTask)
+  const showWebhookCrumb = !!(webhookTriggerId && webhookTrigger)
   const showApiLogsCrumb = !!apiLogsOpen
   const showConnectionsCrumb = !!connectionsOpen
-  const isAgentLeaf = !showSessionCrumb && !showTaskCrumb && !showApiLogsCrumb && !showConnectionsCrumb
+  const isAgentLeaf = !showSessionCrumb && !showTaskCrumb && !showWebhookCrumb && !showApiLogsCrumb && !showConnectionsCrumb
 
   return (
     <div className="h-full flex flex-col" data-testid="main-content">
@@ -198,13 +201,24 @@ export function MainContent() {
               </SessionContextMenu>
             </div>
           )}
-          {scheduledTaskId && scheduledTask && (
+          {showTaskCrumb && (
             <div className="flex items-center gap-1.5 min-w-0">
               <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
               <div className="flex items-center gap-1 text-muted-foreground">
                 <Clock className="h-4 w-4" />
                 <span className="truncate text-sm font-light text-foreground">
-                  {scheduledTask.name || 'Scheduled Task'}
+                  {scheduledTask?.name || 'Scheduled Task'}
+                </span>
+              </div>
+            </div>
+          )}
+          {showWebhookCrumb && (
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
+              <div className="flex items-center gap-1 text-muted-foreground">
+                <Zap className="h-4 w-4" />
+                <span className="truncate text-sm font-light text-foreground">
+                  {webhookTrigger?.name || webhookTrigger?.triggerType || 'Webhook Trigger'}
                 </span>
               </div>
             </div>
@@ -392,7 +406,7 @@ export function MainContent() {
               View trigger
             </button>
             <span className="mx-1 text-border">|</span>
-            <Webhook className="h-3 w-3 shrink-0" />
+            <Zap className="h-3 w-3 shrink-0" />
             <span>
               Session created by webhook trigger{session.webhookTriggerName ? ` "${session.webhookTriggerName}"` : ''}
             </span>
