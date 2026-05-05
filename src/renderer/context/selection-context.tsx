@@ -25,6 +25,13 @@ interface SelectionContextType {
   view: AgentView
   /** One-shot draft text to pre-fill the agent home composer. Consumed on read. */
   pendingDraft: string | null
+  /**
+   * Slug of an agent that was *just* created via the New Agent flow. Used to
+   * tag its AgentHome with a view-transition-name so the morph from the
+   * sidebar button to the home page only fires for this specific arrival —
+   * not every time AgentHome happens to mount.
+   */
+  justCreatedSlug: string | null
 
   /**
    * Select an agent (or clear selection with `null`). Resets the view to home
@@ -38,6 +45,8 @@ interface SelectionContextType {
   setView: (view: AgentView) => void
   /** Read and clear the pending draft. Returns null if there isn't one. */
   consumePendingDraft: () => string | null
+  /** Mark a slug as just-created (enables one-shot view transition tag). */
+  setJustCreatedSlug: (slug: string | null) => void
   /** Clear agent selection and view (back to global Home). */
   clearSelection: () => void
 
@@ -55,6 +64,11 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
   const [selectedAgentSlug, setSelectedAgentSlug] = useState<string | null>(null)
   const [view, setViewState] = useState<AgentView>(HOME)
   const [pendingDraft, setPendingDraft] = useState<string | null>(null)
+  const [justCreatedSlug, setJustCreatedSlugState] = useState<string | null>(null)
+
+  const setJustCreatedSlug = useCallback((slug: string | null) => {
+    setJustCreatedSlugState(slug)
+  }, [])
 
   const setAgent = useCallback((agentSlug: string | null, nextView?: AgentView) => {
     setSelectedAgentSlug(agentSlug)
@@ -128,10 +142,12 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
         selectedAgentSlug,
         view,
         pendingDraft,
+        justCreatedSlug,
         setAgent,
         setAgentWithDraft,
         setView,
         consumePendingDraft,
+        setJustCreatedSlug,
         clearSelection,
         handleAgentDeleted,
         handleSessionDeleted,

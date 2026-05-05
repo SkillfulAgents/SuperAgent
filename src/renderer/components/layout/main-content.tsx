@@ -40,7 +40,7 @@ import { SessionSearchBar } from '@renderer/components/messages/session-search-b
 
 export function MainContent() {
   useRenderTracker('MainContent')
-  const { selectedAgentSlug: agentSlug, view, setView } = useSelection()
+  const { selectedAgentSlug: agentSlug, view, setView, justCreatedSlug } = useSelection()
   const sessionId = view.kind === 'session' ? view.id : null
   const scheduledTaskId = view.kind === 'task' ? view.id : null
   const webhookTriggerId = view.kind === 'webhook' ? view.id : null
@@ -481,6 +481,11 @@ export function MainContent() {
                 setSettingsTab(tab)
                 setSettingsOpen(true)
               }}
+              style={
+                justCreatedSlug === agent.slug
+                  ? { viewTransitionName: 'new-agent-arrival' }
+                  : undefined
+              }
             />
           )
         )}

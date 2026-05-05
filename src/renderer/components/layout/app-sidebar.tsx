@@ -939,7 +939,7 @@ export function AppSidebar() {
                 </SidebarMenuItem>
                 <SidebarMenuItem>
                   <SidebarMenuButton
-                    onClick={() => { void createUntitledAgent() }}
+                    onClick={(e) => { void createUntitledAgent(e.currentTarget) }}
                     disabled={isCreatingAgent}
                     data-testid="new-agent-button"
                   >

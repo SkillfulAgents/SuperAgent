@@ -333,3 +333,43 @@
   color: black;
 }
 
+/*
+  Scale-style transition for the New Agent flow: the sidebar button morphs
+  into the AgentHome page. Source and destination share the
+  `new-agent-arrival` view-transition-name; this block tunes the cross-fade
+  timing so it lands like macOS's Scale effect rather than a generic morph.
+*/
+@keyframes new-agent-arrival-fade-in {
+  from { opacity: 0.45; }
+  to { opacity: 1; }
+}
+
+::view-transition-image-pair(new-agent-arrival) {
+  animation-duration: 720ms;
+  animation-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+::view-transition-new(new-agent-arrival) {
+  animation-name: new-agent-arrival-fade-in;
+  animation-duration: 720ms;
+  animation-delay: 60ms;
+  animation-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+/*
+  Default UA behavior cross-fades the old snapshot (here, the New Agent
+  button) with the new one inside the morphing container — which scales
+  the button image up to full-page size as it fades. Suppress that so the
+  morph reads as the new page emerging from the button's rect, not as a
+  giant stretched button dissolving.
+*/
+::view-transition-old(new-agent-arrival) {
+  animation: none;
+  opacity: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(new-agent-arrival),
+  ::view-transition-new(new-agent-arrival) {
+    animation-duration: 1ms;
+    animation-delay: 0ms;
+  }
+}
+
