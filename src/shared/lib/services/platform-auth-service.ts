@@ -1,4 +1,4 @@
-import { createRemoteJWKSet, errors as joseErrors, jwtVerify } from 'jose'
+import { errors as joseErrors } from 'jose'
 
 import { getSettings, updateSettings, type PlatformAuthSettings } from '@shared/lib/config/settings'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
@@ -6,24 +6,59 @@ import { PlatformAuthSettingsSchema } from '@shared/lib/types/skillset-schema'
 import { captureException } from '@shared/lib/error-reporting'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getAuthProviderIssuer } from '@shared/lib/auth/provider-config'
+import { verifyOidcJwt } from '@shared/lib/auth/oidc-jwt'
 
 export type PlatformAuthRecord = PlatformAuthSettings
 
 export type PlatformAuthSource = 'settings' | 'env' | null
 
 
-const ORG_ACCESS_TOKEN_AUDIENCE = 'platform-org-runtime'
-const ORG_ACCESS_TOKEN_ALG = 'RS256'
-const ORG_ACCESS_TOKEN_TYP = 'JWT'
+// Spec for the org access tokens minted by the platform OIDC issuer.
+const PLATFORM_ORG_ACCESS_TOKEN_AUDIENCE = 'platform-org-runtime'
+const PLATFORM_ORG_ACCESS_TOKEN_ALG = 'RS256'
+const PLATFORM_ORG_ACCESS_TOKEN_TYP = 'JWT'
 const PLATFORM_AUTH_PROVIDER_ID = 'platform'
 
-export interface VerifiedOrgAccessToken {
+export interface VerifiedPlatformOrgAccessToken {
   orgId: string
   iss: string
   aud: string
   iat: number
   exp: number
   kid: string | null
+}
+
+export async function verifyPlatformOrgAccessTokenSigned(
+  token: string,
+  options: { issuer: string },
+): Promise<VerifiedPlatformOrgAccessToken> {
+  const { payload, protectedHeader } = await verifyOidcJwt(token, {
+    issuer: options.issuer,
+    audience: PLATFORM_ORG_ACCESS_TOKEN_AUDIENCE,
+    algorithms: [PLATFORM_ORG_ACCESS_TOKEN_ALG],
+    typ: PLATFORM_ORG_ACCESS_TOKEN_TYP,
+  })
+  const orgIdValue = payload['orgId']
+  if (typeof orgIdValue !== 'string' || orgIdValue.length === 0) {
+    throw new joseErrors.JWTClaimValidationFailed(
+      'orgId claim is required',
+      payload,
+      'orgId',
+      'missing',
+    )
+  }
+  return {
+    orgId: orgIdValue,
+    iss: typeof payload.iss === 'string' ? payload.iss : options.issuer,
+    aud: Array.isArray(payload.aud)
+      ? String(payload.aud[0] ?? '')
+      : typeof payload.aud === 'string'
+        ? payload.aud
+        : '',
+    iat: typeof payload.iat === 'number' ? payload.iat : 0,
+    exp: typeof payload.exp === 'number' ? payload.exp : 0,
+    kid: typeof protectedHeader.kid === 'string' ? protectedHeader.kid : null,
+  }
 }
 
 export interface PlatformAuthStatus {
@@ -53,72 +88,6 @@ function buildTokenPreview(token: string): string {
     return token
   }
   return `${token.slice(0, 6)}...${token.slice(-4)}`
-}
-
-// JWKS resolver cache, one per issuer URL.
-const jwksByIssuer = new Map<string, ReturnType<typeof createRemoteJWKSet>>()
-
-type RemoteJwksResolver = ReturnType<typeof createRemoteJWKSet>
-// Test-only override; lets tests swap in a local JWKS resolver.
-let injectedJwksResolver: RemoteJwksResolver | null = null
-
-export function _setOrgJwksResolverForTest(resolver: RemoteJwksResolver | null): void {
-  injectedJwksResolver = resolver
-  jwksByIssuer.clear()
-  cachedEnvManagedStatus = undefined
-}
-
-function getJwksResolverForIssuer(issuer: string): RemoteJwksResolver {
-  if (injectedJwksResolver) return injectedJwksResolver
-  let resolver = jwksByIssuer.get(issuer)
-  if (!resolver) {
-    let jwksUrl: URL
-    try {
-      jwksUrl = new URL('/jwks', issuer)
-    } catch (error) {
-      throw new Error(`Invalid issuer URL for JWKS: ${issuer}`, { cause: error })
-    }
-    resolver = createRemoteJWKSet(jwksUrl)
-    jwksByIssuer.set(issuer, resolver)
-  }
-  return resolver
-}
-
-export async function verifyOrgAccessTokenSigned(
-  token: string,
-  options: { issuer: string; audience?: string },
-): Promise<VerifiedOrgAccessToken> {
-  const { payload, protectedHeader } = await jwtVerify(
-    token,
-    getJwksResolverForIssuer(options.issuer),
-    {
-      issuer: options.issuer,
-      audience: options.audience ?? ORG_ACCESS_TOKEN_AUDIENCE,
-      algorithms: [ORG_ACCESS_TOKEN_ALG],
-      typ: ORG_ACCESS_TOKEN_TYP,
-    },
-  )
-  const orgIdValue = payload['orgId']
-  if (typeof orgIdValue !== 'string' || orgIdValue.length === 0) {
-    throw new joseErrors.JWTClaimValidationFailed(
-      'orgId claim is required',
-      payload,
-      'orgId',
-      'missing',
-    )
-  }
-  return {
-    orgId: orgIdValue,
-    iss: typeof payload.iss === 'string' ? payload.iss : options.issuer,
-    aud: Array.isArray(payload.aud)
-      ? String(payload.aud[0] ?? '')
-      : typeof payload.aud === 'string'
-        ? payload.aud
-        : '',
-    iat: typeof payload.iat === 'number' ? payload.iat : 0,
-    exp: typeof payload.exp === 'number' ? payload.exp : 0,
-    kid: typeof protectedHeader.kid === 'string' ? protectedHeader.kid : null,
-  }
 }
 
 function warnInvalidEnvPlatformToken(reason: string, error?: unknown): void {
@@ -165,7 +134,7 @@ export async function initEnvManagedPlatformStatus(): Promise<void> {
     return
   }
   try {
-    const verified = await verifyOrgAccessTokenSigned(envToken, { issuer })
+    const verified = await verifyPlatformOrgAccessTokenSigned(envToken, { issuer })
     cachedEnvManagedStatus = buildEnvManagedStatus(envToken, verified.orgId)
   } catch (error) {
     const reason =

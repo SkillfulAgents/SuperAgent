@@ -18,14 +18,14 @@ import type { SkillsetConfig, InstalledSkillMetadata, InstalledAgentMetadata } f
 
 import {
   _resetEnvManagedPlatformStatusForTest,
-  _setOrgJwksResolverForTest,
   getPlatformAccessToken,
   getPlatformAuthStatus,
   initEnvManagedPlatformStatus,
   savePlatformAuth,
   revokePlatformToken,
-  verifyOrgAccessTokenSigned,
+  verifyPlatformOrgAccessTokenSigned,
 } from './platform-auth-service'
+import { _setOidcJwksResolverForTest } from '@shared/lib/auth/oidc-jwt'
 
 const TEST_ISSUER = 'https://auth.test.example'
 const TEST_KID = 'platform-oidc-main'
@@ -84,7 +84,7 @@ describe('platform-auth-service', () => {
       },
     ])
     clearSettingsCache()
-    _setOrgJwksResolverForTest(testJwksResolver as unknown as Parameters<typeof _setOrgJwksResolverForTest>[0])
+    _setOidcJwksResolverForTest(testJwksResolver as unknown as Parameters<typeof _setOidcJwksResolverForTest>[0])
     _resetEnvManagedPlatformStatusForTest()
   })
 
@@ -95,7 +95,7 @@ describe('platform-auth-service', () => {
     delete process.env.AUTH_MODE
     delete process.env.PLATFORM_TOKEN
     delete process.env.AUTH_PROVIDERS_JSON
-    _setOrgJwksResolverForTest(null)
+    _setOidcJwksResolverForTest(null)
     _resetEnvManagedPlatformStatusForTest()
     vi.restoreAllMocks()
   })
@@ -210,9 +210,9 @@ describe('platform-auth-service', () => {
     )
   })
 
-  it('verifyOrgAccessTokenSigned returns full claims for a valid token', async () => {
+  it('verifyPlatformOrgAccessTokenSigned returns full claims for a valid token', async () => {
     const token = await signTestOrgToken('org_X')
-    const verified = await verifyOrgAccessTokenSigned(token, { issuer: TEST_ISSUER })
+    const verified = await verifyPlatformOrgAccessTokenSigned(token, { issuer: TEST_ISSUER })
     expect(verified).toMatchObject({ orgId: 'org_X', iss: TEST_ISSUER, aud: TEST_AUDIENCE, kid: TEST_KID })
   })
 
