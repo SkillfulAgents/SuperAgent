@@ -5,7 +5,19 @@ import { isHostAllowed } from '@shared/lib/proxy/allowed-hosts'
 import { matchScopes } from '@shared/lib/proxy/scope-matcher'
 import { resolveApiPolicy } from '@shared/lib/proxy/policy-resolver'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
-import { getConnectionToken } from '@shared/lib/composio/client'
+import { translateProxyBody } from '@shared/lib/proxy/body-translation'
+import {
+  buildProxyParameters,
+  envelopeToResponse,
+  PROXY_SKIP_REQUEST_HEADERS,
+  PROXY_SKIP_RESPONSE_HEADERS,
+} from '@shared/lib/proxy/composio-envelope'
+import {
+  getConnectionToken,
+  proxyExecute,
+  ComposioRedactedTokenError,
+  type ProxyExecuteParams,
+} from '@shared/lib/composio/client'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { db } from '@shared/lib/db'
 import {
@@ -15,39 +27,56 @@ import {
 } from '@shared/lib/db/schema'
 import { eq, and } from 'drizzle-orm'
 
-// In-memory token cache: composioConnectionId → { accessToken, expiresAt }
-const tokenCache = new Map<
-  string,
-  { accessToken: string; cacheExpiresAt: number }
->()
+// Per-connection mode cache: composioConnectionId → either a real token (use direct fetch)
+// or a "use-proxy" sentinel (token is redacted; route through Composio's proxy execute).
+type ConnectionMode =
+  | { kind: 'token'; accessToken: string; cacheExpiresAt: number }
+  | { kind: 'use-proxy'; cacheExpiresAt: number }
+
+const connectionModeCache = new Map<string, ConnectionMode>()
 
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes
 
-async function getCachedToken(composioConnectionId: string): Promise<string> {
-  const cached = tokenCache.get(composioConnectionId)
+async function resolveConnectionMode(
+  composioConnectionId: string
+): Promise<ConnectionMode> {
+  const cached = connectionModeCache.get(composioConnectionId)
   if (cached && cached.cacheExpiresAt > Date.now()) {
-    return cached.accessToken
+    return cached
   }
 
-  const { accessToken, expiresAt } = await getConnectionToken(
-    composioConnectionId
-  )
+  try {
+    const { accessToken, expiresAt } = await getConnectionToken(
+      composioConnectionId
+    )
 
-  let ttl = DEFAULT_CACHE_TTL_MS
-  if (expiresAt) {
-    const tokenExpiresMs = new Date(expiresAt).getTime() - Date.now()
-    // Expire cache 60s before token expires, capped at 5 minutes
-    ttl = Math.min(tokenExpiresMs - 60_000, DEFAULT_CACHE_TTL_MS)
+    let ttl = DEFAULT_CACHE_TTL_MS
+    if (expiresAt) {
+      const tokenExpiresMs = new Date(expiresAt).getTime() - Date.now()
+      // Expire cache 60s before token expires, capped at 5 minutes
+      ttl = Math.min(tokenExpiresMs - 60_000, DEFAULT_CACHE_TTL_MS)
+    }
+    // At least 30s cache to avoid hammering Composio
+    ttl = Math.max(ttl, 30_000)
+
+    const mode: ConnectionMode = {
+      kind: 'token',
+      accessToken,
+      cacheExpiresAt: Date.now() + ttl,
+    }
+    connectionModeCache.set(composioConnectionId, mode)
+    return mode
+  } catch (err) {
+    if (err instanceof ComposioRedactedTokenError) {
+      const mode: ConnectionMode = {
+        kind: 'use-proxy',
+        cacheExpiresAt: Date.now() + DEFAULT_CACHE_TTL_MS,
+      }
+      connectionModeCache.set(composioConnectionId, mode)
+      return mode
+    }
+    throw err
   }
-  // At least 30s cache to avoid hammering Composio
-  ttl = Math.max(ttl, 30_000)
-
-  tokenCache.set(composioConnectionId, {
-    accessToken,
-    cacheExpiresAt: Date.now() + ttl,
-  })
-
-  return accessToken
 }
 
 async function logAuditEntry(entry: {
@@ -266,59 +295,13 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
 
   // resolvedPolicyDecision is now 'allow' (auto) or 'approved_by_user' (manual)
 
-  // 4. Fetch real token (with cache)
-  let realToken: string
-  try {
-    realToken = await getCachedToken(account.composioConnectionId)
-  } catch (error) {
-    await logAuditEntry({
-      agentSlug,
-      accountId,
-      toolkit: account.toolkitSlug,
-      targetHost,
-      targetPath,
-      method: c.req.method,
-      errorMessage: `Failed to fetch access token: ${error}`,
-      policyDecision: resolvedPolicyDecision,
-      matchedScopes: JSON.stringify(policyResult.matchedScopes),
-    })
-    return c.json({ error: 'Failed to fetch access token' }, 502)
-  }
-
-  // 5. Build target URL
-  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
-  const queryString = new URL(c.req.url).search
-  const targetUrl = `https://${targetHost}/${targetPath}${queryString}`
-
-  // 6. Forward request
-  const forwardHeaders = new Headers()
-  const skipHeaders = new Set([
-    'host',
-    'authorization',
-    'connection',
-    'content-length',
-    'transfer-encoding',
-    'accept-encoding',
-  ])
-
-  c.req.raw.headers.forEach((value, key) => {
-    if (!skipHeaders.has(key.toLowerCase())) {
-      forwardHeaders.set(key, value)
-    }
-  })
-  forwardHeaders.set('Authorization', `Bearer ${realToken}`)
-
-  const init: RequestInit = { method, headers: forwardHeaders }
-  if (method !== 'GET' && method !== 'HEAD') {
-    init.body = await c.req.arrayBuffer()
-  }
-
-  let statusCode: number | undefined
-  try {
-    const response = await fetch(targetUrl, init)
-    statusCode = response.status
-
-    // Fire-and-forget audit log to avoid adding latency to proxied responses
+  // Audit helper: curried with all the context fields shared by every
+  // post-policy audit entry. Caller supplies only what varies (statusCode,
+  // errorMessage). Keeps the forward branches focused on the actual logic.
+  const audit = (extras: {
+    statusCode?: number
+    errorMessage?: string
+  }) =>
     logAuditEntry({
       agentSlug,
       accountId,
@@ -326,45 +309,104 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
       targetHost,
       targetPath,
       method,
-      statusCode,
       policyDecision: resolvedPolicyDecision,
       matchedScopes: JSON.stringify(policyResult.matchedScopes),
+      ...extras,
     })
 
-    // Pass response through
-    const responseHeaders = new Headers()
-    const skipResponseHeaders = new Set([
-      'transfer-encoding',
-      'content-encoding', // fetch() auto-decompresses, so body is already decoded
-      'content-length', // length changes after decompression
-    ])
-    response.headers.forEach((value, key) => {
-      if (!skipResponseHeaders.has(key.toLowerCase())) {
-        responseHeaders.set(key, value)
+  // 4. Resolve how to forward this connection: real token vs. Composio proxy
+  let mode: ConnectionMode
+  try {
+    mode = await resolveConnectionMode(account.composioConnectionId)
+  } catch (error) {
+    await audit({ errorMessage: `Failed to fetch access token: ${error}` })
+    return c.json({ error: 'Failed to fetch access token' }, 502)
+  }
+
+  // 5. Build target URL (used by both forward paths)
+  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
+  const queryString = new URL(c.req.url).search
+  const targetUrl = `https://${targetHost}/${targetPath}${queryString}`
+
+  if (mode.kind === 'token') {
+    // 6a. Direct forward path (unchanged behavior, full streaming + body pass-through)
+    const forwardHeaders = new Headers()
+    c.req.raw.headers.forEach((value, key) => {
+      if (!PROXY_SKIP_REQUEST_HEADERS.has(key.toLowerCase())) {
+        forwardHeaders.set(key, value)
       }
     })
+    forwardHeaders.set('Authorization', `Bearer ${mode.accessToken}`)
 
-    return new Response(response.body, {
-      status: response.status,
-      headers: responseHeaders,
+    const init: RequestInit = { method, headers: forwardHeaders }
+    if (method !== 'GET' && method !== 'HEAD') {
+      init.body = await c.req.arrayBuffer()
+    }
+
+    try {
+      const response = await fetch(targetUrl, init)
+
+      // Fire-and-forget audit log to avoid adding latency to proxied responses
+      audit({ statusCode: response.status })
+
+      const responseHeaders = new Headers()
+      response.headers.forEach((value, key) => {
+        if (!PROXY_SKIP_RESPONSE_HEADERS.has(key.toLowerCase())) {
+          responseHeaders.set(key, value)
+        }
+      })
+
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } catch (error) {
+      await audit({ errorMessage: `Proxy request failed: ${error}` })
+      return c.json(
+        { error: 'Proxy request failed', details: String(error) },
+        502
+      )
+    }
+  }
+
+  // 6b. Composio proxy execute path (for redacted connections)
+  const parameters = buildProxyParameters(c.req.raw.headers)
+
+  const contentType = c.req.header('Content-Type') ?? null
+  const requestBuffer =
+    method === 'GET' || method === 'HEAD'
+      ? new ArrayBuffer(0)
+      : await c.req.arrayBuffer()
+  const translation = translateProxyBody(method, contentType, requestBuffer)
+
+  if (!translation.ok) {
+    await audit({ statusCode: translation.status, errorMessage: translation.message })
+    return c.json(
+      { error: translation.errorCode, message: translation.message },
+      translation.status
+    )
+  }
+
+  let result
+  try {
+    result = await proxyExecute({
+      endpoint: targetUrl,
+      method: method as ProxyExecuteParams['method'],
+      connectedAccountId: account.composioConnectionId,
+      ...(translation.body !== undefined ? { body: translation.body } : {}),
+      ...(parameters.length ? { parameters } : {}),
+      ...(translation.binaryBody ? { binaryBody: translation.binaryBody } : {}),
     })
   } catch (error) {
-    await logAuditEntry({
-      agentSlug,
-      accountId,
-      toolkit: account.toolkitSlug,
-      targetHost,
-      targetPath,
-      method,
-      errorMessage: `Proxy request failed: ${error}`,
-      policyDecision: resolvedPolicyDecision,
-      matchedScopes: JSON.stringify(policyResult.matchedScopes),
-    })
+    await audit({ errorMessage: `Proxy request failed: ${error}` })
     return c.json(
       { error: 'Proxy request failed', details: String(error) },
       502
     )
   }
+
+  audit({ statusCode: result.status })
+  return envelopeToResponse(result)
 })
 
 export default proxy

@@ -22,7 +22,13 @@ vi.mock('@shared/lib/error-reporting', () => ({
 const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
 
-import { getConnectionToken, ComposioApiError } from './client'
+import {
+  getConnectionToken,
+  proxyExecute,
+  getAccountDisplayName,
+  ComposioApiError,
+  ComposioRedactedTokenError,
+} from './client'
 
 function makeComposioResponse(
   state: { authScheme: string; val: Record<string, unknown> },
@@ -294,5 +300,308 @@ describe('getConnectionToken', () => {
     } catch (e) {
       expect((e as ComposioApiError).statusCode).toBe(401)
     }
+  })
+
+  it('redaction throws ComposioRedactedTokenError (typed sentinel for proxy fallback)', async () => {
+    mockFetchOk(makeComposioResponse({
+      authScheme: 'OAUTH2',
+      val: { status: 'ACTIVE', access_token: 'REDACTED' },
+    }))
+
+    try {
+      await getConnectionToken('conn-1')
+      throw new Error('expected throw')
+    } catch (e) {
+      expect(e).toBeInstanceOf(ComposioRedactedTokenError)
+      expect(e).toBeInstanceOf(ComposioApiError) // inheritance preserved
+      expect((e as ComposioApiError).statusCode).toBe(403)
+    }
+  })
+})
+
+describe('proxyExecute', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetEffectiveComposioApiKey.mockReturnValue('test-api-key')
+    mockGetComposioUserId.mockReturnValue('test-user')
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('POSTs to /api/v3.1/tools/execute/proxy with the expected body shape', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: 200,
+        data: { login: 'octocat' },
+        headers: { 'x-ratelimit-remaining': '4999' },
+      }),
+    })
+
+    const result = await proxyExecute({
+      endpoint: 'https://api.github.com/user',
+      method: 'GET',
+      connectedAccountId: 'ca_abc',
+      parameters: [{ name: 'Accept', value: 'application/vnd.github+json', type: 'header' }],
+    })
+
+    expect(mockFetch).toHaveBeenCalledOnce()
+    const [url, init] = mockFetch.mock.calls[0]
+    expect(url).toBe('https://backend.composio.dev/api/v3.1/tools/execute/proxy')
+    expect(init.method).toBe('POST')
+    const sent = JSON.parse(init.body as string)
+    expect(sent).toEqual({
+      endpoint: 'https://api.github.com/user',
+      method: 'GET',
+      connected_account_id: 'ca_abc',
+      parameters: [{ name: 'Accept', value: 'application/vnd.github+json', type: 'header' }],
+    })
+
+    expect(result.status).toBe(200)
+    expect(result.data).toEqual({ login: 'octocat' })
+    expect(result.headers).toEqual({ 'x-ratelimit-remaining': '4999' })
+  })
+
+  it('forwards body and binary_body when provided', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ status: 201, data: { id: 1 }, headers: {} }),
+    })
+
+    await proxyExecute({
+      endpoint: '/repos/x/y/issues',
+      method: 'POST',
+      connectedAccountId: 'ca_abc',
+      body: { title: 'test' },
+    })
+
+    const sent = JSON.parse(mockFetch.mock.calls[0][1].body as string)
+    expect(sent.body).toEqual({ title: 'test' })
+    expect(sent.binary_body).toBeUndefined()
+
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ status: 200, data: {}, headers: {} }),
+    })
+    await proxyExecute({
+      endpoint: '/upload',
+      method: 'PUT',
+      connectedAccountId: 'ca_abc',
+      binaryBody: { base64: 'AAA=', content_type: 'image/png' },
+    })
+    const sent2 = JSON.parse(mockFetch.mock.calls[1][1].body as string)
+    expect(sent2.binary_body).toEqual({ base64: 'AAA=', content_type: 'image/png' })
+    expect(sent2.body).toBeUndefined()
+  })
+
+  it('returns parsed binaryData when envelope includes binary_data', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: 200,
+        data: null,
+        headers: {},
+        binary_data: {
+          url: 'https://cdn.example/x',
+          content_type: 'application/pdf',
+          size: 100,
+          expires_at: '2099-01-01T00:00:00Z',
+        },
+      }),
+    })
+
+    const result = await proxyExecute({
+      endpoint: '/file.pdf',
+      method: 'GET',
+      connectedAccountId: 'ca_abc',
+    })
+
+    expect(result.binaryData).toEqual({
+      url: 'https://cdn.example/x',
+      content_type: 'application/pdf',
+      size: 100,
+      expires_at: '2099-01-01T00:00:00Z',
+    })
+  })
+
+  it('throws ComposioApiError on non-ok response from Composio', async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: { message: 'Bad endpoint', slug: 'ExternalProxy_OriginMismatch' } }),
+    })
+
+    await expect(
+      proxyExecute({
+        endpoint: 'https://www.google.com',
+        method: 'GET',
+        connectedAccountId: 'ca_abc',
+      })
+    ).rejects.toBeInstanceOf(ComposioApiError)
+  })
+})
+
+describe('getAccountDisplayName proxy fallback', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetEffectiveComposioApiKey.mockReturnValue('test-api-key')
+    mockGetComposioUserId.mockReturnValue('test-user')
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  // Dispatch fetch by URL so we can stub each Composio endpoint independently
+  function dispatchFetch(handlers: {
+    connectedAccount?: () => unknown
+    proxyExecute?: () => unknown
+  }) {
+    mockFetch.mockImplementation(async (url: string) => {
+      if (url.includes('/connected_accounts/') && handlers.connectedAccount) {
+        return { ok: true, json: async () => handlers.connectedAccount!() }
+      }
+      if (url.includes('/tools/execute/proxy') && handlers.proxyExecute) {
+        return { ok: true, json: async () => handlers.proxyExecute!() }
+      }
+      throw new Error('Unexpected fetch URL: ' + url)
+    })
+  }
+
+  it('Google toolkit: redacted token → falls back to proxyExecute and returns email', async () => {
+    dispatchFetch({
+      connectedAccount: () => makeComposioResponse({
+        authScheme: 'OAUTH2',
+        val: { status: 'ACTIVE', access_token: 'REDACTED' },
+      }),
+      proxyExecute: () => ({
+        status: 200,
+        data: { email: 'mreid4358@gmail.com', name: 'Mike Reid' },
+        headers: {},
+      }),
+    })
+
+    const display = await getAccountDisplayName('conn-1', 'gmail', 'Gmail')
+    expect(display).toBe('mreid4358@gmail.com')
+
+    // Both Composio endpoints were hit
+    const urls = mockFetch.mock.calls.map((c) => c[0] as string)
+    expect(urls.some((u) => u.endsWith('/connected_accounts/conn-1'))).toBe(true)
+    expect(urls.some((u) => u.endsWith('/tools/execute/proxy'))).toBe(true)
+
+    // Verify the proxy envelope targeted googleapis userinfo for this connection
+    const proxyCall = mockFetch.mock.calls.find((c) =>
+      (c[0] as string).endsWith('/tools/execute/proxy')
+    )
+    const sent = JSON.parse((proxyCall![1] as { body: string }).body)
+    expect(sent).toMatchObject({
+      endpoint: 'https://www.googleapis.com/oauth2/v2/userinfo',
+      method: 'GET',
+      connected_account_id: 'conn-1',
+    })
+  })
+
+  it('Google toolkit: returns fallback when proxy fallback also fails', async () => {
+    dispatchFetch({
+      connectedAccount: () => makeComposioResponse({
+        authScheme: 'OAUTH2',
+        val: { status: 'ACTIVE', access_token: 'REDACTED' },
+      }),
+    })
+    // Proxy URL hits the throw branch in dispatchFetch; getAccountDisplayName
+    // should swallow the error and return the fallback.
+    mockFetch.mockImplementation(async (url: string) => {
+      if (url.includes('/connected_accounts/')) {
+        return {
+          ok: true,
+          json: async () => makeComposioResponse({
+            authScheme: 'OAUTH2',
+            val: { status: 'ACTIVE', access_token: 'REDACTED' },
+          }),
+        }
+      }
+      // Composio proxy returned an error envelope
+      return {
+        ok: false,
+        status: 502,
+        json: async () => ({ error: 'upstream failed' }),
+      }
+    })
+
+    const display = await getAccountDisplayName('conn-2', 'gmail', 'Gmail')
+    expect(display).toBe('Gmail')
+  })
+
+  it('Google toolkit with non-redacted token: uses direct path (no proxy call)', async () => {
+    // Dispatch: connected_accounts returns a real token; userinfo via direct googleapis fetch
+    mockFetch.mockImplementation(async (url: string) => {
+      if (url.includes('/connected_accounts/')) {
+        return {
+          ok: true,
+          json: async () => makeComposioResponse({
+            authScheme: 'OAUTH2',
+            val: { status: 'ACTIVE', access_token: 'real-google-token-1234567890abcdef' },
+          }),
+        }
+      }
+      if (url.includes('googleapis.com/oauth2/v2/userinfo')) {
+        return { ok: true, json: async () => ({ email: 'user@example.com' }) }
+      }
+      throw new Error('Unexpected fetch URL: ' + url)
+    })
+
+    const display = await getAccountDisplayName('conn-3', 'gmail', 'Gmail')
+    expect(display).toBe('user@example.com')
+
+    const urls = mockFetch.mock.calls.map((c) => c[0] as string)
+    expect(urls.some((u) => u.endsWith('/tools/execute/proxy'))).toBe(false)
+  })
+
+  it('Microsoft toolkit: redacted token → falls back to proxyExecute against graph.microsoft.com', async () => {
+    dispatchFetch({
+      connectedAccount: () => makeComposioResponse(
+        {
+          authScheme: 'OAUTH2',
+          val: { status: 'ACTIVE', access_token: 'REDACTED' },
+        },
+        { toolkit: { slug: 'outlook' } }
+      ),
+      proxyExecute: () => ({
+        status: 200,
+        data: { mail: 'user@contoso.com', userPrincipalName: 'user@contoso.com' },
+        headers: {},
+      }),
+    })
+
+    const display = await getAccountDisplayName('conn-ms', 'outlook', 'Outlook')
+    expect(display).toBe('user@contoso.com')
+
+    const proxyCall = mockFetch.mock.calls.find((c) =>
+      (c[0] as string).endsWith('/tools/execute/proxy')
+    )
+    const sent = JSON.parse((proxyCall![1] as { body: string }).body)
+    expect(sent.endpoint).toBe('https://graph.microsoft.com/v1.0/me')
+  })
+
+  it('Microsoft toolkit: redacted + only userPrincipalName (no mail) returns UPN', async () => {
+    dispatchFetch({
+      connectedAccount: () => makeComposioResponse(
+        {
+          authScheme: 'OAUTH2',
+          val: { status: 'ACTIVE', access_token: 'REDACTED' },
+        },
+        { toolkit: { slug: 'outlook' } }
+      ),
+      proxyExecute: () => ({
+        status: 200,
+        data: { userPrincipalName: 'upn@contoso.com' },
+        headers: {},
+      }),
+    })
+
+    const display = await getAccountDisplayName('conn-ms-upn', 'outlook', 'Outlook')
+    expect(display).toBe('upn@contoso.com')
   })
 })

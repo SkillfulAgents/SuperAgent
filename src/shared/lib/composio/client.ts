@@ -9,8 +9,11 @@ import {
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { captureMessage } from '@shared/lib/error-reporting'
+import { ProxyExecuteResponseSchema } from './proxy-execute-schema'
 
-const COMPOSIO_BASE_URL = 'https://backend.composio.dev/api/v3'
+const COMPOSIO_HOST = 'https://backend.composio.dev'
+
+type ComposioApiVersion = 'v3' | 'v3.1'
 
 interface ComposioError {
   error: string | { message?: string; slug?: string; suggested_fix?: string }
@@ -25,6 +28,17 @@ class ComposioApiError extends Error {
   ) {
     super(message)
     this.name = 'ComposioApiError'
+  }
+}
+
+/**
+ * Thrown by getConnectionToken when Composio returns a redacted token.
+ * Callers should catch this and fall back to proxyExecute().
+ */
+class ComposioRedactedTokenError extends ComposioApiError {
+  constructor(message: string, details?: ComposioError) {
+    super(message, 403, details)
+    this.name = 'ComposioRedactedTokenError'
   }
 }
 
@@ -45,7 +59,8 @@ function shouldUseLocalComposioKey(): boolean {
 
 async function composioFetch<T>(
   endpoint: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  apiVersion: ComposioApiVersion = 'v3'
 ): Promise<T> {
   const localApiKey = getEffectiveComposioApiKey()
   const platformToken = localApiKey ? null : getPlatformComposioToken()
@@ -54,11 +69,17 @@ async function composioFetch<T>(
 
   let url: string
   if (platformToken) {
+    if (apiVersion !== 'v3') {
+      throw new ComposioApiError(
+        `Platform Composio mode does not yet support API version ${apiVersion}. Configure a local Composio API key.`,
+        501
+      )
+    }
     url = `${getPlatformComposioBaseUrl()}${endpoint}`
     headers.set('Authorization', `Bearer ${platformToken}`)
     headers.delete('x-api-key')
   } else if (localApiKey) {
-    url = `${COMPOSIO_BASE_URL}${endpoint}`
+    url = `${COMPOSIO_HOST}/api/${apiVersion}${endpoint}`
     headers.set('x-api-key', localApiKey)
   } else {
     throw new ComposioApiError('Composio API key is not configured', 401)
@@ -451,9 +472,8 @@ export async function getConnectionToken(
       },
       fingerprint: ['composio-redacted-token', redactionPattern],
     })
-    throw new ComposioApiError(
-      'Access token is redacted by Composio. Disable "Mask Connected Account Secrets" in the Composio project settings. If the connection uses a Composio-managed auth config, credentials are redacted regardless of that setting — migrate to a custom auth config (your own OAuth app) to retrieve actual credentials.',
-      403
+    throw new ComposioRedactedTokenError(
+      'Access token is redacted by Composio. Disable "Mask Connected Account Secrets" in the Composio project settings. If the connection uses a Composio-managed auth config, credentials are redacted regardless of that setting — migrate to a custom auth config (your own OAuth app) to retrieve actual credentials.'
     )
   }
 
@@ -467,6 +487,73 @@ export async function getConnectionToken(
   return {
     accessToken,
     expiresAt,
+  }
+}
+
+// ============================================================================
+// Proxy Execute
+// ============================================================================
+
+export interface ProxyExecuteParameter {
+  name: string
+  value: string
+  type: 'query' | 'header'
+}
+
+export type ProxyExecuteBinaryBody =
+  | { url: string }
+  | { base64: string; content_type: string }
+
+export interface ProxyExecuteParams {
+  endpoint: string
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD'
+  connectedAccountId: string
+  body?: unknown
+  parameters?: ProxyExecuteParameter[]
+  binaryBody?: ProxyExecuteBinaryBody
+}
+
+export interface ProxyExecuteResult {
+  status: number
+  data: unknown
+  headers: Record<string, string>
+  binaryData?: {
+    url: string
+    content_type: string
+    size: number
+    expires_at: string
+  }
+}
+
+/**
+ * Forward a request to an upstream API via Composio's proxy.
+ * Composio attaches the connected account's auth server-side and forwards
+ * the request. Use this for connections whose tokens are redacted (Composio-managed).
+ */
+export async function proxyExecute(
+  p: ProxyExecuteParams
+): Promise<ProxyExecuteResult> {
+  const raw = await composioFetch<unknown>(
+    '/tools/execute/proxy',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        endpoint: p.endpoint,
+        method: p.method,
+        connected_account_id: p.connectedAccountId,
+        ...(p.body !== undefined ? { body: p.body } : {}),
+        ...(p.parameters?.length ? { parameters: p.parameters } : {}),
+        ...(p.binaryBody ? { binary_body: p.binaryBody } : {}),
+      }),
+    },
+    'v3.1'
+  )
+  const parsed = ProxyExecuteResponseSchema.parse(raw)
+  return {
+    status: parsed.status,
+    data: parsed.data,
+    headers: parsed.headers,
+    binaryData: parsed.binary_data,
   }
 }
 
@@ -509,6 +596,53 @@ export async function getGoogleUserInfo(accessToken: string): Promise<GoogleUser
   }
 }
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null
+}
+
+async function getGoogleUserInfoViaProxy(
+  connectionId: string
+): Promise<GoogleUserInfo | null> {
+  try {
+    const result = await proxyExecute({
+      endpoint: 'https://www.googleapis.com/oauth2/v2/userinfo',
+      method: 'GET',
+      connectedAccountId: connectionId,
+    })
+    if (result.status >= 400 || !isRecord(result.data)) return null
+    const data = result.data
+    return {
+      email: typeof data.email === 'string' ? data.email : '',
+      name: typeof data.name === 'string' ? data.name : undefined,
+      picture: typeof data.picture === 'string' ? data.picture : undefined,
+    }
+  } catch (error) {
+    console.warn('Error fetching Google user info via proxy:', error)
+    return null
+  }
+}
+
+async function getMicrosoftMailViaProxy(
+  connectionId: string
+): Promise<string | null> {
+  try {
+    const result = await proxyExecute({
+      endpoint: 'https://graph.microsoft.com/v1.0/me',
+      method: 'GET',
+      connectedAccountId: connectionId,
+    })
+    if (result.status >= 400 || !isRecord(result.data)) return null
+    const mail = result.data.mail
+    const upn = result.data.userPrincipalName
+    if (typeof mail === 'string' && mail) return mail
+    if (typeof upn === 'string' && upn) return upn
+    return null
+  } catch (error) {
+    console.warn('Error fetching Microsoft user info via proxy:', error)
+    return null
+  }
+}
+
 /**
  * Get a display name for a newly connected account.
  * For supported providers, fetches user-specific info (like email).
@@ -539,11 +673,14 @@ export async function getAccountDisplayName(
     try {
       const { accessToken } = await getConnectionToken(connectionId)
       const userInfo = await getGoogleUserInfo(accessToken)
-      if (userInfo?.email) {
-        return userInfo.email
-      }
+      if (userInfo?.email) return userInfo.email
     } catch (error) {
-      console.warn('Could not fetch user info for display name:', error)
+      if (error instanceof ComposioRedactedTokenError) {
+        const userInfo = await getGoogleUserInfoViaProxy(connectionId)
+        if (userInfo?.email) return userInfo.email
+      } else {
+        console.warn('Could not fetch user info for display name:', error)
+      }
     }
   } else if (microsoftToolkits.includes(slug)) {
     try {
@@ -561,10 +698,15 @@ export async function getAccountDisplayName(
         }
       }
     } catch (error) {
-      console.warn(
-        'Could not fetch Microsoft user info for display name:',
-        error
-      )
+      if (error instanceof ComposioRedactedTokenError) {
+        const mail = await getMicrosoftMailViaProxy(connectionId)
+        if (mail) return mail
+      } else {
+        console.warn(
+          'Could not fetch Microsoft user info for display name:',
+          error
+        )
+      }
     }
   }
 
@@ -580,4 +722,4 @@ export function isPlatformComposioActive(): boolean {
   return !shouldUseLocalComposioKey() && Boolean(getPlatformComposioToken())
 }
 
-export { ComposioApiError }
+export { ComposioApiError, ComposioRedactedTokenError }
