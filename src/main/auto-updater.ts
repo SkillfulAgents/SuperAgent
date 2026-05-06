@@ -87,6 +87,12 @@ async function runUpdateCheckBody() {
     const wantPrerelease = !!getUserSettings('local').allowPrereleaseUpdates
 
     autoUpdater.allowPrerelease = wantPrerelease
+    // electron-updater's `channel` setter has a side effect: it flips
+    // `allowDowngrade=true`. We mutate channel below in the dual-channel path,
+    // and the singleton state survives between checks. Reset defensively here
+    // so we never offer a downgrade (e.g. user on 0.3.22-rc.1 being offered
+    // the older 0.3.21 stable).
+    autoUpdater.allowDowngrade = false
 
     if (!isPreRelease || !wantPrerelease) {
       // Stable user: electron-updater handles this correctly.
@@ -110,6 +116,7 @@ async function runUpdateCheckBody() {
     try {
       autoUpdater.allowPrerelease = true
       autoUpdater.channel = preChannel
+      autoUpdater.allowDowngrade = false  // channel setter just flipped this on
       const result = await autoUpdater.checkForUpdates()
       preVer = result?.updateInfo?.version ?? null
     } catch {
@@ -122,6 +129,7 @@ async function runUpdateCheckBody() {
       suppressErrors = true
       autoUpdater.allowPrerelease = false
       autoUpdater.channel = 'latest'
+      autoUpdater.allowDowngrade = false  // channel setter just flipped this on
       const result: any = await Promise.race([
         autoUpdater.checkForUpdates(),
         new Promise((resolve) => setTimeout(() => resolve(null), 10_000)),
@@ -139,6 +147,7 @@ async function runUpdateCheckBody() {
     if (preVer && (!stableVer || semverGt(preVer, stableVer))) {
       autoUpdater.allowPrerelease = true
       autoUpdater.channel = preChannel
+      autoUpdater.allowDowngrade = false  // channel setter just flipped this on
       await autoUpdater.checkForUpdates()
     }
 

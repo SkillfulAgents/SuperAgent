@@ -28,9 +28,12 @@ vi.mock('@shared/lib/services/user-settings-service', () => ({
   getUserSettings: vi.fn(() => ({ allowPrereleaseUpdates: false })),
 }))
 
-const mockAutoUpdater = {
+// `mockAutoUpdater.channel` mimics electron-updater's real setter, which
+// flips `allowDowngrade=true` as a side effect. Our production code resets
+// it; the mock surfaces that side effect so tests can verify the reset works.
+const mockAutoUpdater: any = {
   allowPrerelease: false,
-  channel: undefined as string | undefined,
+  allowDowngrade: false,
   autoDownload: false,
   autoInstallOnAppQuit: true,
   checkForUpdates: vi.fn(),
@@ -38,6 +41,15 @@ const mockAutoUpdater = {
   quitAndInstall: vi.fn(),
   on: vi.fn(),
 }
+let _mockChannel: string | undefined
+Object.defineProperty(mockAutoUpdater, 'channel', {
+  configurable: true,
+  get: () => _mockChannel,
+  set: (v: string | undefined) => {
+    _mockChannel = v
+    mockAutoUpdater.allowDowngrade = true
+  },
+})
 
 vi.mock('electron-updater', () => ({
   autoUpdater: mockAutoUpdater,
@@ -111,7 +123,11 @@ function setupReleases(cfg: {
     if (!ver) throw new Error('No releases found')
 
     events['checking-for-update']?.()
-    if (semver.gt(ver, cfg.currentVersion)) {
+    // Mirror electron-updater's isUpdateAvailable: an older feed version
+    // counts as available iff allowDowngrade is set.
+    const isNewer = semver.gt(ver, cfg.currentVersion)
+    const isOlder = semver.lt(ver, cfg.currentVersion)
+    if (isNewer || (mockAutoUpdater.allowDowngrade && isOlder)) {
       events['update-available']?.({ version: ver })
     } else {
       events['update-not-available']?.()
@@ -132,7 +148,8 @@ describe('check-for-updates', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     mockAutoUpdater.allowPrerelease = false
-    mockAutoUpdater.channel = undefined
+    mockAutoUpdater.allowDowngrade = false
+    _mockChannel = undefined
     vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
     vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
     vi.mocked(app.getVersion).mockReturnValue('0.2.5')
@@ -235,6 +252,19 @@ describe('check-for-updates', () => {
       await handlers['check-for-updates']()
 
       expect(getStatus()).toMatchObject({ state: 'not-available' })
+    })
+
+    // Regression: electron-updater's `channel` setter flips
+    // `allowDowngrade=true`. Without our reset, the stable check inside the
+    // dual-channel path would offer the older stable as an "update".
+    it('does NOT offer stable as a downgrade when on a newer RC', async () => {
+      setupReleases({ currentVersion: '0.3.22-rc.1', latestRC: '0.3.22-rc.1', latestStable: '0.3.21' })
+
+      await handlers['check-for-updates']()
+
+      expect(getStatus()).toMatchObject({ state: 'not-available' })
+      // Sanity: our reset should leave allowDowngrade=false at the end.
+      expect(mockAutoUpdater.allowDowngrade).toBe(false)
     })
   })
 
@@ -399,7 +429,8 @@ describe('silent background checks', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     mockAutoUpdater.allowPrerelease = false
-    mockAutoUpdater.channel = undefined
+    mockAutoUpdater.allowDowngrade = false
+    _mockChannel = undefined
     vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
     vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
     vi.mocked(app.getVersion).mockReturnValue('0.2.5')
@@ -472,7 +503,8 @@ describe('concurrent check coalescing', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     mockAutoUpdater.allowPrerelease = false
-    mockAutoUpdater.channel = undefined
+    mockAutoUpdater.allowDowngrade = false
+    _mockChannel = undefined
     vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
     vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
     vi.mocked(app.getVersion).mockReturnValue('0.2.5')
