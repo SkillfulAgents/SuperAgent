@@ -20,6 +20,7 @@ import { requestSecretDef } from './request-secret'
 import { requestConnectedAccountDef } from './request-connected-account'
 import { scheduleTaskDef } from './schedule-task'
 import { deliverFileDef } from './deliver-file'
+import { deliverSessionDef } from './deliver-session'
 import { requestFileDef } from './request-file'
 import { requestRemoteMcpDef } from './request-remote-mcp'
 import { requestScriptRunDef } from './request-script-run'
@@ -80,6 +81,7 @@ const definitions: Record<string, ToolDefinition> = {
   'mcp__user-input__request_connected_account': requestConnectedAccountDef,
   'mcp__user-input__schedule_task': scheduleTaskDef,
   'mcp__user-input__deliver_file': deliverFileDef,
+  'mcp__user-input__deliver_session': deliverSessionDef,
   'mcp__user-input__request_file': requestFileDef,
   'mcp__user-input__request_remote_mcp': requestRemoteMcpDef,
   'mcp__user-input__request_script_run': requestScriptRunDef,
