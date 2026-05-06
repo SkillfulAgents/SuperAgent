@@ -31,6 +31,7 @@ import {
 } from '@shared/lib/services/chat-integration-session-service'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { runWithOptionalUser } from '@shared/lib/platform-attribution'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 
 // ── Sentry helpers ─────────────────────────────────────────────────────
@@ -464,11 +465,20 @@ class ChatIntegrationManager {
   // ── Incoming message handling ─────────────────────────────────────
 
   private async handleIncomingMessage(integrationId: string, message: IncomingMessage): Promise<void> {
-    const conn = this.connections.get(integrationId)
-    if (!conn) return
-
     const integration = getChatIntegration(integrationId)
     if (!integration) return
+    return runWithOptionalUser(integration.createdByUserId ?? undefined, () =>
+      this.handleIncomingMessageInner(integrationId, message, integration),
+    )
+  }
+
+  private async handleIncomingMessageInner(
+    integrationId: string,
+    message: IncomingMessage,
+    integration: ChatIntegration,
+  ): Promise<void> {
+    const conn = this.connections.get(integrationId)
+    if (!conn) return
 
     const chatId = message.chatId
     if (!chatId) return
@@ -552,6 +562,7 @@ class ChatIntegrationManager {
         await updateSessionMetadata(integration.agentSlug, sessionId, {
           isChatIntegrationSession: true,
           chatIntegrationId: integrationId,
+          ...(integration.createdByUserId ? { createdByUserId: integration.createdByUserId } : {}),
         })
 
         createChatIntegrationSession({

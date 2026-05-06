@@ -12,7 +12,7 @@ import { containerManager } from '@shared/lib/container/container-manager'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
-import { runWithRequestUser } from '@shared/lib/platform-attribution'
+import { runWithOptionalUser } from '@shared/lib/platform-attribution'
 import { db } from '@shared/lib/db'
 import { connectedAccounts } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
@@ -254,10 +254,7 @@ class TriggerManager {
   ): Promise<void> {
     // Attribute to trigger creator; fall back to the connected_account owner.
     const ownerUserId = trigger.createdByUserId ?? resolveConnectedAccountOwner(trigger.connectedAccountId)
-    const run = ownerUserId
-      ? <T,>(fn: () => Promise<T>) => runWithRequestUser(ownerUserId, fn) as Promise<T>
-      : <T,>(fn: () => Promise<T>) => fn()
-    return run(() => this.spawnSessionInner(trigger, events))
+    return runWithOptionalUser(ownerUserId, () => this.spawnSessionInner(trigger, events))
   }
 
   private async spawnSessionInner(

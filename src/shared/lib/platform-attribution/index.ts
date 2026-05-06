@@ -79,10 +79,22 @@ function buildAttribution(memberId: string | null): Attribution | null {
 const userContext = new AsyncLocalStorage<{ userId: string }>()
 const attributionContext = new AsyncLocalStorage<{ auth: Attribution }>()
 
+// Lazy: stores userId; memberId / token are resolved at attribution.current() time.
 export function runWithRequestUser<T>(userId: string, fn: () => Promise<T> | T): Promise<T> | T {
   return userContext.run({ userId }, fn)
 }
 
+// Same as runWithRequestUser, but a null/undefined userId is a no-op scope.
+export function runWithOptionalUser<T>(
+  userId: string | null | undefined,
+  fn: () => Promise<T> | T,
+): Promise<T> | T {
+  return userId ? userContext.run({ userId }, fn) : fn()
+}
+
+// Eager override: stores a pre-resolved Attribution; takes precedence over
+// the request-user scope. Use when the natural request user isn't who we
+// want to attribute to (see proxy.ts: attribute by connected_account owner).
 export function runWithAttribution<T>(
   auth: Attribution | null,
   fn: () => Promise<T> | T,
