@@ -1,9 +1,20 @@
 import { SCOPE_MAPS, type ScopeMapEntry } from './scope-maps'
+import { SCOPE_DESCRIPTIONS } from './scope-descriptions'
 
 export interface ScopeMatchResult {
   matched: boolean
   scopes: string[]
+  /**
+   * Curated per-scope descriptions describing what each scope GRANTS.
+   * Used in "Always allow <scope>" menu items and the settings dialog.
+   */
   descriptions: Record<string, string>
+  /**
+   * Description of the matched API endpoint (what the current call DOES).
+   * Used to render the prompt headline so the user sees the immediate action,
+   * not a broader scope-level summary that may be alarming.
+   */
+  endpointDescription?: string
 }
 
 /**
@@ -15,7 +26,7 @@ export function matchScopes(
   method: string,
   targetPath: string
 ): ScopeMatchResult {
-  const empty: ScopeMatchResult = { matched: false, scopes: [], descriptions: {} }
+  const empty: ScopeMatchResult = { matched: false, scopes: [], descriptions: {}, endpointDescription: undefined }
 
   const provider = SCOPE_MAPS[toolkit]
   if (!provider) return empty
@@ -51,22 +62,32 @@ export function matchScopes(
   // Collect union of scopes and descriptions
   const scopeSet = new Set<string>()
   const descriptions: Record<string, string> = {}
+  const providerScopeDescriptions = SCOPE_DESCRIPTIONS[toolkit] ?? {}
 
   for (const { entry } of bestMatches) {
-    const desc = entry.description ?? ''
     for (const scope of entry.sufficientScopes) {
       scopeSet.add(scope)
-      // First description wins per scope
-      if (!(scope in descriptions) && desc) {
-        descriptions[scope] = desc
+      if (scope in descriptions) continue
+      // Prefer the curated per-scope description; fall back to the
+      // matched endpoint description so we don't regress on scopes
+      // that are not yet curated.
+      const curated = providerScopeDescriptions[scope]
+      if (curated) {
+        descriptions[scope] = curated
+      } else if (entry.description) {
+        descriptions[scope] = entry.description
       }
     }
   }
+
+  // The first matching endpoint's description summarizes the call itself.
+  const endpointDescription = bestMatches.find((m) => m.entry.description)?.entry.description
 
   return {
     matched: true,
     scopes: Array.from(scopeSet),
     descriptions,
+    endpointDescription,
   }
 }
 

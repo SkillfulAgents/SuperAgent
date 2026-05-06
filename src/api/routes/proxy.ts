@@ -233,6 +233,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
         targetPath,
         matchedScopes: policyResult.matchedScopes,
         scopeDescriptions: policyResult.scopeDescriptions,
+        endpointDescription: policyResult.endpointDescription,
       }, c.req.raw.signal)
       if (decision === 'deny') {
         await logAuditEntry({

@@ -445,6 +445,34 @@ describe('ReviewManager', () => {
       const result = generateReviewDisplayText('gmail', 'GET', '/api/endpoint', {})
       expect(result).toBe('Allow GET request to Gmail?')
     })
+
+    it('prefers endpoint description over scope description', () => {
+      // The headline must describe the immediate action, not the broad scope
+      // grant — otherwise approving a profile read would surface "Read,
+      // compose, send, and permanently delete all your email" as the headline.
+      const result = generateReviewDisplayText(
+        'gmail',
+        'GET',
+        '/gmail/v1/users/me/profile',
+        {
+          'gmail.readonly': 'View your email messages and settings',
+          'gmail.full': 'Read, compose, send, and permanently delete all your email',
+        },
+        "Gets the current user's Gmail profile.",
+      )
+      expect(result).toBe("Allow gets the current user's Gmail profile.?")
+    })
+
+    it('falls back to scope description when endpointDescription is undefined', () => {
+      const result = generateReviewDisplayText(
+        'gmail',
+        'GET',
+        '/path',
+        { 'gmail.readonly': 'Read your email' },
+        undefined,
+      )
+      expect(result).toBe('Allow read your email?')
+    })
   })
 
   it('abort after submitDecision is a no-op (review already resolved)', async () => {

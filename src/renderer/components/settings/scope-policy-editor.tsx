@@ -18,6 +18,7 @@ import {
   DialogTitle,
 } from '@renderer/components/ui/dialog'
 import { SCOPE_MAPS } from '@shared/lib/proxy/scope-maps'
+import { SCOPE_DESCRIPTIONS } from '@shared/lib/proxy/scope-descriptions'
 import { PolicyDecisionToggle } from '@renderer/components/ui/policy-decision-toggle'
 import { HighlightMatch } from '@renderer/components/ui/highlight-match'
 
@@ -61,16 +62,17 @@ export function ScopePolicyEditor({
       : Object.values(provider.allScopes).flat()
     : []
 
-  // Build descriptions from scope map entries
+  // For each scope, prefer the curated description; otherwise borrow the
+  // first endpoint description that mentions this scope.
+  const curated = SCOPE_DESCRIPTIONS[toolkit] ?? {}
   const scopeDescriptions: Record<string, string> = {}
-  if (provider) {
-    for (const entry of provider.scopeMap) {
-      for (const scope of entry.sufficientScopes) {
-        if (!scopeDescriptions[scope] && entry.description) {
-          scopeDescriptions[scope] = entry.description
-        }
-      }
-    }
+  for (const scope of allScopes) {
+    const desc =
+      curated[scope] ??
+      provider?.scopeMap.find(
+        (e) => e.description && e.sufficientScopes.includes(scope),
+      )?.description
+    if (desc) scopeDescriptions[scope] = desc
   }
 
   // Fetch existing policies

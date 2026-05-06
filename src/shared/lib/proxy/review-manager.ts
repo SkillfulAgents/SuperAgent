@@ -11,6 +11,11 @@ export interface ReviewDetails {
   targetPath: string
   matchedScopes: string[]
   scopeDescriptions: Record<string, string>
+  /**
+   * Description of the matched API endpoint (what the current call does).
+   * Preferred over scopeDescriptions when generating the prompt headline.
+   */
+  endpointDescription?: string
   // Optional: x-agent review fields.
   // When present, the UI renders a dedicated "Agent X wants to use Agent Y" prompt
   // with a read/invoke level selector. targetAgentSlug is the other agent being acted on.
@@ -49,23 +54,29 @@ export function humanizeActionName(name: string): string {
 
 /**
  * Generate a human-readable display text for a proxy review request.
- * Uses scope descriptions when available, otherwise builds from the
- * structured fields — with special handling for MCP tool call paths.
+ *
+ * Priority:
+ *  1. The matched endpoint description (describes the specific call)
+ *  2. The first scope description (fallback when endpoint is uncurated)
+ *  3. A generic "Allow <method> request to <Toolkit>?" string
+ *
+ * Note: do NOT default to scope descriptions for the headline. Scope-level
+ * text describes the broad permission (e.g. "Read, compose, send, and
+ * permanently delete all your email") and is alarming when the user is
+ * actually approving a narrow call (e.g. read profile).
  */
 export function generateReviewDisplayText(
   toolkit: string,
   method: string,
   targetPath: string,
-  scopeDescriptions: Record<string, string>
+  scopeDescriptions: Record<string, string>,
+  endpointDescription?: string,
 ): string {
-  // Use the first scope description if available — it's usually the best
-  // human-readable summary of what the request does.
-  const descriptions = Object.values(scopeDescriptions)
-  if (descriptions.length > 0) {
-    const desc = descriptions[0]
-    if (desc.endsWith('?')) return desc
+  const candidate = endpointDescription || Object.values(scopeDescriptions)[0]
+  if (candidate) {
+    if (candidate.endsWith('?')) return candidate
     // Strip leading "allow" (case-insensitive) to avoid "Allow allow..."
-    const stripped = desc.replace(/^allow\s+/i, '')
+    const stripped = candidate.replace(/^allow\s+/i, '')
     return `Allow ${stripped.charAt(0).toLowerCase()}${stripped.slice(1)}?`
   }
 
@@ -127,7 +138,8 @@ export class ReviewManager {
         details.toolkit,
         details.method,
         details.targetPath,
-        details.scopeDescriptions
+        details.scopeDescriptions,
+        details.endpointDescription,
       )
 
       // Broadcast review request to agent's active sessions
@@ -226,7 +238,8 @@ export class ReviewManager {
           review.details.toolkit,
           review.details.method,
           review.details.targetPath,
-          review.details.scopeDescriptions
+          review.details.scopeDescriptions,
+          review.details.endpointDescription,
         )
         results.push({ id: review.id, displayText, ...review.details })
       }
