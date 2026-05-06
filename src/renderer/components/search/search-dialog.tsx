@@ -124,7 +124,7 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
           className="max-h-[60vh] overflow-y-auto py-1"
           data-testid="search-results"
         >
-          {flatItems.length === 0 ? (
+          {!query.trim() || flatItems.length === 0 ? (
             <div className="px-4 py-6 text-center text-sm text-muted-foreground">
               {query.trim() ? 'No matches found' : 'Type to search...'}
             </div>

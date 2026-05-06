@@ -113,6 +113,10 @@ vi.mock('@renderer/context/selection-context', () => ({
   useSelection: () => ({ setAgent: mockSetAgent, view: { kind: 'home' }, selectedAgentSlug: null }),
 }))
 
+vi.mock('@renderer/context/search-context', () => ({
+  useSearch: () => ({ open: false, openSearch: vi.fn(), closeSearch: vi.fn() }),
+}))
+
 vi.mock('@renderer/hooks/use-sessions', () => ({
   useSessions: () => ({ data: [] }),
 }))
