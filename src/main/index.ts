@@ -934,7 +934,10 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
     try {
       const callbackUrl = new URL(url)
       const params = {
-        connectionId: callbackUrl.searchParams.get('connectedAccountId'),
+        // Composio's /link flow may use either casing — accept both.
+        connectionId:
+          callbackUrl.searchParams.get('connectedAccountId') ||
+          callbackUrl.searchParams.get('connected_account_id'),
         status: callbackUrl.searchParams.get('status'),
         toolkit: callbackUrl.searchParams.get('toolkit'),
         error: callbackUrl.searchParams.get('error'),

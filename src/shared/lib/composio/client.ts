@@ -10,6 +10,7 @@ import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-servi
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { captureMessage } from '@shared/lib/error-reporting'
 import { ProxyExecuteResponseSchema } from './proxy-execute-schema'
+import { LinkResponseSchema } from './link-response-schema'
 
 const COMPOSIO_HOST = 'https://backend.composio.dev'
 
@@ -250,17 +251,6 @@ interface ConnectedAccountGetResponse {
   }
 }
 
-// API response type for POST /connected_accounts (initiate)
-interface ConnectedAccountInitiateResponse {
-  id: string
-  status: string
-  data?: {
-    redirectUrl?: string
-    [key: string]: unknown
-  }
-  redirect_url?: string | null
-}
-
 interface ListConnectedAccountsResponse {
   items: ConnectedAccountGetResponse[]
 }
@@ -300,52 +290,38 @@ interface InitiateConnectionResponse {
 }
 
 /**
- * Initiate a new OAuth connection.
- * Returns a redirect URL for the OAuth flow.
+ * Initiate a new OAuth connection via Composio's hosted consent flow.
+ * `POST /connected_accounts/link` replaced `POST /connected_accounts` for
+ * Composio-managed OAuth configs (rolled out 2026-04-22, full cutover 2026-07-03).
+ * `user_id` is now required unconditionally — caller must resolve it.
  */
 export async function initiateConnection(
   authConfigId: string,
   callbackUrl: string,
   userIdOverride?: string
 ): Promise<InitiateConnectionResponse> {
-  const useLocal = shouldUseLocalComposioKey()
-  const needsUserId = useLocal || !getPlatformComposioToken()
-  const userId = needsUserId ? (userIdOverride || getComposioUserId()) : null
-  if (needsUserId && !userId) {
-    throw new ComposioApiError('Composio User ID is not configured', 401)
+  const userId = userIdOverride || getComposioUserId()
+  if (!userId) {
+    throw new ComposioApiError(
+      'Composio User ID is required to initiate a connection',
+      401
+    )
   }
 
-  const response = await composioFetch<ConnectedAccountInitiateResponse>(
-    '/connected_accounts',
-    {
-      method: 'POST',
-      body: JSON.stringify({
-        auth_config: {
-          id: authConfigId,
-        },
-        connection: {
-          state: {
-            authScheme: 'OAUTH2',
-            val: {
-              status: 'INITIALIZING',
-            },
-          },
-          ...(userId ? { user_id: userId } : {}),
-          callback_url: callbackUrl,
-        },
-      }),
-    }
-  )
+  const raw = await composioFetch<unknown>('/connected_accounts/link', {
+    method: 'POST',
+    body: JSON.stringify({
+      auth_config_id: authConfigId,
+      user_id: userId,
+      callback_url: callbackUrl,
+    }),
+  })
 
-  // The redirect URL may be in data.redirectUrl or redirect_url
-  const redirectUrl = response.data?.redirectUrl || response.redirect_url
-  if (!redirectUrl) {
-    throw new ComposioApiError('No redirect URL returned from Composio', 500)
-  }
+  const parsed = LinkResponseSchema.parse(raw)
 
   return {
-    connectionId: response.id,
-    redirectUrl,
+    connectionId: parsed.connected_account_id,
+    redirectUrl: parsed.redirect_url,
   }
 }
 

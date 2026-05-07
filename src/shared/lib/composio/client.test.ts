@@ -26,6 +26,7 @@ import {
   getConnectionToken,
   proxyExecute,
   getAccountDisplayName,
+  initiateConnection,
   ComposioApiError,
   ComposioRedactedTokenError,
 } from './client'
@@ -603,5 +604,112 @@ describe('getAccountDisplayName proxy fallback', () => {
 
     const display = await getAccountDisplayName('conn-ms-upn', 'outlook', 'Outlook')
     expect(display).toBe('upn@contoso.com')
+  })
+})
+
+describe('initiateConnection', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetEffectiveComposioApiKey.mockReturnValue('test-api-key')
+    mockGetComposioUserId.mockReturnValue('test-user')
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  function mockLinkOk(body: unknown) {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 201,
+      headers: { get: () => 'application/json' },
+      json: () => Promise.resolve(body),
+      text: () => Promise.resolve(JSON.stringify(body)),
+    })
+  }
+
+  it('POSTs to /connected_accounts/link with flat body', async () => {
+    mockLinkOk({
+      link_token: 'lk_abc',
+      redirect_url: 'https://connect.composio.dev/link/lk_abc',
+      expires_at: '2026-05-06T21:36:56.811Z',
+      connected_account_id: 'ca_new',
+    })
+
+    const result = await initiateConnection(
+      'ac_xyz',
+      'superagent://oauth-callback?toolkit=github',
+      'user-42'
+    )
+
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+    const [url, init] = mockFetch.mock.calls[0]
+    expect(url).toBe(
+      'https://backend.composio.dev/api/v3/connected_accounts/link'
+    )
+    expect((init as RequestInit).method).toBe('POST')
+    const sent = JSON.parse((init as { body: string }).body)
+    expect(sent).toEqual({
+      auth_config_id: 'ac_xyz',
+      user_id: 'user-42',
+      callback_url: 'superagent://oauth-callback?toolkit=github',
+    })
+
+    expect(result).toEqual({
+      connectionId: 'ca_new',
+      redirectUrl: 'https://connect.composio.dev/link/lk_abc',
+    })
+  })
+
+  it('falls back to getComposioUserId() when no override is given', async () => {
+    mockGetComposioUserId.mockReturnValue('settings-user')
+    mockLinkOk({
+      link_token: 'lk_x',
+      redirect_url: 'https://connect.composio.dev/link/lk_x',
+      expires_at: '2026-05-06T21:36:56.811Z',
+      connected_account_id: 'ca_x',
+    })
+
+    await initiateConnection('ac_x', 'cb://done')
+
+    const sent = JSON.parse(
+      (mockFetch.mock.calls[0][1] as { body: string }).body
+    )
+    expect(sent.user_id).toBe('settings-user')
+  })
+
+  it('throws ComposioApiError(401) when no user id is available', async () => {
+    mockGetComposioUserId.mockReturnValue(undefined)
+
+    await expect(
+      initiateConnection('ac_x', 'cb://done')
+    ).rejects.toBeInstanceOf(ComposioApiError)
+    expect(mockFetch).not.toHaveBeenCalled()
+  })
+
+  it('throws via Zod when response is missing connected_account_id', async () => {
+    mockLinkOk({
+      link_token: 'lk_x',
+      redirect_url: 'https://connect.composio.dev/link/lk_x',
+      expires_at: '2026-05-06T21:36:56.811Z',
+      // connected_account_id missing
+    })
+
+    await expect(
+      initiateConnection('ac_x', 'cb://done', 'user-1')
+    ).rejects.toThrow()
+  })
+
+  it('throws via Zod when response is missing redirect_url', async () => {
+    mockLinkOk({
+      link_token: 'lk_x',
+      // redirect_url missing
+      expires_at: '2026-05-06T21:36:56.811Z',
+      connected_account_id: 'ca_x',
+    })
+
+    await expect(
+      initiateConnection('ac_x', 'cb://done', 'user-1')
+    ).rejects.toThrow()
   })
 })
