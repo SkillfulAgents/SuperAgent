@@ -62,7 +62,7 @@ export function ComposioTab() {
         <div className={`rounded-md border px-3 py-2 ${
           hasLocalComposioKey
             ? 'border-blue-200 bg-blue-50 dark:border-blue-900 dark:bg-blue-500/10'
-            : 'border-green-200 bg-green-50 dark:border-green-900 dark:bg-green-950/30'
+            : 'border-green-200 bg-green-50 dark:border-green-900 dark:bg-green-500/10'
         }`}>
           {hasLocalComposioKey ? (
             <div className="space-y-1.5">
