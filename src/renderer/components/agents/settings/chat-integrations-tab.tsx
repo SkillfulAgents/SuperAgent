@@ -38,14 +38,36 @@ function generateSlackManifest(botName: string): string {
     display_information: { name: botName },
     features: {
       bot_user: { display_name: botName, always_online: false },
+      app_home: {
+        home_tab_enabled: false,
+        messages_tab_enabled: true,
+        messages_tab_read_only_enabled: false,
+      },
     },
     oauth_config: {
       scopes: {
-        bot: ['users:read', 'chat:write', 'files:read', 'files:write', 'im:history', 'im:read', 'im:write', 'reactions:write'],
+        bot: [
+          'users:read',
+          'chat:write',
+          'files:read',
+          'files:write',
+          'im:history',
+          'im:read',
+          'im:write',
+          'channels:history',
+          'channels:read',
+          'groups:history',
+          'groups:read',
+          'mpim:history',
+          'mpim:read',
+          'reactions:write',
+        ],
       },
     },
     settings: {
-      event_subscriptions: { bot_events: ['message.im'] },
+      event_subscriptions: {
+        bot_events: ['message.im', 'message.channels', 'message.groups', 'message.mpim'],
+      },
       interactivity: { is_enabled: true },
       org_deploy_enabled: false,
       socket_mode_enabled: true,
@@ -93,9 +115,9 @@ const PROVIDER_INFO = {
     steps: [
       <>Go to <a href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer" className="underline text-primary hover:text-primary/80">api.slack.com/apps</a> &rarr; &ldquo;Create New App&rdquo; &rarr; &ldquo;From scratch&rdquo;</>,
       'Enable Socket Mode (Settings → Socket Mode → toggle ON)',
-      'Generate App-Level Token (Basic Information → App-Level Tokens → Generate Token with connections:write scope)',
-      'Add Bot Token Scopes (OAuth & Permissions → Scopes → Bot Token Scopes): chat:write, im:history, im:read, im:write, users:read, files:read, files:write, reactions:write',
-      'Subscribe to events (Event Subscriptions → toggle ON → Subscribe to bot events → add message.im)',
+      'Generate App-Level Token: Basic Information (left sidebar) → scroll to App-Level Tokens (below "App Credentials") → Generate Token and Scopes → add connections:write scope → copy the xapp-... token (shown once)',
+      'Add Bot Token Scopes (OAuth & Permissions → Scopes → Bot Token Scopes): chat:write, im:history, im:read, im:write, channels:history, channels:read, groups:history, groups:read, mpim:history, mpim:read, users:read, files:read, files:write, reactions:write',
+      'Subscribe to events (Event Subscriptions → toggle ON → Subscribe to bot events → add message.im, message.channels, message.groups, message.mpim)',
       'Enable Interactivity (Interactivity & Shortcuts → toggle ON)',
       'Enable App Home messaging (App Home → Show Tabs → check "Messages Tab" AND check "Allow users to send Slash commands and messages from the messages tab")',
       'Install to Workspace (OAuth & Permissions → Install to Workspace) and copy the Bot Token (xoxb-...)',
@@ -394,8 +416,8 @@ export function ChatIntegrationsTab({ agentSlug }: ChatIntegrationsTabProps) {
                   Go to <a href="https://api.slack.com/apps?new_app=1&manifest_format=json" target="_blank" rel="noopener noreferrer" className="underline text-primary hover:text-primary/80">api.slack.com/apps</a> → &quot;Create New App&quot; → &quot;From an app manifest&quot;
                 </li>
                 <li className="text-xs text-muted-foreground">Select your workspace, then paste the manifest below</li>
-                <li className="text-xs text-muted-foreground">Create the app, then go to Basic Information → App-Level Tokens → Generate Token with <code className="bg-muted px-1 rounded">connections:write</code> scope</li>
-                <li className="text-xs text-muted-foreground">Install to Workspace (OAuth & Permissions → Install to Workspace) and copy the Bot Token (xoxb-...)</li>
+                <li className="text-xs text-muted-foreground">Create the app, then open <strong>Basic Information</strong> in the left sidebar. Scroll down to <strong>App-Level Tokens</strong> (below &ldquo;App Credentials&rdquo;) → click <strong>Generate Token and Scopes</strong>, give it any name, add the <code className="bg-muted px-1 rounded">connections:write</code> scope, and copy the <code className="bg-muted px-1 rounded">xapp-...</code> token (shown once — paste it into the App-Level Token field below)</li>
+                <li className="text-xs text-muted-foreground">Install to Workspace (OAuth & Permissions → Install to Workspace) and copy the Bot Token (<code className="bg-muted px-1 rounded">xoxb-...</code>)</li>
               </ol>
               <div className="relative">
                 <pre className="text-2xs leading-relaxed bg-background border rounded-md p-2 overflow-x-auto max-h-40 select-all">
