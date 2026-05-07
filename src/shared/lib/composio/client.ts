@@ -293,7 +293,8 @@ interface InitiateConnectionResponse {
  * Initiate a new OAuth connection via Composio's hosted consent flow.
  * `POST /connected_accounts/link` replaced `POST /connected_accounts` for
  * Composio-managed OAuth configs (rolled out 2026-04-22, full cutover 2026-07-03).
- * `user_id` is now required unconditionally — caller must resolve it.
+ * `user_id` is required for local API key users; platform proxy injects it
+ * server-side so callers may omit it.
  */
 export async function initiateConnection(
   authConfigId: string,
@@ -301,7 +302,7 @@ export async function initiateConnection(
   userIdOverride?: string
 ): Promise<InitiateConnectionResponse> {
   const userId = userIdOverride || getComposioUserId()
-  if (!userId) {
+  if (!userId && shouldUseLocalComposioKey()) {
     throw new ComposioApiError(
       'Composio User ID is required to initiate a connection',
       401
@@ -312,7 +313,7 @@ export async function initiateConnection(
     method: 'POST',
     body: JSON.stringify({
       auth_config_id: authConfigId,
-      user_id: userId,
+      ...(userId ? { user_id: userId } : {}),
       callback_url: callbackUrl,
     }),
   })

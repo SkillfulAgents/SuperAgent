@@ -130,18 +130,11 @@ connectedAccountsRouter.post('/initiate', async (c) => {
       callbackUrl = `${origin}/api/connected-accounts/callback?toolkit=${encodeURIComponent(providerSlug)}`
     }
 
-    // /connected_accounts/link requires user_id unconditionally. In auth mode
-    // it's the platform-issued user id; otherwise fall back to the local
-    // settings value (set during onboarding).
+    // Platform proxy injects user_id server-side, so it's only required
+    // for local API key users and auth-mode users.
     const composioUserId = isAuthMode()
       ? getCurrentUserId(c)
       : getComposioUserId()
-    if (!composioUserId) {
-      return c.json(
-        { error: 'Composio User ID is not configured' },
-        400
-      )
-    }
 
     const { connectionId, redirectUrl } = await initiateConnection(
       authConfig.id,
