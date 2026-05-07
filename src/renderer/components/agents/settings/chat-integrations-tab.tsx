@@ -37,7 +37,7 @@ function generateSlackManifest(botName: string): string {
   return JSON.stringify({
     display_information: { name: botName },
     features: {
-      bot_user: { display_name: botName, always_online: false },
+      bot_user: { display_name: botName, always_online: true },
       app_home: {
         home_tab_enabled: false,
         messages_tab_enabled: true,
