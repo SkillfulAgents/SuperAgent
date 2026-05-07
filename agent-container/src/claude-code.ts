@@ -46,6 +46,12 @@ const COMPUTER_USE_AGENT_PROMPT = fs.readFileSync(
   'utf-8'
 );
 
+// Load dashboard-builder subagent prompt from file
+const DASHBOARD_BUILDER_AGENT_PROMPT = fs.readFileSync(
+  path.join(__dirname, 'dashboard-builder-agent-prompt.md'),
+  'utf-8'
+);
+
 interface RemoteMcpConfig {
   id: string;
   name: string;
@@ -440,6 +446,22 @@ export class ClaudeCodeProcess extends EventEmitter {
             ],
             prompt: WEB_BROWSER_AGENT_PROMPT,
             maxTurns: 500,
+          },
+          'dashboard-builder': {
+            description: 'Dashboard building specialist. Delegate any task that involves creating, editing, or debugging dashboards (artifacts) — designing layouts, writing HTML/CSS/JS or React code, adding charts, connecting to data sources, fixing visual issues, or iterating on dashboard design. This agent uses Opus and handles the full build cycle: scaffolding, coding, starting, and verifying via screenshots.',
+            model: 'opus' as const,
+            tools: [
+              'mcp__dashboards__create_dashboard',
+              'mcp__dashboards__start_dashboard',
+              'mcp__dashboards__list_dashboards',
+              'mcp__dashboards__get_dashboard_logs',
+              'Read',
+              'Write',
+              'Edit',
+              'Bash',
+            ],
+            prompt: DASHBOARD_BUILDER_AGENT_PROMPT,
+            maxTurns: 200,
           },
           ...(['darwin', 'win32'].includes(process.env.HOST_PLATFORM || '') ? {
             'computer-use': {

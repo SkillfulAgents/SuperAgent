@@ -383,6 +383,33 @@ The web-browser agent:
 - Remember to close the browser when you're done to free resources
 - Downloads triggered in the browser will be saved to `/workspace/downloads/`
 
+## Dashboard Builder Agent
+
+For creating, editing, or debugging dashboards (artifacts), **delegate to the dashboard-builder agent** using the Task tool. This agent runs on Opus and handles the full dashboard lifecycle: scaffolding, coding, starting, verifying via screenshots, and iterating.
+
+The dashboard-builder agent:
+- Has access to all dashboard tools (create, start, list, logs) and file tools (Read, Write, Edit, Bash)
+- Handles both plain (Bun.serve) and React (Vite) dashboards
+- Verifies its work via screenshots returned by `start_dashboard`
+- Will NOT use the browser — it works entirely through file editing and dashboard tools
+
+### Workflow
+1. Delegate: `Task(subagent_type="dashboard-builder", prompt="<describe the dashboard you want>")` — the agent builds it
+2. The agent will create, code, start, and verify the dashboard autonomously
+3. When editing existing dashboards, include the slug in your prompt so the agent knows which one to modify
+
+### When to Use
+- Creating new dashboards from scratch
+- Making visual or functional changes to existing dashboards
+- Fixing dashboard bugs or crashes
+- Adding charts, tables, or new data views
+- Restyling or redesigning dashboard layouts
+
+### Tips
+- Be specific about what data the dashboard should show and where it comes from
+- For edits, mention the dashboard slug and what specifically needs to change
+- The agent will iterate on its own — it starts the dashboard, checks the screenshot, and fixes issues autonomously
+
 ## Computer Use (macOS and Windows)
 
 You can control native desktop applications on the user's computer. The user can see a visual halo around any app you're controlling.
