@@ -1,27 +1,27 @@
 {
   "storyId": "github-whoami",
   "passed": false,
-  "reason": "Agent attempted to use GitHub tool but failed to retrieve GitHub username due to OAuth token authentication error\n  Bugs found:\n    - Agent response does not contain a GitHub username - instead returns error: \"Failed to fetch access token\" when calling api.github.com/user, indicating the connected GitHub account's OAuth token needs to be refreshed/reauthorized",
+  "reason": "Agent attempted to use GitHub tool to retrieve username but failed due to 401 authentication error - response did not include GitHub username\n  Bugs found:\n    - GitHub OAuth authentication failed: Agent received \"401 Bad credentials\" error when attempting to call GitHub API endpoint (api.github.com/user) through the platform proxy. The injected OAuth token was not valid or not being injected properly into the GitHub REST API requests, preventing the agent from successfully retrieving the authenticated user's GitHub username.",
   "steps": [
-    "Navigated to http://localhost:47891 — page loaded successfully with agents visible in sidebar",
-    "Clicked agent \"QA-20260505-211615-u8vy\" in sidebar — agent detail page opened",
-    "Verified agent status — agent status was \"idle\" as expected",
-    "Typed and sent message \"Use the GitHub tool to check who I am. Tell me my GitHub username.\" — message submitted to agent",
-    "Account access card appeared — selected GitHub account and clicked \"Allow Access (1)\" button",
-    "Multiple API request review dialogs appeared — approved 3 GitHub API calls by clicking \"Allow Once\" each time",
-    "Agent completed processing after 1 minute 6 seconds — response was error message about failed OAuth token instead of GitHub username"
+    "1. Navigated to http://localhost:47891 — Page loaded successfully with agent list visible",
+    "2. Found and clicked agent \"QA-20260507-211129-27ig\" in sidebar — Agent detail page opened with session creation",
+    "3. Verified agent status — Status displayed as \"idle\" ✓",
+    "4. Sent message \"Use the GitHub tool to check who I am. Tell me my GitHub username.\" — Message was submitted and appeared in chat",
+    "5. GitHub account access request card appeared — Selected GitHub account (already checked) and clicked \"Allow Access (1)\" to grant permission",
+    "6. Waited for response — Agent processed for 2m 35s, requesting multiple GitHub API permissions during execution",
+    "7. Agent returned response but without GitHub username — Response indicated 401 authentication error. Agent stated: \"The proxy is returning 401 — the GitHub OAuth token isn't being injected properly when reaching the GitHub API.\" Agent offered workaround options instead of returning the requested GitHub username. Task requirement not met: response should have included GitHub username but instead showed authentication failure."
   ],
   "bugs": [
-    "Agent response does not contain a GitHub username - instead returns error: \"Failed to fetch access token\" when calling api.github.com/user, indicating the connected GitHub account's OAuth token needs to be refreshed/reauthorized"
+    "GitHub OAuth authentication failed: Agent received \"401 Bad credentials\" error when attempting to call GitHub API endpoint (api.github.com/user) through the platform proxy. The injected OAuth token was not valid or not being injected properly into the GitHub REST API requests, preventing the agent from successfully retrieving the authenticated user's GitHub username."
   ],
-  "durationMs": 118988,
-  "sessionId": "1ef0568f-6143-4f36-8597-52df2ae9a9c2",
+  "durationMs": 234249,
+  "sessionId": "14b082d4-cb7b-4d9c-8aa5-38cf8c22f558",
   "cost": {
-    "inputTokens": 531,
-    "outputTokens": 15191,
-    "cacheCreationTokens": 78052,
-    "cacheReadTokens": 2345140,
+    "inputTokens": 687,
+    "outputTokens": 17441,
+    "cacheCreationTokens": 102378,
+    "cacheReadTokens": 3403510,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.408565
+    "totalCostUsd": 0.556216
   }
 }

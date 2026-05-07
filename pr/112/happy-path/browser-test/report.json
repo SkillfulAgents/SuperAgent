@@ -1,25 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that QA-20260505-211613-qbhi agent can execute browser commands and correctly report page title from https://example.com",
+  "reason": "Successfully executed all steps: navigated to SuperAgent, opened the specified agent, sent a browser navigation request, and received a response containing \"Example Domain\"",
   "steps": [
-    "Navigated to http://localhost:47891 — SuperAgent application loaded successfully",
-    "Clicked on \"QA-20260505-211613-qbhi\" agent in sidebar — Agent chat view opened",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in input field — Message text populated in textbox",
-    "Clicked Send message button — Message sent successfully, agent status changed to \"working\"",
-    "Waited 10 seconds for response — Agent completed browser operations in 8 seconds",
-    "Verified response text — Agent response displays \"The page title is Example Domain.\" matching the expected result",
-    "Took final screenshot — Captured confirmation showing successful test completion"
+    "Navigated to http://localhost:47891 — Page loaded successfully showing SuperAgent home with three agents listed",
+    "Clicked on agent \"QA-20260507-211127-0ocz\" in the sidebar — Agent page opened with chat interface and agent settings visible",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the chat input field — Message was entered successfully in the input box",
+    "Clicked the Send message button — Message was sent and agent transitioned to \"working\" status",
+    "Waited up to 3 minutes for response — Agent completed work in 6 seconds, displaying the response \"The page title is Example Domain.\" in the chat",
+    "Verified response mentions \"Example Domain\" and took screenshot — Screenshot confirms response contains \"Example Domain\" and browser preview shows the actual Example Domain webpage"
   ],
   "bugs": [],
-  "durationMs": 62625,
-  "sessionId": "69906791-cf47-4ff4-8bbc-cf77d7b2a632",
+  "durationMs": 100536,
+  "sessionId": "5e2bc016-a901-44c1-9e0b-7201fc3d7618",
   "cost": {
-    "inputTokens": 282,
-    "outputTokens": 8285,
-    "cacheCreationTokens": 45652,
-    "cacheReadTokens": 1041700,
+    "inputTokens": 342,
+    "outputTokens": 11073,
+    "cacheCreationTokens": 59237,
+    "cacheReadTokens": 1339517,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.202942
+    "totalCostUsd": 0.263705
   }
 }

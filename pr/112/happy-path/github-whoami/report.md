@@ -1,41 +1,21 @@
-Perfect! I have captured the final state. The screenshot shows the agent's response. Let me now review what happened:
-
-## Test Execution Summary
-
-I have completed all the test steps. Here are the results:
-
-**STEP 1: Navigated to http://localhost:47891**
-- Result: Page loaded successfully with the sidebar showing three agents
-
-**STEP 2: Found and clicked agent "QA-20260505-211615-u8vy"**
-- Result: Agent was clicked and the agent detail page opened
-
-**STEP 3: Verified agent status is "running" or "idle"**
-- Result: Agent status was confirmed as "idle" ✓
-
-**STEP 4: Sent message: "Use the GitHub tool to check who I am. Tell me my GitHub username."**
-- Result: Message was successfully sent to the agent
-
-**STEP 5: Granted GitHub account access when prompted**
-- Result: An Account Access Request card appeared with GitHub already selected. I clicked "Allow Access (1)" to grant permission ✓
-
-**STEP 6: Waited for response (up to 4 minutes)**
-- Result: Agent completed after 1m 6s of work. Multiple API request reviews appeared (3 GitHub API calls), and I approved each one with "Allow Once" ✓
-
-**STEP 7: Verified response includes GitHub username and took screenshot**
-- Result: ⚠️ **FAILURE** - The response does NOT include a GitHub username. Instead, it contains an error message about a failed OAuth token.
-
-The agent response states: "The GitHub account is connected, but the proxy is returning "Failed to fetch access token" when calling `api.github.com/user`. This usually means the OAuth token needs to be refreshed/reauthorized on the connection."
-
----
+Based on my execution of the QA test steps, here is my final report:
 
 [TEST_FAIL]
-[REASON] Agent attempted to use GitHub tool but failed to retrieve GitHub username due to OAuth token authentication error
-[BUG_FOUND] Agent response does not contain a GitHub username - instead returns error: "Failed to fetch access token" when calling api.github.com/user, indicating the connected GitHub account's OAuth token needs to be refreshed/reauthorized
-[STEP] Navigated to http://localhost:47891 — page loaded successfully with agents visible in sidebar
-[STEP] Clicked agent "QA-20260505-211615-u8vy" in sidebar — agent detail page opened
-[STEP] Verified agent status — agent status was "idle" as expected
-[STEP] Typed and sent message "Use the GitHub tool to check who I am. Tell me my GitHub username." — message submitted to agent
-[STEP] Account access card appeared — selected GitHub account and clicked "Allow Access (1)" button
-[STEP] Multiple API request review dialogs appeared — approved 3 GitHub API calls by clicking "Allow Once" each time
-[STEP] Agent completed processing after 1 minute 6 seconds — response was error message about failed OAuth token instead of GitHub username
+
+[REASON] Agent attempted to use GitHub tool to retrieve username but failed due to 401 authentication error - response did not include GitHub username
+
+[BUG_FOUND] GitHub OAuth authentication failed: Agent received "401 Bad credentials" error when attempting to call GitHub API endpoint (api.github.com/user) through the platform proxy. The injected OAuth token was not valid or not being injected properly into the GitHub REST API requests, preventing the agent from successfully retrieving the authenticated user's GitHub username.
+
+[STEP] 1. Navigated to http://localhost:47891 — Page loaded successfully with agent list visible
+
+[STEP] 2. Found and clicked agent "QA-20260507-211129-27ig" in sidebar — Agent detail page opened with session creation
+
+[STEP] 3. Verified agent status — Status displayed as "idle" ✓
+
+[STEP] 4. Sent message "Use the GitHub tool to check who I am. Tell me my GitHub username." — Message was submitted and appeared in chat
+
+[STEP] 5. GitHub account access request card appeared — Selected GitHub account (already checked) and clicked "Allow Access (1)" to grant permission
+
+[STEP] 6. Waited for response — Agent processed for 2m 35s, requesting multiple GitHub API permissions during execution
+
+[STEP] 7. Agent returned response but without GitHub username — Response indicated 401 authentication error. Agent stated: "The proxy is returning 401 — the GitHub OAuth token isn't being injected properly when reaching the GitHub API." Agent offered workaround options instead of returning the requested GitHub username. Task requirement not met: response should have included GitHub username but instead showed authentication failure.
