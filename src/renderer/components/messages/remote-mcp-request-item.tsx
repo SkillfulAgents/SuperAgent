@@ -617,7 +617,7 @@ export function RemoteMcpRequestItem({
         ) : (
           <div className="space-y-2">
             <div className="flex items-center gap-3 rounded-[12px] border border-border bg-white px-4 py-3 dark:bg-background">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-zinc-200">
                 <McpSourceIcon slug={connectCardSlug} />
               </div>
             <div className="min-w-0 flex-1">

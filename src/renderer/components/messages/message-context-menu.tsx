@@ -38,7 +38,7 @@ export function MessageContextMenu({ text, children, onRemove }: MessageContextM
           <>
             <ContextMenuSeparator />
             <ContextMenuItem
-              className="text-destructive focus:text-destructive"
+              className="text-destructive focus:bg-destructive/10 focus:text-destructive"
               onClick={onRemove}
             >
               <Trash2 className="h-4 w-4 mr-2" />

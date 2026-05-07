@@ -102,7 +102,7 @@ export function IntegrationRow({
       }
     >
       <div className="flex items-center gap-3">
-        <div className="h-7 w-7 rounded-md bg-muted flex items-center justify-center shrink-0">
+        <div className="h-7 w-7 rounded-md bg-muted dark:bg-zinc-200 flex items-center justify-center shrink-0">
           <ServiceIcon
             slug={iconSlug}
             fallback={iconFallback}

@@ -173,7 +173,7 @@ export function FileRequestItem({
               ? 'border-blue-400 dark:border-blue-500 bg-blue-100 dark:bg-blue-900'
               : selectedFile
                 ? 'border-blue-300 dark:border-blue-700 bg-blue-50 dark:bg-blue-950/50'
-                : 'border-border bg-white dark:bg-blue-950/30 hover:border-border'
+                : 'border-border bg-white dark:bg-blue-500/10 hover:border-border'
           )}
           role="button"
           tabIndex={0}

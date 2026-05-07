@@ -249,10 +249,10 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
         const hasUnread = !session.isActive && !session.isAwaitingInput && session.hasUnreadNotifications
 
         const colors = isAwaiting
-          ? 'bg-orange-50 border-orange-200 dark:bg-orange-950/30 dark:border-orange-800'
+          ? 'bg-orange-50 border-orange-200 dark:bg-orange-900 dark:border-orange-800'
           : isWorking
-          ? 'bg-green-50 border-green-200 dark:bg-green-950/30 dark:border-green-800'
-          : 'bg-blue-50 border-blue-200 dark:bg-blue-950/30 dark:border-blue-800'
+          ? 'bg-green-50 border-green-200 dark:bg-green-900 dark:border-green-800'
+          : 'bg-blue-50 border-blue-200 dark:bg-blue-950 dark:border-blue-800'
 
         return (
           <div
@@ -288,7 +288,7 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
         >
           <button
             onClick={() => setAgent(agent.slug)}
-            className="w-full flex items-center gap-2 px-3 py-1.5 pt-3 text-left text-xs border rounded-b-lg transition-colors hover:brightness-95 bg-blue-50 border-blue-200 dark:bg-blue-950/30 dark:border-blue-800"
+            className="w-full flex items-center gap-2 px-3 py-1.5 pt-3 text-left text-xs border rounded-b-lg transition-colors hover:brightness-95 bg-blue-50 border-blue-200 dark:bg-blue-950 dark:border-blue-800"
           >
             <span className="h-2 w-2 shrink-0 rounded-full bg-blue-500" />
             <span className="font-medium">{collapsedUnreadCount} more notification{collapsedUnreadCount !== 1 ? 's' : ''}</span>

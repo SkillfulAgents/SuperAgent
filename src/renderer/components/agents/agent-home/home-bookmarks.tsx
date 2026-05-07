@@ -123,7 +123,7 @@ function BookmarkRow({
           Rename
         </ContextMenuItem>
         <ContextMenuSeparator />
-        <ContextMenuItem className="text-destructive focus:text-destructive" onClick={onDelete}>
+        <ContextMenuItem className="text-destructive focus:bg-destructive/10 focus:text-destructive" onClick={onDelete}>
           <Trash2 className="h-3.5 w-3.5 mr-2" />
           Delete
         </ContextMenuItem>

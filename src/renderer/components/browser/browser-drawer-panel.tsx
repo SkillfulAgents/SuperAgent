@@ -271,7 +271,7 @@ export function BrowserDrawerPanel({
         )}
 
         {/* Canvas viewport — full width, edge-to-edge. Glow only when agent is actively working */}
-        <div className={cn('relative shrink-0 overflow-hidden bg-black border-y border-border/40', isActive && !stream.needsAttention && 'browser-glow-container')}>
+        <div className={cn('relative shrink-0 overflow-hidden bg-background border-y border-border/40', isActive && !stream.needsAttention && 'browser-glow-container')}>
           <canvas
             ref={canvasRef}
             className={`w-full block ${stream.isViewOnly ? 'cursor-not-allowed' : 'cursor-default'}`}

@@ -244,7 +244,7 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
             {mountedFolders.map((mount, idx) => (
               <div
                 key={idx}
-                className="flex items-center gap-1.5 rounded-full border bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800 px-3 py-1 text-xs"
+                className="flex items-center gap-1.5 rounded-full border bg-blue-50 dark:bg-blue-500/10 border-blue-200 dark:border-blue-800 px-3 py-1 text-xs"
                 title={`Host: ${mount.hostPath}`}
               >
                 <Link2 className="h-3 w-3 text-blue-500" />

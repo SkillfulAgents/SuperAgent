@@ -282,7 +282,7 @@ export function QuestionRequestItem({
                     'flex items-center gap-2 p-2 rounded-lg border cursor-pointer transition-colors',
                     isSelected
                       ? 'bg-blue-100 dark:bg-blue-900 border-blue-300 dark:border-blue-600'
-                      : 'bg-white dark:bg-blue-950/30 hover:bg-blue-50 dark:hover:bg-blue-900/50'
+                      : 'bg-white dark:bg-blue-500/10 hover:bg-blue-50 dark:hover:bg-blue-900/50'
                   )}
                 >
                   <input
@@ -310,7 +310,7 @@ export function QuestionRequestItem({
                 'flex items-center gap-2 p-2 rounded-lg border cursor-pointer transition-colors',
                 otherSelected[currentQuestionIndex]
                   ? 'bg-blue-100 dark:bg-blue-900 border-blue-300 dark:border-blue-600'
-                  : 'bg-white dark:bg-blue-950/30 hover:bg-blue-50 dark:hover:bg-blue-900/50'
+                  : 'bg-white dark:bg-blue-500/10 hover:bg-blue-50 dark:hover:bg-blue-900/50'
               )}
             >
               <input
@@ -331,7 +331,7 @@ export function QuestionRequestItem({
                   onChange={(e) => handleOtherTextChange(currentQuestionIndex, e.target.value, currentQuestion.multiSelect)}
                   onFocus={() => ensureOtherSelected(currentQuestionIndex, currentQuestion.multiSelect)}
                   disabled={status === 'submitting'}
-                  className="min-h-0 resize-none overflow-hidden bg-white dark:bg-blue-950/30 border-input shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 text-sm"
+                  className="min-h-0 resize-none overflow-hidden bg-white dark:bg-blue-500/10 border-input shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 text-sm"
                   onClick={(e) => {
                     e.stopPropagation()
                     ensureOtherSelected(currentQuestionIndex, currentQuestion.multiSelect)

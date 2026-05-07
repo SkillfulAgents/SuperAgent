@@ -389,7 +389,7 @@ export function ConnectedAccountRequestItem({
         <div className="pt-3">
           <div className="flex items-center justify-between gap-3 rounded-[12px] border border-border bg-white pl-[10px] pr-3 py-2 dark:bg-background">
             <div className="flex items-center gap-2 text-sm text-foreground/80">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-zinc-200">
                 <ServiceIcon slug={toolkit} fallback="request" className="h-6 w-6" />
               </div>
               <p>{(provider?.displayName || toolkit).replace(/\b\w/g, (char) => char.toUpperCase())}</p>
@@ -535,7 +535,7 @@ function AccountOption({
           'border-border bg-white dark:bg-background'
         )}
       >
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-zinc-200">
           <ServiceIcon slug={account.toolkitSlug} fallback="request" className="h-5 w-5" />
         </div>
         <Input
@@ -598,7 +598,7 @@ function AccountOption({
         onClick={(e) => e.stopPropagation()}
         className="mx-1 shrink-0"
       />
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-zinc-200">
         <ServiceIcon slug={account.toolkitSlug} fallback="request" className="h-5 w-5" />
       </div>
       <div className="flex-1 min-w-0">

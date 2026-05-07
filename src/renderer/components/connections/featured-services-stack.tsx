@@ -28,7 +28,7 @@ export function FeaturedServicesStack({ size = 'sm', className }: FeaturedServic
           key={slug}
           className={cn(
             tile,
-            'rounded-lg border border-border bg-background flex items-center justify-center shadow-sm transition-transform duration-100 ease-out hover:scale-110 hover:z-10',
+            'rounded-lg border border-border bg-background dark:bg-zinc-200 flex items-center justify-center shadow-sm transition-transform duration-100 ease-out hover:scale-110 hover:z-10',
           )}
           style={{ marginLeft: i === 0 ? 0 : overlap, zIndex: i }}
         >
@@ -42,11 +42,11 @@ export function FeaturedServicesStack({ size = 'sm', className }: FeaturedServic
       <div
         className={cn(
           tile,
-          'rounded-lg border border-border bg-background flex items-center justify-center shadow-sm',
+          'rounded-lg border border-border bg-background dark:bg-zinc-200 flex items-center justify-center shadow-sm',
         )}
         style={{ marginLeft: overlap, zIndex: FEATURED_SERVICE_SLUGS.length }}
       >
-        <span className="text-2xs font-medium text-muted-foreground/70">70+</span>
+        <span className="text-2xs font-medium text-muted-foreground/70 dark:text-zinc-500">70+</span>
       </div>
     </div>
   )

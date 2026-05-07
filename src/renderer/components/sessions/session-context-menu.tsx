@@ -118,7 +118,7 @@ export function SessionContextMenu({
           </ContextMenuItem>
           {isOwner && (
             <ContextMenuItem
-              className="text-destructive focus:text-destructive"
+              className="text-destructive focus:bg-destructive/10 focus:text-destructive"
               onClick={() => setShowDeleteDialog(true)}
               data-testid="delete-session-item"
             >
