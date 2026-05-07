@@ -544,12 +544,53 @@ interface GoogleUserInfo {
 }
 
 /**
- * Fetch user info from Google using an OAuth access token.
- * Returns the user's email address and name if available.
+ * Pick the upstream endpoint that exposes the user's email for a given
+ * Google toolkit. Most toolkits include the `userinfo.email` scope, so
+ * `/oauth2/v2/userinfo` works. Calendar-only OAuth scopes don't include
+ * userinfo, so we use `calendarList/primary` instead — its `id` field is
+ * the connected user's primary calendar email.
  */
-export async function getGoogleUserInfo(accessToken: string): Promise<GoogleUserInfo | null> {
+function getGoogleEmailLookup(
+  toolkitSlug: string
+): { endpoint: string; field: 'email' | 'id' } | null {
+  if (toolkitSlug === 'googlecalendar') {
+    return {
+      endpoint:
+        'https://www.googleapis.com/calendar/v3/users/me/calendarList/primary',
+      field: 'id',
+    }
+  }
+  if (
+    [
+      'gmail',
+      'googledrive',
+      'googlesheets',
+      'googledocs',
+      'googleslides',
+      'googlemeet',
+      'youtube',
+    ].includes(toolkitSlug)
+  ) {
+    return {
+      endpoint: 'https://www.googleapis.com/oauth2/v2/userinfo',
+      field: 'email',
+    }
+  }
+  return null
+}
+
+/**
+ * Fetch user info from Google using an OAuth access token.
+ * Returns the user's email address and (for userinfo endpoints) name/picture.
+ */
+export async function getGoogleUserInfo(
+  accessToken: string,
+  toolkitSlug: string = 'gmail'
+): Promise<GoogleUserInfo | null> {
+  const lookup = getGoogleEmailLookup(toolkitSlug)
+  if (!lookup) return null
   try {
-    const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+    const response = await fetch(lookup.endpoint, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
       },
@@ -561,10 +602,12 @@ export async function getGoogleUserInfo(accessToken: string): Promise<GoogleUser
     }
 
     const data = await response.json()
+    const email = typeof data?.[lookup.field] === 'string' ? data[lookup.field] : ''
+    if (!email) return null
     return {
-      email: data.email,
-      name: data.name,
-      picture: data.picture,
+      email,
+      name: typeof data?.name === 'string' ? data.name : undefined,
+      picture: typeof data?.picture === 'string' ? data.picture : undefined,
     }
   } catch (error) {
     console.warn('Error fetching Google user info:', error)
@@ -577,18 +620,23 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 }
 
 async function getGoogleUserInfoViaProxy(
-  connectionId: string
+  connectionId: string,
+  toolkitSlug: string
 ): Promise<GoogleUserInfo | null> {
+  const lookup = getGoogleEmailLookup(toolkitSlug)
+  if (!lookup) return null
   try {
     const result = await proxyExecute({
-      endpoint: 'https://www.googleapis.com/oauth2/v2/userinfo',
+      endpoint: lookup.endpoint,
       method: 'GET',
       connectedAccountId: connectionId,
     })
     if (result.status >= 400 || !isRecord(result.data)) return null
     const data = result.data
+    const email = typeof data[lookup.field] === 'string' ? (data[lookup.field] as string) : ''
+    if (!email) return null
     return {
-      email: typeof data.email === 'string' ? data.email : '',
+      email,
       name: typeof data.name === 'string' ? data.name : undefined,
       picture: typeof data.picture === 'string' ? data.picture : undefined,
     }
@@ -648,11 +696,11 @@ export async function getAccountDisplayName(
   if (googleToolkits.includes(slug)) {
     try {
       const { accessToken } = await getConnectionToken(connectionId)
-      const userInfo = await getGoogleUserInfo(accessToken)
+      const userInfo = await getGoogleUserInfo(accessToken, slug)
       if (userInfo?.email) return userInfo.email
     } catch (error) {
       if (error instanceof ComposioRedactedTokenError) {
-        const userInfo = await getGoogleUserInfoViaProxy(connectionId)
+        const userInfo = await getGoogleUserInfoViaProxy(connectionId, slug)
         if (userInfo?.email) return userInfo.email
       } else {
         console.warn('Could not fetch user info for display name:', error)

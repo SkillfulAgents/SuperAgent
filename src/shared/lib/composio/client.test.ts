@@ -560,6 +560,120 @@ describe('getAccountDisplayName proxy fallback', () => {
     expect(urls.some((u) => u.endsWith('/tools/execute/proxy'))).toBe(false)
   })
 
+  it.each([
+    ['googledrive'],
+    ['googlesheets'],
+    ['googledocs'],
+    ['googleslides'],
+  ])(
+    '%s: redacted token → proxy hits /oauth2/v2/userinfo and returns email',
+    async (slug) => {
+      dispatchFetch({
+        connectedAccount: () =>
+          makeComposioResponse(
+            {
+              authScheme: 'OAUTH2',
+              val: { status: 'ACTIVE', access_token: 'REDACTED' },
+            },
+            { toolkit: { slug } }
+          ),
+        proxyExecute: () => ({
+          status: 200,
+          data: { email: 'user@example.com' },
+          headers: {},
+        }),
+      })
+
+      const display = await getAccountDisplayName(`conn-${slug}`, slug, slug)
+      expect(display).toBe('user@example.com')
+
+      const proxyCall = mockFetch.mock.calls.find((c) =>
+        (c[0] as string).endsWith('/tools/execute/proxy')
+      )
+      const sent = JSON.parse((proxyCall![1] as { body: string }).body)
+      expect(sent.endpoint).toBe(
+        'https://www.googleapis.com/oauth2/v2/userinfo'
+      )
+    }
+  )
+
+  it('googlecalendar: redacted token → proxy hits calendarList/primary and returns email from `id`', async () => {
+    dispatchFetch({
+      connectedAccount: () =>
+        makeComposioResponse(
+          {
+            authScheme: 'OAUTH2',
+            val: { status: 'ACTIVE', access_token: 'REDACTED' },
+          },
+          { toolkit: { slug: 'googlecalendar' } }
+        ),
+      proxyExecute: () => ({
+        status: 200,
+        data: {
+          id: 'cal-user@gmail.com',
+          summary: 'cal-user@gmail.com',
+          primary: true,
+        },
+        headers: {},
+      }),
+    })
+
+    const display = await getAccountDisplayName(
+      'conn-cal',
+      'googlecalendar',
+      'Google Calendar'
+    )
+    expect(display).toBe('cal-user@gmail.com')
+
+    const proxyCall = mockFetch.mock.calls.find((c) =>
+      (c[0] as string).endsWith('/tools/execute/proxy')
+    )
+    const sent = JSON.parse((proxyCall![1] as { body: string }).body)
+    expect(sent.endpoint).toBe(
+      'https://www.googleapis.com/calendar/v3/users/me/calendarList/primary'
+    )
+  })
+
+  it('googlecalendar with non-redacted token: direct fetch hits calendarList/primary', async () => {
+    mockFetch.mockImplementation(async (url: string) => {
+      if (url.includes('/connected_accounts/')) {
+        return {
+          ok: true,
+          json: async () =>
+            makeComposioResponse(
+              {
+                authScheme: 'OAUTH2',
+                val: {
+                  status: 'ACTIVE',
+                  access_token: 'real-google-token-1234567890abcdef',
+                },
+              },
+              { toolkit: { slug: 'googlecalendar' } }
+            ),
+        }
+      }
+      if (url.includes('calendar/v3/users/me/calendarList/primary')) {
+        return {
+          ok: true,
+          json: async () => ({ id: 'cal@example.com', primary: true }),
+        }
+      }
+      throw new Error('Unexpected fetch URL: ' + url)
+    })
+
+    const display = await getAccountDisplayName(
+      'conn-cal-direct',
+      'googlecalendar',
+      'Google Calendar'
+    )
+    expect(display).toBe('cal@example.com')
+
+    const urls = mockFetch.mock.calls.map((c) => c[0] as string)
+    // userinfo endpoint must NOT be hit for googlecalendar
+    expect(urls.some((u) => u.includes('/oauth2/v2/userinfo'))).toBe(false)
+    expect(urls.some((u) => u.endsWith('/tools/execute/proxy'))).toBe(false)
+  })
+
   it('Microsoft toolkit: redacted token → falls back to proxyExecute against graph.microsoft.com', async () => {
     dispatchFetch({
       connectedAccount: () => makeComposioResponse(
