@@ -74,6 +74,7 @@ export interface AppPreferences {
   useHostBrowser?: boolean
   hostBrowserProvider?: HostBrowserProviderId
   chromeProfileId?: string
+  chromeHeadless?: boolean
   allowPrereleaseUpdates?: boolean
   theme?: 'system' | 'light' | 'dark'
   maxBrowserTabs?: number
