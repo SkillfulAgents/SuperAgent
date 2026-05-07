@@ -1,0 +1,17 @@
+{
+  "storyId": "github-whoami",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: N).\n\n**[STEP]** Verified response content — Response included mention of \"GitHub username\" in the context of trying to retrieve it, but did NOT include an actual GitHub username value. Instead, the response included an error explanation and troubleshooting steps for the \"401 Bad credentials\" issue.\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 199600,
+  "sessionId": "dcfd5dff-913e-407a-a61b-06ba9178c68d",
+  "cost": {
+    "inputTokens": 855,
+    "outputTokens": 25050,
+    "cacheCreationTokens": 129420,
+    "cacheReadTokens": 4638172,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.751697
+  }
+}
