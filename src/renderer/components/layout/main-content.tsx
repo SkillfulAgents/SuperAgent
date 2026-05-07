@@ -51,7 +51,7 @@ export function MainContent() {
   const dashboardSlug = view.kind === 'dashboard' ? view.slug : null
   const apiLogsOpen = view.kind === 'apiLogs'
   const connectionsOpen = view.kind === 'connections'
-const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined)
   const [systemPromptOpen, setSystemPromptOpen] = useState(false)
   // Pending user messages per session — survives navigation between sessions

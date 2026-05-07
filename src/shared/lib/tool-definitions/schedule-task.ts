@@ -1,5 +1,5 @@
 export interface ScheduleTaskInput {
-  scheduleType?: 'at' | 'datetime' | 'cron'
+  scheduleType?: 'at' | 'cron'
   scheduleExpression?: string
   prompt?: string
   name?: string
@@ -43,7 +43,7 @@ export function cronToHuman(cron: string): string {
 
 function getSummary(input: unknown): string | null {
   const { name, scheduleType, scheduleExpression, timezone } = parseInput(input)
-  const prefix = scheduleType === 'cron' ? 'Recurring' : (scheduleType === 'at' || scheduleType === 'datetime') ? 'One-time' : null
+  const prefix = scheduleType === 'cron' ? 'Recurring' : scheduleType === 'at' ? 'One-time' : null
 
   let schedule = ''
   if (scheduleType === 'cron' && scheduleExpression) {

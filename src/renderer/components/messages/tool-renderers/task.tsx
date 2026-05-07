@@ -13,8 +13,8 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center gap-2 text-sm">
-        <Bot className="h-4 w-4 text-blue-500" />
+      <div className="flex items-center gap-2 text-xs">
+        <Bot className="h-3 w-3 text-foreground" />
         <span className="text-muted-foreground italic">Launching sub-agent...</span>
       </div>
       {parsed.subagent_type && (

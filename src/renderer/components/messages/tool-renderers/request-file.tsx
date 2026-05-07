@@ -21,7 +21,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       )}
       {result && (
         <div
-          className={`bg-background text-xs rounded p-2 ${isError ? 'text-red-700 dark:text-red-300' : 'text-green-700 dark:text-green-300'}`}
+          className={`bg-background text-xs rounded p-2 ${isError ? 'text-red-800 dark:text-red-200' : 'text-green-800 dark:text-green-200'}`}
         >
           {typeof result === 'string' ? result : JSON.stringify(result, null, 2)}
         </div>

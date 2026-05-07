@@ -1,8 +1,8 @@
 
 import { useState, useRef, useMemo, useEffect } from 'react'
 import { cn } from '@shared/lib/utils/cn'
-import { ChevronDown, ChevronRight, Check, X, Ban, Loader2 } from 'lucide-react'
-import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
+import { ChevronDown, ChevronRight } from 'lucide-react'
+import { ToolCallItem, StreamingToolCallItem, StatusIndicator } from './tool-call-item'
 import { useSubagentMessages } from '@renderer/hooks/use-messages'
 import { parseToolResult } from '@renderer/lib/parse-tool-result'
 import type { ApiToolCall, ApiMessage } from '@shared/lib/types/api'
@@ -174,38 +174,21 @@ export function SubAgentBlock({
     || !!(subagentStreamingToolUse && !isStreamingToolUsePersisted)
 
   return (
-    <div className="text-sm border border-border/40 rounded-md overflow-hidden">
+    <div className="text-sm border border-border/70 rounded-md overflow-hidden">
       {/* Header — matches ToolCallItem collapsed row */}
       <button
         onClick={() => setExpanded(!expanded)}
         className={cn('flex w-full items-center gap-2 px-3 py-1.5 group hover:bg-muted/50 transition-colors', expanded && 'bg-muted/50')}
       >
-        {/* Status indicator */}
-        {status === 'completed' ? (
-          <span className="h-3.5 w-3.5 shrink-0 rounded-full bg-green-100 dark:bg-green-950/60 flex items-center justify-center">
-            <Check className="h-2.5 w-2.5 text-green-600 dark:text-green-400" strokeWidth={3} />
-          </span>
-        ) : status === 'error' ? (
-          <span className="h-3.5 w-3.5 shrink-0 rounded-full bg-muted flex items-center justify-center">
-            <X className="h-2.5 w-2.5 text-muted-foreground" strokeWidth={3} />
-          </span>
-        ) : status === 'running' ? (
-          <span className="h-3.5 w-3.5 shrink-0 flex items-center justify-center">
-            <Loader2 className="h-3 w-3 text-gray-400 animate-spin" />
-          </span>
-        ) : (
-          <span className="h-3.5 w-3.5 shrink-0 rounded-full bg-muted flex items-center justify-center">
-            <Ban className="h-2.5 w-2.5 text-muted-foreground" strokeWidth={3} />
-          </span>
-        )}
-        <span className="font-mono font-normal shrink-0 text-xs text-muted-foreground group-hover:text-foreground transition-colors">Sub-agent:</span>
-        <span className="font-mono font-normal shrink-0 text-xs text-muted-foreground group-hover:text-foreground transition-colors">
+        <StatusIndicator status={status} />
+        <span className="font-mono font-normal shrink-0 text-xs text-foreground/70 group-hover:text-foreground transition-colors">Sub-agent:</span>
+        <span className="font-mono font-normal shrink-0 text-xs text-foreground/70 group-hover:text-foreground transition-colors">
           {subagentType}
         </span>
         {description && (
           <>
-            <span aria-hidden className="shrink-0 text-muted-foreground/60 group-hover:text-muted-foreground text-xs transition-colors">→</span>
-            <span className="text-muted-foreground group-hover:text-foreground truncate text-xs transition-colors">
+            <span aria-hidden className="shrink-0 text-foreground/40 group-hover:text-muted-foreground text-xs transition-colors">→</span>
+            <span className="text-foreground/70 group-hover:text-foreground truncate text-xs transition-colors">
               {description}
             </span>
           </>
@@ -221,7 +204,7 @@ export function SubAgentBlock({
 
       {/* Body - subagent messages */}
       {expanded && (
-        <div className="border-t border-border/40 bg-muted/50 rounded-b-md px-3 py-3">
+        <div className="border-t border-border/70 bg-muted/50 rounded-b-md px-3 py-3">
           <div className="space-y-3">
             {totalItems === 0 && isRunning && !hasStreamingContent && (
               <div className="text-xs text-muted-foreground italic py-2">

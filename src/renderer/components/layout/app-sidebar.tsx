@@ -752,7 +752,7 @@ export function AppSidebar() {
       window.electronAPI?.removeOpenCreateAgent?.()
     }
   }, [createUntitledAgent])
-  const { clearSelection, selectedAgentSlug, view, setView } = useSelection()
+  const { clearSelection, selectedAgentSlug } = useSelection()
   const { data: agents, isLoading, error } = useAgents()
   const { data: userSettings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()
@@ -1002,7 +1002,7 @@ export function AppSidebar() {
             <Settings className="h-4 w-4" />
             <span>Settings</span>
           </SidebarMenuButton>
-<span className="px-2 text-xs text-muted-foreground shrink-0">v{__APP_VERSION__}</span>
+          <span className="px-2 text-xs text-muted-foreground shrink-0">v{__APP_VERSION__}</span>
         </div>
       </SidebarFooter>
 

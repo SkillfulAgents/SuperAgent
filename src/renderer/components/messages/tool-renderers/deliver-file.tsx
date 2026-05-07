@@ -28,12 +28,12 @@ function ExpandedView({ input, result, isError, agentSlug }: ToolRendererProps) 
   return (
     <div className="space-y-2">
       {description && (
-        <p className="text-sm text-muted-foreground">{description}</p>
+        <p className="text-xs text-muted-foreground">{description}</p>
       )}
       {filePath && (
         <div className="flex items-center gap-2">
           <FileTypeIcon filename={getFilename(filePath)} size={20} />
-          <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
+          <code className="bg-background px-1.5 py-0.5 rounded text-xs">
             {getFilename(filePath)}
           </code>
           {!isError && agentSlug && (
@@ -51,7 +51,7 @@ function ExpandedView({ input, result, isError, agentSlug }: ToolRendererProps) 
       )}
       {result && (
         <div
-          className={`bg-background text-xs rounded p-2 ${isError ? 'text-red-700' : 'text-green-700'}`}
+          className={`bg-background text-xs rounded p-2 ${isError ? 'text-red-800 dark:text-red-200' : 'text-green-800 dark:text-green-200'}`}
         >
           {typeof result === 'string' ? result : JSON.stringify(result, null, 2)}
         </div>
@@ -65,7 +65,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
     const partial = JSON.parse(partialInput)
     if (partial.filePath) {
       return (
-        <div className="text-sm text-muted-foreground">
+        <div className="text-xs text-muted-foreground">
           Delivering: {getFilename(partial.filePath)}
         </div>
       )
@@ -73,7 +73,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
   } catch {
     // partial JSON, ignore
   }
-  return <div className="text-sm text-muted-foreground">Preparing file...</div>
+  return <div className="text-xs text-muted-foreground">Preparing file...</div>
 }
 
 function CollapsedContent({ input, isError, agentSlug }: CollapsedContentProps) {
