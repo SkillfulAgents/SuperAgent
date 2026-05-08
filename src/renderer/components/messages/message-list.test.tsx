@@ -30,14 +30,6 @@ const mockStreamState = {
   isCompacting: false,
   activeSubagents: new Map(),
   completedSubagents: new Map(),
-  pendingSecretRequests: [] as Array<{ toolUseId: string; secretName: string; reason?: string }>,
-  pendingConnectedAccountRequests: [] as any[],
-  pendingRemoteMcpRequests: [] as any[],
-  pendingQuestionRequests: [] as any[],
-  pendingFileRequests: [] as any[],
-  pendingBrowserInputRequests: [] as any[],
-  pendingScriptRunRequests: [] as any[],
-  pendingComputerUseRequests: [] as any[],
   typingUser: null as { id: string; name?: string } | null,
   peerUserMessage: null as { content: string; sender: { id: string; name?: string; email?: string } } | null,
 }
@@ -46,14 +38,6 @@ const mockClearCompacting = vi.fn()
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
   useMessageStream: () => mockStreamState,
-  removeSecretRequest: vi.fn(),
-  removeConnectedAccountRequest: vi.fn(),
-  removeRemoteMcpRequest: vi.fn(),
-  removeQuestionRequest: vi.fn(),
-  removeFileRequest: vi.fn(),
-  removeBrowserInputRequest: vi.fn(),
-  removeScriptRunRequest: vi.fn(),
-  removeComputerUseRequest: vi.fn(),
   clearCompacting: (...args: unknown[]) => mockClearCompacting(...args),
 }))
 
@@ -119,26 +103,6 @@ vi.mock('@renderer/components/ui/tooltip', () => ({
   TooltipContent: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
 }))
 
-vi.mock('./secret-request-item', () => ({
-  SecretRequestItem: ({ secretName }: any) => <div data-testid="secret-request">{secretName}</div>,
-}))
-
-vi.mock('./connected-account-request-item', () => ({
-  ConnectedAccountRequestItem: ({ toolkit }: any) => <div data-testid="connected-account-request">{toolkit}</div>,
-}))
-
-vi.mock('./remote-mcp-request-item', () => ({
-  RemoteMcpRequestItem: ({ url }: any) => <div data-testid="remote-mcp-request">{url}</div>,
-}))
-
-vi.mock('./question-request-item', () => ({
-  QuestionRequestItem: ({ toolUseId }: any) => <div data-testid="question-request">{toolUseId}</div>,
-}))
-
-vi.mock('./file-request-item', () => ({
-  FileRequestItem: ({ description }: any) => <div data-testid="file-request">{description}</div>,
-}))
-
 describe('MessageList', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -154,12 +118,6 @@ describe('MessageList', () => {
       isCompacting: false,
       activeSubagents: new Map(),
       completedSubagents: new Map(),
-      pendingSecretRequests: [],
-      pendingConnectedAccountRequests: [],
-      pendingRemoteMcpRequests: [],
-      pendingQuestionRequests: [],
-      pendingFileRequests: [],
-      pendingBrowserInputRequests: [],
       typingUser: null,
       peerUserMessage: null,
     })
@@ -288,125 +246,7 @@ describe('MessageList', () => {
     expect(screen.getByText('Compacting conversation...')).toBeInTheDocument()
   })
 
-  it('shows pending secret requests from SSE', () => {
-    mockMessagesData.data = []
-    mockStreamState.pendingSecretRequests = [
-      { toolUseId: 'tu-1', secretName: 'API_KEY' },
-    ]
-
-    renderWithProviders(
-      <MessageList sessionId="s-1" agentSlug="agent-1" />
-    )
-    expect(screen.getByTestId('secret-request')).toBeInTheDocument()
-    expect(screen.getByText('API_KEY')).toBeInTheDocument()
-  })
-
-  it('shows pending question requests', () => {
-    mockMessagesData.data = []
-    mockStreamState.pendingQuestionRequests = [
-      {
-        toolUseId: 'tu-q1',
-        questions: [
-          {
-            question: 'Which DB?',
-            header: 'DB',
-            options: [{ label: 'PG', description: 'PostgreSQL' }],
-            multiSelect: false,
-          },
-        ],
-      },
-    ]
-
-    renderWithProviders(
-      <MessageList sessionId="s-1" agentSlug="agent-1" />
-    )
-    expect(screen.getByTestId('question-request')).toBeInTheDocument()
-  })
-
-  it('shows pending file requests', () => {
-    mockMessagesData.data = []
-    mockStreamState.pendingFileRequests = [
-      { toolUseId: 'tu-f1', description: 'Upload config file' },
-    ]
-
-    renderWithProviders(
-      <MessageList sessionId="s-1" agentSlug="agent-1" />
-    )
-    expect(screen.getByTestId('file-request')).toBeInTheDocument()
-    expect(screen.getByText('Upload config file')).toBeInTheDocument()
-  })
-
-  it('derives pending requests from message history when active', () => {
-    mockStreamState.isActive = true
-    mockMessagesData.data = [
-      createAssistantMessage({
-        content: { text: '' },
-        toolCalls: [
-          createToolCall({
-            id: 'tc-secret',
-            name: 'mcp__user-input__request_secret',
-            input: { secretName: 'DB_PASSWORD', reason: 'For database' },
-            result: undefined,
-          }),
-        ],
-      }),
-    ]
-
-    renderWithProviders(
-      <MessageList sessionId="s-1" agentSlug="agent-1" />
-    )
-    expect(screen.getByTestId('secret-request')).toBeInTheDocument()
-    expect(screen.getByText('DB_PASSWORD')).toBeInTheDocument()
-  })
-
-  it('does not derive pending requests from history when session is idle', () => {
-    mockStreamState.isActive = false
-    mockMessagesData.data = [
-      createAssistantMessage({
-        content: { text: '' },
-        toolCalls: [
-          createToolCall({
-            id: 'tc-secret',
-            name: 'mcp__user-input__request_secret',
-            input: { secretName: 'DB_PASSWORD' },
-            result: undefined,
-          }),
-        ],
-      }),
-    ]
-
-    renderWithProviders(
-      <MessageList sessionId="s-1" agentSlug="agent-1" />
-    )
-    expect(screen.queryByTestId('secret-request')).not.toBeInTheDocument()
-  })
-
-  it('deduplicates SSE and message-based pending requests', () => {
-    mockStreamState.isActive = true
-    mockStreamState.pendingSecretRequests = [
-      { toolUseId: 'tu-dup', secretName: 'API_KEY' },
-    ]
-    mockMessagesData.data = [
-      createAssistantMessage({
-        content: { text: '' },
-        toolCalls: [
-          createToolCall({
-            id: 'tu-dup',
-            name: 'mcp__user-input__request_secret',
-            input: { secretName: 'API_KEY' },
-            result: undefined,
-          }),
-        ],
-      }),
-    ]
-
-    renderWithProviders(
-      <MessageList sessionId="s-1" agentSlug="agent-1" />
-    )
-    // Should only appear once
-    const secretRequests = screen.getAllByTestId('secret-request')
-    expect(secretRequests).toHaveLength(1)
-  })
+  // Pending-request derivation/rendering is covered by use-pending-requests.test.tsx.
 
   it('shows turn elapsed times for completed turns', () => {
     const userMsg = createUserMessage({
@@ -823,183 +663,6 @@ describe('MessageList', () => {
     expect(screen.getByTestId('tool-call-Bash')).toBeInTheDocument()
   })
 
-  // ---- Message-based pending request extraction for all types ----
-
-  it('derives connected_account pending request from message history when active', () => {
-    mockStreamState.isActive = true
-    mockMessagesData.data = [
-      createAssistantMessage({
-        content: { text: '' },
-        toolCalls: [
-          createToolCall({
-            id: 'tc-ca',
-            name: 'mcp__user-input__request_connected_account',
-            input: { toolkit: 'github', reason: 'Need access' },
-            result: undefined,
-          }),
-        ],
-      }),
-    ]
-
-    renderWithProviders(
-      <MessageList sessionId="s-1" agentSlug="agent-1" />
-    )
-
-    expect(screen.getByTestId('connected-account-request')).toBeInTheDocument()
-    expect(screen.getByText('github')).toBeInTheDocument()
-  })
-
-  it('derives question pending request from message history when active', () => {
-    mockStreamState.isActive = true
-    mockMessagesData.data = [
-      createAssistantMessage({
-        content: { text: '' },
-        toolCalls: [
-          createToolCall({
-            id: 'tc-q',
-            name: 'AskUserQuestion',
-            input: {
-              questions: [
-                { question: 'Which env?', header: 'Env', options: [{ label: 'Prod', description: 'Production' }], multiSelect: false },
-              ],
-            },
-            result: undefined,
-          }),
-        ],
-      }),
-    ]
-
-    renderWithProviders(
-      <MessageList sessionId="s-1" agentSlug="agent-1" />
-    )
-
-    expect(screen.getByTestId('question-request')).toBeInTheDocument()
-  })
-
-  it('derives file pending request from message history when active', () => {
-    mockStreamState.isActive = true
-    mockMessagesData.data = [
-      createAssistantMessage({
-        content: { text: '' },
-        toolCalls: [
-          createToolCall({
-            id: 'tc-file',
-            name: 'mcp__user-input__request_file',
-            input: { description: 'Upload config', fileTypes: '.json' },
-            result: undefined,
-          }),
-        ],
-      }),
-    ]
-
-    renderWithProviders(
-      <MessageList sessionId="s-1" agentSlug="agent-1" />
-    )
-
-    expect(screen.getByTestId('file-request')).toBeInTheDocument()
-    expect(screen.getByText('Upload config')).toBeInTheDocument()
-  })
-
-  it('derives remote MCP pending request from message history when active', () => {
-    mockStreamState.isActive = true
-    mockMessagesData.data = [
-      createAssistantMessage({
-        content: { text: '' },
-        toolCalls: [
-          createToolCall({
-            id: 'tc-mcp',
-            name: 'mcp__user-input__request_remote_mcp',
-            input: { url: 'https://mcp.example.com', name: 'Example' },
-            result: undefined,
-          }),
-        ],
-      }),
-    ]
-
-    renderWithProviders(
-      <MessageList sessionId="s-1" agentSlug="agent-1" />
-    )
-
-    expect(screen.getByTestId('remote-mcp-request')).toBeInTheDocument()
-    expect(screen.getByText('https://mcp.example.com')).toBeInTheDocument()
-  })
-
-  it('skips message-based requests when subsequent user message exists', () => {
-    mockStreamState.isActive = true
-    mockMessagesData.data = [
-      createAssistantMessage({
-        content: { text: '' },
-        toolCalls: [
-          createToolCall({
-            id: 'tc-old-secret',
-            name: 'mcp__user-input__request_secret',
-            input: { secretName: 'OLD_KEY' },
-            result: undefined,
-          }),
-        ],
-      }),
-      createUserMessage({ content: { text: 'User moved on' } }),
-    ]
-
-    renderWithProviders(
-      <MessageList sessionId="s-1" agentSlug="agent-1" />
-    )
-
-    // Secret request should NOT show — user sent a message after it
-    expect(screen.queryByTestId('secret-request')).not.toBeInTheDocument()
-  })
-
-  it('skips message-based requests when tool call already has a result', () => {
-    mockStreamState.isActive = true
-    mockMessagesData.data = [
-      createAssistantMessage({
-        content: { text: '' },
-        toolCalls: [
-          createToolCall({
-            id: 'tc-done',
-            name: 'mcp__user-input__request_secret',
-            input: { secretName: 'DONE_KEY' },
-            result: 'provided', // has result → not pending
-          }),
-        ],
-      }),
-    ]
-
-    renderWithProviders(
-      <MessageList sessionId="s-1" agentSlug="agent-1" />
-    )
-
-    expect(screen.queryByTestId('secret-request')).not.toBeInTheDocument()
-  })
-
-  it('pendingUserMessage causes message-based extraction to skip (as if user moved on)', () => {
-    mockStreamState.isActive = true
-    mockMessagesData.data = [
-      createAssistantMessage({
-        content: { text: '' },
-        toolCalls: [
-          createToolCall({
-            id: 'tc-skipped',
-            name: 'mcp__user-input__request_secret',
-            input: { secretName: 'SKIP_KEY' },
-            result: undefined,
-          }),
-        ],
-      }),
-    ]
-
-    renderWithProviders(
-      <MessageList
-        sessionId="s-1"
-        agentSlug="agent-1"
-        pendingUserMessage={{ text: 'New input', sentAt: Date.now() }}
-      />
-    )
-
-    // pendingUserMessage acts like a subsequent user message
-    expect(screen.queryByTestId('secret-request')).not.toBeInTheDocument()
-  })
-
   // ---- Deferred elapsed time ----
 
   it('does not defer elapsed time when streaming belongs to a new turn', () => {
@@ -1077,34 +740,6 @@ describe('MessageList', () => {
   })
 
   // ---- Shows connected account requests from SSE ----
-
-  it('shows pending connected account requests from SSE', () => {
-    mockMessagesData.data = []
-    mockStreamState.pendingConnectedAccountRequests = [
-      { toolUseId: 'tu-ca-1', toolkit: 'slack', reason: 'Need access' },
-    ]
-
-    renderWithProviders(
-      <MessageList sessionId="s-1" agentSlug="agent-1" />
-    )
-
-    expect(screen.getByTestId('connected-account-request')).toBeInTheDocument()
-    expect(screen.getByText('slack')).toBeInTheDocument()
-  })
-
-  it('shows pending remote MCP requests from SSE', () => {
-    mockMessagesData.data = []
-    mockStreamState.pendingRemoteMcpRequests = [
-      { toolUseId: 'tu-mcp-1', url: 'https://mcp.test.com', name: 'Test MCP' },
-    ]
-
-    renderWithProviders(
-      <MessageList sessionId="s-1" agentSlug="agent-1" />
-    )
-
-    expect(screen.getByTestId('remote-mcp-request')).toBeInTheDocument()
-    expect(screen.getByText('https://mcp.test.com')).toBeInTheDocument()
-  })
 
   // ---- Delivered files summary ----
 

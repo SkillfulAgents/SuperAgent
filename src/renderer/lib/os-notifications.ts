@@ -54,17 +54,30 @@ export function hasNotificationPermission(): boolean {
 
 /**
  * Show an OS notification.
+ *
+ * `actions` + `context` enable action buttons. macOS-only: the Web
+ * Notification API and Windows/Linux Electron notifications ignore the
+ * actions array. The `context` is opaque metadata that flows back to
+ * onNotificationEvent listeners on click/action.
  */
 export async function showOSNotification(
   title: string,
   body: string,
-  onClick?: () => void
+  onClick?: () => void,
+  options?: {
+    actions?: Array<{ text: string }>
+    context?: unknown
+  },
 ): Promise<void> {
   if (isElectron() && window.electronAPI?.showNotification) {
     // Use Electron's native notification
-    await window.electronAPI.showNotification(title, body)
+    try {
+      await window.electronAPI.showNotification(title, body, options?.actions, options?.context)
+    } catch (err) {
+      console.error('[showOSNotification] electron IPC rejected:', err)
+    }
   } else if ('Notification' in window && Notification.permission === 'granted') {
-    // Use Web Notifications API
+    // Use Web Notifications API (no action support)
     const notification = new Notification(title, {
       body,
       icon: '/icon.png',

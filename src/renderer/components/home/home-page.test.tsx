@@ -108,11 +108,13 @@ vi.mock('@shared/lib/utils/cn', () => ({
   },
 }))
 
-const mockSelectAgent = vi.fn()
-const mockSelectSession = vi.fn()
-const mockSelectDashboard = vi.fn()
+const mockSetAgent = vi.fn()
 vi.mock('@renderer/context/selection-context', () => ({
-  useSelection: () => ({ selectAgent: mockSelectAgent, selectSession: mockSelectSession, selectDashboard: mockSelectDashboard, selectedAgent: null }),
+  useSelection: () => ({ setAgent: mockSetAgent, view: { kind: 'home' }, selectedAgentSlug: null }),
+}))
+
+vi.mock('@renderer/context/search-context', () => ({
+  useSearch: () => ({ open: false, openSearch: vi.fn(), closeSearch: vi.fn() }),
 }))
 
 vi.mock('@renderer/hooks/use-sessions', () => ({
@@ -149,13 +151,17 @@ vi.mock('@renderer/components/agents/agent-status', () => ({
   getAgentActivityStatus: () => 'sleeping',
 }))
 
-vi.mock('@renderer/context/dialog-context', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@renderer/context/dialog-context')>()
-  return {
-    ...actual,
-    useDialogs: () => ({ openCreateAgent: vi.fn() }),
-  }
-})
+vi.mock('@renderer/hooks/use-create-untitled-agent', () => ({
+  useCreateUntitledAgent: () => ({
+    createUntitledAgent: vi.fn(),
+    isPending: false,
+  }),
+  UNTITLED_AGENT_NAME: 'Untitled',
+}))
+
+vi.mock('@renderer/components/agents/template-install-dialog', () => ({
+  TemplateInstallDialog: () => null,
+}))
 
 vi.mock('@renderer/components/ui/sidebar', () => ({
   SidebarTrigger: () => <button>sidebar</button>,

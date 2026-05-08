@@ -10,6 +10,7 @@
 import { App as SlackApp } from '@slack/bolt'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import { ChatClientConnector, type OutgoingMessage } from './base-connector'
+import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
 
 // ── Config ──────────────────────────────────────────────────────────────
@@ -164,7 +165,7 @@ export class SlackConnector extends ChatClientConnector {
       if (!message || (subtype && subtype !== 'file_share')) return
       const msg = message as any
 
-      const text = msg.text || ''
+      const rawText = msg.text || ''
       const chatId = msg.channel || ''
       const userId = msg.user || ''
       const ts = msg.ts || ''
@@ -175,6 +176,9 @@ export class SlackConnector extends ChatClientConnector {
       // Resolve real user and channel names
       const userName = await this.resolveUserName(userId)
       const chatName = await this.resolveChannelName(chatId)
+
+      // Resolve <@U123>, <#C123|name>, links, and special mentions in the text
+      const text = await this.resolveMentionsInText(rawText)
 
       // Handle file uploads
       const files = msg.files?.map((f: any) => ({
@@ -421,6 +425,15 @@ export class SlackConnector extends ChatClientConnector {
   async sendUserRequestCard(chatId: string, event: UserRequestEvent): Promise<string> {
     if (!this.app) throw new Error('Slack app not connected')
 
+    if (isUnsupportedInChat(event)) {
+      const result = await this.app.client.chat.postMessage({
+        channel: chatId,
+        text: `_${describeUnsupportedRequest(event)}_`,
+        mrkdwn: true,
+      })
+      return result.ts || ''
+    }
+
     switch (event.type) {
       case 'user_question_request': {
         let lastTs = ''
@@ -520,10 +533,9 @@ export class SlackConnector extends ChatClientConnector {
       }
 
       default: {
-        // Generic card for other event types
         const result = await this.app.client.chat.postMessage({
           channel: chatId,
-          text: `*${event.type}*\n\`\`\`${JSON.stringify(event, null, 2).slice(0, 2500)}\`\`\``,
+          text: `_${describeUnsupportedRequest(event)}_`,
           mrkdwn: true,
         })
         return result.ts || ''
@@ -588,6 +600,29 @@ export class SlackConnector extends ChatClientConnector {
       console.warn(`[SlackConnector] Failed to resolve user name for ${userId}:`, err instanceof Error ? err.message : err)
       return undefined
     }
+  }
+
+  // Convert Slack mention syntax (<@U123>, <#C123|name>, <url|label>, <!here>) into plain text.
+  private async resolveMentionsInText(text: string): Promise<string> {
+    if (!text) return text
+    let out = text
+    // Resolve user mentions in parallel
+    const userIds = Array.from(out.matchAll(/<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g)).map((m) => m[1])
+    const uniqueUserIds = Array.from(new Set(userIds))
+    const resolved = await Promise.all(uniqueUserIds.map(async (id) => [id, (await this.resolveUserName(id)) || id] as const))
+    const nameById = new Map(resolved)
+    out = out.replace(/<@([UW][A-Z0-9]+)(?:\|([^>]*))?>/g, (_full, id, alt) => {
+      const name = alt || nameById.get(id) || id
+      return `@${name}`
+    })
+    // Channel links
+    out = out.replace(/<#[CG][A-Z0-9]+(?:\|([^>]+))?>/g, (_full, name) => name ? `#${name}` : '#channel')
+    // Special mentions
+    out = out.replace(/<!(channel|here|everyone)>/g, '@$1')
+    // Slack URL formatting: <url|label> → "label (url)", <url> → "url"
+    out = out.replace(/<(https?:\/\/[^|>\s]+)\|([^>]+)>/g, '$2 ($1)')
+    out = out.replace(/<(https?:\/\/[^>\s]+)>/g, '$1')
+    return out
   }
 
   private async resolveChannelName(channelId: string): Promise<string | undefined> {

@@ -248,11 +248,13 @@ xAgent.post('/create', zValidator('json', createBodySchema), async (c) => {
 
 const getSessionsBodySchema = z.object({
   slug: z.string(),
+  limit: z.number().int().min(1).max(200).optional(),
+  offset: z.number().int().min(0).optional(),
 })
 
 xAgent.post('/get-sessions', zValidator('json', getSessionsBodySchema), async (c) => {
   const callerSlug = getCallerSlug(c)
-  const { slug: targetSlug } = c.req.valid('json')
+  const { slug: targetSlug, limit = 50, offset = 0 } = c.req.valid('json')
 
   const target = await getAgent(targetSlug)
   if (!target) return c.json({ error: 'Target agent not found' }, 404)
@@ -266,9 +268,10 @@ xAgent.post('/get-sessions', zValidator('json', getSessionsBodySchema), async (c
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
 
-  const sessions = await listSessions(targetSlug)
+  const allSessions = await listSessions(targetSlug)
+  const page = allSessions.slice(offset, offset + limit)
   return c.json({
-    sessions: sessions.map((s) => ({
+    sessions: page.map((s) => ({
       id: s.id,
       name: s.name,
       createdAt: s.createdAt,
@@ -276,6 +279,9 @@ xAgent.post('/get-sessions', zValidator('json', getSessionsBodySchema), async (c
       messageCount: s.messageCount,
       isRunning: messagePersister.isSessionActive(s.id),
     })),
+    total: allSessions.length,
+    offset,
+    limit,
   })
 })
 

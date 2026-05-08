@@ -10,6 +10,7 @@ export interface PolicyResult {
   decision: PolicyDecision
   matchedScopes: string[]
   scopeDescriptions: Record<string, string>
+  endpointDescription?: string
   resolvedFrom: 'scope_policy' | 'account_default' | 'global_default'
 }
 
@@ -106,6 +107,7 @@ export async function resolveApiPolicy(
     decision: bestDecision ?? globalDefault,
     matchedScopes: matchResult.scopes,
     scopeDescriptions: matchResult.descriptions,
+    endpointDescription: matchResult.endpointDescription,
     resolvedFrom,
   }
 }

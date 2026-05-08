@@ -9,12 +9,12 @@ test.describe.configure({ mode: 'serial' })
 
 async function openSettings(page: Page) {
   await page.locator('[data-testid="settings-button"]').click()
-  await expect(page.locator('[data-testid="global-settings-dialog"]')).toBeVisible()
+  await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
 }
 
 async function closeSettings(page: Page) {
-  await page.keyboard.press('Escape')
-  await expect(page.locator('[data-testid="global-settings-dialog"]')).not.toBeVisible()
+  await page.locator('[data-testid="settings-back"]').click()
+  await expect(page.locator('[data-testid="global-settings-page"]')).not.toBeVisible()
 }
 
 async function goToTab(page: Page, tabId: string) {
@@ -38,7 +38,7 @@ async function waitForSettingsSave(page: Page) {
 // Existing tests: navigation & structure
 // ---------------------------------------------------------------------------
 
-test.describe('Settings Dialog', () => {
+test.describe('Settings Page', () => {
   let appPage: AppPage
 
   test.beforeEach(async ({ page }) => {
@@ -47,7 +47,7 @@ test.describe('Settings Dialog', () => {
     await appPage.waitForAgentsLoaded()
   })
 
-  test('opens settings dialog via sidebar button', async ({ page }) => {
+  test('opens settings page via sidebar button', async ({ page }) => {
     await openSettings(page)
   })
 
@@ -57,8 +57,7 @@ test.describe('Settings Dialog', () => {
     // User tabs (visible to all)
     await expect(page.locator('[data-testid="settings-nav-general"]')).toBeVisible()
     await expect(page.locator('[data-testid="settings-nav-notifications"]')).toBeVisible()
-    await expect(page.locator('[data-testid="settings-nav-accounts"]')).toBeVisible()
-    await expect(page.locator('[data-testid="settings-nav-remote-mcps"]')).toBeVisible()
+    await expect(page.locator('[data-testid="settings-nav-connections"]')).toBeVisible()
     await expect(page.locator('[data-testid="settings-nav-usage"]')).toBeVisible()
 
     // Admin tabs (visible in non-auth mode)
@@ -126,10 +125,33 @@ test.describe('Settings Dialog', () => {
     await expect(page.locator('#browser-host')).toBeVisible()
   })
 
-  test('closes settings dialog', async ({ page }) => {
+  test('closes settings page', async ({ page }) => {
     await openSettings(page)
-    await page.keyboard.press('Escape')
-    await expect(page.locator('[data-testid="global-settings-dialog"]')).not.toBeVisible()
+    await page.locator('[data-testid="settings-back"]').click()
+    await expect(page.locator('[data-testid="global-settings-page"]')).not.toBeVisible()
+  })
+
+  test('app shell unmounts while settings is open and returns on close', async ({ page }) => {
+    // App sidebar visible before opening settings
+    await expect(page.locator('[data-testid="app-sidebar"]')).toBeVisible()
+
+    await openSettings(page)
+    // App sidebar (and its Settings button) is gone; the settings sidebar replaces it
+    await expect(page.locator('[data-testid="app-sidebar"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid="settings-button"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid="settings-sidebar"]')).toBeVisible()
+
+    await page.locator('[data-testid="settings-back"]').click()
+    // App sidebar returns
+    await expect(page.locator('[data-testid="app-sidebar"]')).toBeVisible()
+    await expect(page.locator('[data-testid="settings-button"]')).toBeVisible()
+    await expect(page.locator('[data-testid="settings-sidebar"]')).not.toBeVisible()
+  })
+
+  test('non-auth mode shows ungrouped sections (no group labels)', async ({ page }) => {
+    await openSettings(page)
+    // Group labels are only rendered in auth+admin mode; in non-auth mode the sidebar is flat.
+    await expect(page.locator('[data-sidebar="group-label"]')).toHaveCount(0)
   })
 })
 
@@ -388,25 +410,22 @@ test.describe('Settings validation errors', () => {
     await appPage.waitForAgentsLoaded()
   })
 
-  test('Runtime tab: shows error for memory below minimum', async ({ page }) => {
+  test('Runtime tab: memory dropdown does not offer values below 512m', async ({ page }) => {
     await openSettings(page)
     await goToTab(page, 'runtime')
 
-    // Memory input is disabled when agents are running — skip if disabled
-    const memoryInput = page.locator('#memory-limit')
-    const isDisabled = await memoryInput.isDisabled()
-    test.skip(isDisabled, 'Memory input is disabled because agents are running')
+    // Memory dropdown is disabled when agents are running — skip if disabled
+    const memoryTrigger = page.locator('#memory-limit')
+    const isDisabled = await memoryTrigger.isDisabled()
+    test.skip(isDisabled, 'Memory dropdown is disabled because agents are running')
 
-    // Set memory to 100m (below 512m minimum)
-    await memoryInput.fill('100m')
+    await memoryTrigger.click()
 
-    // Error message should appear
-    await expect(page.getByText('Memory limit must be at least 512m.')).toBeVisible()
-
-    // Save button should be disabled (it only appears when hasChanges is true)
-    const saveBtn = page.getByRole('button', { name: 'Save' })
-    await expect(saveBtn).toBeVisible()
-    await expect(saveBtn).toBeDisabled()
+    // The smallest option must be 512 MB — no sub-minimum values like 128 MB / 256 MB.
+    const options = page.getByRole('option')
+    await expect(options.first()).toHaveText('512 MB')
+    await expect(page.getByRole('option', { name: '128 MB' })).toHaveCount(0)
+    await expect(page.getByRole('option', { name: '256 MB' })).toHaveCount(0)
   })
 
   test('Runtime tab: shows error for empty agent image', async ({ page }) => {
@@ -430,17 +449,21 @@ test.describe('Settings validation errors', () => {
     await openSettings(page)
     await goToTab(page, 'runtime')
 
-    // CPU input is disabled when agents are running — skip if disabled
-    const cpuInput = page.locator('#cpu-limit')
-    const isDisabled = await cpuInput.isDisabled()
-    test.skip(isDisabled, 'CPU input is disabled because agents are running')
+    // CPU dropdown is disabled when agents are running — skip if disabled
+    const cpuTrigger = page.locator('#cpu-limit')
+    const isDisabled = await cpuTrigger.isDisabled()
+    test.skip(isDisabled, 'CPU dropdown is disabled because agents are running')
 
     // Initially no save button (no changes)
     await expect(page.getByRole('button', { name: 'Save' })).not.toBeVisible()
 
-    // Make a change
-    const originalValue = await cpuInput.inputValue()
-    await cpuInput.fill('4')
+    // Capture the current selection text ("1 core", "2 cores", etc.) and pick
+    // a different option from the dropdown.
+    const originalText = (await cpuTrigger.textContent())?.trim() ?? ''
+    const targetOption = originalText.startsWith('4') ? '2 cores' : '4 cores'
+
+    await cpuTrigger.click()
+    await page.getByRole('option', { name: targetOption }).click()
 
     // Save and Reset buttons should now appear
     await expect(page.getByRole('button', { name: 'Save' })).toBeVisible()
@@ -448,7 +471,7 @@ test.describe('Settings validation errors', () => {
 
     // Click Reset — buttons should disappear, value restored
     await page.getByRole('button', { name: 'Reset' }).click()
-    await expect(page.locator('#cpu-limit')).toHaveValue(originalValue)
+    await expect(cpuTrigger).toHaveText(originalText)
     await expect(page.getByRole('button', { name: 'Save' })).not.toBeVisible()
   })
 
@@ -456,12 +479,15 @@ test.describe('Settings validation errors', () => {
     await openSettings(page)
     await goToTab(page, 'runtime')
 
-    // CPU input is disabled when agents are running — skip if disabled
-    const cpuInput = page.locator('#cpu-limit')
-    test.skip(await cpuInput.isDisabled(), 'CPU input is disabled because agents are running')
+    // CPU dropdown is disabled when agents are running — skip if disabled
+    const cpuTrigger = page.locator('#cpu-limit')
+    test.skip(await cpuTrigger.isDisabled(), 'CPU dropdown is disabled because agents are running')
 
-    // Make a change so Save button appears
-    await cpuInput.fill('4')
+    // Make a change so Save button appears — pick an option different from the current one
+    const originalText = (await cpuTrigger.textContent())?.trim() ?? ''
+    const targetOption = originalText.startsWith('4') ? '2 cores' : '4 cores'
+    await cpuTrigger.click()
+    await page.getByRole('option', { name: targetOption }).click()
     await expect(page.getByRole('button', { name: 'Save' })).toBeVisible()
 
     // Intercept the next PUT request to simulate server error
@@ -485,5 +511,47 @@ test.describe('Settings validation errors', () => {
 
     // Remove the route intercept so subsequent tests work
     await page.unroute('**/api/settings')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Deep-link reset: tab targets clear when settings closes so the next plain
+// open lands on the default section.
+// ---------------------------------------------------------------------------
+
+test.describe('Settings deep-link reset', () => {
+  test('voice-button deep link does not stick after close', async ({ page, request }) => {
+    // Skip the first-launch wizard so the app renders straight to the agent view.
+    await request.put('http://localhost:3000/api/user-settings', {
+      data: { setupCompleted: true },
+    })
+    // Seed an agent via API so the home message-input (which hosts the voice button) renders.
+    const createRes = await request.post('http://localhost:3000/api/agents', {
+      data: { name: 'Voice Deep Link Test' },
+    })
+    const agent = await createRes.json() as { slug: string }
+
+    const appPage = new AppPage(page)
+    await appPage.goto()
+    await appPage.waitForAgentsLoaded()
+    await page.locator(`[data-testid="agent-item-${agent.slug}"]`).click()
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
+
+    // Voice provider is unconfigured in mock mode → clicking the mic deep-links to the Voice section.
+    await page.locator('[data-testid="voice-input-button"]').click()
+    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
+    await expect(page.locator('[data-testid="settings-nav-voice"]')).toHaveAttribute('data-active', 'true')
+
+    // Close, then reopen via the plain Settings button (no tab argument).
+    await page.locator('[data-testid="settings-back"]').click()
+    await page.locator('[data-testid="settings-button"]').click()
+    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
+
+    // Should land on the default first section, NOT remember 'voice'.
+    await expect(page.locator('[data-testid="settings-nav-general"]')).toHaveAttribute('data-active', 'true')
+    await expect(page.locator('[data-testid="settings-nav-voice"]')).toHaveAttribute('data-active', 'false')
+
+    // Clean up: delete the seeded agent via API so other tests aren't affected.
+    await request.delete(`http://localhost:3000/api/agents/${agent.slug}`)
   })
 })

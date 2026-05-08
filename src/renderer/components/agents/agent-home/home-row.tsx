@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 
-// TODO: migrate home-crons, home-skills, home-volumes, home-bookmarks rows to use HomeRow.
-// home-crons currently uses a <button> outer which nests buttons (invalid HTML + breaks Radix focus).
+// TODO: migrate home-triggers, home-skills, home-volumes, home-bookmarks rows to use HomeRow.
+// home-triggers currently uses a <button> outer which nests buttons (invalid HTML + breaks Radix focus).
 
 interface HomeRowProps {
   onActivate: () => void

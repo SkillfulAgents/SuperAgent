@@ -61,14 +61,19 @@ export function ComposioTab() {
       {isPlatformConnected && (
         <div className={`rounded-md border px-3 py-2 ${
           hasLocalComposioKey
-            ? 'border-blue-200 bg-blue-50 dark:border-blue-900 dark:bg-blue-950/30'
-            : 'border-green-200 bg-green-50 dark:border-green-900 dark:bg-green-950/30'
+            ? 'border-blue-200 bg-blue-50 dark:border-blue-900 dark:bg-blue-500/10'
+            : 'border-green-200 bg-green-50 dark:border-green-900 dark:bg-green-500/10'
         }`}>
           {hasLocalComposioKey ? (
-            <p className="text-xs text-blue-700 dark:text-blue-400">
-              Using your local Composio API key. Your existing OAuth connections are preserved.
-              Remove the key below to switch to platform-managed Composio.
-            </p>
+            <div className="space-y-1.5">
+              <p className="text-xs text-blue-700 dark:text-blue-400">
+                Using your local Composio API key.
+                Remove the key below to switch to platform-managed Composio.
+              </p>
+              <p className="text-xs text-blue-700 dark:text-blue-400">
+                Webhook triggers are not supported with a personal key.
+              </p>
+            </div>
           ) : (
             <p className="text-xs text-green-700 dark:text-green-400">
               Composio is managed by your organization on the platform.
@@ -80,6 +85,12 @@ export function ComposioTab() {
       )}
 
       <ComposioApiKeyInput disabled={isLoading} />
+
+      {isPlatformConnected && hasLocalComposioKey && (
+        <p className="text-xs text-muted-foreground -mt-4">
+          Switching provider requires reconnecting your OAuth accounts.
+        </p>
+      )}
 
       {/* Composio User ID */}
       <div className="space-y-2">

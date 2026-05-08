@@ -24,6 +24,7 @@ export const userSettingsSchema = z.object({
   setupCompleted: z.boolean().default(false),
   showMenuBarIcon: z.boolean().default(true),
   allowPrereleaseUpdates: z.boolean().default(false),
+  autoCheckUpdates: z.boolean().default(true),
   timezone: z.string().optional(),
   agentOrder: z.array(z.string()).optional(),
   defaultApiPolicy: z.enum(['allow', 'review', 'block']).default('review'),

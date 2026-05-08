@@ -133,6 +133,13 @@ export async function setPolicy(
  * Evaluate the effective decision for an operation.
  * Returns 'allow' | 'review' | 'block'.
  *
+ * Precedence (most-specific wins):
+ *   1. Specific-target row (caller, op, target=X) — applies to that target only.
+ *   2. Global row (caller, op, target=null) — applies when no specific row exists.
+ *      For 'read'/'invoke' this is the "allow for all agents" form. For 'list'
+ *      it's the only form (list has no target).
+ *   3. Default: 'review' (interactive prompt).
+ *
  * Each operation is independent — invoke does NOT imply read. This lets users
  * configure write-only access (invoke=allow, read=review/block) for cases
  * where one agent should be able to trigger another but not browse its history.
@@ -146,8 +153,12 @@ export function evaluate(
   operation: XAgentOperation,
   targetSlug: string | null,
 ): XAgentDecision {
-  const exact = getPolicy(callerSlug, operation, targetSlug)
-  if (exact) return exact.decision
+  if (targetSlug !== null) {
+    const exact = getPolicy(callerSlug, operation, targetSlug)
+    if (exact) return exact.decision
+  }
+  const global = getPolicy(callerSlug, operation, null)
+  if (global) return global.decision
   return 'review'
 }
 

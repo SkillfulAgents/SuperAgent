@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { app, ipcMain } from 'electron'
+import { app, ipcMain, powerMonitor } from 'electron'
 import { getSettings } from '@shared/lib/config/settings'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -10,9 +10,14 @@ const semver = require('semver')
 // ---------------------------------------------------------------------------
 
 vi.mock('electron', () => ({
-  app: { getVersion: vi.fn(() => '0.2.5') },
+  app: {
+    getVersion: vi.fn(() => '0.2.5'),
+    on: vi.fn(),
+    isPackaged: false,
+  },
   ipcMain: { handle: vi.fn() },
   BrowserWindow: vi.fn(),
+  powerMonitor: { on: vi.fn() },
 }))
 
 vi.mock('@shared/lib/config/settings', () => ({
@@ -23,9 +28,12 @@ vi.mock('@shared/lib/services/user-settings-service', () => ({
   getUserSettings: vi.fn(() => ({ allowPrereleaseUpdates: false })),
 }))
 
-const mockAutoUpdater = {
+// `mockAutoUpdater.channel` mimics electron-updater's real setter, which
+// flips `allowDowngrade=true` as a side effect. Our production code resets
+// it; the mock surfaces that side effect so tests can verify the reset works.
+const mockAutoUpdater: any = {
   allowPrerelease: false,
-  channel: undefined as string | undefined,
+  allowDowngrade: false,
   autoDownload: false,
   autoInstallOnAppQuit: true,
   checkForUpdates: vi.fn(),
@@ -33,6 +41,15 @@ const mockAutoUpdater = {
   quitAndInstall: vi.fn(),
   on: vi.fn(),
 }
+let _mockChannel: string | undefined
+Object.defineProperty(mockAutoUpdater, 'channel', {
+  configurable: true,
+  get: () => _mockChannel,
+  set: (v: string | undefined) => {
+    _mockChannel = v
+    mockAutoUpdater.allowDowngrade = true
+  },
+})
 
 vi.mock('electron-updater', () => ({
   autoUpdater: mockAutoUpdater,
@@ -47,11 +64,15 @@ type Listener = (...args: any[]) => void
 
 let handlers: Record<string, Handler>
 let events: Record<string, Listener>
+let powerEvents: Record<string, Listener>
+let appEvents: Record<string, Listener>
 
 /** Boot the module: register IPC handlers + init auto-updater. */
 async function boot() {
   handlers = {}
   events = {}
+  powerEvents = {}
+  appEvents = {}
 
   vi.mocked(ipcMain.handle).mockImplementation(((ch: string, fn: any) => {
     handlers[ch] = fn
@@ -61,6 +82,16 @@ async function boot() {
     events[ev] = fn
     return mockAutoUpdater
   })
+
+  vi.mocked(powerMonitor.on).mockImplementation(((ev: string, fn: any) => {
+    powerEvents[ev] = fn
+    return powerMonitor
+  }) as any)
+
+  vi.mocked(app.on).mockImplementation(((ev: string, fn: any) => {
+    appEvents[ev] = fn
+    return app
+  }) as any)
 
   // resetModules so the module-level state (currentStatus, updaterReady, etc.)
   // starts fresh for every test.
@@ -92,7 +123,11 @@ function setupReleases(cfg: {
     if (!ver) throw new Error('No releases found')
 
     events['checking-for-update']?.()
-    if (semver.gt(ver, cfg.currentVersion)) {
+    // Mirror electron-updater's isUpdateAvailable: an older feed version
+    // counts as available iff allowDowngrade is set.
+    const isNewer = semver.gt(ver, cfg.currentVersion)
+    const isOlder = semver.lt(ver, cfg.currentVersion)
+    if (isNewer || (mockAutoUpdater.allowDowngrade && isOlder)) {
       events['update-available']?.({ version: ver })
     } else {
       events['update-not-available']?.()
@@ -113,7 +148,8 @@ describe('check-for-updates', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     mockAutoUpdater.allowPrerelease = false
-    mockAutoUpdater.channel = undefined
+    mockAutoUpdater.allowDowngrade = false
+    _mockChannel = undefined
     vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
     vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
     vi.mocked(app.getVersion).mockReturnValue('0.2.5')
@@ -216,6 +252,19 @@ describe('check-for-updates', () => {
       await handlers['check-for-updates']()
 
       expect(getStatus()).toMatchObject({ state: 'not-available' })
+    })
+
+    // Regression: electron-updater's `channel` setter flips
+    // `allowDowngrade=true`. Without our reset, the stable check inside the
+    // dual-channel path would offer the older stable as an "update".
+    it('does NOT offer stable as a downgrade when on a newer RC', async () => {
+      setupReleases({ currentVersion: '0.3.22-rc.1', latestRC: '0.3.22-rc.1', latestStable: '0.3.21' })
+
+      await handlers['check-for-updates']()
+
+      expect(getStatus()).toMatchObject({ state: 'not-available' })
+      // Sanity: our reset should leave allowDowngrade=false at the end.
+      expect(mockAutoUpdater.allowDowngrade).toBe(false)
     })
   })
 
@@ -369,5 +418,148 @@ describe('check-for-updates', () => {
         expect(getStatus()).toMatchObject({ state: 'available', version: '0.3.0-rc.6' })
       }
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Silent (background) check semantics
+// ---------------------------------------------------------------------------
+
+describe('silent background checks', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    mockAutoUpdater.allowPrerelease = false
+    mockAutoUpdater.allowDowngrade = false
+    _mockChannel = undefined
+    vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
+    vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
+    vi.mocked(app.getVersion).mockReturnValue('0.2.5')
+    await boot()
+  })
+
+  it('powerMonitor resume triggers a silent check', async () => {
+    setupReleases({ currentVersion: '0.2.5', latestRC: null, latestStable: '0.2.11' })
+
+    expect(powerEvents.resume).toBeDefined()
+    await powerEvents.resume?.()
+
+    // tick() awaits runUpdateCheck which awaits the dynamic import; flush.
+    for (let i = 0; i < 50; i++) await Promise.resolve()
+
+    expect(getStatus()).toMatchObject({ state: 'available', version: '0.2.11' })
+  })
+
+  it('errors during a silent check do not flip the UI to error state', async () => {
+    // Manual check first so we have a known starting state.
+    setupReleases({ currentVersion: '0.2.5', latestRC: null, latestStable: '0.2.5' })
+    await handlers['check-for-updates']()
+    expect(getStatus()).toMatchObject({ state: 'not-available' })
+
+    // Now have the silent (resume-triggered) check throw, and have the
+    // autoUpdater fire its 'error' event during that run.
+    mockAutoUpdater.checkForUpdates.mockImplementation(async () => {
+      events['error']?.(new Error('Network blip'))
+      throw new Error('Network blip')
+    })
+
+    await powerEvents.resume?.()
+
+    // Status should not have flipped to 'error' — the user never asked for
+    // this check, so noise should stay quiet.
+    expect(getStatus().state).not.toBe('error')
+  })
+
+  it('errors during a manual check still surface', async () => {
+    mockAutoUpdater.checkForUpdates.mockImplementation(async () => {
+      events['error']?.(new Error('Network down'))
+      throw new Error('Network down')
+    })
+
+    await handlers['check-for-updates']()
+
+    expect(getStatus()).toMatchObject({ state: 'error' })
+  })
+
+  it('respects autoCheckUpdates=false on resume', async () => {
+    vi.mocked(getUserSettings).mockReturnValue({
+      allowPrereleaseUpdates: false,
+      autoCheckUpdates: false,
+    } as any)
+    setupReleases({ currentVersion: '0.2.5', latestRC: null, latestStable: '0.2.11' })
+
+    await powerEvents.resume?.()
+
+    // No check ran — status stays at the initial 'idle'.
+    expect(mockAutoUpdater.checkForUpdates).not.toHaveBeenCalled()
+    expect(getStatus()).toMatchObject({ state: 'idle' })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// In-flight mutex (concurrent check coalescing)
+// ---------------------------------------------------------------------------
+
+describe('concurrent check coalescing', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    mockAutoUpdater.allowPrerelease = false
+    mockAutoUpdater.allowDowngrade = false
+    _mockChannel = undefined
+    vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
+    vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
+    vi.mocked(app.getVersion).mockReturnValue('0.2.5')
+    await boot()
+  })
+
+  // Flush queued microtasks so awaits inside runUpdateCheck (e.g. the dynamic
+  // import of electron-updater) get past their suspension points.
+  async function flushMicrotasks() {
+    for (let i = 0; i < 50; i++) await Promise.resolve()
+  }
+
+  it('concurrent calls share a single in-flight check', async () => {
+    let resolveCheck: (v: any) => void = () => {}
+    mockAutoUpdater.checkForUpdates.mockImplementation(
+      () => new Promise((resolve) => { resolveCheck = resolve as any }),
+    )
+
+    const a = handlers['check-for-updates']()
+    const b = handlers['check-for-updates']()
+    const c = powerEvents.resume?.() // silent
+
+    // Wait until the first call has actually entered checkForUpdates.
+    await flushMicrotasks()
+    expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(1)
+
+    resolveCheck({ updateInfo: { version: '0.2.11' } })
+    await Promise.all([a, b, c])
+
+    // Still only the one underlying call.
+    expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(1)
+  })
+
+  it('a manual check joining a silent in-flight check makes errors visible', async () => {
+    let triggerError: () => void = () => {}
+    mockAutoUpdater.checkForUpdates.mockImplementation(
+      () => new Promise((_, reject) => {
+        triggerError = () => {
+          events['error']?.(new Error('Boom'))
+          reject(new Error('Boom'))
+        }
+      }),
+    )
+
+    // Silent check starts first.
+    const silentRun = powerEvents.resume?.()
+    // Manual check joins the same in-flight promise; should promote to
+    // user-visible so the error surfaces.
+    const manualRun = handlers['check-for-updates']()
+
+    // Wait for checkForUpdates to be called so triggerError is captured.
+    await flushMicrotasks()
+    triggerError()
+    await Promise.all([silentRun, manualRun])
+
+    expect(getStatus()).toMatchObject({ state: 'error' })
   })
 })

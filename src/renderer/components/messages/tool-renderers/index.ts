@@ -12,6 +12,7 @@ import { requestSecretRenderer } from './request-secret'
 import { requestConnectedAccountRenderer } from './request-connected-account'
 import { scheduleTaskRenderer } from './schedule-task'
 import { deliverFileRenderer } from './deliver-file'
+import { deliverSessionRenderer } from './deliver-session'
 import { requestFileRenderer } from './request-file'
 import { requestRemoteMcpRenderer } from './request-remote-mcp'
 import { requestScriptRunRenderer } from './request-script-run'
@@ -78,6 +79,7 @@ const toolRenderers: Record<string, ToolRenderer> = {
   'mcp__user-input__request_connected_account': requestConnectedAccountRenderer,
   'mcp__user-input__schedule_task': scheduleTaskRenderer,
   'mcp__user-input__deliver_file': deliverFileRenderer,
+  'mcp__user-input__deliver_session': deliverSessionRenderer,
   'mcp__user-input__request_file': requestFileRenderer,
   'mcp__user-input__request_remote_mcp': requestRemoteMcpRenderer,
   'mcp__user-input__request_script_run': requestScriptRunRenderer,

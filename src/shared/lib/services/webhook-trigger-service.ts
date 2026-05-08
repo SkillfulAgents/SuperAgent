@@ -28,6 +28,8 @@ export interface CreateWebhookTriggerParams {
   name?: string
   createdBySessionId?: string
   createdByUserId?: string
+  model?: string
+  effort?: string
 }
 
 // ============================================================================
@@ -50,6 +52,8 @@ export async function createWebhookTrigger(params: CreateWebhookTriggerParams): 
     fireCount: 0,
     createdBySessionId: params.createdBySessionId ?? null,
     createdByUserId: params.createdByUserId ?? null,
+    model: params.model ?? null,
+    effort: params.effort ?? null,
     createdAt: new Date(),
   }
 
@@ -319,4 +323,46 @@ export async function updateComposioTriggerId(
     .update(webhookTriggers)
     .set({ composioTriggerId })
     .where(eq(webhookTriggers.id, triggerId))
+}
+
+/**
+ * Update a webhook trigger's prompt (the instructions sent when the trigger fires).
+ * Allowed in any non-cancelled state.
+ */
+export async function updateWebhookTriggerPrompt(
+  triggerId: string,
+  prompt: string,
+): Promise<boolean> {
+  const trigger = await getWebhookTrigger(triggerId)
+  if (!trigger || trigger.status === 'cancelled') return false
+
+  const result = await db
+    .update(webhookTriggers)
+    .set({ prompt })
+    .where(eq(webhookTriggers.id, triggerId))
+
+  return (result.changes ?? 0) > 0
+}
+
+/**
+ * Update a webhook trigger's runtime options (model and/or effort).
+ * Pass null to clear a field back to the global default.
+ */
+export async function updateWebhookTriggerRuntimeOptions(
+  triggerId: string,
+  options: { model?: string | null; effort?: string | null },
+): Promise<boolean> {
+  const trigger = await getWebhookTrigger(triggerId)
+  if (!trigger || trigger.status === 'cancelled') return false
+
+  const updates: Record<string, string | null> = {}
+  if ('model' in options) updates.model = options.model ?? null
+  if ('effort' in options) updates.effort = options.effort ?? null
+
+  const result = await db
+    .update(webhookTriggers)
+    .set(updates)
+    .where(eq(webhookTriggers.id, triggerId))
+
+  return (result.changes ?? 0) > 0
 }

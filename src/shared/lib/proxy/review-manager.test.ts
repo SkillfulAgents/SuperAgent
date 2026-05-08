@@ -310,6 +310,55 @@ describe('ReviewManager', () => {
     }
   })
 
+  // Security: a user with `user` role on agent A must not be able to resolve
+  // agent B's review by guessing/leaking B's reviewId. submitDecision must
+  // refuse to mutate the review when the caller's expected agent doesn't
+  // match the review's stored agent.
+  it('SECURITY: submitDecision rejects when expectedAgentSlug does not match review agent', async () => {
+    const promise = manager.requestReview({
+      agentSlug: 'agent-victim',
+      accountId: 'acc-1',
+      toolkit: 'gmail',
+      method: 'GET',
+      targetPath: '/path',
+      matchedScopes: ['gmail.readonly'],
+      scopeDescriptions: {},
+    })
+
+    const pending = manager.getPendingReviewsForAgent('agent-victim')
+    const reviewId = pending[0].id
+
+    // Attacker has role only on agent-attacker, calls
+    // POST /api/agents/agent-attacker/proxy-review/<victim's reviewId>
+    const success = manager.submitDecision(reviewId, 'allow', 'agent-attacker')
+    expect(success).toBe(false)
+
+    // Victim's review is still pending — not resolved
+    expect(manager.getPendingReviewsForAgent('agent-victim').length).toBe(1)
+
+    // Legit owner still resolves cleanly
+    expect(manager.submitDecision(reviewId, 'deny', 'agent-victim')).toBe(true)
+    expect(await promise).toBe('deny')
+  })
+
+  // Security: same shape for the omitted-arg call path. We keep the optional
+  // arg backwards-compatible for internal callers (resolveMatchingPending
+  // already filters by agentSlug), but any HTTP-facing caller must pass it.
+  it('SECURITY: submitDecision still works when expectedAgentSlug is omitted (internal callers)', async () => {
+    const promise = manager.requestReview({
+      agentSlug: 'agent-1',
+      accountId: 'acc-1',
+      toolkit: 'gmail',
+      method: 'GET',
+      targetPath: '/path',
+      matchedScopes: [],
+      scopeDescriptions: {},
+    })
+    const reviewId = manager.getPendingReviewsForAgent('agent-1')[0].id
+    expect(manager.submitDecision(reviewId, 'allow')).toBe(true)
+    expect(await promise).toBe('allow')
+  })
+
   it('double submitDecision for same id: second returns false', async () => {
     const promise = manager.requestReview({
       agentSlug: 'agent-1',
@@ -444,6 +493,34 @@ describe('ReviewManager', () => {
     it('falls back to generic text when no scope descriptions or MCP path', () => {
       const result = generateReviewDisplayText('gmail', 'GET', '/api/endpoint', {})
       expect(result).toBe('Allow GET request to Gmail?')
+    })
+
+    it('prefers endpoint description over scope description', () => {
+      // The headline must describe the immediate action, not the broad scope
+      // grant — otherwise approving a profile read would surface "Read,
+      // compose, send, and permanently delete all your email" as the headline.
+      const result = generateReviewDisplayText(
+        'gmail',
+        'GET',
+        '/gmail/v1/users/me/profile',
+        {
+          'gmail.readonly': 'View your email messages and settings',
+          'gmail.full': 'Read, compose, send, and permanently delete all your email',
+        },
+        "Gets the current user's Gmail profile.",
+      )
+      expect(result).toBe("Allow gets the current user's Gmail profile.?")
+    })
+
+    it('falls back to scope description when endpointDescription is undefined', () => {
+      const result = generateReviewDisplayText(
+        'gmail',
+        'GET',
+        '/path',
+        { 'gmail.readonly': 'Read your email' },
+        undefined,
+      )
+      expect(result).toBe('Allow read your email?')
     })
   })
 

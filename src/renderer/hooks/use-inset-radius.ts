@@ -13,7 +13,7 @@ function pickRadiusForOS(): number {
 
   if (platform === 'darwin') {
     // macOS 26 (Tahoe) ships noticeably larger window corners than 15 (Sequoia) and earlier.
-    if (Number.isFinite(major) && major >= 26) return 10
+    if (Number.isFinite(major) && major >= 26) return 16
     return 7
   }
 

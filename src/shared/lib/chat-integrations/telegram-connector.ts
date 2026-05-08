@@ -10,6 +10,7 @@ import { Bot, type Context as GrammyContext } from 'grammy'
 import { Marked, Renderer } from 'marked'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import { ChatClientConnector, type OutgoingMessage } from './base-connector'
+import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
 
 // ── Config ──────────────────────────────────────────────────────────────
@@ -398,6 +399,11 @@ export class TelegramConnector extends ChatClientConnector {
   async sendUserRequestCard(chatId: string, event: UserRequestEvent): Promise<string> {
     if (!this.bot) throw new Error('Bot not connected')
 
+    if (isUnsupportedInChat(event)) {
+      const sent = await this.bot.api.sendMessage(chatId, `<i>${this.escapeHtml(describeUnsupportedRequest(event))}</i>`, { parse_mode: 'HTML' })
+      return String(sent.message_id)
+    }
+
     switch (event.type) {
       case 'user_question_request': {
         let lastMessageId = ''
@@ -464,9 +470,7 @@ export class TelegramConnector extends ChatClientConnector {
       }
 
       default: {
-        // Generic card for other event types
-        const text = `<b>${this.escapeHtml(event.type)}</b>\n<pre>${this.escapeHtml(JSON.stringify(event, null, 2).slice(0, 3000))}</pre>`
-        const sent = await this.bot.api.sendMessage(chatId, text, { parse_mode: 'HTML' })
+        const sent = await this.bot.api.sendMessage(chatId, `<i>${this.escapeHtml(describeUnsupportedRequest(event))}</i>`, { parse_mode: 'HTML' })
         return String(sent.message_id)
       }
     }

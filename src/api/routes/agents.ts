@@ -15,13 +15,7 @@ import {
   agentExists,
 } from '@shared/lib/services/agent-service'
 import { containerManager } from '@shared/lib/container/container-manager'
-import { EFFORT_LEVELS, type EffortLevel } from '@shared/lib/container/types'
-
-const effortSchema = z.enum(EFFORT_LEVELS).optional()
-
-function parseEffort(raw: unknown): EffortLevel | undefined {
-  return effortSchema.safeParse(raw).data
-}
+import { parseRuntimeOptions } from '@shared/lib/container/runtime-options'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { listChatIntegrations, listChatIntegrationsByAgents } from '@shared/lib/services/chat-integration-service'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
@@ -159,7 +153,11 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
       const unreadSessionIds = unreadByAgent.get(agent.slug) ?? new Set<string>()
       const pendingTasks = tasksByAgent.get(agent.slug) ?? []
 
-      // Compute session flags from in-memory state (no I/O needed)
+      // Compute session flags from in-memory state (no I/O needed).
+      // `unreadByAgent` is already filtered to user-actionable notification types
+      // (session_complete / session_waiting); session_complete on automated sessions
+      // is suppressed at creation time, so any unread that lands here is one the
+      // user genuinely needs to see.
       let hasActiveSessions = false
       let hasSessionsAwaitingInput = false
       let hasUnreadNotifications = false
@@ -493,6 +491,48 @@ agents.get('/my-roles', async (c) => {
   }
 })
 
+// POST /api/agents/generate-name - Generate an agent name from a prompt using a lightweight LLM
+// Collection-level route: keep this before the /:id/* agent-existence middleware.
+// TODO: Migrate remaining route handlers to use zValidator for consistent request validation
+const generateNameBodySchema = z.object({
+  prompt: z.string().min(1, 'Prompt is required'),
+})
+
+agents.post('/generate-name', zValidator('json', generateNameBodySchema), async (c) => {
+  try {
+    const { prompt } = c.req.valid('json')
+    const truncatedPrompt = prompt.trim().substring(0, 10_000)
+
+    const anthropic = getLlmClient()
+    const response = await withRetry(() =>
+      anthropic.messages.create({
+        model: getSummarizerModel(),
+        max_tokens: 50,
+        messages: [
+          {
+            role: 'user',
+            content: `Generate a short, descriptive agent name (2-4 words max) based on what the user wants the agent to do. The user's description is:
+
+"${truncatedPrompt}"
+
+Respond with ONLY the agent name, nothing else. No quotes, no explanation.`,
+          },
+        ],
+      })
+    )
+
+    const name = extractTextFromLlmResponse(response)?.trim()
+    if (!name) {
+      return c.json({ error: 'Failed to generate name' }, 500)
+    }
+
+    return c.json({ name })
+  } catch (error) {
+    console.error('Failed to generate agent name:', error)
+    return c.json({ error: 'Failed to generate name' }, 500)
+  }
+})
+
 // Middleware: verify agent exists for all /:id/* routes
 agents.use('/:id/*', async (c, next) => {
   const slug = c.req.param('id')
@@ -615,47 +655,6 @@ agents.post('/', async (c) => {
   } catch (error) {
     console.error('Failed to create agent:', error)
     return c.json({ error: 'Failed to create agent' }, 500)
-  }
-})
-
-// POST /api/agents/generate-name - Generate an agent name from a prompt using a lightweight LLM
-// TODO: Migrate remaining route handlers to use zValidator for consistent request validation
-const generateNameBodySchema = z.object({
-  prompt: z.string().min(1, 'Prompt is required'),
-})
-
-agents.post('/generate-name', zValidator('json', generateNameBodySchema), async (c) => {
-  try {
-    const { prompt } = c.req.valid('json')
-    const truncatedPrompt = prompt.trim().substring(0, 10_000)
-
-    const anthropic = getLlmClient()
-    const response = await withRetry(() =>
-      anthropic.messages.create({
-        model: getSummarizerModel(),
-        max_tokens: 50,
-        messages: [
-          {
-            role: 'user',
-            content: `Generate a short, descriptive agent name (2-4 words max) based on what the user wants the agent to do. The user's description is:
-
-"${truncatedPrompt}"
-
-Respond with ONLY the agent name, nothing else. No quotes, no explanation.`,
-          },
-        ],
-      })
-    )
-
-    const name = extractTextFromLlmResponse(response)?.trim()
-    if (!name) {
-      return c.json({ error: 'Failed to generate name' }, 500)
-    }
-
-    return c.json({ name })
-  } catch (error) {
-    console.error('Failed to generate agent name:', error)
-    return c.json({ error: 'Failed to generate name' }, 500)
   }
 })
 
@@ -1108,13 +1107,13 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
   try {
     const slug = c.req.param('id')
     const body = await c.req.json()
-    const { message, effort } = body
+    const { message } = body
 
     if (!message?.trim()) {
       return c.json({ error: 'Message is required' }, 400)
     }
 
-    const parsedEffort = parseEffort(effort)
+    const runtimeOptions = parseRuntimeOptions(body)
 
     const agent = await getAgent(slug)
     if (!agent) {
@@ -1133,11 +1132,13 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       initialMessageUuid = randomUUID()
     }
 
+    const sessionModel = runtimeOptions.model ?? getEffectiveModels().agentModel
+
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: message.trim(),
       initialMessageUuid,
-      model: getEffectiveModels().agentModel,
+      model: sessionModel,
       browserModel: getEffectiveModels().browserModel,
       maxOutputTokens: agentLimits.maxOutputTokens,
       maxThinkingTokens: agentLimits.maxThinkingTokens,
@@ -1145,7 +1146,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       maxBudgetUsd: agentLimits.maxBudgetUsd,
       customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
       maxBrowserTabs: getSettings().app?.maxBrowserTabs,
-      effort: parsedEffort,
+      effort: runtimeOptions.effort,
     })
     const sessionId = containerSession.id
 
@@ -1161,8 +1162,15 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     }
 
     await registerSession(slug, sessionId, 'New Session')
-    if (parsedEffort) {
-      updateSessionMetadata(slug, sessionId, { effort: parsedEffort }).catch(console.error)
+    // Persist only what the user explicitly chose. The server-side fallback is
+    // applied at session creation but should not masquerade as a user choice in
+    // metadata — otherwise a later change to the global default wouldn't be
+    // reflected when the composer reloads.
+    const initialMetadata: Parameters<typeof updateSessionMetadata>[2] = {}
+    if (runtimeOptions.effort) initialMetadata.effort = runtimeOptions.effort
+    if (runtimeOptions.model) initialMetadata.model = runtimeOptions.model
+    if (Object.keys(initialMetadata).length > 0) {
+      updateSessionMetadata(slug, sessionId, initialMetadata).catch(console.error)
     }
     await messagePersister.subscribeToSession(sessionId, client, sessionId, slug)
     // Store slash commands from container's init event (captured during session creation)
@@ -1341,13 +1349,13 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     const agentSlug = c.req.param('id')
     const sessionId = c.req.param('sessionId')
     const body = await c.req.json()
-    const { content, effort } = body
+    const { content } = body
 
     if (!content?.trim()) {
       return c.json({ error: 'Content is required' }, 400)
     }
 
-    const parsedEffort = parseEffort(effort)
+    const runtimeOptions = parseRuntimeOptions(body)
 
     const agent = await getAgent(agentSlug)
     if (!agent) {
@@ -1393,9 +1401,12 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       })
     }
 
-    await client.sendMessage(sessionId, content.trim(), messageUuid, parsedEffort)
-    if (parsedEffort) {
-      updateSessionMetadata(agentSlug, sessionId, { effort: parsedEffort }).catch(console.error)
+    await client.sendMessage(sessionId, content.trim(), messageUuid, runtimeOptions)
+    const updates: Parameters<typeof updateSessionMetadata>[2] = {}
+    if (runtimeOptions.effort) updates.effort = runtimeOptions.effort
+    if (runtimeOptions.model) updates.model = runtimeOptions.model
+    if (Object.keys(updates).length > 0) {
+      updateSessionMetadata(agentSlug, sessionId, updates).catch(console.error)
     }
 
     return c.json({ success: true }, 201)
@@ -1450,6 +1461,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       webhookTriggerId: metadata?.webhookTriggerId,
       webhookTriggerName: metadata?.webhookTriggerName,
       effort: metadata?.effort,
+      model: metadata?.model,
     })
   } catch (error) {
     console.error('Failed to fetch session:', error)
@@ -4212,6 +4224,7 @@ agents.get('/:id/proxy-reviews', AgentRead(), async (c) => {
 
 // POST /api/agents/:id/proxy-review/:reviewId - Submit a review decision
 agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
+  const slug = c.req.param('id')
   const reviewId = c.req.param('reviewId')
   const body = await c.req.json<{ decision: 'allow' | 'deny' }>()
 
@@ -4219,7 +4232,10 @@ agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
     return c.json({ error: 'Invalid decision. Must be "allow" or "deny".' }, 400)
   }
 
-  const success = reviewManager.submitDecision(reviewId, body.decision)
+  // Pass slug so submitDecision rejects cross-agent attempts. AgentUser()
+  // verifies the URL agent only — without this, a user with role on agent A
+  // could resolve agent B's review by sending B's reviewId to A's URL.
+  const success = reviewManager.submitDecision(reviewId, body.decision, slug)
   if (!success) {
     return c.json({ error: 'Review not found or already resolved' }, 404)
   }
@@ -4307,9 +4323,19 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
     )
   }
 
-  // Submit decision for this review (and any others matching the same scope)
-  reviewManager.submitDecision(reviewId, body.decision)
+  // Submit decision for this review (and any others matching the same scope).
+  // Pass slug so submitDecision rejects cross-agent attempts (see B1).
+  reviewManager.submitDecision(reviewId, body.decision, slug)
   reviewManager.resolveMatchingPending(slug, body.scope, body.decision)
+
+  // For x-agent "always allow for all agents" (targetSlug=null on read/invoke),
+  // the per-scope match above only resolves prompts for the same exact target.
+  // Sweep every pending review of the same operation so sibling prompts
+  // (e.g. an in-flight read:bob when the user just allowed read:* globally)
+  // also resolve immediately instead of timing out.
+  if (body.reviewType === 'xagent' && body.xAgent && body.xAgent.targetSlug === null) {
+    reviewManager.resolveMatchingXAgentByOperation(slug, body.xAgent.operation, body.decision)
+  }
 
   return c.json({ ok: true })
 })

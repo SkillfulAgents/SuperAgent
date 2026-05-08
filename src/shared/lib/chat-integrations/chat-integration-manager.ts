@@ -271,7 +271,12 @@ class ChatIntegrationManager {
 
     this.connections.set(integration.id, conn)
 
-    await connector.connect()
+    try {
+      await connector.connect()
+    } catch (err) {
+      await this.removeIntegration(integration.id)
+      throw err
+    }
     this.disconnectedSince.delete(integration.id)
     breadcrumb('Integration connected', { integrationId: integration.id, provider: integration.provider })
     this.emitNotification(integration, 'connected')
@@ -664,7 +669,9 @@ class ChatIntegrationManager {
     integration: ChatIntegration,
     message: IncomingMessage,
   ): Promise<{ text: string; failedFiles: string[] }> {
-    const text = message.text || ''
+    // In group/channel contexts, prefix with sender name so the agent can attribute messages.
+    const prefix = message.chatName && message.userName ? `[${message.userName}]: ` : ''
+    const text = prefix + (message.text || '')
 
     if (!message.files || message.files.length === 0) {
       return { text, failedFiles: [] }

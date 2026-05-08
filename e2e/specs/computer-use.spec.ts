@@ -29,7 +29,7 @@ test.describe('Computer Use requests', () => {
 
     // Verify content is shown
     const request = sessionPage.getComputerUseRequests().first()
-    await expect(request).toContainText('Computer Use Request')
+    await expect(request).toContainText('Allow the agent to list apps & windows?')
     await expect(request).toContainText('List Apps & Windows')
 
     // Approve once

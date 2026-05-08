@@ -8,7 +8,7 @@ interface RequestItemActionsProps {
 
 export function RequestItemActions({ children, className }: RequestItemActionsProps) {
   return (
-    <div className={cn('flex justify-end gap-2 pt-8', className)}>
+    <div className={cn('flex justify-end gap-2 pt-4', className)}>
       {children}
     </div>
   )

@@ -11,7 +11,11 @@ import {
   cancelWebhookTriggerWithCleanup,
   pauseWebhookTrigger,
   resumeWebhookTrigger,
+  updateWebhookTriggerPrompt,
+  updateWebhookTriggerRuntimeOptions,
 } from '@shared/lib/services/webhook-trigger-service'
+import { promptUpdateSchema } from './trigger-prompt-schema'
+import { RuntimeOptionsSchema } from '@shared/lib/container/runtime-options'
 import {
   getSessionsByWebhookTrigger,
 } from '@shared/lib/services/session-service'
@@ -85,6 +89,56 @@ webhookTriggersRouter.post('/:triggerId/resume', TriggerAgentRole('user'), async
   } catch (error) {
     console.error('Failed to resume webhook trigger:', error)
     return c.json({ error: 'Failed to resume webhook trigger' }, 500)
+  }
+})
+
+// PATCH /api/webhook-triggers/:triggerId/prompt - Edit the trigger's instructions
+webhookTriggersRouter.patch('/:triggerId/prompt', TriggerAgentRole('user'), async (c) => {
+  try {
+    const trigger = c.get('webhookTrigger' as never) as Awaited<ReturnType<typeof getWebhookTrigger>>
+    const body = await c.req.json().catch(() => ({}))
+    const parsed = promptUpdateSchema.safeParse(body)
+    if (!parsed.success) {
+      return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid prompt' }, 400)
+    }
+
+    const updated = await updateWebhookTriggerPrompt(trigger!.id, parsed.data.prompt)
+    if (!updated) {
+      return c.json({ error: 'Trigger not found or cancelled' }, 404)
+    }
+
+    const refreshed = await getWebhookTrigger(trigger!.id)
+    return c.json(refreshed)
+  } catch (error) {
+    console.error('Failed to update webhook trigger prompt:', error)
+    return c.json({ error: 'Failed to update prompt' }, 500)
+  }
+})
+
+// PATCH /api/webhook-triggers/:triggerId/runtime-options - Update model and/or effort
+webhookTriggersRouter.patch('/:triggerId/runtime-options', TriggerAgentRole('user'), async (c) => {
+  try {
+    const trigger = c.get('webhookTrigger' as never) as Awaited<ReturnType<typeof getWebhookTrigger>>
+    const body = await c.req.json().catch(() => ({}))
+    const parsed = RuntimeOptionsSchema.partial().safeParse(body)
+    if (!parsed.success) {
+      return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid runtime options' }, 400)
+    }
+
+    const updates: { model?: string | null; effort?: string | null } = {}
+    if ('model' in body) updates.model = parsed.data.model ?? null
+    if ('effort' in body) updates.effort = parsed.data.effort ?? null
+
+    const updated = await updateWebhookTriggerRuntimeOptions(trigger!.id, updates)
+    if (!updated) {
+      return c.json({ error: 'Trigger not found or cancelled' }, 404)
+    }
+
+    const refreshed = await getWebhookTrigger(trigger!.id)
+    return c.json(refreshed)
+  } catch (error) {
+    console.error('Failed to update webhook trigger runtime options:', error)
+    return c.json({ error: 'Failed to update runtime options' }, 500)
   }
 })
 

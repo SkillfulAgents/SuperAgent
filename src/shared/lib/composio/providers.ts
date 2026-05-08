@@ -44,6 +44,12 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     description: 'Google documents',
   },
   {
+    slug: 'googleslides',
+    displayName: 'Google Slides',
+    icon: 'presentation',
+    description: 'Google presentations',
+  },
+  {
     slug: 'googlemeet',
     displayName: 'Google Meet',
     icon: 'video',

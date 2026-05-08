@@ -9,8 +9,12 @@ import {
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { captureMessage } from '@shared/lib/error-reporting'
+import { ProxyExecuteResponseSchema } from './proxy-execute-schema'
+import { LinkResponseSchema } from './link-response-schema'
 
-const COMPOSIO_BASE_URL = 'https://backend.composio.dev/api/v3'
+const COMPOSIO_HOST = 'https://backend.composio.dev'
+
+type ComposioApiVersion = 'v3' | 'v3.1'
 
 interface ComposioError {
   error: string | { message?: string; slug?: string; suggested_fix?: string }
@@ -25,6 +29,17 @@ class ComposioApiError extends Error {
   ) {
     super(message)
     this.name = 'ComposioApiError'
+  }
+}
+
+/**
+ * Thrown by getConnectionToken when Composio returns a redacted token.
+ * Callers should catch this and fall back to proxyExecute().
+ */
+class ComposioRedactedTokenError extends ComposioApiError {
+  constructor(message: string, details?: ComposioError) {
+    super(message, 403, details)
+    this.name = 'ComposioRedactedTokenError'
   }
 }
 
@@ -45,7 +60,8 @@ function shouldUseLocalComposioKey(): boolean {
 
 async function composioFetch<T>(
   endpoint: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  apiVersion: ComposioApiVersion = 'v3'
 ): Promise<T> {
   const localApiKey = getEffectiveComposioApiKey()
   const platformToken = localApiKey ? null : getPlatformComposioToken()
@@ -54,11 +70,17 @@ async function composioFetch<T>(
 
   let url: string
   if (platformToken) {
+    if (apiVersion !== 'v3') {
+      throw new ComposioApiError(
+        `Platform Composio mode does not yet support API version ${apiVersion}. Configure a local Composio API key.`,
+        501
+      )
+    }
     url = `${getPlatformComposioBaseUrl()}${endpoint}`
     headers.set('Authorization', `Bearer ${platformToken}`)
     headers.delete('x-api-key')
   } else if (localApiKey) {
-    url = `${COMPOSIO_BASE_URL}${endpoint}`
+    url = `${COMPOSIO_HOST}/api/${apiVersion}${endpoint}`
     headers.set('x-api-key', localApiKey)
   } else {
     throw new ComposioApiError('Composio API key is not configured', 401)
@@ -229,17 +251,6 @@ interface ConnectedAccountGetResponse {
   }
 }
 
-// API response type for POST /connected_accounts (initiate)
-interface ConnectedAccountInitiateResponse {
-  id: string
-  status: string
-  data?: {
-    redirectUrl?: string
-    [key: string]: unknown
-  }
-  redirect_url?: string | null
-}
-
 interface ListConnectedAccountsResponse {
   items: ConnectedAccountGetResponse[]
 }
@@ -279,52 +290,39 @@ interface InitiateConnectionResponse {
 }
 
 /**
- * Initiate a new OAuth connection.
- * Returns a redirect URL for the OAuth flow.
+ * Initiate a new OAuth connection via Composio's hosted consent flow.
+ * `POST /connected_accounts/link` replaced `POST /connected_accounts` for
+ * Composio-managed OAuth configs (rolled out 2026-04-22, full cutover 2026-07-03).
+ * `user_id` is required for local API key users; platform proxy injects it
+ * server-side so callers may omit it.
  */
 export async function initiateConnection(
   authConfigId: string,
   callbackUrl: string,
   userIdOverride?: string
 ): Promise<InitiateConnectionResponse> {
-  const useLocal = shouldUseLocalComposioKey()
-  const needsUserId = useLocal || !getPlatformComposioToken()
-  const userId = needsUserId ? (userIdOverride || getComposioUserId()) : null
-  if (needsUserId && !userId) {
-    throw new ComposioApiError('Composio User ID is not configured', 401)
+  const userId = userIdOverride || getComposioUserId()
+  if (!userId && shouldUseLocalComposioKey()) {
+    throw new ComposioApiError(
+      'Composio User ID is required to initiate a connection',
+      401
+    )
   }
 
-  const response = await composioFetch<ConnectedAccountInitiateResponse>(
-    '/connected_accounts',
-    {
-      method: 'POST',
-      body: JSON.stringify({
-        auth_config: {
-          id: authConfigId,
-        },
-        connection: {
-          state: {
-            authScheme: 'OAUTH2',
-            val: {
-              status: 'INITIALIZING',
-            },
-          },
-          ...(userId ? { user_id: userId } : {}),
-          callback_url: callbackUrl,
-        },
-      }),
-    }
-  )
+  const raw = await composioFetch<unknown>('/connected_accounts/link', {
+    method: 'POST',
+    body: JSON.stringify({
+      auth_config_id: authConfigId,
+      ...(userId ? { user_id: userId } : {}),
+      callback_url: callbackUrl,
+    }),
+  })
 
-  // The redirect URL may be in data.redirectUrl or redirect_url
-  const redirectUrl = response.data?.redirectUrl || response.redirect_url
-  if (!redirectUrl) {
-    throw new ComposioApiError('No redirect URL returned from Composio', 500)
-  }
+  const parsed = LinkResponseSchema.parse(raw)
 
   return {
-    connectionId: response.id,
-    redirectUrl,
+    connectionId: parsed.connected_account_id,
+    redirectUrl: parsed.redirect_url,
   }
 }
 
@@ -451,9 +449,8 @@ export async function getConnectionToken(
       },
       fingerprint: ['composio-redacted-token', redactionPattern],
     })
-    throw new ComposioApiError(
-      'Access token is redacted by Composio. Disable "Mask Connected Account Secrets" in the Composio project settings. If the connection uses a Composio-managed auth config, credentials are redacted regardless of that setting — migrate to a custom auth config (your own OAuth app) to retrieve actual credentials.',
-      403
+    throw new ComposioRedactedTokenError(
+      'Access token is redacted by Composio. Disable "Mask Connected Account Secrets" in the Composio project settings. If the connection uses a Composio-managed auth config, credentials are redacted regardless of that setting — migrate to a custom auth config (your own OAuth app) to retrieve actual credentials.'
     )
   }
 
@@ -471,6 +468,73 @@ export async function getConnectionToken(
 }
 
 // ============================================================================
+// Proxy Execute
+// ============================================================================
+
+export interface ProxyExecuteParameter {
+  name: string
+  value: string
+  type: 'query' | 'header'
+}
+
+export type ProxyExecuteBinaryBody =
+  | { url: string }
+  | { base64: string; content_type: string }
+
+export interface ProxyExecuteParams {
+  endpoint: string
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD'
+  connectedAccountId: string
+  body?: unknown
+  parameters?: ProxyExecuteParameter[]
+  binaryBody?: ProxyExecuteBinaryBody
+}
+
+export interface ProxyExecuteResult {
+  status: number
+  data: unknown
+  headers: Record<string, string>
+  binaryData?: {
+    url: string
+    content_type: string
+    size: number
+    expires_at: string
+  }
+}
+
+/**
+ * Forward a request to an upstream API via Composio's proxy.
+ * Composio attaches the connected account's auth server-side and forwards
+ * the request. Use this for connections whose tokens are redacted (Composio-managed).
+ */
+export async function proxyExecute(
+  p: ProxyExecuteParams
+): Promise<ProxyExecuteResult> {
+  const raw = await composioFetch<unknown>(
+    '/tools/execute/proxy',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        endpoint: p.endpoint,
+        method: p.method,
+        connected_account_id: p.connectedAccountId,
+        ...(p.body !== undefined ? { body: p.body } : {}),
+        ...(p.parameters?.length ? { parameters: p.parameters } : {}),
+        ...(p.binaryBody ? { binary_body: p.binaryBody } : {}),
+      }),
+    },
+    'v3.1'
+  )
+  const parsed = ProxyExecuteResponseSchema.parse(raw)
+  return {
+    status: parsed.status,
+    data: parsed.data,
+    headers: parsed.headers,
+    binaryData: parsed.binary_data,
+  }
+}
+
+// ============================================================================
 // Provider-specific User Info
 // ============================================================================
 
@@ -481,12 +545,53 @@ interface GoogleUserInfo {
 }
 
 /**
- * Fetch user info from Google using an OAuth access token.
- * Returns the user's email address and name if available.
+ * Pick the upstream endpoint that exposes the user's email for a given
+ * Google toolkit. Most toolkits include the `userinfo.email` scope, so
+ * `/oauth2/v2/userinfo` works. Calendar-only OAuth scopes don't include
+ * userinfo, so we use `calendarList/primary` instead — its `id` field is
+ * the connected user's primary calendar email.
  */
-export async function getGoogleUserInfo(accessToken: string): Promise<GoogleUserInfo | null> {
+function getGoogleEmailLookup(
+  toolkitSlug: string
+): { endpoint: string; field: 'email' | 'id' } | null {
+  if (toolkitSlug === 'googlecalendar') {
+    return {
+      endpoint:
+        'https://www.googleapis.com/calendar/v3/users/me/calendarList/primary',
+      field: 'id',
+    }
+  }
+  if (
+    [
+      'gmail',
+      'googledrive',
+      'googlesheets',
+      'googledocs',
+      'googleslides',
+      'googlemeet',
+      'youtube',
+    ].includes(toolkitSlug)
+  ) {
+    return {
+      endpoint: 'https://www.googleapis.com/oauth2/v2/userinfo',
+      field: 'email',
+    }
+  }
+  return null
+}
+
+/**
+ * Fetch user info from Google using an OAuth access token.
+ * Returns the user's email address and (for userinfo endpoints) name/picture.
+ */
+export async function getGoogleUserInfo(
+  accessToken: string,
+  toolkitSlug: string = 'gmail'
+): Promise<GoogleUserInfo | null> {
+  const lookup = getGoogleEmailLookup(toolkitSlug)
+  if (!lookup) return null
   try {
-    const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+    const response = await fetch(lookup.endpoint, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
       },
@@ -498,13 +603,67 @@ export async function getGoogleUserInfo(accessToken: string): Promise<GoogleUser
     }
 
     const data = await response.json()
+    const email = typeof data?.[lookup.field] === 'string' ? data[lookup.field] : ''
+    if (!email) return null
     return {
-      email: data.email,
-      name: data.name,
-      picture: data.picture,
+      email,
+      name: typeof data?.name === 'string' ? data.name : undefined,
+      picture: typeof data?.picture === 'string' ? data.picture : undefined,
     }
   } catch (error) {
     console.warn('Error fetching Google user info:', error)
+    return null
+  }
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null
+}
+
+async function getGoogleUserInfoViaProxy(
+  connectionId: string,
+  toolkitSlug: string
+): Promise<GoogleUserInfo | null> {
+  const lookup = getGoogleEmailLookup(toolkitSlug)
+  if (!lookup) return null
+  try {
+    const result = await proxyExecute({
+      endpoint: lookup.endpoint,
+      method: 'GET',
+      connectedAccountId: connectionId,
+    })
+    if (result.status >= 400 || !isRecord(result.data)) return null
+    const data = result.data
+    const email = typeof data[lookup.field] === 'string' ? (data[lookup.field] as string) : ''
+    if (!email) return null
+    return {
+      email,
+      name: typeof data.name === 'string' ? data.name : undefined,
+      picture: typeof data.picture === 'string' ? data.picture : undefined,
+    }
+  } catch (error) {
+    console.warn('Error fetching Google user info via proxy:', error)
+    return null
+  }
+}
+
+async function getMicrosoftMailViaProxy(
+  connectionId: string
+): Promise<string | null> {
+  try {
+    const result = await proxyExecute({
+      endpoint: 'https://graph.microsoft.com/v1.0/me',
+      method: 'GET',
+      connectedAccountId: connectionId,
+    })
+    if (result.status >= 400 || !isRecord(result.data)) return null
+    const mail = result.data.mail
+    const upn = result.data.userPrincipalName
+    if (typeof mail === 'string' && mail) return mail
+    if (typeof upn === 'string' && upn) return upn
+    return null
+  } catch (error) {
+    console.warn('Error fetching Microsoft user info via proxy:', error)
     return null
   }
 }
@@ -526,6 +685,7 @@ export async function getAccountDisplayName(
     'googledrive',
     'googlesheets',
     'googledocs',
+    'googleslides',
     'googlemeet',
     'googletasks',
     'youtube',
@@ -537,12 +697,15 @@ export async function getAccountDisplayName(
   if (googleToolkits.includes(slug)) {
     try {
       const { accessToken } = await getConnectionToken(connectionId)
-      const userInfo = await getGoogleUserInfo(accessToken)
-      if (userInfo?.email) {
-        return userInfo.email
-      }
+      const userInfo = await getGoogleUserInfo(accessToken, slug)
+      if (userInfo?.email) return userInfo.email
     } catch (error) {
-      console.warn('Could not fetch user info for display name:', error)
+      if (error instanceof ComposioRedactedTokenError) {
+        const userInfo = await getGoogleUserInfoViaProxy(connectionId, slug)
+        if (userInfo?.email) return userInfo.email
+      } else {
+        console.warn('Could not fetch user info for display name:', error)
+      }
     }
   } else if (microsoftToolkits.includes(slug)) {
     try {
@@ -560,10 +723,15 @@ export async function getAccountDisplayName(
         }
       }
     } catch (error) {
-      console.warn(
-        'Could not fetch Microsoft user info for display name:',
-        error
-      )
+      if (error instanceof ComposioRedactedTokenError) {
+        const mail = await getMicrosoftMailViaProxy(connectionId)
+        if (mail) return mail
+      } else {
+        console.warn(
+          'Could not fetch Microsoft user info for display name:',
+          error
+        )
+      }
     }
   }
 
@@ -579,4 +747,4 @@ export function isPlatformComposioActive(): boolean {
   return !shouldUseLocalComposioKey() && Boolean(getPlatformComposioToken())
 }
 
-export { ComposioApiError }
+export { ComposioApiError, ComposioRedactedTokenError }

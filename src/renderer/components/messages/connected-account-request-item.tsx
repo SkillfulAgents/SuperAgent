@@ -2,7 +2,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
 import { formatDistanceToNow } from 'date-fns'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   Check,
   X,
@@ -10,7 +10,6 @@ import {
   Plus,
   Pencil,
   MoreVertical,
-  Plug,
 } from 'lucide-react'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { Button } from '@renderer/components/ui/button'
@@ -69,7 +68,7 @@ export function ConnectedAccountRequestItem({
 
   const { track } = useAnalyticsTracking()
   const provider = getProvider(toolkit)
-  const accounts = data?.accounts ?? []
+  const accounts = useMemo(() => data?.accounts ?? [], [data])
 
   // Auto-select when there's exactly one account
   const hasAutoSelected = useRef(false)
@@ -307,20 +306,16 @@ export function ConnectedAccountRequestItem({
       }
     : null
 
-  // Build read-only config
-  const readOnlyConfig = readOnly
-    ? {
-        description: reason ? (
-          <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{reason}</p>
-        ) : undefined,
-      }
-    : (false as const)
+  // Build read-only config — primary text now lives in the title.
+  const readOnlyConfig = readOnly ? {} : (false as const)
 
   return (
     <RequestItemShell
-      title="Account Access Request"
-      icon={<Plug className="h-4 w-4" />}
+      title={reason || `Connect to ${provider?.displayName || toolkit}`}
+      subtitle="Selected accounts will be linked to this agent for future use."
       theme="blue"
+      sessionId={sessionId}
+      agentSlug={agentSlug}
       completed={completedConfig}
       readOnly={readOnlyConfig}
       waitingText="Waiting for response"
@@ -328,14 +323,6 @@ export function ConnectedAccountRequestItem({
       data-testid={isCompleted ? 'connected-account-request-completed' : 'connected-account-request'}
       data-status={isCompleted ? status : undefined}
     >
-      {/* Description */}
-      {reason && (
-        <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{reason}</p>
-      )}
-      <p className="mt-2 text-xs text-muted-foreground">
-        Selected accounts will be linked to this agent for future use.
-      </p>
-
       {/* Account Selection */}
       {isLoading ? (
         <div className="flex items-center gap-2 pt-3 text-blue-600 dark:text-blue-400">
@@ -389,7 +376,7 @@ export function ConnectedAccountRequestItem({
         <div className="pt-3">
           <div className="flex items-center justify-between gap-3 rounded-[12px] border border-border bg-white pl-[10px] pr-3 py-2 dark:bg-background">
             <div className="flex items-center gap-2 text-sm text-foreground/80">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-zinc-200">
                 <ServiceIcon slug={toolkit} fallback="request" className="h-6 w-6" />
               </div>
               <p>{(provider?.displayName || toolkit).replace(/\b\w/g, (char) => char.toUpperCase())}</p>
@@ -398,7 +385,7 @@ export function ConnectedAccountRequestItem({
               onClick={handleConnectNew}
               loading={status === 'connecting'}
               disabled={status !== 'pending'}
-              size="sm"
+              size="xs"
               className="min-w-24 bg-foreground text-background hover:bg-foreground/90"
             >
               <Plus className="h-4 w-4" />
@@ -416,7 +403,7 @@ export function ConnectedAccountRequestItem({
             loading={status === 'connecting'}
             disabled={status !== 'pending'}
             variant="ghost"
-            size="sm"
+            size="xs"
             className="text-muted-foreground hover:bg-muted hover:text-foreground"
           >
             <Plus className="mr-1 h-4 w-4" />
@@ -427,7 +414,7 @@ export function ConnectedAccountRequestItem({
 
       {/* Action buttons when accounts exist */}
       {accounts.length > 0 && (
-        <RequestItemActions className="pt-0">
+        <RequestItemActions>
           <DeclineButton
             onDecline={handleDecline}
             disabled={status !== 'pending'}
@@ -440,7 +427,7 @@ export function ConnectedAccountRequestItem({
             onClick={handleProvide}
             loading={status === 'submitting'}
             disabled={selectedAccountIds.size === 0 || status !== 'pending'}
-            size="sm"
+            size="xs"
             className="min-w-24 bg-blue-600 text-white hover:bg-blue-700"
           >
             Allow Access{selectedAccountIds.size > 0 ? ` (${selectedAccountIds.size})` : ''}
@@ -450,7 +437,7 @@ export function ConnectedAccountRequestItem({
 
       {/* Action buttons when no accounts */}
       {accounts.length === 0 && (
-        <RequestItemActions className="mt-6 pt-0">
+        <RequestItemActions>
           <DeclineButton
             onDecline={handleDecline}
             disabled={status !== 'pending' && status !== 'connecting'}
@@ -535,7 +522,7 @@ function AccountOption({
           'border-border bg-white dark:bg-background'
         )}
       >
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-zinc-200">
           <ServiceIcon slug={account.toolkitSlug} fallback="request" className="h-5 w-5" />
         </div>
         <Input
@@ -549,7 +536,7 @@ function AccountOption({
           }}
         />
         <Button
-          size="sm"
+          size="xs"
           variant="default"
           className="h-6 shrink-0 bg-foreground px-2 text-xs text-background hover:bg-foreground/90"
           onClick={onSaveEdit}
@@ -559,7 +546,7 @@ function AccountOption({
           <span>Update</span>
         </Button>
         <Button
-          size="sm"
+          size="xs"
           variant="outline"
           className="h-6 shrink-0 px-2 text-xs"
           onClick={onCancelEdit}
@@ -598,7 +585,7 @@ function AccountOption({
         onClick={(e) => e.stopPropagation()}
         className="mx-1 shrink-0"
       />
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-zinc-200">
         <ServiceIcon slug={account.toolkitSlug} fallback="request" className="h-5 w-5" />
       </div>
       <div className="flex-1 min-w-0">
@@ -612,15 +599,13 @@ function AccountOption({
         <span onClick={(e) => e.stopPropagation()}>
           <PolicySummaryPill
             accountId={account.id}
-            toolkit={account.toolkitSlug}
-            compact
             onClick={onOpenPolicies}
           />
         </span>
         <Popover open={menuOpen} onOpenChange={setMenuOpen}>
           <PopoverTrigger asChild>
             <Button
-              size="sm"
+              size="xs"
               variant="ghost"
               className="h-5 w-5 shrink-0 p-0 text-muted-foreground/70 hover:bg-transparent hover:text-muted-foreground"
               onClick={(e) => {
@@ -636,7 +621,7 @@ function AccountOption({
             onClick={(e) => e.stopPropagation()}
           >
             <Button
-              size="sm"
+              size="xs"
               variant="ghost"
               className="w-full justify-start gap-2 text-foreground hover:bg-muted"
               onClick={(e) => {

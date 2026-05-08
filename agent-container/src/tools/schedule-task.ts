@@ -74,6 +74,18 @@ Note: One-time tasks ('at') will execute once and complete. Recurring tasks ('cr
       .describe(
         'Optional IANA timezone for interpreting the schedule (e.g., "America/New_York", "Europe/London"). If not specified, uses the creating user\'s timezone.'
       ),
+    model: z
+      .enum(['opus', 'sonnet', 'haiku'])
+      .optional()
+      .describe(
+        'Optional model family to use for this task. If not specified, uses the global default.'
+      ),
+    effort: z
+      .enum(['low', 'medium', 'high', 'xhigh', 'max'])
+      .optional()
+      .describe(
+        'Optional effort level for this task. If not specified, uses the global default.'
+      ),
   },
   async (args) => {
     console.log(`[schedule_task] Scheduling ${args.scheduleType} task: ${args.scheduleExpression}`)

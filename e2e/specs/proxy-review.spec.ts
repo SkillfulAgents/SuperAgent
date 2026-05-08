@@ -32,7 +32,7 @@ test.describe('Proxy Review Requests', () => {
 
     // Verify the API details are shown
     const request = sessionPage.getProxyReviewRequests().first()
-    await expect(request).toContainText('API Request Review')
+    await expect(request).toContainText('Allow send a message to a channel?')
     await expect(request).toContainText('POST')
     await expect(request).toContainText('api/chat.postMessage')
     await expect(request).toContainText('slack')

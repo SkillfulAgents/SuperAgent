@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { renderWithProviders as render } from '@renderer/test/test-utils'
 import { QuestionRequestItem } from './question-request-item'
 
 const mockApiFetch = vi.fn()
@@ -78,11 +79,11 @@ describe('QuestionRequestItem', () => {
     expect(screen.getByText('Document database')).toBeInTheDocument()
   })
 
-  it('renders title chip with "Question"', () => {
+  it('renders the question text in the header', () => {
     render(
       <QuestionRequestItem {...defaultProps} questions={singleQuestion} />
     )
-    expect(screen.getByText('Question')).toBeInTheDocument()
+    expect(screen.getByText('Which database?')).toBeInTheDocument()
   })
 
   it('submit button is disabled when nothing is selected', () => {
@@ -271,17 +272,18 @@ describe('QuestionRequestItem', () => {
     })
   })
 
-  it('shows "Questions" (plural) title for multiple questions', () => {
+  it('shows the current question text in the header for multi-question stacks', () => {
     render(
       <QuestionRequestItem {...defaultProps} questions={twoQuestions} />
     )
-    expect(screen.getByText('Questions')).toBeInTheDocument()
+    // First question is shown by default
+    expect(screen.getByText('Which database?')).toBeInTheDocument()
   })
 
-  it('shows "Question" (singular) title for single question', () => {
+  it('shows the question text in the header for a single question', () => {
     render(
       <QuestionRequestItem {...defaultProps} questions={singleQuestion} />
     )
-    expect(screen.getByText('Question')).toBeInTheDocument()
+    expect(screen.getByText('Which database?')).toBeInTheDocument()
   })
 })

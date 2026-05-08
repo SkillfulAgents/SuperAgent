@@ -1,31 +1,17 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useCallback } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { Label } from '@renderer/components/ui/label'
 import { Switch } from '@renderer/components/ui/switch'
 import { Download, RefreshCw, CheckCircle2, Loader2 } from 'lucide-react'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
-
-interface UpdateStatus {
-  state: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
-  version?: string
-  progress?: number
-  error?: string
-}
+import { useUpdateStatus } from '@renderer/context/update-status-context'
 
 export function UpdateSection() {
   const { data: userSettings } = useUserSettings()
   const updateUserSettings = useUpdateUserSettings()
   const { track } = useAnalyticsTracking()
-  const [status, setStatus] = useState<UpdateStatus>({ state: 'idle' })
-
-  useEffect(() => {
-    window.electronAPI?.getUpdateStatus().then(setStatus)
-    window.electronAPI?.onUpdateStatus(setStatus)
-    return () => {
-      window.electronAPI?.removeUpdateStatus()
-    }
-  }, [])
+  const status = useUpdateStatus()
 
   const handleCheck = useCallback(async () => {
     track('updates_checked')
@@ -87,6 +73,21 @@ export function UpdateSection() {
             </Button>
           )}
         </div>
+      </div>
+      <div className="flex items-center justify-between">
+        <div className="space-y-0.5">
+          <Label htmlFor="auto-check-updates">Automatically check for updates</Label>
+          <p className="text-xs text-muted-foreground">
+            Check on startup and periodically while the app is running
+          </p>
+        </div>
+        <Switch
+          id="auto-check-updates"
+          checked={userSettings?.autoCheckUpdates !== false}
+          onCheckedChange={(checked: boolean) => {
+            updateUserSettings.mutate({ autoCheckUpdates: checked })
+          }}
+        />
       </div>
       <div className="flex items-center justify-between">
         <div className="space-y-0.5">

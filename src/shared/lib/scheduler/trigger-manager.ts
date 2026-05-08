@@ -18,6 +18,7 @@ import {
   markTriggerFailed,
 } from '@shared/lib/services/webhook-trigger-service'
 import type { WebhookTrigger } from '@shared/lib/services/webhook-trigger-service'
+import type { EffortLevel } from '@shared/lib/container/types'
 import {
   registerSession,
   updateSessionMetadata,
@@ -243,11 +244,13 @@ class TriggerManager {
     const client = await containerManager.ensureRunning(trigger.agentSlug)
     const availableEnvVars = await getSecretEnvVars(trigger.agentSlug)
 
+    const models = getEffectiveModels()
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: prompt,
-      model: getEffectiveModels().agentModel,
-      browserModel: getEffectiveModels().browserModel,
+      model: trigger.model || models.agentModel,
+      browserModel: models.browserModel,
+      ...(trigger.effort ? { effort: trigger.effort as EffortLevel } : {}),
     })
 
     const sessionId = containerSession.id

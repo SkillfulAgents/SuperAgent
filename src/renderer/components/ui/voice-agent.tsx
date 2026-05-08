@@ -218,7 +218,7 @@ export function VoiceAgent({ config, onResult, onClose, layout = 'vertical', cla
 
           {/* Right column: full-bleed transcript with top/bottom fade */}
           <div
-            className="overflow-hidden min-w-0"
+            className="overflow-hidden min-w-0 min-h-0"
             style={{ maskImage: fadeMask, WebkitMaskImage: fadeMask }}
           >
             <div

@@ -1,6 +1,6 @@
 import { apiFetch } from '@renderer/lib/api'
 import { useState, useEffect, useRef } from 'react'
-import { ShieldCheck, ShieldX, ChevronDown, GitPullRequestDraft, ArrowUp } from 'lucide-react'
+import { ShieldCheck, ShieldX, ChevronDown, ArrowUp } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { cn } from '@shared/lib/utils/cn'
@@ -17,6 +17,7 @@ interface ProxyReviewRequestItemProps {
   matchedScopes: string[]
   scopeDescriptions: Record<string, string>
   displayText?: string
+  sessionId?: string
   agentSlug: string
   readOnly?: boolean
   onComplete: () => void
@@ -33,6 +34,7 @@ export function ProxyReviewRequestItem({
   matchedScopes,
   scopeDescriptions,
   displayText,
+  sessionId,
   agentSlug,
   readOnly,
   onComplete,
@@ -138,9 +140,9 @@ export function ProxyReviewRequestItem({
 
   const readOnlyConfig = readOnly
     ? {
-        description: (
+        extraContent: (
           <>
-            <div className="mt-5 flex flex-wrap items-center gap-2">
+            <div className="mt-3 flex flex-wrap items-center gap-2">
               <span className="inline-flex h-7 items-center rounded-md bg-muted px-2.5 font-mono text-xs text-foreground/85">
                 {requestLabel}
               </span>
@@ -153,9 +155,10 @@ export function ProxyReviewRequestItem({
 
   return (
     <RequestItemShell
-      title="API Request Review"
-      icon={<GitPullRequestDraft />}
+      title={displayText || requestLabel}
       theme="orange"
+      sessionId={sessionId}
+      agentSlug={agentSlug}
       completed={completedConfig}
       readOnly={readOnlyConfig}
       waitingText="Waiting for approval"
@@ -163,15 +166,8 @@ export function ProxyReviewRequestItem({
       data-testid={isCompleted ? 'proxy-review-completed' : 'proxy-review-request'}
       data-status={isCompleted ? status : undefined}
     >
-      {/* Display text (human-readable description of the request) */}
-      {displayText && (
-        <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">
-          {displayText}
-        </p>
-      )}
-
       {/* Code block showing method/path + toolkit */}
-      <div className={displayText ? 'mt-3' : 'mt-5'}>
+      <div className="mt-3">
         <div className="rounded-md border border-border bg-white px-3 py-2 dark:bg-background">
           <span className="mr-2 inline-flex h-7 items-center rounded-md bg-muted px-2.5 text-xs font-medium text-foreground/80 capitalize">
             {toolkit}
@@ -183,13 +179,13 @@ export function ProxyReviewRequestItem({
       </div>
 
       {/* Action buttons */}
-      <RequestItemActions className="pt-6">
+      <RequestItemActions>
         <div className="flex items-stretch">
           <Button
             data-testid="proxy-review-deny-btn"
             onClick={() => handleDecision('deny')}
             disabled={status === 'submitting'}
-            size="sm"
+            size="xs"
             variant="outline"
             className="rounded-r-none border-r-0 border-border text-foreground hover:bg-muted"
           >
@@ -199,7 +195,7 @@ export function ProxyReviewRequestItem({
             <PopoverTrigger asChild>
               <Button
                 disabled={status === 'submitting'}
-                size="sm"
+                size="xs"
                 variant="outline"
                 className="rounded-l-none border-border px-1.5 text-foreground hover:bg-muted"
                 data-testid="proxy-review-deny-btn-chevron"
@@ -232,7 +228,7 @@ export function ProxyReviewRequestItem({
                           }}
                           disabled={status === 'submitting'}
                           variant="ghost"
-                          size="sm"
+                          size="xs"
                           className="h-auto w-full justify-start py-2 text-foreground hover:bg-muted"
                         >
                           <span className="flex flex-col items-start text-left">
@@ -318,7 +314,7 @@ export function ProxyReviewRequestItem({
             <PopoverTrigger asChild>
               <Button
                 disabled={status === 'submitting'}
-                size="sm"
+                size="xs"
                 className="min-w-24 pr-0 bg-orange-600 text-white hover:bg-orange-700"
                 data-testid="proxy-review-always-allow-btn"
               >
@@ -336,7 +332,7 @@ export function ProxyReviewRequestItem({
                   }}
                   disabled={status === 'submitting'}
                   variant="ghost"
-                  size="sm"
+                  size="xs"
                   className="h-auto min-w-0 w-full justify-start py-2 text-foreground hover:bg-muted"
                 >
                   <span className="flex min-w-0 w-full flex-col items-start text-left">
@@ -359,7 +355,7 @@ export function ProxyReviewRequestItem({
                         }}
                         disabled={status === 'submitting'}
                         variant="ghost"
-                        size="sm"
+                        size="xs"
                         className="h-auto min-w-0 w-full justify-start py-2 text-foreground hover:bg-muted"
                       >
                         <span className="flex min-w-0 w-full flex-col items-start text-left">
@@ -399,7 +395,7 @@ export function ProxyReviewRequestItem({
                 }}
                 disabled={status === 'submitting'}
                 variant="ghost"
-                size="sm"
+                size="xs"
                 className="h-auto min-w-0 w-full justify-start py-2 text-foreground hover:bg-muted"
               >
                 <span className="flex min-w-0 w-full flex-col items-start text-left">

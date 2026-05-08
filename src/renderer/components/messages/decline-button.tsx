@@ -10,6 +10,7 @@ interface DeclineButtonProps {
   className?: string
   label?: string
   showIcon?: boolean
+  size?: 'sm' | 'xs'
   'data-testid'?: string
 }
 
@@ -19,6 +20,7 @@ export function DeclineButton({
   className,
   label = 'Decline',
   showIcon = true,
+  size = 'xs',
   'data-testid': testId
 }: DeclineButtonProps) {
   const [open, setOpen] = useState(false)
@@ -36,7 +38,7 @@ export function DeclineButton({
         onClick={() => onDecline()}
         disabled={disabled}
         variant="outline"
-        size="sm"
+        size={size}
         className={cn('rounded-r-none border-r-0', className)}
         data-testid={testId}
       >
@@ -48,7 +50,7 @@ export function DeclineButton({
           <Button
             disabled={disabled}
             variant="outline"
-            size="sm"
+            size={size}
             className={cn('rounded-l-none px-1.5', className)}
             data-testid={testId ? `${testId}-chevron` : undefined}
           >

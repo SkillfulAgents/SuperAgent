@@ -24,9 +24,41 @@ const mockCreateSession = {
   isPending: false,
 }
 
+// Default to "loaded, empty" — most tests don't care, and the new
+// first-session Opus tests want this state. Specific tests that need a
+// non-empty list override mockSessionsData before rendering.
+let mockSessionsData: unknown = []
+
 vi.mock('@renderer/hooks/use-sessions', () => ({
   useCreateSession: () => mockCreateSession,
-  useSessions: () => ({ data: [] }),
+  useSessions: () => ({ data: mockSessionsData }),
+  useDeleteSession: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+  useSession: () => ({ data: undefined }),
+  useUpdateSessionName: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+}))
+
+// Settings drive ComposerOptions: composerModels comes from llmProviderStatus,
+// fallback model from settings.models.agentModel.
+vi.mock('@renderer/hooks/use-settings', () => ({
+  useSettings: () => ({
+    data: {
+      llmProvider: 'anthropic',
+      models: { agentModel: 'sonnet' },
+      llmProviderStatus: [
+        {
+          id: 'anthropic',
+          name: 'Anthropic',
+          isConfigured: true,
+          availableModels: [],
+          composerModels: [
+            { family: 'opus', modelId: 'opus', label: 'Opus' },
+            { family: 'sonnet', modelId: 'sonnet', label: 'Sonnet' },
+            { family: 'haiku', modelId: 'haiku', label: 'Haiku' },
+          ],
+        },
+      ],
+    },
+  }),
 }))
 
 vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
@@ -37,8 +69,8 @@ vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
 
 vi.mock('@renderer/context/selection-context', () => ({
   useSelection: () => ({
-    selectScheduledTask: vi.fn(),
-    selectSession: vi.fn(),
+    setAgent: vi.fn(),
+    setView: vi.fn(),
     consumePendingDraft: vi.fn(() => null),
   }),
 }))
@@ -85,6 +117,10 @@ vi.mock('@renderer/hooks/use-message-composer', () => ({
     capturedComposerOptions = opts
     return mockComposer
   },
+}))
+
+vi.mock('@renderer/hooks/use-start-onboarding-session', () => ({
+  useStartOnboardingSession: () => vi.fn(),
 }))
 
 vi.mock('@renderer/hooks/use-humanized-cron', () => ({
@@ -140,6 +176,7 @@ describe('AgentHome', () => {
     mockCanUseAgent = true
     mockCanAdminAgent = false
     capturedComposerOptions = undefined
+    mockSessionsData = []
   })
 
   // --- Rendering ---
@@ -256,13 +293,24 @@ describe('AgentHome', () => {
 
   // --- Auto-expand ---
 
-  it('auto-expands when the message is very long', () => {
-    mockComposer.message = 'one\ntwo\nthree\nfour\nfive'
-    renderWithProviders(
-      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
-    )
+  it('auto-expands to full view when the textarea overflows its max-height', () => {
+    // jsdom doesn't compute layout, so stub scrollHeight > clientHeight to
+    // simulate content overflowing the CSS-driven 6-line cap.
+    const origScroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight')
+    const origClient = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight')
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', { configurable: true, get: () => 200 })
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => 120 })
+    try {
+      mockComposer.message = 'this message would overflow six lines in a real browser'
+      renderWithProviders(
+        <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+      )
 
-    expect(screen.getByTestId('home-message-input').className).toContain('min-h-[50vh]')
+      expect(screen.getByTestId('home-message-input').className).toContain('min-h-[50vh]')
+    } finally {
+      if (origScroll) Object.defineProperty(HTMLElement.prototype, 'scrollHeight', origScroll)
+      if (origClient) Object.defineProperty(HTMLElement.prototype, 'clientHeight', origClient)
+    }
   })
 
   // --- View-only mode ---
@@ -373,11 +421,13 @@ describe('AgentHome', () => {
       await capturedComposerOptions.onSubmit('Hello agent')
     })
 
-    expect(mockCreateSession.mutateAsync).toHaveBeenCalledWith({
-      agentSlug: 'test-agent',
-      message: 'Hello agent',
-      effort: 'high',
-    })
+    expect(mockCreateSession.mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentSlug: 'test-agent',
+        message: 'Hello agent',
+        effort: 'high',
+      })
+    )
     expect(onSessionCreated).toHaveBeenCalledWith('session-123', 'Hello agent')
   })
 
@@ -396,5 +446,63 @@ describe('AgentHome', () => {
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     expect(screen.getByTitle('Add files')).toBeDisabled()
+  })
+
+  // --- First-session Opus default ---
+  //
+  // When AgentHome's session list has finished loading and is empty, the
+  // composer should default to Opus regardless of the user's "Default Model"
+  // setting. Once at least one session exists, the default reverts to the
+  // user's setting (the standard hierarchy in useComposerOptions).
+
+  it('defaults the first-session composer to Opus when sessions have loaded as empty', async () => {
+    mockSessionsData = []
+    mockComposer.canSubmit = true
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    await act(async () => {
+      await capturedComposerOptions.onSubmit('Hello')
+    })
+
+    expect(mockCreateSession.mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'opus' })
+    )
+  })
+
+  it('uses the settings default model (not Opus) when at least one session exists', async () => {
+    mockSessionsData = [{ id: 'existing-1', name: 'Prior session', createdAt: '2025-01-01' }]
+    mockComposer.canSubmit = true
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    await act(async () => {
+      await capturedComposerOptions.onSubmit('Hello')
+    })
+
+    // Settings default is sonnet in the test fixture; should NOT be Opus.
+    expect(mockCreateSession.mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'sonnet' })
+    )
+  })
+
+  it('does not force Opus while sessions are still loading (data is undefined)', async () => {
+    mockSessionsData = undefined  // useSessions hasn't resolved yet
+    mockComposer.canSubmit = true
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    await act(async () => {
+      await capturedComposerOptions.onSubmit('Hello')
+    })
+
+    // Pre-load: should fall back to settings default, not pre-emptively force Opus.
+    // (Avoids flicker if a slow load eventually returns existing sessions.)
+    expect(mockCreateSession.mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'sonnet' })
+    )
   })
 })

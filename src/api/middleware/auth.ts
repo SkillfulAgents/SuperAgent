@@ -17,7 +17,7 @@ async function getAuthLazy() {
 
 // Re-export from shared types so existing consumers (webhook-triggers.ts etc.) keep working
 export { type AgentRole, ROLE_HIERARCHY, hasMinRole } from '@shared/lib/types/agent'
-import { type AgentRole, ROLE_HIERARCHY, hasMinRole } from '@shared/lib/types/agent'
+import { type AgentRole, hasMinRole } from '@shared/lib/types/agent'
 
 /**
  * Authenticated — verifies user session and attaches user to context.

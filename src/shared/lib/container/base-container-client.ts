@@ -13,10 +13,10 @@ import type {
   ContainerSession,
   ContainerStats,
   CreateSessionOptions,
-  EffortLevel,
   StartOptions,
   StreamMessage,
 } from './types'
+import type { RuntimeOptions } from './runtime-options'
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { getSettings } from '@shared/lib/config/settings'
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
@@ -835,9 +835,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return response.ok
   }
 
-  async sendMessage(sessionId: string, content: string, uuid?: string, effort?: EffortLevel): Promise<void> {
+  async sendMessage(sessionId: string, content: string, uuid?: string, options?: RuntimeOptions): Promise<void> {
     const port = await this.getPortOrThrow()
     const timeoutMs = 30000 // 30 second timeout
+    const effort = options?.effort
+    const model = options?.model
 
     try {
       const controller = new AbortController()
@@ -848,7 +850,12 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content, ...(uuid ? { uuid } : {}), ...(effort ? { effort } : {}) }),
+          body: JSON.stringify({
+            content,
+            ...(uuid ? { uuid } : {}),
+            ...(effort ? { effort } : {}),
+            ...(model ? { model } : {}),
+          }),
           signal: controller.signal,
         }
       )

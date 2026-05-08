@@ -286,9 +286,16 @@ export async function loadDailyUsageData(options: LoadOptions): Promise<DailyUsa
   // Convert to output format
   const results: DailyUsageData[] = []
   for (const [date, day] of dateMap) {
+    // Round cost values to 10 decimal places (sub-nanocent precision) at the
+    // output boundary. Cost is summed by `+=` across files read concurrently;
+    // floating-point addition is non-associative, so completion-order jitter
+    // produces 1-ULP differences (10⁻¹⁵ scale) that break idempotence tests
+    // and make displayed values jitter run-to-run. Rounding here is well below
+    // any visible precision and makes the function deterministic.
+    const round = (n: number) => Math.round(n * 1e10) / 1e10
     const modelBreakdowns: ModelBreakdown[] = []
     for (const [modelName, data] of day.models) {
-      modelBreakdowns.push({ modelName, ...data })
+      modelBreakdowns.push({ modelName, ...data, cost: round(data.cost) })
     }
 
     results.push({
@@ -297,7 +304,7 @@ export async function loadDailyUsageData(options: LoadOptions): Promise<DailyUsa
       outputTokens: day.outputTokens,
       cacheCreationTokens: day.cacheCreationTokens,
       cacheReadTokens: day.cacheReadTokens,
-      totalCost: day.totalCost,
+      totalCost: round(day.totalCost),
       modelBreakdowns,
     })
   }

@@ -5,14 +5,21 @@ import { AnalyticsProvider } from './context/analytics-context'
 import { AuthGate } from './components/auth/auth-gate'
 import { SelectionProvider } from './context/selection-context'
 import { ConnectivityProvider } from './context/connectivity-context'
-import { DialogProvider } from './context/dialog-context'
+import { DialogProvider, useDialogs } from './context/dialog-context'
+import { UpdateStatusProvider } from './context/update-status-context'
+import { UpdateToastNotifier } from './components/update-toast-notifier'
 import { DraftsProvider } from './context/drafts-context'
+import { SearchProvider } from './context/search-context'
 import { AppSidebar } from './components/layout/app-sidebar'
 import { MainContent } from './components/layout/main-content'
 import { WindowControls } from './components/layout/window-controls'
+import { GlobalSettingsPage } from './components/settings/global-settings-page'
+import { ContainerSetupHandler } from './components/settings/container-setup-handler'
 import { SidebarProvider, SidebarInset } from './components/ui/sidebar'
+import { Toaster } from './components/ui/sonner'
 import { TrayNavigationHandler } from './components/tray-navigation-handler'
 import { GlobalNotificationHandler } from './components/notifications/global-notification-handler'
+import { OnboardingProvider } from './context/onboarding-context'
 import { GettingStartedWizard } from './components/wizard/getting-started-wizard'
 import { ErrorBoundary } from './components/ui/error-boundary'
 import { useUserSettings } from './hooks/use-user-settings'
@@ -66,21 +73,43 @@ function AppContent() {
 
   return (
     <DialogProvider onOpenWizard={() => setWizardOpen(true)}>
-      <WindowControls />
-      {wizardOpen ? (
-        <GettingStartedWizard onClose={() => setWizardOpen(false)} />
-      ) : (
-        <TrayNavigationHandler>
-          <GlobalNotificationHandler />
-          <SidebarProvider className="h-screen">
-            <AppSidebar />
-            <SidebarInset className="min-w-0">
-              <MainContent />
-            </SidebarInset>
-          </SidebarProvider>
-        </TrayNavigationHandler>
-      )}
+      <UpdateStatusProvider>
+        <OnboardingProvider>
+          <WindowControls />
+          <UpdateToastNotifier />
+          {wizardOpen ? (
+            <GettingStartedWizard onClose={() => setWizardOpen(false)} />
+          ) : (
+            <AppShell />
+          )}
+        </OnboardingProvider>
+      </UpdateStatusProvider>
     </DialogProvider>
+  )
+}
+
+function AppShell() {
+  const { settingsOpen, setSettingsOpen, settingsTab, openWizard } = useDialogs()
+
+  return (
+    <TrayNavigationHandler>
+      <GlobalNotificationHandler />
+      <ContainerSetupHandler />
+      {settingsOpen ? (
+        <GlobalSettingsPage
+          onClose={() => setSettingsOpen(false)}
+          onOpenWizard={openWizard}
+          initialSection={settingsTab}
+        />
+      ) : (
+        <SidebarProvider className="h-screen">
+          <AppSidebar />
+          <SidebarInset className="min-w-0">
+            <MainContent />
+          </SidebarInset>
+        </SidebarProvider>
+      )}
+    </TrayNavigationHandler>
   )
 }
 
@@ -93,9 +122,12 @@ export default function App() {
             <SelectionProvider>
               <ConnectivityProvider>
                 <DraftsProvider>
-                  <ErrorBoundary>
-                    <AppContent />
-                  </ErrorBoundary>
+                  <SearchProvider>
+                    <ErrorBoundary>
+                      <AppContent />
+                      <Toaster />
+                    </ErrorBoundary>
+                  </SearchProvider>
                 </DraftsProvider>
               </ConnectivityProvider>
             </SelectionProvider>

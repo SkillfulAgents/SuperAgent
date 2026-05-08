@@ -664,6 +664,55 @@ describe('/get-sessions', () => {
     const res = await authedFetch('/x-agent/get-sessions', { slug: TARGET_SLUG })
     expect(res.status).toBe(200)
   })
+
+  it('global read=allow (target=null) lets get-sessions through with no per-target policy', async () => {
+    const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+    await setPolicy(CALLER_SLUG, 'read', null, 'allow')
+    mockListSessions.mockResolvedValue([])
+    const res = await authedFetch('/x-agent/get-sessions', { slug: TARGET_SLUG })
+    expect(res.status).toBe(200)
+  })
+
+  it('per-target block overrides a global read=allow', async () => {
+    const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+    await setPolicy(CALLER_SLUG, 'read', null, 'allow')
+    await setPolicy(CALLER_SLUG, 'read', TARGET_SLUG, 'block')
+    mockListSessions.mockResolvedValue([])
+    const res = await authedFetch('/x-agent/get-sessions', { slug: TARGET_SLUG })
+    expect(res.status).toBe(403)
+  })
+
+  it('paginates with limit and offset, returns total', async () => {
+    const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+    await setPolicy(CALLER_SLUG, 'read', TARGET_SLUG, 'allow')
+    const all = Array.from({ length: 75 }, (_, i) => ({
+      id: `sess-${i}`,
+      name: `S${i}`,
+      createdAt: new Date(),
+      lastActivityAt: new Date(),
+      messageCount: i,
+    }))
+    mockListSessions.mockResolvedValue(all)
+
+    const res1 = await authedFetch('/x-agent/get-sessions', { slug: TARGET_SLUG })
+    const body1 = await res1.json()
+    expect(body1.sessions).toHaveLength(50)
+    expect(body1.total).toBe(75)
+    expect(body1.offset).toBe(0)
+    expect(body1.limit).toBe(50)
+    expect(body1.sessions[0].id).toBe('sess-0')
+
+    const res2 = await authedFetch('/x-agent/get-sessions', { slug: TARGET_SLUG, offset: 50 })
+    const body2 = await res2.json()
+    expect(body2.sessions).toHaveLength(25)
+    expect(body2.total).toBe(75)
+    expect(body2.sessions[0].id).toBe('sess-50')
+
+    const res3 = await authedFetch('/x-agent/get-sessions', { slug: TARGET_SLUG, limit: 10, offset: 5 })
+    const body3 = await res3.json()
+    expect(body3.sessions).toHaveLength(10)
+    expect(body3.sessions[0].id).toBe('sess-5')
+  })
 })
 
 describe('/get-transcript', () => {

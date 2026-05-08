@@ -8,12 +8,14 @@ export function WorkingDots({ dotClassName = 'bg-green-500' }: { dotClassName?: 
   )
 }
 
-export function AwaitingDot({ size = 'sm' }: { size?: 'sm' | 'default' }) {
-  const dim = size === 'default' ? 'h-2 w-2' : 'h-1.5 w-1.5'
+export function AwaitingDot() {
+  // 12px outer wrapper reserves layout room around the 6px dot so the
+  // `animate-ping` halo (rendered as a same-sized sibling that scales via transform)
+  // isn't clipped by the parent row's `overflow-hidden`.
   return (
-    <span className={`relative flex shrink-0 ${dim}`} role="img" aria-label="needs input">
-      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-orange-500 opacity-75" />
-      <span className={`relative inline-flex rounded-full bg-orange-500 ${dim}`} />
+    <span className="relative flex items-center justify-center shrink-0 h-3 w-3" role="img" aria-label="needs input">
+      <span className="animate-ping absolute inline-flex h-1.5 w-1.5 rounded-full bg-orange-500 opacity-75" />
+      <span className="relative inline-flex rounded-full bg-orange-500 h-1.5 w-1.5" />
     </span>
   )
 }

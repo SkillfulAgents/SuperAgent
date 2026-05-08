@@ -111,6 +111,14 @@ Use get_available_triggers first to discover what triggers are available for an 
       .record(z.string(), z.unknown())
       .optional()
       .describe('Optional configuration for the trigger (depends on trigger type)'),
+    model: z
+      .enum(['opus', 'sonnet', 'haiku'])
+      .optional()
+      .describe('Optional model family to use when this trigger fires. If not specified, uses the global default.'),
+    effort: z
+      .enum(['low', 'medium', 'high', 'xhigh', 'max'])
+      .optional()
+      .describe('Optional effort level when this trigger fires. If not specified, uses the global default.'),
   },
   async (args) => {
     console.log(`[setup_trigger] Setting up ${args.trigger_type} trigger`)
@@ -140,6 +148,8 @@ Use get_available_triggers first to discover what triggers are available for an 
           prompt: args.prompt,
           name: args.name,
           trigger_config: args.trigger_config,
+          model: args.model,
+          effort: args.effort,
         },
       )
 

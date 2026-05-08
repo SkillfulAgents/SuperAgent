@@ -2,15 +2,18 @@
  * Global Notification Handler
  *
  * Connects to the global SSE stream and handles:
- * - OS notifications (when tab not visible OR not viewing the notification's session)
+ * - OS notifications (gated by session focus — actionable types also fire
+ *   when the window is unfocused at the OS level)
+ * - OS notification action button dispatch (Approve/Deny → API)
  * - Session state changes (active/idle) - updates sidebar
  * - Agent status changes (running/stopped) - updates agent list
  * - Scheduled task updates - updates task list
  */
 
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { getApiBaseUrl, isElectron } from '@renderer/lib/env'
+import { apiFetch } from '@renderer/lib/api'
 import { showOSNotification } from '@renderer/lib/os-notifications'
 import { useSelection } from '@renderer/context/selection-context'
 import { useUser } from '@renderer/context/user-context'
@@ -18,6 +21,12 @@ import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { setMountWarning } from '@renderer/hooks/use-mount-warnings'
 import type { UserSettingsData } from '@shared/lib/services/user-settings-service'
+import {
+  NotificationActionContextSchema,
+  NotificationEventSchema,
+  NotificationActionsArraySchema,
+  NotificationMetadataSchema,
+} from '@shared/lib/notifications/notification-action-schema'
 import { useRenderTracker } from '@renderer/lib/perf'
 
 function isNotificationTypeEnabled(
@@ -37,7 +46,8 @@ function isNotificationTypeEnabled(
 export function GlobalNotificationHandler() {
   useRenderTracker('GlobalNotificationHandler')
   const queryClient = useQueryClient()
-  const { selectedSessionId } = useSelection()
+  const { view, setAgent } = useSelection()
+  const selectedSessionId = view.kind === 'session' ? view.id : null
   const { data: unreadData } = useUnreadNotificationCount()
   const { data: userSettings } = useUserSettings()
   const { canAccessAgent } = useUser()
@@ -56,6 +66,93 @@ export function GlobalNotificationHandler() {
       window.electronAPI.setBadgeCount(count)
     }
   }, [unreadData?.count])
+
+  // Dispatch a single notification interaction event. Shared between live
+  // events (onNotificationEvent) and queued events flushed on mount.
+  // Validates both the event envelope and the embedded action context with
+  // Zod — a malicious / corrupted payload (e.g. crafted SSE injection) is
+  // dropped at this boundary instead of trusted as-is.
+  const dispatchNotificationEvent = useCallback((rawEvent: unknown) => {
+    const eventResult = NotificationEventSchema.safeParse(rawEvent)
+    if (!eventResult.success) return
+    const event = eventResult.data
+
+    // Mark the DB notification as read on ANY interaction (body click or
+    // action button) — otherwise the unread badge keeps counting events
+    // the user has clearly seen and acted on. Uses the loose metadata
+    // schema so this works regardless of `kind`.
+    const metaResult = NotificationMetadataSchema.safeParse(event.context)
+    const notificationId = metaResult.success ? metaResult.data.notificationId : undefined
+    if (notificationId) {
+      apiFetch(`/api/notifications/${notificationId}/read`, { method: 'POST' })
+        .then((res) => {
+          if (res.ok) {
+            queryClient.invalidateQueries({ queryKey: ['notifications'] })
+          }
+        })
+        .catch(() => {
+          // Best-effort: a stale notificationId is fine to silently ignore.
+        })
+    }
+
+    // Action button interactions also dispatch a proxy-review decision.
+    if (event.type !== 'action' || event.actionIndex === undefined) return
+
+    const ctxResult = NotificationActionContextSchema.safeParse(event.context)
+    if (!ctxResult.success) return
+    const ctx = ctxResult.data
+    if (ctx.kind !== 'proxy_review') return
+
+    // Decision lookup is by index into ctx.decisions (set by the trigger),
+    // not a hardcoded `index === 0 ? allow : deny`. Reordering the action
+    // buttons no longer flips approve/deny silently. (Review S6.)
+    const decision = ctx.decisions?.[event.actionIndex]
+    if (decision !== 'allow' && decision !== 'deny') return
+
+    apiFetch(`/api/agents/${ctx.agentSlug}/proxy-review/${ctx.reviewId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision }),
+    })
+      .then((res) => {
+        if (!res.ok && res.status !== 404) {
+          console.error('[notification-action] Failed to submit proxy review decision:', res.status)
+        }
+        queryClient.invalidateQueries({ queryKey: ['proxy-reviews', ctx.agentSlug] })
+      })
+      .catch((err) => {
+        console.error('[notification-action] Error submitting proxy review decision:', err)
+      })
+  }, [queryClient])
+
+  // Dispatch OS notification action button events (macOS only) back into the
+  // app. For proxy reviews this means submitting Approve/Deny without the user
+  // having to focus the window.
+  useEffect(() => {
+    if (!isElectron() || !window.electronAPI?.onNotificationEvent) return
+    return window.electronAPI.onNotificationEvent(dispatchNotificationEvent)
+  }, [dispatchNotificationEvent])
+
+  // On mount, drain any notification interactions that fired while the
+  // window was closed (the main-process SSE fallback queues them since the
+  // renderer's IPC listeners don't yet exist at that point).
+  const flushedRef = useRef(false)
+  useEffect(() => {
+    if (flushedRef.current) return
+    flushedRef.current = true
+    if (!isElectron() || !window.electronAPI?.flushPendingNotificationEvents) return
+    window.electronAPI.flushPendingNotificationEvents().then(({ events, navigations }) => {
+      for (const nav of navigations) {
+        setAgent(
+          nav.agentSlug,
+          nav.sessionId ? { kind: 'session', id: nav.sessionId } : { kind: 'home' },
+        )
+      }
+      for (const evt of events) {
+        dispatchNotificationEvent(evt)
+      }
+    })
+  }, [dispatchNotificationEvent, setAgent])
 
   useEffect(() => {
     const baseUrl = getApiBaseUrl()
@@ -84,17 +181,51 @@ export function GlobalNotificationHandler() {
             const isViewingNotificationSession = notificationSessionId === selectedSessionIdRef.current
             const isTabVisible = document.visibilityState === 'visible'
 
+            const notificationType = data.notificationType as string | undefined
+
+            // For actionable types (`session_waiting`) we also surface the
+            // notification when the window is on screen but unfocused —
+            // `document.visibilityState` stays 'visible' on alt-tab, so
+            // without `hasFocus()` the user can be "looking at" a session
+            // they're actually ignoring while in another app, and miss
+            // the prompt. For chattier types (chat-integration, etc.) we
+            // keep the visibility-only gate to avoid notification spam
+            // for users who keep the window in a side panel. (Review S4.)
+            const isAppActive =
+              notificationType === 'session_waiting'
+                ? isTabVisible && document.hasFocus()
+                : isTabVisible
+
             // Show OS notification if:
             // 1. User has access to the notification's agent
             // 2. User's notification settings allow this type
-            // 3. Tab is hidden OR not viewing the notification's session
-            const notificationType = data.notificationType as string | undefined
+            // 3. App not active OR not viewing the notification's session
             if (
               isNotificationTypeEnabled(userSettingsRef.current, notificationType ?? '') &&
-              (!isTabVisible || !isViewingNotificationSession)
+              (!isAppActive || !isViewingNotificationSession)
             ) {
               const { title, body } = data as { title: string; body: string }
-              showOSNotification(title, body)
+              // Validate actions at the SSE boundary. A malicious / buggy
+              // broadcaster can't inject a 1000-button notification with
+              // multi-KB labels — schema caps to MAX_NOTIFICATION_ACTIONS
+              // and MAX_NOTIFICATION_ACTION_TEXT_LENGTH (review N2).
+              const actionsResult = NotificationActionsArraySchema.safeParse(data.actions)
+              const actions = actionsResult.success && actionsResult.data.length > 0
+                ? actionsResult.data
+                : undefined
+              const baseContext = (data.actionContext as Record<string, unknown> | undefined) ?? {}
+              // Always carry agentSlug/sessionId in context so clicking the
+              // notification navigates to the right place (otherwise main just
+              // focuses the window and drops the user on the homepage). Also
+              // carry notificationId so the dispatcher can mark the DB record
+              // as read when the user interacts with the OS notification.
+              const context = {
+                ...baseContext,
+                agentSlug: agentSlug ?? baseContext.agentSlug,
+                sessionId: notificationSessionId ?? baseContext.sessionId,
+                notificationId: data.notificationId ?? baseContext.notificationId,
+              }
+              showOSNotification(title, body, undefined, { actions, context })
             }
             break
           }

@@ -74,6 +74,7 @@ export interface AppPreferences {
   useHostBrowser?: boolean
   hostBrowserProvider?: HostBrowserProviderId
   chromeProfileId?: string
+  chromeHeadless?: boolean
   allowPrereleaseUpdates?: boolean
   theme?: 'system' | 'light' | 'dark'
   maxBrowserTabs?: number
@@ -152,7 +153,7 @@ export interface AnalyticsTarget {
 }
 
 export type { LlmProviderId } from '../llm-provider/base-llm-provider'
-import type { LlmProviderId } from '../llm-provider/base-llm-provider'
+import type { LlmProviderId, ComposerModel } from '../llm-provider/base-llm-provider'
 
 export interface PlatformAuthSettings {
   token: string
@@ -215,6 +216,7 @@ export interface LlmProviderInfo {
   name: string
   isConfigured: boolean
   availableModels: { value: string; label: string }[]
+  composerModels: ComposerModel[]
 }
 
 export interface GlobalSettingsResponse {
@@ -316,9 +318,16 @@ export function loadSettings(): AppSettings {
         }
       }
 
-      // Migrate useHostBrowser → hostBrowserProvider
+      // Migrate useHostBrowser → hostBrowserProvider. Delete the deprecated
+      // field so the migration doesn't re-fire on every load and clobber a
+      // later user choice of "Container (built-in)" (which leaves
+      // hostBrowserProvider undefined).
+      // TODO legacy migration - delete soon
       if (loaded.app?.useHostBrowser && !loaded.app?.hostBrowserProvider) {
         loaded.app.hostBrowserProvider = 'chrome'
+      }
+      if (loaded.app && 'useHostBrowser' in loaded.app) {
+        delete loaded.app.useHostBrowser
       }
 
       // Merge with defaults to ensure all fields exist

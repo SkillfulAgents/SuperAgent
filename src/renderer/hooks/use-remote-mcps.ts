@@ -80,6 +80,32 @@ export function useAddRemoteMcp() {
 }
 
 /**
+ * Rename a remote MCP server
+ */
+export function useRenameRemoteMcp() {
+  const queryClient = useQueryClient()
+
+  return useMutation<void, Error, { mcpId: string; name: string }>({
+    mutationFn: async ({ mcpId, name }) => {
+      const res = await apiFetch(`/api/remote-mcps/${mcpId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      })
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({}))
+        throw new Error(error.error || 'Failed to rename MCP server')
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['remote-mcps'] })
+      // TODO: invalidate only affected agents once we can scope this by mcpId
+      queryClient.invalidateQueries({ queryKey: ['agent-remote-mcps'] })
+    },
+  })
+}
+
+/**
  * Delete a remote MCP server
  */
 export function useDeleteRemoteMcp() {
@@ -95,9 +121,11 @@ export function useDeleteRemoteMcp() {
         throw new Error(error.error || 'Failed to delete MCP server')
       }
     },
-    onSuccess: () => {
+    onSuccess: (_, id) => {
       queryClient.invalidateQueries({ queryKey: ['remote-mcps'] })
       queryClient.invalidateQueries({ queryKey: ['agent-remote-mcps'] })
+      queryClient.removeQueries({ queryKey: ['mcp-agents', id] })
+      queryClient.removeQueries({ queryKey: ['tool-policies', id] })
     },
   })
 }
@@ -120,8 +148,11 @@ export function useAssignMcpToAgent() {
         throw new Error(error.error || 'Failed to assign MCP to agent')
       }
     },
-    onSuccess: (_, { agentSlug }) => {
+    onSuccess: (_, { agentSlug, mcpIds }) => {
       queryClient.invalidateQueries({ queryKey: ['agent-remote-mcps', agentSlug] })
+      for (const id of mcpIds) {
+        queryClient.invalidateQueries({ queryKey: ['mcp-agents', id] })
+      }
     },
   })
 }
@@ -142,9 +173,25 @@ export function useRemoveMcpFromAgent() {
         throw new Error(error.error || 'Failed to remove MCP from agent')
       }
     },
-    onSuccess: (_, { agentSlug }) => {
+    onSuccess: (_, { agentSlug, mcpId }) => {
       queryClient.invalidateQueries({ queryKey: ['agent-remote-mcps', agentSlug] })
+      queryClient.invalidateQueries({ queryKey: ['mcp-agents', mcpId] })
     },
+  })
+}
+
+/**
+ * Hook to fetch agent slugs that have an MCP server mapped
+ */
+export function useMcpAgents(mcpId: string) {
+  return useQuery<{ agentSlugs: string[] }>({
+    queryKey: ['mcp-agents', mcpId],
+    queryFn: async () => {
+      const res = await apiFetch(`/api/remote-mcps/${mcpId}/agents`)
+      if (!res.ok) throw new Error('Failed to fetch MCP agents')
+      return res.json()
+    },
+    enabled: !!mcpId,
   })
 }
 
@@ -171,6 +218,7 @@ export function useDiscoverMcpTools() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['remote-mcps'] })
+      queryClient.invalidateQueries({ queryKey: ['agent-remote-mcps'] })
     },
   })
 }
@@ -194,6 +242,7 @@ export function useTestMcpConnection() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['remote-mcps'] })
+      queryClient.invalidateQueries({ queryKey: ['agent-remote-mcps'] })
     },
   })
 }
@@ -213,7 +262,7 @@ export function useInvalidateRemoteMcps() {
  * Initiate OAuth flow for an MCP server
  */
 export function useInitiateMcpOAuth() {
-  return useMutation<{ redirectUrl: string; state: string }, Error, { mcpId?: string; name?: string; url?: string; electron?: boolean }>({
+  return useMutation<{ redirectUrl: string; state: string }, Error, { mcpId?: string; name?: string; url?: string; electron?: boolean; clientName?: string; clientId?: string; clientSecret?: string }>({
     mutationFn: async (data) => {
       const res = await apiFetch('/api/remote-mcps/initiate-oauth', {
         method: 'POST',

@@ -96,6 +96,9 @@ export interface SessionMetadata {
   slashCommands?: SlashCommandInfo[]
   // Last effort level used by the user on this session (seeds the composer on reload)
   effort?: EffortLevel
+  // Last model used by the user on this session (seeds the composer on reload).
+  // Stored as the provider's pinned ID, not the family.
+  model?: string
   // X-Agent: present when this session was created by another agent invoking this one
   invokedByAgentSlug?: string
 }
@@ -253,11 +256,11 @@ You are a helpful AI assistant.
 
 ## Preferences
 
-<!-- The agent can learn and note preferences here -->
+<!-- Add your preferences here — the agent will also append what it learns -->
 
 ## Project Notes
 
-<!-- The agent can add notes as it learns about the project -->
+<!-- Add project context here — the agent will also add notes as it learns -->
 `
 
 /**

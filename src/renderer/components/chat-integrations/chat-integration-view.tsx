@@ -47,7 +47,8 @@ export function ChatIntegrationView({ integrationId, agentSlug }: ChatIntegratio
   const deleteIntegration = useDeleteChatIntegration()
   const updateIntegration = useUpdateChatIntegration()
   const clearSession = useClearChatSession()
-  const { selectedChatSessionId, handleChatIntegrationDeleted, selectChatSession } = useSelection()
+  const { view, handleChatIntegrationDeleted, setView } = useSelection()
+  const selectedChatSessionId = view.kind === 'chat' ? view.sessionId ?? null : null
   const { canUseAgent } = useUser()
   const canManage = canUseAgent(agentSlug)
   const [clearError, setClearError] = useState<string | null>(null)
@@ -205,7 +206,7 @@ export function ChatIntegrationView({ integrationId, agentSlug }: ChatIntegratio
                   <div className="flex items-center gap-2 flex-1 min-w-0">
                     <select
                       value={activeSessionId}
-                      onChange={(e) => selectChatSession(integrationId, e.target.value)}
+                      onChange={(e) => setView({ kind: 'chat', integrationId, sessionId: e.target.value })}
                       aria-label="Select chat session"
                       className="bg-transparent border rounded px-1.5 py-0.5 text-xs text-muted-foreground cursor-pointer"
                     >

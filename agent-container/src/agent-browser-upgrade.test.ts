@@ -44,6 +44,18 @@ describe('Dockerfile agent-browser config', () => {
       expect(line.trim().startsWith('else') || line.trim().startsWith('npx playwright install')).toBe(true)
     }
   })
+
+  it('points agent-browser at the chromium-current symlink', () => {
+    // agent-browser's built-in chromium discovery only finds the Chrome for
+    // Testing layout (chrome-linux64/chrome) under PLAYWRIGHT_BROWSERS_PATH.
+    // Playwright actually installs to chrome-linux/chrome, so discovery misses
+    // and `agent-browser` reports "Chrome not found". We work around that by
+    // setting AGENT_BROWSER_EXECUTABLE_PATH to the stable chromium-current
+    // symlink the Dockerfile sets up after `playwright install`. See
+    // commit 8312b4b1 for the regression that removed the previous workaround
+    // (a chrome-linux64 → chrome-linux symlink).
+    expect(dockerfile).toMatch(/AGENT_BROWSER_EXECUTABLE_PATH=\/opt\/playwright-browsers\/chromium-current/)
+  })
 })
 
 describe('rewriteTabNewCommand removed', () => {

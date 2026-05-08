@@ -14,10 +14,12 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from '@renderer/components/ui/dialog'
 import { SCOPE_MAPS } from '@shared/lib/proxy/scope-maps'
+import { SCOPE_DESCRIPTIONS } from '@shared/lib/proxy/scope-descriptions'
 import { PolicyDecisionToggle } from '@renderer/components/ui/policy-decision-toggle'
 import { HighlightMatch } from '@renderer/components/ui/highlight-match'
 
@@ -55,23 +57,31 @@ export function ScopePolicyEditor({
 
   // Get scopes from the scope map for this toolkit
   const provider = SCOPE_MAPS[toolkit]
-  const allScopes = provider
-    ? Array.isArray(provider.allScopes)
-      ? provider.allScopes
-      : Object.values(provider.allScopes).flat()
-    : []
+  const allScopes = useMemo(
+    () =>
+      provider
+        ? Array.isArray(provider.allScopes)
+          ? provider.allScopes
+          : Object.values(provider.allScopes).flat()
+        : [],
+    [provider],
+  )
 
-  // Build descriptions from scope map entries
-  const scopeDescriptions: Record<string, string> = {}
-  if (provider) {
-    for (const entry of provider.scopeMap) {
-      for (const scope of entry.sufficientScopes) {
-        if (!scopeDescriptions[scope] && entry.description) {
-          scopeDescriptions[scope] = entry.description
-        }
-      }
+  // For each scope, prefer the curated description; otherwise borrow the
+  // first endpoint description that mentions this scope.
+  const scopeDescriptions = useMemo(() => {
+    const curated = SCOPE_DESCRIPTIONS[toolkit] ?? {}
+    const descs: Record<string, string> = {}
+    for (const scope of allScopes) {
+      const desc =
+        curated[scope] ??
+        provider?.scopeMap.find(
+          (e) => e.description && e.sufficientScopes.includes(scope),
+        )?.description
+      if (desc) descs[scope] = desc
     }
-  }
+    return descs
+  }, [allScopes, toolkit, provider])
 
   // Fetch existing policies
   useEffect(() => {
@@ -109,7 +119,7 @@ export function ScopePolicyEditor({
         setPolicies(allScopes.map((scope) => ({ scope, decision: 'default' })))
         setLoading(false)
       })
-  }, [open, accountId, toolkit])
+  }, [open, accountId, allScopes])
 
   // Filtered policies
   const filteredPolicies = useMemo(() => {
@@ -165,6 +175,7 @@ export function ScopePolicyEditor({
       <DialogContent className="max-w-lg max-h-[80vh] overflow-hidden flex flex-col">
         <DialogHeader>
           {header ?? <DialogTitle className="capitalize">{toolkit} Scope Policies</DialogTitle>}
+          <DialogDescription className="sr-only">Configure per-scope access policies for {toolkit}</DialogDescription>
         </DialogHeader>
 
         {loading ? (

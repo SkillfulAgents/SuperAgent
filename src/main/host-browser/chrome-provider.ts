@@ -13,28 +13,51 @@ interface BrowserCandidate {
   paths: string[]
 }
 
+const WIN_LOCAL_APP_DATA = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')
+
 const BROWSER_CANDIDATES: Record<string, BrowserCandidate> = {
   darwin: {
     browser: 'chrome',
-    paths: ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'],
+    paths: [
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      path.join(os.homedir(), 'Applications', 'Google Chrome.app', 'Contents', 'MacOS', 'Google Chrome'),
+    ],
   },
   linux: {
     browser: 'chrome',
-    paths: ['/usr/bin/google-chrome', '/usr/bin/chromium-browser'],
+    paths: [
+      '/usr/bin/google-chrome',
+      '/usr/bin/chromium-browser',
+      '/usr/bin/google-chrome-stable',
+      '/usr/bin/chromium',
+      '/opt/google/chrome/chrome',
+      '/snap/bin/google-chrome',
+      '/snap/bin/chromium',
+    ],
   },
   win32: {
     browser: 'chrome',
-    paths: ['C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'],
+    paths: [
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      path.join(WIN_LOCAL_APP_DATA, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    ],
   },
 }
 
 interface BrowserInstance {
-  process: ChildProcess
+  // On linux/win32 we spawn Chrome directly; on darwin we go through `open -g -n -a`
+  // (so Chrome doesn't steal OS focus on launch), which means our spawned child is
+  // `open` itself and Chrome is reparented to launchd. In the darwin case we set
+  // process to null and rely on `pid` + a polling watcher for lifecycle.
+  process: ChildProcess | null
+  pid: number
   port: number
   proxyPort: number | null
   proxyServer: net.Server | null
   userDataDir: string
   stoppingIntentionally: boolean
+  externalCloseWatcher: NodeJS.Timeout | null
 }
 
 /**
@@ -262,59 +285,159 @@ export class ChromeProvider implements HostBrowserProvider {
     }
     fs.writeFileSync(prefsPath, JSON.stringify(prefs, null, 2))
 
-    const browserProcess = spawn(
-      this.detectedPath!,
-      [
-        `--remote-debugging-port=${port}`,
-        '--remote-debugging-address=0.0.0.0',
-        '--no-first-run',
-        '--no-default-browser-check',
-        `--user-data-dir=${userDataDir}`,
-        // Prevent Chrome from throttling rendering when the window is behind
-        // other windows. Without these, screencast frames stop flowing.
-        '--disable-backgrounding-occluded-windows',
-        '--disable-renderer-backgrounding',
-        '--disable-background-timer-throttling',
-        '--disable-features=CalculateNativeWinOcclusion,WebContentsOcclusion',
-        // Start with about:blank instead of chrome://newtab so agent-browser's
-        // target discovery sees a trackable page and reuses it rather than
-        // creating an extra tab (it filters out chrome:// URLs).
-        'about:blank',
-      ],
-      { detached: false, stdio: ['ignore', 'ignore', 'pipe'] }
-    )
+    const headless = options?.chromeHeadless === 'true'
+
+    const chromeArgs = [
+      `--remote-debugging-port=${port}`,
+      '--remote-debugging-address=0.0.0.0',
+      '--no-first-run',
+      '--no-default-browser-check',
+      `--user-data-dir=${userDataDir}`,
+      // Prevent Chrome from throttling rendering when the window is behind
+      // other windows. Without these, screencast frames stop flowing.
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
+      '--disable-background-timer-throttling',
+      '--disable-features=CalculateNativeWinOcclusion,WebContentsOcclusion',
+      // Start with about:blank instead of chrome://newtab so agent-browser's
+      // target discovery sees a trackable page and reuses it rather than
+      // creating an extra tab (it filters out chrome:// URLs).
+      'about:blank',
+    ]
+
+    if (headless) {
+      chromeArgs.unshift('--headless=new', '--window-size=1920,1080')
+      const chromeVersion = this.getChromeVersion()
+      if (chromeVersion) {
+        const platformUA = process.platform === 'win32'
+          ? 'Windows NT 10.0; Win64; x64'
+          : process.platform === 'darwin'
+            ? 'Macintosh; Intel Mac OS X 10_15_7'
+            : 'X11; Linux x86_64'
+        chromeArgs.push(
+          `--user-agent=Mozilla/5.0 (${platformUA}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`
+        )
+      }
+    }
 
     const spawnedAt = Date.now()
 
     // Collect stderr for diagnostics if Chrome fails to start
     const stderrChunks: Buffer[] = []
-    browserProcess.stderr?.on('data', (chunk: Buffer) => {
-      stderrChunks.push(chunk)
-    })
-
     // Track early process failure so waitForPort can report a useful error.
     // Initialise as `undefined` so we can distinguish "not exited yet" from
     // "exited with signal" (which Node reports as code === null).
     let earlyExitCode: number | null | undefined = undefined
     let earlyExitSignal: string | null = null
-    const earlyExitPromise = new Promise<never>((_, reject) => {
-      browserProcess.on('error', (err) => {
-        console.error(`[ChromeProvider] Browser process error for instance ${instanceId}:`, err)
-        const stderr = Buffer.concat(stderrChunks).toString().trim()
-        reject(new Error(
-          `Failed to spawn browser: ${err.message}${stderr ? `\nChrome stderr: ${stderr}` : ''}`
-        ))
+    let browserProcess: ChildProcess | null = null
+    let chromePid: number
+    let earlyExitPromise: Promise<never>
+    // For darwin we poll the Chrome PID for early death; clear this after the
+    // launch race resolves so polling doesn't leak.
+    let earlyExitInterval: NodeJS.Timeout | null = null
+
+    if (process.platform === 'darwin') {
+      // On macOS, spawning Chrome directly causes it to activate and steal OS focus
+      // from whatever app the user is currently in. `open -g -n -a` launches via
+      // LaunchServices in the background:
+      //   -g: don't bring the app to the foreground
+      //   -n: open a new instance even if Chrome is already running
+      //   -a: app bundle to open
+      // Chrome is reparented to launchd, so our child here is `open` (which exits
+      // shortly after dispatching the launch). We track Chrome by PID instead.
+      const appBundlePath = path.dirname(path.dirname(path.dirname(this.detectedPath!))) // .../Google Chrome.app
+
+      const openProc = spawn(
+        'open',
+        ['-g', '-n', '-a', appBundlePath, '--args', ...chromeArgs],
+        { detached: false, stdio: ['ignore', 'ignore', 'pipe'] }
+      )
+      const openStderr: Buffer[] = []
+      openProc.stderr?.on('data', (chunk: Buffer) => { openStderr.push(chunk) })
+
+      try {
+        await new Promise<void>((resolve, reject) => {
+          openProc.on('error', (err) => reject(new Error(`Failed to invoke 'open': ${err.message}`)))
+          openProc.on('exit', (code) => {
+            const stderr = Buffer.concat(openStderr).toString().trim()
+            if (code === 0) resolve()
+            else reject(new Error(`'open' exited with code ${code}${stderr ? `: ${stderr}` : ''}`))
+          })
+        })
+      } catch (err) {
+        captureException(err, {
+          tags: { component: 'browser', operation: 'launch' },
+          extra: { instanceId, platform: 'darwin', stage: 'open-dispatch' },
+        })
+        throw err
+      }
+
+      // Chrome processes appear in `ps` shortly after `open` returns. Retry briefly.
+      const foundPid = await this.findChromePidByUserDataDir(userDataDir, 5000)
+      if (!foundPid) {
+        const err = new Error(`Chrome was launched via 'open' but the process could not be located for user-data-dir ${userDataDir}`)
+        captureException(err, {
+          tags: { component: 'browser', operation: 'launch' },
+          extra: { instanceId, platform: 'darwin', stage: 'pid-lookup', userDataDir },
+        })
+        throw err
+      }
+      chromePid = foundPid
+
+      // Watch the PID for early death. If Chrome exits before the port opens,
+      // surface that quickly instead of waiting the full waitForPort timeout.
+      earlyExitPromise = new Promise<never>((_, reject) => {
+        earlyExitInterval = setInterval(() => {
+          try {
+            process.kill(chromePid, 0) // signal 0 = existence check
+          } catch {
+            if (earlyExitInterval) clearInterval(earlyExitInterval)
+            earlyExitInterval = null
+            earlyExitCode = -1
+            reject(new Error(`Chrome process (PID ${chromePid}) exited before debug port ${port} became available`))
+          }
+        }, 250)
       })
-      browserProcess.on('exit', (code, signal) => {
-        earlyExitCode = code
-        earlyExitSignal = signal
-        const stderr = Buffer.concat(stderrChunks).toString().trim()
-        reject(new Error(
-          `Browser process exited with ${signal ? `signal ${signal}` : `code ${code}`} before debug port became available` +
-          (stderr ? `\nChrome stderr: ${stderr}` : '')
-        ))
+    } else {
+      browserProcess = spawn(
+        this.detectedPath!,
+        chromeArgs,
+        { detached: false, stdio: ['ignore', 'ignore', 'pipe'] }
+      )
+      if (browserProcess.pid == null) {
+        const err = new Error('Failed to spawn Chrome: no PID assigned to child process')
+        captureException(err, {
+          tags: { component: 'browser', operation: 'launch' },
+          extra: { instanceId, platform: process.platform },
+        })
+        throw err
+      }
+      chromePid = browserProcess.pid
+
+      browserProcess.stderr?.on('data', (chunk: Buffer) => {
+        stderrChunks.push(chunk)
       })
-    })
+
+      const childProcess = browserProcess
+      earlyExitPromise = new Promise<never>((_, reject) => {
+        childProcess.on('error', (err) => {
+          console.error(`[ChromeProvider] Browser process error for instance ${instanceId}:`, err)
+          const stderr = Buffer.concat(stderrChunks).toString().trim()
+          reject(new Error(
+            `Failed to spawn browser: ${err.message}${stderr ? `\nChrome stderr: ${stderr}` : ''}`
+          ))
+        })
+        childProcess.on('exit', (code, signal) => {
+          earlyExitCode = code
+          earlyExitSignal = signal
+          const stderr = Buffer.concat(stderrChunks).toString().trim()
+          reject(new Error(
+            `Browser process exited with ${signal ? `signal ${signal}` : `code ${code}`} before debug port became available` +
+            (stderr ? `\nChrome stderr: ${stderr}` : '')
+          ))
+        })
+      })
+    }
 
     // Chrome on Windows ignores --remote-debugging-address=0.0.0.0 and always
     // binds its CDP port to 127.0.0.1. This means containers running inside WSL2
@@ -341,20 +464,27 @@ export class ChromeProvider implements HostBrowserProvider {
 
     const instance: BrowserInstance = {
       process: browserProcess,
+      pid: chromePid,
       port,
       proxyPort,
       proxyServer,
       userDataDir,
       stoppingIntentionally: false,
+      externalCloseWatcher: null,
     }
     this.instances.set(instanceId, instance)
 
-    // Now that the instance is registered, wire up the exit handler for
-    // external-close notifications (separate from the earlyExitPromise above).
-    browserProcess.on('exit', (code) => {
-      console.log(`[ChromeProvider] Browser for instance ${instanceId} exited with code ${code}`)
+    // Wire up external-close detection. On linux/win32 we have a real ChildProcess
+    // and can use its 'exit' event. On darwin Chrome was launched via `open` and
+    // is reparented to launchd, so we poll the PID instead.
+    const handleExit = (reason: string) => {
+      console.log(`[ChromeProvider] Browser for instance ${instanceId} exited (${reason})`)
       const wasIntentional = instance.stoppingIntentionally
       instance.proxyServer?.close()
+      if (instance.externalCloseWatcher) {
+        clearInterval(instance.externalCloseWatcher)
+        instance.externalCloseWatcher = null
+      }
       this.instances.delete(instanceId)
       if (!wasIntentional) {
         console.log(`[ChromeProvider] Browser for instance ${instanceId} closed externally, notifying listeners`)
@@ -362,7 +492,13 @@ export class ChromeProvider implements HostBrowserProvider {
           console.error('[ChromeProvider] Error in onExternalClose callback:', err)
         })
       }
-    })
+    }
+
+    if (browserProcess) {
+      browserProcess.on('exit', (code) => handleExit(`code ${code}`))
+    }
+    // The darwin polling watcher is started after the launch race succeeds,
+    // so it doesn't fight with earlyExitInterval.
 
     try {
       // Race the port check against early process death / spawn errors.
@@ -373,6 +509,7 @@ export class ChromeProvider implements HostBrowserProvider {
         earlyExitPromise,
       ])
     } catch (err) {
+      if (earlyExitInterval) { clearInterval(earlyExitInterval); earlyExitInterval = null }
       const stderr = Buffer.concat(stderrChunks).toString().trim()
       // Run ad-hoc diagnostics to capture the actual root cause
       const diagnostics = collectChromeDiagnostics(this.detectedPath, port, userDataDir)
@@ -403,8 +540,23 @@ export class ChromeProvider implements HostBrowserProvider {
       throw err
     }
 
+    // Launch race won. Stop the early-exit poller (if any) and, on darwin,
+    // start a long-lived poller to detect external close (Chrome quit by user).
+    if (earlyExitInterval) { clearInterval(earlyExitInterval); earlyExitInterval = null }
+    if (!browserProcess) {
+      // darwin path: poll the PID at 1s intervals
+      instance.externalCloseWatcher = setInterval(() => {
+        try {
+          process.kill(chromePid, 0)
+        } catch {
+          handleExit(`PID ${chromePid} no longer alive`)
+        }
+      }, 1000)
+    }
+
     const exposedPort = proxyPort ?? port
-    console.log(`[ChromeProvider] Chrome CDP on port ${port}${proxyPort ? `, proxy on 0.0.0.0:${proxyPort}` : ''} for instance ${instanceId}`)
+
+    console.log(`[ChromeProvider] Chrome CDP on port ${port}${proxyPort ? `, proxy on 0.0.0.0:${proxyPort}` : ''} for instance ${instanceId} (pid ${chromePid})`)
     return { port: exposedPort, downloadDir }
   }
 
@@ -413,21 +565,38 @@ export class ChromeProvider implements HostBrowserProvider {
     if (instance) {
       instance.stoppingIntentionally = true
       instance.proxyServer?.close()
-      if (!instance.process.killed) {
-        instance.process.kill()
-        // Wait for process to actually exit before removing from map.
-        // Without this, the next launch() won't see the existing instance
-        // and will spawn a new Chrome while this one is still dying.
+      if (instance.externalCloseWatcher) {
+        clearInterval(instance.externalCloseWatcher)
+        instance.externalCloseWatcher = null
+      }
+
+      if (instance.process && !instance.process.killed) {
+        // linux/win32: we own the child process. Kill via the ChildProcess
+        // and wait for the 'exit' event so the next launch() doesn't race
+        // with a still-dying Chrome.
+        const childProcess = instance.process
+        childProcess.kill()
         await new Promise<void>((resolve) => {
           const timeout = setTimeout(() => {
-            try { instance.process.kill('SIGKILL') } catch { /* ignore */ }
+            try { childProcess.kill('SIGKILL') } catch { /* ignore */ }
             resolve()
           }, 5000)
-          instance.process.on('exit', () => {
+          childProcess.on('exit', () => {
             clearTimeout(timeout)
             resolve()
           })
         })
+      } else if (!instance.process) {
+        // darwin: Chrome was reparented to launchd. Send SIGTERM by PID and
+        // poll for exit, escalating to SIGKILL if it doesn't exit in time.
+        try {
+          process.kill(instance.pid, 'SIGTERM')
+        } catch { /* already gone */ }
+        await this.waitForPidExit(instance.pid, 5000)
+        if (await this.pidAlive(instance.pid)) {
+          try { process.kill(instance.pid, 'SIGKILL') } catch { /* ignore */ }
+          await this.waitForPidExit(instance.pid, 2000)
+        }
       }
     }
     this.instances.delete(instanceId)
@@ -442,9 +611,68 @@ export class ChromeProvider implements HostBrowserProvider {
   isRunning(instanceId?: string): boolean {
     if (instanceId) {
       const instance = this.instances.get(instanceId)
-      return instance !== undefined && !instance.process.killed
+      if (!instance) return false
+      // linux/win32: check the ChildProcess; darwin: check the PID directly.
+      if (instance.process) return !instance.process.killed
+      try {
+        process.kill(instance.pid, 0)
+        return true
+      } catch {
+        return false
+      }
     }
     return this.instances.size > 0
+  }
+
+  /** Locate the Chrome browser-process PID for a given user-data-dir.
+   *  Chrome spawns helper processes (renderer, GPU, utility); we want the parent,
+   *  which is the one whose argv contains --user-data-dir=<dir> AND no --type= flag.
+   *  Retries until found or the timeout elapses, since `open` returns before
+   *  Chrome's processes are visible to ps. */
+  private async findChromePidByUserDataDir(userDataDir: string, timeoutMs: number): Promise<number | null> {
+    const needle = `--user-data-dir=${userDataDir}`
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      try {
+        const out = execSync('ps -A -o pid=,command=', { encoding: 'utf-8', timeout: 3000 })
+        for (const line of out.split('\n')) {
+          if (!line.includes(needle)) continue
+          if (line.includes('--type=')) continue // helper process
+          const m = line.trim().match(/^(\d+)\s/)
+          if (m) return parseInt(m[1], 10)
+        }
+      } catch { /* retry */ }
+      await new Promise((r) => setTimeout(r, 100))
+    }
+    return null
+  }
+
+  private getChromeVersion(): string | null {
+    if (!this.detectedPath) return null
+    try {
+      if (process.platform === 'darwin') {
+        const plistPath = path.join(path.dirname(this.detectedPath), '..', 'Info.plist')
+        const plist = fs.readFileSync(plistPath, 'utf-8')
+        const m = plist.match(/<key>CFBundleShortVersionString<\/key>\s*<string>([^<]+)<\/string>/)
+        return m?.[1] ?? null
+      }
+      if (process.platform === 'win32') {
+        return execSync(`"${this.detectedPath}" --version 2>nul`, { encoding: 'utf-8', timeout: 5000 }).trim().replace(/^Google Chrome\s+/, '')
+      }
+      return execSync(`"${this.detectedPath}" --version 2>/dev/null`, { encoding: 'utf-8', timeout: 5000 }).trim().replace(/^Google Chrome\s+/, '')
+    } catch { return null }
+  }
+
+  private async pidAlive(pid: number): Promise<boolean> {
+    try { process.kill(pid, 0); return true } catch { return false }
+  }
+
+  private async waitForPidExit(pid: number, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if (!(await this.pidAlive(pid))) return
+      await new Promise((r) => setTimeout(r, 100))
+    }
   }
 
   private async findFreePort(): Promise<number> {

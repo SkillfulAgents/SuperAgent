@@ -127,14 +127,48 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.send('focus-window')
   },
 
+  // Notify main of sidebar collapsed state so it can reposition macOS traffic lights
+  setSidebarCollapsed: (collapsed: boolean) => {
+    ipcRenderer.send('set-sidebar-collapsed', collapsed)
+  },
+
   // Tray visibility control
   setTrayVisible: (visible: boolean): Promise<void> => {
     return ipcRenderer.invoke('set-tray-visible', visible)
   },
 
-  // Show OS notification
-  showNotification: (title: string, body: string): Promise<void> => {
-    return ipcRenderer.invoke('show-notification', { title, body })
+  // Show OS notification. `actions` + `context` enable action buttons (macOS
+  // only — Windows/Linux ignore the actions array). Listen with
+  // onNotificationEvent to receive click/action callbacks.
+  showNotification: (
+    title: string,
+    body: string,
+    actions?: Array<{ text: string }>,
+    context?: unknown,
+  ): Promise<void> => {
+    return ipcRenderer.invoke('show-notification', { title, body, actions, context })
+  },
+
+  // Subscribe to notification interaction events (click / action button).
+  // Returns an unsubscribe function.
+  onNotificationEvent: (
+    callback: (event: { type: 'click' | 'action'; actionIndex?: number; context?: unknown }) => void,
+  ): (() => void) => {
+    const handler = (_e: unknown, data: { type: 'click' | 'action'; actionIndex?: number; context?: unknown }) => callback(data)
+    ipcRenderer.on('notification-event', handler)
+    return () => {
+      ipcRenderer.off('notification-event', handler)
+    }
+  },
+
+  // Pull events queued while the window was closed (main-process fallback
+  // notifications). Renderer calls this once on mount so click/action
+  // events captured before any IPC listener existed still get dispatched.
+  flushPendingNotificationEvents: (): Promise<{
+    events: Array<{ type: 'click' | 'action'; actionIndex?: number; context?: unknown }>
+    navigations: Array<{ agentSlug: string; sessionId: string | null }>
+  }> => {
+    return ipcRenderer.invoke('flush-pending-notification-events')
   },
 
   // Set dock badge count (macOS)
@@ -215,7 +249,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   onUpdateStatus: (callback: (status: any) => void) => {
-    ipcRenderer.on('update-status', (_event, status) => callback(status))
+    const handler = (_event: Electron.IpcRendererEvent, status: any) => callback(status)
+    ipcRenderer.on('update-status', handler)
+    return () => {
+      ipcRenderer.removeListener('update-status', handler)
+    }
   },
 
   removeUpdateStatus: () => {
@@ -261,8 +299,21 @@ declare global {
       removeOpenSettings: () => void
       onOpenCreateAgent: (callback: () => void) => void
       removeOpenCreateAgent: () => void
+      setSidebarCollapsed: (collapsed: boolean) => void
       setTrayVisible: (visible: boolean) => Promise<void>
-      showNotification: (title: string, body: string) => Promise<void>
+      showNotification: (
+        title: string,
+        body: string,
+        actions?: Array<{ text: string }>,
+        context?: unknown,
+      ) => Promise<void>
+      onNotificationEvent: (
+        callback: (event: { type: 'click' | 'action'; actionIndex?: number; context?: unknown }) => void,
+      ) => () => void
+      flushPendingNotificationEvents: () => Promise<{
+        events: Array<{ type: 'click' | 'action'; actionIndex?: number; context?: unknown }>
+        navigations: Array<{ agentSlug: string; sessionId: string | null }>
+      }>
       setBadgeCount: (count: number) => Promise<void>
       detectHostBrowser: () => Promise<{ available: boolean; browser: string | null; path: string | null }>
       setNativeTheme: (theme: string) => Promise<void>
@@ -279,7 +330,7 @@ declare global {
       downloadUpdate: () => Promise<void>
       installUpdate: () => Promise<void>
       getUpdateStatus: () => Promise<any>
-      onUpdateStatus: (callback: (status: any) => void) => void
+      onUpdateStatus: (callback: (status: any) => void) => () => void
       removeUpdateStatus: () => void
     }
   }

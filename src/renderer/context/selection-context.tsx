@@ -1,26 +1,46 @@
 
 import { createContext, useContext, useState, useCallback, type ReactNode } from 'react'
 
+/**
+ * Discriminated union describing what is currently shown for the selected agent.
+ *
+ * The agent slug is orthogonal to the view (you can switch agents without
+ * changing the conceptual view). Mutual exclusion between view kinds is
+ * enforced by construction — there is exactly one view at a time.
+ */
+export type AgentView =
+  | { kind: 'home' }
+  | { kind: 'session'; id: string }
+  | { kind: 'task'; id: string }
+  | { kind: 'webhook'; id: string }
+  | { kind: 'chat'; integrationId: string; sessionId?: string }
+  | { kind: 'dashboard'; slug: string }
+  | { kind: 'apiLogs' }
+  | { kind: 'connections' }
+
+const HOME: AgentView = { kind: 'home' }
+
 interface SelectionContextType {
   selectedAgentSlug: string | null
-  selectedSessionId: string | null
-  selectedScheduledTaskId: string | null
-  selectedWebhookTriggerId: string | null
-  selectedChatIntegrationId: string | null
-  selectedChatSessionId: string | null // session within a chat integration
-  selectedDashboardSlug: string | null
+  view: AgentView
   /** One-shot draft text to pre-fill the agent home composer. Consumed on read. */
   pendingDraft: string | null
-  selectAgent: (agentSlug: string | null) => void
-  selectAgentWithDraft: (agentSlug: string, draft: string) => void
-  selectSession: (sessionId: string | null) => void
+
+  /**
+   * Select an agent (or clear selection with `null`). Resets the view to home
+   * unless `view` is provided — pass a view to atomically dive into a session,
+   * task, dashboard, etc. on the new agent without intermediate renders.
+   */
+  setAgent: (agentSlug: string | null, view?: AgentView) => void
+  /** Select an agent and pre-fill the composer with `draft` on its home view. */
+  setAgentWithDraft: (agentSlug: string, draft: string) => void
+  /** Replace the current view (keeps the selected agent). */
+  setView: (view: AgentView) => void
+  /** Read and clear the pending draft. Returns null if there isn't one. */
   consumePendingDraft: () => string | null
-  selectScheduledTask: (taskId: string | null) => void
-  selectWebhookTrigger: (triggerId: string | null) => void
-  selectChatIntegration: (integrationId: string | null) => void
-  selectChatSession: (integrationId: string, sessionId: string) => void
-  selectDashboard: (slug: string | null) => void
+  /** Clear agent selection and view (back to global Home). */
   clearSelection: () => void
+
   handleAgentDeleted: (agentSlug: string) => void
   handleSessionDeleted: (sessionId: string) => void
   handleScheduledTaskDeleted: (taskId: string) => void
@@ -33,33 +53,22 @@ const SelectionContext = createContext<SelectionContextType | null>(null)
 
 export function SelectionProvider({ children }: { children: ReactNode }) {
   const [selectedAgentSlug, setSelectedAgentSlug] = useState<string | null>(null)
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
-  const [selectedScheduledTaskId, setSelectedScheduledTaskId] = useState<string | null>(null)
-  const [selectedWebhookTriggerId, setSelectedWebhookTriggerId] = useState<string | null>(null)
-  const [selectedChatIntegrationId, setSelectedChatIntegrationId] = useState<string | null>(null)
-  const [selectedChatSessionId, setSelectedChatSessionId] = useState<string | null>(null)
-  const [selectedDashboardSlug, setSelectedDashboardSlug] = useState<string | null>(null)
+  const [view, setViewState] = useState<AgentView>(HOME)
   const [pendingDraft, setPendingDraft] = useState<string | null>(null)
 
-  const selectAgent = useCallback((agentSlug: string | null) => {
+  const setAgent = useCallback((agentSlug: string | null, nextView?: AgentView) => {
     setSelectedAgentSlug(agentSlug)
-    setSelectedSessionId(null)
-    setSelectedScheduledTaskId(null)
-    setSelectedWebhookTriggerId(null)
-    setSelectedChatIntegrationId(null)
-    setSelectedChatSessionId(null)
-    setSelectedDashboardSlug(null)
+    setViewState(nextView ?? HOME)
   }, [])
 
-  const selectAgentWithDraft = useCallback((agentSlug: string, draft: string) => {
+  const setAgentWithDraft = useCallback((agentSlug: string, draft: string) => {
     setPendingDraft(draft)
     setSelectedAgentSlug(agentSlug)
-    setSelectedSessionId(null)
-    setSelectedScheduledTaskId(null)
-    setSelectedWebhookTriggerId(null)
-    setSelectedChatIntegrationId(null)
-    setSelectedChatSessionId(null)
-    setSelectedDashboardSlug(null)
+    setViewState(HOME)
+  }, [])
+
+  const setView = useCallback((nextView: AgentView) => {
+    setViewState(nextView)
   }, [])
 
   const consumePendingDraft = useCallback(() => {
@@ -68,133 +77,61 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     return draft
   }, [pendingDraft])
 
-  const selectSession = useCallback((sessionId: string | null) => {
-    setSelectedSessionId(sessionId)
-    setSelectedScheduledTaskId(null)
-    setSelectedWebhookTriggerId(null)
-    setSelectedChatIntegrationId(null)
-    setSelectedChatSessionId(null)
-    setSelectedDashboardSlug(null)
-  }, [])
-
-  const selectScheduledTask = useCallback((taskId: string | null) => {
-    setSelectedScheduledTaskId(taskId)
-    setSelectedSessionId(null)
-    setSelectedWebhookTriggerId(null)
-    setSelectedChatIntegrationId(null)
-    setSelectedChatSessionId(null)
-    setSelectedDashboardSlug(null)
-  }, [])
-
-  const selectWebhookTrigger = useCallback((triggerId: string | null) => {
-    setSelectedWebhookTriggerId(triggerId)
-    setSelectedSessionId(null)
-    setSelectedScheduledTaskId(null)
-    setSelectedChatIntegrationId(null)
-    setSelectedChatSessionId(null)
-    setSelectedDashboardSlug(null)
-  }, [])
-
-  const selectChatIntegration = useCallback((integrationId: string | null) => {
-    setSelectedChatIntegrationId(integrationId)
-    setSelectedChatSessionId(null)
-    setSelectedSessionId(null)
-    setSelectedScheduledTaskId(null)
-    setSelectedWebhookTriggerId(null)
-    setSelectedDashboardSlug(null)
-  }, [])
-
-  const selectChatSession = useCallback((integrationId: string, sessionId: string) => {
-    setSelectedChatIntegrationId(integrationId)
-    setSelectedChatSessionId(sessionId)
-    setSelectedSessionId(null)
-    setSelectedScheduledTaskId(null)
-    setSelectedWebhookTriggerId(null)
-    setSelectedDashboardSlug(null)
-  }, [])
-
-  const selectDashboard = useCallback((slug: string | null) => {
-    setSelectedDashboardSlug(slug)
-    setSelectedSessionId(null)
-    setSelectedScheduledTaskId(null)
-    setSelectedWebhookTriggerId(null)
-    setSelectedChatIntegrationId(null)
-    setSelectedChatSessionId(null)
-  }, [])
-
   const clearSelection = useCallback(() => {
     setSelectedAgentSlug(null)
-    setSelectedSessionId(null)
-    setSelectedScheduledTaskId(null)
-    setSelectedWebhookTriggerId(null)
-    setSelectedChatIntegrationId(null)
-    setSelectedChatSessionId(null)
-    setSelectedDashboardSlug(null)
+    setViewState(HOME)
   }, [])
 
   const handleAgentDeleted = useCallback((agentSlug: string) => {
-    if (selectedAgentSlug === agentSlug) {
-      setSelectedAgentSlug(null)
-      setSelectedSessionId(null)
-      setSelectedScheduledTaskId(null)
-      setSelectedWebhookTriggerId(null)
-      setSelectedChatIntegrationId(null)
-      setSelectedChatSessionId(null)
-      setSelectedDashboardSlug(null)
-    }
-  }, [selectedAgentSlug])
+    setSelectedAgentSlug((current) => {
+      if (current === agentSlug) {
+        setViewState(HOME)
+        return null
+      }
+      return current
+    })
+  }, [])
 
   const handleSessionDeleted = useCallback((sessionId: string) => {
-    if (selectedSessionId === sessionId) {
-      setSelectedSessionId(null)
-    }
-  }, [selectedSessionId])
+    setViewState((current) =>
+      current.kind === 'session' && current.id === sessionId ? HOME : current
+    )
+  }, [])
 
   const handleScheduledTaskDeleted = useCallback((taskId: string) => {
-    if (selectedScheduledTaskId === taskId) {
-      setSelectedScheduledTaskId(null)
-    }
-  }, [selectedScheduledTaskId])
+    setViewState((current) =>
+      current.kind === 'task' && current.id === taskId ? HOME : current
+    )
+  }, [])
 
   const handleWebhookTriggerDeleted = useCallback((triggerId: string) => {
-    if (selectedWebhookTriggerId === triggerId) {
-      setSelectedWebhookTriggerId(null)
-    }
-  }, [selectedWebhookTriggerId])
+    setViewState((current) =>
+      current.kind === 'webhook' && current.id === triggerId ? HOME : current
+    )
+  }, [])
 
   const handleChatIntegrationDeleted = useCallback((integrationId: string) => {
-    if (selectedChatIntegrationId === integrationId) {
-      setSelectedChatIntegrationId(null)
-      setSelectedChatSessionId(null)
-    }
-  }, [selectedChatIntegrationId])
+    setViewState((current) =>
+      current.kind === 'chat' && current.integrationId === integrationId ? HOME : current
+    )
+  }, [])
 
   const handleDashboardDeleted = useCallback((slug: string) => {
-    if (selectedDashboardSlug === slug) {
-      setSelectedDashboardSlug(null)
-    }
-  }, [selectedDashboardSlug])
+    setViewState((current) =>
+      current.kind === 'dashboard' && current.slug === slug ? HOME : current
+    )
+  }, [])
 
   return (
     <SelectionContext.Provider
       value={{
         selectedAgentSlug,
-        selectedSessionId,
-        selectedScheduledTaskId,
-        selectedWebhookTriggerId,
-        selectedChatIntegrationId,
-        selectedChatSessionId,
-        selectedDashboardSlug,
+        view,
         pendingDraft,
-        selectAgent,
-        selectAgentWithDraft,
-        selectSession,
+        setAgent,
+        setAgentWithDraft,
+        setView,
         consumePendingDraft,
-        selectScheduledTask,
-        selectWebhookTrigger,
-        selectChatIntegration,
-        selectChatSession,
-        selectDashboard,
         clearSelection,
         handleAgentDeleted,
         handleSessionDeleted,

@@ -149,6 +149,27 @@ export function BrowserTab() {
         />
       )}
 
+      {/* Chrome-specific: Headless mode */}
+      {effectiveProvider === 'chrome' && (
+        <div className="flex items-center justify-between">
+          <div className="space-y-0.5">
+            <Label htmlFor="chrome-headless">Headless Mode</Label>
+            <p className="text-xs text-muted-foreground">
+              Run Chrome without a visible window. Prevents Chrome from stealing
+              focus while the agent browses. The browser preview still works normally.
+            </p>
+          </div>
+          <Switch
+            id="chrome-headless"
+            checked={settings?.app?.chromeHeadless ?? false}
+            onCheckedChange={(checked) => {
+              updateSettings.mutate({ app: { chromeHeadless: checked } })
+            }}
+            disabled={isLoading}
+          />
+        </div>
+      )}
+
       {/* Browserbase-specific settings */}
       {effectiveProvider === 'browserbase' && (
         <>

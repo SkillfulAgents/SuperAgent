@@ -19,6 +19,7 @@ import {
   cancelTriggerTool,
 } from './tools/webhook-triggers'
 import { deliverFileTool } from './tools/deliver-file'
+import { deliverSessionTool } from './tools/deliver-session'
 import { requestFileTool } from './tools/request-file'
 import { requestBrowserInputTool } from './tools/request-browser-input'
 import { requestScriptRunTool } from './tools/request-script-run'
@@ -54,7 +55,7 @@ export function createUserInputMcpServer() {
     tools: [
       requestSecretTool, requestConnectedAccountTool, searchConnectedAccountServicesTool,
       requestRemoteMcpTool, searchRemoteMcpServicesTool, scheduleTaskTool,
-      deliverFileTool, requestFileTool, requestBrowserInputTool,
+      deliverFileTool, deliverSessionTool, requestFileTool, requestBrowserInputTool,
       ...(includeScriptRun ? [requestScriptRunTool] : []),
       ...(includeWebhookTriggers ? [getAvailableTriggersTool, listTriggersTool, setupTriggerTool, cancelTriggerTool] : []),
     ],

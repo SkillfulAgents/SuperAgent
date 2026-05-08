@@ -1,3 +1,4 @@
 - do not run npm build on changes as it ruins the dev server. Instead, run typecheck + lint
 - when running E2E tests, always pipe output through tee to a file so results are preserved: `E2E_MOCK=true npx playwright test 2>&1 | tee /tmp/e2e-results.txt`
 - always use Zod schemas to validate JSON before storing in DB or writing to file, and when parsing JSON read back from DB/file. Define schemas in a dedicated file alongside the service/feature (e.g. `config-schema.ts`) and use `.parse()` at the boundary
+- to test the auto-updater locally, fake an older version against the real GitHub feed: `SUPERAGENT_TEST_UPDATES=1 SUPERAGENT_FAKE_VERSION=0.0.1 npm run dev:electron` (gated on `!app.isPackaged`, so it's a no-op in shipped builds)

@@ -99,6 +99,8 @@ export interface ApiSession {
   webhookTriggerName?: string
   // Last effort level used on this session (seeds the composer selector)
   effort?: EffortLevel
+  // Last model used on this session (seeds the composer selector)
+  model?: string
 }
 
 // ============================================================================
@@ -299,6 +301,8 @@ export interface ApiScheduledTask {
   lastSessionId: string | null
   createdBySessionId: string | null
   timezone: string | null
+  model: string | null
+  effort: string | null
   createdAt: Date
   cancelledAt: Date | null
   pausedAt: Date | null

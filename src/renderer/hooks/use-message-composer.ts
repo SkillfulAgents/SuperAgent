@@ -168,6 +168,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     if (!keepMessageUntilComplete) {
       // Clear input immediately so the message doesn't linger while the network request is in flight
       setMessage('')
+      setDraft(undefined)
       clearAttachments()
     }
 
@@ -184,6 +185,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
 
     if (keepMessageUntilComplete) {
       setMessage('')
+      setDraft(undefined)
       clearAttachments()
     }
   }

@@ -74,9 +74,11 @@ export function BrowserInputRequestItem({
 
   return (
     <RequestItemShell
-      title="Browser Input Request"
-      icon={<Globe />}
+      title={message}
+      subtitle="Click 'Done' when you have completed the suggested steps."
       theme="blue"
+      sessionId={sessionId}
+      agentSlug={agentSlug}
       waitingText="Waiting for input"
       completed={
         isCompleted
@@ -95,29 +97,11 @@ export function BrowserInputRequestItem({
             }
           : null
       }
-      readOnly={
-        readOnly
-          ? {
-              description: (
-                <>
-                  <div className="pt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{message}</div>
-                  <p className="pt-2 text-xs text-muted-foreground">
-                    Click &apos;Done&apos; when you have completed the suggested steps.
-                  </p>
-                </>
-              ),
-            }
-          : false
-      }
+      readOnly={readOnly ? {} : false}
       error={error}
       data-testid={isCompleted ? 'browser-input-request-completed' : 'browser-input-request'}
       data-status={isCompleted ? status : undefined}
     >
-      <p className="pt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{message}</p>
-      <p className="mt-2 text-xs text-muted-foreground">
-        Click &apos;Done&apos; when you have completed the suggested steps.
-      </p>
-
       {requirements.length > 0 && (
         <div className="pt-4">
           <div className="rounded-md border border-border bg-white p-3 dark:bg-background">
@@ -138,7 +122,7 @@ export function BrowserInputRequestItem({
           onClick={handleChatWithAgent}
           loading={submittingAction === 'declining'}
           disabled={status === 'submitting'}
-          size="sm"
+          size="xs"
           variant="outline"
           className="h-8 min-w-24 border-border text-foreground hover:bg-muted"
           data-testid="browser-input-chat-btn"
@@ -150,7 +134,7 @@ export function BrowserInputRequestItem({
           onClick={handleComplete}
           loading={submittingAction === 'completing'}
           disabled={status === 'submitting'}
-          size="sm"
+          size="xs"
           className="h-8 min-w-24 bg-blue-600 text-white hover:bg-blue-700"
           data-testid="browser-input-complete-btn"
         >
