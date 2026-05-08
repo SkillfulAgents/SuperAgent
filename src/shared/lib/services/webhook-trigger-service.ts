@@ -108,6 +108,12 @@ export async function createWebhookTrigger(params: CreateWebhookTriggerParams): 
     agentSlug: params.agentSlug,
   })
 
+  // Re-poll so a host that booted with 0 active triggers subscribes to
+  // Realtime now. Lazy import avoids circular dependency.
+  void import('@shared/lib/scheduler/trigger-manager').then(({ triggerManager }) =>
+    triggerManager.pollAndProcess(),
+  )
+
   return id
 }
 
