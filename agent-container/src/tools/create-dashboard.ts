@@ -38,7 +38,9 @@ Arguments:
         content: [
           {
             type: 'text' as const,
-            text: `Dashboard "${args.name}" created at /workspace/artifacts/${args.slug}/\n\nYou can now edit the source files and use start_dashboard to start the server.`,
+            text: `Dashboard "${args.name}" created at /workspace/artifacts/${args.slug}/
+
+Read /workspace/artifacts/${args.slug}/DESIGN.md before editing — it defines the design tokens and rules. Use start_dashboard to start the server.`,
           },
         ],
       }
