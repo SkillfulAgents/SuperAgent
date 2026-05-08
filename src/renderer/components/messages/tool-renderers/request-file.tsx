@@ -9,13 +9,13 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
     <div className="space-y-2">
       {description && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground">Description</div>
+          <div className="text-xs font-medium tracking-wider text-muted-foreground">Description</div>
           <p className="text-xs">{description}</p>
         </div>
       )}
       {fileTypes && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground">File types</div>
+          <div className="text-xs font-medium tracking-wider text-muted-foreground">File types</div>
           <p className="text-xs">{fileTypes}</p>
         </div>
       )}

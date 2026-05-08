@@ -50,7 +50,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
     return (
       <div className="space-y-2">
         {query && (
-          <div className="text-xs font-medium text-muted-foreground">
+          <div className="text-xs font-medium tracking-wider text-muted-foreground">
             Query: <span className="font-mono">{query}</span>
           </div>
         )}
@@ -70,7 +70,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {/* Links list */}
       {links.length > 0 && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">
             Sources ({links.length})
           </div>
           <ul className="space-y-1">

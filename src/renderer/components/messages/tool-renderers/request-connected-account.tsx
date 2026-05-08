@@ -45,7 +45,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {/* Toolkit */}
       {toolkit && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Service</div>
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Service</div>
           <div className="bg-background rounded p-2 text-xs font-medium capitalize">
             {provider?.displayName || toolkit}
           </div>
@@ -55,7 +55,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {/* Reason */}
       {reason && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Reason</div>
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Reason</div>
           <div className="bg-background rounded p-2 text-xs">
             {reason}
           </div>
@@ -65,7 +65,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {/* Result */}
       {displayResult && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">
             {isError ? 'Error' : 'Result'}
           </div>
           <div
@@ -96,7 +96,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
   return (
     <div className="space-y-2">
       <div>
-        <div className="text-xs font-medium text-muted-foreground mb-1">Service</div>
+        <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Service</div>
         <div className="bg-background rounded p-2 text-xs font-medium capitalize">
           {provider?.displayName || parsed.toolkit || (
             <span className="text-muted-foreground italic">...</span>
@@ -105,7 +105,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
       </div>
       {parsed.reason && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Reason</div>
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Reason</div>
           <div className="bg-background rounded p-2 text-xs">
             {parsed.reason}
             <span className="animate-pulse">|</span>

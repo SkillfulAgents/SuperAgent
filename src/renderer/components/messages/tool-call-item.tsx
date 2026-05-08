@@ -41,13 +41,13 @@ function isUserInputTool(name: string): boolean {
 function ToolNameWithSummary({ name, summary }: { name: string; summary?: string | null }) {
   return (
     <>
-      <span className="font-mono font-normal shrink-0 text-xs text-foreground/70 group-hover:text-foreground transition-colors">
+      <span className="font-mono font-normal shrink-0 text-xs tracking-wide text-foreground/80 group-hover:text-foreground transition-colors">
         {name}
       </span>
       {summary && (
         <>
-          <span aria-hidden className="shrink-0 text-foreground/40 group-hover:text-muted-foreground text-xs transition-colors">→</span>
-          <span className="text-foreground/70 group-hover:text-foreground truncate text-xs transition-colors">
+          <span aria-hidden className="shrink-0 text-foreground/40 group-hover:text-muted-foreground text-xs tracking-wide transition-colors">→</span>
+          <span className="text-foreground/80 group-hover:text-foreground truncate text-xs tracking-wide transition-colors">
             {summary}
           </span>
         </>
@@ -59,27 +59,27 @@ function ToolNameWithSummary({ name, summary }: { name: string; summary?: string
 export function StatusIndicator({ status }: { status: string }) {
   if (status === 'success' || status === 'completed') {
     return (
-      <span className="h-3.5 w-3.5 shrink-0 rounded-full bg-green-100 dark:bg-green-950/60 flex items-center justify-center">
+      <span className="h-4 w-4 shrink-0 rounded-full bg-green-100 dark:bg-green-950/60 flex items-center justify-center">
         <Check className="h-2.5 w-2.5 text-green-600 dark:text-green-400" strokeWidth={3} />
       </span>
     )
   }
   if (status === 'error') {
     return (
-      <span className="h-3.5 w-3.5 shrink-0 rounded-full bg-muted flex items-center justify-center">
+      <span className="h-4 w-4 shrink-0 rounded-full bg-muted flex items-center justify-center">
         <X className="h-2.5 w-2.5 text-muted-foreground" strokeWidth={3} />
       </span>
     )
   }
   if (status === 'running') {
     return (
-      <span className="h-3.5 w-3.5 shrink-0 flex items-center justify-center">
+      <span className="h-4 w-4 shrink-0 flex items-center justify-center">
         <Loader2 className="h-3 w-3 text-gray-400 animate-spin" />
       </span>
     )
   }
   return (
-    <span className="h-3.5 w-3.5 shrink-0 rounded-full bg-muted flex items-center justify-center">
+    <span className="h-4 w-4 shrink-0 rounded-full bg-muted flex items-center justify-center">
       <Ban className="h-2.5 w-2.5 text-muted-foreground" strokeWidth={3} />
     </span>
   )
@@ -109,14 +109,14 @@ export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug, isSessionA
   const CustomExpandedView = renderer?.ExpandedView
 
   return (
-    <div className="text-sm border border-border/70 rounded-md overflow-hidden" data-testid={`tool-call-${toolCall.name}`}>
+    <div className="text-sm border border-border/90 rounded-md overflow-hidden" data-testid={`tool-call-${toolCall.name}`}>
       <button
         onClick={() => setExpanded(!expanded)}
         className={cn('flex w-full items-center gap-2 px-3 py-1.5 group hover:bg-muted/50 transition-colors', expanded && 'bg-muted/50')}
       >
         <StatusIndicator status={status} />
         {isPendingUserInput && (
-          <span className="font-mono font-normal shrink-0 text-xs text-foreground/70 group-hover:text-foreground transition-colors">
+          <span className="font-mono font-normal shrink-0 text-xs tracking-wide text-foreground/80 group-hover:text-foreground transition-colors">
             Waiting for input:
           </span>
         )}
@@ -153,7 +153,7 @@ export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug, isSessionA
       </button>
 
       {expanded && (
-        <div className="border-t border-border/70 bg-muted/50 rounded-b-md px-3 py-3">
+        <div className="border-t border-border/90 bg-muted/50 rounded-b-md px-3 py-3">
           {CustomExpandedView ? (
             <CustomExpandedView
               input={toolCall.input}
@@ -166,7 +166,7 @@ export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug, isSessionA
             <div className="space-y-2">
               {/* Input */}
               <div>
-                <div className="text-xs font-medium text-muted-foreground mb-1">Input</div>
+                <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Input</div>
                 <pre className="bg-background rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto">
                   {inputStr}
                 </pre>
@@ -175,7 +175,7 @@ export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug, isSessionA
               {/* Output */}
               {resultStr && (
                 <div>
-                  <div className="text-xs font-medium text-muted-foreground mb-1">
+                  <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">
                     {toolCall.isError ? 'Error' : 'Output'}
                   </div>
                   <pre
@@ -242,7 +242,7 @@ export function StreamingToolCallItem({ name, partialInput }: StreamingToolCallI
   }
 
   return (
-    <div className="text-sm border border-border/70 rounded-md overflow-hidden">
+    <div className="text-sm border border-border/90 rounded-md overflow-hidden">
       <div className="flex w-full items-center gap-2 px-3 py-1.5 bg-muted/50">
         <StatusIndicator status="running" />
         <ToolNameWithSummary
@@ -254,14 +254,14 @@ export function StreamingToolCallItem({ name, partialInput }: StreamingToolCallI
         </span>
       </div>
 
-      <div className="border-t border-border/70 bg-muted/50 rounded-b-md px-3 py-3">
+      <div className="border-t border-border/90 bg-muted/50 rounded-b-md px-3 py-3">
         {CustomStreamingView ? (
           <CustomStreamingView partialInput={partialInput} />
         ) : (
           // Fallback: generic display
           <div className="space-y-2">
             <div>
-              <div className="text-xs font-medium text-muted-foreground mb-1">Input</div>
+              <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Input</div>
               <pre className="bg-background rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto whitespace-pre-wrap break-all">
                 {displayInput || <span className="text-muted-foreground italic">Waiting for input...</span>}
                 <span className="animate-pulse">|</span>

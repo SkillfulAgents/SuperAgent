@@ -70,7 +70,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {/* Task name */}
       {name && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Task Name</div>
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Task Name</div>
           <div className="bg-background rounded p-2 text-xs font-medium">
             {name}
           </div>
@@ -80,7 +80,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {/* Prompt */}
       {prompt && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Prompt</div>
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Prompt</div>
           <div className="bg-background rounded p-2 text-xs whitespace-pre-wrap">{prompt}</div>
         </div>
       )}
@@ -88,7 +88,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {/* Result */}
       {displayResult && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">
             {isError ? 'Error' : 'Result'}
           </div>
           <div
@@ -144,7 +144,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
       {/* Task name */}
       {parsed.name && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Task Name</div>
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Task Name</div>
           <div className="bg-background rounded p-2 text-xs font-medium">
             {parsed.name}
           </div>
@@ -154,7 +154,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
       {/* Prompt */}
       {parsed.prompt && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Prompt</div>
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Prompt</div>
           <div className="bg-background rounded p-2 text-xs whitespace-pre-wrap">
             {parsed.prompt}
             <span className="animate-pulse">|</span>

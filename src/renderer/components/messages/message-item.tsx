@@ -104,7 +104,7 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
     <div
       className={cn(
         'flex gap-3',
-        isUser && 'flex-row-reverse'
+        isUser && 'flex-row-reverse !my-6'
       )}
       data-testid={isUser ? 'message-user' : isAssistant ? 'message-assistant' : undefined}
     >

@@ -87,7 +87,7 @@ function DashboardLogsExpandedView({ input, result, isError }: ToolRendererProps
 
       {result && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">
             {isError ? 'Error' : 'Logs'}
           </div>
           <pre

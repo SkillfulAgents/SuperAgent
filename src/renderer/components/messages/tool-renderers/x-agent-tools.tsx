@@ -93,7 +93,7 @@ function CreateAgentExpandedView({ input, result, isError }: ToolRendererProps) 
       {description && <p className="text-xs text-muted-foreground">{description}</p>}
       {instructions && (
         <div>
-          <div className="mb-1 text-xs font-medium text-muted-foreground">Instructions</div>
+          <div className="mb-1 text-xs font-medium tracking-wider text-muted-foreground">Instructions</div>
           <pre className="whitespace-pre-wrap rounded bg-background p-2 text-xs">{instructions}</pre>
         </div>
       )}
@@ -154,7 +154,7 @@ function InvokeAgentExpandedView({ input, result, isError }: ToolRendererProps) 
       </div>
       {prompt && (
         <div>
-          <div className="mb-1 text-xs font-medium text-muted-foreground">Prompt</div>
+          <div className="mb-1 text-xs font-medium tracking-wider text-muted-foreground">Prompt</div>
           <div className="bg-background rounded p-2 text-xs whitespace-pre-wrap">
             {prompt}
           </div>

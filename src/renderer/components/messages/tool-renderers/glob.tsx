@@ -12,7 +12,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
     <div className="space-y-2">
       {/* Pattern and path */}
       <div>
-        <div className="text-xs font-medium text-muted-foreground mb-1">Pattern</div>
+        <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Pattern</div>
         <div className="bg-background rounded p-2 text-xs font-mono">
           {pattern}
           {path && (
@@ -24,7 +24,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {/* File list */}
       {(files.length > 0 || isError) && result && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">
             {isError ? 'Error' : `Files (${files.length})`}
           </div>
           <pre

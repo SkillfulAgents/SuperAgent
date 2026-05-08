@@ -11,7 +11,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {/* File path */}
       {file_path && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">File</div>
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">File</div>
           <div className="bg-background rounded p-2 text-xs font-mono truncate">
             {file_path}
             {(offset !== undefined || limit !== undefined) && (
@@ -28,7 +28,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {/* Content */}
       {result && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">
             {isError ? 'Error' : 'Content'}
           </div>
           <pre
@@ -55,7 +55,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
   return (
     <div className="space-y-2">
       <div>
-        <div className="text-xs font-medium text-muted-foreground mb-1">File</div>
+        <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">File</div>
         <pre className="bg-background rounded p-2 text-xs overflow-x-auto font-mono whitespace-pre-wrap break-all">
           {parsed.file_path || <span className="text-muted-foreground italic">...</span>}
           <span className="animate-pulse">|</span>
