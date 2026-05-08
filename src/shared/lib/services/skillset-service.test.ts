@@ -76,7 +76,10 @@ vi.mock('@shared/lib/utils/retry', () => ({
   withRetry: async (fn: () => Promise<unknown>) => fn(),
 }))
 
-const mockGetPlatformAuthStatus = vi.fn((_userId?: string) => ({ orgId: undefined as string | undefined }))
+const mockGetPlatformAuthStatus = vi.fn(
+  (_userId?: string): { connected?: boolean; source?: 'settings' | 'env' | null; orgId: string | undefined } =>
+    ({ orgId: undefined }),
+)
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getPlatformAuthStatus: (...args: [string?]) => mockGetPlatformAuthStatus(...args),
   getPlatformAccessToken: vi.fn(() => undefined),
