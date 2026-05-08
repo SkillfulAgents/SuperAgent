@@ -1,24 +1,27 @@
 {
   "storyId": "browser-test",
-  "passed": true,
-  "reason": "Browser use feature: agent successfully opened browser, navigated to specified URL, retrieved page title, and reported result mentioning \"Example Domain\"",
+  "passed": false,
+  "reason": "Agent received browser-use request to navigate to https://example.com and report page title, but failed due to external LLM provider API overload error before executing browser tools.\n  Bugs found:\n    - Agent failed to complete browser-use task. Instead of opening a browser and navigating to example.com, the agent returned an \"LLM Provider Error\" with message \"API Error: Repeated 529 Overloaded errors. The API is at capacity — this is usually temporary.\" The response does not mention \"Example Domain\" as expected. The agent worked for 8 seconds before failing.",
   "steps": [
-    "Navigated to http://localhost:47891 — page loaded with SuperAgent interface showing list of agents including \"QA-20260508-164912-y708\"",
-    "Clicked on \"QA-20260508-164912-y708\" agent in sidebar — agent chat page opened with message input field ready",
-    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — message displayed in chat, agent status changed to \"working\", \"Browser Page Title Retrieval Task\" spawned",
-    "Waited up to 3 minutes for response — agent completed in approximately 10 seconds with full response",
-    "Verified response mentions \"Example Domain\" — screenshot shows clear message \"The page title is Example Domain\" with browser tool cards showing \"Open Browser https://example.com\" and \"Browser Command $ get title\" both completed successfully",
-    "Verified browser preview panel displayed — live browser preview appeared on the right showing the actual Example Domain page content"
+    "Navigated to http://localhost:47891 — Page loaded successfully showing SuperAgent interface with agent list in sidebar",
+    "Clicked on \"QA-20260508-170002-ivzo\" agent in the sidebar — Agent opened successfully, showing chat interface with message input textbox",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into textbox and clicked Send button — Message sent successfully, agent status changed to \"working\", session created as \"Browser Page Title Lookup Test\"",
+    "Waited 10 seconds for response — Agent completed after 8 seconds with error message",
+    "Waited additional 30 seconds to allow retry — No retry occurred, error message remains unchanged",
+    "Scrolled to check for additional messages — No additional content found",
+    "Verified response content — Response shows LLM Provider Error (HTTP 529 API overload) and does NOT mention \"Example Domain\""
   ],
-  "bugs": [],
-  "durationMs": 87650,
-  "sessionId": "0666673f-0af6-46f9-aa24-b93b05d92ef0",
+  "bugs": [
+    "Agent failed to complete browser-use task. Instead of opening a browser and navigating to example.com, the agent returned an \"LLM Provider Error\" with message \"API Error: Repeated 529 Overloaded errors. The API is at capacity — this is usually temporary.\" The response does not mention \"Example Domain\" as expected. The agent worked for 8 seconds before failing."
+  ],
+  "durationMs": 150410,
+  "sessionId": "39830280-1adf-40ea-b7ae-ef7593614cb4",
   "cost": {
-    "inputTokens": 336,
-    "outputTokens": 8900,
-    "cacheCreationTokens": 130615,
-    "cacheReadTokens": 1217178,
+    "inputTokens": 411,
+    "outputTokens": 11275,
+    "cacheCreationTokens": 55949,
+    "cacheReadTokens": 1666087,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.329823
+    "totalCostUsd": 0.293331
   }
 }
