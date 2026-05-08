@@ -1,24 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title, and returned the correct response \"Example Domain\"",
+  "reason": "Browser use feature successfully executes browser navigation and page title retrieval, with live preview and tool call tracking.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully with SuperAgent interface showing multiple agents in the sidebar",
-    "Found and clicked on agent \"QA-20260508-003848-wsiw\" in the sidebar — Agent opened, displaying chat interface with message input field",
-    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message displayed in chat, agent status changed to \"working\"",
-    "Waited up to 3 minutes for response — Agent completed work in approximately 11 seconds (well within timeout)",
-    "Verified response contains \"Example Domain\" — Response clearly states \"The page title is Example Domain.\" with checkmarks confirming both tool calls (Open Browser and Browser Command) executed successfully",
-    "Took screenshot to document the result — Screenshot shows the complete successful interaction with the agent, including the browser preview panel displaying the actual Example Domain webpage and the activity log showing all executed browser actions"
+    "Navigated to http://localhost:47891 - Successfully loaded SuperAgent home page with agent list in sidebar.",
+    "Clicked on \"QA-20260508-020355-5dce\" agent in sidebar - Agent opened successfully with chat interface ready.",
+    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message sent and agent began processing.",
+    "Waited up to 3 minutes for response - Response received in 8 seconds with agent status changing from \"working\" to \"idle\".",
+    "Verified response mentions \"Example Domain\" - Response displays \"The page title is Example Domain.\" matching expected result.",
+    "Took screenshot - Screenshot captured showing complete conversation with browser preview panel displaying Example Domain page."
   ],
   "bugs": [],
-  "durationMs": 75893,
-  "sessionId": "e7625e32-b61b-4a4a-bf2a-1dee074a808c",
+  "durationMs": 80858,
+  "sessionId": "99933749-1b50-4b29-864c-365e2642ce52",
   "cost": {
-    "inputTokens": 234,
-    "outputTokens": 7097,
-    "cacheCreationTokens": 117691,
-    "cacheReadTokens": 755444,
+    "inputTokens": 275,
+    "outputTokens": 7577,
+    "cacheCreationTokens": 46719,
+    "cacheReadTokens": 1031138,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.258377
+    "totalCostUsd": 0.199673
   }
 }
