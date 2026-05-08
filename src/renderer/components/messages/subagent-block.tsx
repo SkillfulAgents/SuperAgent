@@ -178,17 +178,17 @@ export function SubAgentBlock({
       {/* Header — matches ToolCallItem collapsed row */}
       <button
         onClick={() => setExpanded(!expanded)}
-        className={cn('flex w-full items-center gap-2 px-3 py-1.5 group hover:bg-muted/50 transition-colors', expanded && 'bg-muted/50')}
+        className={cn('flex w-full items-center gap-2 pl-2 pr-2 py-1 group hover:bg-muted/50 transition-colors', expanded && 'bg-muted/50')}
       >
         <StatusIndicator status={status} />
-        <span className="font-mono font-normal shrink-0 text-xs text-foreground/70 group-hover:text-foreground transition-colors">Sub-agent:</span>
-        <span className="font-mono font-normal shrink-0 text-xs text-foreground/70 group-hover:text-foreground transition-colors">
+        <span className="font-sans font-normal shrink-0 text-sm text-foreground/70 group-hover:text-foreground transition-colors">Sub-agent:</span>
+        <span className="font-sans font-normal shrink-0 text-sm text-foreground/70 group-hover:text-foreground transition-colors">
           {subagentType}
         </span>
         {description && (
           <>
-            <span aria-hidden className="shrink-0 text-foreground/40 group-hover:text-muted-foreground text-xs transition-colors">→</span>
-            <span className="text-foreground/70 group-hover:text-foreground truncate text-xs transition-colors">
+            <span aria-hidden className="shrink-0 text-foreground/40 group-hover:text-muted-foreground text-sm transition-colors">→</span>
+            <span className="text-foreground/70 group-hover:text-foreground truncate text-sm transition-colors">
               {description}
             </span>
           </>

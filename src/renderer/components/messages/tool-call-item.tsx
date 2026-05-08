@@ -41,13 +41,13 @@ function isUserInputTool(name: string): boolean {
 function ToolNameWithSummary({ name, summary }: { name: string; summary?: string | null }) {
   return (
     <>
-      <span className="font-mono font-normal shrink-0 text-xs tracking-wide text-foreground/80 group-hover:text-foreground transition-colors">
+      <span className="font-sans font-normal shrink-0 text-sm text-foreground/70 group-hover:text-foreground transition-colors">
         {name}
       </span>
       {summary && (
         <>
-          <span aria-hidden className="shrink-0 text-foreground/40 group-hover:text-muted-foreground text-xs tracking-wide transition-colors">→</span>
-          <span className="text-foreground/80 group-hover:text-foreground truncate text-xs tracking-wide transition-colors">
+          <span aria-hidden className="shrink-0 text-foreground/40 group-hover:text-muted-foreground text-sm transition-colors">→</span>
+          <span className="text-foreground/70 group-hover:text-foreground truncate text-sm transition-colors">
             {summary}
           </span>
         </>
@@ -60,14 +60,14 @@ export function StatusIndicator({ status }: { status: string }) {
   if (status === 'success' || status === 'completed') {
     return (
       <span className="h-4 w-4 shrink-0 rounded-full bg-green-100 dark:bg-green-950/60 flex items-center justify-center">
-        <Check className="h-2.5 w-2.5 text-green-600 dark:text-green-400" strokeWidth={3} />
+        <Check className="h-2.5 w-2.5 text-green-600 dark:text-green-400" strokeWidth={2.5} />
       </span>
     )
   }
   if (status === 'error') {
     return (
-      <span className="h-4 w-4 shrink-0 rounded-full bg-muted flex items-center justify-center">
-        <X className="h-2.5 w-2.5 text-muted-foreground" strokeWidth={3} />
+      <span className="h-4 w-4 shrink-0 rounded-full bg-zinc-200 dark:bg-zinc-700 flex items-center justify-center">
+        <X className="h-2.5 w-2.5 text-muted-foreground" strokeWidth={2.5} />
       </span>
     )
   }
@@ -79,8 +79,8 @@ export function StatusIndicator({ status }: { status: string }) {
     )
   }
   return (
-    <span className="h-4 w-4 shrink-0 rounded-full bg-muted flex items-center justify-center">
-      <Ban className="h-2.5 w-2.5 text-muted-foreground" strokeWidth={3} />
+    <span className="h-4 w-4 shrink-0 rounded-full bg-zinc-200 dark:bg-zinc-700 flex items-center justify-center">
+      <Ban className="h-2.5 w-2.5 text-muted-foreground" strokeWidth={2.5} />
     </span>
   )
 }
@@ -109,14 +109,14 @@ export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug, isSessionA
   const CustomExpandedView = renderer?.ExpandedView
 
   return (
-    <div className="text-sm border border-border/90 rounded-md overflow-hidden" data-testid={`tool-call-${toolCall.name}`}>
+    <div className="text-sm border border-border/70 rounded-md overflow-hidden" data-testid={`tool-call-${toolCall.name}`}>
       <button
         onClick={() => setExpanded(!expanded)}
-        className={cn('flex w-full items-center gap-2 px-3 py-1.5 group hover:bg-muted/50 transition-colors', expanded && 'bg-muted/50')}
+        className={cn('flex w-full items-center gap-2 pl-2 pr-2 py-1 group hover:bg-muted/50 transition-colors', expanded && 'bg-muted/50')}
       >
         <StatusIndicator status={status} />
         {isPendingUserInput && (
-          <span className="font-mono font-normal shrink-0 text-xs tracking-wide text-foreground/80 group-hover:text-foreground transition-colors">
+          <span className="font-sans font-normal shrink-0 text-sm text-foreground/70 group-hover:text-foreground transition-colors">
             Waiting for input:
           </span>
         )}
@@ -126,7 +126,7 @@ export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug, isSessionA
         />
         {renderer?.CollapsedContent && (
           <>
-            {!summary && <span aria-hidden className="shrink-0 text-muted-foreground/60 group-hover:text-muted-foreground text-xs transition-colors">→</span>}
+            {!summary && <span aria-hidden className="shrink-0 text-muted-foreground/60 group-hover:text-muted-foreground text-sm transition-colors">→</span>}
             <renderer.CollapsedContent
               input={toolCall.input}
               result={resultStr}
@@ -153,7 +153,7 @@ export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug, isSessionA
       </button>
 
       {expanded && (
-        <div className="border-t border-border/90 bg-muted/50 rounded-b-md px-3 py-3">
+        <div className="border-t border-border/70 bg-muted/50 rounded-b-md px-3 py-3">
           {CustomExpandedView ? (
             <CustomExpandedView
               input={toolCall.input}
@@ -242,8 +242,8 @@ export function StreamingToolCallItem({ name, partialInput }: StreamingToolCallI
   }
 
   return (
-    <div className="text-sm border border-border/90 rounded-md overflow-hidden">
-      <div className="flex w-full items-center gap-2 px-3 py-1.5 bg-muted/50">
+    <div className="text-sm border border-border/70 rounded-md overflow-hidden">
+      <div className="flex w-full items-center gap-2 pl-2 pr-2 py-1 bg-muted/50">
         <StatusIndicator status="running" />
         <ToolNameWithSummary
           name={renderer?.displayName || formatToolName(name)}
@@ -254,7 +254,7 @@ export function StreamingToolCallItem({ name, partialInput }: StreamingToolCallI
         </span>
       </div>
 
-      <div className="border-t border-border/90 bg-muted/50 rounded-b-md px-3 py-3">
+      <div className="border-t border-border/70 bg-muted/50 rounded-b-md px-3 py-3">
         {CustomStreamingView ? (
           <CustomStreamingView partialInput={partialInput} />
         ) : (
