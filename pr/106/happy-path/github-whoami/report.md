@@ -1,21 +1,25 @@
-## Final Test Report
+## Test Execution Report
 
 [TEST_FAIL]
 
-[REASON] Agent responded but with proxy error instead of GitHub username
+[REASON] Agent attempted to use GitHub tool but failed to retrieve authenticated username due to proxy authentication issues
 
-[BUG_FOUND] Agent unable to retrieve GitHub username due to proxy error. Response states: "The GitHub account was granted but the proxy is returning a 502 'Failed to fetch access token' error when trying to call the GitHub API. This usually means the OAuth flow didn't fully complete on the connection side." Expected a GitHub username in the response, but received an error message about proxy/OAuth failure instead.
+[BUG_FOUND] GitHub proxy authentication failed with "Bad credentials" error - the CONNECTED_ACCOUNTS environment variable was empty, preventing the agent from successfully retrieving the authenticated user information despite granting permissions and attempting multiple API call methods (curl, Python requests)
 
-[STEP] Step 1: Navigate to http://localhost:47891 — Successfully loaded the SuperAgent application with sidebar visible
+[STEP] Step 1 - Navigated to http://localhost:47891 — Page loaded successfully with SuperAgent interface showing three agents in the sidebar
 
-[STEP] Step 2: Find and click "QA-20260505-175638-0uem" agent — Successfully clicked the agent in the sidebar and opened the agent detail page
+[STEP] Step 2 - Found and clicked the "QA-20260508-163820-xdrt" agent in the sidebar — Agent opened successfully, displaying agent home page with message composer
 
-[STEP] Step 3: Verify agent status is "running" or "idle" — Verified status was "idle" (shown in header and sidebar)
+[STEP] Step 3 - Verified agent status is "running" or "idle" — Status confirmed as "idle" at the top of the page
 
-[STEP] Step 4: Send message "Use the GitHub tool to check who I am. Tell me my GitHub username." — Successfully typed and sent the message using the send button
+[STEP] Step 4 - Sent message "Use the GitHub tool to check who I am. Tell me my GitHub username." — Message sent successfully, agent status changed to "working", session renamed to "GitHub Username Verification Check"
 
-[STEP] Step 5: Grant GitHub account access when card appears — Account Access Request card appeared asking to grant GitHub access. GitHub account was already checked. Clicked "Allow Access (1)" button to grant access.
+[STEP] Step 5 - Card appeared asking to grant GitHub account access — Account request card appeared showing GitHub service, with a pre-connected GitHub account already checked. Clicked "Allow Access (1)" button to grant access
 
-[STEP] Step 6: Wait up to 4 minutes for response — Agent worked for 2 minutes 4 seconds and completed response within the timeout period. Agent made 6 bash tool calls attempting different approaches to fetch the GitHub user.
+[STEP] Step 6a - First GitHub API request card appeared asking to allow GET /user — Clicked "Allow" button and selected "Allow Once" from the permission dialog
 
-[STEP] Step 7: Verify response includes GitHub username and take screenshot — Response received but did NOT include a GitHub username. Instead received error message: "The GitHub account was granted but the proxy is returning a 502 'Failed to fetch access token' error when trying to call the GitHub API. This usually means the OAuth flow didn't fully complete on the connection side. Could you check the GitHub connection in your UI and re-authorize it? Once that's done, I can retry the call to fetch your username from `/user`." Screenshot taken showing the error response.
+[STEP] Step 6b - Second GitHub API request card appeared asking to allow GET /user again — Clicked "Allow" button and selected "Allow Once" from the permission dialog
+
+[STEP] Step 7 - Waited for response (1m 28s total) — Agent completed working. Final response received but did NOT include a GitHub username. Instead, the agent reported: "The GitHub connection request was acknowledged but the proxy returns 'Bad credentials' — and `CONNECTED_ACCOUNTS` is still empty in my env. This usually means the OAuth flow wasn't fully completed on your end. Could you finish connecting the GitHub account? Once it's authorized I'll fetch `/user` and report your username."
+
+[STEP] Step 8 - Verified response includes GitHub username — FAILED: The response explains the failure to retrieve the username rather than providing an actual username. The agent attempted multiple methods (curl, Python requests) but all failed due to authentication errors with the GitHub proxy endpoint
