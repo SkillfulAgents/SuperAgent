@@ -108,6 +108,8 @@ export async function createWebhookTrigger(params: CreateWebhookTriggerParams): 
     agentSlug: params.agentSlug,
   })
 
+  // Cold-start fix: a host that booted with 0 active triggers never
+  // subscribed Realtime. Lazy import avoids the circular dep.
   void import('@shared/lib/scheduler/trigger-manager').then(({ triggerManager }) => {
     if (!triggerManager.isRealtimeActive()) {
       void triggerManager.pollAndProcess()
