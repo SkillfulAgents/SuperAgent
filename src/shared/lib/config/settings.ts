@@ -61,7 +61,7 @@ export interface AgentLimitsSettings {
   maxBudgetUsd?: number
 }
 
-export type HostBrowserProviderId = 'chrome' | 'browserbase'
+export type HostBrowserProviderId = 'chrome' | 'browserbase' | 'platform'
 
 export type BrowserbaseStealthOs = 'linux' | 'windows' | 'mac' | 'mobile' | 'tablet'
 
