@@ -6,27 +6,6 @@ import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-servi
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo, BrowserDebugInfo } from './types'
 
-/**
- * Platform-managed Browserbase provider.
- *
- * Logically a separate provider — the user is signed in to the platform and
- * the platform's proxy holds the Browserbase API key + project id. The user
- * does NOT configure any Browserbase credentials themselves; they just need
- * a valid platform session.
- *
- * Wire-protocol notes (intentionally different from `BrowserbaseProvider`):
- *  - Base URL is `${platformProxy}/v1/browserbase/*`, not `api.browserbase.com`.
- *  - Auth header is `Authorization: Bearer <platformToken>`, not `X-BB-API-Key`.
- *  - `projectId` is omitted from request bodies; the proxy injects the real
- *    project id server-side from its env, so clients can't pin a project.
- *  - Context map is persisted to a separate file (`platform-browserbase-contexts.json`)
- *    so it never collides with the BYOK BrowserbaseProvider's map.
- *
- * Note: the Browserbase debug `wsUrl` returned by the proxy still points at
- * `wss://connect.browserbase.com/...`. CDP traffic flows directly to
- * Browserbase, not through the platform proxy — the proxy only mediates the
- * REST control plane (create / inspect / release session, create context).
- */
 const CONTEXTS_FILE = 'platform-browserbase-contexts.json'
 
 interface BrowserbaseSession {
@@ -86,12 +65,11 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
           }
         }
       } catch {
-        // Session no longer valid — drop and create a fresh one below
+        // Session no longer valid
       }
       this.sessions.delete(instanceId)
     }
 
-    // Persistent context per agent (cookies / storage carried across sessions)
     const contextKey = agentId || instanceId
     const contextId = await this.getOrCreateContext(contextKey, token)
 
@@ -107,7 +85,6 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
       }
     }
 
-    // No `projectId` here — the platform proxy injects it server-side.
     const sessionPayload: Record<string, unknown> = { keepAlive: true, browserSettings }
 
     if (settings.app?.browserbaseProxies) {
@@ -143,7 +120,6 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
       return { cdpUrl: debugUrl }
     }
 
-    // Fallback to single-use connectUrl if the debug endpoint didn't yield one
     return { cdpUrl: session.connectUrl }
   }
 
@@ -166,7 +142,6 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
     const debug = await response.json() as BrowserbaseDebugResponse
     if (!debug.pages || debug.pages.length === 0) return null
 
-    // Page-level CDP wsUrls connect directly to Browserbase, not through the proxy.
     const pages = debug.pages.map((page) => ({
       id: page.id,
       url: page.url,
@@ -189,7 +164,6 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
       await fetch(`${this.proxyBase()}/sessions/${sessionId}`, {
         method: 'POST',
         headers: this.authHeaders(token, true),
-        // No projectId — the proxy injects it server-side.
         body: JSON.stringify({ status: 'REQUEST_RELEASE' }),
       })
       console.log(`[PlatformBrowserProvider] Released session ${sessionId}`)
@@ -210,11 +184,6 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
     return this.sessions.size > 0
   }
 
-  /**
-   * Resolve the platform proxy URL for Browserbase routes.
-   * Read fresh on every call so users that switch platform endpoints (e.g.
-   * staging ↔ production) don't need to restart the app.
-   */
   private proxyBase(): string {
     const base = getPlatformProxyBaseUrl()
     if (!base) {
@@ -253,7 +222,6 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
     const response = await fetch(`${this.proxyBase()}/contexts`, {
       method: 'POST',
       headers: this.authHeaders(token, true),
-      // No projectId in body — proxy fills it.
       body: JSON.stringify({}),
     })
 
