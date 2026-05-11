@@ -10,6 +10,7 @@ import { WebhookTriggerView } from '@renderer/components/webhook-triggers/webhoo
 import { ChatIntegrationView } from '@renderer/components/chat-integrations/chat-integration-view'
 import { ApiLogsView } from '@renderer/components/api-logs/api-logs-view'
 import { ConnectionsView } from '@renderer/components/connections/connections-view'
+import { AgentSecretsView } from '@renderer/components/agents/agent-secrets/agent-secrets-view'
 import { BrowserDrawerPanel } from '@renderer/components/browser/browser-drawer-panel'
 import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
@@ -48,6 +49,7 @@ export function MainContent() {
   const dashboardSlug = view.kind === 'dashboard' ? view.slug : null
   const apiLogsOpen = view.kind === 'apiLogs'
   const connectionsOpen = view.kind === 'connections'
+  const secretsOpen = view.kind === 'secrets'
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined)
   const [systemPromptOpen, setSystemPromptOpen] = useState(false)
@@ -161,7 +163,8 @@ export function MainContent() {
   const showWebhookCrumb = !!(webhookTriggerId && webhookTrigger)
   const showApiLogsCrumb = !!apiLogsOpen
   const showConnectionsCrumb = !!connectionsOpen
-  const isAgentLeaf = !showSessionCrumb && !showTaskCrumb && !showWebhookCrumb && !showApiLogsCrumb && !showConnectionsCrumb
+  const showSecretsCrumb = !!secretsOpen
+  const isAgentLeaf = !showSessionCrumb && !showTaskCrumb && !showWebhookCrumb && !showApiLogsCrumb && !showConnectionsCrumb && !showSecretsCrumb
 
   return (
     <div className="h-full flex flex-col" data-testid="main-content">
@@ -252,6 +255,12 @@ export function MainContent() {
             <div className="flex items-center gap-1.5 min-w-0">
               <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
               <span className="truncate text-sm font-light text-foreground">Connections</span>
+            </div>
+          )}
+          {showSecretsCrumb && (
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
+              <span className="truncate text-sm font-light text-foreground">Secrets</span>
             </div>
           )}
         </div>
@@ -440,6 +449,8 @@ export function MainContent() {
           <ApiLogsView agentSlug={agentSlug} />
         ) : view.kind === 'connections' ? (
           <ConnectionsView agentSlug={agentSlug} />
+        ) : view.kind === 'secrets' ? (
+          <AgentSecretsView agentSlug={agentSlug} />
         ) : view.kind === 'task' ? (
           <ScheduledTaskView taskId={view.id} agentSlug={agentSlug} />
         ) : view.kind === 'webhook' ? (

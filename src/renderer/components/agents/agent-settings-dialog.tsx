@@ -1,12 +1,11 @@
 
 import * as React from 'react'
-import { Settings, KeyRound, Sparkles, Users, HardDrive, MessageCircle, Network } from 'lucide-react'
+import { Settings, Sparkles, Users, HardDrive, MessageCircle, Network } from 'lucide-react'
 import { useUser } from '@renderer/context/user-context'
 import { Button } from '@renderer/components/ui/button'
 import { SettingsDialog, SettingsDialogTab } from '@renderer/components/ui/settings-dialog'
 import { useUpdateAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { GeneralTab } from './settings/general-tab'
-import { SecretsTab } from './settings/secrets-tab'
 import { SkillsTab } from './settings/skills-tab'
 import { AccessTab } from './settings/access-tab'
 import { VolumesTab } from './settings/volumes-tab'
@@ -90,9 +89,6 @@ export function AgentSettingsDialog({
           onNameChange={setName}
           onDialogClose={() => onOpenChange(false)}
         />
-      </SettingsDialogTab>
-      <SettingsDialogTab id="secrets" label="Secrets" icon={<KeyRound className="h-4 w-4" />}>
-        <SecretsTab agentSlug={agent.slug} isOpen={open} />
       </SettingsDialogTab>
       <SettingsDialogTab id="skills" label="Skills" icon={<Sparkles className="h-4 w-4" />}>
         <SkillsTab agentSlug={agent.slug} />
