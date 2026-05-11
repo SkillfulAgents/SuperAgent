@@ -1,0 +1,28 @@
+{
+  "storyId": "github-whoami",
+  "passed": false,
+  "reason": "Agent did not return a GitHub username due to GitHub OAuth authentication failure\n  Bugs found:\n    - The agent encountered a \"401 Bad credentials from GitHub\" error from the proxy, and the CONNECTED_ACCOUNTS was empty even though the GitHub account grant succeeded. The OAuth token did not attach properly to the session, preventing the agent from retrieving the authenticated user's GitHub username.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Successfully loaded the SuperAgent home page with sidebar showing three agents",
+    "Clicked on \"QA-20260511-225215-xqnb\" agent in sidebar — Agent opened successfully showing status \"idle\" in top right indicator",
+    "Verified agent status is \"idle\" — Confirmed agent status shows \"idle\" (requirement met)",
+    "Sent message \"Use the GitHub tool to check who I am. Tell me my GitHub username.\" — Message was entered and sent successfully, agent transitioned to \"working\" status",
+    "Granted GitHub account access — A \"Request Connected Account\" card appeared asking to allow GitHub access; selected the available GitHub account and clicked \"Allow Access (1)\"",
+    "Waited for agent response while granting multiple API permissions — Agent executed multiple bash commands (Fetch authenticated GitHub user info, Retry GitHub user lookup via proxy, Inspect proxy env vars, Inspect proxy response headers); multiple permission dialogs appeared asking to allow \"GET /user\" GitHub API calls; granted permissions 3 times",
+    "Agent completed after 1m 23s — Agent returned an error message explaining: \"The proxy is returning 401 Bad credentials from GitHub, and `CONNECTED_ACCOUNTS` is showing as empty even though the grant succeeded — it looks like the OAuth token didn't get attached properly on this session.\" Agent asked user to try reconnecting the GitHub account.",
+    "Verified response includes GitHub username — FAILED: The response did not contain a GitHub username. Instead, it contained an authentication error message asking the user to re-authorize the GitHub account."
+  ],
+  "bugs": [
+    "The agent encountered a \"401 Bad credentials from GitHub\" error from the proxy, and the CONNECTED_ACCOUNTS was empty even though the GitHub account grant succeeded. The OAuth token did not attach properly to the session, preventing the agent from retrieving the authenticated user's GitHub username."
+  ],
+  "durationMs": 156526,
+  "sessionId": "f0dbdcf5-0d5c-4182-9290-423e3e280f63",
+  "cost": {
+    "inputTokens": 612,
+    "outputTokens": 15771,
+    "cacheCreationTokens": 92885,
+    "cacheReadTokens": 2866086,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.482182
+  }
+}

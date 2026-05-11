@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the browser-use feature successfully executes browser tool commands, displays tool cards with results, shows a live browser preview panel, and the agent correctly retrieves and reports the page title from the targeted URL.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Application loaded successfully showing SuperAgent home page with three agents in sidebar including \"QA-20260511-225213-y7tf\"",
+    "Clicked on \"QA-20260511-225213-y7tf\" agent in the sidebar — Agent chat interface opened showing message input box and agent configuration panels",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into the input box — Message appeared in the input field and Send button became enabled",
+    "Clicked Send message button — Message was sent, agent status changed to \"working\", and \"Browser Page Title Retrieval Task working\" appeared in the sidebar",
+    "Waited up to 3 minutes for response mentioning \"Example Domain\" — Response arrived within timeout showing tool cards for \"Open Browser\" and \"Browser Command $ get title\", with the text \"The page title is \\\"Example Domain\\\".\" and a live browser preview panel displaying the actual Example Domain website",
+    "Took final screenshot — Screenshot captured showing the complete chat interface with tool cards, agent response, and live browser preview panel with the Example Domain page loaded"
+  ],
+  "bugs": [],
+  "durationMs": 80128,
+  "sessionId": "83c37f7b-44f5-4746-821f-6e84590648b0",
+  "cost": {
+    "inputTokens": 207,
+    "outputTokens": 8010,
+    "cacheCreationTokens": 115930,
+    "cacheReadTokens": 648449,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.250014
+  }
+}
