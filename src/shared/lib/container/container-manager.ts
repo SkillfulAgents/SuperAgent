@@ -1,7 +1,7 @@
 import path from 'path'
 import { createContainerClient, checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, startRunner, refreshRunnerAvailability, clearRunnerAvailabilityCache, reconcileRunnerState, getRunnerDisplayName, getContainerClientClass, getCliCommand, type ContainerRunner } from './client-factory'
 import { ensureLimaReady } from './lima-container-client'
-import type { ContainerClient, ContainerConfig, ContainerInfo, HealthCheckResult, ImagePullProgress, RuntimeReadiness } from './types'
+import type { ContainerClient, ContainerConfig, ContainerInfo, HealthCheckResult, ImagePullProgress, RuntimeReadiness, StopOptions } from './types'
 import { healthMonitor } from './health-monitor'
 import { db } from '@shared/lib/db'
 import { agentConnectedAccounts, connectedAccounts, agentRemoteMcps, remoteMcpServers } from '@shared/lib/db/schema'
@@ -134,7 +134,7 @@ class ContainerManager {
    * Marks the agent as "stopping" so health checks, status sync, and connection
    * error handlers stop spawning CLI commands into a potentially overloaded VM.
    */
-  async stopContainer(agentId: string): Promise<void> {
+  async stopContainer(agentId: string, options?: StopOptions): Promise<void> {
     // Mark as stopping immediately to prevent health checks / sync from spawning
     // more CLI processes into an overloaded VM
     this.stoppingAgents.add(agentId)
@@ -151,7 +151,7 @@ class ContainerManager {
       }
 
       const client = this.getClient(agentId)
-      const result = await client.stop()
+      const result = await client.stop(options)
       forceStopUsed = result.forceStopUsed
     } finally {
       this.stoppingAgents.delete(agentId)

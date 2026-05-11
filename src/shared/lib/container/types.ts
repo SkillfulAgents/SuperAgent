@@ -79,10 +79,15 @@ export interface HealthCheckResult {
   details?: Record<string, unknown>
 }
 
+export interface StopOptions {
+  stopTimeoutMs?: number
+  killTimeoutMs?: number
+}
+
 export interface ContainerClient {
   // Lifecycle management
   start(options?: StartOptions): Promise<void>
-  stop(): Promise<{ forceStopUsed: boolean }>
+  stop(options?: StopOptions): Promise<{ forceStopUsed: boolean }>
   stopSync(): void // Synchronous stop for exit handlers
 
   // Build a -v flag value for a volume mount (hostPath:containerPath with runtime-specific suffix)

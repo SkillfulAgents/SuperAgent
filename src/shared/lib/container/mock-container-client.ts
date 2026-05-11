@@ -10,6 +10,7 @@ import type {
   ContainerStats,
   CreateSessionOptions,
   StartOptions,
+  StopOptions,
   StreamMessage,
 } from './types'
 import type { RuntimeOptions } from './runtime-options'
@@ -992,7 +993,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     console.log(`[MockContainerClient] Started mock container for agent ${this.config.agentId}`)
   }
 
-  async stop(): Promise<{ forceStopUsed: boolean }> {
+  async stop(_options?: StopOptions): Promise<{ forceStopUsed: boolean }> {
     if (this.activeBrowserSessionId && cleanupBrowserSessionFn) {
       cleanupBrowserSessionFn(this.activeBrowserSessionId)
       this.activeBrowserSessionId = null

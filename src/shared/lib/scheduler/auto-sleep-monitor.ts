@@ -105,7 +105,10 @@ class AutoSleepMonitor {
               `[AutoSleepMonitor] Agent ${agentId} idle for >${timeoutMinutes}m, stopping...`
             )
 
-            await containerManager.stopContainer(agentId)
+            await containerManager.stopContainer(agentId, {
+              stopTimeoutMs: 60_000,
+              killTimeoutMs: 30_000,
+            })
           }
         } catch (error) {
           console.error(
