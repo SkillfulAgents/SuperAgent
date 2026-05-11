@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that agent can successfully open a browser, navigate to https://example.com, capture the page title \"Example Domain\", and report it back in the response.",
+  "reason": "Verified that the agent can open a browser, navigate to https://example.com, retrieve the page title \"Example Domain\", and report the result back through the chat interface within 3 minutes.",
   "steps": [
-    "Step 1 - Navigated to http://localhost:47891 - Successfully loaded the Super Agent application with agent list visible",
-    "Step 2 - Found and clicked the \"QA-20260416-182625-k1db\" agent in sidebar - Agent chat interface loaded with \"Browser Page Title Verification\" session created",
-    "Step 3 - Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message displayed in chat and sent successfully",
-    "Step 4 - Waited up to 3 minutes for response - Response received within 10 seconds",
-    "Step 5 - Verified response mentions \"Example Domain\" - Response confirmed: \"The page title is \\\"Example Domain\\\". It's the standard IANA example page with a heading and a \\\"Learn more\\\" link.\" Also visible in live browser preview on right panel"
+    "Navigated to http://localhost:47891 - Successfully loaded the SuperAgent home page with agents listed in the sidebar.",
+    "Found and clicked the \"QA-20260511-225359-s5u0\" agent - Successfully opened the agent's chat interface with the message input field visible.",
+    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message was successfully entered into the chat input field and sent by clicking the send button.",
+    "Waited up to 3 minutes for a response - Agent successfully completed the task within 17 seconds, as indicated by the \"Worked for 17s\" message.",
+    "Verified response mentions \"Example Domain\" - Response clearly states: \"The page title is \"Example Domain\".\" All three tool calls (Open Browser, Browser Get State, Close Browser) completed successfully with green checkmarks."
   ],
   "bugs": [],
-  "durationMs": 91387,
-  "sessionId": "5984f372-e3a4-4bff-afc0-b63e0bcd32ab",
+  "durationMs": 92073,
+  "sessionId": "6b0fc52d-87a3-46f9-8ce6-7d7404d9ba5d",
   "cost": {
-    "inputTokens": 270,
-    "outputTokens": 7751,
-    "cacheCreationTokens": 44405,
-    "cacheReadTokens": 988285,
+    "inputTokens": 315,
+    "outputTokens": 9645,
+    "cacheCreationTokens": 54572,
+    "cacheReadTokens": 1196399,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.19336
+    "totalCostUsd": 0.236395
   }
 }

@@ -1,41 +1,31 @@
-Excellent! I have successfully completed all the test steps. The screenshot clearly shows:
-
-1. **Agent**: QA-20260416-182626-l701 with status "idle"
-2. **Message sent**: "Use the GitHub tool to check who I am. Tell me my GitHub username."
-3. **Process executed**: 
-   - Bash: Get authenticated GitHub username
-   - Bash: Check for connected accounts
-   - Request Connected Account: GitHub (access granted)
-   - Bash: Fetch GitHub username via proxy
-4. **Response received**: "Your GitHub username is **yiw190**."
-5. **Duration**: Worked for 20s
+Now I have completed the test. Let me provide the structured report:
 
 ---
 
-## Final Report
+[TEST_FAIL]
 
-[TEST_PASS]
+[REASON] The agent was unable to retrieve a GitHub username due to authentication issues with the Composio GitHub connection (401 Bad credentials with an invalid/expired OAuth token)
 
-[REASON] Successfully verified that the agent can use GitHub tools to retrieve the authenticated user's GitHub username after granting account access.
+[BUG_FOUND] The Composio GitHub connection has an invalid or expired OAuth token (account ID ac28d008-bfb0-422c-8d42-27db304e6dd8). When the agent attempted to use the GitHub tool to fetch the authenticated user via the proxy, it returned "401 Bad credentials" when hitting api.github.com/user, preventing the agent from retrieving the GitHub username.
 
-[STEP] Navigated to http://localhost:47891 — Application loaded successfully with sidebar showing agents.
+[STEP] Navigated to http://localhost:47891 — Page loaded successfully with sidebar showing agents
 
-[STEP] Found and clicked "QA-20260416-182626-l701" agent in the sidebar — Agent detail page opened, status shows "idle".
+[STEP] Found and clicked "QA-20260511-225400-r6zr" agent in sidebar — Agent opened with landing page showing message input
 
-[STEP] Verified agent status is "idle" — Confirmed, status indicator shows "idle".
+[STEP] Verified agent status — Status showed "idle" in the agent header
 
-[STEP] Sent message "Use the GitHub tool to check who I am. Tell me my GitHub username." — Message submitted successfully, agent status changed to "working".
+[STEP] Typed and sent message "Use the GitHub tool to check who I am. Tell me my GitHub username." — Message was sent and agent transitioned to "working" status, creating a new session "GitHub Identity Verification Request"
 
-[STEP] Account access request card appeared — Card displayed asking to "Allow access to GitHub to retrieve your username?" with GitHub account pre-selected.
+[STEP] Account request card appeared asking to grant GitHub account access — GitHub account was already listed and selected, clicked "Allow Access (1)" button
 
-[STEP] Clicked "Allow Access (1)" button to grant GitHub account access — Agent continued processing, status changed to "awaiting input" then back to "working".
+[STEP] Agent requested multiple GitHub API permissions — Clicked "Allow" on several proxy review requests for GET /user endpoint, selected "Allow Once" on permission dialogs multiple times
 
-[STEP] API Request Review card appeared — Showing "Allow get the authenticated user?" for GitHub GET /user endpoint.
+[STEP] Agent attempted alternative approaches including Bash tools and MCP connections — Several tool calls were made (Check connected accounts, Fetch GitHub user info, Verbose curl, etc.)
 
-[STEP] Clicked "Allow Once" to permit the API call — Permission granted, agent continued processing.
+[STEP] Agent requested to connect GitHub MCP as alternative — Clicked "Connect" button but received error "Failed to initiate OAuth flow"
 
-[STEP] Waited for agent to complete response — Agent completed after approximately 43 seconds of total processing time.
+[STEP] Clicked "Deny" to reject GitHub MCP connection — Agent continued processing
 
-[STEP] Verified response includes GitHub username — Response clearly displays "Your GitHub username is yiw190." confirming successful retrieval of the authenticated user's GitHub username.
+[STEP] Agent completed after 4m 5s with idle status — Response provided but did NOT include GitHub username. Instead, agent reported that the Composio GitHub connection returned "401 Bad credentials" with invalid/expired OAuth token and suggested reconnecting the GitHub account or approving the GitHub MCP request
 
-[STEP] Took final screenshot — Screenshot captured showing the complete conversation flow and final response with GitHub username.
+[STEP] Took final screenshot — Screenshot shows the agent's error explanation instead of a GitHub username
