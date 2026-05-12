@@ -1,24 +1,24 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "Successfully navigated to the agent, sent a message, waited for response, and verified the answer contains \"4\"",
+  "reason": "Agent QA-20260512-222246-2jdx successfully responds with correct answer \"4\" to the math question \"What is 2+2?\"",
   "steps": [
-    "Step 1: Navigated to http://localhost:47891 — App loaded successfully with agent list visible in sidebar",
-    "Step 2: Found and clicked agent \"QA-20260421-193059-6w8h\" in the sidebar — Agent detail page opened successfully",
-    "Step 3: Verified agent status — Status shows \"idle\" which satisfies the requirement (running or idle)",
-    "Step 4: Sent message \"Hello! What is 2+2?\" — Message successfully entered and sent, agent status changed to \"working\"",
-    "Step 5: Waited up to 3 minutes for response — Response received in approximately 1 second (well within the 3-minute limit)",
-    "Step 6: Verified response mentions \"4\" — Agent response clearly displays \"4\" with \"Worked for 1s\" timestamp. Agent status returned to \"idle\""
+    "Step 1 - Navigated to http://localhost:47891 — Page loaded successfully with sidebar showing three agents",
+    "Step 2 - Found and clicked agent \"QA-20260512-222246-2jdx\" in the sidebar — Agent detail page opened with message input ready",
+    "Step 3 - Verified agent status — Status shows \"idle\" (meets requirement: running or idle) ✓",
+    "Step 4 - Sent message \"Hello! What is 2+2?\" — Message successfully transmitted and displayed in chat",
+    "Step 5 - Waited up to 3 minutes for response — Response received in approximately 1 second",
+    "Step 6 - Verified response mentions \"4\" — Response clearly shows \"4\" as the agent's answer, screenshot captured showing complete conversation"
   ],
   "bugs": [],
-  "durationMs": 92350,
-  "sessionId": "b73ef575-8fca-4f36-bd07-5d66df2924ab",
+  "durationMs": 79469,
+  "sessionId": "e9a31240-9662-45a7-a7ea-4af7fa7dfd80",
   "cost": {
-    "inputTokens": 288,
-    "outputTokens": 9752,
-    "cacheCreationTokens": 53076,
-    "cacheReadTokens": 1088287,
+    "inputTokens": 207,
+    "outputTokens": 7458,
+    "cacheCreationTokens": 40542,
+    "cacheReadTokens": 743199,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.224222
+    "totalCostUsd": 0.162494
   }
 }
