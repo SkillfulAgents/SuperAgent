@@ -41,7 +41,7 @@ jobs:
 
           # Run Agent E2E for changes anywhere in the container/runtime path,
           # not just when the agent image itself changes.
-          if git diff --name-only "$DIFF_BASE" HEAD | grep -qE '^(agent-container/|src/shared/lib/container/|src/renderer/components/settings/container-setup-dialog\.tsx$|src/renderer/components/wizard/docker-setup-step\.tsx$|src/api/routes/runtime-status\.ts$|src/renderer/hooks/use-runtime-status\.ts$|docker-compose\.yml$|\.github/workflows/(agent-e2e-test|build-app-container|build-container)\.yml$)'; then
+          if git diff --name-only "$DIFF_BASE" HEAD | grep -qE '^(agent-container/|src/shared/lib/container/|src/renderer/components/settings/container-setup-dialog\.tsx$|src/renderer/components/wizard/docker-setup-step\.tsx$|src/api/routes/runtime-status\.ts$|src/renderer/hooks/use-runtime-status\.ts$|docker-compose\.yml$|\.qagent/|\.github/workflows/(agent-e2e-test|build-app-container|build-container)\.yml$)'; then
             echo "container-changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "container-changed=false" >> "$GITHUB_OUTPUT"
