@@ -669,7 +669,18 @@ class ChatIntegrationManager {
   }
 
   private deriveDisplayName(_provider: string, message: IncomingMessage): string | undefined {
-    return deriveDisplayName(message)
+    const baseName = deriveDisplayName(message)
+
+    // Per-thread sessions use composite chatId (channelId|threadTs) — append datetime
+    if (message.chatId.includes('|')) {
+      const d = message.timestamp
+      const date = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+      const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+      const label = `${date}, ${time}`
+      return baseName ? `${baseName} — ${label}` : label
+    }
+
+    return baseName
   }
 
   /**

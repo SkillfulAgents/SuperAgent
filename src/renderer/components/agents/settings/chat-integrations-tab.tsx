@@ -142,6 +142,9 @@ export function ChatIntegrationsTab({ agentSlug }: ChatIntegrationsTabProps) {
   const [formData, setFormData] = useState<Record<string, string>>({})
   const [integrationName, setIntegrationName] = useState('')
   const [showToolCalls, setShowToolCalls] = useState(false)
+  const [onlyMentioned, setOnlyMentioned] = useState(false)
+  const [answerInThread, setAnswerInThread] = useState(false)
+  const [newSessionPerThread, setNewSessionPerThread] = useState(false)
   const [testResult, setTestResult] = useState<{ valid: boolean; info?: string } | null>(null)
   const [slackSetupMode, setSlackSetupMode] = useState<'manifest' | 'manual'>('manifest')
   const [manifestCopied, setManifestCopied] = useState(false)
@@ -152,6 +155,9 @@ export function ChatIntegrationsTab({ agentSlug }: ChatIntegrationsTabProps) {
     setFormData({})
     setIntegrationName('')
     setShowToolCalls(false)
+    setOnlyMentioned(false)
+    setAnswerInThread(false)
+    setNewSessionPerThread(false)
     setTestResult(null)
     setManifestCopied(false)
   }
@@ -176,11 +182,17 @@ export function ChatIntegrationsTab({ agentSlug }: ChatIntegrationsTabProps) {
   const handleCreate = async () => {
     if (!selectedProvider) return
     try {
+      const config: Record<string, unknown> = { ...formData }
+      if (selectedProvider === 'slack') {
+        if (onlyMentioned) config.onlyMentioned = true
+        if (answerInThread) config.answerInThread = true
+        if (answerInThread && newSessionPerThread) config.newSessionPerThread = true
+      }
       await createIntegration.mutateAsync({
         agentSlug,
         provider: selectedProvider,
         name: integrationName.trim() || undefined,
-        config: formData,
+        config,
         showToolCalls,
       })
       resetForm()
@@ -204,6 +216,29 @@ export function ChatIntegrationsTab({ agentSlug }: ChatIntegrationsTabProps) {
 
   const handleToggleToolCalls = async (id: string, current: boolean) => {
     await updateIntegration.mutateAsync({ id, showToolCalls: !current })
+  }
+
+  const parseSlackFlags = (configStr: string) => {
+    try {
+      const c = JSON.parse(configStr)
+      return {
+        onlyMentioned: c.onlyMentioned ?? false,
+        answerInThread: c.answerInThread ?? false,
+        newSessionPerThread: c.newSessionPerThread ?? false,
+      }
+    } catch {
+      return { onlyMentioned: false, answerInThread: false, newSessionPerThread: false }
+    }
+  }
+
+  const handleToggleSlackFlag = async (integration: { id: string; config: string }, flag: string) => {
+    let config: Record<string, unknown>
+    try { config = JSON.parse(integration.config) } catch { return }
+    config[flag] = !config[flag]
+    if (flag === 'answerInThread' && config[flag] === false) {
+      delete config.newSessionPerThread
+    }
+    await updateIntegration.mutateAsync({ id: integration.id, config })
   }
 
   const statusBadge = (status: string) => {
@@ -287,6 +322,50 @@ export function ChatIntegrationsTab({ agentSlug }: ChatIntegrationsTabProps) {
                       Show tool calls
                     </label>
                   </div>
+                  {integration.provider === 'slack' && (() => {
+                    const flags = parseSlackFlags(integration.config)
+                    return (
+                      <div className="mt-2 space-y-1.5">
+                        <p className="text-2xs text-muted-foreground/70 font-medium">Channel behavior</p>
+                        <div className="flex items-center gap-2">
+                          <Checkbox
+                            id={`only-mentioned-${integration.id}`}
+                            checked={flags.onlyMentioned}
+                            onCheckedChange={() => handleToggleSlackFlag(integration, 'onlyMentioned')}
+                            disabled={updateIntegration.isPending}
+                          />
+                          <label htmlFor={`only-mentioned-${integration.id}`} className="text-xs text-muted-foreground cursor-pointer">
+                            Only trigger on @mention
+                          </label>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Checkbox
+                            id={`answer-thread-${integration.id}`}
+                            checked={flags.answerInThread}
+                            onCheckedChange={() => handleToggleSlackFlag(integration, 'answerInThread')}
+                            disabled={updateIntegration.isPending}
+                          />
+                          <label htmlFor={`answer-thread-${integration.id}`} className="text-xs text-muted-foreground cursor-pointer">
+                            Reply in thread
+                          </label>
+                        </div>
+                        <div className="flex items-center gap-2 pl-5">
+                          <Checkbox
+                            id={`new-session-thread-${integration.id}`}
+                            checked={flags.newSessionPerThread}
+                            onCheckedChange={() => handleToggleSlackFlag(integration, 'newSessionPerThread')}
+                            disabled={updateIntegration.isPending || !flags.answerInThread}
+                          />
+                          <label
+                            htmlFor={`new-session-thread-${integration.id}`}
+                            className={`text-xs cursor-pointer ${flags.answerInThread ? 'text-muted-foreground' : 'text-muted-foreground/40'}`}
+                          >
+                            New session per thread
+                          </label>
+                        </div>
+                      </div>
+                    )
+                  })()}
                 </div>
               </div>
               <div className="flex items-center gap-1 shrink-0 ml-2">
@@ -487,6 +566,49 @@ export function ChatIntegrationsTab({ agentSlug }: ChatIntegrationsTabProps) {
                 Show tool calls in chat
               </label>
             </div>
+
+            {selectedProvider === 'slack' && (
+              <div className="space-y-1.5">
+                <p className="text-2xs text-muted-foreground/70 font-medium">Channel behavior</p>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="new-only-mentioned"
+                    checked={onlyMentioned}
+                    onCheckedChange={(checked) => setOnlyMentioned(checked === true)}
+                  />
+                  <label htmlFor="new-only-mentioned" className="text-xs text-muted-foreground cursor-pointer">
+                    Only trigger on @mention
+                  </label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="new-answer-thread"
+                    checked={answerInThread}
+                    onCheckedChange={(checked) => {
+                      setAnswerInThread(checked === true)
+                      if (!checked) setNewSessionPerThread(false)
+                    }}
+                  />
+                  <label htmlFor="new-answer-thread" className="text-xs text-muted-foreground cursor-pointer">
+                    Reply in thread
+                  </label>
+                </div>
+                <div className="flex items-center gap-2 pl-5">
+                  <Checkbox
+                    id="new-session-per-thread"
+                    checked={newSessionPerThread}
+                    onCheckedChange={(checked) => setNewSessionPerThread(checked === true)}
+                    disabled={!answerInThread}
+                  />
+                  <label
+                    htmlFor="new-session-per-thread"
+                    className={`text-xs cursor-pointer ${answerInThread ? 'text-muted-foreground' : 'text-muted-foreground/40'}`}
+                  >
+                    New session per thread
+                  </label>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Test result */}

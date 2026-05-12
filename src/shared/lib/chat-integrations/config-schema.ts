@@ -15,6 +15,10 @@ export const slackConfigSchema = z.object({
   botToken: z.string().min(1, 'Bot token is required'),
   appToken: z.string().min(1, 'App-level token is required'),
   channelId: z.string().optional(),
+  // Channel behavior toggles (only apply to channels, not DMs)
+  onlyMentioned: z.boolean().optional(),
+  answerInThread: z.boolean().optional(),
+  newSessionPerThread: z.boolean().optional(),
 })
 
 export type TelegramConfig = z.infer<typeof telegramConfigSchema>

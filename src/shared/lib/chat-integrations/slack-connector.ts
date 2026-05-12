@@ -19,6 +19,9 @@ export interface SlackConfig {
   botToken: string
   appToken: string
   channelId?: string
+  onlyMentioned?: boolean
+  answerInThread?: boolean
+  newSessionPerThread?: boolean
 }
 
 // ── Slack limits ────────────────────────────────────────────────────────
@@ -112,6 +115,73 @@ export function markdownToSlackMrkdwn(md: string): string {
   return result.trim()
 }
 
+// ── Message routing (exported for testing) ──────────────────────────────
+
+export interface SlackMessageRoutingParams {
+  rawText: string
+  chatId: string
+  ts: string
+  channelType: string
+  threadTs?: string
+  botUserId: string | null
+  config: Pick<SlackConfig, 'onlyMentioned' | 'answerInThread' | 'newSessionPerThread'>
+  activeThreads: ReadonlySet<string>
+}
+
+export interface SlackMessageRoutingResult {
+  shouldProcess: boolean
+  effectiveChatId: string
+  threadContext?: { channel: string; threadTs: string }
+  threadKey?: string
+}
+
+export function routeSlackMessage(params: SlackMessageRoutingParams): SlackMessageRoutingResult {
+  const { rawText, chatId, ts, channelType, threadTs, botUserId, config, activeThreads } = params
+  const isChannel = channelType === 'channel' || channelType === 'group'
+
+  if (isChannel && config.onlyMentioned) {
+    const isMentioned = botUserId ? rawText.includes(`<@${botUserId}>`) : false
+    if (!isMentioned) {
+      if (!threadTs || !activeThreads.has(`${chatId}|${threadTs}`)) {
+        return { shouldProcess: false, effectiveChatId: chatId }
+      }
+    }
+  }
+
+  let effectiveChatId = chatId
+  let threadContext: { channel: string; threadTs: string } | undefined
+  let threadKey: string | undefined
+
+  if (isChannel && config.answerInThread) {
+    const threadAnchor = threadTs || ts
+    if (config.newSessionPerThread) {
+      effectiveChatId = `${chatId}|${threadAnchor}`
+    }
+    threadContext = { channel: chatId, threadTs: threadAnchor }
+    threadKey = `${chatId}|${threadAnchor}`
+  }
+
+  return { shouldProcess: true, effectiveChatId, threadContext, threadKey }
+}
+
+export function resolveSlackChannel(
+  effectiveChatId: string,
+  threadContextMap: ReadonlyMap<string, { channel: string; threadTs: string }>,
+): { channel: string; threadTs?: string } {
+  const ctx = threadContextMap.get(effectiveChatId)
+  if (ctx) return ctx
+
+  const pipeIdx = effectiveChatId.indexOf('|')
+  if (pipeIdx > 0) {
+    return {
+      channel: effectiveChatId.slice(0, pipeIdx),
+      threadTs: effectiveChatId.slice(pipeIdx + 1),
+    }
+  }
+
+  return { channel: effectiveChatId }
+}
+
 // ── Connector ───────────────────────────────────────────────────────────
 
 export class SlackConnector extends ChatClientConnector {
@@ -136,7 +206,12 @@ export class SlackConnector extends ChatClientConnector {
   private lastUserMessageTs: Map<string, string> = new Map()
 
   // Track whether we have a thinking reaction active
-  private activeReactions: Set<string> = new Set() // channelId:ts
+  private activeReactions: Set<string> = new Set() // effectiveChatId:ts
+
+  // Thread context: maps effective chatId → real channel + thread anchor ts (for answerInThread)
+  private threadContextMap: Map<string, { channel: string; threadTs: string }> = new Map()
+  // Tracks threads the bot has participated in (for allowing thread replies without re-mention)
+  private activeThreads: Set<string> = new Set() // channelId|threadTs
 
   constructor(private config: SlackConfig) {
     super()
@@ -159,7 +234,6 @@ export class SlackConnector extends ChatClientConnector {
 
     // Handle incoming messages
     this.app.message(async ({ message, say: _say }: { message: any; say: any }) => {
-      // Skip bot messages, edits, etc.
       // Skip bot messages, edits, etc. — but allow file_share (user sent an image/file)
       const subtype = (message as any).subtype
       if (!message || (subtype && subtype !== 'file_share')) return
@@ -169,16 +243,43 @@ export class SlackConnector extends ChatClientConnector {
       const chatId = msg.channel || ''
       const userId = msg.user || ''
       const ts = msg.ts || ''
+      const threadTs = msg.thread_ts as string | undefined
+
+      const routing = routeSlackMessage({
+        rawText,
+        chatId,
+        ts,
+        channelType: msg.channel_type || '',
+        threadTs,
+        botUserId: this.botUserId,
+        config: this.config,
+        activeThreads: this.activeThreads,
+      })
+
+      if (!routing.shouldProcess) return
+
+      // Detect new thread entry before marking it active
+      const isNewThreadEntry = !!(routing.threadKey && !this.activeThreads.has(routing.threadKey) && threadTs)
+
+      const effectiveChatId = routing.effectiveChatId
+      if (routing.threadContext) this.threadContextMap.set(effectiveChatId, routing.threadContext)
+      if (routing.threadKey) this.activeThreads.add(routing.threadKey)
 
       // Track message ts for reaction-based typing
-      this.lastUserMessageTs.set(chatId, ts)
+      this.lastUserMessageTs.set(effectiveChatId, ts)
 
       // Resolve real user and channel names
       const userName = await this.resolveUserName(userId)
       const chatName = await this.resolveChannelName(chatId)
 
       // Resolve <@U123>, <#C123|name>, links, and special mentions in the text
-      const text = await this.resolveMentionsInText(rawText)
+      let text = await this.resolveMentionsInText(rawText)
+
+      // When joining a thread mid-conversation, fetch earlier messages as context
+      if (isNewThreadEntry) {
+        const history = await this.fetchThreadHistory(chatId, threadTs, ts)
+        if (history) text = history + '\n\n' + text
+      }
 
       // Handle file uploads
       const files = msg.files?.map((f: any) => ({
@@ -190,7 +291,7 @@ export class SlackConnector extends ChatClientConnector {
       this.emitMessage({
         externalMessageId: ts,
         text,
-        chatId,
+        chatId: effectiveChatId,
         userId,
         userName,
         chatName,
@@ -276,15 +377,18 @@ export class SlackConnector extends ChatClientConnector {
   async disconnect(): Promise<void> {
     this.connected = false
 
-    // Remove any active reactions
+    // Remove any active reactions (before clearing thread context needed to resolve channels)
     for (const key of this.activeReactions) {
-      const [channel, ts] = key.split(':')
+      const [effectiveChatId, ts] = key.split(':')
+      const { channel } = this.resolveChannel(effectiveChatId)
       this.removeThinkingReaction(channel, ts).catch(() => {})
     }
     this.activeReactions.clear()
     this.actionDataMap.clear()
     this.pendingQuestions.clear()
     this.lastUserMessageTs.clear()
+    this.threadContextMap.clear()
+    this.activeThreads.clear()
     this.userNameCache.clear()
     this.channelNameCache.clear()
 
@@ -304,15 +408,17 @@ export class SlackConnector extends ChatClientConnector {
   async sendMessage(chatId: string, message: OutgoingMessage): Promise<string> {
     if (!this.app) throw new Error('Slack app not connected')
 
+    const { channel, threadTs } = this.resolveChannel(chatId)
     const mrkdwn = markdownToSlackMrkdwn(message.text || '(empty message)')
     const chunks = this.splitMessage(mrkdwn)
 
     let lastTs = ''
     for (const chunk of chunks) {
       const result = await this.app.client.chat.postMessage({
-        channel: chatId,
+        channel,
         text: chunk,
         mrkdwn: true,
+        ...(threadTs ? { thread_ts: threadTs } : {}),
       })
       lastTs = result.ts || ''
     }
@@ -326,21 +432,24 @@ export class SlackConnector extends ChatClientConnector {
   async sendFile(chatId: string, fileData: Buffer, filename: string, caption?: string): Promise<string> {
     if (!this.app) throw new Error('Slack app not connected')
 
+    const { channel, threadTs } = this.resolveChannel(chatId)
     const result = await this.app.client.filesUploadV2({
-      channel_id: chatId,
+      channel_id: channel,
       file: fileData,
       filename,
       initial_comment: caption,
-    })
+      ...(threadTs ? { thread_ts: threadTs } : {}),
+    } as any)
 
     // filesUploadV2 returns files array; extract the message ts if available
     const file = (result as any).files?.[0]
-    return file?.shares?.public?.[chatId]?.[0]?.ts || file?.shares?.private?.[chatId]?.[0]?.ts || ''
+    return file?.shares?.public?.[channel]?.[0]?.ts || file?.shares?.private?.[channel]?.[0]?.ts || ''
   }
 
   async sendStreamingUpdate(chatId: string, text: string, existingMessageId?: string): Promise<string> {
     if (!this.app) throw new Error('Slack app not connected')
 
+    const { channel, threadTs } = this.resolveChannel(chatId)
     const truncated = text.length > MAX_MESSAGE_LENGTH
       ? text.slice(0, MAX_MESSAGE_LENGTH - 20) + '\n\n... (truncated)'
       : text
@@ -348,9 +457,10 @@ export class SlackConnector extends ChatClientConnector {
 
     if (!existingMessageId) {
       const result = await this.app.client.chat.postMessage({
-        channel: chatId,
+        channel,
         text: displayText,
         mrkdwn: true,
+        ...(threadTs ? { thread_ts: threadTs } : {}),
       })
       return result.ts || ''
     }
@@ -358,7 +468,7 @@ export class SlackConnector extends ChatClientConnector {
     // Edit existing message
     try {
       await this.app.client.chat.update({
-        channel: chatId,
+        channel,
         ts: existingMessageId,
         text: displayText,
       })
@@ -375,13 +485,14 @@ export class SlackConnector extends ChatClientConnector {
   async finalizeStreamingMessage(chatId: string, messageId: string, finalText: string): Promise<void> {
     if (!this.app) return
 
+    const { channel } = this.resolveChannel(chatId)
     const truncated = finalText.length > MAX_MESSAGE_LENGTH
       ? finalText.slice(0, MAX_MESSAGE_LENGTH - 20) + '\n\n... (truncated)'
       : finalText
 
     try {
       await this.app.client.chat.update({
-        channel: chatId,
+        channel,
         ts: messageId,
         text: markdownToSlackMrkdwn(truncated || '(empty response)'),
       })
@@ -408,9 +519,10 @@ export class SlackConnector extends ChatClientConnector {
     const key = `${chatId}:${lastTs}`
     if (this.activeReactions.has(key)) return // Already reacting
 
+    const { channel } = this.resolveChannel(chatId)
     try {
       await this.app.client.reactions.add({
-        channel: chatId,
+        channel,
         timestamp: lastTs,
         name: 'thinking_face',
       })
@@ -425,11 +537,15 @@ export class SlackConnector extends ChatClientConnector {
   async sendUserRequestCard(chatId: string, event: UserRequestEvent): Promise<string> {
     if (!this.app) throw new Error('Slack app not connected')
 
+    const { channel, threadTs } = this.resolveChannel(chatId)
+    const threadOpt = threadTs ? { thread_ts: threadTs } : {}
+
     if (isUnsupportedInChat(event)) {
       const result = await this.app.client.chat.postMessage({
-        channel: chatId,
+        channel,
         text: `_${describeUnsupportedRequest(event)}_`,
         mrkdwn: true,
+        ...threadOpt,
       })
       return result.ts || ''
     }
@@ -481,9 +597,10 @@ export class SlackConnector extends ChatClientConnector {
           }
 
           const result = await this.app.client.chat.postMessage({
-            channel: chatId,
+            channel,
             text: q.question, // Fallback text
             blocks,
+            ...threadOpt,
           })
           lastTs = result.ts || ''
         }
@@ -493,18 +610,20 @@ export class SlackConnector extends ChatClientConnector {
 
       case 'secret_request': {
         const result = await this.app.client.chat.postMessage({
-          channel: chatId,
+          channel,
           text: `*Secret requested:* \`${event.secretName}\`${event.reason ? `\nReason: ${event.reason}` : ''}\n\nPlease reply with the secret value.`,
           mrkdwn: true,
+          ...threadOpt,
         })
         return result.ts || ''
       }
 
       case 'file_request': {
         const result = await this.app.client.chat.postMessage({
-          channel: chatId,
+          channel,
           text: `*File requested:*\n${event.description}${event.fileTypes ? `\n\nAccepted types: ${event.fileTypes}` : ''}\n\nPlease upload the file.`,
           mrkdwn: true,
+          ...threadOpt,
         })
         return result.ts || ''
       }
@@ -512,9 +631,10 @@ export class SlackConnector extends ChatClientConnector {
       case 'file_delivery': {
         // File transfer from container to chat is not yet supported — show metadata only
         const result = await this.app.client.chat.postMessage({
-          channel: chatId,
+          channel,
           text: `*File delivered:* \`${event.filePath}\`${event.description ? `\n${event.description}` : ''}\n\n_File download not yet supported — view in the app._`,
           mrkdwn: true,
+          ...threadOpt,
         })
         return result.ts || ''
       }
@@ -525,18 +645,20 @@ export class SlackConnector extends ChatClientConnector {
           : event.status === 'cancelled' ? ':no_entry_sign:'
           : ':hourglass_flowing_sand:'
         const result = await this.app.client.chat.postMessage({
-          channel: chatId,
+          channel,
           text: `:wrench: *${event.toolName}* — \`${event.summary}\` ${emoji}`,
           mrkdwn: true,
+          ...threadOpt,
         })
         return result.ts || ''
       }
 
       default: {
         const result = await this.app.client.chat.postMessage({
-          channel: chatId,
+          channel,
           text: `_${describeUnsupportedRequest(event)}_`,
           mrkdwn: true,
+          ...threadOpt,
         })
         return result.ts || ''
       }
@@ -544,6 +666,43 @@ export class SlackConnector extends ChatClientConnector {
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────
+
+  private resolveChannel(effectiveChatId: string): { channel: string; threadTs?: string } {
+    return resolveSlackChannel(effectiveChatId, this.threadContextMap)
+  }
+
+  /**
+   * Fetch earlier messages from a thread the bot is joining mid-conversation.
+   * Returns formatted history or null on failure (graceful — works without extra scopes).
+   */
+  private async fetchThreadHistory(channel: string, threadTs: string, currentMessageTs: string): Promise<string | null> {
+    if (!this.app) return null
+    try {
+      const result = await this.app.client.conversations.replies({
+        channel,
+        ts: threadTs,
+        limit: 50,
+      })
+      if (!result.ok || !result.messages) return null
+
+      const previous = result.messages.filter(m => m.ts !== currentMessageTs)
+      if (previous.length === 0) return null
+
+      const lines: string[] = []
+      for (const m of previous) {
+        const name = m.user ? (await this.resolveUserName(m.user) || m.user) : 'Unknown'
+        const text = m.text ? await this.resolveMentionsInText(m.text) : ''
+        if (text) lines.push(`${name}: ${text}`)
+      }
+      if (lines.length === 0) return null
+
+      const label = lines.length === 1 ? '1 previous message' : `${lines.length} previous messages`
+      return `[Thread context — ${label}]\n${lines.join('\n')}`
+    } catch (err) {
+      console.warn('[SlackConnector] Failed to fetch thread history (non-critical):', err instanceof Error ? err.message : err)
+      return null
+    }
+  }
 
   private registerAction(toolUseId: string, value: unknown): string {
     // Evict stale action entries to prevent unbounded growth
@@ -564,7 +723,8 @@ export class SlackConnector extends ChatClientConnector {
 
     const key = `${chatId}:${lastTs}`
     if (this.activeReactions.has(key)) {
-      await this.removeThinkingReaction(chatId, lastTs)
+      const { channel } = this.resolveChannel(chatId)
+      await this.removeThinkingReaction(channel, lastTs)
       this.activeReactions.delete(key)
     }
   }
@@ -634,7 +794,7 @@ export class SlackConnector extends ChatClientConnector {
       // For channels/groups use the channel name; for DMs return undefined
       // so that the resolved userName (from users.info) is used instead.
       const channel = result.channel as any
-      const name = channel?.is_im ? undefined : (channel?.name || undefined)
+      const name = channel?.is_im ? undefined : (channel?.name ? `#${channel.name}` : undefined)
       if (name) this.channelNameCache.set(channelId, { value: name, ts: Date.now() })
       return name
     } catch {
