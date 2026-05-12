@@ -1,1 +1,0 @@
-The test execution is complete. Both monitoring tasks have concluded as expected - the agent's response was received and verified before the monitor timeouts occurred. The test passed all requirements successfully.
