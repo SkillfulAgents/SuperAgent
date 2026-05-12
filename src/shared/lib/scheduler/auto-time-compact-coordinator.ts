@@ -24,7 +24,7 @@ import { listSessions } from '@shared/lib/services/session-service'
 import { advanceAutoTimeCompact } from '@shared/lib/services/auto-time-compact'
 
 const POLL_INTERVAL_MS = 60_000
-const DEFAULT_MIN_NEW_TURNS = 4
+const DEFAULT_KEEP_TURNS = 10
 
 class AutoTimeCompactCoordinator {
   private intervalId: NodeJS.Timeout | null = null
@@ -67,9 +67,9 @@ class AutoTimeCompactCoordinator {
       if (idleMinutes <= 0) return // disabled
 
       const idleMs = idleMinutes * 60_000
-      const minNewTurns = Math.max(
+      const keepTurns = Math.max(
         1,
-        settings.app?.autoCompactMinNewTurns ?? DEFAULT_MIN_NEW_TURNS
+        settings.app?.autoCompactKeepTurns ?? DEFAULT_KEEP_TURNS
       )
       const now = Date.now()
 
@@ -96,7 +96,7 @@ class AutoTimeCompactCoordinator {
 
           this.processingSessions.add(session.id)
           try {
-            await advanceAutoTimeCompact(agentSlug, session.id, minNewTurns)
+            await advanceAutoTimeCompact(agentSlug, session.id, keepTurns)
           } catch (err) {
             console.error(
               `[AutoTimeCompactCoordinator] ${agentSlug}/${session.id} failed:`,

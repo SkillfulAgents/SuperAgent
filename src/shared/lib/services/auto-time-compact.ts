@@ -3,20 +3,26 @@
  *
  * Appends a synthetic SDK-native `compact_boundary` plus a paired
  * `isCompactSummary` user message to the JSONL tail. The SDK's resume
- * reader (see node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs around
- * the `hasPreservedSegment` branch) treats any compact_boundary without
- * `compactMetadata.preservedSegment` as a hard reset point: everything
- * read before that line is discarded, and the API request is built from
- * `[system_prompt, ...entries_after_boundary]` only.
+ * reader (node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs, the
+ * `hasPreservedSegment` branch) treats any compact_boundary without
+ * `compactMetadata.preservedSegment` as a hard reset: every entry read
+ * before the boundary is discarded, and the API request is built from
+ * `[system_prompt, ...entries_after_boundary]` only. We only append
+ * `[boundary, summary]` (no trailing entries), so the API context after
+ * a compact becomes `[system_prompt, summary_as_user_message]`.
  *
- * Recency = pure text concatenation. We pull the user-text and
- * assistant-text content from every entry written since the previous
- * boundary, prepend the previous summary so the running transcript stays
- * cumulative, and stuff the result into the new summary message. No
- * trailing entries are preserved verbatim — they don't need to be,
- * because the SDK's truncate-on-boundary semantics already discard
- * everything pre-boundary. This sidesteps every tool_use / tool_result
- * pairing concern at the API level.
+ * Summary content reconstructs the conversation as a one-string transcript:
+ *   - All human user-text turns are emitted with role tags.
+ *   - The most recent `keepTurns` turns are kept verbatim (assistant text,
+ *     tool_use, tool_result all inline).
+ *   - Older turns keep their user/assistant text; any tool I/O is collapsed
+ *     into a single `[...]` placeholder per contiguous run.
+ *   - Per-tool-result text is truncated at TOOL_RESULT_MAX_CHARS to keep
+ *     a single noisy snapshot from blowing up the summary.
+ *
+ * Cumulative: every tick re-parses the entire JSONL from scratch (skipping
+ * our own boundaries / summary messages), so a fresh summary always
+ * covers the full session.
  *
  * Triggered by auto-time-compact-coordinator. Off until the user enables
  * it via Settings > Runtime > Auto-Compact Idle Sessions.
@@ -25,8 +31,14 @@
 import * as fs from 'fs'
 import { randomUUID } from 'crypto'
 import { APP_VERSION } from '@shared/lib/config/version'
+import { containerManager } from '@shared/lib/container/container-manager'
 import { messagePersister } from '@shared/lib/container/message-persister'
-import type { JsonlEntry, JsonlMessageEntry } from '@shared/lib/types/agent'
+import type {
+  ContentBlock,
+  JsonlEntry,
+  JsonlMessageEntry,
+  ToolResultBlock,
+} from '@shared/lib/types/agent'
 import {
   getSessionJsonlPath,
   readJsonlFile,
@@ -35,6 +47,20 @@ import {
 const STRATEGY = 'time_recency'
 const ENTRYPOINT_TAG = 'superagent-auto-time-compact'
 
+// Trigger gate (hardcoded V0): we only burn a boundary when there's been
+// real activity since the last one — at least one new human input *and*
+// more than this many tool_use calls.
+const MIN_NEW_USER_TEXT = 1
+const MIN_NEW_TOOL_USES = 10
+
+// Per-tool-result string cap — one giant snapshot output shouldn't be
+// allowed to dominate the summary.
+const TOOL_RESULT_MAX_CHARS = 8_000
+
+// Single short placeholder for any contiguous run of dropped tool I/O
+// in older turns. The marker is intentionally cheap (a few tokens).
+const TOOL_PLACEHOLDER = '[...]'
+
 function isCompactBoundaryEntry(entry: JsonlEntry | undefined): boolean {
   if (!entry) return false
   const e = entry as { type?: string; subtype?: string }
@@ -42,15 +68,8 @@ function isCompactBoundaryEntry(entry: JsonlEntry | undefined): boolean {
 }
 
 /**
- * "Human user-text" = a message a real person typed. Excludes:
- *   - assistant entries
- *   - tool_result entries (also type=user, but content is a tool response)
- *   - our own compact-summary entries
- *
- * Used purely as a freshness signal: we only want to compact when the
- * conversation has accumulated enough genuine human input since the last
- * boundary — otherwise the coordinator's per-minute tick would keep
- * stamping boundaries onto an idle session forever.
+ * "Human user-text" = a message a real person typed. Excludes assistant
+ * entries, tool_result user entries, and our own compact-summary entries.
  */
 function isHumanUserText(entry: JsonlEntry | undefined): boolean {
   if (!entry) return false
@@ -71,29 +90,170 @@ function findLatestBoundaryIndex(entries: JsonlEntry[]): number {
   return -1
 }
 
-/**
- * Pull the human-readable text out of a JSONL message entry. Returns null
- * for entries that contribute nothing useful (tool-only turns, file
- * snapshots, system entries, etc.). Skips tool_result blocks so we don't
- * dump megabytes of tool I/O into the summary.
- */
-function extractText(entry: JsonlEntry): { role: 'user' | 'assistant'; text: string } | null {
-  if (entry.type !== 'user' && entry.type !== 'assistant') return null
-  const e = entry as JsonlMessageEntry
-  if (e.isCompactSummary) return null
-  const content = e.message?.content
-  if (typeof content === 'string') {
-    const text = content.trim()
-    return text ? { role: e.type, text } : null
+function getBlocks(entry: JsonlMessageEntry): ContentBlock[] {
+  const content = entry.message?.content
+  if (typeof content === 'string') return [{ type: 'text', text: content } as ContentBlock]
+  if (Array.isArray(content)) return content as ContentBlock[]
+  return []
+}
+
+function extractUserTextString(entry: JsonlMessageEntry): string {
+  const blocks = getBlocks(entry)
+  const parts: string[] = []
+  for (const block of blocks) {
+    const b = block as { type?: string; text?: string }
+    if (b.type === 'text' && typeof b.text === 'string') parts.push(b.text)
   }
-  if (!Array.isArray(content)) return null
+  return parts.join('\n').trim()
+}
+
+function extractAssistantTextString(entry: JsonlMessageEntry): string {
+  return extractUserTextString(entry)
+}
+
+function stringifyToolResultContent(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) {
+    try { return JSON.stringify(content) } catch { return String(content) }
+  }
   const parts: string[] = []
   for (const block of content) {
     const b = block as { type?: string; text?: string }
     if (b.type === 'text' && typeof b.text === 'string') parts.push(b.text)
+    else if (b.type === 'image') parts.push('[image]')
+    else {
+      try { parts.push(JSON.stringify(block)) } catch { parts.push(String(block)) }
+    }
   }
-  const text = parts.join('\n').trim()
-  return text ? { role: e.type, text } : null
+  return parts.join('\n')
+}
+
+function truncate(text: string, limit: number): string {
+  if (text.length <= limit) return text
+  return text.slice(0, limit) + `… [truncated ${text.length - limit} chars]`
+}
+
+interface Turn {
+  /** The opening human user-text message of this turn. */
+  userText: string
+  /** Every entry between this user-text and the next, in JSONL order. */
+  body: JsonlMessageEntry[]
+}
+
+/**
+ * Walk the JSONL and split into "turns". A turn starts at each human
+ * user-text and absorbs every subsequent user/assistant entry until the
+ * next human user-text. Compact-summary entries (ours) are ignored
+ * entirely so we never recursively summarize our own summaries.
+ */
+function parseTurns(entries: JsonlEntry[]): Turn[] {
+  const turns: Turn[] = []
+  let current: Turn | null = null
+  for (const entry of entries) {
+    if (entry.type !== 'user' && entry.type !== 'assistant') continue
+    const e = entry as JsonlMessageEntry
+    if (e.isCompactSummary) continue
+
+    if (isHumanUserText(e)) {
+      if (current) turns.push(current)
+      current = { userText: extractUserTextString(e), body: [] }
+    } else if (current) {
+      current.body.push(e)
+    }
+    // Entries before the first user-text are ignored — there's no turn
+    // to attach them to and they're rare (usually just init noise).
+  }
+  if (current) turns.push(current)
+  return turns
+}
+
+function formatOlderTurnBody(body: JsonlMessageEntry[]): string[] {
+  const lines: string[] = []
+  let droppedRunPending = false
+  const flushPlaceholder = () => {
+    if (droppedRunPending) {
+      lines.push(TOOL_PLACEHOLDER)
+      droppedRunPending = false
+    }
+  }
+  for (const entry of body) {
+    if (entry.type === 'assistant') {
+      const text = extractAssistantTextString(entry)
+      const blocks = getBlocks(entry)
+      const hasToolUse = blocks.some(
+        (b) => (b as { type?: string }).type === 'tool_use'
+      )
+      if (text) {
+        flushPlaceholder()
+        lines.push(`Assistant: ${text}`)
+      }
+      if (hasToolUse) droppedRunPending = true
+    } else if (entry.type === 'user') {
+      // user-with-tool_result in this slot
+      droppedRunPending = true
+    }
+  }
+  flushPlaceholder()
+  return lines
+}
+
+function formatRecentTurnBody(body: JsonlMessageEntry[]): string[] {
+  const lines: string[] = []
+  for (const entry of body) {
+    const blocks = getBlocks(entry)
+    if (entry.type === 'assistant') {
+      for (const block of blocks) {
+        const b = block as {
+          type?: string
+          text?: string
+          name?: string
+          input?: unknown
+        }
+        if (b.type === 'text' && typeof b.text === 'string') {
+          lines.push(`Assistant: ${b.text}`)
+        } else if (b.type === 'tool_use') {
+          let input: string
+          try { input = JSON.stringify(b.input ?? {}) } catch { input = '{}' }
+          lines.push(`[tool_use: ${b.name ?? 'unknown'}] ${input}`)
+        }
+      }
+    } else if (entry.type === 'user') {
+      for (const block of blocks) {
+        const b = block as ToolResultBlock & { type?: string }
+        if (b.type !== 'tool_result') continue
+        const text = stringifyToolResultContent(b.content).trim()
+        if (!text) continue
+        lines.push(`[tool_result] ${truncate(text, TOOL_RESULT_MAX_CHARS)}`)
+      }
+    }
+  }
+  return lines
+}
+
+function formatSummary(turns: Turn[], keepTurns: number): string {
+  const lines: string[] = []
+  lines.push(
+    '[auto-time-compact] Conversation history. Older tool I/O is elided ' +
+      `("${TOOL_PLACEHOLDER}"); the most recent ${keepTurns} user turn(s) ` +
+      'are kept verbatim with tool details.'
+  )
+  if (turns.length === 0) return lines.join('\n')
+
+  const cutoff = Math.max(0, turns.length - keepTurns)
+  const older = turns.slice(0, cutoff)
+  const recent = turns.slice(cutoff)
+
+  for (const turn of older) {
+    lines.push('')
+    if (turn.userText) lines.push(`User: ${turn.userText}`)
+    lines.push(...formatOlderTurnBody(turn.body))
+  }
+  for (const turn of recent) {
+    lines.push('')
+    if (turn.userText) lines.push(`User: ${turn.userText}`)
+    lines.push(...formatRecentTurnBody(turn.body))
+  }
+  return lines.join('\n')
 }
 
 function makeBoundary(sessionId: string, logicalParentUuid: string | null) {
@@ -146,27 +306,41 @@ function makeSummaryEntry(
   }
 }
 
+function countToolUsesInAssistant(entry: JsonlMessageEntry): number {
+  if (entry.type !== 'assistant') return 0
+  let count = 0
+  for (const block of getBlocks(entry)) {
+    if ((block as { type?: string }).type === 'tool_use') count++
+  }
+  return count
+}
+
 /**
- * The entry right after a compact_boundary is the previous summary's user
- * message. Pull its content so the next summary can prepend it and stay
- * cumulative — successive boundaries truncate, so each summary must
- * carry forward everything earlier or the model loses history.
+ * Count fresh activity since the latest boundary. Returns
+ * { newUserText, newToolUses } using timestamp comparison so the
+ * trailing copies / pre-boundary entries don't contribute.
  */
-function findPreviousSummaryContent(
+function countFreshActivity(
   entries: JsonlEntry[],
-  boundaryIdx: number
-): string | null {
-  if (boundaryIdx < 0) return null
-  const next = entries[boundaryIdx + 1] as JsonlMessageEntry | undefined
-  if (!next || next.type !== 'user' || !next.isCompactSummary) return null
-  const content = next.message?.content
-  return typeof content === 'string' ? content : null
+  latestBoundaryTimestamp: string | null
+): { newUserText: number; newToolUses: number } {
+  let newUserText = 0
+  let newToolUses = 0
+  for (const entry of entries) {
+    const ts = (entry as { timestamp?: string }).timestamp
+    if (latestBoundaryTimestamp && (!ts || ts <= latestBoundaryTimestamp)) continue
+    if (isHumanUserText(entry)) newUserText++
+    if (entry.type === 'assistant') {
+      newToolUses += countToolUsesInAssistant(entry as JsonlMessageEntry)
+    }
+  }
+  return { newUserText, newToolUses }
 }
 
 export async function advanceAutoTimeCompact(
   agentSlug: string,
   sessionId: string,
-  minNewHumanTurns: number
+  keepTurns: number
 ): Promise<boolean> {
   const tag = `[AutoTimeCompact] ${agentSlug}/${sessionId}`
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
@@ -174,27 +348,27 @@ export async function advanceAutoTimeCompact(
   const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
   if (entries.length === 0) return false
 
-  // Freshness gate: only compact when there's enough new human input since
-  // the previous boundary. Without this gate the coordinator's per-minute
-  // tick would keep stamping new boundaries onto an idle session forever.
+  // Trigger gate. We only burn a boundary when there's been real activity
+  // since the last one — at least one human input and a chunk of tool I/O
+  // (tool I/O is where the token cost actually piles up).
   const latestBoundaryIdx = findLatestBoundaryIndex(entries)
-  const newContent = entries.slice(latestBoundaryIdx + 1)
-  const newHumanTurns = newContent.filter(isHumanUserText).length
-  if (newHumanTurns < minNewHumanTurns) return false
+  const latestBoundaryTimestamp =
+    latestBoundaryIdx >= 0
+      ? ((entries[latestBoundaryIdx] as { timestamp?: string }).timestamp ?? null)
+      : null
 
-  // Cumulative summary: previous summary text + new conversation text.
-  const previousSummary = findPreviousSummaryContent(entries, latestBoundaryIdx)
-  const newTextLines: string[] = []
-  for (const entry of newContent) {
-    const t = extractText(entry)
-    if (!t) continue
-    const tagLabel = t.role === 'user' ? 'User' : 'Assistant'
-    newTextLines.push(`${tagLabel}: ${t.text}`)
-  }
-  const newText = newTextLines.join('\n\n')
-  const summary = previousSummary
-    ? `${previousSummary}\n\n${newText}`
-    : `[auto-time-compact] Conversation transcript (text-only):\n\n${newText}`
+  const { newUserText, newToolUses } = countFreshActivity(
+    entries,
+    latestBoundaryTimestamp
+  )
+  if (newUserText < MIN_NEW_USER_TEXT) return false
+  if (newToolUses <= MIN_NEW_TOOL_USES) return false
+
+  // Build summary by re-parsing the whole JSONL (compact-summary entries
+  // are skipped inside parseTurns, so we never feed our own summaries back
+  // into themselves).
+  const turns = parseTurns(entries)
+  const summary = formatSummary(turns, keepTurns)
 
   const tailUuid = (entries[entries.length - 1] as { uuid?: string }).uuid
   if (!tailUuid) return false
@@ -208,14 +382,32 @@ export async function advanceAutoTimeCompact(
     'utf-8'
   )
 
-  // Tell SSE subscribers the file changed — without this the open chat
-  // pane keeps rendering the pre-compaction view until something else
-  // (a new message, a navigation, etc.) forces a refetch.
   messagePersister.broadcastMessagesUpdated(sessionId)
 
+  // Force the agent-container SDK to drop its in-memory message chain so
+  // the boundary we just appended actually takes effect on the next user
+  // message. Without this, the SDK's running Query keeps the
+  // pre-compaction chain in memory and never re-reads JSONL — the user
+  // would type a new message and the model would still see the entire
+  // un-compacted history. Interrupting the Query aborts the for-await
+  // pump (even when no request is in flight, isProcessing is true while
+  // it's waiting on the input queue), flips isReady=false, and the next
+  // sendMessage triggers a fresh query({ resume }) that re-reads the
+  // JSONL — at which point the SDK's compact_boundary truncation kicks
+  // in. See agent-container/src/claude-code.ts:interrupt + sendMessage.
+  try {
+    const client = containerManager.getClient(agentSlug)
+    await client.interruptSession(sessionId)
+  } catch (err) {
+    // Container may be gone (sleep, restart, etc.) — JSONL is already
+    // updated, so the next time the container comes up with this session
+    // it'll resume cleanly from the new boundary.
+    console.warn(`${tag} interruptSession failed (non-fatal):`, err)
+  }
+
   console.log(
-    `${tag} compacted: newHumanTurns=${newHumanTurns} ` +
-      `prevSummaryChars=${previousSummary?.length ?? 0} ` +
+    `${tag} compacted: turns=${turns.length} keepTurns=${keepTurns} ` +
+      `newUserText=${newUserText} newToolUses=${newToolUses} ` +
       `summaryChars=${summary.length}`
   )
   return true

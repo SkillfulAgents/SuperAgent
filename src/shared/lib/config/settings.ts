@@ -79,11 +79,15 @@ export interface AppPreferences {
    */
   autoCompactIdleMinutes?: number
   /**
-   * Trigger threshold: minimum number of new human user turns since the
-   * previous boundary required to fire a new compact. Prevents the
-   * per-minute tick from re-stamping boundaries onto an idle session.
+   * How many of the most recent user turns to keep verbatim in the
+   * summary (with full assistant text + tool_use + tool_result detail).
+   * Older turns are kept as user/assistant text only; their tool I/O
+   * collapses to a single `[...]` placeholder per contiguous run.
+   *
+   * Trigger gates (≥1 new human input AND >10 new tool_use calls since
+   * the previous boundary) are hardcoded for V0 and not exposed here.
    */
-  autoCompactMinNewTurns?: number
+  autoCompactKeepTurns?: number
   setupCompleted?: boolean
   /** @deprecated Use hostBrowserProvider instead */
   useHostBrowser?: boolean
@@ -293,7 +297,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     showMenuBarIcon: true,
     autoSleepTimeoutMinutes: 30,
     autoCompactIdleMinutes: 0,
-    autoCompactMinNewTurns: 4,
+    autoCompactKeepTurns: 10,
     notifications: {
       enabled: true,
       sessionComplete: true,
