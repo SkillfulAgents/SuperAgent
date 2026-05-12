@@ -102,6 +102,8 @@ export interface SessionMetadata {
   model?: string
   // X-Agent: present when this session was created by another agent invoking this one
   invokedByAgentSlug?: string
+  // Per-session opt-in for the auto-time-compact background service.
+  autoCompactEnabled?: boolean
 }
 
 /**
@@ -122,6 +124,7 @@ export interface SessionInfo {
   lastActivityAt: Date
   messageCount: number
   isActive?: boolean
+  autoCompactEnabled?: boolean
 }
 
 /**

@@ -178,6 +178,7 @@ function parseSessionInfo(
     createdAt,
     lastActivityAt,
     messageCount: messages.length,
+    autoCompactEnabled: metadata?.autoCompactEnabled,
   }
 }
 
@@ -288,6 +289,7 @@ export async function listSessions(
         createdAt: stat.birthtime,
         lastActivityAt: new Date(stat.mtimeMs),
         messageCount: 0,
+        autoCompactEnabled: metadata[sessionId]?.autoCompactEnabled,
       })
     }
   }
@@ -309,6 +311,7 @@ export async function listSessions(
         createdAt,
         lastActivityAt: createdAt,
         messageCount: 0,
+        autoCompactEnabled: sessionMeta.autoCompactEnabled,
       })
     }
   }

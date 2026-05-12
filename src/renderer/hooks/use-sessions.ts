@@ -91,3 +91,30 @@ export function useUpdateSessionName() {
     },
   })
 }
+
+export function useToggleSessionAutoCompact() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async ({
+      sessionId,
+      agentSlug,
+      enabled,
+    }: {
+      sessionId: string
+      agentSlug: string
+      enabled: boolean
+    }) => {
+      const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ autoCompactEnabled: enabled }),
+      })
+      if (!res.ok) throw new Error('Failed to toggle auto-compact')
+      return res.json() as Promise<ApiSession>
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['sessions', variables.agentSlug] })
+      queryClient.invalidateQueries({ queryKey: ['session', variables.sessionId, variables.agentSlug] })
+    },
+  })
+}

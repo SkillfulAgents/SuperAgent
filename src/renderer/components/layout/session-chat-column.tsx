@@ -7,6 +7,7 @@ import { usePendingRequests } from '@renderer/components/messages/use-pending-re
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { DonutChart } from '@renderer/components/ui/donut-chart'
+import { AutoCompactToggle } from '@renderer/components/layout/auto-compact-toggle'
 import type { EffortLevel } from '@shared/lib/container/types'
 
 interface PendingMessage {
@@ -75,28 +76,29 @@ export function SessionChatColumn({
               initialModel={model}
             />
             <div className="flex justify-between items-center gap-1.5 px-6 py-3">
-              {contextPercent != null ? (
-                <TooltipProvider delayDuration={0}>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <div className="flex items-center gap-1.5 cursor-default">
-                        <span className="text-xs text-muted-foreground">Context Usage</span>
-                        <DonutChart
-                          percent={contextPercent}
-                          animated={isActive}
-                          size="sm"
-                          showLabel={false}
-                        />
-                      </div>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      <p>{contextPercent}%</p>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              ) : (
-                <span />
-              )}
+              <div className="flex items-center gap-4">
+                {contextPercent != null ? (
+                  <TooltipProvider delayDuration={0}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <div className="flex items-center gap-1.5 cursor-default">
+                          <span className="text-xs text-muted-foreground">Context Usage</span>
+                          <DonutChart
+                            percent={contextPercent}
+                            animated={isActive}
+                            size="sm"
+                            showLabel={false}
+                          />
+                        </div>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>{contextPercent}%</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                ) : null}
+                <AutoCompactToggle sessionId={sessionId} agentSlug={agentSlug} />
+              </div>
               <span className="text-xs text-muted-foreground flex items-center gap-1">
                 <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">↵</kbd>
                 <span>Send</span>

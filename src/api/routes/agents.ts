@@ -1456,6 +1456,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       lastActivityAt: session.lastActivityAt,
       messageCount: session.messageCount,
       isActive,
+      autoCompactEnabled: metadata?.autoCompactEnabled,
       lastUsage: metadata?.lastUsage,
       scheduledTaskId: metadata?.scheduledTaskId,
       scheduledTaskName: metadata?.scheduledTaskName,
@@ -1470,13 +1471,13 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
   }
 })
 
-// PATCH /api/agents/:id/sessions/:sessionId - Update a session (e.g., rename)
+// PATCH /api/agents/:id/sessions/:sessionId - Update a session (e.g., rename, toggle auto-compact)
 agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const sessionId = c.req.param('sessionId')
     const body = await c.req.json()
-    const { name } = body
+    const { name, autoCompactEnabled } = body
 
 
     const session = await getSession(agentSlug, sessionId)
@@ -1488,8 +1489,12 @@ agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
     if (name?.trim()) {
       await updateSessionName(agentSlug, sessionId, name.trim())
     }
+    if (typeof autoCompactEnabled === 'boolean') {
+      await updateSessionMetadata(agentSlug, sessionId, { autoCompactEnabled })
+    }
 
     const updated = await getSession(agentSlug, sessionId)
+    const updatedMeta = await getSessionMetadata(agentSlug, sessionId)
 
     return c.json({
       id: updated?.id || sessionId,
@@ -1498,6 +1503,7 @@ agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
       createdAt: updated?.createdAt || session.createdAt,
       lastActivityAt: updated?.lastActivityAt || session.lastActivityAt,
       messageCount: updated?.messageCount || session.messageCount,
+      autoCompactEnabled: updatedMeta?.autoCompactEnabled,
     })
   } catch (error) {
     console.error('Failed to update session:', error)
