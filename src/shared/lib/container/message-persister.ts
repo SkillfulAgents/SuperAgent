@@ -214,6 +214,16 @@ class MessagePersister {
     return state?.isActive ?? false
   }
 
+  /**
+   * Notify SSE clients that persisted JSONL messages changed outside the
+   * live SDK stream — e.g. an idle-time compaction service appended a
+   * synthetic compact_boundary + summary directly to the file. Renderer
+   * subscribers re-fetch on receiving `messages_updated`.
+   */
+  broadcastMessagesUpdated(sessionId: string): void {
+    this.broadcastToSSE(sessionId, { type: 'messages_updated' })
+  }
+
   // Wait until a session is no longer active (i.e. a 'result' message arrived,
   // it was interrupted, or the connection closed). Polls streamingState because
   // there's no single "done" event — multiple code paths (handleMessage 'result',

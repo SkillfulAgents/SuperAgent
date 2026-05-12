@@ -79,6 +79,8 @@ export function RuntimeTab() {
   const [cpuLimit, setCpuLimit] = useState('')
   const [memoryLimit, setMemoryLimit] = useState('')
   const [autoSleepMinutes, setAutoSleepMinutes] = useState<string | null>(null)
+  const [autoCompactIdleMinutes, setAutoCompactIdleMinutes] = useState<string | null>(null)
+  const [autoCompactMinNewTurns, setAutoCompactMinNewTurns] = useState<string | null>(null)
   const [maxOutputTokens, setMaxOutputTokens] = useState<string | null>(null)
   const [maxThinkingTokens, setMaxThinkingTokens] = useState<string | null>(null)
   const [maxTurns, setMaxTurns] = useState<string | null>(null)
@@ -164,6 +166,8 @@ export function RuntimeTab() {
       setMemoryLimit(settings.container.resourceLimits.memory)
       setHasChanges(false)
       setAutoSleepMinutes(null)
+      setAutoCompactIdleMinutes(null)
+      setAutoCompactMinNewTurns(null)
     }
   }, [settings])
 
@@ -643,6 +647,54 @@ export function RuntimeTab() {
             disabled={isLoading}
           />
           <span className="text-sm text-muted-foreground">minutes</span>
+        </div>
+      </div>
+
+      {/* Auto-Compact Idle Sessions */}
+      <div className="space-y-2">
+        <div className="space-y-0.5">
+          <Label htmlFor="auto-compact-idle">Auto-Compact Idle Sessions</Label>
+          <p className="text-xs text-muted-foreground">
+            After a session has been idle this long, append a compact_boundary so the next
+            request replays only a text-only summary of the conversation. Tools, tool results
+            and other JSONL noise are dropped from the model&apos;s context. Only sessions used
+            in the current app run are affected — older sessions are left untouched.
+            Set to 0 to disable.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Input
+            id="auto-compact-idle"
+            type="number"
+            min={0}
+            step={1}
+            value={autoCompactIdleMinutes ?? (settings?.app?.autoCompactIdleMinutes ?? 0).toString()}
+            onChange={(e) => setAutoCompactIdleMinutes(e.target.value)}
+            onBlur={() => {
+              const value = Math.max(0, parseInt(autoCompactIdleMinutes ?? '0', 10) || 0)
+              setAutoCompactIdleMinutes(null)
+              updateSettings.mutate({ app: { autoCompactIdleMinutes: value } })
+            }}
+            className="w-24"
+            disabled={isLoading}
+          />
+          <span className="text-sm text-muted-foreground">minutes idle, fire only when</span>
+          <Input
+            id="auto-compact-min-new-turns"
+            type="number"
+            min={1}
+            step={1}
+            value={autoCompactMinNewTurns ?? (settings?.app?.autoCompactMinNewTurns ?? 4).toString()}
+            onChange={(e) => setAutoCompactMinNewTurns(e.target.value)}
+            onBlur={() => {
+              const value = Math.max(1, parseInt(autoCompactMinNewTurns ?? '4', 10) || 4)
+              setAutoCompactMinNewTurns(null)
+              updateSettings.mutate({ app: { autoCompactMinNewTurns: value } })
+            }}
+            className="w-20"
+            disabled={isLoading || (settings?.app?.autoCompactIdleMinutes ?? 0) <= 0}
+          />
+          <span className="text-sm text-muted-foreground">new human turns have accumulated.</span>
         </div>
       </div>
 

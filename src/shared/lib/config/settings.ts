@@ -69,6 +69,21 @@ export interface AppPreferences {
   showMenuBarIcon?: boolean
   notifications?: NotificationSettings
   autoSleepTimeoutMinutes?: number
+  /**
+   * Auto-compact idle threshold. After a session has been idle this many
+   * minutes, a compact_boundary + cumulative text-only summary is appended
+   * to its JSONL tail. The SDK's next resume then sees the boundary,
+   * truncates everything before it, and replays only the summary as
+   * context. Set to 0 to disable. Only sessions used in this app run are
+   * affected; older sessions are left untouched.
+   */
+  autoCompactIdleMinutes?: number
+  /**
+   * Trigger threshold: minimum number of new human user turns since the
+   * previous boundary required to fire a new compact. Prevents the
+   * per-minute tick from re-stamping boundaries onto an idle session.
+   */
+  autoCompactMinNewTurns?: number
   setupCompleted?: boolean
   /** @deprecated Use hostBrowserProvider instead */
   useHostBrowser?: boolean
@@ -277,6 +292,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   app: {
     showMenuBarIcon: true,
     autoSleepTimeoutMinutes: 30,
+    autoCompactIdleMinutes: 0,
+    autoCompactMinNewTurns: 4,
     notifications: {
       enabled: true,
       sessionComplete: true,

@@ -8,6 +8,7 @@ import { chatIntegrationManager } from './chat-integrations/chat-integration-man
 import { captureException } from './error-reporting'
 import { isPlatformComposioActive } from './composio/client'
 import { autoSleepMonitor } from './scheduler/auto-sleep-monitor'
+import { autoTimeCompactCoordinator } from './scheduler/auto-time-compact-coordinator'
 import { getActiveProvider, stopAllProviders } from '../../main/host-browser'
 import { listAgents } from './services/agent-service'
 import { isAuthMode } from './auth/mode'
@@ -127,6 +128,13 @@ export async function initializeServices() {
   autoSleepMonitor.start().catch((error) => {
     console.error('Failed to start auto-sleep monitor:', error)
   })
+
+  // Auto-time-based session compaction (V0: recency only, no LLM).
+  // The coordinator always runs but does nothing until the user enables it
+  // via Settings > Runtime > Auto-Compact (settings.app.autoCompactIdleMinutes > 0).
+  autoTimeCompactCoordinator.start().catch((error) => {
+    console.error('Failed to start auto-time-compact coordinator:', error)
+  })
 }
 
 /**
@@ -156,6 +164,7 @@ export async function shutdownServices() {
   taskScheduler.stop()
   triggerManager.stop()
   autoSleepMonitor.stop()
+  autoTimeCompactCoordinator.stop()
   containerManager.stopStatusSync()
   containerManager.stopHealthMonitor()
   await containerManager.stopAll()
