@@ -7,9 +7,7 @@ import { usePendingRequests } from '@renderer/components/messages/use-pending-re
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { DonutChart } from '@renderer/components/ui/donut-chart'
-import { Switch } from '@renderer/components/ui/switch'
-import { useSession, useToggleSessionAutoCompact } from '@renderer/hooks/use-sessions'
-import { useUser } from '@renderer/context/user-context'
+import { AutoCompactToggle } from '@renderer/components/layout/auto-compact-toggle'
 import type { EffortLevel } from '@shared/lib/container/types'
 
 interface PendingMessage {
@@ -47,11 +45,6 @@ export function SessionChatColumn({
     agentSlug,
     pendingUserMessage,
   })
-  const { canAdminAgent } = useUser()
-  const isOwner = canAdminAgent(agentSlug)
-  const { data: session } = useSession(sessionId, agentSlug)
-  const toggleAutoCompact = useToggleSessionAutoCompact()
-  const autoCompactEnabled = session?.autoCompactEnabled ?? false
 
   const renderCtx: RenderContext = { sessionId, agentSlug, readOnly: isViewOnly }
 
@@ -104,30 +97,7 @@ export function SessionChatColumn({
                     </Tooltip>
                   </TooltipProvider>
                 ) : null}
-                {isOwner && (
-                  <TooltipProvider delayDuration={0}>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <label className="flex items-center gap-1.5 cursor-pointer">
-                          <span className="text-xs text-muted-foreground">Auto-Compact</span>
-                          <Switch
-                            checked={autoCompactEnabled}
-                            onCheckedChange={(next) =>
-                              toggleAutoCompact.mutate({ sessionId, agentSlug, enabled: next })
-                            }
-                            aria-label="Auto-compact this session when idle"
-                          />
-                        </label>
-                      </TooltipTrigger>
-                      <TooltipContent side="top">
-                        <p className="max-w-xs text-xs">
-                          When idle, rewrite this session&apos;s history so older tool I/O is
-                          elided and only the most recent turns are kept verbatim.
-                        </p>
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                )}
+                <AutoCompactToggle sessionId={sessionId} agentSlug={agentSlug} />
               </div>
               <span className="text-xs text-muted-foreground flex items-center gap-1">
                 <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">↵</kbd>
