@@ -15,7 +15,12 @@ export default async function ensureOAuth(ctx: SetupContext): Promise<void> {
     throw new Error('ensureOAuth requires COMPOSIO_API_KEY and COMPOSIO_USER_ID in env')
   }
 
-  const composioUrl = `https://backend.composio.dev/api/v3/connected_accounts?entityId=${encodeURIComponent(composioUserId)}&toolkit=github&status=ACTIVE`
+  const params = new URLSearchParams({
+    user_ids: composioUserId,
+    toolkit_slugs: 'github',
+    statuses: 'ACTIVE',
+  })
+  const composioUrl = `https://backend.composio.dev/api/v3/connected_accounts?${params.toString()}`
   const composioRes = await fetch(composioUrl, {
     headers: { 'x-api-key': composioKey, 'Content-Type': 'application/json' },
   })
@@ -25,15 +30,21 @@ export default async function ensureOAuth(ctx: SetupContext): Promise<void> {
   }
 
   const composioData = (await composioRes.json()) as {
-    items?: Array<{ id: string; toolkit?: { slug?: string } }>
+    items?: Array<{
+      id: string
+      user_id?: string
+      toolkit?: { slug?: string }
+    }>
   }
 
   const connections = composioData.items ?? []
-  const githubConn = connections.find((c) => c.toolkit?.slug === 'github')
+  const githubConn = connections.find(
+    (c) => c.toolkit?.slug === 'github' && c.user_id === composioUserId,
+  )
 
   if (!githubConn) {
     throw new Error(
-      `No active GitHub connection found in Composio for entity "${composioUserId}". ` +
+      `No active GitHub connection found in Composio for user_id "${composioUserId}". ` +
         `Please connect GitHub via Composio first.`,
     )
   }
