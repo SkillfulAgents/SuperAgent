@@ -1,5 +1,5 @@
 
-import { Bell, ChevronDown, ChevronRight, Plus, Search, Settings, AlertTriangle, LayoutGrid, Loader2, SquareMousePointer, WifiOff, LogOut, User, Users } from 'lucide-react'
+import { Bell, ChevronDown, ChevronRight, Plus, Search, Settings, AlertTriangle, LayoutGrid, Loader2, SquareMousePointer, WifiOff, LogOut, User, Users, Store } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
@@ -74,6 +74,8 @@ import { restrictToVerticalAxis } from '@dnd-kit/modifiers'
 import { SortableAgentMenuItem } from './sortable-agent-item'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
 import { useRenderTracker } from '@renderer/lib/perf'
+import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
+import { AgentTemplateBrowseDialog } from '@renderer/components/agents/agent-template-browse-dialog'
 
 // 4px-wide thin scrollbar with a muted-foreground/20 thumb. Reused on the
 // agents-list group; pull out as a constant so the call site stays readable.
@@ -759,6 +761,9 @@ export function AppSidebar() {
   const { clearSelection, selectedAgentSlug } = useSelection()
   const { openSearch } = useSearch()
   const { data: agents, isLoading, error } = useAgents()
+  const { data: discoverableAgents } = useDiscoverableAgents()
+  const hasMarketplace = !!(discoverableAgents && discoverableAgents.length > 0)
+  const [marketplaceOpen, setMarketplaceOpen] = useState(false)
   const { data: userSettings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()
   const { data: runtimeStatus } = useRuntimeStatus()
@@ -821,7 +826,8 @@ export function AppSidebar() {
   const showHeaderBar = needsTrafficLightPadding
 
   return (
-    <Sidebar variant="inset" data-testid="app-sidebar">
+    <>
+      <Sidebar variant="inset" data-testid="app-sidebar">
       {/*
         Always rendered so height/border can transition smoothly when entering
         or leaving fullscreen on macOS. Collapses to 0 height (with no border)
@@ -851,10 +857,10 @@ export function AppSidebar() {
             */}
             <div
               className={cn(
-                'px-2 pb-4 text-base font-semibold select-none transition-[margin-top] duration-200 ease-out flex items-center gap-1',
+                'px-2 pb-2 text-base font-semibold select-none transition-[margin-top] duration-200 ease-out flex items-center gap-1',
                 isWindowsElectron && 'app-drag-region'
               )}
-              style={{ marginTop: showHeaderBar ? '-4px' : '12px' }}
+              style={{ marginTop: showHeaderBar ? '-8px' : '8px' }}
             >
               SuperAgent
               {isWindowsElectron && (
@@ -926,7 +932,7 @@ export function AppSidebar() {
 
             <ApiKeyWarning onOpenSettings={() => openSettings('llm')} />
             <SidebarGroupContent>
-              <SidebarMenu>
+              <SidebarMenu className="gap-0.5">
                 <SidebarMenuItem>
                   <SidebarMenuButton
                     onClick={clearSelection}
@@ -950,6 +956,17 @@ export function AppSidebar() {
                     <span>New Agent</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
+                {hasMarketplace && (
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      onClick={() => setMarketplaceOpen(true)}
+                      data-testid="marketplace-button"
+                    >
+                      <Store className="h-4 w-4" />
+                      <span>Marketplace</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                )}
                 <SidebarMenuItem>
                   <SidebarMenuButton
                     onClick={openSearch}
@@ -963,7 +980,7 @@ export function AppSidebar() {
             </SidebarGroupContent>
           </SidebarGroup>
           <SidebarGroup className={cn('flex-1 min-h-0 overflow-y-auto p-0', THIN_SCROLLBAR)}>
-            <SidebarGroupLabel className="mt-2 font-normal text-sidebar-foreground/50">Your Agents</SidebarGroupLabel>
+            <SidebarGroupLabel className="mt-0.5 font-normal text-sidebar-foreground/50">Your Agents</SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu className="gap-1">
                 {isLoading ? (
@@ -1005,7 +1022,7 @@ export function AppSidebar() {
         </SidebarContent>
       </ErrorBoundary>
 
-      <SidebarFooter className="border-t p-0 px-2 pt-4">
+      <SidebarFooter className="border-t p-0 px-2 pt-1">
         <UserMenu />
         <div className="flex items-center justify-between gap-2">
           <SidebarMenuButton
@@ -1032,7 +1049,10 @@ export function AppSidebar() {
       </SidebarFooter>
 
       <SidebarRail />
-    </Sidebar>
+      </Sidebar>
+
+      <AgentTemplateBrowseDialog open={marketplaceOpen} onOpenChange={setMarketplaceOpen} />
+    </>
   )
 }
 

@@ -3,6 +3,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { downloadBlob } from '@renderer/lib/download'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
+import { useSkillsets } from '@renderer/hooks/use-skillsets'
 import type { ApiAgent, ApiDiscoverableAgent, ApiItemStatus } from '@shared/lib/types/api'
 
 // Alias preserves the prior export name for downstream consumers while we
@@ -21,9 +22,12 @@ let refreshPromise: Promise<void> | null = null
  */
 export function useDiscoverableAgents() {
   const queryClient = useQueryClient()
+  const { data: skillsets } = useSkillsets()
+  const hasSkillsets = !!(skillsets && skillsets.length > 0)
 
   return useQuery<ApiDiscoverableAgent[]>({
     queryKey: ['discoverable-agents'],
+    enabled: hasSkillsets,
     queryFn: async () => {
       const res = await apiFetch('/api/agents/discoverable-agents')
       if (!res.ok) throw new Error('Failed to fetch discoverable agents')
