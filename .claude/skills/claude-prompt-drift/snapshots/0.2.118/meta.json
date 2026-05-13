@@ -1,0 +1,7 @@
+{
+  "sdk_version": "0.2.118",
+  "model": "claude-opus-4-7",
+  "superagent_commit": "8c73399e",
+  "captured_at": "2026-05-13T00:20:01Z",
+  "axis": "both"
+}

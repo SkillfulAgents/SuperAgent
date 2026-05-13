@@ -1,0 +1,5 @@
+pure-baseline/node_modules/
+pure-baseline/package-lock.json
+pure-baseline/package.json
+snapshots/**/.seen-models.json
+snapshots/**/raw.json
