@@ -562,6 +562,16 @@ export async function installAgentFromSkillset(
   // Copy template files from repo to workspace
   await copyDirectoryFiltered(agentDirInRepo, workspaceDir)
 
+  // The template's CLAUDE.md overwrites the one createAgentFromExistingWorkspace
+  // wrote, so patch the frontmatter name to the user's chosen name.
+  const claudeMdPath = getAgentClaudeMdPath(agent.slug)
+  const claudeMdContent = await readFileOrNull(claudeMdPath)
+  if (claudeMdContent) {
+    const { frontmatter, body } = parseMarkdownWithFrontmatter<AgentFrontmatter>(claudeMdContent)
+    frontmatter.name = agentName
+    await fs.promises.writeFile(claudeMdPath, serializeMarkdownWithFrontmatter(frontmatter, body), 'utf-8')
+  }
+
   // Compute hash of template files
   const hash = await computeAgentTemplateHash(workspaceDir)
 
