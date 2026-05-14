@@ -54,9 +54,15 @@ test.describe('Global Settings → Connections — Add MCP flow', () => {
     await page.locator('[data-testid="mcp-form-url"]').fill(mockMcp.url)
     // authType defaults to "No Authentication" — leave it.
 
-    // 4. Submit. The dialog should close on success.
+    // 4. Submit. The directory dialog closes and the Tool Policy editor opens.
     await page.locator('[data-testid="mcp-form-submit"]').click()
     await expect(dialog).toBeHidden({ timeout: 10000 })
+
+    // Dismiss the Tool Policy editor that opens for the new MCP.
+    const policyDialog = page.getByText('Tool Policies')
+    await expect(policyDialog).toBeVisible({ timeout: 10000 })
+    await page.getByRole('button', { name: 'Cancel' }).click()
+    await expect(policyDialog).not.toBeVisible({ timeout: 5000 })
 
     // 5. The new row shows up in the global Connections list.
     //    The unified row has no per-agent Switch — match by name instead.

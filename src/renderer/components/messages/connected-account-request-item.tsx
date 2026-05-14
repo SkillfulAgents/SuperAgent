@@ -20,6 +20,7 @@ import { RequestItemShell } from './request-item-shell'
 import { RequestItemActions } from './request-item-actions'
 import { cn } from '@shared/lib/utils/cn'
 import { ScopePolicyEditor } from '@renderer/components/settings/scope-policy-editor'
+import { ConnectionSuccessHeader } from '@renderer/components/connections/connection-success-header'
 import { PolicySummaryPill } from '@renderer/components/ui/policy-summary-pill'
 import {
   useConnectedAccountsByToolkit,
@@ -461,19 +462,10 @@ export function ConnectedAccountRequestItem({
             }
           }}
           header={policyEditorIsNewAccount ? (
-            <div className="flex flex-col items-center gap-2 py-2">
-              <div className="h-12 w-12 rounded-full bg-green-100 dark:bg-green-900/50 flex items-center justify-center">
-                <ServiceIcon slug={toolkit} fallback="oauth" className="h-6 w-6 text-green-600 dark:text-green-400" />
-              </div>
-              <div className="text-center">
-                <p className="text-base font-semibold capitalize">
-                  {provider?.displayName || toolkit} Successfully Connected!
-                </p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Configure what agents can do with this account.
-                </p>
-              </div>
-            </div>
+            <ConnectionSuccessHeader
+              toolkit={toolkit}
+              displayName={provider?.displayName || toolkit}
+            />
           ) : undefined}
         />
       )}

@@ -2,6 +2,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import type { RemoteMcpServer } from '@renderer/hooks/use-remote-mcps'
 import { useQuery } from '@tanstack/react-query'
 import {
   Dialog,
@@ -42,13 +43,26 @@ import { COMMON_MCP_SERVERS, type CommonMcpServer } from '@shared/lib/mcp/common
 
 export type DirectoryTab = 'apis' | 'mcps'
 
+export interface NewApiConnection {
+  accountId: string
+  toolkit: string
+}
+
+export interface NewMcpConnection {
+  mcpId: string
+  name: string
+  tools: Array<{ name: string; description?: string }>
+}
+
 interface IntegrationDirectoryDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   initialTab?: DirectoryTab
+  onApiConnected?: (connection: NewApiConnection) => void
+  onMcpConnected?: (connection: NewMcpConnection) => void
 }
 
-export function IntegrationDirectoryDialog({ open, onOpenChange, initialTab = 'apis' }: IntegrationDirectoryDialogProps) {
+export function IntegrationDirectoryDialog({ open, onOpenChange, initialTab = 'apis', onApiConnected, onMcpConnected }: IntegrationDirectoryDialogProps) {
   const [tab, setTab] = useState<DirectoryTab>(initialTab)
   const [filter, setFilter] = useState('')
   const prevOpen = useRef(open)
@@ -69,6 +83,16 @@ export function IntegrationDirectoryDialog({ open, onOpenChange, initialTab = 'a
   }
 
   const close = useCallback(() => onOpenChange(false), [onOpenChange])
+
+  const handleApiConnected = useCallback((connection: NewApiConnection) => {
+    onOpenChange(false)
+    onApiConnected?.(connection)
+  }, [onOpenChange, onApiConnected])
+
+  const handleMcpConnected = useCallback((connection: NewMcpConnection) => {
+    onOpenChange(false)
+    onMcpConnected?.(connection)
+  }, [onOpenChange, onMcpConnected])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -97,10 +121,10 @@ export function IntegrationDirectoryDialog({ open, onOpenChange, initialTab = 'a
             </div>
           </div>
           <TabsContent value="apis" className="mt-0">
-            <ApisPanel filter={filter} onConnected={close} />
+            <ApisPanel filter={filter} onConnected={handleApiConnected} fallbackClose={close} />
           </TabsContent>
           <TabsContent value="mcps" className="mt-0">
-            <McpsPanel filter={filter} onAdded={close} />
+            <McpsPanel filter={filter} onConnected={handleMcpConnected} fallbackClose={close} />
           </TabsContent>
         </Tabs>
       </DialogContent>
@@ -110,7 +134,7 @@ export function IntegrationDirectoryDialog({ open, onOpenChange, initialTab = 'a
 
 // --- APIs panel ---
 
-function ApisPanel({ filter, onConnected }: { filter: string; onConnected: () => void }) {
+function ApisPanel({ filter, onConnected, fallbackClose }: { filter: string; onConnected: (connection: NewApiConnection) => void; fallbackClose: () => void }) {
   const { data: providersData, isLoading } = useQuery<{ providers: Provider[] }>({
     queryKey: ['providers'],
     queryFn: async () => {
@@ -124,13 +148,20 @@ function ApisPanel({ filter, onConnected }: { filter: string; onConnected: () =>
 
   const [connecting, setConnecting] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const connectingRef = useRef(connecting)
+  connectingRef.current = connecting
 
   useEffect(() => {
-    const handleComplete = (success: boolean) => {
+    const handleComplete = (success: boolean, accountId?: string, toolkit?: string) => {
+      const resolvedToolkit = toolkit || connectingRef.current
       setConnecting(null)
       if (success) {
         invalidateAccounts()
-        onConnected()
+        if (accountId && resolvedToolkit) {
+          onConnected({ accountId, toolkit: resolvedToolkit })
+        } else {
+          fallbackClose()
+        }
       }
     }
 
@@ -150,7 +181,12 @@ function ApisPanel({ filter, onConnected }: { filter: string; onConnected: () =>
                 toolkit: params.toolkit,
               }),
             })
-            handleComplete(res.ok)
+            if (res.ok) {
+              const data = await res.json()
+              handleComplete(true, data.account?.id, params.toolkit)
+            } else {
+              handleComplete(false)
+            }
           } catch {
             handleComplete(false)
           }
@@ -163,12 +199,12 @@ function ApisPanel({ filter, onConnected }: { filter: string; onConnected: () =>
 
     const handleMessage = (event: MessageEvent) => {
       if (event.data?.type === 'oauth-callback') {
-        handleComplete(event.data.success)
+        handleComplete(event.data.success, event.data.accountId, event.data.toolkitSlug)
       }
     }
     window.addEventListener('message', handleMessage)
     return () => window.removeEventListener('message', handleMessage)
-  }, [invalidateAccounts, onConnected])
+  }, [invalidateAccounts, onConnected, fallbackClose])
 
   const filtered = useMemo(() => {
     const providers = Array.isArray(providersData?.providers) ? providersData.providers : []
@@ -267,7 +303,7 @@ type DraftState = Omit<McpDraft, 'authType' | 'token' | 'clientName' | 'clientId
   clientSecret: string
 }
 
-function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void }) {
+function McpsPanel({ filter, onConnected, fallbackClose }: { filter: string; onConnected: (connection: NewMcpConnection) => void; fallbackClose: () => void }) {
   const addMcp = useAddRemoteMcp()
   const initiateOAuth = useInitiateMcpOAuth()
   const invalidateRemoteMcps = useInvalidateRemoteMcps()
@@ -276,14 +312,34 @@ function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void })
   const [draft, setDraft] = useState<DraftState | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [oauthPending, setOauthPending] = useState(false)
+  const draftRef = useRef(draft)
+  draftRef.current = draft
+
+  const handleMcpReady = useCallback((server: RemoteMcpServer) => {
+    invalidateRemoteMcps()
+    const tools = (server.tools || []).map((t) => ({ name: t.name, description: t.description }))
+    onConnected({ mcpId: server.id, name: server.name, tools })
+  }, [invalidateRemoteMcps, onConnected])
 
   useMcpOAuthListener(oauthPending, ({ success, error: oauthError }) => {
     setOauthPending(false)
     setSubmitting(false)
     if (success) {
-      invalidateRemoteMcps()
+      const draftUrl = draftRef.current?.url?.trim()
       setDraft(null)
-      onAdded()
+      // Refetch to find the newly created server
+      apiFetch('/api/remote-mcps').then((res) => res.json()).then((data: { servers: RemoteMcpServer[] }) => {
+        const newServer = Array.isArray(data.servers) ? data.servers.find((s) => s.url === draftUrl) : undefined
+        if (newServer) {
+          handleMcpReady(newServer)
+        } else {
+          invalidateRemoteMcps()
+          fallbackClose()
+        }
+      }).catch(() => {
+        invalidateRemoteMcps()
+        fallbackClose()
+      })
     } else {
       setError(oauthError || 'OAuth authorization failed')
     }
@@ -369,20 +425,20 @@ function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void })
           }
           popup.close()
           setDraft(null)
-          onAdded()
+          fallbackClose()
         } catch (err) {
           popup.close()
           throw err
         }
       } else {
-        await addMcp.mutateAsync({
+        const result = await addMcp.mutateAsync({
           name: valid.name,
           url: valid.url,
           authType: valid.authType,
           accessToken: valid.authType === 'bearer' ? valid.token.trim() : undefined,
         })
         setDraft(null)
-        onAdded()
+        handleMcpReady(result.server)
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add MCP server')
