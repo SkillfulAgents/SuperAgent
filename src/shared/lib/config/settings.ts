@@ -290,6 +290,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     agentModel: 'claude-opus-4-7',
     browserModel: 'claude-sonnet-4-6',
   },
+  skillsets: [DEFAULT_PUBLIC_SKILLSET],
 }
 
 function getSettingsPath(): string {
@@ -362,7 +363,7 @@ export function loadSettings(): AppSettings {
         customEnvVars: loaded.customEnvVars,
         skillsets: loaded.skillsets !== undefined
           ? loaded.skillsets
-          : [DEFAULT_PUBLIC_SKILLSET],
+          : DEFAULT_SETTINGS.skillsets,
         auth: {
           ...DEFAULT_AUTH_SETTINGS,
           ...loaded.auth,
@@ -379,7 +380,7 @@ export function loadSettings(): AppSettings {
     console.error('Failed to load settings, using defaults:', error)
   }
 
-  return { ...DEFAULT_SETTINGS, skillsets: [DEFAULT_PUBLIC_SKILLSET] }
+  return { ...DEFAULT_SETTINGS }
 }
 
 /**
