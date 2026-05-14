@@ -8,7 +8,7 @@ import {
 } from '@shared/lib/config/settings'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
-import { captureMessage } from '@shared/lib/error-reporting'
+import { addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { ProxyExecuteResponseSchema } from './proxy-execute-schema'
 import { LinkResponseSchema } from './link-response-schema'
 
@@ -433,21 +433,17 @@ export async function getConnectionToken(
 
   const redactionPattern = detectRedaction(accessToken)
   if (redactionPattern) {
-    captureMessage('Composio returned a redacted access token', {
+    addErrorBreadcrumb({
+      category: 'composio',
+      message: `Redacted token detected (${redactionPattern}) for connection ${connectionId}`,
       level: 'warning',
-      tags: {
-        component: 'composio-client',
-        operation: 'get-connection-token',
+      data: {
         toolkit: response.toolkit?.slug ?? 'unknown',
         auth_scheme: String(authScheme ?? 'unknown'),
         is_composio_managed: String(response.auth_config?.is_composio_managed ?? 'unknown'),
         redaction_pattern: redactionPattern,
-      },
-      extra: {
         connectionId,
-        authConfigId: response.auth_config?.id,
       },
-      fingerprint: ['composio-redacted-token', redactionPattern],
     })
     throw new ComposioRedactedTokenError(
       'Access token is redacted by Composio. Disable "Mask Connected Account Secrets" in the Composio project settings. If the connection uses a Composio-managed auth config, credentials are redacted regardless of that setting — migrate to a custom auth config (your own OAuth app) to retrieve actual credentials.'
