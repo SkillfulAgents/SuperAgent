@@ -231,6 +231,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('read-local-file', filePath)
   },
 
+  // Keep awake (macOS lid-close sleep prevention)
+  setKeepAwake: (enabled: boolean): Promise<void> => {
+    return ipcRenderer.invoke('set-keep-awake', enabled)
+  },
+
   // Auto-update
   checkForUpdates: (): Promise<void> => {
     return ipcRenderer.invoke('check-for-updates')
@@ -326,6 +331,7 @@ declare global {
       showInFolder: (hostPath: string) => Promise<string | null>
       getRecentFiles: (limit?: number) => Promise<{ name: string; path: string; thumbnail?: string }[]>
       readLocalFile: (filePath: string) => Promise<{ buffer: ArrayBuffer; name: string; type: string } | null>
+      setKeepAwake: (enabled: boolean) => Promise<void>
       checkForUpdates: () => Promise<void>
       downloadUpdate: () => Promise<void>
       installUpdate: () => Promise<void>
