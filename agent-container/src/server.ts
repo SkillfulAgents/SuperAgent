@@ -807,7 +807,7 @@ function broadcastBrowserEvent(active: boolean): void {
 
 // GET /browser/status - Check if browser is running
 app.get('/browser/status', (c) => {
-  return c.json(browserState);
+  return c.json(_getBrowserState());
 });
 
 
