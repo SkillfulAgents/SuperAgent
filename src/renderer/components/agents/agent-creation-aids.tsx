@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
-import { AudioLines, Upload, ArrowDownToLine, FileArchive, Loader2 } from 'lucide-react'
+import { AudioLines, Upload, ArrowUpToLine, FileArchive, Loader2, Shapes } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@renderer/components/ui/button'
 import { OptionCard } from '@renderer/components/ui/option-card'
@@ -14,9 +14,10 @@ import {
 } from '@renderer/components/ui/dialog'
 import { VoiceAgent } from '@renderer/components/ui/voice-agent'
 import { SkillInstallDialog } from '@renderer/components/agents/skill-install-dialog'
+import { AgentTemplateBrowseDialog } from '@renderer/components/agents/agent-template-browse-dialog'
 import { apiFetch } from '@renderer/lib/api'
 import { useDeleteAgent } from '@renderer/hooks/use-agents'
-import { useImportAgentTemplate, type ImportProgress } from '@renderer/hooks/use-agent-templates'
+import { useImportAgentTemplate, useDiscoverableAgents, type ImportProgress } from '@renderer/hooks/use-agent-templates'
 import { useIsVoiceAgentConfigured } from '@renderer/hooks/use-voice-input'
 import type { VoiceAgentConfig } from '@renderer/lib/voice-agent'
 import type { ApiAgent } from '@shared/lib/types/api'
@@ -44,6 +45,9 @@ export interface AgentCreationAidsProps {
 export function AgentCreationAids({ onVoiceResult, onImportComplete, className }: AgentCreationAidsProps) {
   const hasVoiceConfigured = useIsVoiceAgentConfigured()
   const deleteAgent = useDeleteAgent()
+  const { data: discoverableAgents } = useDiscoverableAgents()
+  const hasMarketplace = !!(discoverableAgents && discoverableAgents.length > 0)
+  const [showTemplatesDialog, setShowTemplatesDialog] = useState(false)
 
   // --- Voice agent flow ---
   const [showVoiceAgent, setShowVoiceAgent] = useState(false)
@@ -209,27 +213,32 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
 
   return (
     <div className={className}>
-      <div className="space-y-3">
+      <p className="mb-3 text-xs text-muted-foreground">Other ways to get started</p>
+      <div className="flex flex-wrap gap-3">
+        {hasMarketplace && (
+          <OptionCard
+            title="Browse Templates"
+            icon={<Shapes className="h-4 w-4" />}
+            onClick={() => setShowTemplatesDialog(true)}
+          />
+        )}
+
         {hasVoiceConfigured && (
           <OptionCard
-            title="Talk to SuperAgent for Ideas"
-            description="Answer a few questions about your job — get a detailed prompt for your agent."
-            icon={<AudioLines className="h-3 w-3" />}
-            pill="5 min"
-            buttonLabel="Start"
+            title="Brainstorm with Voice"
+            icon={<AudioLines className="h-4 w-4" />}
             onClick={startVoiceAgent}
           />
         )}
 
         <OptionCard
           title="Import an Agent"
-          description="Import an agent via a .zip file with bundled skills and optional env. variables."
-          icon={<ArrowDownToLine className="h-3 w-3" />}
-          pill="30 sec"
-          buttonLabel="Import"
+          icon={<ArrowUpToLine className="h-4 w-4" />}
           onClick={() => setShowImportDialog(true)}
         />
       </div>
+
+      <AgentTemplateBrowseDialog open={showTemplatesDialog} onOpenChange={setShowTemplatesDialog} />
 
       <Dialog open={showVoiceAgent} onOpenChange={(open) => { if (!open) closeVoiceAgent() }}>
         <DialogContent className="max-w-2xl p-0 overflow-hidden h-[420px] [grid-template-rows:minmax(0,1fr)] gap-0">

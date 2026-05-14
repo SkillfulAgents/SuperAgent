@@ -8,10 +8,8 @@ import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice
 import { AgentCreationAids, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
 import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
 import { TemplateInstallDialog } from '@renderer/components/agents/template-install-dialog'
-import { AgentTemplateBrowseContent } from '@renderer/components/agents/agent-template-browse-content'
 import { useCreateAgent } from '@renderer/hooks/use-agents'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
-import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
 import { useSelection } from '@renderer/context/selection-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
@@ -108,9 +106,6 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
     }
   }, [composer.message])
 
-  // --- Template install flow (inline name step + required env vars) ---
-  const { data: discoverableAgents } = useDiscoverableAgents()
-  const hasTemplates = !!(discoverableAgents && discoverableAgents.length > 0)
   const [templateToInstall, setTemplateToInstall] = useState<ApiDiscoverableAgent | null>(initialTemplate ?? null)
 
   useEffect(() => {
@@ -203,29 +198,6 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
             onImportComplete={handleImportComplete}
           />
         </div>
-
-        {hasTemplates && (
-          <>
-            <div
-              {...itemProps(300, 30)}
-              className={`flex items-center gap-4 pt-2 px-6 ${itemProps(300, 30).className}`}
-            >
-              <div className="h-px flex-1 bg-border" />
-              <span className="text-xs text-muted-foreground">OR START FROM A TEMPLATE</span>
-              <div className="h-px flex-1 bg-border" />
-            </div>
-
-            <div
-              {...itemProps(360, 0)}
-              className={itemProps(360, 0).className}
-            >
-              <AgentTemplateBrowseContent
-                discoverableAgents={discoverableAgents!}
-                onSelect={setTemplateToInstall}
-              />
-            </div>
-          </>
-        )}
       </div>
 
       <TemplateInstallDialog
