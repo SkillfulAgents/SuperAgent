@@ -76,7 +76,7 @@ Add an entry to `SCOPE_DESCRIPTIONS` with end-user-friendly text for **every** s
 Add the slug to the `SERVICES` array so the agent's `search_connected_account_services` tool can discover it.
 
 ### 8. `agent-container/src/system-prompt.md`
-Add the slug to the appropriate category in the "Supported services include" line (around line 122). This is what the agent reads to know what's available without calling the search tool first.
+Add the slug to the appropriate category in the "Supported services include" line in the Requesting Connected Accounts section. This is what the agent reads to know what's available without calling the search tool first.
 
 ### 9. `scripts/download-service-icons.ts`
 Add the slug to `ALL_SLUGS`. If the Composio logos API serves the icon under a different name (test with `curl -sI https://logos.composio.dev/api/<name>`), also add a `SLUG_TO_API_NAME` mapping. Many Google services need hyphenation (`googlesheets` → `google-sheets`), but **not** all of them — `googleslides` works as-is.

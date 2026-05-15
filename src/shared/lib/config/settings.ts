@@ -184,6 +184,8 @@ export interface AppSettings {
   analyticsTargets?: AnalyticsTarget[]
   shareErrorReports?: boolean
   platformAuth?: PlatformAuthSettings
+  /** Anthropic SDK tool search — defaults on; passed as `ENABLE_TOOL_SEARCH` to the container. */
+  enableToolSearch?: boolean
 }
 
 // API key source types
@@ -252,6 +254,7 @@ export interface GlobalSettingsResponse {
   shareAnalytics: boolean
   analyticsTargets?: AnalyticsTarget[]
   shareErrorReports: boolean
+  enableToolSearch: boolean
 }
 
 /**
@@ -290,6 +293,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     agentModel: 'claude-opus-4-7',
     browserModel: 'claude-sonnet-4-6',
   },
+  enableToolSearch: true,
   skillsets: [DEFAULT_PUBLIC_SKILLSET],
 }
 
@@ -374,6 +378,7 @@ export function loadSettings(): AppSettings {
         analyticsTargets: loaded.analyticsTargets,
         shareErrorReports: loaded.shareErrorReports,
         platformAuth: loaded.platformAuth,
+        enableToolSearch: loaded.enableToolSearch ?? DEFAULT_SETTINGS.enableToolSearch,
       }
     }
   } catch (error) {

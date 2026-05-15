@@ -1092,9 +1092,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    * The caller must clean up the file after the container starts.
    */
   protected buildEnvFile(additionalEnvVars?: Record<string, string>): { flag: string; cleanup: () => void } {
+    const settings = getSettings()
     const envVars: Record<string, string | undefined> = {
       ...getActiveLlmProvider().getContainerEnvVars(),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
+      ENABLE_TOOL_SEARCH: settings.enableToolSearch !== false ? 'true' : 'false',
       ...this.config.envVars,
       ...additionalEnvVars,
     }
