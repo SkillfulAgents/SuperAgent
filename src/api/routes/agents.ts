@@ -2521,6 +2521,24 @@ agents.get('/:id/secrets', AgentRead(), async (c) => {
   }
 })
 
+// GET /api/agents/:id/secrets/:secretId/value - Reveal the raw value of a single secret
+agents.get('/:id/secrets/:secretId/value', AgentUser(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const envVar = c.req.param('secretId')
+
+    const secret = await getSecret(slug, envVar)
+    if (!secret) {
+      return c.json({ error: 'Secret not found' }, 404)
+    }
+
+    return c.json({ value: secret.value })
+  } catch (error) {
+    console.error('Failed to reveal secret:', error)
+    return c.json({ error: 'Failed to reveal secret' }, 500)
+  }
+})
+
 // POST /api/agents/:id/secrets - Create or update a secret
 agents.post('/:id/secrets', AgentUser(), async (c) => {
   try {

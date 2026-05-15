@@ -47,7 +47,7 @@ export function HomeExtras({ agentSlug, onOpenSettings }: HomeExtrasProps) {
       <div className="divide-y divide-border/50">
         <ExtrasButton label="System Prompt" onClick={() => onOpenSettings?.('system-prompt')} />
         <ExtrasButton label={directoryLabel} onClick={handleOpenDirectory} hoverIcon={directoryHoverIcon} />
-        <ExtrasButton label="Secrets" onClick={() => onOpenSettings?.('secrets')} />
+        <ExtrasButton label="Secrets" onClick={() => setView({ kind: 'secrets' })} />
         <ExtrasButton label="API Logs" onClick={() => setView({ kind: 'apiLogs' })} />
       </div>
       {error && (
