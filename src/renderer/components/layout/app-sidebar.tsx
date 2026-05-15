@@ -1,5 +1,5 @@
 
-import { Bell, ChevronDown, ChevronRight, Plus, Search, Settings, AlertTriangle, LayoutGrid, Loader2, SquareMousePointer, WifiOff, LogOut, User, Users, Store } from 'lucide-react'
+import { Bell, ChevronDown, ChevronRight, Plus, Search, Settings, AlertTriangle, LayoutGrid, Loader2, SquareMousePointer, WifiOff, LogOut, User, Users, Compass } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
@@ -50,6 +50,7 @@ import { useArtifacts, type ArtifactInfo } from '@renderer/hooks/use-artifacts'
 import { useChatIntegrations, useChatIntegrationSessions, type ChatIntegration } from '@renderer/hooks/use-chat-integrations'
 import { formatProviderName } from '@shared/lib/chat-integrations/utils'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { useUser } from '@renderer/context/user-context'
 import { useUpdateStatus } from '@renderer/context/update-status-context'
 import { NotificationsPopoverContent } from '@renderer/components/notifications/notifications-popover'
@@ -862,7 +863,7 @@ export function AppSidebar() {
               )}
               style={{ marginTop: showHeaderBar ? '-8px' : '8px' }}
             >
-              SuperAgent
+              <span>SuperAgent</span>
               {isWindowsElectron && (
                 <button
                   className="app-no-drag p-0.5 rounded hover:bg-foreground/10 transition-colors cursor-default"
@@ -874,6 +875,25 @@ export function AppSidebar() {
                   <ChevronDown className="h-4 w-4 text-foreground/60" />
                 </button>
               )}
+              <TooltipProvider delayDuration={200}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={openSearch}
+                      aria-label="Search"
+                      className="app-no-drag ml-auto -mr-2 h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition-colors"
+                      data-testid="search-button"
+                    >
+                      <Search className="h-4 w-4" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="flex items-center gap-2">
+                    <span>Search</span>
+                    <span className="opacity-70">{getPlatform() === 'darwin' ? '⌘K' : 'Ctrl+K'}</span>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             </div>
 
             {/* Status banners — render under the wordmark so they sit inside the
@@ -932,7 +952,7 @@ export function AppSidebar() {
 
             <ApiKeyWarning onOpenSettings={() => openSettings('llm')} />
             <SidebarGroupContent>
-              <SidebarMenu className="gap-0.5">
+              <SidebarMenu className="gap-0.5 py-2">
                 <SidebarMenuItem>
                   <SidebarMenuButton
                     onClick={clearSelection}
@@ -946,6 +966,17 @@ export function AppSidebar() {
                 <SidebarMenuItem>
                   <NotificationsMenuButton />
                 </SidebarMenuItem>
+                {hasMarketplace && (
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      onClick={() => setMarketplaceOpen(true)}
+                      data-testid="marketplace-button"
+                    >
+                      <Compass className="h-4 w-4" />
+                      <span>Explore</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                )}
                 <SidebarMenuItem>
                   <SidebarMenuButton
                     onClick={() => { void createUntitledAgent() }}
@@ -954,26 +985,6 @@ export function AppSidebar() {
                   >
                     <Plus className="h-4 w-4" />
                     <span>New Agent</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-                {hasMarketplace && (
-                  <SidebarMenuItem>
-                    <SidebarMenuButton
-                      onClick={() => setMarketplaceOpen(true)}
-                      data-testid="marketplace-button"
-                    >
-                      <Store className="h-4 w-4" />
-                      <span>Marketplace</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                )}
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    onClick={openSearch}
-                    data-testid="search-button"
-                  >
-                    <Search className="h-4 w-4" />
-                    <span>Search</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               </SidebarMenu>
