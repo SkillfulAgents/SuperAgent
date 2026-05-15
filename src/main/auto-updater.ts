@@ -288,17 +288,19 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
     })
 
     autoUpdater.on('error', (err: Error) => {
-      captureException(err, {
-        tags: { component: 'auto-updater', operation: 'runtime' },
-        extra: {
-          currentVersion: app.getVersion(),
-          state: currentStatus.state,
-          suppressed: suppressErrors,
-          userVisible: runIsUserVisible,
-        },
-        level: 'warning',
-      })
       if (suppressErrors) return
+      const isTransientNetworkError = /net::ERR_(NETWORK_CHANGED|INTERNET_DISCONNECTED|NAME_NOT_RESOLVED|CONNECTION_TIMED_OUT|CONNECTION_REFUSED|CONNECTION_RESET)\b/.test(err.message)
+      if (!isTransientNetworkError) {
+        captureException(err, {
+          tags: { component: 'auto-updater', operation: 'runtime' },
+          extra: {
+            currentVersion: app.getVersion(),
+            state: currentStatus.state,
+            userVisible: runIsUserVisible,
+          },
+          level: 'warning',
+        })
+      }
       // Errors during a purely silent background check should not flip the UI
       // to error state — the user never asked for the check.
       if (runningCheck && !runIsUserVisible) return
