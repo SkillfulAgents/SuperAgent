@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
-import { AudioLines, Upload, ArrowUpToLine, FileArchive, Loader2, Shapes } from 'lucide-react'
+import { AudioLines, Upload, ArrowDownToLine, FileArchive, Loader2, Shapes } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@renderer/components/ui/button'
 import { OptionCard } from '@renderer/components/ui/option-card'
@@ -219,6 +219,7 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
           <OptionCard
             title="Browse Templates"
             icon={<Shapes className="h-4 w-4" />}
+            ariaDescription="Opens the agent template marketplace"
             onClick={() => setShowTemplatesDialog(true)}
           />
         )}
@@ -227,13 +228,15 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
           <OptionCard
             title="Brainstorm with Voice"
             icon={<AudioLines className="h-4 w-4" />}
+            ariaDescription="Start a voice interview to draft your agent prompt"
             onClick={startVoiceAgent}
           />
         )}
 
         <OptionCard
           title="Import an Agent"
-          icon={<ArrowUpToLine className="h-4 w-4" />}
+          icon={<ArrowDownToLine className="h-4 w-4" />}
+          ariaDescription="Import an agent from a .zip template file"
           onClick={() => setShowImportDialog(true)}
         />
       </div>
