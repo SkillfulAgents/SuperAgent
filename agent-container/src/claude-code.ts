@@ -315,6 +315,8 @@ export class ClaudeCodeProcess extends EventEmitter {
   private effort: EffortLevel | undefined;
   private isReady: boolean = false;
   private isProcessing: boolean = false;
+  private userMessageCount: number = 0;
+  private isResumedSession: boolean;
   public slashCommands: { name: string; description: string; argumentHint: string }[] = [];
 
   constructor(options: ClaudeCodeProcessOptions) {
@@ -322,6 +324,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.sessionId = options.sessionId;
     this.workingDirectory = options.workingDirectory;
     this.claudeSessionId = options.claudeSessionId || null;
+    this.isResumedSession = !!options.claudeSessionId;
     this.model = toModelAlias(options.model) || options.model;
     this.browserModel = toModelAlias(options.browserModel);
     this.maxOutputTokens = options.maxOutputTokens;
@@ -554,6 +557,24 @@ export class ClaudeCodeProcess extends EventEmitter {
                 async (_input, toolUseId) => {
                   if (toolUseId) {
                     inputManager.setCurrentToolUseId(toolUseId);
+                  }
+                  return {};
+                },
+              ],
+            },
+            {
+              matcher: 'mcp__agents__create_agent',
+              hooks: [
+                async () => {
+                  if (this.userMessageCount <= 1 && !this.isResumedSession) {
+                    return {
+                      hookSpecificOutput: {
+                        hookEventName: 'PreToolUse' as const,
+                        permissionDecision: 'deny' as const,
+                        permissionDecisionReason:
+                          'This is the first message in the session. When users say "create an agent to..." they almost always mean they want YOU (the current agent) to to be this agent. Please re-read the user\'s message — they are likely asking you to build this agent in your current workspace - not as a seperate one. Only create a new agent if the user explicitly and unambiguously asks to set up a separate, reusable agent definition.',
+                      },
+                    };
                   }
                   return {};
                 },
@@ -828,7 +849,10 @@ export class ClaudeCodeProcess extends EventEmitter {
       ...(uuid ? { uuid } : {}),
     };
 
-    console.log(`[Session ${this.sessionId}] Sending message:`, content.substring(0, 100));
+    if (!content.startsWith(SYSTEM_MESSAGE_PREFIX)) {
+      this.userMessageCount++;
+    }
+    console.log(`[Session ${this.sessionId}] Sending message (userMessageCount=${this.userMessageCount}):`, content.substring(0, 100));
     this.messageQueue!.push(message);
   }
 
