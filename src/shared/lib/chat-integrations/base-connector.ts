@@ -32,15 +32,17 @@ export interface OutgoingMessage {
 export type MessageHandler = (message: IncomingMessage) => void
 export type InteractiveResponseHandler = (toolUseId: string, response: unknown) => void
 export type ErrorHandler = (error: Error) => void
+export type TypingHintHandler = (chatId: string) => void
 
 // ── Abstract class ──────────────────────────────────────────────────────
 
 export abstract class ChatClientConnector {
-  abstract readonly provider: 'telegram' | 'slack'
+  abstract readonly provider: 'telegram' | 'slack' | 'imessage'
 
   protected messageHandlers: MessageHandler[] = []
   protected interactiveResponseHandlers: InteractiveResponseHandler[] = []
   protected errorHandlers: ErrorHandler[] = []
+  protected typingHintHandlers: TypingHintHandler[] = []
 
   /** Establish connection (long-poll loop / WebSocket). Resolves once healthy. */
   abstract connect(): Promise<void>
@@ -108,6 +110,14 @@ export abstract class ChatClientConnector {
     }
   }
 
+  /** Subscribe to typing hints (e.g. external user started typing). Useful for pre-warming containers. */
+  onTypingHint(handler: TypingHintHandler): () => void {
+    this.typingHintHandlers.push(handler)
+    return () => {
+      this.typingHintHandlers = this.typingHintHandlers.filter((h) => h !== handler)
+    }
+  }
+
   // ── Protected helpers for subclasses ────────────────────────────────
 
   protected emitMessage(message: IncomingMessage): void {
@@ -139,6 +149,16 @@ export abstract class ChatClientConnector {
       } catch (err) {
         console.error('[ChatConnector] Error in error handler:', err)
         captureException(err, { tags: { component: 'chat-integration', operation: 'emit-error' }, extra: { provider: this.provider, originalError: error.message } })
+      }
+    }
+  }
+
+  protected emitTypingHint(chatId: string): void {
+    for (const handler of this.typingHintHandlers) {
+      try {
+        handler(chatId)
+      } catch {
+        // Non-critical — best-effort pre-warm
       }
     }
   }
