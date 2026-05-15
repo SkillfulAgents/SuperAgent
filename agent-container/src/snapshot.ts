@@ -10,7 +10,7 @@ interface CacheEntry {
 const cache = new Map<string, CacheEntry>();
 
 export interface SnapshotOptions {
-  depth?: number | null;
+  mode?: 'navigation' | 'detailed' | null;
   scope?: string | null;
   json?: boolean;
   interactive?: boolean;
@@ -40,24 +40,14 @@ function truncateToDepth(text: string, depth: number): string {
   return out.join('\n');
 }
 
-// Plain accessible names (e.g. `"Repository"` from the snapshot) become
-// aria-label lookups; anything else passes through as CSS / XPath.
+// Scope is intentionally simple: a CSS selector or XPath. The model should
+// choose the selector it actually wants to query; we do not guess accessible
+// names or interpret snapshot refs as scope targets.
 export function buildScopeCandidates(scope: string): string[] {
-  if (/[[\]#.>~+*]/.test(scope) || scope.startsWith('//')) return [scope];
-
-  const escaped = scope.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  return [
-    `[aria-label="${escaped}"]`,
-    `[role][aria-label="${escaped}"]`,
-    scope,
-  ];
+  return [scope];
 }
 
-// When the caller doesn't pin a depth and isn't scoping into a subtree, we
-// truncate to this depth locally so a default `browser_snapshot()` stays cheap
-// (just the top-level clickables). With `scope`, the caller has already
-// narrowed the subtree, so we return it whole unless they pin a depth.
-const DEFAULT_UNSCOPED_DEPTH = 0;
+const NAVIGATE_DEPTH = 1;
 
 export async function takeSnapshot(
   sessionId: string,
@@ -65,15 +55,16 @@ export async function takeSnapshot(
   cdpUrl: string | null,
   execBrowser: ExecBrowser
 ): Promise<SnapshotResult> {
-  // depth semantics: undefined → use default for this mode; -1 → no truncation
-  // (full tree); any non-negative integer → truncate / cap at that depth.
-  const isUnlimited = opts.depth === -1;
-  const explicitDepth =
-    typeof opts.depth === 'number' && Number.isInteger(opts.depth) && opts.depth >= 0
-      ? opts.depth
-      : null;
+  const mode = opts.mode === 'detailed' ? 'detailed' : 'navigation';
   const hasScope = typeof opts.scope === 'string' && opts.scope.length > 0;
+  if (mode === 'detailed' && !hasScope) {
+    return {
+      ok: false,
+      error: 'mode "detailed" requires scope. First use the default navigation snapshot to identify a CSS/XPath selector, then retry with mode "detailed" and scope.',
+    };
+  }
   const canUseCache =
+    mode === 'navigation' &&
     !hasScope &&
     !opts.json &&
     opts.interactive !== false &&
@@ -89,23 +80,23 @@ export async function takeSnapshot(
       full = res.stdout;
       cache.set(sessionId, { text: full, capturedAt: Date.now() });
     }
-    if (isUnlimited) return { ok: true, text: full };
-    const effectiveDepth = explicitDepth ?? DEFAULT_UNSCOPED_DEPTH;
-    return { ok: true, text: truncateToDepth(full, effectiveDepth) };
+    return { ok: true, text: truncateToDepth(full, NAVIGATE_DEPTH) };
   }
 
-  const baseArgs = ['snapshot'];
-  if (opts.json) baseArgs.push('--json');
-  if (opts.interactive !== false) baseArgs.push('-i');
-  if (opts.compact !== false) baseArgs.push('-c');
-  if (explicitDepth != null) baseArgs.push('-d', String(explicitDepth));
+  const snapshotOptions = ['-c'];
+  if (opts.json) snapshotOptions.push('--json');
+  if (opts.interactive !== false) snapshotOptions.push('-i');
+  if (opts.compact === false) snapshotOptions.splice(snapshotOptions.indexOf('-c'), 1);
 
   const selectors = hasScope ? buildScopeCandidates(opts.scope!) : [null];
   let last = { stdout: '', exitCode: 0 };
   for (const sel of selectors) {
-    const args = sel ? [...baseArgs, '-s', sel] : baseArgs;
+    const args = sel ? ['snapshot', ...snapshotOptions, '-s', sel] : ['snapshot', ...snapshotOptions];
     last = await execBrowser(args, cdpUrl ?? undefined);
-    if (last.exitCode === 0) return { ok: true, text: last.stdout };
+    if (last.exitCode === 0) {
+      if (mode === 'detailed' || opts.json) return { ok: true, text: last.stdout };
+      return { ok: true, text: truncateToDepth(last.stdout, NAVIGATE_DEPTH) };
+    }
   }
   return { ok: false, error: last.stdout };
 }

@@ -50,43 +50,25 @@ describe('buildScopeCandidates', () => {
     expect(buildScopeCandidates('nav > ul')).toEqual(['nav > ul']);
     expect(buildScopeCandidates('//main')).toEqual(['//main']);
   });
-
-  it('plain names try aria-label first, fall back to bare CSS', () => {
-    expect(buildScopeCandidates('Repository')).toEqual([
-      '[aria-label="Repository"]',
-      '[role][aria-label="Repository"]',
-      'Repository',
-    ]);
-  });
-
-  it('multi-word names', () => {
-    expect(buildScopeCandidates('Personal tools')).toEqual([
-      '[aria-label="Personal tools"]',
-      '[role][aria-label="Personal tools"]',
-      'Personal tools',
-    ]);
-  });
-
-  it('escapes double quotes', () => {
-    expect(buildScopeCandidates('He said "hi"')[0]).toBe('[aria-label="He said \\"hi\\""]');
-  });
 });
 
 describe('takeSnapshot', () => {
-  it('caches full snapshot and serves depth slices locally', async () => {
+  it('caches navigate snapshots and returns a shallow page map', async () => {
     invalidate('s1');
     const exec = vi.fn(async (args: string[]) => ({
       stdout: TREE,
       exitCode: 0,
     }));
 
-    const r1 = await takeSnapshot('s1', { depth: 0 }, null, exec);
-    expect(r1).toEqual({ ok: true, text: '- WebArea "Title"' });
+    const r1 = await takeSnapshot('s1', {}, null, exec);
+    expect(r1).toEqual({
+      ok: true,
+      text: ['- WebArea "Title"', '  - banner', '  - main'].join('\n'),
+    });
     expect(exec).toHaveBeenCalledTimes(1);
 
-    const r2 = await takeSnapshot('s1', { depth: 1 }, null, exec);
-    expect(r2.ok).toBe(true);
-    if (r2.ok) expect(r2.text.split('\n')).toHaveLength(3);
+    const r2 = await takeSnapshot('s1', {}, null, exec);
+    expect(r2).toEqual(r1);
     expect(exec).toHaveBeenCalledTimes(1);
   });
 
@@ -99,11 +81,9 @@ describe('takeSnapshot', () => {
     expect(exec).toHaveBeenCalledTimes(2);
   });
 
-  it('scope tries candidates in order until one succeeds', async () => {
+  it('scope by CSS selector passes the selector through', async () => {
     invalidate('s3');
-    let call = 0;
     const exec = vi.fn(async (args: string[]) => {
-      call++;
       const scopeArg = args[args.indexOf('-s') + 1];
       if (scopeArg === '[aria-label="Repository"]') {
         return { stdout: '- navigation "Repository" [ref=e7]', exitCode: 0 };
@@ -111,12 +91,12 @@ describe('takeSnapshot', () => {
       return { stdout: "Selector didn't match", exitCode: 1 };
     });
 
-    const r = await takeSnapshot('s3', { scope: 'Repository' }, null, exec);
+    const r = await takeSnapshot('s3', { scope: '[aria-label="Repository"]' }, null, exec);
     expect(r).toEqual({ ok: true, text: '- navigation "Repository" [ref=e7]' });
-    expect(call).toBe(1);
+    expect(exec).toHaveBeenCalledTimes(1);
   });
 
-  it('scope falls through candidates when earlier ones miss', async () => {
+  it('scope by plain CSS selector is attempted once', async () => {
     invalidate('s4');
     const exec = vi.fn(async (args: string[]) => {
       const scopeArg = args[args.indexOf('-s') + 1];
@@ -126,7 +106,7 @@ describe('takeSnapshot', () => {
 
     const r = await takeSnapshot('s4', { scope: 'main' }, null, exec);
     expect(r).toEqual({ ok: true, text: '- main' });
-    expect(exec).toHaveBeenCalledTimes(3);
+    expect(exec).toHaveBeenCalledTimes(1);
   });
 
   it('returns error when all scope candidates fail', async () => {
@@ -137,39 +117,62 @@ describe('takeSnapshot', () => {
     expect(r).toEqual({ ok: false, error: 'nope' });
   });
 
-  it('no scope + no depth truncates to default (top-level only)', async () => {
+  it('navigate mode returns a shallow page map', async () => {
     invalidate('s6');
     const exec = vi.fn(async () => ({ stdout: TREE, exitCode: 0 }));
     const r = await takeSnapshot('s6', {}, null, exec);
-    expect(r).toEqual({ ok: true, text: '- WebArea "Title"' });
+    expect(r).toEqual({
+      ok: true,
+      text: ['- WebArea "Title"', '  - banner', '  - main'].join('\n'),
+    });
   });
 
-  it('scope + no depth does NOT pass -d to CLI (returns full subtree)', async () => {
+  it('scoped navigate snapshots stay shallow', async () => {
     invalidate('s7');
-    const exec = vi.fn(async (args: string[]) => ({
-      stdout: args.includes('-d') ? 'truncated' : 'full subtree',
-      exitCode: 0,
-    }));
+    const exec = vi.fn(async (args: string[]) => ({ stdout: TREE, exitCode: 0 }));
     const r = await takeSnapshot('s7', { scope: 'Repository' }, null, exec);
-    expect(r).toEqual({ ok: true, text: 'full subtree' });
+    expect(r).toEqual({
+      ok: true,
+      text: ['- WebArea "Title"', '  - banner', '  - main'].join('\n'),
+    });
     expect(exec).toHaveBeenCalled();
     const calledArgs = exec.mock.calls[0]![0] as string[];
     expect(calledArgs).not.toContain('-d');
   });
 
-  it('depth=-1 returns the full unfiltered snapshot (no truncation)', async () => {
-    invalidate('s9');
+  it('detailed mode requires scope', async () => {
+    invalidate('s10');
     const exec = vi.fn(async () => ({ stdout: TREE, exitCode: 0 }));
-    const r = await takeSnapshot('s9', { depth: -1 }, null, exec);
-    expect(r).toEqual({ ok: true, text: TREE });
+    const r = await takeSnapshot('s10', { mode: 'detailed' }, null, exec);
+    expect(r).toEqual({
+      ok: false,
+      error: 'mode "detailed" requires scope. First use the default navigation snapshot to identify a CSS/XPath selector, then retry with mode "detailed" and scope.',
+    });
+    expect(exec).not.toHaveBeenCalled();
   });
 
-  it('scope + explicit depth passes -d to CLI', async () => {
-    invalidate('s8');
+  it('scoped detailed mode returns the full snapshot without -d', async () => {
+    invalidate('s11');
+    const exec = vi.fn(async (args: string[]) => ({
+      stdout: args.includes('-d') ? '(empty page)' : TREE,
+      exitCode: 0,
+    }));
+    const r = await takeSnapshot('s11', { mode: 'detailed', scope: 'main' }, null, exec);
+    expect(r).toEqual({ ok: true, text: TREE });
+    expect(exec.mock.calls[0]![0]).toEqual(['snapshot', '-c', '-i', '-s', 'main']);
+  });
+
+  it('interactive=false is independent from mode', async () => {
+    invalidate('s12');
     const exec = vi.fn(async (args: string[]) => ({ stdout: args.join(' '), exitCode: 0 }));
-    await takeSnapshot('s8', { scope: 'Repository', depth: 2 }, null, exec);
-    const calledArgs = exec.mock.calls[0]![0] as string[];
-    expect(calledArgs).toContain('-d');
-    expect(calledArgs[calledArgs.indexOf('-d') + 1]).toBe('2');
+    await takeSnapshot('s12', { interactive: false }, null, exec);
+    expect(exec.mock.calls[0]![0]).toEqual(['snapshot', '-c']);
+  });
+
+  it('compact=false is independent from mode', async () => {
+    invalidate('s13');
+    const exec = vi.fn(async (args: string[]) => ({ stdout: args.join(' '), exitCode: 0 }));
+    await takeSnapshot('s13', { compact: false }, null, exec);
+    expect(exec.mock.calls[0]![0]).toEqual(['snapshot', '-i']);
   });
 });

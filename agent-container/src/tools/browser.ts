@@ -143,30 +143,30 @@ export const browserCloseTool = tool(
 
 export const browserSnapshotTool = tool(
   'browser_snapshot',
-  `Returns the current page's actionable elements with refs (@e1, @e2, ...) for use with browser_click / browser_fill / etc.`,
+  `Get the current page's accessibility tree with refs (@e1, @e2, ...) for use with browser_click / browser_fill / etc.
+
+Call with no arguments first for navigation/interaction. mode controls depth only: navigation (default) is shallow; detailed returns the full tree for a scoped section and requires scope because whole-page detail can be large.`,
   {
-    depth: z
-      .number()
-      .int()
-      .min(-1)
+    mode: z
+      .enum(['navigation', 'detailed'])
       .optional()
-      .describe('How many levels of nested actionable elements to include. Omit (default) to get the sensible default for whichever mode you\'re in: with no `scope`, you get just the top-level clickables (cheap, enough for most tasks); with a `scope`, you get the entire subtree of that container. Pass an explicit number (0, 1, 2, …) to override. Pass `-1` for no limit (full unfiltered tree — expensive, use sparingly).'),
+      .describe('Depth mode. navigation (default) returns a shallow snapshot for finding refs. detailed returns the full tree for the scoped target and requires scope.'),
     scope: z
       .string()
       .optional()
-      .describe('Optional. Limits the snapshot to one section of the page. Accepts ONLY (a) the accessible name of a landmark row in the snapshot — must be one of `navigation` / `main` / `region` / `complementary` / `form` / `search` / `banner` / `contentinfo` (e.g. `scope: "Repository"` when you saw `- navigation "Repository" [ref=e7]`), or (b) a CSS selector (`scope: "#login"`, `scope: "[role=dialog]"`, `scope: "main"`). Do NOT pass the text of a `heading` / `button` / `link` / `cell` row, and do NOT pass free-form phrases — those will fail. If you can\'t find a usable landmark or selector, use `depth` instead.'),
+      .describe('Optional CSS or XPath selector for a known area. Does not accept snapshot refs, visible text, role names, or free-form phrases.'),
     interactive: z
       .boolean()
       .optional()
-      .describe('Default true: only return interactive elements (links, buttons, inputs). Set to `false` to also include non-interactive text content like headings, paragraphs, numbers, and labels. Use `false` when you need to read static text from the page (version numbers, prices, dates, article body, etc.) — those are filtered out by the default.'),
+      .describe('Include interactive elements with refs (default: true)'),
     compact: z
       .boolean()
       .optional()
-      .describe('Default true: collapse empty structural wrappers to reduce output size. Set to `false` only when you specifically need to see the full DOM structure.'),
+      .describe('Compact output to reduce size (default: true)'),
   },
   async (args) => {
     const result = await browserFetch('snapshot', {
-      depth: args.depth,
+      mode: args.mode,
       scope: args.scope,
       interactive: args.interactive,
       compact: args.compact,

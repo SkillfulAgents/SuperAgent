@@ -961,10 +961,10 @@ app.post('/browser/snapshot', async (c) => {
   try {
     const body = await c.req.json<{
       sessionId: string;
+      mode?: 'navigation' | 'detailed';
       interactive?: boolean;
       compact?: boolean;
       json?: boolean;
-      depth?: number;
       scope?: string;
     }>();
 
