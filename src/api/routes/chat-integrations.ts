@@ -16,7 +16,7 @@ import {
 } from '@shared/lib/services/chat-integration-service'
 import { listChatIntegrationSessions, archiveChatIntegrationSession, getChatIntegrationSessionById, deleteChatIntegrationSessionsByIntegration } from '@shared/lib/services/chat-integration-session-service'
 import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
-import { validateChatIntegrationConfig } from '@shared/lib/chat-integrations/config-schema'
+import { validateChatIntegrationConfig, CHAT_PROVIDERS, type ChatProvider } from '@shared/lib/chat-integrations/config-schema'
 import { Authenticated, AgentUser, EntityAgentRole } from '../middleware/auth'
 import { captureException } from '@shared/lib/error-reporting'
 
@@ -58,6 +58,7 @@ chatIntegrationsRouter.post('/test-credentials', Authenticated(), async (c) => {
     }
 
     // Validate by attempting a lightweight API call
+    // TODO: we should move these to be part of the integration class, not hardcoded here in the route handler. This breaks abstracting provider-specific logic out of the route layer and makes it harder to maintain as we add more providers.
     if (provider === 'telegram') {
       const botToken = config.botToken
       if (!botToken) {
@@ -101,6 +102,52 @@ chatIntegrationsRouter.post('/test-credentials', Authenticated(), async (c) => {
       return c.json({ valid: true, team: data.team, user: data.user })
     }
 
+    if (provider === 'imessage') {
+      const { gatewayUrl, phoneNumber, token } = config
+      if (!gatewayUrl || !phoneNumber || !token) {
+        return c.json({ error: 'Missing gatewayUrl, phoneNumber, or token' }, 400)
+      }
+      try {
+        const wsUrl = `${String(gatewayUrl).replace(/^http/, 'ws')}/ws/${encodeURIComponent(phoneNumber)}`
+        const { default: WebSocket } = await import('ws')
+        const result = await new Promise<{ valid: boolean; error?: string; phoneNumber?: string }>((resolve) => {
+          const ws = new WebSocket(wsUrl, {
+            headers: { Authorization: `Bearer ${token}` },
+          })
+          const timeout = setTimeout(() => {
+            ws.close()
+            resolve({ valid: false, error: 'Connection timeout' })
+          }, 10_000)
+          ws.on('open', () => ws.send(JSON.stringify({ type: 'ready' })))
+          ws.on('message', (raw) => {
+            try {
+              const event = JSON.parse(raw.toString())
+              if (event.type === 'connected') {
+                clearTimeout(timeout)
+                ws.close(1000)
+                resolve({ valid: true, phoneNumber: event.data?.phoneNumber || phoneNumber })
+              }
+            } catch { /* ignore parse errors */ }
+          })
+          ws.on('close', (code) => {
+            clearTimeout(timeout)
+            resolve({ valid: false, error: `Connection closed (code ${code})` })
+          })
+          ws.on('error', (err) => {
+            clearTimeout(timeout)
+            resolve({ valid: false, error: err.message })
+          })
+        })
+        if (!result.valid) {
+          return c.json({ valid: false, error: result.error || 'Connection failed' }, 400)
+        }
+        return c.json({ valid: true, phoneNumber: result.phoneNumber })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Connection failed'
+        return c.json({ valid: false, error: message }, 400)
+      }
+    }
+
     return c.json({ error: 'Invalid provider' }, 400)
   } catch (error) {
     console.error('Failed to test credentials:', error)
@@ -121,8 +168,8 @@ chatIntegrationsRouter.post('/:id', AgentUser(), async (c) => {
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
     }
 
-    if (!['telegram', 'slack'].includes(provider)) {
-      return c.json({ error: 'Invalid provider. Must be "telegram" or "slack"' }, 400)
+    if (!CHAT_PROVIDERS.includes(provider)) {
+      return c.json({ error: `Invalid provider. Must be one of: ${CHAT_PROVIDERS.join(', ')}` }, 400)
     }
 
     // Validate config against Zod schema
@@ -199,7 +246,7 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
       const integration = c.get('chatIntegration' as never) as Awaited<ReturnType<typeof getChatIntegration>>
       if (integration) {
         try {
-          validateChatIntegrationConfig(integration.provider as 'telegram' | 'slack', config)
+          validateChatIntegrationConfig(integration.provider as ChatProvider, config)
         } catch (err) {
           const message = err instanceof Error ? err.message : 'Invalid config'
           return c.json({ error: `Invalid config: ${message}` }, 400)

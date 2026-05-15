@@ -32,6 +32,7 @@ import {
   Check,
 } from 'lucide-react'
 import { formatProviderName } from '@shared/lib/chat-integrations/utils'
+import { CHAT_PROVIDERS, type ChatProvider } from '@shared/lib/chat-integrations/config-schema'
 
 function generateSlackManifest(botName: string): string {
   return JSON.stringify({
@@ -91,9 +92,12 @@ interface ChatIntegrationsTabProps {
   agentSlug: string
 }
 
-type Provider = 'telegram' | 'slack'
-
-const PROVIDER_INFO = {
+const PROVIDER_INFO: Record<ChatProvider, {
+  label: string
+  slug: string
+  steps: Array<string | React.ReactNode>
+  fields: Array<{ key: string; label: string; placeholder: string; type: 'text' | 'password' }>
+}> = {
   telegram: {
     label: 'Telegram',
     slug: 'telegram',
@@ -128,6 +132,21 @@ const PROVIDER_INFO = {
       { key: 'channelId', label: 'Channel ID (optional)', placeholder: 'Auto-detected from DMs', type: 'text' as const },
     ],
   },
+  imessage: {
+    label: 'iMessage',
+    slug: 'imessage',
+    steps: [
+      'Text "setup" to +1 (205) 396-7934 from the phone number you want to connect',
+      'You\'ll receive a reply with a token and gateway URL',
+      'Enter your phone number, the gateway URL, and token below',
+      'Text /setup to the same number at any time to see these instructions again',
+    ],
+    fields: [
+      { key: 'phoneNumber', label: 'Your Phone Number', placeholder: '+15551234567 (E.164 format)', type: 'text' as const },
+      { key: 'gatewayUrl', label: 'Gateway URL', placeholder: 'https://imessage-gateway.example.com', type: 'text' as const },
+      { key: 'token', label: 'Token', placeholder: 'Paste the token from the setup message', type: 'password' as const },
+    ],
+  },
 }
 
 export function ChatIntegrationsTab({ agentSlug }: ChatIntegrationsTabProps) {
@@ -138,7 +157,7 @@ export function ChatIntegrationsTab({ agentSlug }: ChatIntegrationsTabProps) {
   const testCredentials = useTestChatIntegrationCredentials()
 
   const [isAdding, setIsAdding] = useState(false)
-  const [selectedProvider, setSelectedProvider] = useState<Provider | null>(null)
+  const [selectedProvider, setSelectedProvider] = useState<ChatProvider | null>(null)
   const [formData, setFormData] = useState<Record<string, string>>({})
   const [integrationName, setIntegrationName] = useState('')
   const [showToolCalls, setShowToolCalls] = useState(false)
@@ -172,7 +191,9 @@ export function ChatIntegrationsTab({ agentSlug }: ChatIntegrationsTabProps) {
       })
       const info = selectedProvider === 'telegram'
         ? `Bot: @${result.botUsername || result.botName}`
-        : `Workspace: ${result.team}`
+        : selectedProvider === 'slack'
+        ? `Workspace: ${result.team}`
+        : `Connected: ${result.phoneNumber || 'OK'}`
       setTestResult({ valid: true, info })
     } catch (err) {
       setTestResult({ valid: false, info: err instanceof Error ? err.message : 'Invalid credentials' })
@@ -266,7 +287,7 @@ export function ChatIntegrationsTab({ agentSlug }: ChatIntegrationsTabProps) {
         <div>
           <h3 className="text-sm font-medium">Chat Integrations</h3>
           <p className="text-xs text-muted-foreground mt-1">
-            Connect external messaging apps to chat with this agent from Telegram or Slack.
+            Connect external messaging apps to chat with this agent from Telegram, Slack, or iMessage.
           </p>
         </div>
         {!isAdding && (
@@ -416,7 +437,7 @@ export function ChatIntegrationsTab({ agentSlug }: ChatIntegrationsTabProps) {
           <div>
             <p className="text-sm text-muted-foreground">No chat integrations yet</p>
             <p className="text-xs text-muted-foreground mt-1">
-              Connect Telegram or Slack to chat with your agent from anywhere.
+              Connect Telegram, Slack, or iMessage to chat with your agent from anywhere.
             </p>
           </div>
         </div>
@@ -429,9 +450,12 @@ export function ChatIntegrationsTab({ agentSlug }: ChatIntegrationsTabProps) {
             <Label className="text-sm font-medium">Choose a Platform</Label>
             <Button size="sm" variant="ghost" onClick={resetForm}>Cancel</Button>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            {(['telegram', 'slack'] as const).map((provider) => {
+          <div className="grid grid-cols-3 gap-3">
+            {CHAT_PROVIDERS.map((provider) => {
               const info = PROVIDER_INFO[provider]
+              const subtitle = provider === 'telegram' ? 'Bot API via long polling'
+                : provider === 'slack' ? 'Socket Mode (no webhooks)'
+                : 'Via iMessage Gateway'
               return (
                 <button
                   key={provider}
@@ -444,9 +468,7 @@ export function ChatIntegrationsTab({ agentSlug }: ChatIntegrationsTabProps) {
                   </div>
                   <div>
                     <p className="text-sm font-medium">{info.label}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {provider === 'telegram' ? 'Bot API via long polling' : 'Socket Mode (no webhooks)'}
-                    </p>
+                    <p className="text-xs text-muted-foreground">{subtitle}</p>
                   </div>
                 </button>
               )
@@ -632,7 +654,9 @@ export function ChatIntegrationsTab({ agentSlug }: ChatIntegrationsTabProps) {
           {createIntegration.error && (
             <p className="text-xs text-red-500">
               {createIntegration.error instanceof ChatIntegrationApiError && createIntegration.error.code === 'duplicate_bot_token'
-                ? 'This bot is already connected to another integration. Remove the existing one first, or use a different bot.'
+                ? selectedProvider === 'imessage'
+                  ? 'This phone number is already connected to another integration. Remove the existing one first.'
+                  : 'This bot is already connected to another integration. Remove the existing one first, or use a different bot.'
                 : createIntegration.error.message}
             </p>
           )}

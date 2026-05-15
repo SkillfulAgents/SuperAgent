@@ -21,19 +21,39 @@ export const slackConfigSchema = z.object({
   newSessionPerThread: z.boolean().optional(),
 })
 
+export const imessageConfigSchema = z.object({
+  gatewayUrl: z.string().url('Gateway URL is required').refine(
+    (url) => url.startsWith('http://') || url.startsWith('https://'),
+    'Gateway URL must start with http:// or https://',
+  ),
+  phoneNumber: z.string()
+    .min(1, 'Phone number is required')
+    .regex(/^\+[1-9]\d{6,14}$/, 'Phone number must be in E.164 format (e.g. +15551234567)'),
+  token: z.string().min(1, 'Token is required'),
+})
+
 export type TelegramConfig = z.infer<typeof telegramConfigSchema>
 export type SlackConfig = z.infer<typeof slackConfigSchema>
+export type IMessageConfig = z.infer<typeof imessageConfigSchema>
+
+export const CHAT_PROVIDERS = ['telegram', 'slack', 'imessage'] as const
+export type ChatProvider = (typeof CHAT_PROVIDERS)[number]
+type ChatConfig = TelegramConfig | SlackConfig | IMessageConfig
 
 /**
  * Validate and parse a config object for the given provider.
  * Throws a descriptive error if validation fails.
  */
 export function validateChatIntegrationConfig(
-  provider: 'telegram' | 'slack',
+  provider: ChatProvider,
   config: unknown,
-): TelegramConfig | SlackConfig {
-  const schema = provider === 'telegram' ? telegramConfigSchema : slackConfigSchema
-  return schema.parse(config)
+): ChatConfig {
+  switch (provider) {
+    case 'telegram': return telegramConfigSchema.parse(config)
+    case 'slack': return slackConfigSchema.parse(config)
+    case 'imessage': return imessageConfigSchema.parse(config)
+    default: throw new Error(`Unknown chat integration provider: ${provider}`)
+  }
 }
 
 /**
@@ -41,9 +61,9 @@ export function validateChatIntegrationConfig(
  * Returns null with a logged error if parsing or validation fails.
  */
 export function parseChatIntegrationConfig(
-  provider: 'telegram' | 'slack',
+  provider: ChatProvider,
   configJson: string,
-): TelegramConfig | SlackConfig | null {
+): ChatConfig | null {
   try {
     const raw = JSON.parse(configJson)
     return validateChatIntegrationConfig(provider, raw)

@@ -930,3 +930,114 @@ describe('multi-session isolation', () => {
     expect(bobTexts).not.toContain('Alice')
   })
 })
+
+// ── No-streaming connector (iMessage-style) ─────────────────────────────
+// iMessage connector's sendStreamingUpdate is a no-op and
+// finalizeStreamingMessage sends the full text as a new message.
+// Verify the SSE pipeline still delivers the final text correctly.
+
+describe('no-streaming connector (iMessage-style)', () => {
+  function createNoStreamManaged(): ManagedConnector {
+    const connector = new MockChatClientConnector()
+    // Override to mimic iMessage no-streaming behavior
+    connector.sendStreamingUpdate = async (_chatId, _text, existingId) => {
+      return existingId || `noop-${Date.now()}`
+    }
+    connector.finalizeStreamingMessage = async (chatId, _messageId, finalText) => {
+      await connector.sendMessage(chatId, { text: finalText })
+    }
+    return {
+      connector,
+      integration: {
+        id: 'imessage-test',
+        agentSlug: 'test-agent',
+        provider: 'imessage',
+        name: 'iMessage Bot',
+        config: '{}',
+        showToolCalls: false,
+        status: 'active',
+        errorMessage: null,
+        createdByUserId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      } as ChatIntegration,
+      chatId: 'chat-imsg',
+      sseUnsubscribe: null,
+      messageUnsubscribe: null,
+      interactiveUnsubscribe: null,
+      errorUnsubscribe: null,
+      streamingState: {
+        currentMessageId: null,
+        accumulatedText: '',
+        lastUpdateTime: 0,
+      },
+      currentToolInput: '',
+      pendingToolMessages: [],
+    }
+  }
+
+  it('delivers complete text on session_idle without intermediate stream updates', async () => {
+    const managed = createNoStreamManaged()
+    managed.streamingState.lastUpdateTime = 0
+
+    await processEvents(managed, [
+      { type: 'stream_start' },
+      { type: 'stream_delta', text: 'Hello from ' },
+      { type: 'stream_delta', text: 'iMessage!' },
+      { type: 'session_idle' },
+    ])
+
+    const mock = managed.connector as MockChatClientConnector
+    // No intermediate stream updates recorded (sendStreamingUpdate is no-op)
+    expect(mock.streamUpdates.length).toBe(0)
+    // Final text delivered via sendMessage (from finalizeStreamingMessage)
+    expect(mock.sentMessages.length).toBe(1)
+    expect(mock.sentMessages[0].message.text).toBe('Hello from iMessage!')
+  })
+
+  it('delivers text via sendMessage when no currentMessageId existed', async () => {
+    const managed = createNoStreamManaged()
+    managed.streamingState.accumulatedText = 'Quick reply'
+    managed.streamingState.currentMessageId = null
+
+    await processSSEEvent(managed, { type: 'session_idle' })
+
+    const mock = managed.connector as MockChatClientConnector
+    expect(mock.sentMessages.length).toBe(1)
+    expect(mock.sentMessages[0].message.text).toBe('Quick reply')
+  })
+
+  it('handles text → tool → text cycle correctly', async () => {
+    const managed = createNoStreamManaged()
+    const outputLog: string[] = []
+    const mock = managed.connector as MockChatClientConnector
+    const origSend = mock.sendMessage.bind(mock)
+    mock.sendMessage = async (chatId: string, message: { text: string }) => {
+      outputLog.push(message.text)
+      return origSend(chatId, message)
+    }
+
+    managed.streamingState.lastUpdateTime = 0
+    await processEvents(managed, [
+      { type: 'stream_start' },
+      { type: 'stream_delta', text: 'Let me check...' },
+      { type: 'tool_use_start', toolId: 't1', toolName: 'Bash' },
+      { type: 'tool_use_streaming', partialInput: '{"command":"ls"}' },
+      { type: 'tool_use_ready', toolId: 't1', toolName: 'Bash' },
+      { type: 'stream_start' },
+      { type: 'stream_delta', text: 'Here are the results.' },
+      { type: 'session_idle' },
+    ])
+
+    expect(outputLog.some(t => t.includes('Let me check...'))).toBe(true)
+    expect(outputLog.some(t => t.includes('Here are the results.'))).toBe(true)
+  })
+
+  it('shows typing indicator on stream_start', async () => {
+    const managed = createNoStreamManaged()
+    await processSSEEvent(managed, { type: 'stream_start' })
+
+    const mock = managed.connector as MockChatClientConnector
+    expect(mock.typingIndicators.length).toBe(1)
+  })
+})

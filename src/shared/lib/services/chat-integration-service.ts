@@ -6,14 +6,16 @@ import { eq, and, inArray } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { chatIntegrations } from '@shared/lib/db/schema'
 import type { ChatIntegration, NewChatIntegration } from '@shared/lib/db/schema'
+import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
 import { captureException } from '@shared/lib/error-reporting'
 
 export type { ChatIntegration, NewChatIntegration }
 
 export class DuplicateBotTokenError extends Error {
   readonly existingIntegrationId: string
-  constructor(existingIntegrationId: string) {
-    super(`Bot token is already registered on integration ${existingIntegrationId}`)
+  constructor(existingIntegrationId: string, provider?: string) {
+    const label = provider === 'imessage' ? 'Phone number' : 'Bot token'
+    super(`${label} is already registered on integration ${existingIntegrationId}`)
     this.name = 'DuplicateBotTokenError'
     this.existingIntegrationId = existingIntegrationId
   }
@@ -23,7 +25,7 @@ export class DuplicateBotTokenError extends Error {
 
 export interface CreateChatIntegrationParams {
   agentSlug: string
-  provider: 'telegram' | 'slack'
+  provider: ChatProvider
   name?: string
   config: Record<string, unknown>
   showToolCalls?: boolean
@@ -42,11 +44,11 @@ export interface UpdateChatIntegrationParams {
 // ── Create ──────────────────────────────────────────────────────────────
 
 export function createChatIntegration(params: CreateChatIntegrationParams): string {
-  const newToken = extractBotToken(params.provider, params.config)
+  const newToken = extractUniqueKey(params.provider, params.config)
   if (newToken) {
-    const duplicate = findIntegrationByBotToken(params.provider, newToken)
+    const duplicate = findIntegrationByUniqueKey(params.provider, newToken)
     if (duplicate) {
-      throw new DuplicateBotTokenError(duplicate.id)
+      throw new DuplicateBotTokenError(duplicate.id, params.provider)
     }
   }
 
@@ -69,33 +71,39 @@ export function createChatIntegration(params: CreateChatIntegrationParams): stri
   return id
 }
 
-function extractBotToken(provider: string, config: Record<string, unknown>): string | null {
+/** Extract the unique key for duplicate detection: botToken for Telegram/Slack, phoneNumber for iMessage. */
+function extractUniqueKey(provider: string, config: Record<string, unknown>): string | null {
+  if (provider === 'imessage') {
+    const phone = (config as { phoneNumber?: unknown }).phoneNumber
+    return typeof phone === 'string' && phone.length > 0 ? phone : null
+  }
   const token = (config as { botToken?: unknown }).botToken
   if (provider !== 'telegram' && provider !== 'slack') return null
   return typeof token === 'string' && token.length > 0 ? token : null
 }
 
-function findIntegrationByBotToken(
+function findIntegrationByUniqueKey(
   provider: string,
-  token: string,
+  key: string,
   excludeId?: string,
 ): ChatIntegration | null {
   const rows = db.select().from(chatIntegrations)
     .where(eq(chatIntegrations.provider, provider as ChatIntegration['provider']))
     .all()
+  const field = provider === 'imessage' ? 'phoneNumber' : 'botToken'
   for (const row of rows) {
     if (excludeId && row.id === excludeId) continue
     const cfg = safeParseConfig(row)
-    if (cfg && typeof cfg.botToken === 'string' && cfg.botToken === token) {
+    if (cfg && typeof (cfg as any)[field] === 'string' && (cfg as any)[field] === key) {
       return row
     }
   }
   return null
 }
 
-function safeParseConfig(row: ChatIntegration): { botToken?: string } | null {
+function safeParseConfig(row: ChatIntegration): Record<string, unknown> | null {
   try {
-    return JSON.parse(row.config) as { botToken?: string }
+    return JSON.parse(row.config) as Record<string, unknown>
   } catch (err) {
     captureException(err, {
       tags: { component: 'chat-integration', operation: 'parse-config' },
@@ -126,9 +134,8 @@ export function listChatIntegrations(agentSlug?: string, status?: string): ChatI
 /**
  * Returns integrations that should be connected on startup (active + error for retry).
  *
- * Deduplicates by bot token so we never start two pollers against the same
- * Telegram token — that triggers a 409 Conflict from `getUpdates` and, if
- * unhandled, crashes the Electron app (see SUP-150).
+ * Deduplicates by unique key (bot token for Telegram/Slack, phone number for
+ * iMessage) so we never start two connections against the same credential.
  * When duplicates exist, prefer `active` over `error`; within the same status,
  * prefer the most recently updated row.
  */
@@ -137,32 +144,32 @@ export function listStartupChatIntegrations(): ChatIntegration[] {
     .where(inArray(chatIntegrations.status, ['active', 'error']))
     .all()
 
-  const byToken = new Map<string, ChatIntegration>()
-  const tokenless: ChatIntegration[] = []
+  const byKey = new Map<string, ChatIntegration>()
+  const keyless: ChatIntegration[] = []
 
   for (const row of rows) {
     const cfg = safeParseConfig(row)
-    const token = cfg && typeof cfg.botToken === 'string' ? cfg.botToken : null
-    if (!token) {
-      tokenless.push(row)
+    const uniqueKey = cfg ? extractUniqueKey(row.provider, cfg) : null
+    if (!uniqueKey) {
+      keyless.push(row)
       continue
     }
-    const key = `${row.provider}:${token}`
-    const existing = byToken.get(key)
+    const mapKey = `${row.provider}:${uniqueKey}`
+    const existing = byKey.get(mapKey)
     if (!existing || isBetterStartupCandidate(row, existing)) {
-      byToken.set(key, row)
+      byKey.set(mapKey, row)
     }
   }
 
-  if (rows.length !== byToken.size + tokenless.length) {
+  if (rows.length !== byKey.size + keyless.length) {
     captureException(new Error('Duplicate chat integrations detected at startup'), {
       tags: { component: 'chat-integration', operation: 'list-startup' },
       level: 'warning',
-      extra: { totalRows: rows.length, uniqueTokens: byToken.size, tokenless: tokenless.length },
+      extra: { totalRows: rows.length, uniqueKeys: byKey.size, keyless: keyless.length },
     })
   }
 
-  return [...byToken.values(), ...tokenless]
+  return [...byKey.values(), ...keyless]
 }
 
 function isBetterStartupCandidate(candidate: ChatIntegration, current: ChatIntegration): boolean {
@@ -200,11 +207,11 @@ export function updateChatIntegration(id: string, params: UpdateChatIntegrationP
   if (params.config !== undefined) {
     const current = getChatIntegration(id)
     if (current) {
-      const newToken = extractBotToken(current.provider, params.config)
+      const newToken = extractUniqueKey(current.provider, params.config)
       if (newToken) {
-        const duplicate = findIntegrationByBotToken(current.provider, newToken, id)
+        const duplicate = findIntegrationByUniqueKey(current.provider, newToken, id)
         if (duplicate) {
-          throw new DuplicateBotTokenError(duplicate.id)
+          throw new DuplicateBotTokenError(duplicate.id, current.provider)
         }
       }
     }

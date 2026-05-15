@@ -6,6 +6,7 @@
  */
 
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
+import type { ChatProvider } from './config-schema'
 import { captureException } from '@shared/lib/error-reporting'
 
 // ── Types ───────────────────────────────────────────────────────────────
@@ -37,7 +38,7 @@ export type TypingHintHandler = (chatId: string) => void
 // ── Abstract class ──────────────────────────────────────────────────────
 
 export abstract class ChatClientConnector {
-  abstract readonly provider: 'telegram' | 'slack' | 'imessage'
+  abstract readonly provider: ChatProvider
 
   protected messageHandlers: MessageHandler[] = []
   protected interactiveResponseHandlers: InteractiveResponseHandler[] = []
