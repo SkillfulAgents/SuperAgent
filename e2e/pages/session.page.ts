@@ -422,6 +422,30 @@ export class SessionPage {
     await container.locator('[data-testid="proxy-review-always-allow-all"]').click()
   }
 
+  // --- X-Agent Review Request Helpers ---
+
+  async waitForXAgentReviewRequest(timeout = 15000) {
+    await expect(this.page.locator('[data-testid="xagent-review-request"]').first()).toBeVisible({ timeout })
+  }
+
+  getXAgentReviewRequests() {
+    return this.page.locator('[data-testid="xagent-review-request"]')
+  }
+
+  async allowXAgentReview() {
+    const container = this.page.locator('[data-testid="xagent-review-request"]').first()
+    await container.locator('[data-testid="xagent-review-allow-once-btn"]').click()
+  }
+
+  async denyXAgentReview() {
+    const container = this.page.locator('[data-testid="xagent-review-request"]').first()
+    await container.locator('[data-testid="xagent-review-deny-btn"]').click()
+  }
+
+  async stopSessionFromRequest() {
+    await this.page.locator('[data-testid="request-stop-session"]').first().click()
+  }
+
   // --- Computer Use Request Helpers ---
 
   async waitForComputerUseRequest(timeout = 15000) {

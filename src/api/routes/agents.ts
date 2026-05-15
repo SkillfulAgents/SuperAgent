@@ -1639,6 +1639,7 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     if (info.status !== 'running') {
       console.log(`[Agents] Container not running for ${agentSlug}, marking session ${sessionId} as interrupted locally`)
       await messagePersister.markSessionInterrupted(sessionId)
+      reviewManager.denyAllForAgent(agentSlug)
       return c.json({ success: true, note: 'Container not running, session marked inactive' })
     }
 
@@ -1652,6 +1653,7 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     }
 
     await messagePersister.markSessionInterrupted(sessionId)
+    reviewManager.denyAllForAgent(agentSlug)
 
     return c.json({ success: true })
   } catch (error) {
@@ -1659,7 +1661,9 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     // Even on error, try to mark session as interrupted to fix UI state
     try {
       const sessionId = c.req.param('sessionId')
+      const agentSlugFallback = c.req.param('id')
       await messagePersister.markSessionInterrupted(sessionId)
+      reviewManager.denyAllForAgent(agentSlugFallback)
       return c.json({ success: true, note: 'Error during interrupt, but session marked inactive' })
     } catch {
       return c.json({ error: 'Failed to interrupt session' }, 500)
