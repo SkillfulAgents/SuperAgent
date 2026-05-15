@@ -1,23 +1,26 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser use feature working correctly - agent successfully navigated to https://example.com and reported the page title as \"Example Domain\"",
+  "reason": "Browser-use feature successfully executed: agent opened browser, navigated to https://example.com, and returned the page title \"Example Domain\"",
   "steps": [
-    "Navigated to http://localhost:47891 - Page loaded successfully showing SuperAgent home with agent list",
-    "Found and clicked on \"QA-20260513-201129-4zti\" agent in the sidebar - Agent chat interface opened with message input field visible",
-    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message displayed in chat and agent began processing",
-    "Waited 5 seconds for response - Agent completed work in 9 seconds total, showing both tool calls (Open Browser and Browser Command) with green success indicators",
-    "Verified response mentions \"Example Domain\" - Response text clearly displays \"The page title is \"Example Domain\".\" with live browser preview showing the Example Domain page loaded on the right side"
+    "Navigated to http://localhost:47891 — Application loaded successfully showing SuperAgent interface with agent list in sidebar",
+    "Found and clicked on agent \"QA-20260515-004549-mw0b\" in the sidebar — Agent page loaded with chat interface and empty message history",
+    "Clicked on chat input textbox — Textbox became active and focused",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully entered in the input field",
+    "Clicked \"Send message\" button — Message was sent and agent began working (status changed to \"working\")",
+    "Waited up to 3 minutes for response mentioning \"Example Domain\" — Agent completed task in 7 seconds and returned response",
+    "Verified response content — Response clearly states: \"The page title is \\\"Example Domain\\\".\" Browser preview panel on right side displays the actual Example Domain page. Two browser tool calls are shown: \"Open Browser https://example.com\" and \"Page Snapshot\" both marked successful with checkmarks",
+    "Took final screenshot — Full page screenshot captured showing complete chat session with agent response, browser preview, and activity log"
   ],
   "bugs": [],
-  "durationMs": 62687,
-  "sessionId": "97c36b35-e81d-401a-b27a-adc6210a3421",
+  "durationMs": 79912,
+  "sessionId": "3c871fd6-2575-40b8-a7e1-441b45b609c3",
   "cost": {
-    "inputTokens": 363,
-    "outputTokens": 9476,
-    "cacheCreationTokens": 132770,
-    "cacheReadTokens": 1336637,
+    "inputTokens": 234,
+    "outputTokens": 6453,
+    "cacheCreationTokens": 40675,
+    "cacheReadTokens": 826220,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.347369
+    "totalCostUsd": 0.165965
   }
 }

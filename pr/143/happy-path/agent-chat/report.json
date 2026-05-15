@@ -1,26 +1,28 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "Agent successfully received message and responded with correct answer \"4\" to the math question",
+  "reason": "Agent QA-20260515-004548-tg5j successfully received and responded to the test message with the correct answer \"4\" to the question \"What is 2+2?\"",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully with SuperAgent application displaying \"Your Agents\" list",
-    "Found \"QA-20260513-201128-qzfl\" agent in the sidebar and clicked it — Agent page opened with agent name displayed at the top and status showing \"idle\"",
-    "Verified agent status — Status indicator confirmed as \"idle\" which meets the requirement (running or idle)",
-    "Clicked on the message input field — Input field became active and ready for text entry",
-    "Typed the message \"Hello! What is 2+2?\" — Message text was successfully entered into the input field",
-    "Clicked the \"Send message\" button — Message was sent and a new session \"Math Basics Question Session\" was created in the sidebar; agent status changed to \"working\"",
-    "Waited for agent response — Agent processed the request and responded within approximately 1 second with the answer \"4\"",
-    "Verified response contains \"4\" — The agent's response is clearly displayed as \"4\" in the chat window, confirming the correct mathematical answer to 2+2"
+    "Navigated to http://localhost:47891 — Application loaded successfully with sidebar showing three agents",
+    "Located agent \"QA-20260515-004548-tg5j\" in the sidebar — Agent was found with \"idle\" status, visible both in sidebar and main agent list",
+    "Clicked on the agent in the sidebar — Agent detail page opened, showing the agent configuration view with message input field",
+    "Verified agent status is \"idle\" — Status indicator confirmed as \"idle\" in the top right of the header",
+    "Clicked on the message input field — Input field became focused and ready for text entry",
+    "Typed the message \"Hello! What is 2+2?\" — Message was successfully entered into the input field",
+    "Clicked the Send message button — Message was sent, agent status changed to \"working\", and a new session \"Basic Math Question Session\" was created",
+    "Waited for agent response — Agent responded within approximately 1 second (well within the 3-minute timeout requirement)",
+    "Verified the response mentions \"4\" — Agent response clearly displays \"4\" as the answer to the math question, with completion status showing \"Worked for 1s\"",
+    "Took final screenshot — Screenshot 04_final_response.png documents the complete successful interaction with user message and agent response visible"
   ],
   "bugs": [],
-  "durationMs": 177664,
-  "sessionId": "dca060ff-23d0-413d-9e28-49b739b6839d",
+  "durationMs": 72899,
+  "sessionId": "443fabde-271e-4b2c-ae84-06d07280a0f6",
   "cost": {
-    "inputTokens": 270,
-    "outputTokens": 9160,
-    "cacheCreationTokens": 127458,
-    "cacheReadTokens": 960971,
+    "inputTokens": 315,
+    "outputTokens": 12324,
+    "cacheCreationTokens": 138192,
+    "cacheReadTokens": 1171199,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.30149
+    "totalCostUsd": 0.351795
   }
 }
