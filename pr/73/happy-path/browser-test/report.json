@@ -1,25 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser use feature test: Agent successfully navigated to https://example.com via browser tool calls and reported the correct page title \"Example Domain\"",
+  "reason": "Browser Use feature: Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and closed the browser.",
   "steps": [
-    "Navigated to http://localhost:47891 - Page loaded successfully showing SuperAgent home with three agents in sidebar",
-    "Clicked on agent \"QA-20260513-030815-ye7k\" in the sidebar - Agent details page opened with chat interface",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into input field - Message text appeared in input field",
-    "Clicked \"Send message\" button - Message was sent, agent status changed to \"working\", new session \"Browser Navigation Page Title Check\" appeared in sidebar",
-    "Waited 10 seconds - Agent executed browser tools: Open Browser and Browser Get State calls visible, browser preview showing \"Example Domain\"",
-    "Waited additional 10 seconds - Agent completed task with response: \"The page title (h1) is \\\"Example Domain\\\".\", status changed to \"idle\", timer showed 20s total",
-    "Took final screenshot - Screenshot captured showing complete exchange with agent's correct response about the page title"
+    "Navigated to http://localhost:47891 — Page loaded successfully, showing SuperAgent interface with sidebar containing agent list",
+    "Found and clicked the \"QA-20260515-204640-8duk\" agent in the sidebar — Agent opened successfully, displaying the chat interface with message input box",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into the input box — Message text appeared in the textbox",
+    "Clicked the Send message button — Message was sent and agent began processing with \"working\" status",
+    "Waited up to 3 minutes for a response mentioning \"Example Domain\" — Response arrived in approximately 13 seconds showing tool execution chain (ToolSearch, Open Browser, Browser Get State, Close Browser)",
+    "Verified the response contains \"Example Domain\" — Response clearly states: \"The page title is \"Example Domain\".\" confirming successful browser navigation and title retrieval"
   ],
   "bugs": [],
-  "durationMs": 87901,
-  "sessionId": "646a9da3-d7f3-4a8e-a481-98e976572938",
+  "durationMs": 89857,
+  "sessionId": "52ce398a-9ff8-4892-9832-208aea36c18a",
   "cost": {
-    "inputTokens": 315,
-    "outputTokens": 10683,
-    "cacheCreationTokens": 130545,
-    "cacheReadTokens": 1126437,
+    "inputTokens": 288,
+    "outputTokens": 8707,
+    "cacheCreationTokens": 49986,
+    "cacheReadTokens": 1065554,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.329555
+    "totalCostUsd": 0.212861
   }
 }

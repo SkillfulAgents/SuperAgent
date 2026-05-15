@@ -1,25 +1,21 @@
-Perfect! The test has completed successfully. I can see the final conversation:
-- User message: "Hello! What is 2+2?" (shown in the top right)
-- Agent response: "4" (displayed prominently in the center)
-- Processing time: "Worked for 1s" (shown below the response)
-- Agent status: "idle" (shown in the top right status indicator)
+Perfect! All steps have been completed successfully. The screenshot clearly shows the conversation with the agent response containing "4".
 
-All test steps have been executed successfully with no issues found.
-
----
+## Final Report
 
 [TEST_PASS]
 
-[REASON] Agent successfully responded to math question with correct answer "4" within 1 second
+[REASON] Successfully sent a math question to the agent and received the correct response mentioning "4"
 
-[STEP] Navigated to http://localhost:47891 — App loaded successfully showing home page with agent list
+[STEP] Navigated to http://localhost:47891 — Page loaded successfully with sidebar displaying three agents including "QA-20260515-204639-ztn4"
 
-[STEP] Clicked on "QA-20260513-030813-0jdt" agent in the main content area — Agent page opened displaying the selected agent
+[STEP] Clicked on agent "QA-20260515-204639-ztn4" in the sidebar — Agent page opened, displaying agent details and message composer
 
-[STEP] Verified agent status is "running" or "idle" — Agent status confirmed as "idle" in the top right status indicator
+[STEP] Verified agent status is "running" or "idle" — Status showed "idle" which is an acceptable state for the test
 
-[STEP] Sent message "Hello! What is 2+2?" — Message was successfully entered in the input field and sent by clicking the send button
+[STEP] Typed message "Hello! What is 2+2?" in the message input field — Message successfully entered in the textarea
 
-[STEP] Waited for response — Agent responded within 1 second (well under the 3-minute timeout)
+[STEP] Clicked "Send message" button — Message sent successfully, session "Basic Math Question Session" was created, and agent status changed to "working"
 
-[STEP] Verified response mentions "4" and took screenshot — Response clearly shows "4" as the answer with "Worked for 1s" processing time indicator visible
+[STEP] Waited for agent response — Agent responded within approximately 1 second with the number "4"
+
+[STEP] Verified response mentions "4" and took screenshot — Response clearly displays "4" as the answer, with status showing "Worked for 1s", confirming the agent successfully processed the math question
