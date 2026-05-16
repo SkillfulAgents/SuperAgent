@@ -289,6 +289,30 @@ describe('loadSettings', () => {
       expect(result.agentLimits).toEqual(limits)
     })
 
+    it('preserves app.autoDeleteInactiveDays', () => {
+      mockSettingsFile(JSON.stringify({ app: { autoDeleteInactiveDays: 30 } }))
+
+      const result = loadSettings()
+
+      expect(result.app?.autoDeleteInactiveDays).toBe(30)
+    })
+
+    it('preserves app.autoDeleteInactiveDays = 0 (disabled)', () => {
+      mockSettingsFile(JSON.stringify({ app: { autoDeleteInactiveDays: 0 } }))
+
+      const result = loadSettings()
+
+      expect(result.app?.autoDeleteInactiveDays).toBe(0)
+    })
+
+    it('leaves autoDeleteInactiveDays undefined when not set', () => {
+      mockSettingsFile(JSON.stringify({}))
+
+      const result = loadSettings()
+
+      expect(result.app?.autoDeleteInactiveDays).toBeUndefined()
+    })
+
     it('preserves customEnvVars as-is', () => {
       const envVars = { MY_VAR: 'hello', ANOTHER: 'world' }
       mockSettingsFile(JSON.stringify({ customEnvVars: envVars }))

@@ -106,6 +106,7 @@ import { resolveTargetApp } from '@shared/lib/computer-use/types'
 import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
+import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import * as fs from 'fs'
 import { Readable } from 'stream'
 import pLimit from 'p-limit'
@@ -146,9 +147,10 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
   return Promise.all(
     agents.map((agent) => limit(async () => {
       // Only FS operations remain per-agent (parallelized)
-      const [sessionSummary, artifacts] = await Promise.all([
+      const [sessionSummary, artifacts, agentPrefs] = await Promise.all([
         getSessionSummary(agent.slug),
         listArtifactsFromFilesystem(agent.slug),
+        readAgentPreferences(agent.slug),
       ])
 
       const unreadSessionIds = unreadByAgent.get(agent.slug) ?? new Set<string>()
@@ -220,6 +222,7 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
           name: a.name || a.slug,
           ...(a.hasScreenshot ? { hasScreenshot: true } : {}),
         })),
+        autoDeleteInactiveDays: agentPrefs.autoDeleteInactiveDays,
       }
     }))
   )
@@ -732,6 +735,55 @@ agents.delete('/:id', AgentAdmin(), async (c) => {
   } catch (error) {
     console.error('Failed to delete agent:', error)
     return c.json({ error: 'Failed to delete agent' }, 500)
+  }
+})
+
+// ============================================================
+// Agent Preferences endpoints
+// ============================================================
+
+// GET /api/agents/:id/preferences - Get agent preferences
+agents.get('/:id/preferences', AgentRead(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    if (!(await agentExists(slug))) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+    const prefs = await readAgentPreferences(slug)
+    return c.json(prefs)
+  } catch (error) {
+    console.error('Failed to get agent preferences:', error)
+    return c.json({ error: 'Failed to get agent preferences' }, 500)
+  }
+})
+
+// PUT /api/agents/:id/preferences - Update agent preferences
+agents.put('/:id/preferences', AgentAdmin(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    if (!(await agentExists(slug))) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+
+    const body = await c.req.json()
+
+    if ('autoDeleteInactiveDays' in body) {
+      const val = body.autoDeleteInactiveDays
+      if (val !== null && val !== undefined) {
+        if (typeof val !== 'number' || !Number.isInteger(val) || val <= 0) {
+          return c.json(
+            { error: 'autoDeleteInactiveDays must be a positive integer or null' },
+            400
+          )
+        }
+      }
+    }
+
+    const merged = await updateAgentPreferences(slug, body)
+    return c.json(merged)
+  } catch (error) {
+    console.error('Failed to update agent preferences:', error)
+    return c.json({ error: 'Failed to update agent preferences' }, 500)
   }
 })
 

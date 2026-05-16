@@ -70,6 +70,7 @@ export interface AppPreferences {
   showMenuBarIcon?: boolean
   notifications?: NotificationSettings
   autoSleepTimeoutMinutes?: number
+  autoDeleteInactiveDays?: number
   setupCompleted?: boolean
   /** @deprecated Use hostBrowserProvider instead */
   useHostBrowser?: boolean

@@ -12,11 +12,14 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@renderer/components/ui/alert-dialog'
-import { useFactoryReset } from '@renderer/hooks/use-settings'
+import { useSettings, useUpdateSettings, useFactoryReset } from '@renderer/hooks/use-settings'
 import { RotateCcw, Bug } from 'lucide-react'
 import { DebugTab } from './debug-tab'
+import { AutoDeleteSelect } from './auto-delete-select'
 
 export function AdminTab() {
+  const { data: settings } = useSettings()
+  const updateSettings = useUpdateSettings()
   const factoryReset = useFactoryReset()
   const [isResetting, setIsResetting] = useState(false)
   const [showDebug, setShowDebug] = useState(false)
@@ -34,6 +37,22 @@ export function AdminTab() {
 
   return (
     <div className="space-y-6">
+      {/* Session Auto-Delete */}
+      <div className="space-y-2">
+        <div className="space-y-0.5">
+          <Label>Session Auto-Delete</Label>
+          <p className="text-xs text-muted-foreground">
+            Automatically delete sessions inactive for this duration. Starred sessions are preserved.
+          </p>
+        </div>
+        <AutoDeleteSelect
+          value={settings?.app?.autoDeleteInactiveDays}
+          onChange={(days) => {
+            updateSettings.mutate({ app: { autoDeleteInactiveDays: days } })
+          }}
+        />
+      </div>
+
       {/* Danger Zone */}
       <div className="space-y-4">
         <h3 className="text-sm font-medium text-destructive">Danger Zone</h3>

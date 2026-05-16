@@ -69,6 +69,7 @@ const TEMPLATE_EXCLUDE = new Set([
   '.superagent-sessions.json',
   '.skillset-agent-metadata.json',
   'bookmarks.json',
+  'agent-preferences.json',
 ])
 
 /** File extensions excluded from templates at any level */
