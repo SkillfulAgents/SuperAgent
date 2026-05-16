@@ -332,7 +332,7 @@ describe('loadSettings', () => {
       expect(result.apiKeys).toBeUndefined()
       expect(result.agentLimits).toBeUndefined()
       expect(result.customEnvVars).toBeUndefined()
-      expect(result.skillsets).toBeUndefined()
+      expect(result.skillsets).toEqual(DEFAULT_SETTINGS.skillsets)
     })
   })
 

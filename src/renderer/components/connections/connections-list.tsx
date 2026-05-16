@@ -3,10 +3,14 @@ import { flushSync } from 'react-dom'
 import { Switch } from '@renderer/components/ui/switch'
 import { Button } from '@renderer/components/ui/button'
 import { Loader2, Plus } from 'lucide-react'
-import { IntegrationDirectoryDialog } from '@renderer/components/connections/integration-directory-dialog'
+import { IntegrationDirectoryDialog, type NewApiConnection, type NewMcpConnection } from '@renderer/components/connections/integration-directory-dialog'
 import { IntegrationList } from '@renderer/components/connections/integration-row'
 import { IntegrationRowActions } from '@renderer/components/connections/integration-row-actions'
 import { ConnectionRow } from '@renderer/components/connections/connection-row'
+import { ScopePolicyEditor } from '@renderer/components/settings/scope-policy-editor'
+import { ToolPolicyEditor } from '@renderer/components/settings/tool-policy-editor'
+import { ConnectionSuccessHeader } from '@renderer/components/connections/connection-success-header'
+import { getProvider } from '@shared/lib/composio/providers'
 import {
   useConnectedAccounts,
   useAgentConnectedAccounts,
@@ -36,6 +40,10 @@ export function ConnectionsList({ agentSlug }: ConnectionsListProps) {
 
 export function NewIntegrationButton() {
   const [open, setOpen] = useState(false)
+  const [newApi, setNewApi] = useState<NewApiConnection | null>(null)
+  const [newMcp, setNewMcp] = useState<NewMcpConnection | null>(null)
+
+  const provider = newApi ? getProvider(newApi.toolkit) : null
 
   return (
     <>
@@ -52,7 +60,32 @@ export function NewIntegrationButton() {
         open={open}
         onOpenChange={setOpen}
         initialTab="apis"
+        onApiConnected={setNewApi}
+        onMcpConnected={setNewMcp}
       />
+      {newApi && (
+        <ScopePolicyEditor
+          accountId={newApi.accountId}
+          toolkit={newApi.toolkit}
+          open
+          onOpenChange={(isOpen) => { if (!isOpen) setNewApi(null) }}
+          header={
+            <ConnectionSuccessHeader
+              toolkit={newApi.toolkit}
+              displayName={provider?.displayName || newApi.toolkit}
+            />
+          }
+        />
+      )}
+      {newMcp && (
+        <ToolPolicyEditor
+          mcpId={newMcp.mcpId}
+          mcpName={newMcp.name}
+          tools={newMcp.tools}
+          open
+          onOpenChange={(isOpen) => { if (!isOpen) setNewMcp(null) }}
+        />
+      )}
     </>
   )
 }

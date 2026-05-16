@@ -9,7 +9,7 @@
 
 import { z } from 'zod'
 
-export const SkillProviderSchema = z.enum(['github', 'platform'])
+export const SkillProviderSchema = z.enum(['github', 'platform', 'public'])
 
 export const SkillsetProviderDataSchema = z.record(z.string(), z.unknown())
 

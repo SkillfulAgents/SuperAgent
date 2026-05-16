@@ -273,10 +273,11 @@ export interface ApiSkillsetConfig {
   skillCount: number
   agentCount: number
   addedAt: string
-  provider?: 'github' | 'platform'
+  provider?: 'github' | 'platform' | 'public'
   badgeLabel?: string
   showUrl: boolean
-  publishMode: 'pull_request' | 'hosted_submit'
+  publishMode: 'pull_request' | 'hosted_submit' | 'none'
+  error?: string
 }
 
 // ============================================================================

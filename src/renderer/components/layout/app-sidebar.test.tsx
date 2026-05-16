@@ -22,6 +22,7 @@ vi.mock('@renderer/lib/api', () => ({
 const mockUseAgents = vi.fn()
 vi.mock('@renderer/hooks/use-agents', () => ({
   useAgents: () => mockUseAgents(),
+  useDeleteAgent: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }))
 
 const mockCreateUntitledAgent = vi.fn()
@@ -35,6 +36,7 @@ vi.mock('@renderer/hooks/use-create-untitled-agent', () => ({
 const mockUseSessions = vi.fn()
 vi.mock('@renderer/hooks/use-sessions', () => ({
   useSessions: (slug: string | null) => mockUseSessions(slug),
+  useCreateSession: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }))
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
@@ -127,6 +129,11 @@ const mockDialogContext = {
   settingsTab: undefined,
   openWizard: vi.fn(),
 }
+vi.mock('@renderer/context/onboarding-context', () => ({
+  useOnboarding: () => ({ isOnboarding: false, setOnboarding: vi.fn() }),
+  OnboardingProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}))
+
 vi.mock('@renderer/context/dialog-context', () => ({
   useDialogs: () => mockDialogContext,
   DialogProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,

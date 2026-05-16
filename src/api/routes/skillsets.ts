@@ -11,10 +11,24 @@ import {
   getSkillsetIndex,
   removeSkillsetCache,
   ensureSkillsetCached,
+  isGitAvailable,
 } from '@shared/lib/services/skillset-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import type { SkillsetConfig, SkillProvider } from '@shared/lib/types/skillset'
 import type { ApiSkillsetConfig } from '@shared/lib/types/api'
+
+async function resolveProvider(url: string, explicit?: SkillProvider): Promise<SkillProvider | undefined> {
+  if (explicit) return explicit
+  try {
+    const hostname = new URL(url).hostname
+    if (hostname === 'github.com' && !(await isGitAvailable())) {
+      return 'public'
+    }
+  } catch {
+    // invalid URL — let downstream validation handle it
+  }
+  return undefined
+}
 
 function toSkillsetRef(config: Pick<SkillsetConfig, 'id' | 'url' | 'name' | 'provider' | 'providerData'>) {
   const provider = getSkillsetProvider(config.provider)
@@ -31,7 +45,7 @@ const skillsets = new Hono()
 
 skillsets.use('*', Authenticated())
 
-function configToApiResponse(config: SkillsetConfig, skillCount: number, agentCount: number = 0): ApiSkillsetConfig {
+function configToApiResponse(config: SkillsetConfig, skillCount: number, agentCount: number = 0, error?: string): ApiSkillsetConfig {
   const provider = getSkillsetProvider(config.provider)
   const display = provider.getDisplayInfo()
   return {
@@ -46,6 +60,7 @@ function configToApiResponse(config: SkillsetConfig, skillCount: number, agentCo
     badgeLabel: display.badgeLabel,
     showUrl: display.showUrl,
     publishMode: provider.publishMode,
+    error,
   }
 }
 
@@ -56,8 +71,17 @@ skillsets.get('/', async (c) => {
     const result: ApiSkillsetConfig[] = []
 
     for (const config of configs) {
-      const index = await getSkillsetIndex(toSkillsetRef(config))
-      result.push(configToApiResponse(config, index?.skills.length ?? 0, index?.agents?.length ?? 0))
+      let index = await getSkillsetIndex(toSkillsetRef(config))
+      let error: string | undefined
+      if (!index) {
+        try {
+          await ensureSkillsetCached(toSkillsetRef(config))
+          index = await getSkillsetIndex(toSkillsetRef(config))
+        } catch (err) {
+          error = err instanceof Error ? err.message : 'Failed to fetch skillset'
+        }
+      }
+      result.push(configToApiResponse(config, index?.skills.length ?? 0, index?.agents?.length ?? 0, error))
     }
 
     return c.json(result)
@@ -70,11 +94,12 @@ skillsets.get('/', async (c) => {
 // POST /api/skillsets/validate - Validate a skillset URL
 skillsets.post('/validate', IsAdmin(), async (c) => {
   try {
-    const { url, provider } = await c.req.json() as { url?: string; provider?: SkillProvider }
+    const { url, provider: explicitProvider } = await c.req.json() as { url?: string; provider?: SkillProvider }
     if (!url || typeof url !== 'string') {
       return c.json({ valid: false, error: 'URL is required' }, 400)
     }
 
+    const provider = await resolveProvider(url.trim(), explicitProvider)
     const index = await validateSkillsetUrl(url.trim(), provider)
     return c.json({ valid: true, index })
   } catch (error) {
@@ -86,12 +111,13 @@ skillsets.post('/validate', IsAdmin(), async (c) => {
 // POST /api/skillsets - Add a skillset (validates first)
 skillsets.post('/', IsAdmin(), async (c) => {
   try {
-    const { url, provider } = await c.req.json() as { url?: string; provider?: SkillProvider }
+    const { url, provider: explicitProvider } = await c.req.json() as { url?: string; provider?: SkillProvider }
     if (!url || typeof url !== 'string') {
       return c.json({ error: 'URL is required' }, 400)
     }
 
     const trimmedUrl = url.trim()
+    const provider = await resolveProvider(trimmedUrl, explicitProvider)
     const skillsetId = urlToSkillsetId(trimmedUrl)
 
     // Check for duplicates

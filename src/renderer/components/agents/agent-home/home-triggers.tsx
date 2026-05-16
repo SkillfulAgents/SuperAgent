@@ -8,6 +8,7 @@ import {
   Info,
   Trash2,
   Pause,
+  ChevronRight,
 } from 'lucide-react'
 import {
   AlertDialog,
@@ -20,6 +21,7 @@ import {
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
 import {
+  useScheduledTasks,
   useRunScheduledTaskNow,
   useCancelScheduledTask,
   usePauseScheduledTask,
@@ -55,6 +57,9 @@ export function HomeTriggers({
   onSelectWebhook,
 }: HomeTriggersProps) {
   const { data: webhookTriggersData } = useWebhookTriggers(agentSlug, 'active')
+  const { data: cancelledWebhooksData } = useWebhookTriggers(agentSlug, 'cancelled')
+  const { data: cancelledTasksData } = useScheduledTasks(agentSlug, 'cancelled')
+  const [showDeleted, setShowDeleted] = useState(false)
 
   const items = useMemo<TriggerItem[]>(() => {
     const cronItems: TriggerItem[] = scheduledTasks.map((task) => ({
@@ -70,9 +75,25 @@ export function HomeTriggers({
     return [...cronItems, ...webhookItems].sort((a, b) => b.createdAtMs - a.createdAtMs)
   }, [scheduledTasks, webhookTriggersData])
 
+  const deletedItems = useMemo<TriggerItem[]>(() => {
+    const cronItems: TriggerItem[] = (Array.isArray(cancelledTasksData) ? cancelledTasksData : []).map((task) => ({
+      kind: 'cron',
+      createdAtMs: new Date(task.createdAt).getTime(),
+      task,
+    }))
+    const webhookItems: TriggerItem[] = (Array.isArray(cancelledWebhooksData) ? cancelledWebhooksData : []).map((trigger) => ({
+      kind: 'webhook',
+      createdAtMs: new Date(trigger.createdAt).getTime(),
+      trigger,
+    }))
+    return [...cronItems, ...webhookItems].sort((a, b) => b.createdAtMs - a.createdAtMs)
+  }, [cancelledTasksData, cancelledWebhooksData])
+
+  const hasDeleted = deletedItems.length > 0
+
   return (
     <HomeCollapsible title="Triggers">
-      {items.length > 0 ? (
+      {items.length > 0 || hasDeleted ? (
         <div className="mt-2 divide-y divide-border/50">
           {items.map((item) =>
             item.kind === 'cron' ? (
@@ -90,6 +111,37 @@ export function HomeTriggers({
                 onSelect={() => onSelectWebhook(item.trigger.id)}
               />
             ),
+          )}
+          {hasDeleted && (
+            <>
+              <button
+                type="button"
+                className="flex w-full items-center gap-1 py-2 px-4 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+                onClick={() => setShowDeleted((v) => !v)}
+              >
+                <span>{showDeleted ? 'Hide deleted' : `Show ${deletedItems.length} deleted`}</span>
+                <ChevronRight className={`h-3 w-3 transition-transform ${showDeleted ? 'rotate-90' : ''}`} />
+              </button>
+              {showDeleted && deletedItems.map((item) =>
+                item.kind === 'cron' ? (
+                  <div key={`c-del-${item.task.id}`} className="opacity-50">
+                    <CronRow
+                      task={item.task}
+                      agentSlug={agentSlug}
+                      onSelect={() => onSelectTask(item.task.id)}
+                    />
+                  </div>
+                ) : (
+                  <div key={`w-del-${item.trigger.id}`} className="opacity-50">
+                    <WebhookRow
+                      trigger={item.trigger}
+                      agentSlug={agentSlug}
+                      onSelect={() => onSelectWebhook(item.trigger.id)}
+                    />
+                  </div>
+                ),
+              )}
+            </>
           )}
         </div>
       ) : (

@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { BaseLlmProvider, type ModelOption, type ModelPurpose } from './base-llm-provider'
+import { attribution } from '@shared/lib/platform-attribution'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import type { ApiKeyStatus } from '../config/settings'
@@ -57,10 +58,14 @@ export class PlatformLlmProvider extends BaseLlmProvider {
   getContainerEnvVars(): Record<string, string | undefined> {
     const proxyUrl = getPlatformProxyBaseUrl()
     const containerUrl = proxyUrl.replace('://localhost', '://host.docker.internal')
+
+    const auth = attribution.current()
+    const authToken = auth?.bearerToken() ?? this.getEffectiveApiKey()
+
     return {
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_BASE_URL: containerUrl,
-      ANTHROPIC_AUTH_TOKEN: this.getEffectiveApiKey(),
+      ANTHROPIC_AUTH_TOKEN: authToken,
     }
   }
 

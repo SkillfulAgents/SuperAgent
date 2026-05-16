@@ -31,7 +31,7 @@ export interface SkillsetIndex {
 // ============================================================================
 
 /** Skill provider type */
-export type SkillProvider = 'github' | 'platform'
+export type SkillProvider = 'github' | 'platform' | 'public'
 
 /** Provider-specific serialized data owned by the concrete provider */
 export type SkillsetProviderData = Record<string, unknown>

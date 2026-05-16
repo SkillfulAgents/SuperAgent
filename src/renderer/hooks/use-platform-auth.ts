@@ -1,22 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 
 import { apiFetch } from '@renderer/lib/api'
 import { useUpdateSettings } from '@renderer/hooks/use-settings'
 import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
+import type {
+  PlatformAuthSource,
+  PlatformAuthStatus as SharedPlatformAuthStatus,
+} from '@shared/lib/services/platform-auth-service'
 
 export const PLATFORM_AUTH_CHOICE_STORAGE_KEY = 'superagent-auth-choice'
 
-export interface PlatformAuthStatus {
-  connected: boolean
-  tokenPreview: string | null
-  email: string | null
-  label: string | null
-  orgId: string | null
-  orgName: string | null
-  role: string | null
-  createdAt: string | null
-  updatedAt: string | null
+export type { PlatformAuthSource }
+
+export interface PlatformAuthStatus extends SharedPlatformAuthStatus {
   platformBaseUrl: string
 }
 
@@ -26,8 +23,21 @@ export interface PlatformAuthCallbackParams {
   error?: string | null
 }
 
+// Run env-managed auto-sync at most once per process.
+let envSkillsetSyncFired = false
+
+function triggerPlatformSkillsetSync(queryClient: QueryClient): void {
+  void apiFetch('/api/skillsets/sync-remote', {
+    method: 'POST',
+    body: JSON.stringify({ provider: 'platform' }),
+  })
+    .then(() => queryClient.invalidateQueries({ queryKey: ['skillsets'] }))
+    .catch(() => {})
+}
+
 export function usePlatformAuthStatus() {
-  return useQuery<PlatformAuthStatus>({
+  const queryClient = useQueryClient()
+  const query = useQuery<PlatformAuthStatus>({
     queryKey: ['platform-auth'],
     queryFn: async () => {
       const res = await apiFetch('/api/platform-auth')
@@ -38,6 +48,17 @@ export function usePlatformAuthStatus() {
       return res.json()
     },
   })
+
+  // AUTH_MODE skips OAuth complete; mirror auto-sync once on first connect.
+  useEffect(() => {
+    if (envSkillsetSyncFired) return
+    const status = query.data
+    if (!status?.connected || status.source !== 'env') return
+    envSkillsetSyncFired = true
+    triggerPlatformSkillsetSync(queryClient)
+  }, [query.data, queryClient])
+
+  return query
 }
 
 function useInitiatePlatformLogin() {
@@ -136,13 +157,7 @@ export function useSavePlatformAccessKey() {
       queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
       await applyPlatformDefaults().catch(() => {})
 
-      // Auto-sync provider-owned skillsets after platform auth is ready.
-      void apiFetch('/api/skillsets/sync-remote', {
-        method: 'POST',
-        body: JSON.stringify({ provider: 'platform' }),
-      })
-        .then(() => queryClient.invalidateQueries({ queryKey: ['skillsets'] }))
-        .catch(() => {})
+      triggerPlatformSkillsetSync(queryClient)
     },
   })
 }
@@ -181,13 +196,7 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
         setError(err instanceof Error ? err.message : 'Failed to apply platform defaults.')
       })
 
-      // Auto-sync provider-owned skillsets after successful connection.
-      void apiFetch('/api/skillsets/sync-remote', {
-        method: 'POST',
-        body: JSON.stringify({ provider: 'platform' }),
-      })
-        .then(() => queryClient.invalidateQueries({ queryKey: ['skillsets'] }))
-        .catch(() => {})
+      triggerPlatformSkillsetSync(queryClient)
 
       onSuccessRef.current?.(params)
       return

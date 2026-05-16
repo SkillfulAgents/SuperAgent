@@ -45,7 +45,9 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
 const mockGetWebhookTriggersByComposioId = vi.fn()
 const mockMarkTriggerFired = vi.fn().mockResolvedValue(undefined)
 const mockMarkTriggerFailed = vi.fn().mockResolvedValue(undefined)
+const mockGetDistinctMemberIds = vi.fn(() => ['sub_test_member'])
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
+  getDistinctPlatformMemberIdsForActiveTriggers: () => mockGetDistinctMemberIds(),
   getWebhookTriggersByComposioId: (...args: unknown[]) => mockGetWebhookTriggersByComposioId(...args),
   markTriggerFired: (...args: unknown[]) => mockMarkTriggerFired(...args),
   markTriggerFailed: (...args: unknown[]) => mockMarkTriggerFailed(...args),
@@ -68,7 +70,7 @@ vi.mock('@shared/lib/services/agent-service', () => ({
 const mockPollAndClaimEvents = vi.fn()
 const mockAcknowledgeEvents = vi.fn().mockResolvedValue(undefined)
 vi.mock('@shared/lib/services/webhook-events-client', () => ({
-  pollAndClaimEvents: () => mockPollAndClaimEvents(),
+  pollAndClaimEvents: (...args: unknown[]) => mockPollAndClaimEvents(...args),
   acknowledgeEvents: (...args: unknown[]) => mockAcknowledgeEvents(...args),
 }))
 
@@ -88,6 +90,7 @@ describe('TriggerManager', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockCreateSession.mockResolvedValue({ id: 'session_123' })
+    mockGetDistinctMemberIds.mockReturnValue(['sub_test_member'])
   })
 
   describe('start', () => {
@@ -144,7 +147,7 @@ describe('TriggerManager', () => {
       expect(mockMarkTriggerFired).toHaveBeenCalledWith('trigger_1', 'session_123')
 
       // Verify events were acknowledged
-      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1'])
+      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1'], 'sub_test_member')
 
       triggerManager.stop()
     })
@@ -181,7 +184,7 @@ describe('TriggerManager', () => {
       expect(prompt).toContain('Event 3:')
 
       // All 3 events acknowledged
-      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1', 'whe_2', 'whe_3'])
+      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1', 'whe_2', 'whe_3'], 'sub_test_member')
 
       triggerManager.stop()
     })
@@ -199,7 +202,7 @@ describe('TriggerManager', () => {
       await triggerManager.start()
 
       expect(mockCreateSession).not.toHaveBeenCalled()
-      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_orphan'])
+      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_orphan'], 'sub_test_member')
 
       triggerManager.stop()
     })
@@ -226,7 +229,7 @@ describe('TriggerManager', () => {
       await triggerManager.start()
 
       expect(mockMarkTriggerFailed).toHaveBeenCalledWith('trigger_1', 'Agent no longer exists')
-      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1'])
+      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1'], 'sub_test_member')
       expect(mockCreateSession).not.toHaveBeenCalled()
 
       triggerManager.stop()

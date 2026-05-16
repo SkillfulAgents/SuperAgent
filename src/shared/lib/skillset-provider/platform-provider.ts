@@ -273,11 +273,12 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
 
   override buildSkillsetConfig(remote: SkillsetRemoteDescriptor): SkillsetConfig {
     const auth = getPlatformAuthStatus()
+    const trustedOrgId = auth.source === 'settings' ? auth.orgId : null
     return {
       ...super.buildSkillsetConfig(remote),
       providerData: {
         repoId: remote.repoId,
-        ...(auth.orgId ? { orgId: auth.orgId } : {}),
+        ...(trustedOrgId ? { orgId: trustedOrgId } : {}),
         ...(auth.orgName ? { orgName: auth.orgName } : {}),
       },
     }
@@ -286,10 +287,11 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
   override updateSkillsetConfig(existing: SkillsetConfig, remote: SkillsetRemoteDescriptor): boolean {
     let changed = super.updateSkillsetConfig(existing, remote)
     const auth = getPlatformAuthStatus()
+    const trustedOrgId = auth.source === 'settings' ? auth.orgId : null
     const current = this.getPlatformData(existing)
     const nextFields: PlatformProviderData = {
       repoId: remote.repoId,
-      ...(auth.orgId ? { orgId: auth.orgId } : {}),
+      ...(trustedOrgId ? { orgId: trustedOrgId } : {}),
       ...(auth.orgName ? { orgName: auth.orgName } : {}),
     }
     if (
@@ -311,10 +313,11 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
   override isConfigValid(config: SkillsetConfig): boolean {
     if (config.provider !== 'platform') return true
     const auth = getPlatformAuthStatus()
-    const currentOrgId = auth.orgId ?? null
+    const currentOrgId = auth.source === 'settings' ? auth.orgId ?? null : null
     const configOrgId = this.getPlatformData(config).orgId ?? null
     // If the user isn't signed in, no platform configs are valid.
-    if (!currentOrgId) return false
+    if (!auth.connected) return false
+    if (!currentOrgId) return true
     return configOrgId === currentOrgId
   }
 
@@ -323,9 +326,10 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
   ): boolean {
     if (meta.provider !== 'platform') return true
     const auth = getPlatformAuthStatus()
-    const currentOrgId = auth.orgId ?? null
+    const currentOrgId = auth.source === 'settings' ? auth.orgId ?? null : null
     const metaOrgId = this.getPlatformData(meta).orgId ?? null
-    if (!currentOrgId) return false
+    if (!auth.connected) return false
+    if (!currentOrgId) return true
     return metaOrgId === currentOrgId
   }
 

@@ -8,10 +8,8 @@ import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice
 import { AgentCreationAids, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
 import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
 import { TemplateInstallDialog } from '@renderer/components/agents/template-install-dialog'
-import { TemplateCard } from '@renderer/components/agents/template-card'
 import { useCreateAgent } from '@renderer/hooks/use-agents'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
-import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
 import { useSelection } from '@renderer/context/selection-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
@@ -108,9 +106,6 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
     }
   }, [composer.message])
 
-  // --- Template install flow (inline name step + required env vars) ---
-  const { data: discoverableAgents } = useDiscoverableAgents()
-  const hasTemplates = !!(discoverableAgents && discoverableAgents.length > 0)
   const [templateToInstall, setTemplateToInstall] = useState<ApiDiscoverableAgent | null>(initialTemplate ?? null)
 
   useEffect(() => {
@@ -203,40 +198,6 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
             onImportComplete={handleImportComplete}
           />
         </div>
-
-        {hasTemplates && (
-          <>
-            <div
-              {...itemProps(300, 30)}
-              className={`flex items-center gap-4 pt-2 px-6 ${itemProps(300, 30).className}`}
-            >
-              <div className="h-px flex-1 bg-border" />
-              <span className="text-xs text-muted-foreground">OR START FROM A TEMPLATE</span>
-              <div className="h-px flex-1 bg-border" />
-            </div>
-
-            <div
-              {...itemProps(360, 0)}
-              className={`space-y-4 ${itemProps(360, 0).className}`}
-            >
-              {groupBySkillset(discoverableAgents!).map(([skillsetName, agents]) => (
-                <div key={skillsetName} className="space-y-2">
-                  <p className="text-xs font-medium text-muted-foreground px-1">{skillsetName}</p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {agents.map((agent) => (
-                      <TemplateCard
-                        key={`${agent.skillsetId}::${agent.path}`}
-                        template={agent}
-                        variant="compact"
-                        onClick={() => setTemplateToInstall(agent)}
-                      />
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
       </div>
 
       <TemplateInstallDialog
@@ -246,14 +207,4 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
       />
     </div>
   )
-}
-
-function groupBySkillset(agents: ApiDiscoverableAgent[]): Array<[string, ApiDiscoverableAgent[]]> {
-  const grouped = new Map<string, ApiDiscoverableAgent[]>()
-  for (const agent of agents) {
-    const existing = grouped.get(agent.skillsetName) || []
-    existing.push(agent)
-    grouped.set(agent.skillsetName, existing)
-  }
-  return Array.from(grouped.entries())
 }

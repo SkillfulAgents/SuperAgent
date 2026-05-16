@@ -255,6 +255,15 @@ export class ChromeProvider implements HostBrowserProvider {
     const userDataDir = path.join(getDataDir(), 'host-browser-profiles', instanceId)
     fs.mkdirSync(userDataDir, { recursive: true })
 
+    // Remove stale Chrome lock files left behind by a previous crash. If the old
+    // instance is still alive we already checked and stopped it above (lines 227-235),
+    // so any remaining lock is orphaned and will cause Chrome to exit with code 0
+    // thinking another instance owns this data dir.
+    for (const lockName of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+      const lockPath = path.join(userDataDir, lockName)
+      try { fs.rmSync(lockPath, { force: true }) } catch { /* ignore */ }
+    }
+
     if (profileId) {
       const destProfileDir = path.join(userDataDir, 'Default')
       // Only copy the user's Chrome profile on first launch. Subsequent launches

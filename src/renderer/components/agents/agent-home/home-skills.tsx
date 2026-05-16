@@ -111,7 +111,7 @@ function SkillRow({ skill, agentSlug }: { skill: ApiSkillWithStatus; agentSlug: 
                 <FileCode className="h-3.5 w-3.5" />
                 View Files
               </button>
-              {skill.status.type === 'local' && skill.status.publishable !== false && (
+              {skill.status.type === 'local' && skill.status.publishable !== false && publishMode !== 'none' && (
                 <button
                   className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                   onClick={(e) => { e.stopPropagation(); setPublishOpen(true) }}
@@ -134,7 +134,7 @@ function SkillRow({ skill, agentSlug }: { skill: ApiSkillWithStatus; agentSlug: 
                   Update
                 </button>
               )}
-              {skill.status.type === 'locally_modified' && (
+              {skill.status.type === 'locally_modified' && publishMode !== 'none' && (
                 <button
                   className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                   onClick={(e) => { e.stopPropagation(); setReviewOpen(true) }}

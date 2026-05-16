@@ -130,10 +130,6 @@ vi.mock('@renderer/hooks/use-user-settings', () => ({
   useUserSettings: () => ({ data: null }),
 }))
 
-vi.mock('@renderer/hooks/use-agent-templates', () => ({
-  useDiscoverableAgents: () => ({ data: [] }),
-}))
-
 vi.mock('@renderer/hooks/use-usage', () => ({
   useUsageData: () => ({ data: undefined, refetch: vi.fn() }),
 }))
@@ -157,10 +153,6 @@ vi.mock('@renderer/hooks/use-create-untitled-agent', () => ({
     isPending: false,
   }),
   UNTITLED_AGENT_NAME: 'Untitled',
-}))
-
-vi.mock('@renderer/components/agents/template-install-dialog', () => ({
-  TemplateInstallDialog: () => null,
 }))
 
 vi.mock('@renderer/components/ui/sidebar', () => ({

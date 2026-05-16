@@ -9,6 +9,7 @@ import { containerManager } from '@shared/lib/container/container-manager'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
+import { runWithOptionalUser } from '@shared/lib/platform-attribution'
 import {
   getDueTasks,
   markTaskExecuted,
@@ -139,6 +140,11 @@ class TaskScheduler {
    * Execute a single scheduled task.
    */
   private async executeTask(task: ScheduledTask): Promise<void> {
+    // Attribute to task creator (baked into ANTHROPIC token on cold start).
+    return runWithOptionalUser(task.createdByUserId, () => this.executeTaskInner(task))
+  }
+
+  private async executeTaskInner(task: ScheduledTask): Promise<void> {
     console.log(
       `[TaskScheduler] Executing task ${task.id} for agent ${task.agentSlug}`
     )
@@ -166,6 +172,7 @@ class TaskScheduler {
       initialMessage: task.prompt,
       model: task.model || models.agentModel,
       browserModel: models.browserModel,
+      metadata: { isAutomated: true },
       ...(task.effort ? { effort: task.effort as EffortLevel } : {}),
     })
 

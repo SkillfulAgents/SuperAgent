@@ -86,3 +86,72 @@ test.describe('Proxy Review Requests', () => {
     await sessionPage.expectAssistantMessage('approved by user')
   })
 })
+
+test.describe('X-Agent Review Requests', () => {
+  let appPage: AppPage
+  let agentPage: AgentPage
+  let sessionPage: SessionPage
+  let testAgentName: string
+
+  test.beforeEach(async ({ page }, testInfo) => {
+    appPage = new AppPage(page)
+    agentPage = new AgentPage(page)
+    sessionPage = new SessionPage(page)
+
+    await appPage.goto()
+    await appPage.waitForAgentsLoaded()
+
+    testAgentName = `XAgent Review Agent ${testInfo.workerIndex}-${Date.now()}`
+    await agentPage.createAgent(testAgentName)
+  })
+
+  test('x-agent review: interrupt dismisses the review card', async ({ page }) => {
+    // "x-agent review" triggers XAgentReviewScenario
+    await sessionPage.sendMessage('x-agent review')
+
+    // Wait for the x-agent review prompt to appear
+    await sessionPage.waitForXAgentReviewRequest()
+
+    // Click the X (stop session) button on the card
+    await sessionPage.stopSessionFromRequest()
+
+    // Review prompt should disappear
+    await expect(sessionPage.getXAgentReviewRequests()).toHaveCount(0, { timeout: 10000 })
+  })
+
+  test('x-agent review: user can allow the request', async ({ page }) => {
+    await sessionPage.sendMessage('x-agent review')
+
+    await sessionPage.waitForXAgentReviewRequest()
+
+    // Verify the card shows the right text
+    const request = sessionPage.getXAgentReviewRequests().first()
+    await expect(request).toContainText('list other agents in this workspace')
+
+    // Allow the request
+    await sessionPage.allowXAgentReview()
+
+    // Review prompt should disappear
+    await expect(sessionPage.getXAgentReviewRequests()).toHaveCount(0, { timeout: 10000 })
+
+    // Session should complete with approval message
+    await sessionPage.waitForInputEnabled(15000)
+    await sessionPage.expectAssistantMessage('approved by user')
+  })
+
+  test('x-agent review: user can deny the request', async ({ page }) => {
+    await sessionPage.sendMessage('x-agent review')
+
+    await sessionPage.waitForXAgentReviewRequest()
+
+    // Deny the request
+    await sessionPage.denyXAgentReview()
+
+    // Review prompt should disappear
+    await expect(sessionPage.getXAgentReviewRequests()).toHaveCount(0, { timeout: 10000 })
+
+    // Session should complete with denial message
+    await sessionPage.waitForInputEnabled(15000)
+    await sessionPage.expectAssistantMessage('denied by user')
+  })
+})

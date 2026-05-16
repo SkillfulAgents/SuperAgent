@@ -4,9 +4,13 @@
 
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 
-/** Capitalize the first letter of a provider name (e.g. "telegram" → "Telegram"). */
+const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+  imessage: 'iMessage',
+}
+
+/** Format a provider slug for display (e.g. "telegram" → "Telegram", "imessage" → "iMessage"). */
 export function formatProviderName(provider: string): string {
-  return provider.charAt(0).toUpperCase() + provider.slice(1)
+  return PROVIDER_DISPLAY_NAMES[provider] ?? provider.charAt(0).toUpperCase() + provider.slice(1)
 }
 
 // Event types that need the desktop app (OAuth callbacks, browser input, script approval, etc.).

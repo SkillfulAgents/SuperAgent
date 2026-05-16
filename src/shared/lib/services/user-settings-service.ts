@@ -29,6 +29,7 @@ export const userSettingsSchema = z.object({
   agentOrder: z.array(z.string()).optional(),
   defaultApiPolicy: z.enum(['allow', 'review', 'block']).default('review'),
   defaultMcpPolicy: z.enum(['allow', 'review', 'block']).default('review'),
+  keepAwakeEnabled: z.boolean().default(false),
   onboardingProgress: z.object({
     path: z.enum(['manual', 'platform']),
     stepId: z.string(),

@@ -29,6 +29,7 @@ import { sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { user as userTable } from '@shared/lib/db/schema'
 import { authEnforcementMiddleware, getAuthSettings } from './middleware/auth-enforcement'
+import { getPublicAuthProviders } from '@shared/lib/auth/provider-config'
 import { LocalModeAuth } from './middleware/local-mode-auth'
 
 const app = new Hono()
@@ -113,6 +114,7 @@ if (isAuthMode()) {
 if (isAuthMode()) {
   app.get('/api/auth-config', (c) => {
     const authSettings = getAuthSettings()
+    const publicProviders = getPublicAuthProviders()
 
     // Check if any users exist (first-user signup bypass)
     let hasUsers = true
@@ -127,6 +129,7 @@ if (isAuthMode()) {
       signupMode: authSettings.signupMode,
       allowLocalAuth: authSettings.allowLocalAuth,
       allowSocialAuth: authSettings.allowSocialAuth,
+      providers: publicProviders,
       passwordMinLength: authSettings.passwordMinLength,
       passwordRequireComplexity: authSettings.passwordRequireComplexity,
       requireAdminApproval: authSettings.requireAdminApproval,

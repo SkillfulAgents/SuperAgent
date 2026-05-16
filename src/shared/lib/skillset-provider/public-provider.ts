@@ -1,0 +1,162 @@
+import path from 'path'
+import fs from 'fs'
+import AdmZip from 'adm-zip'
+import { ensureDirectory } from '@shared/lib/utils/file-storage'
+import { validateSafeCloneUrl } from '@shared/lib/utils/url-safety'
+import { withRetry } from '@shared/lib/utils/retry'
+import {
+  BaseSkillsetProvider,
+  type SkillsetPublishInput,
+  type SkillsetPublishResult,
+  type SkillsetProviderRef,
+  type SkillsetDisplayInfo,
+} from './base-skillset-provider'
+
+const CACHE_META_FILENAME = '.skillset-cache-meta.json'
+
+export class PublicSkillsetProvider extends BaseSkillsetProvider {
+  readonly id = 'public' as const
+  readonly name = 'Public'
+  readonly publishMode = 'none' as const
+  readonly supportsSuggestions = false
+  readonly usesGitCache = false
+
+  override getDisplayInfo(): SkillsetDisplayInfo {
+    return { badgeLabel: 'Public', showUrl: true }
+  }
+
+  override async isCacheReady(cacheDir: string): Promise<boolean> {
+    try {
+      await fs.promises.access(path.join(cacheDir, CACHE_META_FILENAME))
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  override async populateCache(cacheDir: string, ref: SkillsetProviderRef): Promise<void> {
+    if (!ref.skillsetUrl) {
+      throw new Error('Public skillset provider requires a URL')
+    }
+    const zipballUrl = buildZipballUrl(ref.skillsetUrl)
+    await downloadAndExtract(zipballUrl, cacheDir, ref.skillsetUrl)
+  }
+
+  override async refreshCache(cacheDir: string, ref: SkillsetProviderRef): Promise<void> {
+    const tmpDir = cacheDir + '.tmp-' + Date.now()
+    try {
+      await this.populateCache(tmpDir, ref)
+      await fs.promises.rm(cacheDir, { recursive: true, force: true })
+      await fs.promises.rename(tmpDir, cacheDir)
+    } catch (err) {
+      await fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+      throw err
+    }
+  }
+
+  override async publishUpdate(_input: SkillsetPublishInput): Promise<SkillsetPublishResult> {
+    throw new Error('Public skillsets are read-only. Publishing is not supported.')
+  }
+}
+
+function buildZipballUrl(repoUrl: string): string {
+  let parsed: URL
+  try {
+    parsed = new URL(repoUrl)
+  } catch {
+    throw new Error(`Invalid URL: ${repoUrl}`)
+  }
+  if (parsed.hostname !== 'github.com') {
+    throw new Error(`Only github.com URLs are supported for public skillsets: ${repoUrl}`)
+  }
+  const parts = parsed.pathname.replace(/^\//, '').replace(/\.git$/, '').split('/')
+  if (parts.length < 2) {
+    throw new Error('Invalid GitHub URL: expected https://github.com/{owner}/{repo}')
+  }
+  const [owner, repo] = parts
+  return `https://api.github.com/repos/${owner}/${repo}/zipball`
+}
+
+async function downloadAndExtract(
+  zipballUrl: string,
+  destDir: string,
+  originalUrl: string,
+): Promise<void> {
+  validateSafeCloneUrl(zipballUrl, {
+    allowedHostPrefixes: ['https://api.github.com'],
+  })
+
+  const zipBuffer = await withRetry(async () => {
+    const response = await fetch(zipballUrl, {
+      headers: {
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': 'Superagent-App',
+      },
+      redirect: 'follow',
+    })
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error(
+          `Repository not found: ${originalUrl}\n` +
+          'Make sure the repository exists and is public.',
+        )
+      }
+      if (response.status === 403) {
+        throw new Error(
+          'GitHub API rate limit exceeded. Please try again later.',
+        )
+      }
+      throw new Error(`Failed to download skillset: ${response.status} ${response.statusText}`)
+    }
+    return Buffer.from(await response.arrayBuffer())
+  }, 3, 1000)
+
+  const zip = new AdmZip(zipBuffer)
+  const entries = zip.getEntries()
+  const stripPrefix = detectZipPrefix(entries)
+
+  await ensureDirectory(destDir)
+
+  for (const entry of entries) {
+    if (entry.isDirectory) continue
+
+    const entryName = stripPrefix
+      ? entry.entryName.slice(stripPrefix.length)
+      : entry.entryName
+
+    if (!entryName) continue
+    if (entryName.startsWith('__MACOSX/')) continue
+
+    const destPath = path.resolve(destDir, entryName)
+    if (!destPath.startsWith(path.resolve(destDir) + path.sep)) continue
+
+    await ensureDirectory(path.dirname(destPath))
+    await fs.promises.writeFile(destPath, entry.getData())
+  }
+
+  await fs.promises.writeFile(
+    path.join(destDir, CACHE_META_FILENAME),
+    JSON.stringify({
+      provider: 'public',
+      cachedAt: new Date().toISOString(),
+      sourceUrl: originalUrl,
+    }, null, 2),
+    'utf-8',
+  )
+}
+
+function detectZipPrefix(entries: AdmZip.IZipEntry[]): string {
+  const fileEntries = entries.filter(
+    (e) => !e.isDirectory && !e.entryName.startsWith('__MACOSX/'),
+  )
+  if (fileEntries.length === 0) return ''
+
+  const firstSegments = new Set<string>()
+  for (const entry of fileEntries) {
+    const slashIdx = entry.entryName.indexOf('/')
+    if (slashIdx === -1) return ''
+    firstSegments.add(entry.entryName.substring(0, slashIdx + 1))
+  }
+  return firstSegments.size === 1 ? firstSegments.values().next().value! : ''
+}
+

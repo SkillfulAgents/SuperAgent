@@ -7,6 +7,10 @@ import { Label } from '@renderer/components/ui/label'
 import { usePlatformConnect } from '@renderer/hooks/use-platform-auth'
 import { ManualAccessKeyInput } from '@renderer/components/settings/manual-access-key-input'
 
+interface PlatformTabProps {
+  readOnly?: boolean
+}
+
 function formatTimestamp(value: string | null): string {
   if (!value) return '—'
   try {
@@ -16,7 +20,7 @@ function formatTimestamp(value: string | null): string {
   }
 }
 
-export function PlatformTab() {
+export function PlatformTab({ readOnly = false }: PlatformTabProps) {
   const {
     handleConnect,
     isLaunching,
@@ -87,6 +91,13 @@ export function PlatformTab() {
       </div>
 
       {/* Feedback */}
+      {readOnly && (
+        <Alert>
+          <AlertDescription>
+            Platform access is managed by this deployment. Connection changes must be made by updating the deployment environment bundle.
+          </AlertDescription>
+        </Alert>
+      )}
       {message && (
         <Alert>
           <AlertDescription>{message}</AlertDescription>
@@ -103,7 +114,7 @@ export function PlatformTab() {
 
       {/* Actions */}
       <div className="flex flex-wrap gap-2 pt-2">
-        <Button size="sm" onClick={handleConnect} disabled={isLaunching}>
+        <Button size="sm" onClick={handleConnect} disabled={readOnly || isLaunching}>
           {isLaunching ? (
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
           ) : isConnected ? (
@@ -120,7 +131,11 @@ export function PlatformTab() {
         </Button>
       </div>
 
-      <ManualAccessKeyInput className="pt-1" />
+      <ManualAccessKeyInput
+        className="pt-1"
+        disabled={readOnly}
+        disabledReason="Manual access keys are disabled while Platform auth is managed by AUTH_MODE."
+      />
     </div>
   )
 }

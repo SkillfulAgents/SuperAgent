@@ -69,6 +69,11 @@ vi.mock('drizzle-orm', () => ({
   and: (...args: unknown[]) => args,
 }))
 
+vi.mock('@shared/lib/platform-attribution', () => ({
+  attribution: { fromResourceCreator: () => null },
+  runWithAttribution: <T,>(_auth: unknown, fn: () => T): T => fn(),
+}))
+
 // Mock policy enforcement
 const mockMatchScopes = vi.fn()
 const mockResolveApiPolicy = vi.fn()

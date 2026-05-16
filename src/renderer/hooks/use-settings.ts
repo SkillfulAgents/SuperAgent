@@ -57,6 +57,7 @@ export interface UpdateSettingsParams {
   shareAnalytics?: boolean
   analyticsTargets?: AnalyticsTarget[]
   shareErrorReports?: boolean
+  enableToolSearch?: boolean
 }
 
 export interface UpdateSettingsError {

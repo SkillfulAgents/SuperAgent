@@ -96,6 +96,7 @@ import {
   collectAgentRequiredEnvVars,
 } from '@shared/lib/services/agent-template-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
+import type { SkillsetConfig } from '@shared/lib/types/skillset'
 import { withRetry } from '@shared/lib/utils/retry'
 import { transformMessages, type TransformedMessage, type TransformedItem } from '@shared/lib/utils/message-transform'
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
@@ -115,7 +116,7 @@ function getConfiguredSkillsets() {
   return getSettings().skillsets || []
 }
 
-function toSkillsetRef(config: { id: string; url: string; name: string; provider?: 'github' | 'platform'; providerData?: Record<string, unknown> }) {
+function toSkillsetRef(config: Pick<SkillsetConfig, 'id' | 'url' | 'name' | 'provider' | 'providerData'>) {
   const provider = getSkillsetProvider(config.provider)
   return {
     skillsetId: config.id,
@@ -1169,6 +1170,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     const initialMetadata: Parameters<typeof updateSessionMetadata>[2] = {}
     if (runtimeOptions.effort) initialMetadata.effort = runtimeOptions.effort
     if (runtimeOptions.model) initialMetadata.model = runtimeOptions.model
+    if (isAuthMode()) initialMetadata.createdByUserId = getCurrentUserId(c)
     if (Object.keys(initialMetadata).length > 0) {
       updateSessionMetadata(slug, sessionId, initialMetadata).catch(console.error)
     }
@@ -1637,6 +1639,7 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     if (info.status !== 'running') {
       console.log(`[Agents] Container not running for ${agentSlug}, marking session ${sessionId} as interrupted locally`)
       await messagePersister.markSessionInterrupted(sessionId)
+      reviewManager.denyAllForAgent(agentSlug)
       return c.json({ success: true, note: 'Container not running, session marked inactive' })
     }
 
@@ -1650,6 +1653,7 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     }
 
     await messagePersister.markSessionInterrupted(sessionId)
+    reviewManager.denyAllForAgent(agentSlug)
 
     return c.json({ success: true })
   } catch (error) {
@@ -1657,7 +1661,9 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     // Even on error, try to mark session as interrupted to fix UI state
     try {
       const sessionId = c.req.param('sessionId')
+      const agentSlugFallback = c.req.param('id')
       await messagePersister.markSessionInterrupted(sessionId)
+      reviewManager.denyAllForAgent(agentSlugFallback)
       return c.json({ success: true, note: 'Error during interrupt, but session marked inactive' })
     } catch {
       return c.json({ error: 'Failed to interrupt session' }, 500)

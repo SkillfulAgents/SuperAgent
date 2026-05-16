@@ -18,6 +18,7 @@ import {
   ComposioRedactedTokenError,
   type ProxyExecuteParams,
 } from '@shared/lib/composio/client'
+import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { db } from '@shared/lib/db'
 import {
@@ -317,7 +318,10 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
   // 4. Resolve how to forward this connection: real token vs. Composio proxy
   let mode: ConnectionMode
   try {
-    mode = await resolveConnectionMode(account.composioConnectionId)
+    mode = await runWithAttribution(
+      attribution.fromResourceCreator(account.userId),
+      () => resolveConnectionMode(account.composioConnectionId),
+    )
   } catch (error) {
     await audit({ errorMessage: `Failed to fetch access token: ${error}` })
     return c.json({ error: 'Failed to fetch access token' }, 502)

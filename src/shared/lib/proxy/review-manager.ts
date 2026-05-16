@@ -330,6 +330,21 @@ export class ReviewManager {
     )
   }
 
+  denyAllForAgent(agentSlug: string): void {
+    for (const [id, review] of this.pending) {
+      if (review.details.agentSlug !== agentSlug) continue
+      clearTimeout(review.timer)
+      this.pending.delete(id)
+      review.resolve('deny')
+
+      broadcastReview(agentSlug, {
+        type: 'proxy_review_resolved',
+        reviewId: id,
+        decision: 'deny',
+      })
+    }
+  }
+
   rejectAll(): void {
     for (const [id, review] of this.pending) {
       clearTimeout(review.timer)

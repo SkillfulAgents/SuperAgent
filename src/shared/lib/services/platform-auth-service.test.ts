@@ -2,17 +2,72 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  SignJWT,
+  createLocalJWKSet,
+  exportJWK,
+  generateKeyPair,
+  type GenerateKeyPairResult,
+  type JSONWebKeySet,
+} from 'jose'
 
 import { clearSettingsCache, getSettings, updateSettings } from '@shared/lib/config/settings'
 import { getAgentsDir } from '@shared/lib/utils/file-storage'
 import type { SkillsetConfig, InstalledSkillMetadata, InstalledAgentMetadata } from '@shared/lib/types/skillset'
 
 import {
+  _resetEnvManagedPlatformStatusForTest,
   getPlatformAccessToken,
+  getPlatformAuthStatus,
+  initEnvManagedPlatformStatus,
   savePlatformAuth,
   revokePlatformToken,
+  verifyPlatformOrgAccessTokenSigned,
 } from './platform-auth-service'
+import { _setOidcJwksResolverForTest } from '@shared/lib/auth/oidc-jwt'
+
+const TEST_ISSUER = 'https://auth.test.example'
+const TEST_KID = 'platform-oidc-main'
+const TEST_AUDIENCE = 'platform-org-runtime'
+
+let testKeyPair: GenerateKeyPairResult
+let testJwksResolver: ReturnType<typeof createLocalJWKSet>
+
+interface SignTokenOverrides {
+  issuer?: string
+  audience?: string
+  expiresInSeconds?: number
+  signWithKey?: GenerateKeyPairResult['privateKey']
+  kid?: string
+  omitOrgId?: boolean
+}
+
+async function signTestOrgToken(orgId: string, overrides: SignTokenOverrides = {}): Promise<string> {
+  const now = Math.floor(Date.now() / 1000)
+  const ttl = overrides.expiresInSeconds ?? 3600
+  const payload: Record<string, unknown> = overrides.omitOrgId ? {} : { orgId }
+  return new SignJWT(payload)
+    .setProtectedHeader({
+      alg: 'RS256',
+      typ: 'JWT',
+      kid: overrides.kid ?? TEST_KID,
+    })
+    .setIssuer(overrides.issuer ?? TEST_ISSUER)
+    .setAudience(overrides.audience ?? TEST_AUDIENCE)
+    .setIssuedAt(now)
+    .setExpirationTime(now + ttl)
+    .sign(overrides.signWithKey ?? testKeyPair.privateKey)
+}
+
+beforeAll(async () => {
+  testKeyPair = await generateKeyPair('RS256')
+  const jwk = await exportJWK(testKeyPair.publicKey)
+  const jwks: JSONWebKeySet = {
+    keys: [{ ...jwk, alg: 'RS256', kid: TEST_KID, use: 'sig' }],
+  }
+  testJwksResolver = createLocalJWKSet(jwks)
+})
 
 describe('platform-auth-service', () => {
   let tempDir: string
@@ -20,13 +75,162 @@ describe('platform-auth-service', () => {
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'superagent-platform-auth-'))
     process.env.SUPERAGENT_DATA_DIR = tempDir
+    process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
+      {
+        id: 'platform',
+        type: 'oidc',
+        issuer: TEST_ISSUER,
+        clientId: 'superagent-test',
+      },
+    ])
     clearSettingsCache()
+    _setOidcJwksResolverForTest(testJwksResolver as unknown as Parameters<typeof _setOidcJwksResolverForTest>[0])
+    _resetEnvManagedPlatformStatusForTest()
   })
 
   afterEach(() => {
     clearSettingsCache()
     fs.rmSync(tempDir, { recursive: true, force: true })
     delete process.env.SUPERAGENT_DATA_DIR
+    delete process.env.AUTH_MODE
+    delete process.env.PLATFORM_TOKEN
+    delete process.env.AUTH_PROVIDERS_JSON
+    _setOidcJwksResolverForTest(null)
+    _resetEnvManagedPlatformStatusForTest()
+    vi.restoreAllMocks()
+  })
+
+  it('falls back to PLATFORM_TOKEN env in auth mode when settings have no record', () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = 'env-managed-platform-token'
+
+    expect(getPlatformAccessToken('local')).toBe('env-managed-platform-token')
+  })
+
+  it('returns null when not in auth mode and no settings record exists', () => {
+    process.env.PLATFORM_TOKEN = 'should-be-ignored-when-auth-mode-off'
+    delete process.env.AUTH_MODE
+
+    expect(getPlatformAccessToken('local')).toBeNull()
+  })
+
+  it('returns env-managed status with verified orgId after init', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+
+    await initEnvManagedPlatformStatus()
+
+    expect(getPlatformAuthStatus('local')).toMatchObject({
+      connected: true,
+      label: 'Managed by organization',
+      orgId: 'org_env',
+      source: 'env',
+    })
+  })
+
+  it('warns and reports tokens with bad signature, returning orgId: null', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const otherKey = await generateKeyPair('RS256')
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env', { signWithKey: otherKey.privateKey })
+
+    await initEnvManagedPlatformStatus()
+
+    expect(getPlatformAuthStatus('local')).toMatchObject({
+      connected: true,
+      orgId: null,
+      source: 'env',
+    })
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('[platform-auth] invalid PLATFORM_TOKEN: signature verification failed'),
+    )
+  })
+
+  it('rejects tokens with the wrong issuer', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env', { issuer: 'https://attacker.example' })
+
+    await initEnvManagedPlatformStatus()
+
+    expect(getPlatformAuthStatus('local')).toMatchObject({ orgId: null, source: 'env' })
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('[platform-auth] invalid PLATFORM_TOKEN: claim validation failed: iss'),
+    )
+  })
+
+  it('rejects tokens with the wrong audience', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env', { audience: 'platform-other-runtime' })
+
+    await initEnvManagedPlatformStatus()
+
+    expect(getPlatformAuthStatus('local')).toMatchObject({ orgId: null, source: 'env' })
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('[platform-auth] invalid PLATFORM_TOKEN: claim validation failed: aud'),
+    )
+  })
+
+  it('rejects expired tokens', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env', { expiresInSeconds: -10 })
+
+    await initEnvManagedPlatformStatus()
+
+    expect(getPlatformAuthStatus('local')).toMatchObject({ orgId: null, source: 'env' })
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('[platform-auth] invalid PLATFORM_TOKEN: token expired'),
+    )
+  })
+
+  it('rejects tokens missing orgId claim', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('placeholder', { omitOrgId: true })
+
+    await initEnvManagedPlatformStatus()
+
+    expect(getPlatformAuthStatus('local')).toMatchObject({ orgId: null, source: 'env' })
+    expect(warn).toHaveBeenCalled()
+  })
+
+  it('warns when no issuer is configured and stores orgId: null', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    delete process.env.AUTH_PROVIDERS_JSON
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+
+    await initEnvManagedPlatformStatus()
+
+    expect(getPlatformAuthStatus('local')).toMatchObject({ orgId: null, source: 'env' })
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('[platform-auth] invalid PLATFORM_TOKEN: no issuer configured'),
+    )
+  })
+
+  it('verifyPlatformOrgAccessTokenSigned returns full claims for a valid token', async () => {
+    const token = await signTestOrgToken('org_X')
+    const verified = await verifyPlatformOrgAccessTokenSigned(token, { issuer: TEST_ISSUER })
+    expect(verified).toMatchObject({ orgId: 'org_X', iss: TEST_ISSUER, aud: TEST_AUDIENCE, kid: TEST_KID })
+  })
+
+  it('uses env-managed platform token before saved settings in auth mode', async () => {
+    await savePlatformAuth('local', {
+      token: 'plat_settings_token_1234567890abcdef',
+      orgId: 'org_settings',
+    })
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+
+    await initEnvManagedPlatformStatus()
+
+    expect(getPlatformAccessToken('local')).toBe(process.env.PLATFORM_TOKEN)
+    expect(getPlatformAuthStatus('local')).toMatchObject({
+      orgId: 'org_env',
+      source: 'env',
+    })
   })
 
   it('stores a token and exposes only redacted status', async () => {

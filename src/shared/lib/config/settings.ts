@@ -4,6 +4,7 @@ import os from 'os'
 import { getDataDir } from './data-dir'
 import { getDefaultAgentImage, AGENT_IMAGE_REGISTRY } from './version'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
+import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import type { ComputerUseSettings } from '@shared/lib/computer-use/types'
 
 export interface ContainerSettings {
@@ -61,7 +62,7 @@ export interface AgentLimitsSettings {
   maxBudgetUsd?: number
 }
 
-export type HostBrowserProviderId = 'chrome' | 'browserbase'
+export type HostBrowserProviderId = 'chrome' | 'browserbase' | 'platform'
 
 export type BrowserbaseStealthOs = 'linux' | 'windows' | 'mac' | 'mobile' | 'tablet'
 
@@ -183,6 +184,8 @@ export interface AppSettings {
   analyticsTargets?: AnalyticsTarget[]
   shareErrorReports?: boolean
   platformAuth?: PlatformAuthSettings
+  /** Anthropic SDK tool search — defaults on; passed as `ENABLE_TOOL_SEARCH` to the container. */
+  enableToolSearch?: boolean
 }
 
 // API key source types
@@ -251,6 +254,7 @@ export interface GlobalSettingsResponse {
   shareAnalytics: boolean
   analyticsTargets?: AnalyticsTarget[]
   shareErrorReports: boolean
+  enableToolSearch: boolean
 }
 
 /**
@@ -289,6 +293,8 @@ const DEFAULT_SETTINGS: AppSettings = {
     agentModel: 'claude-opus-4-7',
     browserModel: 'claude-sonnet-4-6',
   },
+  enableToolSearch: true,
+  skillsets: [DEFAULT_PUBLIC_SKILLSET],
 }
 
 function getSettingsPath(): string {
@@ -359,7 +365,9 @@ export function loadSettings(): AppSettings {
         },
         agentLimits: loaded.agentLimits,
         customEnvVars: loaded.customEnvVars,
-        skillsets: loaded.skillsets,
+        skillsets: loaded.skillsets !== undefined
+          ? loaded.skillsets
+          : DEFAULT_SETTINGS.skillsets,
         auth: {
           ...DEFAULT_AUTH_SETTINGS,
           ...loaded.auth,
@@ -370,6 +378,7 @@ export function loadSettings(): AppSettings {
         analyticsTargets: loaded.analyticsTargets,
         shareErrorReports: loaded.shareErrorReports,
         platformAuth: loaded.platformAuth,
+        enableToolSearch: loaded.enableToolSearch ?? DEFAULT_SETTINGS.enableToolSearch,
       }
     }
   } catch (error) {

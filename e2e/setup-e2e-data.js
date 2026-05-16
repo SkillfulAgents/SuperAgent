@@ -26,11 +26,11 @@ fs.mkdirSync(resolvedDir, { recursive: true })
 
 // Remove DB files
 for (const file of ['superagent.db', 'superagent.db-wal', 'superagent.db-shm']) {
-  try { fs.unlinkSync(path.join(resolvedDir, file)) } catch {}
+  try { fs.unlinkSync(path.join(resolvedDir, file)) } catch { /* may not exist */ }
 }
 
 // Remove agents directory
-try { fs.rmSync(path.join(resolvedDir, 'agents'), { recursive: true }) } catch {}
+try { fs.rmSync(path.join(resolvedDir, 'agents'), { recursive: true }) } catch { /* may not exist */ }
 
 // Seed a fake skillset on disk so /discoverable-skills returns content
 // without needing a real git remote.
@@ -116,6 +116,56 @@ execFileSync('git', [...GIT_AUTHOR, 'add', '.'], { cwd: SKILLSET_REPO_DIR, stdio
 execFileSync('git', [...GIT_AUTHOR, 'commit', '-q', '-m', 'seed'], { cwd: SKILLSET_REPO_DIR, stdio: 'pipe' })
 execFileSync('git', ['remote', 'add', 'origin', SKILLSET_FAKE_URL], { cwd: SKILLSET_REPO_DIR, stdio: 'pipe' })
 
+// Seed a public-provider skillset (no .git, uses .skillset-cache-meta.json marker).
+const PUBLIC_SKILLSET_ID = 'e2e-public-skillset'
+const PUBLIC_SKILLSET_DIR = path.join(resolvedDir, 'skillset-cache', PUBLIC_SKILLSET_ID)
+fs.rmSync(PUBLIC_SKILLSET_DIR, { recursive: true, force: true })
+fs.mkdirSync(PUBLIC_SKILLSET_DIR, { recursive: true })
+
+fs.writeFileSync(
+  path.join(PUBLIC_SKILLSET_DIR, 'index.json'),
+  JSON.stringify({
+    skillset_name: 'E2E Public Skillset',
+    description: 'Public skillset seeded for Playwright tests',
+    version: '1.0.0',
+    skills: [
+      {
+        name: 'e2e-public-skill',
+        path: 'skills/e2e-public-skill/SKILL.md',
+        description: 'A skill from the public skillset',
+        version: '1.0.0',
+      },
+    ],
+  }, null, 2),
+)
+
+const PUBLIC_SKILL_DIR = path.join(PUBLIC_SKILLSET_DIR, 'skills', 'e2e-public-skill')
+fs.mkdirSync(PUBLIC_SKILL_DIR, { recursive: true })
+fs.writeFileSync(
+  path.join(PUBLIC_SKILL_DIR, 'SKILL.md'),
+  `---
+name: e2e-public-skill
+description: A skill from the public skillset
+metadata:
+  version: 1.0.0
+---
+
+# E2E Public Skill
+
+This skill is seeded from a public provider for end-to-end tests.
+`,
+)
+
+fs.writeFileSync(
+  path.join(PUBLIC_SKILLSET_DIR, '.skillset-cache-meta.json'),
+  JSON.stringify({
+    provider: 'public',
+    cachedAt: new Date().toISOString(),
+    sourceUrl: 'https://localhost.invalid/e2e-public-skillset',
+  }, null, 2),
+)
+console.log(`[E2E Setup] Seeded public skillset at: ${PUBLIC_SKILLSET_DIR}`)
+
 // Build settings
 const settings = {
   container: {
@@ -132,6 +182,14 @@ const settings = {
       description: 'Fake skillset seeded for Playwright tests',
       addedAt: new Date().toISOString(),
       provider: 'github',
+    },
+    {
+      id: PUBLIC_SKILLSET_ID,
+      url: 'https://localhost.invalid/e2e-public-skillset',
+      name: 'E2E Public Skillset',
+      description: 'Public skillset seeded for Playwright tests',
+      addedAt: new Date().toISOString(),
+      provider: 'public',
     },
   ],
 }

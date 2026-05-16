@@ -37,7 +37,7 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection }: Gl
     ...(isAuthMode ? [{ id: 'profile', label: 'Profile & Login', icon: <User className="h-4 w-4" />, render: () => <ProfileTab /> }] : []),
     { id: 'general', label: 'General', icon: <Settings className="h-4 w-4" />, render: () => <GeneralTab onOpenWizard={onOpenWizard} /> },
     { id: 'notifications', label: 'Notifications', icon: <Bell className="h-4 w-4" />, render: () => <NotificationsTab /> },
-    { id: 'platform', label: 'Platform', icon: <Waypoints className="h-4 w-4" />, render: () => <PlatformTab /> },
+    { id: 'platform', label: 'Platform', icon: <Waypoints className="h-4 w-4" />, render: () => <PlatformTab readOnly={isAuthMode} /> },
     { id: 'connections', label: 'Connections', icon: <Plug className="h-4 w-4" />, render: () => <ConnectionsTab />, headerActions: <NewIntegrationButton /> },
     { id: 'usage', label: 'Usage', icon: <BarChart3 className="h-4 w-4" />, render: () => <UsageTab /> },
   ]

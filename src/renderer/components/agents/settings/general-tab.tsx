@@ -137,7 +137,7 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
                   )}
                   Force Sync
                 </Button>
-                {!templateStatus.openPrUrl && (
+                {!templateStatus.openPrUrl && publishMode !== 'none' && (
                   <Button
                     size="sm"
                     variant="outline"

@@ -7,6 +7,7 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
 }))
 vi.mock('@shared/lib/services/session-service', () => ({
   updateSessionMetadata: vi.fn(() => Promise.resolve()),
+  getSessionMetadata: vi.fn(() => Promise.resolve(null)),
 }))
 vi.mock('@shared/lib/notifications/notification-manager', () => ({
   notificationManager: {

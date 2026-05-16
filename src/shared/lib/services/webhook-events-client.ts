@@ -5,6 +5,7 @@
  * polling pending events and acknowledging consumed events.
  */
 
+import { decodeOrgIdFromToken } from '@shared/lib/platform-attribution'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 
@@ -36,19 +37,24 @@ export interface PollResult {
 // API Calls
 // ============================================================================
 
-async function webhookEventsFetch<T>(
-  endpoint: string,
-  options: RequestInit = {},
-): Promise<T> {
+// Org JWTs encode the acting member as `<token>::<memberId>`; opaque keys ignore it.
+function buildBearer(memberId: string): string {
   const token = getPlatformAccessToken()
   if (!token) {
     throw new Error('Platform access token not available')
   }
+  return decodeOrgIdFromToken(token) ? `${token}::${memberId}` : token
+}
 
+async function webhookEventsFetch<T>(
+  endpoint: string,
+  memberId: string,
+  options: RequestInit = {},
+): Promise<T> {
   const baseUrl = getPlatformProxyBaseUrl()
   const headers = new Headers(options.headers)
   headers.set('Content-Type', 'application/json')
-  headers.set('Authorization', `Bearer ${token}`)
+  headers.set('Authorization', `Bearer ${buildBearer(memberId)}`)
 
   const response = await fetch(`${baseUrl}/v1/webhook-events${endpoint}`, {
     ...options,
@@ -63,20 +69,18 @@ async function webhookEventsFetch<T>(
   return response.json()
 }
 
-/**
- * Poll for pending webhook events and get Realtime connection credentials.
- * Events are atomically claimed (status: pending → claimed) on the server side.
- */
-export async function pollAndClaimEvents(): Promise<PollResult> {
-  return webhookEventsFetch<PollResult>('/poll', { method: 'POST' })
+/** Claim pending webhook events for `memberId` and get Realtime credentials. */
+export async function pollAndClaimEvents(memberId: string): Promise<PollResult> {
+  return webhookEventsFetch<PollResult>('/poll', memberId, { method: 'POST' })
 }
 
-/**
- * Acknowledge events as consumed so they are not returned in the next poll.
- */
-export async function acknowledgeEvents(eventIds: string[]): Promise<void> {
+/** Mark events consumed (must use the same memberId that claimed them). */
+export async function acknowledgeEvents(
+  eventIds: string[],
+  memberId: string,
+): Promise<void> {
   if (eventIds.length === 0) return
-  await webhookEventsFetch('/ack', {
+  await webhookEventsFetch('/ack', memberId, {
     method: 'POST',
     body: JSON.stringify({ event_ids: eventIds }),
   })

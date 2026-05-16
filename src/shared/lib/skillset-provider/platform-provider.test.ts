@@ -161,7 +161,7 @@ describe('PlatformSkillsetProvider.isConfigValid / isInstalledValid', () => {
   })
 
   it('github configs are always valid', () => {
-    mockGetPlatformAuthStatus.mockReturnValue({ orgId: null })
+    mockGetPlatformAuthStatus.mockReturnValue({ connected: false, orgId: null, source: null })
     const valid = provider.isConfigValid({
       id: 'github--foo',
       url: 'https://github.com/example/foo.git',
@@ -174,7 +174,7 @@ describe('PlatformSkillsetProvider.isConfigValid / isInstalledValid', () => {
   })
 
   it('platform config is valid only when orgId matches current auth', () => {
-    mockGetPlatformAuthStatus.mockReturnValue({ orgId: 'org_A' })
+    mockGetPlatformAuthStatus.mockReturnValue({ connected: true, orgId: 'org_A', source: 'settings' })
     const make = (orgId: string) => ({
       id: 'platform--x',
       url: 'u',
@@ -189,7 +189,7 @@ describe('PlatformSkillsetProvider.isConfigValid / isInstalledValid', () => {
   })
 
   it('platform config invalid when disconnected', () => {
-    mockGetPlatformAuthStatus.mockReturnValue({ orgId: null })
+    mockGetPlatformAuthStatus.mockReturnValue({ connected: false, orgId: null, source: null })
     expect(provider.isConfigValid({
       id: 'platform--x',
       url: 'u',
@@ -202,7 +202,7 @@ describe('PlatformSkillsetProvider.isConfigValid / isInstalledValid', () => {
   })
 
   it('isInstalledValid checks orgId match the same way', () => {
-    mockGetPlatformAuthStatus.mockReturnValue({ orgId: 'org_A' })
+    mockGetPlatformAuthStatus.mockReturnValue({ connected: true, orgId: 'org_A', source: 'settings' })
     expect(provider.isInstalledValid({
       provider: 'platform',
       providerData: { orgId: 'org_A' },
@@ -212,5 +212,24 @@ describe('PlatformSkillsetProvider.isConfigValid / isInstalledValid', () => {
       providerData: { orgId: 'org_B' },
     })).toBe(false)
     expect(provider.isInstalledValid({ provider: 'github' })).toBe(true)
+  })
+
+  it('does not use env-decoded orgId for local isolation decisions', () => {
+    mockGetPlatformAuthStatus.mockReturnValue({ connected: true, orgId: 'org_A', source: 'env' })
+
+    expect(provider.isConfigValid({
+      id: 'platform--x',
+      url: 'u',
+      name: 'x',
+      description: '',
+      addedAt: '2026-01-01T00:00:00.000Z',
+      provider: 'platform',
+      providerData: { orgId: 'org_B', repoId: 'r' },
+    })).toBe(true)
+
+    expect(provider.isInstalledValid({
+      provider: 'platform',
+      providerData: { orgId: 'org_B' },
+    })).toBe(true)
   })
 })

@@ -1,6 +1,9 @@
 import { sqlite } from '@shared/lib/db'
 import { getAgentsDataDir } from '@shared/lib/config/data-dir'
 import { listDirectories } from '@shared/lib/utils/file-storage'
+import { initEnvManagedPlatformStatus } from '@shared/lib/services/platform-auth-service'
+import { getAuth } from './index'
+import { getPublicAuthProviders } from './provider-config'
 
 /**
  * Validate that the data directory is compatible with AUTH_MODE.
@@ -19,6 +22,9 @@ export async function validateAuthModeStartup(): Promise<void> {
     const userCount = getUserCount()
     if (userCount > 0) {
       // Case 1: Normal start — user table has entries
+      validateAuthProviders()
+      getAuth()
+      await initEnvManagedPlatformStatus()
       return
     }
   }
@@ -37,6 +43,25 @@ export async function validateAuthModeStartup(): Promise<void> {
   }
 
   // Case 3: Fresh start — no agents, no users
+  validateAuthProviders()
+  getAuth()
+  await initEnvManagedPlatformStatus()
+}
+
+function validateAuthProviders(): void {
+  const providers = getPublicAuthProviders()
+  for (const provider of providers) {
+    if (!provider.readiness.ok) {
+      console.warn(
+        `[auth] provider ${provider.id} is unavailable: ${provider.readiness.reasons.join(', ')}`
+      )
+    }
+  }
+  console.log(
+    `[auth] loaded ${providers.length} OIDC provider(s): ${
+      providers.map((provider) => provider.id).join(', ') || '(none)'
+    }`
+  )
 }
 
 function hasUserTable(): boolean {

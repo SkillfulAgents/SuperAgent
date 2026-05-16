@@ -1,6 +1,6 @@
 import { betterAuth } from 'better-auth'
 import { drizzleAdapter } from 'better-auth/adapters/drizzle'
-import { admin } from 'better-auth/plugins'
+import { admin, genericOAuth } from 'better-auth/plugins'
 import { and, eq, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import * as schema from '@shared/lib/db/schema'
@@ -8,6 +8,7 @@ import { getOrCreateAuthSecret } from './secret'
 import { getAppBaseUrl, getTrustedOrigins } from './config'
 import { getSettings, DEFAULT_AUTH_SETTINGS } from '@shared/lib/config/settings'
 import { enforceMaxConcurrentSessions } from './session-enforcement'
+import { getGenericOAuthProviderConfigs } from './provider-config'
 
 // Re-export isAuthMode from its own file (no better-auth imports)
 // so consumers that only need the check don't pull in ESM deps.
@@ -33,6 +34,12 @@ export function getAuth() {
     const trustedOrigins = getTrustedOrigins()
     const settings = getSettings()
     const authSettings = { ...DEFAULT_AUTH_SETTINGS, ...settings.auth }
+    const oauthProviders = getGenericOAuthProviderConfigs()
+    const oauthPlugin = oauthProviders.length > 0
+      ? genericOAuth({
+          config: oauthProviders,
+        })
+      : null
 
     _auth = betterAuth({
       database: drizzleAdapter(db, {
@@ -67,6 +74,7 @@ export function getAuth() {
         admin({
           defaultRole: authSettings.defaultUserRole === 'admin' ? 'admin' : 'user',
         }),
+        ...(oauthPlugin ? [oauthPlugin] : []),
       ],
       secret: getOrCreateAuthSecret(),
       baseURL: getAppBaseUrl(),

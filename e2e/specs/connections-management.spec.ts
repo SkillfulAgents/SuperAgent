@@ -59,8 +59,14 @@ test.describe('Connections Management - Manual Add Flow', () => {
     await page.locator('[data-testid="mcp-form-url"]').fill(mockMcp.url)
     // authType defaults to "No Authentication" — no need to change.
 
-    // 4. Submit. The dialog closes and the row appears in the list.
+    // 4. Submit. The dialog closes and the Tool Policy editor opens.
     await page.locator('[data-testid="mcp-form-submit"]').click()
+
+    // Dismiss the Tool Policy editor that opens for the new MCP.
+    const policyDialog = page.getByText('Tool Policies')
+    await expect(policyDialog).toBeVisible({ timeout: 10000 })
+    await page.getByRole('button', { name: 'Cancel' }).click()
+    await expect(policyDialog).not.toBeVisible({ timeout: 5000 })
 
     // The mcp row's testid uses the server-assigned id, so match by prefix.
     const switchLocator = page.locator('[data-testid^="connection-switch-mcp-"]')
@@ -124,6 +130,12 @@ test.describe('Connections Management - Manual Add Flow', () => {
     await page.locator('[data-testid="mcp-form-name"]').fill(mcpName)
     await page.locator('[data-testid="mcp-form-url"]').fill(mockMcp.url)
     await page.locator('[data-testid="mcp-form-submit"]').click()
+
+    // Dismiss the Tool Policy editor that opens for the new MCP.
+    const policyDialog = page.getByText('Tool Policies')
+    await expect(policyDialog).toBeVisible({ timeout: 10000 })
+    await page.getByRole('button', { name: 'Cancel' }).click()
+    await expect(policyDialog).not.toBeVisible({ timeout: 5000 })
 
     const switchLocator = page.locator('[data-testid^="connection-switch-mcp-"]').first()
     await expect(switchLocator).toBeVisible({ timeout: 10000 })

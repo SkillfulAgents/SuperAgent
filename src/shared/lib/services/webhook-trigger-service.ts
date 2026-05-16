@@ -6,11 +6,55 @@
  */
 
 import { db } from '@shared/lib/db'
-import { webhookTriggers, type WebhookTrigger, type NewWebhookTrigger } from '@shared/lib/db/schema'
-import { eq, and, inArray, sql, count } from 'drizzle-orm'
+import {
+  webhookTriggers,
+  connectedAccounts,
+  authAccount,
+  type WebhookTrigger,
+  type NewWebhookTrigger,
+} from '@shared/lib/db/schema'
+import { eq, and, inArray, sql, count, desc } from 'drizzle-orm'
 import { trackServerEvent } from '../analytics/server-analytics'
 import { deleteComposioTrigger } from '@shared/lib/composio/triggers'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
+
+const PLATFORM_PROVIDER_ID = 'platform'
+
+function lookupPlatformMemberId(userId: string): string | null {
+  const rows = db
+    .select({ accountId: authAccount.accountId })
+    .from(authAccount)
+    .where(and(eq(authAccount.userId, userId), eq(authAccount.providerId, PLATFORM_PROVIDER_ID)))
+    .orderBy(desc(authAccount.updatedAt))
+    .limit(1)
+    .all()
+  return rows[0]?.accountId ?? null
+}
+
+/** Distinct member IDs of active/paused trigger owners; used by TriggerManager to poll per-member. */
+export function getDistinctPlatformMemberIdsForActiveTriggers(): string[] {
+  const rows = db
+    .select({
+      createdByUserId: webhookTriggers.createdByUserId,
+      ownerUserId: connectedAccounts.userId,
+    })
+    .from(webhookTriggers)
+    .leftJoin(
+      connectedAccounts,
+      eq(connectedAccounts.id, webhookTriggers.connectedAccountId),
+    )
+    .where(inArray(webhookTriggers.status, ['active', 'paused']))
+    .all()
+
+  const ids = new Set<string>()
+  for (const row of rows) {
+    const userId = row.createdByUserId ?? row.ownerUserId
+    if (!userId) continue
+    const memberId = lookupPlatformMemberId(userId)
+    if (memberId) ids.add(memberId)
+  }
+  return [...ids]
+}
 
 export type { WebhookTrigger, NewWebhookTrigger }
 
@@ -62,6 +106,14 @@ export async function createWebhookTrigger(params: CreateWebhookTriggerParams): 
   trackServerEvent('webhook_trigger_created', {
     triggerType: params.triggerType,
     agentSlug: params.agentSlug,
+  })
+
+  // Cold-start fix: a host that booted with 0 active triggers never
+  // subscribed Realtime. Lazy import avoids the circular dep.
+  void import('@shared/lib/scheduler/trigger-manager').then(({ triggerManager }) => {
+    if (!triggerManager.isRealtimeActive()) {
+      void triggerManager.pollAndProcess()
+    }
   })
 
   return id

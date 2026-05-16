@@ -25,6 +25,7 @@ export interface CreateScheduledTaskParams {
   prompt: string
   name?: string
   createdBySessionId?: string
+  createdByUserId?: string
   timezone?: string
   model?: string
   effort?: string
@@ -70,6 +71,7 @@ export async function createScheduledTask(
     executionCount: 0,
     createdAt: new Date(),
     createdBySessionId: params.createdBySessionId,
+    createdByUserId: params.createdByUserId,
     timezone: params.timezone || null,
     model: params.model || null,
     effort: params.effort || null,

@@ -12,8 +12,9 @@ import { TimezonePicker } from '@renderer/components/ui/timezone-picker'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { useUser } from '@renderer/context/user-context'
-import { Wand2 } from 'lucide-react'
+import { Wand2, TriangleAlert } from 'lucide-react'
 import { UpdateSection } from './update-section'
+import { useState } from 'react'
 
 interface GeneralTabProps {
   onOpenWizard: () => void
@@ -26,6 +27,19 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
   const updateGlobalSettings = useUpdateSettings()
   const { isAuthMode, isAdmin } = useUser()
   const showAdminFeatures = !isAuthMode || isAdmin
+  const [keepAwakeLoading, setKeepAwakeLoading] = useState(false)
+
+  const handleKeepAwakeToggle = async (checked: boolean) => {
+    setKeepAwakeLoading(true)
+    try {
+      await window.electronAPI!.setKeepAwake(checked)
+      updateUserSettings.mutate({ keepAwakeEnabled: checked })
+    } catch {
+      // User cancelled the sudo dialog or pmset failed — don't persist
+    } finally {
+      setKeepAwakeLoading(false)
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -88,6 +102,32 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
             }}
             disabled={isUserSettingsLoading}
           />
+        </div>
+      )}
+
+      {/* Keep Awake - macOS Electron only */}
+      {window.electronAPI?.platform === 'darwin' && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <Label htmlFor="keep-awake">Keep Awake</Label>
+              <p className="text-xs text-muted-foreground">
+                Prevent your Mac from sleeping, even with the lid closed. Requires administrator access.
+              </p>
+            </div>
+            <Switch
+              id="keep-awake"
+              checked={userSettings?.keepAwakeEnabled === true}
+              onCheckedChange={handleKeepAwakeToggle}
+              disabled={isUserSettingsLoading || keepAwakeLoading}
+            />
+          </div>
+          <div className="flex gap-2 rounded-md border border-yellow-500/30 bg-yellow-500/5 p-3">
+            <TriangleAlert className="h-4 w-4 mt-0.5 shrink-0 text-yellow-500" />
+            <p className="text-xs text-muted-foreground">
+              This can significantly increase battery consumption. Do not use when your laptop is in a bag or enclosed space — restricted airflow with the lid closed can cause overheating.
+            </p>
+          </div>
         </div>
       )}
 

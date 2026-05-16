@@ -23,7 +23,7 @@ import { db } from '@shared/lib/db'
 import { connectedAccounts } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
-import { updateSessionMetadata } from '@shared/lib/services/session-service'
+import { getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
@@ -1536,6 +1536,7 @@ class MessagePersister {
         const timezone = input.timezone || resolveTimezoneForAgent(agentSlug)
 
         // Create the scheduled task in the database
+        const sessionOwnerId = (await getSessionMetadata(agentSlug, sessionId))?.createdByUserId
         const taskId = await createScheduledTask({
           agentSlug,
           scheduleType: input.scheduleType,
@@ -1543,6 +1544,7 @@ class MessagePersister {
           prompt: input.prompt,
           name: input.name,
           createdBySessionId: sessionId,
+          createdByUserId: sessionOwnerId ?? undefined,
           timezone,
           model: input.model,
           effort: input.effort,
@@ -1733,6 +1735,7 @@ class MessagePersister {
         // 2. Save to SQLite (store the local account ID for app-level lookups)
         let triggerId: string
         try {
+          const triggerOwnerId = (await getSessionMetadata(agentSlug, sessionId))?.createdByUserId
           triggerId = await createWebhookTrigger({
             agentSlug,
             composioTriggerId,
@@ -1742,6 +1745,7 @@ class MessagePersister {
             prompt: input.prompt,
             name: input.name,
             createdBySessionId: sessionId,
+            createdByUserId: triggerOwnerId ?? undefined,
             model: input.model,
             effort: input.effort,
           })

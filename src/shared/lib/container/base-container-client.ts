@@ -14,6 +14,7 @@ import type {
   ContainerStats,
   CreateSessionOptions,
   StartOptions,
+  StopOptions,
   StreamMessage,
 } from './types'
 import type { RuntimeOptions } from './runtime-options'
@@ -545,15 +546,21 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
   }
 
-  async stop(): Promise<{ forceStopUsed: boolean }> {
+  async stop(options?: StopOptions): Promise<{ forceStopUsed: boolean }> {
     let forceStopUsed = false
+    const stopTimeoutMs = options?.stopTimeoutMs ?? 10_000
+    const killTimeoutMs = options?.killTimeoutMs ?? 5_000
 
     try {
       // Terminate all WebSocket connections immediately (no graceful close handshake)
       // to avoid ECONNRESET errors when the container is stopped
       for (const ws of this.wsConnections.values()) {
         ws.removeAllListeners()
-        ws.terminate()
+        try {
+          ws.terminate()
+        } catch {
+          // ws.terminate() throws if the socket is still in CONNECTING state
+        }
       }
       this.wsConnections.clear()
 
@@ -567,7 +574,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       const stopped = await Promise.race([
         execWithPathSilent(`${runner} stop -t 5 ${containerName}`).then(() => true),
-        new Promise<false>((resolve) => setTimeout(() => resolve(false), 10000)),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), stopTimeoutMs)),
       ])
 
       if (!stopped) {
@@ -575,7 +582,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         addErrorBreadcrumb({ category: 'container', message: 'Graceful stop timed out, escalating to kill', data: { containerName, agentId: this.config.agentId } })
         const killed = await Promise.race([
           execWithPathSilent(`${runner} kill ${containerName}`).then(() => true),
-          new Promise<false>((resolve) => setTimeout(() => resolve(false), 5000)),
+          new Promise<false>((resolve) => setTimeout(() => resolve(false), killTimeoutMs)),
         ])
 
         if (!killed) {
@@ -617,7 +624,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // to avoid ECONNRESET errors when the container is stopped
       for (const ws of this.wsConnections.values()) {
         ws.removeAllListeners()
-        ws.terminate()
+        try {
+          ws.terminate()
+        } catch {
+          // ws.terminate() throws if the socket is still in CONNECTING state
+        }
       }
       this.wsConnections.clear()
 
@@ -1081,9 +1092,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    * The caller must clean up the file after the container starts.
    */
   protected buildEnvFile(additionalEnvVars?: Record<string, string>): { flag: string; cleanup: () => void } {
+    const settings = getSettings()
     const envVars: Record<string, string | undefined> = {
       ...getActiveLlmProvider().getContainerEnvVars(),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
+      ENABLE_TOOL_SEARCH: settings.enableToolSearch !== false ? 'true' : 'false',
       ...this.config.envVars,
       ...additionalEnvVars,
     }

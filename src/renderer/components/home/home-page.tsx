@@ -1,11 +1,8 @@
 
-import { useMemo, useState } from 'react'
-import { TemplateInstallDialog } from '@renderer/components/agents/template-install-dialog'
-import { TemplateCard } from '@renderer/components/agents/template-card'
+import { useMemo } from 'react'
 import { useAgents } from '@renderer/hooks/use-agents'
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
-import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
 import { useUsageData } from '@renderer/hooks/use-usage'
 import { useSessions } from '@renderer/hooks/use-sessions'
 import { useSelection } from '@renderer/context/selection-context'
@@ -28,7 +25,6 @@ import { Plus, Bot, Loader2, Clock, CalendarClock, SquareMousePointer, Search } 
 import { useSearch } from '@renderer/context/search-context'
 import { AreaChart, Area, ResponsiveContainer, Tooltip } from 'recharts'
 import type { ApiAgent, ApiAgentDashboard } from '@shared/lib/types/api'
-import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
 import type { DailyUsageEntry } from '@shared/lib/types/usage'
 import { useRenderTracker } from '@renderer/lib/perf'
 
@@ -378,21 +374,17 @@ export function HomePage() {
   useRenderTracker('HomePage')
   const { data: agents, isLoading: agentsLoading } = useAgents()
   const { data: userSettings } = useUserSettings()
-  const { data: discoverableAgents } = useDiscoverableAgents()
   const { data: usageData } = useUsageData(7)
   const orderedAgents = useMemo(
     () => applyAgentOrder(agents ?? [], userSettings?.agentOrder),
     [agents, userSettings?.agentOrder]
   )
   const { createUntitledAgent, isPending: isCreatingAgent } = useCreateUntitledAgent()
-  const { setAgent } = useSelection()
-  const [templateToInstall, setTemplateToInstall] = useState<ApiDiscoverableAgent | null>(null)
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && sidebarState === 'collapsed' && !isFullScreen
 
   const hasAgents = orderedAgents.length > 0
-  const hasTemplates = discoverableAgents && discoverableAgents.length > 0
   const { openSearch } = useSearch()
   const isMac = getPlatform() === 'darwin'
 
@@ -472,29 +464,8 @@ export function HomePage() {
             )}
           </section>
 
-          {/* Templates Section */}
-          {hasTemplates && (
-            <section>
-              <h2 className="text-lg font-semibold mb-4">Agent Templates</h2>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                {discoverableAgents.map((template) => (
-                  <TemplateCard
-                    key={`${template.skillsetId}::${template.path}`}
-                    template={template}
-                    onClick={() => setTemplateToInstall(template)}
-                  />
-                ))}
-              </div>
-            </section>
-          )}
         </div>
       </div>
-
-      <TemplateInstallDialog
-        template={templateToInstall}
-        onClose={() => setTemplateToInstall(null)}
-        onInstalled={(agent) => setAgent(agent.slug)}
-      />
     </div>
   )
 }

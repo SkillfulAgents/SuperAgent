@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { sqliteTable, text, integer, uniqueIndex, index } from 'drizzle-orm/sqlite-core'
+import { CHAT_PROVIDERS } from '@shared/lib/chat-integrations/config-schema'
 
 // =============================================================================
 // Better Auth tables (user, session, account, verification)
@@ -396,10 +397,10 @@ export const webhookTriggers = sqliteTable('webhook_triggers', {
 export const chatIntegrations = sqliteTable('chat_integrations', {
   id: text('id').primaryKey(),
   agentSlug: text('agent_slug').notNull(),
-  provider: text('provider', { enum: ['telegram', 'slack'] }).notNull(),
+  provider: text('provider', { enum: CHAT_PROVIDERS }).notNull(),
   name: text('name'), // User-defined label
 
-  // Provider credentials (JSON: { botToken, chatId } or { botToken, appToken, channelId })
+  // Provider credentials (JSON: { botToken, chatId } | { botToken, appToken, channelId } | { gatewayUrl, phoneNumber, token })
   config: text('config').notNull(),
 
   // Behavior settings

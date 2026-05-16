@@ -13,9 +13,9 @@ vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getPlatformAccessToken: () => null,
 }))
 
-const mockCaptureMessage = vi.fn()
+const mockAddErrorBreadcrumb = vi.fn()
 vi.mock('@shared/lib/error-reporting', () => ({
-  captureMessage: (...args: unknown[]) => mockCaptureMessage(...args),
+  addErrorBreadcrumb: (...args: unknown[]) => mockAddErrorBreadcrumb(...args),
 }))
 
 // Mock global fetch
@@ -192,7 +192,7 @@ describe('getConnectionToken', () => {
     }
   })
 
-  it('emits a Sentry warning with toolkit and pattern tags when a redacted token is detected', async () => {
+  it('emits a breadcrumb with toolkit and pattern when a redacted token is detected', async () => {
     mockFetchOk(makeComposioResponse(
       { authScheme: 'OAUTH2', val: { status: 'ACTIVE', access_token: 'REDACTED' } },
       { toolkit: { slug: 'slack' }, auth_config: { id: 'ac_rNLPL7-eRjv2', auth_scheme: 'OAUTH2', is_composio_managed: true } },
@@ -200,31 +200,27 @@ describe('getConnectionToken', () => {
 
     await expect(getConnectionToken('ca_enPiGqqyyQJl')).rejects.toThrow('redacted')
 
-    expect(mockCaptureMessage).toHaveBeenCalledTimes(1)
-    const [message, context] = mockCaptureMessage.mock.calls[0]
-    expect(message).toMatch(/redacted/i)
-    expect(context.level).toBe('warning')
-    expect(context.tags).toMatchObject({
-      component: 'composio-client',
+    expect(mockAddErrorBreadcrumb).toHaveBeenCalledTimes(1)
+    const breadcrumb = mockAddErrorBreadcrumb.mock.calls[0][0]
+    expect(breadcrumb.category).toBe('composio')
+    expect(breadcrumb.message).toMatch(/redacted/i)
+    expect(breadcrumb.level).toBe('warning')
+    expect(breadcrumb.data).toMatchObject({
       toolkit: 'slack',
       auth_scheme: 'OAUTH2',
       is_composio_managed: 'true',
       redaction_pattern: 'literal-redacted',
-    })
-    expect(context.extra).toMatchObject({
       connectionId: 'ca_enPiGqqyyQJl',
-      authConfigId: 'ac_rNLPL7-eRjv2',
     })
-    expect(context.fingerprint).toEqual(['composio-redacted-token', 'literal-redacted'])
   })
 
-  it('does not emit a Sentry warning for valid tokens', async () => {
+  it('does not emit a breadcrumb for valid tokens', async () => {
     mockFetchOk(makeComposioResponse({
       authScheme: 'OAUTH2',
       val: { status: 'ACTIVE', access_token: 'fake-valid-token-1234567890abcdef' },
     }))
     await getConnectionToken('conn-1')
-    expect(mockCaptureMessage).not.toHaveBeenCalled()
+    expect(mockAddErrorBreadcrumb).not.toHaveBeenCalled()
   })
 
   it.each([

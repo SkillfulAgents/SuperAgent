@@ -10,6 +10,7 @@ import type {
   ContainerStats,
   CreateSessionOptions,
   StartOptions,
+  StopOptions,
   StreamMessage,
 } from './types'
 import type { RuntimeOptions } from './runtime-options'
@@ -596,6 +597,90 @@ export class ProxyReviewScenario implements MockScenario {
   }
 }
 
+export class XAgentReviewScenario implements MockScenario {
+  constructor(
+    private targetAgentSlug: string,
+    private targetAgentName: string,
+    private operation: 'list' | 'read' | 'invoke' | 'create',
+  ) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    const agentSlug = client.getAgentId()
+    let delay = 10
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_start' } },
+      })
+    }, delay)
+    delay += 10
+
+    const text = `Requesting x-agent ${this.operation} on ${this.targetAgentName}`
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
+      })
+    }, delay)
+    delay += 10
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } },
+      })
+    }, delay)
+    delay += 10
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+      })
+    }, delay)
+    delay += 10
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_stop' } },
+      })
+    }, delay)
+    delay += 20
+
+    const capturedDelay = delay
+    setTimeout(() => {
+      reviewManager.requestXAgentReview(
+        agentSlug,
+        this.targetAgentSlug,
+        this.targetAgentName,
+        this.operation,
+      ).then((decision) => {
+        client.writeJsonlEntry(sessionId, {
+          type: 'user',
+          message: { content: userMessage },
+          timestamp: new Date().toISOString(),
+        })
+        client.writeJsonlEntry(sessionId, {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: `X-agent ${this.operation} ${decision === 'allow' ? 'approved' : 'denied'} by user.` }] },
+          timestamp: new Date().toISOString(),
+        })
+        client.emitStreamMessage(sessionId, {
+          type: 'result',
+          content: { type: 'result', subtype: 'success' },
+        })
+      }).catch(() => {
+        client.emitStreamMessage(sessionId, {
+          type: 'result',
+          content: { type: 'result', subtype: 'success' },
+        })
+      })
+    }, capturedDelay)
+  }
+}
+
 /**
  * Mock implementation of ContainerClient for E2E testing.
  * Simulates container behavior without requiring Docker/Podman.
@@ -770,6 +855,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       ['chat:write'],
       { 'chat:write': 'Send a message to a channel' }
     )],
+    // X-agent review scenario for E2E tests
+    ['x-agent review', new XAgentReviewScenario('helper-bot', 'Helper Bot', 'list')],
     // Tool rendering scenarios for E2E tests
     ['read file', new ToolUseScenario(
       'Read',
@@ -992,7 +1079,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     console.log(`[MockContainerClient] Started mock container for agent ${this.config.agentId}`)
   }
 
-  async stop(): Promise<{ forceStopUsed: boolean }> {
+  async stop(_options?: StopOptions): Promise<{ forceStopUsed: boolean }> {
     if (this.activeBrowserSessionId && cleanupBrowserSessionFn) {
       cleanupBrowserSessionFn(this.activeBrowserSessionId)
       this.activeBrowserSessionId = null

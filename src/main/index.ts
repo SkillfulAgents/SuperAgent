@@ -36,6 +36,7 @@ import { createAppMenu, updateAppMenuWindow, destroyAppMenu } from './app-menu'
 import { getSettings } from '@shared/lib/config/settings'
 import { detectAllProviders } from './host-browser'
 import { registerUpdateHandlers, initAutoUpdater, updateAutoUpdaterWindow } from './auto-updater'
+import { enableKeepAwake, disableKeepAwake, cleanupKeepAwake, restoreKeepAwakeOnStartup } from './keep-awake'
 
 // In dev mode, use a separate data directory to avoid mixing with production data.
 // Setting app.name before getPath('userData') changes the resolved directory.
@@ -458,6 +459,15 @@ ipcMain.on('focus-window', () => {
 // IPC handler for tray visibility
 ipcMain.handle('set-tray-visible', (_event, visible: boolean) => {
   setTrayVisible(visible)
+})
+
+// IPC handler for keep-awake (macOS lid-close sleep prevention)
+ipcMain.handle('set-keep-awake', async (_event, enabled: boolean) => {
+  if (enabled) {
+    await enableKeepAwake()
+  } else {
+    await disableKeepAwake()
+  }
 })
 
 // IPC handler for showing OS notifications.
@@ -1247,6 +1257,12 @@ async function startApp() {
   if (settings.app?.showMenuBarIcon !== false) {
     createTray(mainWindow, actualApiPort)
   }
+
+  // Restore keep-awake state from previous session (after window is ready so dialogs display correctly)
+  const userSettings = getUserSettings('local')
+  restoreKeepAwakeOnStartup(userSettings.keepAwakeEnabled).catch((error) => {
+    console.error('Failed to restore keep-awake state:', error)
+  })
 }
 
 startApp()
@@ -1299,6 +1315,9 @@ async function gracefulShutdown() {
   isShuttingDown = true
 
   console.log('Shutting down gracefully...')
+
+  // Restore system sleep settings (best-effort, no sudo prompt)
+  cleanupKeepAwake()
 
   // Stop notification listener
   stopNotificationListener()
