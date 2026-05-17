@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import AdmZip from 'adm-zip'
+import { createZipBuffer, openZipFromBuffer } from '@shared/lib/utils/zip'
 import type { SkillsetConfig, InstalledAgentMetadata } from '@shared/lib/types/skillset'
 
 // ============================================================================
@@ -87,12 +87,8 @@ No frontmatter at all.
 `
 
 /** Helper: create a zip buffer from a map of { path: content } */
-function createZipBuffer(files: Record<string, string>): Buffer {
-  const zip = new AdmZip()
-  for (const [filePath, content] of Object.entries(files)) {
-    zip.addFile(filePath, Buffer.from(content, 'utf-8'))
-  }
-  return zip.toBuffer()
+async function makeZip(files: Record<string, string>): Promise<Buffer> {
+  return createZipBuffer(files)
 }
 
 // ============================================================================
@@ -104,56 +100,56 @@ describe('validateAgentTemplate', () => {
   // Basic validation
   // --------------------------------------------------------------------------
 
-  it('accepts a valid minimal template with CLAUDE.md', () => {
-    const buf = createZipBuffer({ 'CLAUDE.md': MINIMAL_CLAUDE_MD })
-    const result = validateAgentTemplate(buf)
+  it('accepts a valid minimal template with CLAUDE.md', async () => {
+    const buf = await makeZip({ 'CLAUDE.md': MINIMAL_CLAUDE_MD })
+    const result = await validateAgentTemplate(buf)
     expect(result.valid).toBe(true)
     expect(result.agentName).toBe('Test Agent')
     expect(result.fileCount).toBe(1)
     expect(result.stripPrefix).toBe('')
   })
 
-  it('accepts a template with multiple files', () => {
-    const buf = createZipBuffer({
+  it('accepts a template with multiple files', async () => {
+    const buf = await makeZip({
       'CLAUDE.md': MINIMAL_CLAUDE_MD,
       'skills/tool.py': 'print("hi")',
       'config.json': '{}',
     })
-    const result = validateAgentTemplate(buf)
+    const result = await validateAgentTemplate(buf)
     expect(result.valid).toBe(true)
     expect(result.fileCount).toBe(3)
   })
 
-  it('rejects a template missing CLAUDE.md', () => {
-    const buf = createZipBuffer({ 'README.md': '# hi' })
-    const result = validateAgentTemplate(buf)
+  it('rejects a template missing CLAUDE.md', async () => {
+    const buf = await makeZip({ 'README.md': '# hi' })
+    const result = await validateAgentTemplate(buf)
     expect(result.valid).toBe(false)
     expect(result.error).toContain('CLAUDE.md not found')
   })
 
-  it('returns agentName as undefined when CLAUDE.md has no name in frontmatter', () => {
-    const buf = createZipBuffer({ 'CLAUDE.md': CLAUDE_MD_NO_NAME })
-    const result = validateAgentTemplate(buf)
+  it('returns agentName as undefined when CLAUDE.md has no name in frontmatter', async () => {
+    const buf = await makeZip({ 'CLAUDE.md': CLAUDE_MD_NO_NAME })
+    const result = await validateAgentTemplate(buf)
     expect(result.valid).toBe(true)
     expect(result.agentName).toBeUndefined()
   })
 
-  it('returns agentName as undefined when CLAUDE.md has no frontmatter', () => {
-    const buf = createZipBuffer({ 'CLAUDE.md': CLAUDE_MD_NO_FRONTMATTER })
-    const result = validateAgentTemplate(buf)
+  it('returns agentName as undefined when CLAUDE.md has no frontmatter', async () => {
+    const buf = await makeZip({ 'CLAUDE.md': CLAUDE_MD_NO_FRONTMATTER })
+    const result = await validateAgentTemplate(buf)
     expect(result.valid).toBe(true)
     expect(result.agentName).toBeUndefined()
   })
 
-  it('handles invalid ZIP buffer gracefully', () => {
-    const result = validateAgentTemplate(Buffer.from('not a zip file'))
+  it('handles invalid ZIP buffer gracefully', async () => {
+    const result = await validateAgentTemplate(Buffer.from('not a zip file'))
     expect(result.valid).toBe(false)
     expect(result.error).toBeTruthy()
     expect(result.fileCount).toBe(0)
   })
 
-  it('handles empty buffer gracefully', () => {
-    const result = validateAgentTemplate(Buffer.alloc(0))
+  it('handles empty buffer gracefully', async () => {
+    const result = await validateAgentTemplate(Buffer.alloc(0))
     expect(result.valid).toBe(false)
     expect(result.error).toBeTruthy()
     expect(result.fileCount).toBe(0)
@@ -164,53 +160,53 @@ describe('validateAgentTemplate', () => {
   // --------------------------------------------------------------------------
 
   describe('wrapper directory prefix', () => {
-    it('detects and handles wrapper directory prefix', () => {
-      const buf = createZipBuffer({
+    it('detects and handles wrapper directory prefix', async () => {
+      const buf = await makeZip({
         'MyAgent-template/CLAUDE.md': MINIMAL_CLAUDE_MD,
         'MyAgent-template/skills/tool.py': 'print("hi")',
       })
-      const result = validateAgentTemplate(buf)
+      const result = await validateAgentTemplate(buf)
       expect(result.valid).toBe(true)
       expect(result.stripPrefix).toBe('MyAgent-template/')
       expect(result.agentName).toBe('Test Agent')
     })
 
-    it('returns empty prefix when files are at root level', () => {
-      const buf = createZipBuffer({
+    it('returns empty prefix when files are at root level', async () => {
+      const buf = await makeZip({
         'CLAUDE.md': MINIMAL_CLAUDE_MD,
         'tool.py': 'print("hi")',
       })
-      const result = validateAgentTemplate(buf)
+      const result = await validateAgentTemplate(buf)
       expect(result.valid).toBe(true)
       expect(result.stripPrefix).toBe('')
     })
 
-    it('returns empty prefix when files have mixed first segments', () => {
-      const buf = createZipBuffer({
+    it('returns empty prefix when files have mixed first segments', async () => {
+      const buf = await makeZip({
         'dir1/CLAUDE.md': MINIMAL_CLAUDE_MD,
         'dir2/tool.py': 'print("hi")',
       })
-      const result = validateAgentTemplate(buf)
+      const result = await validateAgentTemplate(buf)
       expect(result.valid).toBe(false) // CLAUDE.md won't be found without a single prefix
       expect(result.stripPrefix).toBe('')
     })
 
-    it('returns empty prefix when a file is at root and others in a dir', () => {
-      const buf = createZipBuffer({
+    it('returns empty prefix when a file is at root and others in a dir', async () => {
+      const buf = await makeZip({
         'CLAUDE.md': MINIMAL_CLAUDE_MD,
         'subdir/tool.py': 'print("hi")',
       })
-      const result = validateAgentTemplate(buf)
+      const result = await validateAgentTemplate(buf)
       expect(result.valid).toBe(true)
       // CLAUDE.md is at root, so no common prefix
       expect(result.stripPrefix).toBe('')
     })
 
-    it('finds CLAUDE.md inside wrapper directory', () => {
-      const buf = createZipBuffer({
+    it('finds CLAUDE.md inside wrapper directory', async () => {
+      const buf = await makeZip({
         'Agent-Export/CLAUDE.md': MINIMAL_CLAUDE_MD,
       })
-      const result = validateAgentTemplate(buf)
+      const result = await validateAgentTemplate(buf)
       expect(result.valid).toBe(true)
       expect(result.stripPrefix).toBe('Agent-Export/')
     })
@@ -221,118 +217,118 @@ describe('validateAgentTemplate', () => {
   // --------------------------------------------------------------------------
 
   describe('excluded entries are not counted toward file limits', () => {
-    it('filters out __MACOSX entries', () => {
+    it('filters out __MACOSX entries', async () => {
       const files: Record<string, string> = {
         'CLAUDE.md': MINIMAL_CLAUDE_MD,
         '__MACOSX/._CLAUDE.md': 'resource fork',
       }
-      const result = validateAgentTemplate(createZipBuffer(files))
+      const result = await validateAgentTemplate(await makeZip(files))
       expect(result.valid).toBe(true)
       expect(result.fileCount).toBe(1)
     })
 
-    it('filters out node_modules at any depth', () => {
+    it('filters out node_modules at any depth', async () => {
       const files: Record<string, string> = {
         'CLAUDE.md': MINIMAL_CLAUDE_MD,
         'artifacts/app/node_modules/lodash/index.js': 'module.exports = {}',
         'artifacts/app/node_modules/lodash/package.json': '{}',
         'node_modules/something/index.js': 'nope',
       }
-      const result = validateAgentTemplate(createZipBuffer(files))
+      const result = await validateAgentTemplate(await makeZip(files))
       expect(result.valid).toBe(true)
       expect(result.fileCount).toBe(1)
     })
 
-    it('filters out __pycache__ directories', () => {
+    it('filters out __pycache__ directories', async () => {
       const files: Record<string, string> = {
         'CLAUDE.md': MINIMAL_CLAUDE_MD,
         'skills/__pycache__/tool.cpython-311.pyc': 'bytecode',
         '__pycache__/other.cpython-311.pyc': 'bytecode',
       }
-      const result = validateAgentTemplate(createZipBuffer(files))
+      const result = await validateAgentTemplate(await makeZip(files))
       expect(result.valid).toBe(true)
       expect(result.fileCount).toBe(1)
     })
 
-    it('filters out .pyc files', () => {
+    it('filters out .pyc files', async () => {
       const files: Record<string, string> = {
         'CLAUDE.md': MINIMAL_CLAUDE_MD,
         'skills/tool.py': 'print("hi")',
         'skills/tool.pyc': 'bytecode',
       }
-      const result = validateAgentTemplate(createZipBuffer(files))
+      const result = await validateAgentTemplate(await makeZip(files))
       expect(result.valid).toBe(true)
       expect(result.fileCount).toBe(2) // CLAUDE.md + tool.py
     })
 
-    it('filters out .env files at any depth', () => {
+    it('filters out .env files at any depth', async () => {
       const files: Record<string, string> = {
         'CLAUDE.md': MINIMAL_CLAUDE_MD,
         '.env': 'SECRET=abc',
         'subdir/.env': 'SECRET=def',
         'deep/nested/.env': 'SECRET=ghi',
       }
-      const result = validateAgentTemplate(createZipBuffer(files))
+      const result = await validateAgentTemplate(await makeZip(files))
       expect(result.valid).toBe(true)
       expect(result.fileCount).toBe(1)
     })
 
-    it('filters out .DS_Store files at any depth', () => {
+    it('filters out .DS_Store files at any depth', async () => {
       const files: Record<string, string> = {
         'CLAUDE.md': MINIMAL_CLAUDE_MD,
         '.DS_Store': 'binary',
         'subdir/.DS_Store': 'binary',
       }
-      const result = validateAgentTemplate(createZipBuffer(files))
+      const result = await validateAgentTemplate(await makeZip(files))
       expect(result.valid).toBe(true)
       expect(result.fileCount).toBe(1)
     })
 
-    it('filters out session-metadata.json', () => {
+    it('filters out session-metadata.json', async () => {
       const files: Record<string, string> = {
         'CLAUDE.md': MINIMAL_CLAUDE_MD,
         'session-metadata.json': '{}',
       }
-      const result = validateAgentTemplate(createZipBuffer(files))
+      const result = await validateAgentTemplate(await makeZip(files))
       expect(result.valid).toBe(true)
       expect(result.fileCount).toBe(1)
     })
 
-    it('filters out .superagent-sessions.json', () => {
+    it('filters out .superagent-sessions.json', async () => {
       const files: Record<string, string> = {
         'CLAUDE.md': MINIMAL_CLAUDE_MD,
         '.superagent-sessions.json': '[]',
       }
-      const result = validateAgentTemplate(createZipBuffer(files))
+      const result = await validateAgentTemplate(await makeZip(files))
       expect(result.valid).toBe(true)
       expect(result.fileCount).toBe(1)
     })
 
-    it('filters out .skillset-agent-metadata.json', () => {
+    it('filters out .skillset-agent-metadata.json', async () => {
       const files: Record<string, string> = {
         'CLAUDE.md': MINIMAL_CLAUDE_MD,
         '.skillset-agent-metadata.json': '{}',
       }
-      const result = validateAgentTemplate(createZipBuffer(files))
+      const result = await validateAgentTemplate(await makeZip(files))
       expect(result.valid).toBe(true)
       expect(result.fileCount).toBe(1)
     })
 
-    it('does not count filtered entries toward MAX_FILE_COUNT', () => {
+    it('does not count filtered entries toward MAX_FILE_COUNT', async () => {
       const files: Record<string, string> = {
         'CLAUDE.md': MINIMAL_CLAUDE_MD,
       }
       for (let i = 0; i < 1500; i++) {
         files[`artifacts/app/node_modules/pkg-${i}/index.js`] = `module.exports = ${i}`
       }
-      const result = validateAgentTemplate(createZipBuffer(files))
+      const result = await validateAgentTemplate(await makeZip(files))
       expect(result.valid).toBe(true)
       expect(result.fileCount).toBe(1)
     })
   })
 
   describe('filtering with wrapper prefix', () => {
-    it('filters excluded entries inside a wrapper directory', () => {
+    it('filters excluded entries inside a wrapper directory', async () => {
       const files: Record<string, string> = {
         'Agent-template/CLAUDE.md': MINIMAL_CLAUDE_MD,
         'Agent-template/skills/tool.py': 'print("hi")',
@@ -341,7 +337,7 @@ describe('validateAgentTemplate', () => {
         'Agent-template/.DS_Store': 'binary',
         'Agent-template/skills/tool.pyc': 'bytecode',
       }
-      const result = validateAgentTemplate(createZipBuffer(files))
+      const result = await validateAgentTemplate(await makeZip(files))
       expect(result.valid).toBe(true)
       expect(result.stripPrefix).toBe('Agent-template/')
       expect(result.fileCount).toBe(2) // CLAUDE.md + tool.py
@@ -353,7 +349,7 @@ describe('validateAgentTemplate', () => {
   // --------------------------------------------------------------------------
 
   describe('file count limits', () => {
-    it('rejects template with too many files (> 2000)', () => {
+    it('rejects template with too many files (> 2000)', async () => {
       const files: Record<string, string> = {
         'CLAUDE.md': MINIMAL_CLAUDE_MD,
       }
@@ -361,13 +357,13 @@ describe('validateAgentTemplate', () => {
       for (let i = 0; i < 2001; i++) {
         files[`files/file-${i}.txt`] = `content ${i}`
       }
-      const result = validateAgentTemplate(createZipBuffer(files))
+      const result = await validateAgentTemplate(await makeZip(files))
       expect(result.valid).toBe(false)
       expect(result.error).toContain('Too many files')
       expect(result.error).toContain('max 2000')
     })
 
-    it('accepts template at exactly the file count limit', () => {
+    it('accepts template at exactly the file count limit', async () => {
       const files: Record<string, string> = {
         'CLAUDE.md': MINIMAL_CLAUDE_MD,
       }
@@ -375,7 +371,7 @@ describe('validateAgentTemplate', () => {
       for (let i = 0; i < 1999; i++) {
         files[`files/file-${i}.txt`] = `content ${i}`
       }
-      const result = validateAgentTemplate(createZipBuffer(files))
+      const result = await validateAgentTemplate(await makeZip(files))
       expect(result.valid).toBe(true)
       expect(result.fileCount).toBe(2000)
     })
@@ -386,21 +382,64 @@ describe('validateAgentTemplate', () => {
   // --------------------------------------------------------------------------
 
   describe('total size limits', () => {
-    it('rejects template exceeding 200MB uncompressed', () => {
-      // Create a file that reports large size via header.
-      // AdmZip sets header.size from the actual content, so we create a large content.
-      // Use a string that's about 10MB and have 21 of them (210MB total)
+    it('rejects template exceeding 500MB uncompressed', async () => {
       const largeContent = 'x'.repeat(10 * 1024 * 1024)
       const files: Record<string, string> = {
         'CLAUDE.md': MINIMAL_CLAUDE_MD,
       }
-      for (let i = 0; i < 21; i++) {
+      for (let i = 0; i < 51; i++) {
         files[`large-${i}.bin`] = largeContent
       }
-      const result = validateAgentTemplate(createZipBuffer(files))
+      const result = await validateAgentTemplate(await makeZip(files))
       expect(result.valid).toBe(false)
       expect(result.error).toContain('too large')
-      expect(result.error).toContain('200MB')
+      expect(result.error).toContain('500MB')
+    })
+
+    it('accepts template at exactly the uncompressed size limit', async () => {
+      const chunkContent = 'a'.repeat(10 * 1024 * 1024)
+      const files: Record<string, string> = {
+        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      }
+      for (let i = 0; i < 49; i++) {
+        files[`data-${i}.bin`] = chunkContent
+      }
+      // Fill the remaining budget: 500MB - 49*10MB - CLAUDE.md size
+      const claudeMdSize = Buffer.byteLength(MINIMAL_CLAUDE_MD, 'utf-8')
+      const remaining = 500 * 1024 * 1024 - 49 * 10 * 1024 * 1024 - claudeMdSize
+      files['data-last.bin'] = 'b'.repeat(remaining)
+      const result = await validateAgentTemplate(await makeZip(files))
+      expect(result.valid).toBe(true)
+    })
+
+    it('rejects template at exactly one byte over the limit', async () => {
+      const chunkContent = 'a'.repeat(10 * 1024 * 1024)
+      const files: Record<string, string> = {
+        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      }
+      for (let i = 0; i < 49; i++) {
+        files[`data-${i}.bin`] = chunkContent
+      }
+      const claudeMdSize = Buffer.byteLength(MINIMAL_CLAUDE_MD, 'utf-8')
+      const remaining = 500 * 1024 * 1024 - 49 * 10 * 1024 * 1024 - claudeMdSize
+      files['data-last.bin'] = 'b'.repeat(remaining + 1)
+      const result = await validateAgentTemplate(await makeZip(files))
+      expect(result.valid).toBe(false)
+      expect(result.error).toContain('too large')
+    })
+
+    it('rejects when multiple small files sum to over the limit', async () => {
+      const files: Record<string, string> = {
+        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      }
+      // 51 files × 10MB each = 510MB > 500MB
+      const tenMB = 'x'.repeat(10 * 1024 * 1024)
+      for (let i = 0; i < 51; i++) {
+        files[`chunk-${i}.bin`] = tenMB
+      }
+      const result = await validateAgentTemplate(await makeZip(files))
+      expect(result.valid).toBe(false)
+      expect(result.error).toContain('too large')
     })
   })
 
@@ -409,14 +448,14 @@ describe('validateAgentTemplate', () => {
   // --------------------------------------------------------------------------
 
   describe('path traversal protection', () => {
-    it('rejects entries with .. in the path', () => {
-      // AdmZip sanitizes .. from paths during addFile, so we need to
+    it('rejects entries with .. in the path', async () => {
+      // yazl/yauzl sanitize .. from paths during addFile, so we need to
       // manually modify the ZIP buffer to inject a path traversal entry.
       // We create a valid ZIP, then modify the central directory entry name.
-      const zip = new AdmZip()
-      zip.addFile('CLAUDE.md', Buffer.from(MINIMAL_CLAUDE_MD, 'utf-8'))
-      zip.addFile('safe/evil.txt', Buffer.from('root:x:0:0:', 'utf-8'))
-      const buf = zip.toBuffer()
+      const buf = Buffer.from(await makeZip({
+        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'safe/evil.txt': 'root:x:0:0:',
+      }))
       // Replace 'safe/evil.txt' with '../evil.txt' in the buffer
       // The entry name appears in both local file header and central directory
       const searchStr = Buffer.from('safe/evil.txt')
@@ -426,27 +465,89 @@ describe('validateAgentTemplate', () => {
         replaceStr.copy(buf, idx)
         idx = buf.indexOf(searchStr, idx + 1)
       }
-      const result = validateAgentTemplate(buf)
+      const result = await validateAgentTemplate(buf)
       expect(result.valid).toBe(false)
-      expect(result.error).toContain('Invalid path')
+      expect(result.error?.toLowerCase()).toMatch(/invalid.*path|relative path/)
     })
 
-    it('rejects entries with .. embedded in deeper path segments', () => {
-      const zip = new AdmZip()
-      zip.addFile('CLAUDE.md', Buffer.from(MINIMAL_CLAUDE_MD, 'utf-8'))
-      zip.addFile('foo/ZZDOTDOT/bar.txt', Buffer.from('data', 'utf-8'))
-      const buf = zip.toBuffer()
-      // Replace 'ZZDOTDOT' with '........' which contains '..'
-      const searchStr = Buffer.from('ZZDOTDOT')
-      const replaceStr = Buffer.from('........')
+    it('rejects entries with .. as a path segment in deeper paths', async () => {
+      const buf = Buffer.from(await makeZip({
+        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'foo/ZZ/xx/bar.txt': 'data',
+      }))
+      // Replace 'ZZ' segment with '..' to create foo/../xx/bar.txt
+      const searchStr = Buffer.from('foo/ZZ/xx')
+      const replaceStr = Buffer.from('foo/../xx')
       let idx = buf.indexOf(searchStr)
       while (idx !== -1) {
         replaceStr.copy(buf, idx)
         idx = buf.indexOf(searchStr, idx + 1)
       }
-      const result = validateAgentTemplate(buf)
+      const result = await validateAgentTemplate(buf)
       expect(result.valid).toBe(false)
-      expect(result.error).toContain('Invalid path')
+      expect(result.error?.toLowerCase()).toMatch(/invalid.*path|relative path/)
+    })
+
+    it('rejects trailing .. segment', async () => {
+      const buf = Buffer.from(await makeZip({
+        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'foo/ZZ/data.txt': 'data',
+      }))
+      const searchStr = Buffer.from('foo/ZZ/data')
+      const replaceStr = Buffer.from('foo/../data')
+      let idx = buf.indexOf(searchStr)
+      while (idx !== -1) {
+        replaceStr.copy(buf, idx)
+        idx = buf.indexOf(searchStr, idx + 1)
+      }
+      const result = await validateAgentTemplate(buf)
+      expect(result.valid).toBe(false)
+      expect(result.error?.toLowerCase()).toMatch(/invalid.*path|relative path/)
+    })
+
+    it('allows double dots within a filename (file..txt)', async () => {
+      const buf = await makeZip({
+        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'file..txt': 'content',
+      })
+      const result = await validateAgentTemplate(buf)
+      expect(result.valid).toBe(true)
+    })
+
+    it('allows double dots within a directory name (config..backup/)', async () => {
+      const buf = await makeZip({
+        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'config..backup/data.json': '{}',
+      })
+      const result = await validateAgentTemplate(buf)
+      expect(result.valid).toBe(true)
+    })
+
+    it('allows triple-dot directory names (dir.../file.txt)', async () => {
+      const buf = await makeZip({
+        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'dir.../file.txt': 'content',
+      })
+      const result = await validateAgentTemplate(buf)
+      expect(result.valid).toBe(true)
+    })
+
+    it('allows Next.js optional catch-all routes ([[...slug]])', async () => {
+      const buf = await makeZip({
+        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'src/app/[[...slug]]/page.tsx': 'export default function() {}',
+      })
+      const result = await validateAgentTemplate(buf)
+      expect(result.valid).toBe(true)
+    })
+
+    it('allows module names with double dots (some..module/index.ts)', async () => {
+      const buf = await makeZip({
+        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'some..module/index.ts': 'export {}',
+      })
+      const result = await validateAgentTemplate(buf)
+      expect(result.valid).toBe(true)
     })
   })
 
@@ -455,37 +556,43 @@ describe('validateAgentTemplate', () => {
   // --------------------------------------------------------------------------
 
   describe('edge cases', () => {
-    it('handles template with only directories (no files)', () => {
-      const zip = new AdmZip()
-      // Add directory-only entries
-      zip.addFile('somedir/', Buffer.alloc(0))
-      zip.addFile('anotherdir/', Buffer.alloc(0))
-      const result = validateAgentTemplate(zip.toBuffer())
-      // No CLAUDE.md found
-      expect(result.valid).toBe(false)
-      expect(result.error).toContain('CLAUDE.md not found')
-    })
-
-    it('finds CLAUDE.md with leading ./ prefix stripped', () => {
-      // The code strips leading ./ from entry names
-      const buf = createZipBuffer({ './CLAUDE.md': MINIMAL_CLAUDE_MD })
-      const result = validateAgentTemplate(buf)
+    it('allows paths containing triple dots like Next.js catch-all routes', async () => {
+      const buf = await makeZip({
+        'CLAUDE.md': MINIMAL_CLAUDE_MD,
+        'uploads/src/app/api/proxy/[...path]/route.ts': 'export {}',
+      })
+      const result = await validateAgentTemplate(buf)
       expect(result.valid).toBe(true)
     })
 
-    it('does not match claude.md (case-sensitive)', () => {
-      const buf = createZipBuffer({ 'claude.md': MINIMAL_CLAUDE_MD })
-      const result = validateAgentTemplate(buf)
+    it('handles template with only directories (no files)', async () => {
+      const buf = await makeZip({ 'somedir/placeholder': '', 'anotherdir/placeholder': '' })
+      // This zip has files but no CLAUDE.md
+      const result = await validateAgentTemplate(buf)
       expect(result.valid).toBe(false)
       expect(result.error).toContain('CLAUDE.md not found')
     })
 
-    it('rejects CLAUDE.md in a subdirectory without matching prefix', () => {
-      const buf = createZipBuffer({
+    it('finds CLAUDE.md with leading ./ prefix stripped', async () => {
+      // The code strips leading ./ from entry names
+      const buf = await makeZip({ './CLAUDE.md': MINIMAL_CLAUDE_MD })
+      const result = await validateAgentTemplate(buf)
+      expect(result.valid).toBe(true)
+    })
+
+    it('does not match claude.md (case-sensitive)', async () => {
+      const buf = await makeZip({ 'claude.md': MINIMAL_CLAUDE_MD })
+      const result = await validateAgentTemplate(buf)
+      expect(result.valid).toBe(false)
+      expect(result.error).toContain('CLAUDE.md not found')
+    })
+
+    it('rejects CLAUDE.md in a subdirectory without matching prefix', async () => {
+      const buf = await makeZip({
         'subdir/CLAUDE.md': MINIMAL_CLAUDE_MD,
         'otherdir/file.txt': 'data',
       })
-      const result = validateAgentTemplate(buf)
+      const result = await validateAgentTemplate(buf)
       // Two different first segments, so no prefix detected
       // CLAUDE.md is not at root -> should fail
       expect(result.valid).toBe(false)
@@ -498,68 +605,68 @@ describe('validateAgentTemplate', () => {
 // ============================================================================
 
 describe('validateAgentTemplate (full mode)', () => {
-  it('counts .env files toward fileCount in full mode', () => {
+  it('counts .env files toward fileCount in full mode', async () => {
     const files: Record<string, string> = {
       'CLAUDE.md': MINIMAL_CLAUDE_MD,
       '.env': 'SECRET=abc',
       'session-metadata.json': '{}',
     }
-    const result = validateAgentTemplate(createZipBuffer(files), 'full')
+    const result = await validateAgentTemplate(await makeZip(files), 'full')
     expect(result.valid).toBe(true)
     expect(result.fileCount).toBe(3)
   })
 
-  it('excludes .env files from fileCount in template mode', () => {
+  it('excludes .env files from fileCount in template mode', async () => {
     const files: Record<string, string> = {
       'CLAUDE.md': MINIMAL_CLAUDE_MD,
       '.env': 'SECRET=abc',
       'session-metadata.json': '{}',
     }
-    const result = validateAgentTemplate(createZipBuffer(files), 'template')
+    const result = await validateAgentTemplate(await makeZip(files), 'template')
     expect(result.valid).toBe(true)
     expect(result.fileCount).toBe(1)
   })
 
-  it('enforces file count limit including excluded files in full mode', () => {
+  it('enforces file count limit including excluded files in full mode', async () => {
     const files: Record<string, string> = {
       'CLAUDE.md': MINIMAL_CLAUDE_MD,
     }
     for (let i = 0; i < 2001; i++) {
       files[`.env.${i}`] = `SECRET_${i}=value`
     }
-    const result = validateAgentTemplate(createZipBuffer(files), 'full')
+    const result = await validateAgentTemplate(await makeZip(files), 'full')
     expect(result.valid).toBe(false)
     expect(result.error).toContain('Too many files')
   })
 
-  it('enforces size limit including excluded files in full mode', () => {
+  it('enforces size limit including excluded files in full mode', async () => {
     const largeEnv = 'x'.repeat(10 * 1024 * 1024)
     const files: Record<string, string> = {
       'CLAUDE.md': MINIMAL_CLAUDE_MD,
     }
-    for (let i = 0; i < 21; i++) {
+    for (let i = 0; i < 51; i++) {
       files[`data/large-${i}.env`] = largeEnv
     }
-    const result = validateAgentTemplate(createZipBuffer(files), 'full')
+    const result = await validateAgentTemplate(await makeZip(files), 'full')
     expect(result.valid).toBe(false)
     expect(result.error).toContain('too large')
   })
 
-  it('still filters __MACOSX entries in full mode', () => {
+  it('still filters __MACOSX entries in full mode', async () => {
     const files: Record<string, string> = {
       'CLAUDE.md': MINIMAL_CLAUDE_MD,
       '__MACOSX/._CLAUDE.md': 'resource fork',
     }
-    const result = validateAgentTemplate(createZipBuffer(files), 'full')
+    const result = await validateAgentTemplate(await makeZip(files), 'full')
     expect(result.valid).toBe(true)
     expect(result.fileCount).toBe(1)
   })
 
-  it('checks path traversal on excluded entries in full mode', () => {
-    const zip = new AdmZip()
-    zip.addFile('CLAUDE.md', Buffer.from(MINIMAL_CLAUDE_MD, 'utf-8'))
-    zip.addFile('safe/evil.txt', Buffer.from('data', 'utf-8'))
-    const buf = zip.toBuffer()
+  it('checks path traversal on excluded entries in full mode', async () => {
+    const buf = Buffer.from(await makeZip({
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'safe/evil.txt': 'data',
+    }))
     // Replace 'safe/evil.txt' with '../evil..txt' in the buffer
     const searchStr = Buffer.from('safe/evil.txt')
     const replaceStr = Buffer.from('../evil..txt')
@@ -568,17 +675,17 @@ describe('validateAgentTemplate (full mode)', () => {
       replaceStr.copy(buf, idx)
       idx = buf.indexOf(searchStr, idx + 1)
     }
-    const result = validateAgentTemplate(buf, 'full')
+    const result = await validateAgentTemplate(buf, 'full')
     expect(result.valid).toBe(false)
-    expect(result.error).toContain('Invalid path')
+    expect(result.error?.toLowerCase()).toMatch(/invalid.*path|relative path/)
   })
 
-  it('defaults to template mode when mode is omitted', () => {
+  it('defaults to template mode when mode is omitted', async () => {
     const files: Record<string, string> = {
       'CLAUDE.md': MINIMAL_CLAUDE_MD,
       '.env': 'SECRET=abc',
     }
-    const result = validateAgentTemplate(createZipBuffer(files))
+    const result = await validateAgentTemplate(await makeZip(files))
     expect(result.fileCount).toBe(1) // .env excluded
   })
 })
@@ -588,51 +695,51 @@ describe('validateAgentTemplate (full mode)', () => {
 // ============================================================================
 
 describe('detectZipPrefix (via validateAgentTemplate)', () => {
-  it('detects prefix when all entries share a common first directory', () => {
-    const buf = createZipBuffer({
+  it('detects prefix when all entries share a common first directory', async () => {
+    const buf = await makeZip({
       'common-dir/CLAUDE.md': MINIMAL_CLAUDE_MD,
       'common-dir/file1.txt': 'a',
       'common-dir/sub/file2.txt': 'b',
     })
-    const result = validateAgentTemplate(buf)
+    const result = await validateAgentTemplate(buf)
     expect(result.stripPrefix).toBe('common-dir/')
     expect(result.valid).toBe(true)
   })
 
-  it('returns empty prefix when there is no common directory', () => {
-    const buf = createZipBuffer({
+  it('returns empty prefix when there is no common directory', async () => {
+    const buf = await makeZip({
       'CLAUDE.md': MINIMAL_CLAUDE_MD,
       'file.txt': 'content',
     })
-    const result = validateAgentTemplate(buf)
+    const result = await validateAgentTemplate(buf)
     expect(result.stripPrefix).toBe('')
   })
 
-  it('returns empty prefix when entries are in different top-level directories', () => {
-    const buf = createZipBuffer({
+  it('returns empty prefix when entries are in different top-level directories', async () => {
+    const buf = await makeZip({
       'dir1/CLAUDE.md': MINIMAL_CLAUDE_MD,
       'dir2/file.txt': 'content',
     })
-    const result = validateAgentTemplate(buf)
+    const result = await validateAgentTemplate(buf)
     expect(result.stripPrefix).toBe('')
   })
 
-  it('ignores __MACOSX entries when detecting prefix', () => {
-    const buf = createZipBuffer({
+  it('ignores __MACOSX entries when detecting prefix', async () => {
+    const buf = await makeZip({
       'MyTemplate/CLAUDE.md': MINIMAL_CLAUDE_MD,
       'MyTemplate/tool.py': 'code',
       '__MACOSX/MyTemplate/._CLAUDE.md': 'resource fork',
     })
-    const result = validateAgentTemplate(buf)
+    const result = await validateAgentTemplate(buf)
     expect(result.stripPrefix).toBe('MyTemplate/')
     expect(result.valid).toBe(true)
   })
 
-  it('handles single file in a directory as common prefix', () => {
-    const buf = createZipBuffer({
+  it('handles single file in a directory as common prefix', async () => {
+    const buf = await makeZip({
       'wrapper/CLAUDE.md': MINIMAL_CLAUDE_MD,
     })
-    const result = validateAgentTemplate(buf)
+    const result = await validateAgentTemplate(buf)
     expect(result.stripPrefix).toBe('wrapper/')
     expect(result.valid).toBe(true)
   })
@@ -669,9 +776,13 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
     return workspaceDir
   }
 
-  function getZipEntries(buf: Buffer): string[] {
-    const zip = new AdmZip(buf)
-    return zip.getEntries().map((e) => e.entryName).sort()
+  async function getZipEntries(buf: Buffer): Promise<string[]> {
+    const reader = await openZipFromBuffer(buf)
+    try {
+      return reader.entries.map((e) => e.fileName).sort()
+    } finally {
+      reader.close()
+    }
   }
 
   it('exports a basic agent template', async () => {
@@ -680,7 +791,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
       'skills/tool.py': 'print("hi")',
     })
     const buf = await exportAgentTemplate('test-agent')
-    const entries = getZipEntries(buf)
+    const entries = await getZipEntries(buf)
     expect(entries).toContain('CLAUDE.md')
     expect(entries).toContain('skills/tool.py')
   })
@@ -694,7 +805,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
       'artifacts/app/index.js': 'import lodash from "lodash"',
     })
     const buf = await exportAgentTemplate('test-agent')
-    const entries = getZipEntries(buf)
+    const entries = await getZipEntries(buf)
     expect(entries).toContain('CLAUDE.md')
     expect(entries).toContain('artifacts/app/index.js')
     expect(entries.some((e) => e.includes('node_modules'))).toBe(false)
@@ -708,7 +819,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
       'deep/nested/__pycache__/something.pyc': 'bytecode',
     })
     const buf = await exportAgentTemplate('test-agent')
-    const entries = getZipEntries(buf)
+    const entries = await getZipEntries(buf)
     expect(entries).toContain('skills/tool.py')
     expect(entries.some((e) => e.includes('__pycache__'))).toBe(false)
   })
@@ -720,7 +831,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
       'subdir/.env': 'SECRET=def',
     })
     const buf = await exportAgentTemplate('test-agent')
-    const entries = getZipEntries(buf)
+    const entries = await getZipEntries(buf)
     expect(entries).toContain('CLAUDE.md')
     expect(entries.some((e) => e.includes('.env'))).toBe(false)
   })
@@ -732,7 +843,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
       'subdir/.DS_Store': 'binary junk',
     })
     const buf = await exportAgentTemplate('test-agent')
-    const entries = getZipEntries(buf)
+    const entries = await getZipEntries(buf)
     expect(entries.some((e) => e.includes('.DS_Store'))).toBe(false)
   })
 
@@ -742,7 +853,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
       'session-metadata.json': '{}',
     })
     const buf = await exportAgentTemplate('test-agent')
-    const entries = getZipEntries(buf)
+    const entries = await getZipEntries(buf)
     expect(entries).not.toContain('session-metadata.json')
   })
 
@@ -752,7 +863,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
       '.superagent-sessions.json': '[]',
     })
     const buf = await exportAgentTemplate('test-agent')
-    const entries = getZipEntries(buf)
+    const entries = await getZipEntries(buf)
     expect(entries).not.toContain('.superagent-sessions.json')
   })
 
@@ -762,7 +873,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
       '.skillset-agent-metadata.json': '{}',
     })
     const buf = await exportAgentTemplate('test-agent')
-    const entries = getZipEntries(buf)
+    const entries = await getZipEntries(buf)
     expect(entries).not.toContain('.skillset-agent-metadata.json')
   })
 
@@ -776,7 +887,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
       'deep/nested/module.pyc': 'bytecode',
     })
     const buf = await exportAgentTemplate('test-agent')
-    const entries = getZipEntries(buf)
+    const entries = await getZipEntries(buf)
     expect(entries).toContain('skills/tool.py')
     expect(entries.some((e) => e.endsWith('.pyc'))).toBe(false)
   })
@@ -789,7 +900,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
       'uploads/file.pdf': 'pdf data',
     })
     const buf = await exportAgentTemplate('test-agent')
-    const entries = getZipEntries(buf)
+    const entries = await getZipEntries(buf)
     expect(entries.some((e) => e.startsWith('uploads/'))).toBe(false)
   })
 
@@ -799,7 +910,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
       'downloads/report.csv': 'csv data',
     })
     const buf = await exportAgentTemplate('test-agent')
-    const entries = getZipEntries(buf)
+    const entries = await getZipEntries(buf)
     expect(entries.some((e) => e.startsWith('downloads/'))).toBe(false)
   })
 
@@ -809,7 +920,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
       '.browser-profile/Default/Cookies': 'binary',
     })
     const buf = await exportAgentTemplate('test-agent')
-    const entries = getZipEntries(buf)
+    const entries = await getZipEntries(buf)
     expect(entries.some((e) => e.includes('.browser-profile'))).toBe(false)
   })
 
@@ -819,7 +930,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
       'artifacts/app/downloads/valid.txt': 'this is fine',
     })
     const buf = await exportAgentTemplate('test-agent')
-    const entries = getZipEntries(buf)
+    const entries = await getZipEntries(buf)
     expect(entries).toContain('artifacts/app/downloads/valid.txt')
   })
 
@@ -829,7 +940,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
       'artifacts/uploads/valid.txt': 'nested uploads ok',
     })
     const buf = await exportAgentTemplate('test-agent')
-    const entries = getZipEntries(buf)
+    const entries = await getZipEntries(buf)
     expect(entries).toContain('artifacts/uploads/valid.txt')
   })
 
@@ -842,7 +953,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
       '.claude/skills/my-skill/tool.py': 'skill code',
     })
     const buf = await exportAgentTemplate('test-agent')
-    const entries = getZipEntries(buf)
+    const entries = await getZipEntries(buf)
     expect(entries).toContain('.claude/skills/my-skill/SKILL.md')
     expect(entries).toContain('.claude/skills/my-skill/tool.py')
   })
@@ -853,7 +964,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
       '.claude/projects/settings.json': 'settings',
     })
     const buf = await exportAgentTemplate('test-agent')
-    const entries = getZipEntries(buf)
+    const entries = await getZipEntries(buf)
     expect(entries.some((e) => e.includes('.claude/projects'))).toBe(false)
   })
 
@@ -863,7 +974,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
       '.claude/debug/log.txt': 'debug log',
     })
     const buf = await exportAgentTemplate('test-agent')
-    const entries = getZipEntries(buf)
+    const entries = await getZipEntries(buf)
     expect(entries.some((e) => e.includes('.claude/debug'))).toBe(false)
   })
 
@@ -873,7 +984,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
       '.claude/todos/todo.md': 'todo items',
     })
     const buf = await exportAgentTemplate('test-agent')
-    const entries = getZipEntries(buf)
+    const entries = await getZipEntries(buf)
     expect(entries.some((e) => e.includes('.claude/todos'))).toBe(false)
   })
 
@@ -884,7 +995,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
       '.claude/stats-cache.json': '{}',
     })
     const buf = await exportAgentTemplate('test-agent')
-    const entries = getZipEntries(buf)
+    const entries = await getZipEntries(buf)
     expect(entries.some((e) => e.includes('.claude.json'))).toBe(false)
     expect(entries.some((e) => e.includes('stats-cache.json'))).toBe(false)
   })
@@ -897,7 +1008,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
       '.claude/skills/my-skill/__pycache__/tool.cpython-311.pyc': 'bytecode',
     })
     const buf = await exportAgentTemplate('test-agent')
-    const entries = getZipEntries(buf)
+    const entries = await getZipEntries(buf)
     expect(entries).toContain('.claude/skills/my-skill/tool.py')
     expect(entries.some((e) => e.includes('node_modules'))).toBe(false)
     expect(entries.some((e) => e.includes('__pycache__'))).toBe(false)
@@ -924,7 +1035,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
       'a/b/c/d/e/f/deep-file.txt': 'very deep',
     })
     const buf = await exportAgentTemplate('test-agent')
-    const entries = getZipEntries(buf)
+    const entries = await getZipEntries(buf)
     expect(entries).toContain('a/b/c/d/e/f/deep-file.txt')
   })
 
@@ -941,7 +1052,7 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
       // No .claude/ directory at all
     })
     const buf = await exportAgentTemplate('test-agent')
-    const entries = getZipEntries(buf)
+    const entries = await getZipEntries(buf)
     expect(entries).toContain('CLAUDE.md')
   })
 })
@@ -1978,8 +2089,9 @@ describe('exportAgentFull', () => {
     fs.writeFileSync(path.join(workspaceDir, '.env'), 'SECRET=abc')
 
     const zipBuffer = await exportAgentFull('full-agent')
-    const zip = new AdmZip(zipBuffer)
-    const entryNames = zip.getEntries().map((e) => e.entryName)
+    const reader = await openZipFromBuffer(zipBuffer)
+    const entryNames = reader.entries.map((e) => e.fileName)
+    reader.close()
 
     expect(entryNames).toContain('CLAUDE.md')
     expect(entryNames).toContain('.env')
@@ -1992,8 +2104,9 @@ describe('exportAgentFull', () => {
     fs.writeFileSync(path.join(workspaceDir, 'session-metadata.json'), '{}')
 
     const zipBuffer = await exportAgentFull('full-agent')
-    const zip = new AdmZip(zipBuffer)
-    const entryNames = zip.getEntries().map((e) => e.entryName)
+    const reader = await openZipFromBuffer(zipBuffer)
+    const entryNames = reader.entries.map((e) => e.fileName)
+    reader.close()
 
     expect(entryNames).toContain('session-metadata.json')
   })
@@ -2006,8 +2119,9 @@ describe('exportAgentFull', () => {
     fs.writeFileSync(path.join(nmDir, 'index.js'), 'module.exports = 1')
 
     const zipBuffer = await exportAgentFull('full-agent')
-    const zip = new AdmZip(zipBuffer)
-    const entryNames = zip.getEntries().map((e) => e.entryName)
+    const reader = await openZipFromBuffer(zipBuffer)
+    const entryNames = reader.entries.map((e) => e.fileName)
+    reader.close()
 
     expect(entryNames).not.toContain('node_modules/pkg/index.js')
   })
@@ -2027,8 +2141,9 @@ describe('exportAgentFull', () => {
     }
 
     const zipBuffer = await exportAgentFull('full-agent')
-    const zip = new AdmZip(zipBuffer)
-    const entryNames = zip.getEntries().map((e) => e.entryName)
+    const reader = await openZipFromBuffer(zipBuffer)
+    const entryNames = reader.entries.map((e) => e.fileName)
+    reader.close()
 
     expect(entryNames).toContain('CLAUDE.md')
     expect(entryNames).not.toContain('broken-link')
@@ -2042,8 +2157,9 @@ describe('exportAgentFull', () => {
     fs.writeFileSync(path.join(bpDir, 'cookies.db'), 'data')
 
     const zipBuffer = await exportAgentFull('full-agent')
-    const zip = new AdmZip(zipBuffer)
-    const entryNames = zip.getEntries().map((e) => e.entryName)
+    const reader = await openZipFromBuffer(zipBuffer)
+    const entryNames = reader.entries.map((e) => e.fileName)
+    reader.close()
 
     expect(entryNames).not.toContain('.browser-profile/cookies.db')
   })
@@ -2085,7 +2201,7 @@ describe('importAgentFromTemplate (full mode)', () => {
 
   it('imports .env in full mode', async () => {
     const workspaceDir = setupAgentMock('import-full-agent')
-    const zipBuffer = createZipBuffer({
+    const zipBuffer = await makeZip({
       'CLAUDE.md': MINIMAL_CLAUDE_MD,
       '.env': 'SECRET=abc',
     })
@@ -2099,7 +2215,7 @@ describe('importAgentFromTemplate (full mode)', () => {
 
   it('full import can satisfy required env vars from imported .env', async () => {
     setupAgentMock('import-full-env-agent')
-    const zipBuffer = createZipBuffer({
+    const zipBuffer = await makeZip({
       'CLAUDE.md': MINIMAL_CLAUDE_MD,
       '.env': 'API_KEY=present\n',
       '.claude/skills/skill-a/SKILL.md': `---
@@ -2124,7 +2240,7 @@ metadata:
 
   it('strips .env in template mode', async () => {
     const workspaceDir = setupAgentMock('import-template-agent')
-    const zipBuffer = createZipBuffer({
+    const zipBuffer = await makeZip({
       'CLAUDE.md': MINIMAL_CLAUDE_MD,
       '.env': 'SECRET=abc',
     })
@@ -2137,7 +2253,7 @@ metadata:
 
   it('imports session-metadata.json in full mode', async () => {
     const workspaceDir = setupAgentMock('import-session-agent')
-    const zipBuffer = createZipBuffer({
+    const zipBuffer = await makeZip({
       'CLAUDE.md': MINIMAL_CLAUDE_MD,
       'session-metadata.json': '{"sessions":[]}',
     })
@@ -2151,10 +2267,10 @@ metadata:
   it('still blocks path traversal in full mode', async () => {
     setupAgentMock('import-traversal-agent')
     // Create a zip with path traversal — the import should silently skip it
-    const zip = new AdmZip()
-    zip.addFile('CLAUDE.md', Buffer.from(MINIMAL_CLAUDE_MD, 'utf-8'))
-    zip.addFile('safe/evil.txt', Buffer.from('data', 'utf-8'))
-    const buf = zip.toBuffer()
+    const buf = Buffer.from(await makeZip({
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'safe/evil.txt': 'data',
+    }))
     const searchStr = Buffer.from('safe/evil.txt')
     const replaceStr = Buffer.from('../evil..txt')
     let idx = buf.indexOf(searchStr)
@@ -2163,12 +2279,12 @@ metadata:
       idx = buf.indexOf(searchStr, idx + 1)
     }
     // The validation step will reject this
-    await expect(importAgentFromTemplate(buf, undefined, 'full')).rejects.toThrow('Invalid path')
+    await expect(importAgentFromTemplate(buf, undefined, 'full')).rejects.toThrow(/invalid.*path|relative path/i)
   })
 
   it('still filters __MACOSX in full mode', async () => {
     const workspaceDir = setupAgentMock('import-macosx-agent')
-    const zipBuffer = createZipBuffer({
+    const zipBuffer = await makeZip({
       'CLAUDE.md': MINIMAL_CLAUDE_MD,
       '__MACOSX/._CLAUDE.md': 'resource fork junk',
     })
@@ -2181,7 +2297,7 @@ metadata:
 
   it('defaults to template mode', async () => {
     const workspaceDir = setupAgentMock('import-default-agent')
-    const zipBuffer = createZipBuffer({
+    const zipBuffer = await makeZip({
       'CLAUDE.md': MINIMAL_CLAUDE_MD,
       '.env': 'SECRET=abc',
     })

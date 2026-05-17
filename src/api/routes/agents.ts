@@ -84,6 +84,7 @@ import {
   exportAgentTemplate,
   exportAgentFull,
   importAgentFromTemplate,
+  MAX_COMPRESSED_SIZE,
   installAgentFromSkillset,
   updateAgentFromSkillset,
   getAgentTemplateStatus,
@@ -391,6 +392,10 @@ async function handleChunkedImport(c: Context, formData: FormData, chunk: File) 
 }
 
 async function processImport(c: Context, zipBuffer: Buffer, formData: FormData) {
+  if (zipBuffer.length > MAX_COMPRESSED_SIZE) {
+    return c.json({ error: `File too large (${(zipBuffer.length / 1024 / 1024).toFixed(1)}MB, max ${MAX_COMPRESSED_SIZE / 1024 / 1024}MB)` }, 413)
+  }
+
   const nameOverride = formData.get('name') as string | null
   const mode = formData.get('mode') as string | null
   const importMode = mode === 'full' ? 'full' : 'template'
