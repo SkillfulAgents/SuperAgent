@@ -136,7 +136,7 @@ const PROVIDER_INFO: Record<ChatProvider, {
     label: 'iMessage',
     slug: 'imessage',
     steps: [
-      'Text "setup" to +1 (205) 396-7934 from the phone number you want to connect',
+      'Text "/setup" to +1 (205) 396-7934 from the phone number you want to connect',
       'You\'ll receive a reply with a 6-digit code (expires in 15 minutes)',
       'Enter your phone number and the code below',
       'Text /setup to the same number at any time to get a new code',
