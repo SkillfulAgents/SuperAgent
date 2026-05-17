@@ -409,6 +409,14 @@ export function getAgentSessionMetadataPath(slug: string): string {
 }
 
 /**
+ * Get agent preferences path
+ * ~/.superagent/agents/{slug}/workspace/agent-preferences.json
+ */
+export function getAgentPreferencesPath(slug: string): string {
+  return path.join(getAgentWorkspaceDir(slug), 'agent-preferences.json')
+}
+
+/**
  * Get Claude config directory (for CLAUDE_CONFIG_DIR env var)
  * ~/.superagent/agents/{slug}/workspace/.claude/
  */

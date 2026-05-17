@@ -4,6 +4,8 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
+import { getPolyfillJs } from '../speech-recognition-polyfill'
+import { getLlmPolyfillJs } from '../llm-polyfill'
 import { Authenticated, AgentRead, AgentUser, AgentAdmin } from '../middleware/auth'
 import {
   listAgentsWithStatus,
@@ -82,6 +84,7 @@ import {
   exportAgentTemplate,
   exportAgentFull,
   importAgentFromTemplate,
+  MAX_COMPRESSED_SIZE,
   installAgentFromSkillset,
   updateAgentFromSkillset,
   getAgentTemplateStatus,
@@ -106,6 +109,7 @@ import { resolveTargetApp } from '@shared/lib/computer-use/types'
 import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
+import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import * as fs from 'fs'
 import { Readable } from 'stream'
 import pLimit from 'p-limit'
@@ -146,9 +150,10 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
   return Promise.all(
     agents.map((agent) => limit(async () => {
       // Only FS operations remain per-agent (parallelized)
-      const [sessionSummary, artifacts] = await Promise.all([
+      const [sessionSummary, artifacts, agentPrefs] = await Promise.all([
         getSessionSummary(agent.slug),
         listArtifactsFromFilesystem(agent.slug),
+        readAgentPreferences(agent.slug),
       ])
 
       const unreadSessionIds = unreadByAgent.get(agent.slug) ?? new Set<string>()
@@ -220,6 +225,7 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
           name: a.name || a.slug,
           ...(a.hasScreenshot ? { hasScreenshot: true } : {}),
         })),
+        autoDeleteInactiveDays: agentPrefs.autoDeleteInactiveDays,
       }
     }))
   )
@@ -386,6 +392,10 @@ async function handleChunkedImport(c: Context, formData: FormData, chunk: File) 
 }
 
 async function processImport(c: Context, zipBuffer: Buffer, formData: FormData) {
+  if (zipBuffer.length > MAX_COMPRESSED_SIZE) {
+    return c.json({ error: `File too large (${(zipBuffer.length / 1024 / 1024).toFixed(1)}MB, max ${MAX_COMPRESSED_SIZE / 1024 / 1024}MB)` }, 413)
+  }
+
   const nameOverride = formData.get('name') as string | null
   const mode = formData.get('mode') as string | null
   const importMode = mode === 'full' ? 'full' : 'template'
@@ -732,6 +742,55 @@ agents.delete('/:id', AgentAdmin(), async (c) => {
   } catch (error) {
     console.error('Failed to delete agent:', error)
     return c.json({ error: 'Failed to delete agent' }, 500)
+  }
+})
+
+// ============================================================
+// Agent Preferences endpoints
+// ============================================================
+
+// GET /api/agents/:id/preferences - Get agent preferences
+agents.get('/:id/preferences', AgentRead(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    if (!(await agentExists(slug))) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+    const prefs = await readAgentPreferences(slug)
+    return c.json(prefs)
+  } catch (error) {
+    console.error('Failed to get agent preferences:', error)
+    return c.json({ error: 'Failed to get agent preferences' }, 500)
+  }
+})
+
+// PUT /api/agents/:id/preferences - Update agent preferences
+agents.put('/:id/preferences', AgentAdmin(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    if (!(await agentExists(slug))) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+
+    const body = await c.req.json()
+
+    if ('autoDeleteInactiveDays' in body) {
+      const val = body.autoDeleteInactiveDays
+      if (val !== null && val !== undefined) {
+        if (typeof val !== 'number' || !Number.isInteger(val) || val <= 0) {
+          return c.json(
+            { error: 'autoDeleteInactiveDays must be a positive integer or null' },
+            400
+          )
+        }
+      }
+    }
+
+    const merged = await updateAgentPreferences(slug, body)
+    return c.json(merged)
+  } catch (error) {
+    console.error('Failed to update agent preferences:', error)
+    return c.json({ error: 'Failed to update agent preferences' }, 500)
   }
 })
 
@@ -4040,6 +4099,7 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
         const iframe = document.createElement('iframe');
         iframe.src = dashboardUrl;
         iframe.sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups';
+        iframe.allow = 'microphone; camera';
         document.body.appendChild(iframe);
       } catch (err) {
         statusEl.textContent = err.message;
@@ -4107,6 +4167,22 @@ async function proxyArtifactRequest(c: any) {
   }
 
   const response = await client.fetch(containerPath, init)
+
+  const contentType = response.headers.get('content-type') || ''
+  if (contentType.includes('text/html')) {
+    let html = await response.text()
+    const tags = `<script>${getPolyfillJs()}${getLlmPolyfillJs()}</script>`
+    const headMatch = html.match(/<head(\s[^>]*)?>/i)
+    if (headMatch) {
+      const pos = headMatch.index! + headMatch[0].length
+      html = html.slice(0, pos) + tags + html.slice(pos)
+    } else {
+      html = tags + html
+    }
+    const headers = new Headers(response.headers)
+    headers.delete('content-length')
+    return new Response(html, { status: response.status, headers })
+  }
 
   return new Response(response.body, {
     status: response.status,

@@ -51,6 +51,8 @@ class ContainerManager {
   private healthWarnings: Map<string, HealthCheckResult[]> = new Map()
   /** Agents currently being stopped — skip health checks, sync, and connection error recovery */
   private stoppingAgents: Set<string> = new Set()
+  /** In-flight ensureRunning promises — deduplicates concurrent start requests */
+  private startingAgents: Map<string, Promise<ContainerClient>> = new Map()
 
   /** Optional callback invoked before a container is stopped (e.g. to close host browser) */
   onBeforeContainerStop: ((agentId: string) => Promise<void>) | null = null
@@ -68,8 +70,8 @@ class ContainerManager {
       const config: ContainerConfig = {
         agentId,
         onConnectionError: () => {
-          // Skip if the agent is being stopped — don't spawn more CLI commands
           if (this.stoppingAgents.has(agentId)) return
+          if (this.startingAgents.has(agentId)) return
 
           // When a connection error is detected, sync status with Docker
           // This handles cases where the container crashed or was stopped externally
@@ -138,6 +140,7 @@ class ContainerManager {
     // Mark as stopping immediately to prevent health checks / sync from spawning
     // more CLI processes into an overloaded VM
     this.stoppingAgents.add(agentId)
+    this.startingAgents.delete(agentId)
 
     let forceStopUsed = false
 
@@ -225,6 +228,11 @@ class ContainerManager {
     const client = this.getClient(agentId)
     const previousStatus = this.containerStatuses.get(agentId)?.status
     const info = await client.getInfoFromRuntime()
+
+    // Don't update cache while a start is in-flight — Docker may report "running"
+    // before the container's HTTP server is ready (health check hasn't passed yet)
+    if (this.startingAgents.has(agentId)) return info
+
     this.updateCachedStatus(agentId, info.status, info.port)
 
     // Broadcast if status changed (e.g., container was stopped externally)
@@ -419,11 +427,26 @@ class ContainerManager {
   //
   // Parameter is agentId for backwards compatibility, but will be slug after migration
   async ensureRunning(agentId: string): Promise<ContainerClient> {
+    const inflight = this.startingAgents.get(agentId)
+    if (inflight) return inflight
+
     const client = this.getClient(agentId)
-    // Use cached status to avoid unnecessary docker calls
     const cachedInfo = this.getCachedInfo(agentId)
 
     if (cachedInfo.status !== 'running') {
+      const startPromise = this.doStartContainer(agentId, client)
+      this.startingAgents.set(agentId, startPromise)
+      try {
+        await startPromise
+      } finally {
+        this.startingAgents.delete(agentId)
+      }
+    }
+
+    return client
+  }
+
+  private async doStartContainer(agentId: string, client: ContainerClient): Promise<ContainerClient> {
       // Pass proxy config and account metadata (no raw tokens)
       const envVars: Record<string, string> = {}
 
@@ -547,8 +570,10 @@ class ContainerManager {
       // Start container (user secrets are in .env file in workspace)
       await client.start({ envVars, additionalVolumes })
 
-      // Sync status from Docker to get the actual port
-      const info = await this.syncAgentStatus(agentId)
+      // Get actual port from runtime and update cache directly
+      // (can't use syncAgentStatus here — it's guarded against updates during startup)
+      const info = await client.getInfoFromRuntime()
+      this.updateCachedStatus(agentId, info.status, info.port)
 
       // Record start time so auto-sleep monitor doesn't immediately
       // sleep the container based on stale session activity timestamps
@@ -560,7 +585,6 @@ class ContainerManager {
         agentSlug: agentId,
         status: info.status,
       })
-    }
 
     return client
   }
@@ -577,6 +601,7 @@ class ContainerManager {
     this.containerStatuses.delete(agentId)
     this.healthWarnings.delete(agentId)
     this.stoppingAgents.delete(agentId)
+    this.startingAgents.delete(agentId)
   }
 
   // Clear all cached clients (e.g., when container runner setting changes).
@@ -587,6 +612,7 @@ class ContainerManager {
     this.containerStatuses.clear()
     this.healthWarnings.clear()
     this.stoppingAgents.clear()
+    this.startingAgents.clear()
   }
 
   // Stop all containers (with per-container timeout to prevent blocking shutdown)

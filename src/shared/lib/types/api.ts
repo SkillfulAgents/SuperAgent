@@ -38,6 +38,7 @@ export interface ApiAgent {
   dashboardNames?: string[]
   dashboardSlugs?: string[]
   dashboards?: ApiAgentDashboard[]
+  autoDeleteInactiveDays?: number
 }
 
 export interface ApiAgentDashboard {

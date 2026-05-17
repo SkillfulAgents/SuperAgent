@@ -38,7 +38,7 @@ import {
 /**
  * Read session metadata map from file
  */
-async function readSessionMetadata(agentSlug: string): Promise<SessionMetadataMap> {
+export async function readSessionMetadata(agentSlug: string): Promise<SessionMetadataMap> {
   const metadataPath = getAgentSessionMetadataPath(agentSlug)
   const content = await readFileOrNull(metadataPath)
 
@@ -410,6 +410,40 @@ export async function deleteSession(
   }
 
   return true
+}
+
+/**
+ * Delete multiple sessions in a single batch (one metadata read/write cycle).
+ * Returns the IDs of sessions whose JSONL files were actually removed.
+ */
+export async function deleteSessionsBatch(
+  agentSlug: string,
+  sessionIds: string[]
+): Promise<string[]> {
+  if (sessionIds.length === 0) return []
+
+  const metadata = await readSessionMetadata(agentSlug)
+  const deleted: string[] = []
+
+  for (const sessionId of sessionIds) {
+    const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+    try {
+      await fs.promises.unlink(jsonlPath)
+      deleted.push(sessionId)
+      delete metadata[sessionId]
+    } catch (error: unknown) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === 'ENOENT') {
+        deleted.push(sessionId)
+        delete metadata[sessionId]
+      } else {
+        console.error(`Failed to delete session file ${sessionId}:`, error)
+      }
+    }
+  }
+
+  await writeSessionMetadata(agentSlug, metadata)
+  return deleted
 }
 
 /**

@@ -16,7 +16,7 @@ import {
 } from '@shared/lib/services/chat-integration-service'
 import { listChatIntegrationSessions, archiveChatIntegrationSession, getChatIntegrationSessionById, deleteChatIntegrationSessionsByIntegration } from '@shared/lib/services/chat-integration-session-service'
 import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
-import { validateChatIntegrationConfig, CHAT_PROVIDERS, type ChatProvider } from '@shared/lib/chat-integrations/config-schema'
+import { validateChatIntegrationConfig, CHAT_PROVIDERS, IMESSAGE_GATEWAY_URL, imessageSetupSchema, type ChatProvider } from '@shared/lib/chat-integrations/config-schema'
 import { Authenticated, AgentUser, EntityAgentRole } from '../middleware/auth'
 import { captureException } from '@shared/lib/error-reporting'
 
@@ -102,52 +102,6 @@ chatIntegrationsRouter.post('/test-credentials', Authenticated(), async (c) => {
       return c.json({ valid: true, team: data.team, user: data.user })
     }
 
-    if (provider === 'imessage') {
-      const { gatewayUrl, phoneNumber, token } = config
-      if (!gatewayUrl || !phoneNumber || !token) {
-        return c.json({ error: 'Missing gatewayUrl, phoneNumber, or token' }, 400)
-      }
-      try {
-        const wsUrl = `${String(gatewayUrl).replace(/^http/, 'ws')}/ws/${encodeURIComponent(phoneNumber)}`
-        const { default: WebSocket } = await import('ws')
-        const result = await new Promise<{ valid: boolean; error?: string; phoneNumber?: string }>((resolve) => {
-          const ws = new WebSocket(wsUrl, {
-            headers: { Authorization: `Bearer ${token}` },
-          })
-          const timeout = setTimeout(() => {
-            ws.close()
-            resolve({ valid: false, error: 'Connection timeout' })
-          }, 10_000)
-          ws.on('open', () => ws.send(JSON.stringify({ type: 'ready' })))
-          ws.on('message', (raw) => {
-            try {
-              const event = JSON.parse(raw.toString())
-              if (event.type === 'connected') {
-                clearTimeout(timeout)
-                ws.close(1000)
-                resolve({ valid: true, phoneNumber: event.data?.phoneNumber || phoneNumber })
-              }
-            } catch { /* ignore parse errors */ }
-          })
-          ws.on('close', (code) => {
-            clearTimeout(timeout)
-            resolve({ valid: false, error: `Connection closed (code ${code})` })
-          })
-          ws.on('error', (err) => {
-            clearTimeout(timeout)
-            resolve({ valid: false, error: err.message })
-          })
-        })
-        if (!result.valid) {
-          return c.json({ valid: false, error: result.error || 'Connection failed' }, 400)
-        }
-        return c.json({ valid: true, phoneNumber: result.phoneNumber })
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Connection failed'
-        return c.json({ valid: false, error: message }, 400)
-      }
-    }
-
     return c.json({ error: 'Invalid provider' }, 400)
   } catch (error) {
     console.error('Failed to test credentials:', error)
@@ -170,6 +124,36 @@ chatIntegrationsRouter.post('/:id', AgentUser(), async (c) => {
 
     if (!CHAT_PROVIDERS.includes(provider)) {
       return c.json({ error: `Invalid provider. Must be one of: ${CHAT_PROVIDERS.join(', ')}` }, 400)
+    }
+
+    // For iMessage: if config has a code instead of token, exchange it first
+    // TODO this shoud live in the integration class, not here in the route handler. This breaks abstracting provider-specific logic out of the route layer and makes it harder to maintain as we add more providers.
+    if (provider === 'imessage' && config.code && !config.token) {
+      const parsed = imessageSetupSchema.safeParse({ phoneNumber: config.phoneNumber, code: config.code })
+      if (!parsed.success) {
+        return c.json({ error: parsed.error.issues[0]?.message || 'Invalid phone number or code' }, 400)
+      }
+      const exchangeRes = await fetch(`${IMESSAGE_GATEWAY_URL}/auth/exchange`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: config.phoneNumber, code: config.code }),
+      })
+      if (exchangeRes.status === 401) {
+        return c.json({ error: 'Invalid or expired code' }, 400)
+      }
+      if (exchangeRes.status === 429) {
+        return c.json({ error: 'Too many attempts, try again later' }, 400)
+      }
+      if (!exchangeRes.ok) {
+        return c.json({ error: `Code exchange failed (${exchangeRes.status})` }, 400)
+      }
+      const { token } = await exchangeRes.json() as { token: string }
+      if (!token) {
+        return c.json({ error: 'No token returned from gateway' }, 400)
+      }
+      config.token = token
+      config.gatewayUrl = IMESSAGE_GATEWAY_URL
+      delete config.code
     }
 
     // Validate config against Zod schema

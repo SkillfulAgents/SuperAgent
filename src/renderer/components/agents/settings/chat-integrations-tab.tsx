@@ -136,15 +136,14 @@ const PROVIDER_INFO: Record<ChatProvider, {
     label: 'iMessage',
     slug: 'imessage',
     steps: [
-      'Text "setup" to +1 (205) 396-7934 from the phone number you want to connect',
-      'You\'ll receive a reply with a token and gateway URL',
-      'Enter your phone number, the gateway URL, and token below',
-      'Text /setup to the same number at any time to see these instructions again',
+      'Text "/setup" to +1 (205) 396-7934 from the phone number you want to connect',
+      'You\'ll receive a reply with a 6-digit code (expires in 15 minutes)',
+      'Enter your phone number and the code below',
+      'Text /setup to the same number at any time to get a new code',
     ],
     fields: [
       { key: 'phoneNumber', label: 'Your Phone Number', placeholder: '+15551234567 (E.164 format)', type: 'text' as const },
-      { key: 'gatewayUrl', label: 'Gateway URL', placeholder: 'https://imessage-gateway.example.com', type: 'text' as const },
-      { key: 'token', label: 'Token', placeholder: 'Paste the token from the setup message', type: 'password' as const },
+      { key: 'code', label: 'Setup Code', placeholder: '6-digit code from iMessage', type: 'text' as const },
     ],
   },
 }
@@ -208,6 +207,9 @@ export function ChatIntegrationsTab({ agentSlug }: ChatIntegrationsTabProps) {
         if (onlyMentioned) config.onlyMentioned = true
         if (answerInThread) config.answerInThread = true
         if (answerInThread && newSessionPerThread) config.newSessionPerThread = true
+      }
+      if (selectedProvider === 'imessage') {
+        config.gatewayUrl = 'https://imsgw.com'
       }
       await createIntegration.mutateAsync({
         agentSlug,
@@ -663,18 +665,20 @@ export function ChatIntegrationsTab({ agentSlug }: ChatIntegrationsTabProps) {
 
           {/* Action buttons */}
           <div className="flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={handleTest}
-              disabled={testCredentials.isPending || !formData[PROVIDER_INFO[selectedProvider].fields[0].key]}
-            >
-              {testCredentials.isPending ? (
-                <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Testing...</>
-              ) : (
-                'Test Credentials'
-              )}
-            </Button>
+            {selectedProvider !== 'imessage' && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleTest}
+                disabled={testCredentials.isPending || !formData[PROVIDER_INFO[selectedProvider].fields[0].key]}
+              >
+                {testCredentials.isPending ? (
+                  <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Testing...</>
+                ) : (
+                  'Test Credentials'
+                )}
+              </Button>
+            )}
             <Button
               size="sm"
               onClick={handleCreate}

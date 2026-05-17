@@ -134,6 +134,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
         className="flex-1 w-full border-0"
         title={dashboard?.name || dashboardSlug}
         sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+        allow="microphone; camera"
       />
     </div>
   )

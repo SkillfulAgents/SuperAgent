@@ -229,7 +229,7 @@ export function useTestChatIntegrationCredentials() {
       if (!res.ok) {
         throw new Error((data as { error: string }).error || 'Invalid credentials')
       }
-      return data as { valid: boolean; botName?: string; botUsername?: string; team?: string; user?: string; phoneNumber?: string }
+      return data as { valid: boolean; botName?: string; botUsername?: string; team?: string; user?: string; phoneNumber?: string; token?: string }
     },
   })
 }

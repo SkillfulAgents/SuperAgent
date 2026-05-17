@@ -131,6 +131,13 @@ This applies to all fetches, image sources, link hrefs, etc.
 
 - **Do NOT use the browser tool to view your own dashboards.** The browser runs outside the container and cannot access `localhost` URLs served inside it. Dashboard requests will fail. The user views dashboards through the Superagent UI — you do not need to verify them visually. Use `get_dashboard_logs` to debug issues instead.
 
+## Built-in APIs
+
+The following APIs are automatically available in all dashboards (injected by the platform):
+
+- **Speech Recognition** — The standard `SpeechRecognition` Web API for voice-to-text. See `~/.claude/skills/dashboards/SPEECH_RECOGNITION.md` for full documentation and examples.
+- **LLM (Anthropic SDK)** — An Anthropic SDK-compatible `Anthropic` client for calling Claude. No API keys needed. See `~/.claude/skills/dashboards/LLM_API.md` for full documentation and examples.
+
 ## Best Practices
 
 - **Keep dependencies minimal** — fewer deps means faster installs and starts

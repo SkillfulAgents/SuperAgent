@@ -8,6 +8,7 @@ import { chatIntegrationManager } from './chat-integrations/chat-integration-man
 import { captureException } from './error-reporting'
 import { isPlatformComposioActive } from './composio/client'
 import { autoSleepMonitor } from './scheduler/auto-sleep-monitor'
+import { sessionAutoDeleteMonitor } from './scheduler/session-auto-delete-monitor'
 import { getActiveProvider, stopAllProviders } from '../../main/host-browser'
 import { listAgents } from './services/agent-service'
 import { isAuthMode } from './auth/mode'
@@ -32,6 +33,7 @@ import { getSettings } from './config/settings'
  * - api/index.ts: for non-Electron environments (Vite dev server, standalone web server)
  * - main/index.ts: for Electron, after SUPERAGENT_DATA_DIR is set
  */
+// TODO: this fires a lot of work on startup, which can create a big workload on initial start. We should defer some work and limit concurrency.
 export async function initializeServices() {
   // Initialize error reporting for non-Electron environments (Electron inits in main/index.ts).
   // initErrorReporting is a no-op if already initialized, so this is safe.
@@ -127,6 +129,11 @@ export async function initializeServices() {
   autoSleepMonitor.start().catch((error) => {
     console.error('Failed to start auto-sleep monitor:', error)
   })
+
+  // Start session auto-delete monitor (deferred — waits before first check)
+  sessionAutoDeleteMonitor.start().catch((error) => {
+    console.error('Failed to start session auto-delete monitor:', error)
+  })
 }
 
 /**
@@ -156,6 +163,7 @@ export async function shutdownServices() {
   taskScheduler.stop()
   triggerManager.stop()
   autoSleepMonitor.stop()
+  sessionAutoDeleteMonitor.stop()
   containerManager.stopStatusSync()
   containerManager.stopHealthMonitor()
   await containerManager.stopAll()

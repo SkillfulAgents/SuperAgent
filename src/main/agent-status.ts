@@ -1,10 +1,15 @@
 // Shared types and utilities for fetching agent status
 // Used by both the system tray and the application menu
 
+import { type AgentActivityStatus, getAgentActivityStatus } from '@shared/lib/types/agent-activity-status'
+import type { ContainerStatus } from '@shared/lib/container/types'
+
+export type ActivityStatus = AgentActivityStatus
+
 export interface ApiAgent {
   slug: string
   name: string
-  status: 'running' | 'stopped'
+  status: ContainerStatus
 }
 
 export interface ApiSession {
@@ -12,9 +17,6 @@ export interface ApiSession {
   isActive: boolean
   isAwaitingInput?: boolean
 }
-
-// TODO: Consolidate with AgentActivityStatus in agent-status.tsx and agent.page.ts into a single shared type
-export type ActivityStatus = 'working' | 'idle' | 'sleeping' | 'awaiting_input'
 
 export interface AgentInfo {
   slug: string
@@ -86,17 +88,7 @@ export async function fetchAgentsWithStatus(apiPort: number): Promise<AgentInfo[
           }
         }
 
-        // Derive activity status (matches getAgentActivityStatus logic)
-        let activityStatus: ActivityStatus
-        if (agent.status === 'stopped') {
-          activityStatus = 'sleeping'
-        } else if (hasSessionsAwaitingInput) {
-          activityStatus = 'awaiting_input'
-        } else if (hasActiveSessions) {
-          activityStatus = 'working'
-        } else {
-          activityStatus = 'idle'
-        }
+        const activityStatus = getAgentActivityStatus(agent.status, hasActiveSessions, hasSessionsAwaitingInput)
 
         return {
           slug: agent.slug,

@@ -21,6 +21,8 @@ export const slackConfigSchema = z.object({
   newSessionPerThread: z.boolean().optional(),
 })
 
+export const IMESSAGE_GATEWAY_URL = 'https://imsgw.com'
+
 export const imessageConfigSchema = z.object({
   gatewayUrl: z.string().url('Gateway URL is required').refine(
     (url) => url.startsWith('http://') || url.startsWith('https://'),
@@ -30,6 +32,13 @@ export const imessageConfigSchema = z.object({
     .min(1, 'Phone number is required')
     .regex(/^\+[1-9]\d{6,14}$/, 'Phone number must be in E.164 format (e.g. +15551234567)'),
   token: z.string().min(1, 'Token is required'),
+})
+
+export const imessageSetupSchema = z.object({
+  phoneNumber: z.string()
+    .min(1, 'Phone number is required')
+    .regex(/^\+[1-9]\d{6,14}$/, 'Phone number must be in E.164 format (e.g. +15551234567)'),
+  code: z.string().min(1, 'Code is required').regex(/^\d{6}$/, 'Code must be 6 digits'),
 })
 
 export type TelegramConfig = z.infer<typeof telegramConfigSchema>
