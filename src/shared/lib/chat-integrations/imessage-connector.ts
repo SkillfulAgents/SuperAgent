@@ -73,6 +73,7 @@ export class IMessageConnector extends ChatClientConnector {
   private static readonly BASE_RECONNECT_DELAY_MS = 1_000
 
   private lastReceivedMessageId: string | null = null
+  private lastChatId: string | null = null
   private pendingApprovals: Map<string, PendingApproval> = new Map()
   private pendingQuestions: Map<string, PendingQuestion> = new Map()
 
@@ -218,7 +219,7 @@ export class IMessageConnector extends ChatClientConnector {
 
     this.send({
       type: 'send_message',
-      data: { parts: [{ type: 'text', value: cleanText }] },
+      data: { chatId: this.lastChatId ?? undefined, parts: [{ type: 'text', value: cleanText }] },
     })
 
     return `msg-${Date.now()}`
@@ -235,7 +236,7 @@ export class IMessageConnector extends ChatClientConnector {
   }
 
   async showTypingIndicator(_chatId: string): Promise<void> {
-    this.send({ type: 'start_typing' })
+    this.send({ type: 'start_typing', data: { chatId: this.lastChatId ?? undefined } })
   }
 
   async sendFile(_chatId: string, fileData: Buffer, filename: string, caption?: string): Promise<string> {
@@ -281,7 +282,7 @@ export class IMessageConnector extends ChatClientConnector {
         parts.push({ type: 'text', value: caption })
       }
 
-      this.send({ type: 'send_message', data: { parts } })
+      this.send({ type: 'send_message', data: { chatId: this.lastChatId ?? undefined, parts } })
       return `file-${Date.now()}`
     } catch (err) {
       console.error('[IMessageConnector] Failed to send file:', err)
@@ -289,7 +290,7 @@ export class IMessageConnector extends ChatClientConnector {
       // Fall back to a text message about the file
       this.send({
         type: 'send_message',
-        data: { parts: [{ type: 'text', value: `[File: ${filename}]${caption ? ` — ${caption}` : ''}` }] },
+        data: { chatId: this.lastChatId ?? undefined, parts: [{ type: 'text', value: `[File: ${filename}]${caption ? ` — ${caption}` : ''}` }] },
       })
       return `file-fallback-${Date.now()}`
     }
@@ -346,7 +347,7 @@ export class IMessageConnector extends ChatClientConnector {
     const messageId = `approval-${this.nextApprovalId++}`
     this.send({
       type: 'send_message',
-      data: { parts: [{ type: 'text', value: text }] },
+      data: { chatId: this.lastChatId ?? undefined, parts: [{ type: 'text', value: text }] },
     })
 
     this.pendingApprovals.set(messageId, {
@@ -386,7 +387,7 @@ export class IMessageConnector extends ChatClientConnector {
     const text = lines.join('\n').trim()
     this.send({
       type: 'send_message',
-      data: { parts: [{ type: 'text', value: text }] },
+      data: { chatId: this.lastChatId ?? undefined, parts: [{ type: 'text', value: text }] },
     })
 
     this.pendingQuestions.set(event.toolUseId, {
@@ -428,10 +429,13 @@ export class IMessageConnector extends ChatClientConnector {
         console.error('[IMessageConnector] Message delivery failed:', event.data)
         break
 
-      case 'error':
+      case 'error': {
+        const msg = event.data?.message || 'unknown'
         console.error('[IMessageConnector] Gateway error:', event.data)
-        this.emitError(new Error(`Gateway error: ${event.data?.message || 'unknown'}`))
+        if (/typing indicators are not supported/i.test(msg)) break
+        this.emitError(new Error(`Gateway error: ${msg}`))
         break
+      }
 
       case 'typing.started':
         this.emitTypingHint(this.config.phoneNumber)
@@ -451,9 +455,10 @@ export class IMessageConnector extends ChatClientConnector {
     const sentAt = data.sentAt ? new Date(data.sentAt) : new Date()
 
     this.lastReceivedMessageId = messageId
+    this.lastChatId = chatId
 
     // Send read receipt immediately
-    this.send({ type: 'mark_read' })
+    this.send({ type: 'mark_read', data: { chatId } })
 
     // Extract text and files from parts
     let text = ''
@@ -629,7 +634,7 @@ export class IMessageConnector extends ChatClientConnector {
   private sendTextAndReturn(text: string): string {
     this.send({
       type: 'send_message',
-      data: { parts: [{ type: 'text', value: text }] },
+      data: { chatId: this.lastChatId ?? undefined, parts: [{ type: 'text', value: text }] },
     })
     return `msg-${Date.now()}`
   }
