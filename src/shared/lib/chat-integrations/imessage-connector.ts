@@ -191,8 +191,9 @@ export class IMessageConnector extends ChatClientConnector {
 
   // ── Message sending ─────────────────────────────────────────────────
 
-  async sendMessage(_chatId: string, message: OutgoingMessage): Promise<string> {
+  async sendMessage(chatId: string, message: OutgoingMessage): Promise<string> {
     const text = message.text || ''
+    const targetChatId = chatId || this.lastChatId || undefined
 
     // Parse and handle reaction tags
     const { cleanText, reactions } = this.extractReactions(text)
@@ -219,7 +220,7 @@ export class IMessageConnector extends ChatClientConnector {
 
     this.send({
       type: 'send_message',
-      data: { chatId: this.lastChatId ?? undefined, parts: [{ type: 'text', value: cleanText }] },
+      data: { chatId: targetChatId, parts: [{ type: 'text', value: cleanText }] },
     })
 
     return `msg-${Date.now()}`
@@ -230,16 +231,18 @@ export class IMessageConnector extends ChatClientConnector {
     return existingMessageId || `stream-noop-${Date.now()}`
   }
 
-  async finalizeStreamingMessage(_chatId: string, _messageId: string, finalText: string): Promise<void> {
+  async finalizeStreamingMessage(chatId: string, _messageId: string, finalText: string): Promise<void> {
     // Since we don't stream, send the complete message now
-    await this.sendMessage('', { text: finalText })
+    await this.sendMessage(chatId, { text: finalText })
   }
 
-  async showTypingIndicator(_chatId: string): Promise<void> {
-    this.send({ type: 'start_typing', data: { chatId: this.lastChatId ?? undefined } })
+  async showTypingIndicator(chatId: string): Promise<void> {
+    const targetChatId = chatId || this.lastChatId || undefined
+    this.send({ type: 'start_typing', data: { chatId: targetChatId } })
   }
 
-  async sendFile(_chatId: string, fileData: Buffer, filename: string, caption?: string): Promise<string> {
+  async sendFile(chatId: string, fileData: Buffer, filename: string, caption?: string): Promise<string> {
+    const targetChatId = chatId || this.lastChatId || undefined
     const mimeType = guessMimeType(filename)
 
     try {
@@ -282,7 +285,7 @@ export class IMessageConnector extends ChatClientConnector {
         parts.push({ type: 'text', value: caption })
       }
 
-      this.send({ type: 'send_message', data: { chatId: this.lastChatId ?? undefined, parts } })
+      this.send({ type: 'send_message', data: { chatId: targetChatId, parts } })
       return `file-${Date.now()}`
     } catch (err) {
       console.error('[IMessageConnector] Failed to send file:', err)
@@ -290,7 +293,7 @@ export class IMessageConnector extends ChatClientConnector {
       // Fall back to a text message about the file
       this.send({
         type: 'send_message',
-        data: { chatId: this.lastChatId ?? undefined, parts: [{ type: 'text', value: `[File: ${filename}]${caption ? ` — ${caption}` : ''}` }] },
+        data: { chatId: targetChatId, parts: [{ type: 'text', value: `[File: ${filename}]${caption ? ` — ${caption}` : ''}` }] },
       })
       return `file-fallback-${Date.now()}`
     }
@@ -298,48 +301,49 @@ export class IMessageConnector extends ChatClientConnector {
 
   // ── User request cards ──────────────────────────────────────────────
 
-  async sendUserRequestCard(_chatId: string, event: UserRequestEvent): Promise<string> {
+  async sendUserRequestCard(chatId: string, event: UserRequestEvent): Promise<string> {
+    const targetChatId = chatId || this.lastChatId || undefined
     if (isUnsupportedInChat(event)) {
-      return this.sendTextAndReturn(describeUnsupportedRequest(event))
+      return this.sendTextAndReturn(describeUnsupportedRequest(event), targetChatId)
     }
 
     switch (event.type) {
       case 'user_question_request': {
         // Handle proxy review requests (approval cards)
         if (event.toolUseId.startsWith('review:')) {
-          return this.sendApprovalCard(event)
+          return this.sendApprovalCard(event, targetChatId)
         }
-        return this.sendQuestionCard(event)
+        return this.sendQuestionCard(event, targetChatId)
       }
 
       case 'secret_request': {
         const text = `Secret requested: ${event.secretName}${event.reason ? `\nReason: ${event.reason}` : ''}\n\nPlease reply with the secret value.`
-        return this.sendTextAndReturn(text)
+        return this.sendTextAndReturn(text, targetChatId)
       }
 
       case 'file_request': {
         const text = `File requested:\n${event.description}${event.fileTypes ? `\n\nAccepted types: ${event.fileTypes}` : ''}\n\nPlease send the file.`
-        return this.sendTextAndReturn(text)
+        return this.sendTextAndReturn(text, targetChatId)
       }
 
       case 'file_delivery': {
         const text = `File delivered: ${event.filePath}${event.description ? `\n${event.description}` : ''}`
-        return this.sendTextAndReturn(text)
+        return this.sendTextAndReturn(text, targetChatId)
       }
 
       case 'tool_status': {
         const emoji = event.status === 'success' ? '✅' : event.status === 'error' ? '❌' : event.status === 'cancelled' ? '⛔' : '⏳'
         const text = `${event.toolName} — ${event.summary} ${emoji}`
-        return this.sendTextAndReturn(text)
+        return this.sendTextAndReturn(text, targetChatId)
       }
 
       default: {
-        return this.sendTextAndReturn(describeUnsupportedRequest(event))
+        return this.sendTextAndReturn(describeUnsupportedRequest(event), targetChatId)
       }
     }
   }
 
-  private sendApprovalCard(event: UserRequestEvent): string {
+  private sendApprovalCard(event: UserRequestEvent, targetChatId?: string): string {
     const questions = (event as any).questions as Array<{ question: string }> | undefined
     const displayText = questions?.[0]?.question || 'Allow this action?'
     const text = `${displayText}\n\nReact with 👍 to allow, 👎 to deny.`
@@ -347,7 +351,7 @@ export class IMessageConnector extends ChatClientConnector {
     const messageId = `approval-${this.nextApprovalId++}`
     this.send({
       type: 'send_message',
-      data: { chatId: this.lastChatId ?? undefined, parts: [{ type: 'text', value: text }] },
+      data: { chatId: targetChatId, parts: [{ type: 'text', value: text }] },
     })
 
     this.pendingApprovals.set(messageId, {
@@ -358,7 +362,7 @@ export class IMessageConnector extends ChatClientConnector {
     return messageId
   }
 
-  private sendQuestionCard(event: UserRequestEvent): string {
+  private sendQuestionCard(event: UserRequestEvent, targetChatId?: string): string {
     const questions = (event as any).questions as Array<{
       question: string
       header?: string
@@ -366,7 +370,7 @@ export class IMessageConnector extends ChatClientConnector {
     }>
 
     if (!questions || questions.length === 0) {
-      return this.sendTextAndReturn('(No question provided)')
+      return this.sendTextAndReturn('(No question provided)', targetChatId)
     }
 
     const lines: string[] = []
@@ -387,7 +391,7 @@ export class IMessageConnector extends ChatClientConnector {
     const text = lines.join('\n').trim()
     this.send({
       type: 'send_message',
-      data: { chatId: this.lastChatId ?? undefined, parts: [{ type: 'text', value: text }] },
+      data: { chatId: targetChatId, parts: [{ type: 'text', value: text }] },
     })
 
     this.pendingQuestions.set(event.toolUseId, {
@@ -450,6 +454,7 @@ export class IMessageConnector extends ChatClientConnector {
 
     const messageId = data.messageId as string
     const chatId = data.chatId as string || this.config.phoneNumber
+    const chatName = data.chatName as string | undefined
     const from = data.from as string
     const parts = data.parts as Array<{ type: string; value?: string; url?: string; mimeType?: string; filename?: string; sizeBytes?: number }> || []
     const sentAt = data.sentAt ? new Date(data.sentAt) : new Date()
@@ -493,6 +498,7 @@ export class IMessageConnector extends ChatClientConnector {
       externalMessageId: messageId,
       text,
       chatId,
+      chatName,
       userId: from,
       userName: from,
       files: files.length > 0 ? files : undefined,
@@ -631,10 +637,10 @@ export class IMessageConnector extends ChatClientConnector {
     }
   }
 
-  private sendTextAndReturn(text: string): string {
+  private sendTextAndReturn(text: string, targetChatId?: string): string {
     this.send({
       type: 'send_message',
-      data: { chatId: this.lastChatId ?? undefined, parts: [{ type: 'text', value: text }] },
+      data: { chatId: targetChatId, parts: [{ type: 'text', value: text }] },
     })
     return `msg-${Date.now()}`
   }
