@@ -13,6 +13,7 @@ import * as dns from 'dns';
 import { inputManager } from './input-manager';
 import { dashboardManager } from './dashboard-manager';
 import { tabManager } from './tab-manager';
+import { runBrowserUpload } from './browser-upload';
 
 import { getEditingCommands } from './cdp-editing-commands';
 
@@ -1269,6 +1270,30 @@ app.post('/browser/hover', async (c) => {
   } catch (error: any) {
     console.error('[Browser] Error hovering:', error);
     return c.json({ error: error.message || 'Failed to hover' }, 500);
+  }
+});
+
+// POST /browser/upload - Upload a local file into an <input type="file">
+app.post('/browser/upload', async (c) => {
+  try {
+    const rawBody = await c.req.json().catch(() => ({}));
+    const result = await runBrowserUpload(rawBody, {
+      validateSession: validateBrowserSession,
+      isBrowserActive: () => browserState.active,
+      getConnectionUrl: () => browserState.cdpUrl || getCdpHttpEndpoint(),
+      getActiveTargetUrl: async () => (await findActivePageTarget())?.url ?? null,
+      urlsMatch: (left, right) => tabManager.urlsMatch(left, right),
+    });
+
+    if (!result.success) {
+      return c.json(result.body, result.status);
+    }
+
+    notifyBrowserAction();
+    return c.json(result.body);
+  } catch (error: any) {
+    console.error('[Browser] Error uploading file:', error);
+    return c.json({ error: error.message || 'Failed to upload file' }, 500);
   }
 });
 

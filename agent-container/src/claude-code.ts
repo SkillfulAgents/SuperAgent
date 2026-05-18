@@ -443,6 +443,7 @@ export class ClaudeCodeProcess extends EventEmitter {
               ...mcpToolNames('browser', browserTools),
               'WebSearch',
               'Read',
+              'mcp__user-input__request_file',
               'mcp__user-input__request_browser_input',
             ],
             prompt: WEB_BROWSER_AGENT_PROMPT,
