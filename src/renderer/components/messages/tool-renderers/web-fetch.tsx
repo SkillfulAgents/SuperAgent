@@ -1,10 +1,10 @@
 
-import { ExternalLink } from 'lucide-react'
+import { Globe } from 'lucide-react'
 import { webFetchDef } from '@shared/lib/tool-definitions/web-fetch'
 import type { ToolRenderer } from './types'
 
 export const webFetchRenderer: ToolRenderer = {
   displayName: webFetchDef.displayName,
-  icon: ExternalLink,
+  icon: Globe,
   getSummary: webFetchDef.getSummary,
 }

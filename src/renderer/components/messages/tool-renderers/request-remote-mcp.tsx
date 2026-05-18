@@ -1,5 +1,5 @@
 
-import { Plug } from 'lucide-react'
+import { Blocks } from 'lucide-react'
 import type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps } from './types'
 import { requestRemoteMcpDef, type RequestRemoteMcpInput } from '@shared/lib/tool-definitions/request-remote-mcp'
 
@@ -44,7 +44,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {/* Server name */}
       {name && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Server</div>
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Server</div>
           <div className="bg-background rounded p-2 text-xs font-medium">
             {name}
           </div>
@@ -54,7 +54,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {/* URL */}
       {url && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">URL</div>
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">URL</div>
           <div className="bg-background rounded p-2 text-xs font-mono truncate">
             {url}
           </div>
@@ -64,7 +64,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {/* Reason */}
       {reason && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Reason</div>
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Reason</div>
           <div className="bg-background rounded p-2 text-xs">
             {reason}
           </div>
@@ -74,14 +74,14 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {/* Result */}
       {displayResult && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">
             {isError ? 'Error' : 'Result'}
           </div>
           <div
-            className={`rounded p-2 text-xs ${
+            className={`bg-background rounded p-2 text-xs ${
               isError
-                ? 'bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200'
-                : 'bg-green-50 text-green-800 dark:bg-green-950 dark:text-green-200'
+                ? 'text-red-800 dark:text-red-200'
+                : 'text-green-800 dark:text-green-200'
             }`}
           >
             {displayResult}
@@ -103,7 +103,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
   return (
     <div className="space-y-2">
       <div>
-        <div className="text-xs font-medium text-muted-foreground mb-1">Server</div>
+        <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Server</div>
         <div className="bg-background rounded p-2 text-xs font-medium">
           {parsed.name || parsed.url || (
             <span className="text-muted-foreground italic">...</span>
@@ -112,7 +112,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
       </div>
       {parsed.url && parsed.name && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">URL</div>
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">URL</div>
           <div className="bg-background rounded p-2 text-xs font-mono truncate">
             {parsed.url}
             <span className="animate-pulse">|</span>
@@ -121,7 +121,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
       )}
       {parsed.reason && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Reason</div>
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Reason</div>
           <div className="bg-background rounded p-2 text-xs">
             {parsed.reason}
             <span className="animate-pulse">|</span>
@@ -134,7 +134,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
 
 export const requestRemoteMcpRenderer: ToolRenderer = {
   displayName: 'Request MCP Server',
-  icon: Plug,
+  icon: Blocks,
   getSummary,
   ExpandedView,
   StreamingView,

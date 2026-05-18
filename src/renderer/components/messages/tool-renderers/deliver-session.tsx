@@ -1,4 +1,4 @@
-import { ArrowRight, MessageSquare } from 'lucide-react'
+import { ArrowDownToLine, ArrowRight, MessageSquare } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { useSelection } from '@renderer/context/selection-context'
 import { useAgents } from '@renderer/hooks/use-agents'
@@ -111,7 +111,7 @@ function CollapsedContent({ input, isError, agentSlug }: CollapsedContentProps) 
 
 export const deliverSessionRenderer: ToolRenderer = {
   displayName: 'Deliver Session',
-  icon: ArrowRight,
+  icon: ArrowDownToLine,
   getSummary: (input: unknown) => deliverSessionDef.getSummary(input),
   ExpandedView,
   StreamingView,

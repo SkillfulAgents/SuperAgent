@@ -1,4 +1,4 @@
-import { Users, UserPlus, Send, List, ScrollText, ArrowUpRight } from 'lucide-react'
+import { SquareGanttChart, SquarePlus, SquareArrowRight, MessagesSquare, ArrowUpRight } from 'lucide-react'
 import type { ToolRenderer, ToolRendererProps } from './types'
 import { useSelection } from '@renderer/context/selection-context'
 import {
@@ -47,10 +47,8 @@ function ResultBlock({ result, isError }: { result?: string | null; isError?: bo
   if (!result) return null
   return (
     <pre
-      className={`whitespace-pre-wrap rounded p-2 text-xs ${
-        isError
-          ? 'bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200'
-          : 'bg-muted text-foreground/90'
+      className={`bg-background whitespace-pre-wrap rounded p-2 text-xs ${
+        isError ? 'text-red-800 dark:text-red-200' : 'text-foreground/90'
       }`}
     >
       {result}
@@ -63,7 +61,7 @@ function ResultBlock({ result, isError }: { result?: string | null; isError?: bo
 function ListAgentsExpandedView({ result, isError }: ToolRendererProps) {
   return (
     <div className="space-y-2">
-      <p className="text-sm text-muted-foreground">Listing other agents in this workspace.</p>
+      <p className="text-xs text-muted-foreground">Listing other agents in this workspace.</p>
       <ResultBlock result={result} isError={isError} />
     </div>
   )
@@ -71,7 +69,7 @@ function ListAgentsExpandedView({ result, isError }: ToolRendererProps) {
 
 export const listAgentsRenderer: ToolRenderer = {
   displayName: listAgentsDef.displayName,
-  icon: Users,
+  icon: SquareGanttChart,
   getSummary: listAgentsDef.getSummary,
   ExpandedView: ListAgentsExpandedView,
 }
@@ -86,17 +84,17 @@ function CreateAgentExpandedView({ input, result, isError }: ToolRendererProps) 
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-2 text-sm">
+      <div className="flex items-center gap-2 text-xs">
         {name && <span className="font-medium">{name}</span>}
         {createdSlug && (
-          <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{createdSlug}</code>
+          <code className="rounded bg-background px-1.5 py-0.5 text-xs">{createdSlug}</code>
         )}
       </div>
-      {description && <p className="text-sm text-muted-foreground">{description}</p>}
+      {description && <p className="text-xs text-muted-foreground">{description}</p>}
       {instructions && (
         <div>
-          <div className="mb-1 text-xs font-medium text-muted-foreground">Instructions</div>
-          <pre className="whitespace-pre-wrap rounded bg-muted p-2 text-xs">{instructions}</pre>
+          <div className="mb-1 text-xs font-medium tracking-wider text-muted-foreground">Instructions</div>
+          <pre className="whitespace-pre-wrap rounded bg-background p-2 text-xs">{instructions}</pre>
         </div>
       )}
       {createdSlug && (
@@ -111,7 +109,7 @@ function CreateAgentExpandedView({ input, result, isError }: ToolRendererProps) 
 
 export const createAgentRenderer: ToolRenderer = {
   displayName: createAgentDef.displayName,
-  icon: UserPlus,
+  icon: SquarePlus,
   getSummary: createAgentDef.getSummary,
   ExpandedView: CreateAgentExpandedView,
 }
@@ -128,7 +126,7 @@ function InvokeAgentExpandedView({ input, result, isError }: ToolRendererProps) 
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-2 text-sm">
+      <div className="flex flex-wrap items-center gap-2 text-xs">
         <span className="text-muted-foreground">Target:</span>
         {slug ? <AgentLink slug={slug} /> : <span>—</span>}
         {resolvedSessionId && slug && (
@@ -156,8 +154,8 @@ function InvokeAgentExpandedView({ input, result, isError }: ToolRendererProps) 
       </div>
       {prompt && (
         <div>
-          <div className="mb-1 text-xs font-medium text-muted-foreground">Prompt</div>
-          <div className="rounded border-2 border-dashed border-muted bg-muted/20 p-3 text-sm whitespace-pre-wrap">
+          <div className="mb-1 text-xs font-medium tracking-wider text-muted-foreground">Prompt</div>
+          <div className="bg-background rounded p-2 text-xs whitespace-pre-wrap">
             {prompt}
           </div>
         </div>
@@ -169,7 +167,7 @@ function InvokeAgentExpandedView({ input, result, isError }: ToolRendererProps) 
 
 export const invokeAgentRenderer: ToolRenderer = {
   displayName: invokeAgentDef.displayName,
-  icon: Send,
+  icon: SquareArrowRight,
   getSummary: invokeAgentDef.getSummary,
   ExpandedView: InvokeAgentExpandedView,
 }
@@ -180,7 +178,7 @@ function GetAgentSessionsExpandedView({ input, result, isError }: ToolRendererPr
   const { slug } = input as GetAgentSessionsInput
   return (
     <div className="space-y-2">
-      <div className="text-sm">
+      <div className="text-xs">
         <span className="text-muted-foreground">Sessions of:</span> {slug ? <AgentLink slug={slug} /> : '—'}
       </div>
       <ResultBlock result={result} isError={isError} />
@@ -190,7 +188,7 @@ function GetAgentSessionsExpandedView({ input, result, isError }: ToolRendererPr
 
 export const getAgentSessionsRenderer: ToolRenderer = {
   displayName: getAgentSessionsDef.displayName,
-  icon: List,
+  icon: SquareGanttChart,
   getSummary: getAgentSessionsDef.getSummary,
   ExpandedView: GetAgentSessionsExpandedView,
 }
@@ -201,7 +199,7 @@ function GetAgentSessionTranscriptExpandedView({ input, result, isError }: ToolR
   const { slug, session_id, sync } = input as GetAgentSessionTranscriptInput
   return (
     <div className="space-y-2">
-      <div className="flex flex-wrap items-center gap-2 text-sm">
+      <div className="flex flex-wrap items-center gap-2 text-xs">
         <span className="text-muted-foreground">Reading:</span>
         {slug ? <AgentLink slug={slug} /> : '—'}
         {slug && session_id && (
@@ -223,7 +221,7 @@ function GetAgentSessionTranscriptExpandedView({ input, result, isError }: ToolR
 
 export const getAgentSessionTranscriptRenderer: ToolRenderer = {
   displayName: getAgentSessionTranscriptDef.displayName,
-  icon: ScrollText,
+  icon: MessagesSquare,
   getSummary: getAgentSessionTranscriptDef.getSummary,
   ExpandedView: GetAgentSessionTranscriptExpandedView,
 }

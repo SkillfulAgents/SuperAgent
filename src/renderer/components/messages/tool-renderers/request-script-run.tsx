@@ -42,14 +42,14 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
     <div className="space-y-2">
       {explanation && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Explanation</div>
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Explanation</div>
           <div className="bg-background rounded p-2 text-xs">{explanation}</div>
         </div>
       )}
 
       {scriptType && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Script Type</div>
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Script Type</div>
           <div className="bg-background rounded p-2 text-xs">
             {SCRIPT_TYPE_LABELS[scriptType] || scriptType}
           </div>
@@ -58,7 +58,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
 
       {script && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Script</div>
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Script</div>
           <pre className="bg-background rounded p-2 text-xs font-mono overflow-x-auto whitespace-pre-wrap break-all">
             <code>{script}</code>
           </pre>
@@ -67,14 +67,14 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
 
       {displayResult && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">
             {isError ? 'Error' : 'Output'}
           </div>
           <pre
-            className={`rounded p-2 text-xs font-mono overflow-x-auto whitespace-pre-wrap break-all ${
+            className={`bg-background rounded p-2 text-xs font-mono overflow-x-auto whitespace-pre-wrap break-all ${
               isError
-                ? 'bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200'
-                : 'bg-green-50 text-green-800 dark:bg-green-950 dark:text-green-200'
+                ? 'text-red-800 dark:text-red-200'
+                : 'text-green-800 dark:text-green-200'
             }`}
           >
             {displayResult}

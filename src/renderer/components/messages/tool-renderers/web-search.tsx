@@ -1,5 +1,5 @@
 
-import { Globe } from 'lucide-react'
+import { Search } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { webSearchDef } from '@shared/lib/tool-definitions/web-search'
@@ -50,12 +50,12 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
     return (
       <div className="space-y-2">
         {query && (
-          <div className="text-xs font-medium text-muted-foreground">
+          <div className="text-xs font-medium tracking-wider text-muted-foreground">
             Query: <span className="font-mono">{query}</span>
           </div>
         )}
         {result && (
-          <pre className="bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200 rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto">
+          <pre className="bg-background text-red-800 dark:text-red-200 rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto">
             {result}
           </pre>
         )}
@@ -70,7 +70,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {/* Links list */}
       {links.length > 0 && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">
             Sources ({links.length})
           </div>
           <ul className="space-y-1">
@@ -92,7 +92,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
 
       {/* Markdown content */}
       {markdown && (
-        <div className="prose prose-sm max-w-none dark:prose-invert">
+        <div className="prose prose-sm max-w-none dark:prose-invert text-xs prose-p:text-xs prose-li:text-xs prose-headings:text-xs">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>
             {markdown}
           </ReactMarkdown>
@@ -104,7 +104,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
 
 export const webSearchRenderer: ToolRenderer = {
   displayName: webSearchDef.displayName,
-  icon: Globe,
+  icon: Search,
   getSummary: webSearchDef.getSummary,
   ExpandedView,
 }

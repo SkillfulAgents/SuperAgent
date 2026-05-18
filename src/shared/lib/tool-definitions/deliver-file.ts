@@ -11,9 +11,8 @@ export function getFilename(filePath: string): string {
   return filePath.split('/').pop() || filePath
 }
 
-function getSummary(input: unknown): string | null {
-  const { filePath } = parseInput(input)
-  return filePath ? getFilename(filePath) : null
+function getSummary(_input: unknown): string | null {
+  return null
 }
 
 export const deliverFileDef = { displayName: 'Deliver File', iconName: 'Download', parseInput, getSummary } as const

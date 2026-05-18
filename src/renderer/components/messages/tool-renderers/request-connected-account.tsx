@@ -1,5 +1,5 @@
 
-import { Link2 } from 'lucide-react'
+import { Blocks } from 'lucide-react'
 import type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps } from './types'
 import { requestConnectedAccountDef, type RequestConnectedAccountInput } from '@shared/lib/tool-definitions/request-connected-account'
 import { getProvider } from '@shared/lib/composio/providers'
@@ -45,7 +45,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {/* Toolkit */}
       {toolkit && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Service</div>
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Service</div>
           <div className="bg-background rounded p-2 text-xs font-medium capitalize">
             {provider?.displayName || toolkit}
           </div>
@@ -55,7 +55,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {/* Reason */}
       {reason && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Reason</div>
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Reason</div>
           <div className="bg-background rounded p-2 text-xs">
             {reason}
           </div>
@@ -65,14 +65,14 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {/* Result */}
       {displayResult && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">
             {isError ? 'Error' : 'Result'}
           </div>
           <div
-            className={`rounded p-2 text-xs ${
+            className={`bg-background rounded p-2 text-xs ${
               isError
-                ? 'bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200'
-                : 'bg-green-50 text-green-800 dark:bg-green-950 dark:text-green-200'
+                ? 'text-red-800 dark:text-red-200'
+                : 'text-green-800 dark:text-green-200'
             }`}
           >
             {displayResult}
@@ -96,7 +96,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
   return (
     <div className="space-y-2">
       <div>
-        <div className="text-xs font-medium text-muted-foreground mb-1">Service</div>
+        <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Service</div>
         <div className="bg-background rounded p-2 text-xs font-medium capitalize">
           {provider?.displayName || parsed.toolkit || (
             <span className="text-muted-foreground italic">...</span>
@@ -105,7 +105,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
       </div>
       {parsed.reason && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">Reason</div>
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Reason</div>
           <div className="bg-background rounded p-2 text-xs">
             {parsed.reason}
             <span className="animate-pulse">|</span>
@@ -118,7 +118,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
 
 export const requestConnectedAccountRenderer: ToolRenderer = {
   displayName: 'Request Connected Account',
-  icon: Link2,
+  icon: Blocks,
   getSummary: requestConnectedAccountDef.getSummary,
   ExpandedView,
   StreamingView,

@@ -1,5 +1,5 @@
 
-import { FolderSearch } from 'lucide-react'
+import { Search } from 'lucide-react'
 import { globDef } from '@shared/lib/tool-definitions/glob'
 import type { ToolRenderer, ToolRendererProps } from './types'
 
@@ -12,7 +12,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
     <div className="space-y-2">
       {/* Pattern and path */}
       <div>
-        <div className="text-xs font-medium text-muted-foreground mb-1">Pattern</div>
+        <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Pattern</div>
         <div className="bg-background rounded p-2 text-xs font-mono">
           {pattern}
           {path && (
@@ -24,12 +24,12 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {/* File list */}
       {(files.length > 0 || isError) && result && (
         <div>
-          <div className="text-xs font-medium text-muted-foreground mb-1">
+          <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">
             {isError ? 'Error' : `Files (${files.length})`}
           </div>
           <pre
             className={`rounded p-2 text-xs overflow-x-auto max-h-60 overflow-y-auto font-mono ${
-              isError ? 'bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200' : 'bg-background'
+              isError ? 'bg-background text-red-800 dark:text-red-200' : 'bg-background'
             }`}
           >
             {result}
@@ -47,7 +47,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
 
 export const globRenderer: ToolRenderer = {
   displayName: globDef.displayName,
-  icon: FolderSearch,
+  icon: Search,
   getSummary: globDef.getSummary,
   ExpandedView,
 }

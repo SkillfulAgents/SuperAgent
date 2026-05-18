@@ -86,6 +86,7 @@ vi.mock('@renderer/lib/env', () => ({
 vi.mock('./tool-call-item', () => ({
   ToolCallItem: ({ toolCall }: any) => <div data-testid={`tool-call-${toolCall.name}`}>{toolCall.name}</div>,
   StreamingToolCallItem: ({ name }: any) => <div data-testid="streaming-tool-call">{name}</div>,
+  StatusIndicator: ({ status }: any) => <span data-testid="status-indicator">{status}</span>,
 }))
 
 vi.mock('./subagent-block', () => ({
