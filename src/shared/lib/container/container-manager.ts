@@ -52,6 +52,7 @@ interface CachedContainerStatus {
 class ContainerManager {
   private clients: Map<string, ContainerClient> = new Map()
   private containerStartedAt: Map<string, number> = new Map()
+  private lastKeepAliveAt: Map<string, number> = new Map()
   /** Cached container statuses - avoids repeated docker inspect calls */
   private containerStatuses: Map<string, CachedContainerStatus> = new Map()
   private syncIntervalId: NodeJS.Timeout | null = null
@@ -604,10 +605,20 @@ class ContainerManager {
     return this.containerStartedAt.get(agentId)
   }
 
+  // Record a keep-alive ping (e.g. from an open dashboard) to prevent auto-sleep
+  keepAlive(agentId: string): void {
+    this.lastKeepAliveAt.set(agentId, Date.now())
+  }
+
+  getLastKeepAlive(agentId: string): number | undefined {
+    return this.lastKeepAliveAt.get(agentId)
+  }
+
   // Remove a client from the cache
   removeClient(agentId: string): void {
     this.clients.delete(agentId)
     this.containerStartedAt.delete(agentId)
+    this.lastKeepAliveAt.delete(agentId)
     this.containerStatuses.delete(agentId)
     this.healthWarnings.delete(agentId)
     this.stoppingAgents.delete(agentId)
@@ -619,6 +630,7 @@ class ContainerManager {
   clearClients(): void {
     this.clients.clear()
     this.containerStartedAt.clear()
+    this.lastKeepAliveAt.clear()
     this.containerStatuses.clear()
     this.healthWarnings.clear()
     this.stoppingAgents.clear()
@@ -650,6 +662,7 @@ class ContainerManager {
     }
     this.clients.clear()
     this.containerStartedAt.clear()
+    this.lastKeepAliveAt.clear()
     this.containerStatuses.clear()
     this.healthWarnings.clear()
     this.stoppingAgents.clear()
@@ -669,6 +682,7 @@ class ContainerManager {
     }
     this.clients.clear()
     this.containerStartedAt.clear()
+    this.lastKeepAliveAt.clear()
     this.containerStatuses.clear()
     this.healthWarnings.clear()
   }

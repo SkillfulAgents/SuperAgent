@@ -1101,6 +1101,13 @@ agents.post('/:id/stop', AgentUser(), async (c) => {
   }
 })
 
+// POST /api/agents/:id/keep-alive - Prevent auto-sleep (e.g. dashboard is open)
+agents.post('/:id/keep-alive', AgentRead(), async (c) => {
+  const slug = c.req.param('id')
+  containerManager.keepAlive(slug)
+  return c.json({ ok: true })
+})
+
 // POST /api/agents/:id/open-directory - Get workspace path, optionally open in system file manager
 const OpenDirectoryBody = z.object({ open: z.boolean().optional() })
 

@@ -58,6 +58,7 @@ vi.mock('../middleware/auth', () => ({
 // Container manager
 const mockContainerFetch = vi.fn()
 const mockSendMessage = vi.fn()
+const mockKeepAlive = vi.fn()
 vi.mock('@shared/lib/container/container-manager', () => ({
   containerManager: {
     getClient: () => ({
@@ -69,6 +70,7 @@ vi.mock('@shared/lib/container/container-manager', () => ({
     ensureRunning: vi.fn(),
     getCachedInfo: () => ({ status: 'running', port: 8080 }),
     removeClient: vi.fn(),
+    keepAlive: (...args: unknown[]) => mockKeepAlive(...args),
   },
 }))
 
@@ -2688,5 +2690,23 @@ describe('GET /:id/artifacts/:slug/screenshot.png', () => {
     mockFsReadFile.mockRejectedValueOnce(new Error('EIO disk failure'))
     const res = await getReq(app, '/api/agents/my-agent/artifacts/my-dash/screenshot.png')
     expect(res.status).toBe(500)
+  })
+})
+
+describe('POST /api/agents/:id/keep-alive', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+  })
+
+  it('calls containerManager.keepAlive and returns ok', async () => {
+    const res = await app.request('http://localhost/api/agents/my-agent/keep-alive', {
+      method: 'POST',
+    })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true })
+    expect(mockKeepAlive).toHaveBeenCalledWith('my-agent')
   })
 })
