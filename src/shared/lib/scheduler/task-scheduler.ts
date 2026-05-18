@@ -206,6 +206,7 @@ class TaskScheduler {
     notificationManager.triggerScheduledSessionStarted(
       sessionId,
       task.agentSlug,
+      task.id,
       task.name || undefined
     ).catch((err) => {
       console.error('[TaskScheduler] Failed to trigger scheduled notification:', err)

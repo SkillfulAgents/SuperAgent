@@ -319,7 +319,7 @@ class TriggerManager {
 
     // Notification
     notificationManager
-      .triggerWebhookSessionStarted(sessionId, trigger.agentSlug, trigger.name || undefined)
+      .triggerWebhookSessionStarted(sessionId, trigger.agentSlug, trigger.id, trigger.name || undefined)
       .catch((err) => {
         console.error('[TriggerManager] Failed to trigger notification:', err)
       })

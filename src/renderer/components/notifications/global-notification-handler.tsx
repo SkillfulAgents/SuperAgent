@@ -173,6 +173,17 @@ export function GlobalNotificationHandler() {
               queryClient.invalidateQueries({ queryKey: ['sessions', notifAgentSlug] })
             }
 
+            // Automation-triggered sessions: refresh the trigger/task session lists
+            // and the trigger/task detail so the UI updates in real time.
+            const notifType = data.notificationType as string | undefined
+            if (notifType === 'session_webhook' && data.triggerId) {
+              queryClient.invalidateQueries({ queryKey: ['webhook-trigger-sessions', data.triggerId] })
+              queryClient.invalidateQueries({ queryKey: ['webhook-trigger', data.triggerId] })
+            } else if (notifType === 'session_scheduled' && data.taskId) {
+              queryClient.invalidateQueries({ queryKey: ['scheduled-task-sessions', data.taskId] })
+              queryClient.invalidateQueries({ queryKey: ['scheduled-task', data.taskId] })
+            }
+
             // Skip if user doesn't have access to the notification's agent
             const agentSlug = data.agentSlug as string | undefined
             if (agentSlug && !canAccessAgentRef.current(agentSlug)) break
@@ -250,6 +261,10 @@ export function GlobalNotificationHandler() {
             }
             // Artifacts may have been created/modified during the session
             queryClient.invalidateQueries({ queryKey: ['artifacts'] })
+
+            // Automation session lists show isActive status — refresh them
+            queryClient.invalidateQueries({ queryKey: ['webhook-trigger-sessions'] })
+            queryClient.invalidateQueries({ queryKey: ['scheduled-task-sessions'] })
 
             // Proxy review created or resolved — refetch review list
             if (eventAgentSlug && data.review) {
