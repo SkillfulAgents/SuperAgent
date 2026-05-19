@@ -17,6 +17,7 @@ export type AgentView =
   | { kind: 'dashboard'; slug: string }
   | { kind: 'apiLogs' }
   | { kind: 'connections' }
+  | { kind: 'connectedAgents' }
 
 const HOME: AgentView = { kind: 'home' }
 
