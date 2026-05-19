@@ -84,11 +84,81 @@ test.describe('Search palette', () => {
     await expect(page.locator('[data-testid="search-input"]')).toBeVisible()
     await expect(page.locator('[data-testid="search-input"]')).toBeFocused()
 
-    // Empty query: typing nothing shows the empty-state hint
-    await expect(page.locator('[data-testid="search-results"]')).toContainText('Type to search')
+    // Empty query shows recent agents or a "No recent agents" hint
+    const results = page.locator('[data-testid="search-results"]')
+    await expect(results).toBeVisible()
 
     // Close with Escape
     await page.keyboard.press('Escape')
     await expect(page.locator('[data-testid="search-input"]')).not.toBeVisible()
+  })
+
+  test('Empty query shows recent agents with expand/collapse for sessions', async ({ page, request }) => {
+    const stamp = Date.now()
+    const agentName = `Recent Agent ${stamp}`
+    const sessionName = `Deploy Pipeline ${stamp}`
+
+    await agentPage.createAgent(agentName)
+
+    // Look up the slug
+    const agentsRes = await request.get('http://localhost:3000/api/agents')
+    expect(agentsRes.ok()).toBe(true)
+    const agents = (await agentsRes.json()) as Array<{ slug: string; name: string }>
+    const slug = agents.find((a) => a.name === agentName)?.slug
+    expect(slug, `agent ${agentName} not found in API`).toBeDefined()
+
+    // Wait for the session to finish processing before renaming
+    const sessionsRes = await request.get(`http://localhost:3000/api/agents/${slug}/sessions`)
+    expect(sessionsRes.ok()).toBe(true)
+    const sessions = (await sessionsRes.json()) as Array<{ id: string }>
+    expect(sessions.length).toBeGreaterThan(0)
+    const sessionId = sessions[0].id
+
+    // Retry the PATCH in case the session is still being processed
+    await expect(async () => {
+      const res = await request.patch(
+        `http://localhost:3000/api/agents/${slug}/sessions/${sessionId}`,
+        { data: { name: sessionName } }
+      )
+      expect(res.ok()).toBe(true)
+    }).toPass({ timeout: 5000 })
+
+    await appPage.reload()
+
+    // Open the search palette with empty query
+    await page.keyboard.press('ControlOrMeta+k')
+    const searchInput = page.locator('[data-testid="search-input"]')
+    await expect(searchInput).toBeVisible()
+
+    const results = page.locator('[data-testid="search-results"]')
+
+    // The agent should appear in the recent list without typing anything
+    await expect(results.getByText(agentName)).toBeVisible()
+
+    // Sessions should be collapsed (not visible yet)
+    await expect(results.getByText(sessionName)).not.toBeVisible()
+
+    // ArrowRight expands the agent's sessions
+    await page.keyboard.press('ArrowRight')
+    await expect(results.getByText(sessionName)).toBeVisible()
+
+    // ArrowLeft collapses them
+    await page.keyboard.press('ArrowLeft')
+    await expect(results.getByText(sessionName)).not.toBeVisible()
+
+    // Click the chevron to expand
+    const agentRow = results.getByText(agentName).locator('..')
+    await agentRow.locator('svg').first().click()
+    await expect(results.getByText(sessionName)).toBeVisible()
+
+    // Enter on a session navigates to it (dialog closes, lands on the agent)
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.press('Enter')
+    await expect(page.locator('[data-testid="search-input"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agentName)
+
+    // Cleanup — navigate to agent home before deleting
+    await page.locator('[data-testid="agent-breadcrumb"]').click()
+    await agentPage.deleteAgent()
   })
 })

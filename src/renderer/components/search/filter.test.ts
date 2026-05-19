@@ -1,24 +1,25 @@
 import { describe, it, expect } from 'vitest'
-import { filterAgentsAndSessions, flattenGroups } from './filter'
+import { filterAgentsAndSessions, flattenGroups, getRecentAgents } from './filter'
 import type { ApiAgent, ApiSession } from '@shared/lib/types/api'
 
-function agent(slug: string, name: string): ApiAgent {
+function agent(slug: string, name: string, lastActivityAt?: Date): ApiAgent {
   return {
     slug,
     name,
     createdAt: new Date(0),
     status: 'stopped',
     containerPort: null,
+    lastActivityAt: lastActivityAt ?? undefined,
   }
 }
 
-function session(id: string, agentSlug: string, name: string): ApiSession {
+function session(id: string, agentSlug: string, name: string, lastActivityAt?: Date): ApiSession {
   return {
     id,
     agentSlug,
     name,
     createdAt: new Date(0),
-    lastActivityAt: new Date(0),
+    lastActivityAt: lastActivityAt ?? new Date(0),
     messageCount: 0,
     isActive: false,
     isAwaitingInput: false,
@@ -27,18 +28,16 @@ function session(id: string, agentSlug: string, name: string): ApiSession {
 }
 
 describe('filterAgentsAndSessions', () => {
-  const alpha = agent('alpha', 'Alpha Bot')
-  const beta = agent('beta', 'Beta Worker')
+  const alpha = agent('alpha', 'Alpha Bot', new Date('2025-01-01'))
+  const beta = agent('beta', 'Beta Worker', new Date('2025-01-02'))
   const sessions = {
     alpha: [session('s1', 'alpha', 'Refactor login'), session('s2', 'alpha', 'Database backup')],
     beta: [session('s3', 'beta', 'Login analytics'), session('s4', 'beta', 'Daily report')],
   }
 
-  it('empty query returns every agent with no nested sessions', () => {
+  it('empty query returns empty array', () => {
     const groups = filterAgentsAndSessions([alpha, beta], sessions, '')
-    expect(groups).toHaveLength(2)
-    expect(groups[0]).toEqual({ agent: alpha, matchedAgent: true, sessions: [] })
-    expect(groups[1]).toEqual({ agent: beta, matchedAgent: true, sessions: [] })
+    expect(groups).toHaveLength(0)
   })
 
   it('matches agent name case-insensitively', () => {
@@ -51,7 +50,6 @@ describe('filterAgentsAndSessions', () => {
 
   it('surfaces a non-matching agent because one of its sessions matches', () => {
     const groups = filterAgentsAndSessions([alpha, beta], sessions, 'login')
-    // Both agents appear: alpha has "Refactor login", beta has "Login analytics"
     expect(groups).toHaveLength(2)
     const alphaGroup = groups.find((g) => g.agent.slug === 'alpha')!
     expect(alphaGroup.matchedAgent).toBe(false)
@@ -67,7 +65,6 @@ describe('filterAgentsAndSessions', () => {
     expect(groups).toHaveLength(1)
     expect(groups[0].agent.slug).toBe('alpha')
     expect(groups[0].matchedAgent).toBe(true)
-    // None of alpha's sessions contain "alpha"
     expect(groups[0].sessions).toEqual([])
   })
 
@@ -78,18 +75,71 @@ describe('filterAgentsAndSessions', () => {
 
   it('whitespace-only query is treated as empty', () => {
     const groups = filterAgentsAndSessions([alpha, beta], sessions, '   ')
-    expect(groups).toHaveLength(2)
-    expect(groups.every((g) => g.matchedAgent && g.sessions.length === 0)).toBe(true)
+    expect(groups).toHaveLength(0)
+  })
+})
+
+describe('getRecentAgents', () => {
+  it('returns agents sorted by lastActivityAt descending, limited to 10', () => {
+    const agents = Array.from({ length: 12 }, (_, i) =>
+      agent(`a${i}`, `Agent ${i}`, new Date(2025, 0, i + 1))
+    )
+    const sessions: Record<string, ApiSession[]> = {}
+    const result = getRecentAgents(agents, sessions)
+    expect(result).toHaveLength(10)
+    expect(result[0].agent.slug).toBe('a11')
+    expect(result[9].agent.slug).toBe('a2')
+  })
+
+  it('excludes agents without lastActivityAt', () => {
+    const agents = [
+      agent('active', 'Active', new Date('2025-03-01')),
+      agent('inactive', 'Inactive'),
+    ]
+    const result = getRecentAgents(agents, {})
+    expect(result).toHaveLength(1)
+    expect(result[0].agent.slug).toBe('active')
+  })
+
+  it('sorts sessions by lastActivityAt descending and limits to 10', () => {
+    const a = agent('a', 'Agent A', new Date('2025-01-01'))
+    const allSessions = Array.from({ length: 12 }, (_, i) =>
+      session(`s${i}`, 'a', `Session ${i}`, new Date(2025, 0, i + 1))
+    )
+    const result = getRecentAgents([a], { a: allSessions })
+    expect(result[0].sessions).toHaveLength(10)
+    expect(result[0].sessions[0].id).toBe('s11')
+    expect(result[0].sessions[9].id).toBe('s2')
   })
 })
 
 describe('flattenGroups', () => {
-  const alpha = agent('alpha', 'Alpha')
+  const alpha = agent('alpha', 'Alpha', new Date('2025-01-01'))
   const s1 = session('s1', 'alpha', 'one')
   const s2 = session('s2', 'alpha', 'two')
 
-  it('emits agent first, then its sessions in order', () => {
+  it('without expandedSlugs, emits agent and all sessions', () => {
     const flat = flattenGroups([{ agent: alpha, matchedAgent: true, sessions: [s1, s2] }])
+    expect(flat).toEqual([
+      { kind: 'agent', agent: alpha },
+      { kind: 'session', agent: alpha, session: s1 },
+      { kind: 'session', agent: alpha, session: s2 },
+    ])
+  })
+
+  it('with expandedSlugs, only emits sessions for expanded agents', () => {
+    const flat = flattenGroups(
+      [{ agent: alpha, matchedAgent: true, sessions: [s1, s2] }],
+      new Set()
+    )
+    expect(flat).toEqual([{ kind: 'agent', agent: alpha }])
+  })
+
+  it('with expandedSlugs containing the agent, emits sessions', () => {
+    const flat = flattenGroups(
+      [{ agent: alpha, matchedAgent: true, sessions: [s1, s2] }],
+      new Set(['alpha'])
+    )
     expect(flat).toEqual([
       { kind: 'agent', agent: alpha },
       { kind: 'session', agent: alpha, session: s1 },
