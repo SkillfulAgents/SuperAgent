@@ -10,6 +10,7 @@ import { WebhookTriggerView } from '@renderer/components/webhook-triggers/webhoo
 import { ChatIntegrationView } from '@renderer/components/chat-integrations/chat-integration-view'
 import { ApiLogsView } from '@renderer/components/api-logs/api-logs-view'
 import { ConnectionsView } from '@renderer/components/connections/connections-view'
+import { ConnectedAgentsView } from '@renderer/components/agents/connected-agents/connected-agents-view'
 import { BrowserDrawerPanel } from '@renderer/components/browser/browser-drawer-panel'
 import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
@@ -440,6 +441,8 @@ export function MainContent() {
           <ApiLogsView agentSlug={agentSlug} />
         ) : view.kind === 'connections' ? (
           <ConnectionsView agentSlug={agentSlug} />
+        ) : view.kind === 'connectedAgents' ? (
+          <ConnectedAgentsView agentSlug={agentSlug} />
         ) : view.kind === 'task' ? (
           <ScheduledTaskView taskId={view.id} agentSlug={agentSlug} />
         ) : view.kind === 'webhook' ? (
