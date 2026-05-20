@@ -381,10 +381,6 @@ describe('MessagePersister', () => {
 
   describe('subagent completion detection', () => {
     it('broadcasts subagent_completed when tool_result matches pendingTaskToolId', async () => {
-      // Set up filesystem mock so agentId can be discovered
-      mockReaddir.mockResolvedValue(['agent-sub1.jsonl'])
-      mockStat.mockResolvedValue({ mtimeMs: 1000 })
-
       // Set up Task tool tracking
       mockClient._sendMessage({
         type: 'stream_event',
@@ -398,17 +394,13 @@ describe('MessagePersister', () => {
         event: { type: 'content_block_stop' },
       })
 
-      // Send a sidechain message to trigger agentId discovery
+      // task_started sets agentId deterministically
       mockClient._sendMessage({
-        type: 'assistant',
-        parent_tool_use_id: 'task-tool-1',
-        message: { role: 'assistant', content: [{ type: 'text', text: 'working' }] },
-      })
-
-      // Wait for async discovery to complete
-      await vi.waitFor(() => {
-        const updated = sseEvents.filter(e => e.type === 'subagent_updated' && e.agentId === 'sub1')
-        expect(updated.length).toBeGreaterThanOrEqual(1)
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'sub1',
+        tool_use_id: 'task-tool-1',
+        description: 'test',
       })
 
       sseEvents.length = 0
@@ -566,81 +558,82 @@ describe('MessagePersister', () => {
   // Subagent ID discovery
   // ============================================================================
 
-  describe('subagent ID discovery (FIFO)', () => {
-    it('discovers agentId from single unclaimed file', async () => {
-      mockReaddir.mockResolvedValue(['agent-abc123.jsonl'])
-      mockStat.mockResolvedValue({ mtimeMs: 1000 })
-
-      // Send a sidechain message to trigger discovery
+  describe('subagent ID resolution (deterministic via task_started)', () => {
+    function setupTaskTool(toolId = 'task-tool-1') {
       mockClient._sendMessage({
-        type: 'assistant',
-        parent_tool_use_id: 'task-tool-1',
-        message: { role: 'assistant', content: [{ type: 'text', text: 'working' }] },
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: toolId, name: 'Task' },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_stop' },
+      })
+    }
+
+    it('resolves agentId from task_started.task_id', () => {
+      setupTaskTool('task-tool-1')
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'abc123',
+        tool_use_id: 'task-tool-1',
+        subagent_type: 'web-browser',
+        description: 'Browse the web',
       })
 
-      await vi.waitFor(() => {
-        const events = sseEvents.filter(e => e.type === 'subagent_updated' && e.agentId === 'abc123')
-        expect(events.length).toBeGreaterThanOrEqual(1)
-      })
+      const started = sseEvents.filter(e => e.type === 'subagent_started')
+      expect(started).toHaveLength(1)
+      expect(started[0].agentId).toBe('abc123')
+      expect(started[0].parentToolId).toBe('task-tool-1')
+      expect(started[0].subagentType).toBe('web-browser')
     })
 
-    it('assigns multiple unclaimed files in FIFO order by mtime', async () => {
-      mockReaddir.mockResolvedValue(['agent-abc123.jsonl', 'agent-def456.jsonl'])
-      mockStat.mockImplementation((filePath: string) => {
-        if (filePath.includes('abc123')) return Promise.resolve({ mtimeMs: 1000 })
-        if (filePath.includes('def456')) return Promise.resolve({ mtimeMs: 2000 })
-        return Promise.reject(new Error('ENOENT'))
+    it('resolves multiple parallel subagents deterministically', () => {
+      setupTaskTool('tool-A')
+      setupTaskTool('tool-B')
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'abc123',
+        tool_use_id: 'tool-A',
+        description: 'First',
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'def456',
+        tool_use_id: 'tool-B',
+        description: 'Second',
       })
 
-      // Register two Task tools (in order: tool-A then tool-B)
-      mockClient._sendMessage({
-        type: 'stream_event',
-        event: { type: 'content_block_start', content_block: { type: 'tool_use', id: 'tool-A', name: 'Task' } },
-      })
-      mockClient._sendMessage({
-        type: 'stream_event',
-        event: { type: 'content_block_stop' },
-      })
-      mockClient._sendMessage({
-        type: 'stream_event',
-        event: { type: 'content_block_start', content_block: { type: 'tool_use', id: 'tool-B', name: 'Task' } },
-      })
-      mockClient._sendMessage({
-        type: 'stream_event',
-        event: { type: 'content_block_stop' },
-      })
+      const started = sseEvents.filter(e => e.type === 'subagent_started')
+      expect(started).toHaveLength(2)
+      expect(started[0].agentId).toBe('abc123')
+      expect(started[0].parentToolId).toBe('tool-A')
+      expect(started[1].agentId).toBe('def456')
+      expect(started[1].parentToolId).toBe('tool-B')
+    })
 
+    it('agentId from sidechain message updates entry without filesystem', () => {
+      setupTaskTool('task-tool-1')
       sseEvents.length = 0
 
-      // Sidechain message for tool-A triggers discovery for both
-      mockClient._sendMessage({
-        type: 'assistant',
-        parent_tool_use_id: 'tool-A',
-        message: { role: 'assistant', content: [{ type: 'text', text: 'working' }] },
-      })
-
-      await vi.waitFor(() => {
-        // tool-A (registered first) gets abc123 (oldest file)
-        const eventsA = sseEvents.filter(e => e.type === 'subagent_updated' && e.parentToolId === 'tool-A' && e.agentId === 'abc123')
-        expect(eventsA.length).toBeGreaterThanOrEqual(1)
-        // tool-B (registered second) gets def456 (newer file)
-        const eventsB = sseEvents.filter(e => e.type === 'subagent_updated' && e.parentToolId === 'tool-B' && e.agentId === 'def456')
-        expect(eventsB.length).toBeGreaterThanOrEqual(1)
-      })
-    })
-
-    it('handles missing subagents directory gracefully', async () => {
-      mockReaddir.mockRejectedValue(new Error('ENOENT'))
-
+      // Sidechain message arrives before task_started, with agentId on the message
       mockClient._sendMessage({
         type: 'assistant',
         parent_tool_use_id: 'task-tool-1',
+        agentId: 'direct-id-123',
         message: { role: 'assistant', content: [{ type: 'text', text: 'working' }] },
       })
 
-      const events = sseEvents.filter(e => e.type === 'subagent_updated')
-      expect(events.length).toBeGreaterThanOrEqual(1)
-      expect(events[0].agentId).toBeNull()
+      const updated = sseEvents.filter(e => e.type === 'subagent_updated' && e.agentId === 'direct-id-123')
+      expect(updated.length).toBeGreaterThanOrEqual(1)
+      expect(mockReaddir).not.toHaveBeenCalled()
     })
   })
 
@@ -808,21 +801,15 @@ describe('MessagePersister', () => {
     })
 
     it('clears subagent streaming state on subagent completion', async () => {
-      // Pre-populate agentId so completion takes the synchronous path
-      mockReaddir.mockResolvedValue(['agent-sub1.jsonl'])
-      mockStat.mockResolvedValue({ mtimeMs: 1000 })
-
       setupTaskTool()
 
-      // Send a sidechain message to trigger agentId discovery
+      // task_started sets agentId deterministically
       mockClient._sendMessage({
-        type: 'assistant',
-        parent_tool_use_id: 'task-tool-1',
-        message: { role: 'assistant', content: [{ type: 'text', text: 'init' }] },
-      })
-      await vi.waitFor(() => {
-        const found = sseEvents.filter(e => e.type === 'subagent_updated' && e.agentId === 'sub1')
-        expect(found.length).toBeGreaterThanOrEqual(1)
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'sub1',
+        tool_use_id: 'task-tool-1',
+        description: 'test',
       })
 
       // Stream some subagent content
@@ -861,22 +848,15 @@ describe('MessagePersister', () => {
       expect(starts).toHaveLength(1)
     })
 
-    it('does not reuse completed subagent ID for second subagent (filesystem discovery)', async () => {
-      // First subagent: discover agentId from filesystem
-      mockReaddir.mockResolvedValue(['agent-sub1.jsonl'])
-      mockStat.mockResolvedValue({ mtimeMs: 1000 })
-
+    it('sequential subagents each get their own agentId from task_started', () => {
+      // First subagent
       setupTaskTool('task-tool-1')
-
-      // Trigger agentId discovery via sidechain message
       mockClient._sendMessage({
-        type: 'assistant',
-        parent_tool_use_id: 'task-tool-1',
-        message: { role: 'assistant', content: [{ type: 'text', text: 'first subagent' }] },
-      })
-      await vi.waitFor(() => {
-        const found = sseEvents.filter(e => e.type === 'subagent_updated' && e.agentId === 'sub1')
-        expect(found.length).toBeGreaterThanOrEqual(1)
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'sub1',
+        tool_use_id: 'task-tool-1',
+        description: 'first',
       })
 
       // Complete the first subagent
@@ -890,78 +870,20 @@ describe('MessagePersister', () => {
 
       sseEvents.length = 0
 
-      // Second subagent: filesystem still has sub1 (new file not created yet)
-      // This is the bug scenario — discovery should NOT pick sub1 again
-      mockReaddir.mockResolvedValue(['agent-sub1.jsonl', 'agent-sub2.jsonl'])
-      mockStat.mockImplementation((filePath: string) => {
-        if (filePath.includes('sub1')) return Promise.resolve({ mtimeMs: 1000 })
-        return Promise.resolve({ mtimeMs: 2000 }) // sub2 is newer
-      })
-
+      // Second subagent — gets its own agentId, no risk of reusing sub1
       setupTaskTool('task-tool-2')
-
-      // Trigger discovery for the second subagent
       mockClient._sendMessage({
-        type: 'assistant',
-        parent_tool_use_id: 'task-tool-2',
-        message: { role: 'assistant', content: [{ type: 'text', text: 'second subagent' }] },
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'sub2',
+        tool_use_id: 'task-tool-2',
+        description: 'second',
       })
 
-      await vi.waitFor(() => {
-        const found = sseEvents.filter(e => e.type === 'subagent_updated' && e.agentId === 'sub2')
-        expect(found.length).toBeGreaterThanOrEqual(1)
-      })
-
-      // Should NOT have picked sub1 (the completed one)
-      const sub1Events = sseEvents.filter(e => e.type === 'subagent_updated' && e.agentId === 'sub1')
-      expect(sub1Events).toHaveLength(0)
-    })
-
-    it('does not reuse completed subagent ID when only old file exists', async () => {
-      // First subagent completes
-      mockReaddir.mockResolvedValue(['agent-sub1.jsonl'])
-      mockStat.mockResolvedValue({ mtimeMs: 1000 })
-
-      setupTaskTool('task-tool-1')
-
-      mockClient._sendMessage({
-        type: 'assistant',
-        parent_tool_use_id: 'task-tool-1',
-        message: { role: 'assistant', content: [{ type: 'text', text: 'first' }] },
-      })
-      await vi.waitFor(() => {
-        const found = sseEvents.filter(e => e.type === 'subagent_updated' && e.agentId === 'sub1')
-        expect(found.length).toBeGreaterThanOrEqual(1)
-      })
-
-      mockClient._sendMessage({
-        type: 'user',
-        message: {
-          role: 'user',
-          content: [{ type: 'tool_result', tool_use_id: 'task-tool-1', content: 'done' }],
-        },
-      })
-
-      sseEvents.length = 0
-
-      // Second subagent starts but new file doesn't exist yet — only sub1 on disk
-      mockReaddir.mockResolvedValue(['agent-sub1.jsonl'])
-
-      setupTaskTool('task-tool-2')
-
-      // Send stream event (no agentId available from content)
-      mockClient._sendMessage({
-        type: 'stream_event',
-        parent_tool_use_id: 'task-tool-2',
-        event: { type: 'message_start' },
-      })
-
-      // Discovery should NOT pick sub1 — should leave activeSubagentId as null
-      // Give async discovery time to run
-      await new Promise(resolve => setTimeout(resolve, 50))
-
-      const updatedWithSub1 = sseEvents.filter(e => e.type === 'subagent_updated' && e.agentId === 'sub1')
-      expect(updatedWithSub1).toHaveLength(0)
+      const started = sseEvents.filter(e => e.type === 'subagent_started')
+      expect(started).toHaveLength(1)
+      expect(started[0].agentId).toBe('sub2')
+      expect(started[0].parentToolId).toBe('task-tool-2')
     })
 
     it('extracts agentId directly from complete sidechain messages', async () => {
@@ -977,9 +899,8 @@ describe('MessagePersister', () => {
       })
 
       // Should use the agentId from the message directly, without filesystem discovery
-      const updated = sseEvents.filter(e => e.type === 'subagent_updated')
-      expect(updated).toHaveLength(1)
-      expect(updated[0].agentId).toBe('direct-id-123')
+      const updated = sseEvents.filter(e => e.type === 'subagent_updated' && e.agentId === 'direct-id-123')
+      expect(updated.length).toBeGreaterThanOrEqual(1)
       // Filesystem should NOT have been called
       expect(mockReaddir).not.toHaveBeenCalled()
     })
@@ -1000,6 +921,184 @@ describe('MessagePersister', () => {
       const deltas = sseEvents.filter(e => e.type === 'subagent_stream_delta')
       expect(deltas).toHaveLength(1)
       expect(deltas[0].text).toBe('bare event text')
+    })
+  })
+
+  // ============================================================================
+  // Sidechain complete assistant message broadcasts subagent_stream_delta
+  // ============================================================================
+
+  describe('sidechain complete assistant message text extraction', () => {
+    function setupTaskTool(toolId = 'task-tool-1') {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: toolId, name: 'Task' },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_stop' },
+      })
+    }
+
+    it('broadcasts subagent_stream_delta for sidechain complete assistant message with text blocks', () => {
+      setupTaskTool()
+      sseEvents.length = 0
+
+      // Send a complete assistant message (not streamed) with text content
+      mockClient._sendMessage({
+        type: 'assistant',
+        parent_tool_use_id: 'task-tool-1',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'Here is the analysis result.' },
+          ],
+        },
+      })
+
+      // Should broadcast subagent_stream_delta with the extracted text
+      const deltas = sseEvents.filter(e => e.type === 'subagent_stream_delta')
+      expect(deltas.length).toBeGreaterThanOrEqual(1)
+      expect(deltas[0].text).toBe('Here is the analysis result.')
+      expect(deltas[0].parentToolId).toBe('task-tool-1')
+    })
+
+    it('extracts and concatenates multiple text blocks from complete assistant message', () => {
+      setupTaskTool()
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'assistant',
+        parent_tool_use_id: 'task-tool-1',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'Part one. ' },
+            { type: 'tool_use', id: 'sub-tool', name: 'Bash', input: {} },
+            { type: 'text', text: 'Part two.' },
+          ],
+        },
+      })
+
+      const deltas = sseEvents.filter(e => e.type === 'subagent_stream_delta')
+      expect(deltas.length).toBeGreaterThanOrEqual(1)
+      // The full concatenated text includes both text blocks
+      const allText = deltas.map(d => d.text).join('')
+      expect(allText).toBe('Part one. Part two.')
+    })
+  })
+
+  // ============================================================================
+  // Subagent completion includes resultText
+  // ============================================================================
+
+  describe('subagent completion resultText', () => {
+    function setupTaskTool(toolId = 'task-tool-1') {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: toolId, name: 'Task' },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_stop' },
+      })
+    }
+
+    it('includes resultText in subagent_completed SSE event from tool_result string content', () => {
+      setupTaskTool()
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'sub1',
+        tool_use_id: 'task-tool-1',
+        description: 'test',
+      })
+
+      sseEvents.length = 0
+
+      // Send tool_result with string content (the exit summary)
+      mockClient._sendMessage({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: 'task-tool-1', content: 'All tasks completed successfully.' },
+          ],
+        },
+      })
+
+      const completed = sseEvents.filter(e => e.type === 'subagent_completed')
+      expect(completed).toHaveLength(1)
+      expect(completed[0].resultText).toBe('All tasks completed successfully.')
+    })
+
+    it('includes resultText in subagent_completed from tool_result array content', () => {
+      setupTaskTool()
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'sub1',
+        tool_use_id: 'task-tool-1',
+        description: 'test',
+      })
+
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'task-tool-1',
+              content: [
+                { type: 'text', text: 'First part. ' },
+                { type: 'text', text: 'Second part.' },
+              ],
+            },
+          ],
+        },
+      })
+
+      const completed = sseEvents.filter(e => e.type === 'subagent_completed')
+      expect(completed).toHaveLength(1)
+      expect(completed[0].resultText).toBe('First part. Second part.')
+    })
+
+    it('omits resultText when tool_result has no text content', () => {
+      setupTaskTool()
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'sub1',
+        tool_use_id: 'task-tool-1',
+        description: 'test',
+      })
+
+      sseEvents.length = 0
+
+      // tool_result with no content
+      mockClient._sendMessage({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: 'task-tool-1' },
+          ],
+        },
+      })
+
+      const completed = sseEvents.filter(e => e.type === 'subagent_completed')
+      expect(completed).toHaveLength(1)
+      // resultText should not be set (spread is conditional on truthy value)
+      expect(completed[0].resultText).toBeUndefined()
     })
   })
 

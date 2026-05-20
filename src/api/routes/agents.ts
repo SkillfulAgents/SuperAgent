@@ -260,7 +260,7 @@ export async function resolveInterruptedSubagents(
 
   if (unresolvedTaskCalls.length === 0) return
 
-  // Scan the subagents directory for available files
+  // Scan the subagents directory for .meta.json files which carry toolUseId
   const sessionsDir = getAgentSessionsDir(agentSlug)
   const subagentsDir = path.join(sessionsDir, sessionId, 'subagents')
   let files: string[]
@@ -270,27 +270,28 @@ export async function resolveInterruptedSubagents(
     return // No subagents directory
   }
 
-  // Get unmatched subagent files sorted by mtime (creation order)
-  const unmatchedFiles: { id: string; mtime: number }[] = []
+  // Build toolUseId → agentId map from .meta.json files (deterministic, no FIFO)
+  const toolUseToAgentId = new Map<string, string>()
   for (const file of files) {
-    if (!file.startsWith('agent-') || !file.endsWith('.jsonl')) continue
-    const id = file.replace('agent-', '').replace('.jsonl', '')
+    if (!file.endsWith('.meta.json')) continue
+    const id = file.replace('agent-', '').replace('.meta.json', '')
     if (resolvedAgentIds.has(id)) continue
     try {
-      const stat = await fs.promises.stat(path.join(subagentsDir, file))
-      unmatchedFiles.push({ id, mtime: stat.mtimeMs })
+      const raw = await fs.promises.readFile(path.join(subagentsDir, file), 'utf8')
+      const meta = JSON.parse(raw) as { toolUseId?: string }
+      if (meta.toolUseId) {
+        toolUseToAgentId.set(meta.toolUseId, id)
+      }
     } catch {
       // skip unreadable files
     }
   }
 
-  unmatchedFiles.sort((a, b) => a.mtime - b.mtime)
-
-  // Match unresolved Task calls to unmatched subagent files in order
-  for (let i = 0; i < unresolvedTaskCalls.length && i < unmatchedFiles.length; i++) {
-    unresolvedTaskCalls[i].subagent = {
-      agentId: unmatchedFiles[i].id,
-      status: 'cancelled',
+  // Match unresolved Task calls by toolUseId (deterministic)
+  for (const tc of unresolvedTaskCalls) {
+    const agentId = toolUseToAgentId.get(tc.id)
+    if (agentId) {
+      tc.subagent = { agentId, status: 'cancelled' }
     }
   }
 }

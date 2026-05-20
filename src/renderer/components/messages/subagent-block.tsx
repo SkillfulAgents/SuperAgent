@@ -115,18 +115,23 @@ export function SubAgentBlock({
     )
   }, [subMessages, subagentStreamingToolUse])
 
-  // Extract display info from input
+  // Extract display info — prefer live SSE data (available immediately from task_started),
+  // fall back to tool_use input (available once the tool call is fully streamed)
   const input = toolCall.input as { subagent_type?: string; description?: string }
-  const subagentType = input.subagent_type || 'Agent'
-  const description = input.description || ''
+  const subagentType = activeSubagent?.subagentType || input.subagent_type || 'Agent'
+  const description = activeSubagent?.description || input.description || ''
 
-  // Extract summary text from the tool result (available immediately from the main messages,
-  // no need to wait for subagent JSONL refetch)
+  // Extract summary text — prefer persisted tool_result, fall back to SSE-delivered resultText
   const resultText = useMemo(() => {
-    if (toolCall.result == null) return null
-    const parsed = parseToolResult(toolCall.result)
-    return parsed.text
-  }, [toolCall.result])
+    if (toolCall.result != null) {
+      const parsed = parseToolResult(toolCall.result)
+      return parsed.text
+    }
+    if (isActiveSubagent && activeSubagent?.resultText) {
+      return activeSubagent.resultText
+    }
+    return null
+  }, [toolCall.result, isActiveSubagent, activeSubagent?.resultText])
 
   // Stats from completed subagent
   const stats = toolCall.subagent
@@ -288,7 +293,7 @@ export function SubAgentBlock({
             )}
           </div>
 
-          {/* Stats footer */}
+          {/* Stats footer — show live usage while running, final stats when completed */}
           {stats && status !== 'running' && (
             <div className="mt-2 text-xs text-muted-foreground italic">
               {stats.totalDurationMs != null && formatDuration(stats.totalDurationMs)}
@@ -297,6 +302,16 @@ export function SubAgentBlock({
               )}
               {stats.totalToolUseCount != null && (
                 <> · {stats.totalToolUseCount} tool call{stats.totalToolUseCount !== 1 ? 's' : ''}</>
+              )}
+            </div>
+          )}
+          {isRunning && isActiveSubagent && activeSubagent?.usage && (
+            <div className="mt-2 text-xs text-muted-foreground italic">
+              {formatDuration(activeSubagent.usage.duration_ms)}
+              {' · '}{formatTokens(activeSubagent.usage.total_tokens)} tokens
+              {' · '}{activeSubagent.usage.tool_uses} tool call{activeSubagent.usage.tool_uses !== 1 ? 's' : ''}
+              {activeSubagent.lastToolName && (
+                <> · <span className="font-mono">{activeSubagent.lastToolName}</span></>
               )}
             </div>
           )}

@@ -15,7 +15,7 @@ vi.mock('@renderer/hooks/use-messages', () => ({
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
   useMessageStream: () => ({
-    streamingToolUse: null,
+    streamingToolUses: [],
     activeSubagents: [],
   }),
 }))
