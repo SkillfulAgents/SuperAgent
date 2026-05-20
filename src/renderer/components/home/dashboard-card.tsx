@@ -1,4 +1,3 @@
-import { Button } from '@renderer/components/ui/button'
 import { useSelection } from '@renderer/context/selection-context'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { SquareMousePointer, ArrowUpRight } from 'lucide-react'
@@ -48,10 +47,10 @@ export function DashboardCard({
         >
           <CardContent screenshotUrl={screenshotUrl} />
           <div className="relative z-10 flex h-full flex-col items-end justify-end p-3 opacity-0 transition-opacity duration-200 group-hover:opacity-100">
-            <Button type="button" size="sm" variant="outline" tabIndex={-1} onClick={(e) => e.stopPropagation()}>
+            <span className="inline-flex items-center gap-1 rounded-md border border-input bg-background px-3 h-8 text-xs font-medium shadow-sm [&_svg]:size-4">
               Open app
               <ArrowUpRight />
-            </Button>
+            </span>
           </div>
         </button>
       </div>
@@ -66,10 +65,10 @@ export function DashboardCard({
       >
         <CardContent screenshotUrl={screenshotUrl} />
         <div className="relative z-10 flex h-full flex-col items-end justify-end p-3 opacity-0 transition-opacity duration-200 group-hover:opacity-100">
-          <Button type="button" size="sm" variant="outline" tabIndex={-1} onClick={(e) => e.stopPropagation()}>
+          <span className="inline-flex items-center gap-1 rounded-md border border-input bg-background px-3 h-8 text-xs font-medium shadow-sm [&_svg]:size-4">
             Open app
             <ArrowUpRight />
-          </Button>
+          </span>
         </div>
       </button>
     </div>
