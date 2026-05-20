@@ -172,14 +172,12 @@ interface ChatIntegrationSetupDialogProps {
   /** Non-null opens the dialog for that provider; null is closed. */
   provider: ChatProvider | null
   onOpenChange: (open: boolean) => void
-  onCreated?: () => void
 }
 
 export function ChatIntegrationSetupDialog({
   agentSlug,
   provider,
   onOpenChange,
-  onCreated,
 }: ChatIntegrationSetupDialogProps) {
   return (
     <Dialog open={!!provider} onOpenChange={onOpenChange}>
@@ -190,7 +188,6 @@ export function ChatIntegrationSetupDialog({
             agentSlug={agentSlug}
             provider={provider}
             onClose={() => onOpenChange(false)}
-            onCreated={onCreated}
           />
         )}
       </DialogContent>
@@ -202,12 +199,10 @@ function SetupForm({
   agentSlug,
   provider,
   onClose,
-  onCreated,
 }: {
   agentSlug: string
   provider: ChatProvider
   onClose: () => void
-  onCreated?: () => void
 }) {
   const createIntegration = useCreateChatIntegration()
   const testCredentials = useTestChatIntegrationCredentials()
@@ -277,7 +272,6 @@ function SetupForm({
         config,
         showToolCalls,
       })
-      onCreated?.()
       onClose()
     } catch {
       // Error surfaced via createIntegration.error

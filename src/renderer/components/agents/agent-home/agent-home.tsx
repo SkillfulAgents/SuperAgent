@@ -482,7 +482,6 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
         {/* Right Column — Triggers + Connections + Skills + Volumes */}
         {showRightColumn && (
           <div className="space-y-3">
-            <HomeChatIntegrations agentSlug={agent.slug} />
             <HomeTriggers
               agentSlug={agent.slug}
               scheduledTasks={scheduledTasks}
@@ -502,6 +501,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                 }
               }, 0)
             }} />
+            <HomeChatIntegrations agentSlug={agent.slug} />
             <HomeVolumes agentSlug={agent.slug} />
             <HomeExtras agentSlug={agent.slug} onOpenSettings={onOpenSettings} />
           </div>

@@ -24,7 +24,7 @@ import {
 } from '@renderer/components/ui/alert-dialog'
 import { useChatIntegrations, useUpdateChatIntegration, useDeleteChatIntegration } from '@renderer/hooks/use-chat-integrations'
 import { formatProviderName } from '@shared/lib/chat-integrations/utils'
-import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
+import { parseChatIntegrationConfig, type ChatProvider, type SlackConfig } from '@shared/lib/chat-integrations/config-schema'
 import { IntegrationRow } from '@renderer/components/connections/integration-row'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { ChatIntegrationSetupDialog } from '@renderer/components/chat-integrations/chat-integration-setup-dialog'
@@ -63,15 +63,6 @@ function ToggleRow({ label, checked, onCheckedChange, disabled, ariaLabel }: {
   )
 }
 
-/** Parses an integration's config JSON, returning `{}` on malformed data. */
-function parseConfig(config: unknown): Record<string, unknown> {
-  if (typeof config !== 'string') return (config as Record<string, unknown>) ?? {}
-  try {
-    return JSON.parse(config)
-  } catch {
-    return {}
-  }
-}
 
 function statusBadge(status: string) {
   switch (status) {
@@ -169,7 +160,8 @@ export function HomeChatIntegrations({ agentSlug }: HomeChatIntegrationsProps) {
                         }
                       />
                       {integration.provider === 'slack' && (() => {
-                        const config = parseConfig(integration.config)
+                        const config = parseChatIntegrationConfig('slack', integration.config) as SlackConfig | null
+                        if (!config) return null
                         return (
                           <>
                             <ToggleRow
@@ -310,7 +302,7 @@ export function HomeChatIntegrations({ agentSlug }: HomeChatIntegrationsProps) {
               if (!renameTarget) return
               const trimmed = renameValue.trim()
               updateIntegration.mutate(
-                { id: renameTarget.id, name: trimmed || undefined },
+                { id: renameTarget.id, name: trimmed },
                 { onSuccess: () => setRenameTarget(null) },
               )
             }}
