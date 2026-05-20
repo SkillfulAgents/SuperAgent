@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import {
   Select,
   SelectContent,
@@ -78,6 +79,7 @@ function isApiKeyProvider(provider: SttProvider): provider is ApiKeyProvider {
 function SttApiKeyInput({ provider, disabled }: { provider: ApiKeyProvider; disabled: boolean }) {
   const { data: settings } = useSettings()
   const updateSettings = useUpdateSettings()
+  const queryClient = useQueryClient()
   const config = PROVIDER_CONFIG[provider]
 
   const [apiKeyInput, setApiKeyInput] = useState('')
@@ -107,6 +109,8 @@ function SttApiKeyInput({ provider, disabled }: { provider: ApiKeyProvider; disa
         await updateSettings.mutateAsync({
           apiKeys: { [config.apiKeyField]: apiKeyInput.trim() },
         })
+        // Drop any cached STT token — it was minted against the previous key.
+        queryClient.invalidateQueries({ queryKey: ['stt-token'] })
         setApiKeyInput('')
         setShowApiKey(false)
       }
@@ -123,6 +127,7 @@ function SttApiKeyInput({ provider, disabled }: { provider: ApiKeyProvider; disa
       await updateSettings.mutateAsync({
         apiKeys: { [config.apiKeyField]: '' },
       })
+      queryClient.invalidateQueries({ queryKey: ['stt-token'] })
       setValidationResult(null)
     } catch (error) {
       console.error('Failed to remove API key:', error)
@@ -283,6 +288,7 @@ const VALID_PROVIDERS = new Set(STT_PROVIDERS.map(p => p.value))
 export function VoiceTab() {
   const { data: settings, isLoading } = useSettings()
   const updateSettings = useUpdateSettings()
+  const queryClient = useQueryClient()
   const { data: platformAuth } = usePlatformAuthStatus()
   const isPlatformConnected = platformAuth?.connected ?? false
   const rawProvider = settings?.voice?.sttProvider
@@ -306,6 +312,9 @@ export function VoiceTab() {
             onValueChange={(value) => {
               if (value === 'platform' && !isPlatformConnected) return
               updateSettings.mutate({ voice: { sttProvider: value as SttProvider } })
+              // A new provider means any cached token from the previous one
+              // is unusable; drop it so the next mic click mints a fresh one.
+              queryClient.invalidateQueries({ queryKey: ['stt-token'] })
             }}
             disabled={isLoading}
           >

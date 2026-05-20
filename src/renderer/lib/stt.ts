@@ -5,6 +5,12 @@ export type { SttProvider }
 
 const CONNECT_TIMEOUT_MS = 10_000
 
+// Max audio chunks buffered before the WS is open. At ~128ms per chunk
+// (2048 samples @ 16kHz), 50 chunks ≈ 6.4s of audio. Beyond this, oldest
+// chunks are dropped; in practice the WS opens in <1s so the buffer rarely
+// holds more than a handful of chunks.
+const MAX_PENDING_CHUNKS = 50
+
 export interface TranscriptEvent {
   type: 'interim' | 'final' | 'speech_ended'
   text: string
@@ -42,6 +48,7 @@ class DeepgramAdapter implements SttAdapter {
   private transcriptCb: TranscriptCallback | null = null
   private errorCb: ErrorCallback | null = null
   private connected = false
+  private pendingChunks: ArrayBuffer[] = []
 
   async connect(token: string): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -56,6 +63,11 @@ class DeepgramAdapter implements SttAdapter {
       this.ws.onopen = () => {
         clearTimeout(timeout)
         this.connected = true
+        // Drain any audio captured before the WS opened.
+        for (const chunk of this.pendingChunks) {
+          this.ws?.send(chunk)
+        }
+        this.pendingChunks = []
         resolve()
       }
 
@@ -94,7 +106,14 @@ class DeepgramAdapter implements SttAdapter {
       }
 
       this.ws.onclose = (event) => {
-        if (event.code !== 1000 && event.code !== 1005) {
+        clearTimeout(timeout)
+        if (!this.connected) {
+          // Closed before open — happens when the caller aborts mid-handshake
+          // (user clicked stop) or the server rejected. Reject so callers
+          // don't hang awaiting connect().
+          this.pendingChunks = []
+          reject(new Error(`Deepgram connection closed before open: ${event.code} ${event.reason}`))
+        } else if (event.code !== 1000 && event.code !== 1005) {
           this.errorCb?.(new Error(`Deepgram connection closed: ${event.code} ${event.reason}`))
         }
       }
@@ -104,6 +123,11 @@ class DeepgramAdapter implements SttAdapter {
   sendAudio(chunk: ArrayBuffer): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(chunk)
+    } else if (this.ws?.readyState === WebSocket.CONNECTING) {
+      if (this.pendingChunks.length >= MAX_PENDING_CHUNKS) {
+        this.pendingChunks.shift()
+      }
+      this.pendingChunks.push(chunk)
     }
   }
 
@@ -154,7 +178,15 @@ class OpenaiAdapter implements SttAdapter {
   private errorCb: ErrorCallback | null = null
   private pendingDelta = ''
   private connected = false
+  private pendingChunks: ArrayBuffer[] = []
   readonly sampleRate = 24000
+
+  private sendChunk(chunk: ArrayBuffer): void {
+    this.ws?.send(JSON.stringify({
+      type: 'input_audio_buffer.append',
+      audio: arrayBufferToBase64(chunk),
+    }))
+  }
 
   async connect(token: string): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -193,6 +225,11 @@ class OpenaiAdapter implements SttAdapter {
             },
           },
         }))
+        // Drain any audio captured before the WS opened.
+        for (const chunk of this.pendingChunks) {
+          this.sendChunk(chunk)
+        }
+        this.pendingChunks = []
         resolve()
       }
 
@@ -242,7 +279,11 @@ class OpenaiAdapter implements SttAdapter {
       }
 
       this.ws.onclose = (event) => {
-        if (event.code !== 1000 && event.code !== 1005) {
+        clearTimeout(timeout)
+        if (!this.connected) {
+          this.pendingChunks = []
+          reject(new Error(`OpenAI connection closed before open: ${event.code} ${event.reason}`))
+        } else if (event.code !== 1000 && event.code !== 1005) {
           this.errorCb?.(new Error(`OpenAI connection closed: ${event.code} ${event.reason}`))
         }
       }
@@ -251,10 +292,12 @@ class OpenaiAdapter implements SttAdapter {
 
   sendAudio(chunk: ArrayBuffer): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({
-        type: 'input_audio_buffer.append',
-        audio: arrayBufferToBase64(chunk),
-      }))
+      this.sendChunk(chunk)
+    } else if (this.ws?.readyState === WebSocket.CONNECTING) {
+      if (this.pendingChunks.length >= MAX_PENDING_CHUNKS) {
+        this.pendingChunks.shift()
+      }
+      this.pendingChunks.push(chunk)
     }
   }
 
@@ -315,15 +358,20 @@ export interface AudioCaptureHandle {
  * Set up microphone capture and pipe PCM audio chunks to an SttAdapter.
  * Returns handles for the resources and a cleanup function.
  *
+ * If `options.stream` is provided, it is used as-is (the caller retains no
+ * other reference — cleanup stops its tracks). Otherwise, `getUserMedia` is
+ * called internally. Pre-acquiring the stream lets callers parallelize the
+ * mic-permission prompt with other async work.
+ *
  * TODO: Migrate from deprecated createScriptProcessor to AudioWorkletNode.
  */
 export async function startAudioCapture(
   adapter: SttAdapter,
-  options?: { withAnalyser?: boolean },
+  options?: { withAnalyser?: boolean; stream?: MediaStream },
 ): Promise<AudioCaptureHandle> {
   const sampleRate = adapter.sampleRate ?? 16000
 
-  const stream = await navigator.mediaDevices.getUserMedia({
+  const stream = options?.stream ?? await navigator.mediaDevices.getUserMedia({
     audio: {
       channelCount: 1,
       sampleRate,
@@ -332,6 +380,9 @@ export async function startAudioCapture(
     },
   })
 
+  // AudioContext resamples the stream to its own sampleRate as it flows
+  // through the MediaStreamSource, so a pre-acquired stream at a different
+  // hardware rate is fine.
   const audioContext = new AudioContext({ sampleRate })
   // The context may start suspended if created outside a synchronous user-gesture
   // handler (e.g. after awaiting network requests). Explicitly resume it.
