@@ -163,6 +163,8 @@ export interface JsonlMessageEntry {
   // Compact summary fields (present on user messages that contain a compaction summary)
   isCompactSummary?: boolean
   isVisibleInTranscriptOnly?: boolean
+  // SDK message origin metadata (available since claude-agent-sdk 0.3.144)
+  origin?: { kind: string; [key: string]: unknown }
 }
 
 /**
