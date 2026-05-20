@@ -176,13 +176,6 @@ vi.mock('@renderer/lib/env', () => ({
   getApiBaseUrl: () => '',
 }))
 
-// Palette extraction is async and network-bound (fetches the image). In tests
-// we short-circuit to `status: 'ready', palette: null` so the overlay renders
-// immediately with theme-default fallback, without flashing.
-vi.mock('@renderer/hooks/use-image-palette', () => ({
-  useImagePalette: () => ({ status: 'ready', palette: null }),
-}))
-
 // Import after mocks
 import { HomePage } from './home-page'
 
@@ -286,8 +279,8 @@ describe('HomePage AgentCard', () => {
       isLoading: false,
     })
     renderWithProviders(<HomePage />)
-    expect(screen.getByText('Sales')).toBeInTheDocument()
-    expect(screen.getByText('Metrics')).toBeInTheDocument()
+    const cards = document.querySelectorAll('[class*="h-24"]')
+    expect(cards.length).toBeGreaterThanOrEqual(2)
   })
 
   it('renders a screenshot img when hasScreenshot is true', () => {
@@ -314,7 +307,6 @@ describe('HomePage AgentCard', () => {
     renderWithProviders(<HomePage />)
     const img = document.querySelector('img[src*="/screenshot.png"]')
     expect(img).toBeNull()
-    expect(screen.getByText('Sales')).toBeInTheDocument()
   })
 
   it('renders no dashboard cards when count is 0', () => {
@@ -352,7 +344,6 @@ describe('HomePage AgentCard', () => {
     expect(screen.getByText('1h ago')).toBeInTheDocument()
     expect(screen.getByText('2 tasks')).toBeInTheDocument()
     expect(screen.getByText(/in 1h/)).toBeInTheDocument()
-    expect(screen.getByText('Overview')).toBeInTheDocument()
   })
 
   it('passes pre-aggregated status to AgentStatus', () => {

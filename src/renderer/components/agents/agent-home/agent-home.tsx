@@ -482,7 +482,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
         {/* Right Column — Triggers + Connections + Skills + Volumes */}
         {showRightColumn && (
           <div className="space-y-3">
-            {(agent.dashboards ?? []).map((d) => (
+            {(Array.isArray(agent.dashboards) ? agent.dashboards : []).map((d) => (
               <DashboardCard
                 key={d.slug}
                 dashboard={d}

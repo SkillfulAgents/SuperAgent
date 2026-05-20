@@ -356,7 +356,7 @@ export function HomePage() {
             ) : hasAgents ? (
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                 {orderedAgents.flatMap((agent) => {
-                  const dashboards = agent.dashboards ?? []
+                  const dashboards = Array.isArray(agent.dashboards) ? agent.dashboards : []
                   const cells = [
                     <AgentCard key={agent.slug} agent={agent} dailyUsage={usageData?.daily} />,
                   ]
@@ -366,6 +366,7 @@ export function HomePage() {
                         key={`${agent.slug}::dashboard::${d.slug}`}
                         dashboard={d}
                         agentSlug={agent.slug}
+                        variant="overlay"
                       />
                     )
                   }
