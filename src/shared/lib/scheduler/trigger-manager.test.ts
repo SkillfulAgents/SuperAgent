@@ -74,6 +74,33 @@ vi.mock('@shared/lib/services/webhook-events-client', () => ({
   acknowledgeEvents: (...args: unknown[]) => mockAcknowledgeEvents(...args),
 }))
 
+const mockGetPlatformAccessToken = vi.fn<() => string | null>(() => 'opaque_test_token')
+vi.mock('@shared/lib/services/platform-auth-service', () => ({
+  getPlatformAccessToken: () => mockGetPlatformAccessToken(),
+}))
+
+const mockDecodeOrgIdFromToken = vi.fn<(token: string) => string | null>(() => null)
+vi.mock('@shared/lib/platform-attribution', () => ({
+  runWithOptionalUser: (_userId: string | null, fn: () => unknown) => fn(),
+  decodeOrgIdFromToken: (token: string) => mockDecodeOrgIdFromToken(token),
+}))
+
+vi.mock('@shared/lib/db', () => ({
+  db: {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => ({ all: () => [] }),
+        }),
+      }),
+    }),
+  },
+}))
+
+vi.mock('@shared/lib/db/schema', () => ({
+  connectedAccounts: {},
+}))
+
 vi.mock('@shared/lib/services/supabase-realtime-client', () => ({
   SupabaseRealtimeClient: vi.fn().mockImplementation(() => ({
     connect: vi.fn().mockResolvedValue(undefined),
@@ -91,6 +118,8 @@ describe('TriggerManager', () => {
     vi.clearAllMocks()
     mockCreateSession.mockResolvedValue({ id: 'session_123' })
     mockGetDistinctMemberIds.mockReturnValue(['sub_test_member'])
+    mockGetPlatformAccessToken.mockReturnValue('opaque_test_token')
+    mockDecodeOrgIdFromToken.mockReturnValue(null)
   })
 
   describe('start', () => {
@@ -234,6 +263,47 @@ describe('TriggerManager', () => {
 
       triggerManager.stop()
       mockAgentExists.mockResolvedValue(true) // restore for other tests
+    })
+  })
+
+  describe('pollAndProcess fallback when memberIds is empty', () => {
+    it('opaque key mode: polls with "local" placeholder', async () => {
+      mockGetDistinctMemberIds.mockReturnValue([])
+      mockGetPlatformAccessToken.mockReturnValue('opaque_test_token')
+      mockDecodeOrgIdFromToken.mockReturnValue(null)
+      mockPollAndClaimEvents.mockResolvedValue({ events: [], realtime: null })
+
+      await triggerManager.start()
+
+      expect(mockPollAndClaimEvents).toHaveBeenCalledTimes(1)
+      expect(mockPollAndClaimEvents).toHaveBeenCalledWith('local')
+
+      triggerManager.stop()
+    })
+
+    it('org JWT mode: skips poll to avoid bogus `::local` bearer', async () => {
+      mockGetDistinctMemberIds.mockReturnValue([])
+      mockGetPlatformAccessToken.mockReturnValue('org_jwt_token')
+      mockDecodeOrgIdFromToken.mockReturnValue('org_123')
+      mockPollAndClaimEvents.mockResolvedValue({ events: [], realtime: null })
+
+      await triggerManager.start()
+
+      expect(mockPollAndClaimEvents).not.toHaveBeenCalled()
+
+      triggerManager.stop()
+    })
+
+    it('no platform token: skips poll', async () => {
+      mockGetDistinctMemberIds.mockReturnValue([])
+      mockGetPlatformAccessToken.mockReturnValue(null)
+      mockPollAndClaimEvents.mockResolvedValue({ events: [], realtime: null })
+
+      await triggerManager.start()
+
+      expect(mockPollAndClaimEvents).not.toHaveBeenCalled()
+
+      triggerManager.stop()
     })
   })
 })
