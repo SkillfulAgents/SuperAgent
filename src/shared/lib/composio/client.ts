@@ -180,10 +180,19 @@ function mapAuthConfigListItem(item: AuthConfigListItem): AuthConfig {
 }
 
 /**
- * List all auth configs for the current user.
+ * List auth configs for the current user. When `toolkitSlug` is provided,
+ * Composio filters server-side — necessary to avoid pagination cutoff
+ * hiding existing configs for the toolkit (Composio defaults to 20/page).
  */
-export async function listAuthConfigs(): Promise<AuthConfig[]> {
-  const response = await composioFetch<ListAuthConfigsResponse>('/auth_configs')
+export async function listAuthConfigs(
+  toolkitSlug?: string,
+): Promise<AuthConfig[]> {
+  const query = toolkitSlug
+    ? `?toolkit_slug=${encodeURIComponent(toolkitSlug)}&limit=100`
+    : ''
+  const response = await composioFetch<ListAuthConfigsResponse>(
+    `/auth_configs${query}`,
+  )
   return (response.items || []).map(mapAuthConfigListItem)
 }
 
@@ -195,13 +204,9 @@ export async function getOrCreateAuthConfig(
   providerSlug: string
 ): Promise<AuthConfig> {
   // First, check if an enabled auth config already exists for this provider
-  const existing = await listAuthConfigs()
+  const existing = await listAuthConfigs(providerSlug)
   const matchingConfigs = existing
-    .filter(
-      (config) =>
-        config.toolkitSlug.toLowerCase() === providerSlug.toLowerCase() &&
-        config.status !== 'DISABLED'
-    )
+    .filter((config) => config.status !== 'DISABLED')
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
 
   if (matchingConfigs.length > 0) {
