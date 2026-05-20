@@ -105,8 +105,8 @@ export interface ContainerClient {
   fetch(path: string, init?: RequestInit): Promise<Response>
 
   // Health checks
-  waitForHealthy(timeoutMs?: number): Promise<boolean>
-  isHealthy(): Promise<boolean>
+  waitForHealthy(timeoutMs?: number, knownPort?: number): Promise<boolean>
+  isHealthy(knownPort?: number): Promise<boolean>
 
   // Resource stats (memory, CPU usage)
   getStats(): Promise<ContainerStats | null>

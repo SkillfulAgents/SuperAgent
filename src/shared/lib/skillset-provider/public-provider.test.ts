@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import AdmZip from 'adm-zip'
+import { createZipBuffer } from '@shared/lib/utils/zip'
 
 vi.mock('@shared/lib/utils/retry', () => ({
   withRetry: async (fn: () => Promise<unknown>) => fn(),
@@ -24,12 +24,12 @@ function makeRef(url?: string) {
   }
 }
 
-function buildTestZip(files: Record<string, string>, prefix = 'owner-repo-abc123/'): Buffer {
-  const zip = new AdmZip()
+async function buildTestZip(files: Record<string, string>, prefix = 'owner-repo-abc123/'): Promise<Buffer> {
+  const prefixed: Record<string, string> = {}
   for (const [name, content] of Object.entries(files)) {
-    zip.addFile(prefix + name, Buffer.from(content, 'utf-8'))
+    prefixed[prefix + name] = content
   }
-  return zip.toBuffer()
+  return createZipBuffer(prefixed)
 }
 
 function mockFetchResponse(buffer: Buffer, status = 200) {
@@ -143,7 +143,7 @@ describe('PublicSkillsetProvider.populateCache', () => {
 
   it('downloads, extracts, and strips GitHub prefix', async () => {
     const destDir = path.join(tmpDir, 'cache')
-    const zipBuffer = buildTestZip({
+    const zipBuffer = await buildTestZip({
       'index.json': '{"skillset_name":"Test","skills":[],"version":"1.0.0","description":"test"}',
       'skills/my-skill/SKILL.md': '# My Skill',
     })
@@ -157,7 +157,7 @@ describe('PublicSkillsetProvider.populateCache', () => {
 
   it('writes .skillset-cache-meta.json marker', async () => {
     const destDir = path.join(tmpDir, 'cache')
-    mockFetchResponse(buildTestZip({ 'index.json': '{}' }))
+    mockFetchResponse(await buildTestZip({ 'index.json': '{}' }))
 
     await provider.populateCache(destDir, makeRef('https://github.com/Org/repo'))
 
@@ -169,7 +169,7 @@ describe('PublicSkillsetProvider.populateCache', () => {
 
   it('handles .git suffix in URL', async () => {
     const destDir = path.join(tmpDir, 'cache')
-    mockFetchResponse(buildTestZip({ 'index.json': '{}' }))
+    mockFetchResponse(await buildTestZip({ 'index.json': '{}' }))
 
     await provider.populateCache(destDir, makeRef('https://github.com/Org/repo.git'))
 
@@ -178,7 +178,7 @@ describe('PublicSkillsetProvider.populateCache', () => {
   })
 
   it('skips __MACOSX entries', async () => {
-    const zipBuffer = buildTestZip({
+    const zipBuffer = await buildTestZip({
       'index.json': '{}',
       '__MACOSX/._index.json': 'junk',
     })
@@ -195,7 +195,7 @@ describe('PublicSkillsetProvider.populateCache', () => {
     const destDir = path.join(tmpDir, 'cache')
     const evilPath = path.resolve(destDir, '../traversed.txt')
 
-    mockFetchResponse(buildTestZip({ 'index.json': '{}' }))
+    mockFetchResponse(await buildTestZip({ 'index.json': '{}' }))
     await provider.populateCache(destDir, makeRef('https://github.com/Org/repo'))
 
     // The path traversal protection is `destPath.startsWith(resolve(destDir) + sep)`.
@@ -234,10 +234,11 @@ describe('PublicSkillsetProvider.populateCache', () => {
   })
 
   it('handles ZIP with no common prefix (flat layout)', async () => {
-    const zip = new AdmZip()
-    zip.addFile('index.json', Buffer.from('{"flat":true}'))
-    zip.addFile('skills/a/SKILL.md', Buffer.from('skill'))
-    mockFetchResponse(zip.toBuffer())
+    const flatZip = await createZipBuffer({
+      'index.json': '{"flat":true}',
+      'skills/a/SKILL.md': 'skill',
+    })
+    mockFetchResponse(flatZip)
 
     const destDir = path.join(tmpDir, 'cache')
     await provider.populateCache(destDir, makeRef('https://github.com/Org/repo'))
@@ -267,7 +268,7 @@ describe('PublicSkillsetProvider.refreshCache', () => {
     await fs.promises.mkdir(destDir, { recursive: true })
     await fs.promises.writeFile(path.join(destDir, 'old-file.txt'), 'stale')
 
-    mockFetchResponse(buildTestZip({ 'index.json': '{"fresh":true}' }))
+    mockFetchResponse(await buildTestZip({ 'index.json': '{"fresh":true}' }))
 
     await provider.refreshCache(destDir, makeRef('https://github.com/Org/repo'))
 

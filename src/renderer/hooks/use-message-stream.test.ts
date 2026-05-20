@@ -91,7 +91,7 @@ describe('useMessageStream', () => {
     expect(result.current.isActive).toBe(false)
     expect(result.current.isStreaming).toBe(false)
     expect(result.current.streamingMessage).toBeNull()
-    expect(result.current.streamingToolUse).toBeNull()
+    expect(result.current.streamingToolUses).toEqual([])
     expect(result.current.error).toBeNull()
     expect(result.current.pendingSecretRequests).toEqual([])
   })
@@ -371,11 +371,11 @@ describe('useMessageStream', () => {
       })
     })
 
-    expect(result.current.streamingToolUse).toEqual({
+    expect(result.current.streamingToolUses).toEqual([{
       id: 'tc-1',
       name: 'Bash',
       partialInput: '',
-    })
+    }])
 
     act(() => {
       MockEventSource.instances[0].simulateMessage({
@@ -386,7 +386,7 @@ describe('useMessageStream', () => {
       })
     })
 
-    expect(result.current.streamingToolUse?.partialInput).toBe('{"command": "ls"}')
+    expect(result.current.streamingToolUses[0]?.partialInput).toBe('{"command": "ls"}')
   })
 
   it('handles compact_start and compact_complete events', async () => {
@@ -507,6 +507,10 @@ describe('useMessageStream', () => {
       streamingMessage: '',
       streamingToolUse: null,
       progressSummary: null,
+      subagentType: null,
+      description: null,
+      usage: null,
+      lastToolName: null,
     })
 
     act(() => {
@@ -983,15 +987,16 @@ describe('useMessageStream', () => {
     })
 
     act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'tool_use_ready' })
+      MockEventSource.instances[0].simulateMessage({ type: 'tool_use_ready', toolId: 'tc-1' })
     })
 
-    // Tool use should still be visible
-    expect(result.current.streamingToolUse).toEqual({
+    // Tool use should still be visible, now marked as ready
+    expect(result.current.streamingToolUses).toEqual([{
       id: 'tc-1',
       name: 'Bash',
       partialInput: '{"cmd":"ls"}',
-    })
+      ready: true,
+    }])
     expect(result.current.isStreaming).toBe(true)
   })
 
@@ -1395,10 +1400,10 @@ describe('useMessageStream', () => {
 
     // streamingMessage preserved so MessageList can deduplicate
     expect(result.current.streamingMessage).toBe('Preserved text')
-    expect(result.current.streamingToolUse).toBeNull()
+    expect(result.current.streamingToolUses).toEqual([])
   })
 
-  it('stream_start invalidates messages when previous streamingToolUse exists', async () => {
+  it('stream_start invalidates messages when previous streamingToolUses exist', async () => {
     const { useMessageStream } = await getHookModule()
     const wrapper = createWrapper()
     const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
@@ -1418,7 +1423,7 @@ describe('useMessageStream', () => {
         partialInput: '',
       })
     })
-    expect(result.current.streamingToolUse).not.toBeNull()
+    expect(result.current.streamingToolUses.length).toBeGreaterThan(0)
     spy.mockClear()
 
     act(() => {
@@ -1427,7 +1432,7 @@ describe('useMessageStream', () => {
 
     // Should invalidate messages to fetch persisted tool call before clearing streaming state
     expect(spy).toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
-    expect(result.current.streamingToolUse).toBeNull()
+    expect(result.current.streamingToolUses).toEqual([])
   })
 
   it('ping does not change state when server agrees session is active', async () => {
@@ -1895,5 +1900,310 @@ describe('useMessageStream', () => {
       expect(result.current.pendingScriptRunRequests[0].toolUseId).toBe('tool-prompt')
       expect(result.current.autoApprovedScriptRunIds.has('tool-prompt')).toBe(false)
     })
+  })
+
+  // ---- Parallel tool call streaming ----
+
+  describe('parallel tool calls', () => {
+    it('supports multiple concurrent streaming tool uses', async () => {
+      const { useMessageStream } = await getHookModule()
+      const { result } = renderHook(
+        () => useMessageStream('session-1', 'agent-1'),
+        { wrapper: createWrapper() }
+      )
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+
+      // Start tool A
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'tool_use_start',
+          toolId: 'tc-A',
+          toolName: 'Bash',
+          partialInput: '',
+        })
+      })
+
+      // Start tool B while tool A is still streaming
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'tool_use_start',
+          toolId: 'tc-B',
+          toolName: 'Read',
+          partialInput: '',
+        })
+      })
+
+      // Both tools should be in streamingToolUses
+      expect(result.current.streamingToolUses).toHaveLength(2)
+      expect(result.current.streamingToolUses[0]).toEqual({
+        id: 'tc-A',
+        name: 'Bash',
+        partialInput: '',
+      })
+      expect(result.current.streamingToolUses[1]).toEqual({
+        id: 'tc-B',
+        name: 'Read',
+        partialInput: '',
+      })
+    })
+
+    it('stream_delta preserves existing streamingToolUses', async () => {
+      const { useMessageStream } = await getHookModule()
+      const { result } = renderHook(
+        () => useMessageStream('session-1', 'agent-1'),
+        { wrapper: createWrapper() }
+      )
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+
+      // Start a tool
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'tool_use_start',
+          toolId: 'tc-1',
+          toolName: 'Bash',
+          partialInput: '{"cmd":"ls"}',
+        })
+      })
+      expect(result.current.streamingToolUses).toHaveLength(1)
+
+      // Receive a stream_delta (text) — should NOT clear streamingToolUses
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'stream_delta',
+          text: 'Some text',
+        })
+      })
+
+      expect(result.current.streamingToolUses).toHaveLength(1)
+      expect(result.current.streamingToolUses[0].id).toBe('tc-1')
+      expect(result.current.streamingMessage).toBe('Some text')
+    })
+
+    it('tool_use_ready marks a specific tool as ready by toolId', async () => {
+      const { useMessageStream } = await getHookModule()
+      const { result } = renderHook(
+        () => useMessageStream('session-1', 'agent-1'),
+        { wrapper: createWrapper() }
+      )
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+
+      // Start two tools
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'tool_use_start',
+          toolId: 'tc-A',
+          toolName: 'Bash',
+          partialInput: '{"cmd":"ls"}',
+        })
+      })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'tool_use_start',
+          toolId: 'tc-B',
+          toolName: 'Read',
+          partialInput: '{"file":"x.ts"}',
+        })
+      })
+
+      // Mark only tool A as ready
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'tool_use_ready',
+          toolId: 'tc-A',
+        })
+      })
+
+      expect(result.current.streamingToolUses).toHaveLength(2)
+      expect(result.current.streamingToolUses[0]).toEqual({
+        id: 'tc-A',
+        name: 'Bash',
+        partialInput: '{"cmd":"ls"}',
+        ready: true,
+      })
+      // Tool B should NOT be marked as ready
+      expect(result.current.streamingToolUses[1]).toEqual({
+        id: 'tc-B',
+        name: 'Read',
+        partialInput: '{"file":"x.ts"}',
+      })
+    })
+
+    it('tool_use_ready with unknown toolId is a no-op', async () => {
+      const { useMessageStream } = await getHookModule()
+      const { result } = renderHook(
+        () => useMessageStream('session-1', 'agent-1'),
+        { wrapper: createWrapper() }
+      )
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+
+      // Start one tool
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'tool_use_start',
+          toolId: 'tc-1',
+          toolName: 'Bash',
+          partialInput: '',
+        })
+      })
+
+      const toolUsesBefore = result.current.streamingToolUses
+
+      // Send tool_use_ready for a non-existent tool
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'tool_use_ready',
+          toolId: 'tc-nonexistent',
+        })
+      })
+
+      // State should be unchanged — the existing tool should not be modified
+      expect(result.current.streamingToolUses).toHaveLength(1)
+      expect(result.current.streamingToolUses[0].ready).toBeUndefined()
+    })
+
+    it('tool_use_streaming upserts by toolId instead of replacing', async () => {
+      const { useMessageStream } = await getHookModule()
+      const { result } = renderHook(
+        () => useMessageStream('session-1', 'agent-1'),
+        { wrapper: createWrapper() }
+      )
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+
+      // Start two tools
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'tool_use_start',
+          toolId: 'tc-A',
+          toolName: 'Bash',
+          partialInput: '',
+        })
+      })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'tool_use_start',
+          toolId: 'tc-B',
+          toolName: 'Read',
+          partialInput: '',
+        })
+      })
+
+      // Update tool A via tool_use_streaming
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'tool_use_streaming',
+          toolId: 'tc-A',
+          toolName: 'Bash',
+          partialInput: '{"command": "ls -la"}',
+        })
+      })
+
+      // Both tools should still be present; tool A updated, tool B unchanged
+      expect(result.current.streamingToolUses).toHaveLength(2)
+      expect(result.current.streamingToolUses[0]).toEqual({
+        id: 'tc-A',
+        name: 'Bash',
+        partialInput: '{"command": "ls -la"}',
+      })
+      expect(result.current.streamingToolUses[1]).toEqual({
+        id: 'tc-B',
+        name: 'Read',
+        partialInput: '',
+      })
+    })
+  })
+
+  // ---- Subagent resultText ----
+
+  it('subagent_completed with resultText stores it in the SubagentInfo entry', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+
+    // Start a subagent
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'subagent_stream_start',
+        parentToolId: 'pt-1',
+        agentId: 'sub-1',
+      })
+    })
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'subagent_stream_delta',
+        parentToolId: 'pt-1',
+        text: 'Working on it...',
+      })
+    })
+
+    // Complete with resultText
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'subagent_completed',
+        parentToolId: 'pt-1',
+        agentId: 'sub-1',
+        resultText: 'Task completed successfully. All files updated.',
+      })
+    })
+
+    expect(result.current.completedSubagents?.has('pt-1')).toBe(true)
+    const sub = result.current.activeSubagents.find(s => s.parentToolId === 'pt-1')
+    expect(sub).toBeDefined()
+    expect(sub?.resultText).toBe('Task completed successfully. All files updated.')
+    // Streaming message should still be preserved
+    expect(sub?.streamingMessage).toBe('Working on it...')
+  })
+
+  it('subagent_completed without resultText stores null for resultText', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'subagent_stream_start',
+        parentToolId: 'pt-1',
+        agentId: 'sub-1',
+      })
+    })
+
+    // Complete without resultText
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'subagent_completed',
+        parentToolId: 'pt-1',
+        agentId: 'sub-1',
+      })
+    })
+
+    const sub = result.current.activeSubagents.find(s => s.parentToolId === 'pt-1')
+    expect(sub?.resultText).toBeNull()
   })
 })

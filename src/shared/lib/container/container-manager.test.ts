@@ -121,6 +121,18 @@ vi.mock('@shared/lib/browser/chrome-profile', () => ({
 
 vi.mock('@shared/lib/services/agent-service', () => ({}))
 
+const mockStatfs = vi.fn()
+vi.mock('node:fs/promises', () => ({
+  statfs: (...args: unknown[]) => mockStatfs(...args),
+}))
+
+const mockCaptureMessage = vi.fn()
+vi.mock('@shared/lib/error-reporting', () => ({
+  captureException: vi.fn(),
+  captureMessage: (...args: unknown[]) => mockCaptureMessage(...args),
+  addErrorBreadcrumb: vi.fn(),
+}))
+
 vi.mock('@shared/lib/composio/client', () => ({
   isPlatformComposioActive: () => false,
 }))
@@ -265,6 +277,15 @@ describe('containerManager.ensureRunning — env var construction', () => {
 
     const startOpts = mockStart.mock.calls[0][0]
     expect(startOpts.envVars.TZ).toBe('America/New_York')
+  })
+
+  it('disables Claude Code attribution header injection for stable prompt caching', async () => {
+    setupAccountMocks([])
+
+    await containerManager.ensureRunning('test-agent')
+
+    const startOpts = mockStart.mock.calls[0][0]
+    expect(startOpts.envVars.CLAUDE_CODE_ATTRIBUTION_HEADER).toBe('0')
   })
 })
 
@@ -534,6 +555,8 @@ describe('containerManager.ensureImageReady — state machine', () => {
     vi.clearAllMocks()
     containerManager.clearClients()
     delete process.env.E2E_MOCK
+    // Default: plenty of disk space (100 GB)
+    mockStatfs.mockResolvedValue({ bavail: 100 * 1024 * 1024 * 1024 / 4096, bsize: 4096 })
   })
 
   afterEach(() => {
@@ -717,6 +740,86 @@ describe('containerManager.ensureImageReady — state machine', () => {
       .filter(([msg]: any) => msg.type === 'runtime_readiness_changed' && msg.readiness.status === 'PULLING_IMAGE')
 
     expect(pullEvents.length).toBeGreaterThan(0)
+  })
+
+  it('transitions to ERROR when disk space is insufficient', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+    ])
+    vi.mocked(checkImageExists).mockResolvedValue(false)
+    // 1 GB free (below 5 GB threshold)
+    mockStatfs.mockResolvedValue({ bavail: 1 * 1024 * 1024 * 1024 / 4096, bsize: 4096 })
+
+    await containerManager.ensureImageReady()
+
+    const readiness = containerManager.getReadiness()
+    expect(readiness.status).toBe('ERROR')
+    expect(readiness.message).toContain('Insufficient disk space')
+    expect(readiness.message).toContain('1.0 GB available')
+    // Should NOT have attempted to pull
+    expect(pullImage).not.toHaveBeenCalled()
+  })
+
+  it('sends info-level Sentry event when disk space is insufficient', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+    ])
+    vi.mocked(checkImageExists).mockResolvedValue(false)
+    mockStatfs.mockResolvedValue({ bavail: 2 * 1024 * 1024 * 1024 / 4096, bsize: 4096 })
+
+    await containerManager.ensureImageReady()
+
+    expect(mockCaptureMessage).toHaveBeenCalledWith(
+      'Insufficient disk space for image pull',
+      expect.objectContaining({
+        level: 'info',
+        tags: { component: 'runtime', operation: 'disk-space-check' },
+        extra: expect.objectContaining({ availableGB: 2, requiredGB: 5 }),
+      }),
+    )
+  })
+
+  it('proceeds with pull when disk space is sufficient', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+    ])
+    vi.mocked(checkImageExists).mockResolvedValue(false)
+    vi.mocked(canBuildImage).mockReturnValue(false)
+    vi.mocked(pullImage).mockResolvedValue(undefined)
+    // 20 GB free (above 5 GB threshold)
+    mockStatfs.mockResolvedValue({ bavail: 20 * 1024 * 1024 * 1024 / 4096, bsize: 4096 })
+
+    await containerManager.ensureImageReady()
+
+    expect(pullImage).toHaveBeenCalled()
+    expect(containerManager.getReadiness().status).toBe('READY')
+  })
+
+  it('proceeds with pull when statfs fails', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+    ])
+    vi.mocked(checkImageExists).mockResolvedValue(false)
+    vi.mocked(canBuildImage).mockReturnValue(false)
+    vi.mocked(pullImage).mockResolvedValue(undefined)
+    mockStatfs.mockRejectedValue(new Error('ENOSYS: function not implemented'))
+
+    await containerManager.ensureImageReady()
+
+    expect(pullImage).toHaveBeenCalled()
+    expect(containerManager.getReadiness().status).toBe('READY')
+  })
+
+  it('skips disk space check when image already exists', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+    ])
+    vi.mocked(checkImageExists).mockResolvedValue(true)
+
+    await containerManager.ensureImageReady()
+
+    expect(mockStatfs).not.toHaveBeenCalled()
+    expect(containerManager.getReadiness().status).toBe('READY')
   })
 })
 

@@ -1,7 +1,7 @@
 import path from 'path'
 import fs from 'fs'
-import AdmZip from 'adm-zip'
 import { ensureDirectory } from '@shared/lib/utils/file-storage'
+import { openZipFromBuffer, detectZipPrefix } from '@shared/lib/utils/zip'
 import { validateSafeCloneUrl } from '@shared/lib/utils/url-safety'
 import { withRetry } from '@shared/lib/utils/retry'
 import {
@@ -111,27 +111,37 @@ async function downloadAndExtract(
     return Buffer.from(await response.arrayBuffer())
   }, 3, 1000)
 
-  const zip = new AdmZip(zipBuffer)
-  const entries = zip.getEntries()
-  const stripPrefix = detectZipPrefix(entries)
+  const reader = await openZipFromBuffer(zipBuffer)
+  try {
+    const stripPrefix = detectZipPrefix(reader.entries)
 
-  await ensureDirectory(destDir)
+    await ensureDirectory(destDir)
 
-  for (const entry of entries) {
-    if (entry.isDirectory) continue
+    const MAX_SKILLSET_SIZE = 500 * 1024 * 1024
+    let totalExtracted = 0
+    for (const entry of reader.entries) {
+      if (entry.isDirectory) continue
 
-    const entryName = stripPrefix
-      ? entry.entryName.slice(stripPrefix.length)
-      : entry.entryName
+      const entryName = stripPrefix
+        ? entry.fileName.slice(stripPrefix.length)
+        : entry.fileName
 
-    if (!entryName) continue
-    if (entryName.startsWith('__MACOSX/')) continue
+      if (!entryName) continue
+      if (entryName.startsWith('__MACOSX/')) continue
 
-    const destPath = path.resolve(destDir, entryName)
-    if (!destPath.startsWith(path.resolve(destDir) + path.sep)) continue
+      const destPath = path.resolve(destDir, entryName)
+      if (!destPath.startsWith(path.resolve(destDir) + path.sep)) continue
 
-    await ensureDirectory(path.dirname(destPath))
-    await fs.promises.writeFile(destPath, entry.getData())
+      await ensureDirectory(path.dirname(destPath))
+      const bytesWritten = await reader.extractEntry(
+        entry.fileName,
+        destPath,
+        MAX_SKILLSET_SIZE - totalExtracted,
+      )
+      totalExtracted += bytesWritten
+    }
+  } finally {
+    reader.close()
   }
 
   await fs.promises.writeFile(
@@ -145,18 +155,4 @@ async function downloadAndExtract(
   )
 }
 
-function detectZipPrefix(entries: AdmZip.IZipEntry[]): string {
-  const fileEntries = entries.filter(
-    (e) => !e.isDirectory && !e.entryName.startsWith('__MACOSX/'),
-  )
-  if (fileEntries.length === 0) return ''
-
-  const firstSegments = new Set<string>()
-  for (const entry of fileEntries) {
-    const slashIdx = entry.entryName.indexOf('/')
-    if (slashIdx === -1) return ''
-    firstSegments.add(entry.entryName.substring(0, slashIdx + 1))
-  }
-  return firstSegments.size === 1 ? firstSegments.values().next().value! : ''
-}
 

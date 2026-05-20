@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { Play, RefreshCw, SquareMousePointer, ExternalLink, Dock, Loader2 } from 'lucide-react'
 import { useAgent, useStartAgent } from '@renderer/hooks/use-agents'
+import { useKeepAlive } from '@renderer/hooks/use-keep-alive'
 import { useArtifacts } from '@renderer/hooks/use-artifacts'
 import { useUser } from '@renderer/context/user-context'
 import { getApiBaseUrl, isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
@@ -23,6 +24,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   const startAgent = useStartAgent()
   const { canUseAgent } = useUser()
   const canStart = canUseAgent(agentSlug)
+  useKeepAlive(agentSlug)
 
   const dashboard = artifacts?.find((a) => a.slug === dashboardSlug)
   const isAgentRunning = agent?.status === 'running'
@@ -134,6 +136,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
         className="flex-1 w-full border-0"
         title={dashboard?.name || dashboardSlug}
         sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+        allow="microphone; camera"
       />
     </div>
   )

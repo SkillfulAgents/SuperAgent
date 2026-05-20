@@ -70,9 +70,9 @@ function normalize(data: DailyResult[]): DailyResult[] {
 }
 
 describe('usage-service', () => {
-  describe('loadDailyUsageData — matches ccusage token counts', () => {
+  describe('loadDailyUsageData — matches ccusage stable token counts', () => {
     for (const slug of AGENT_SLUGS) {
-      it(`matches ccusage for agent ${slug}`, async () => {
+      it(`matches ccusage stable counts for agent ${slug}`, async () => {
         const claudePath = getClaudePath(slug)
 
         const [ccusageResult, lightweightResult] = await Promise.all([
@@ -91,22 +91,23 @@ describe('usage-service', () => {
 
           expect(lw.date).toBe(cc.date)
           expect(lw.inputTokens).toBe(cc.inputTokens)
-          expect(lw.outputTokens).toBe(cc.outputTokens)
+          // ccusage keeps the first snapshot for duplicate assistant message IDs.
+          // We keep the highest output_tokens snapshot, so output/cost can be higher.
+          expect(lw.outputTokens).toBeGreaterThanOrEqual(cc.outputTokens)
           expect(lw.cacheCreationTokens).toBe(cc.cacheCreationTokens)
           expect(lw.cacheReadTokens).toBe(cc.cacheReadTokens)
 
-          // Costs must match (if these fail, run: npx tsx scripts/fetch-model-pricing.ts)
-          expect(lw.totalCost).toBeCloseTo(cc.totalCost, 4)
+          expect(lw.totalCost).toBeGreaterThanOrEqual(cc.totalCost - 1e-10)
 
           // Model breakdowns: token counts and costs must match
           expect(lw.modelBreakdowns.length).toBe(cc.modelBreakdowns.length)
           for (let j = 0; j < cc.modelBreakdowns.length; j++) {
             expect(lw.modelBreakdowns[j].modelName).toBe(cc.modelBreakdowns[j].modelName)
             expect(lw.modelBreakdowns[j].inputTokens).toBe(cc.modelBreakdowns[j].inputTokens)
-            expect(lw.modelBreakdowns[j].outputTokens).toBe(cc.modelBreakdowns[j].outputTokens)
+            expect(lw.modelBreakdowns[j].outputTokens).toBeGreaterThanOrEqual(cc.modelBreakdowns[j].outputTokens)
             expect(lw.modelBreakdowns[j].cacheCreationTokens).toBe(cc.modelBreakdowns[j].cacheCreationTokens)
             expect(lw.modelBreakdowns[j].cacheReadTokens).toBe(cc.modelBreakdowns[j].cacheReadTokens)
-            expect(lw.modelBreakdowns[j].cost).toBeCloseTo(cc.modelBreakdowns[j].cost, 4)
+            expect(lw.modelBreakdowns[j].cost).toBeGreaterThanOrEqual(cc.modelBreakdowns[j].cost - 1e-10)
           }
         }
       })
@@ -269,17 +270,17 @@ describe('usage-service', () => {
       expect(result.length).toBeGreaterThan(0)
     })
 
-    it('deduplicates entries across files', async () => {
-      // msg_dup1/req_dup1 appears in both session-a.jsonl and session-b.jsonl
+    it('deduplicates entries across files and keeps the highest output_tokens snapshot', async () => {
+      // msg_dup1/req_dup1 appears multiple times with output snapshots 50, 75, and 50.
       const result = await loadDailyUsageDataLightweight({ claudePath: edgePath })
       const dec10 = result.find((d) => d.date === '2025-12-10')!
 
-      // opus-4-6 entries: msg_dup1 (100in/50out, deduplicated), msg_002 (200/100), msg_005 (400/200 costUSD=0)
+      // opus-4-6 entries: msg_dup1 (100in/75out, highest kept), msg_002 (200/100), msg_005 (400/200 costUSD=0)
       const opusBreakdown = dec10.modelBreakdowns.find((mb) => mb.modelName === 'claude-opus-4-6')!
       // 100 + 200 + 400 = 700 input (not 800 — dup was skipped)
       expect(opusBreakdown.inputTokens).toBe(700)
-      // 50 + 100 + 200 = 350 output
-      expect(opusBreakdown.outputTokens).toBe(350)
+      // 75 + 100 + 200 = 375 output
+      expect(opusBreakdown.outputTokens).toBe(375)
     })
 
     it('falls back to "unknown" for entries without a model field', async () => {
@@ -313,10 +314,10 @@ describe('usage-service', () => {
       // But costUSD: 0 is explicit — should use that
       const opusBreakdown = dec10.modelBreakdowns.find((mb) => mb.modelName === 'claude-opus-4-6')!
       // Total cost for opus: msg_dup1 computed + msg_002 computed + msg_005 explicit 0
-      // msg_dup1: (100*5 + 50*25)/1e6 = 0.001750
+      // msg_dup1: (100*5 + 75*25)/1e6 = 0.002375
       // msg_002: (200*5 + 100*25)/1e6 = 0.003500
       // msg_005: 0 (explicit costUSD)
-      expect(opusBreakdown.cost).toBeCloseTo(0.00525, 6)
+      expect(opusBreakdown.cost).toBeCloseTo(0.005875, 6)
     })
 
     it('uses costUSD from bedrock entry alongside computed entries', async () => {

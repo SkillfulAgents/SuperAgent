@@ -26,7 +26,7 @@ interface BrowserActivityLogProps {
 
 export function BrowserActivityLog({ sessionId, agentSlug }: BrowserActivityLogProps) {
   const { data: messages } = useMessages(sessionId, agentSlug)
-  const { streamingToolUse, activeSubagents } = useMessageStream(sessionId, agentSlug)
+  const { streamingToolUses, activeSubagents } = useMessageStream(sessionId, agentSlug)
   const bottomSentinelRef = useRef<HTMLDivElement>(null)
 
   // Collect ALL subagent IDs from the session messages
@@ -93,9 +93,11 @@ export function BrowserActivityLog({ sessionId, agentSlug }: BrowserActivityLogP
 
   // Streaming browser tool (from active subagent or main agent)
   const streamingBrowserTool = useMemo(() => {
-    if (streamingToolUse?.name.startsWith(BROWSER_TOOL_PREFIX)) {
-      const persisted = flatItems.some(i => i.toolCall.id === streamingToolUse.id)
-      if (!persisted) return streamingToolUse
+    for (const tool of streamingToolUses) {
+      if (tool.name.startsWith(BROWSER_TOOL_PREFIX)) {
+        const persisted = flatItems.some(i => i.toolCall.id === tool.id)
+        if (!persisted) return tool
+      }
     }
     for (const sub of activeSubagents ?? []) {
       if (sub.streamingToolUse?.name.startsWith(BROWSER_TOOL_PREFIX)) {
@@ -104,7 +106,7 @@ export function BrowserActivityLog({ sessionId, agentSlug }: BrowserActivityLogP
       }
     }
     return null
-  }, [streamingToolUse, activeSubagents, flatItems])
+  }, [streamingToolUses, activeSubagents, flatItems])
 
   useEffect(() => {
     bottomSentinelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })

@@ -41,7 +41,7 @@ test.describe('Agent Import Onboarding', () => {
 
   test('importing a template with the onboarding skill creates an onboarding session', async ({ page }) => {
     const agentName = `Imported Onboarding ${Date.now()}`
-    const zipPath = buildAgentTemplateZip(
+    const zipPath = await buildAgentTemplateZip(
       path.join(tmpDir, 'with-onboarding.zip'),
       { name: agentName, withOnboardingSkill: true },
     )
@@ -74,7 +74,7 @@ test.describe('Agent Import Onboarding', () => {
 
   test('onboarding setup dialog is visible while the session is being created', async ({ page }) => {
     const agentName = `Imported Onboarding Dialog ${Date.now()}`
-    const zipPath = buildAgentTemplateZip(
+    const zipPath = await buildAgentTemplateZip(
       path.join(tmpDir, 'onboarding-dialog.zip'),
       { name: agentName, withOnboardingSkill: true },
     )
@@ -103,7 +103,7 @@ test.describe('Agent Import Onboarding', () => {
 
   test('importing a template without the onboarding skill skips session creation', async ({ page }) => {
     const agentName = `Imported Plain ${Date.now()}`
-    const zipPath = buildAgentTemplateZip(
+    const zipPath = await buildAgentTemplateZip(
       path.join(tmpDir, 'plain.zip'),
       { name: agentName, withOnboardingSkill: false },
     )

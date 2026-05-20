@@ -1,9 +1,8 @@
 import { Moon, CircleDashed } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import type { ContainerStatus } from '@shared/lib/container/types'
+import { type AgentActivityStatus, getAgentActivityStatus } from '@shared/lib/types/agent-activity-status'
 import { WorkingDots, AwaitingDot } from './status-indicators'
-
-export type AgentActivityStatus = 'sleeping' | 'idle' | 'working' | 'awaiting_input'
 
 const statusLabels: Record<AgentActivityStatus, string> = {
   sleeping: 'sleeping',
@@ -20,17 +19,6 @@ interface AgentStatusProps {
   iconOnly?: boolean
   workingDotClassName?: string
   className?: string
-}
-
-export function getAgentActivityStatus(
-  containerStatus: ContainerStatus,
-  hasActiveSessions: boolean,
-  hasSessionsAwaitingInput: boolean = false
-): AgentActivityStatus {
-  if (containerStatus === 'stopped') return 'sleeping'
-  if (hasSessionsAwaitingInput) return 'awaiting_input'
-  if (hasActiveSessions) return 'working'
-  return 'idle'
 }
 
 export function AgentStatus({ status, hasActiveSessions = false, hasSessionsAwaitingInput = false, size = 'default', iconOnly = false, workingDotClassName, className }: AgentStatusProps) {

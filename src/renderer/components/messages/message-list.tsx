@@ -8,7 +8,8 @@ import {
   clearCompacting,
 } from '@renderer/hooks/use-message-stream'
 import { MessageItem } from './message-item'
-import { StreamingToolCallItem } from './tool-call-item'
+import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
+import { SubAgentBlock } from './subagent-block'
 import { CompactBoundaryItem } from './compact-boundary-item'
 import { MemoryRecallItem } from './memory-recall-item'
 import { ArrowDown, Loader2, MessageSquarePlus, WifiOff } from 'lucide-react'
@@ -133,7 +134,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, pendingR
     isActive,
     streamingMessage,
     isStreaming,
-    streamingToolUse,
+    streamingToolUses,
     isCompacting,
     activeSubagents,
     completedSubagents,
@@ -202,14 +203,19 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, pendingR
     return persistedText.startsWith(streamingText) || streamingText.startsWith(persistedText)
   }, [messages, streamingMessage])
 
-  // Check if streaming tool use is already in persisted messages (prevents double-render)
-  const isStreamingToolUsePersisted = useMemo(() => {
-    if (!streamingToolUse || !messages?.length) return false
-    return messages.some(m =>
-      m.type === 'assistant' &&
-      m.toolCalls.some(tc => tc.id === streamingToolUse.id)
-    )
-  }, [messages, streamingToolUse])
+  // Filter streaming tool uses to only those NOT yet in persisted messages
+  const unpersistedStreamingToolUses = useMemo(() => {
+    if (!streamingToolUses.length || !messages?.length) return streamingToolUses
+    const persistedToolIds = new Set<string>()
+    for (const m of messages) {
+      if (m.type === 'assistant') {
+        for (const tc of (m as ApiMessage).toolCalls) {
+          persistedToolIds.add(tc.id)
+        }
+      }
+    }
+    return streamingToolUses.filter(t => !persistedToolIds.has(t.id))
+  }, [messages, streamingToolUses])
 
   // Compute elapsed time for each completed response turn
   // A turn starts with a user message and ends at the last assistant message before the next user message (or end of messages when idle)
@@ -288,7 +294,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, pendingR
     if (!messages || pendingUserMessage) return null
     const hasUnpersistedStreaming =
       (streamingMessage && !isStreamingMessagePersisted) ||
-      (streamingToolUse && !isStreamingToolUsePersisted)
+      unpersistedStreamingToolUses.length > 0
     if (!hasUnpersistedStreaming) return null
     // Find the last persisted assistant message — that's where the elapsed time would wrongly appear.
     // But if we hit a user message first, the streaming belongs to a NEW turn and we
@@ -298,7 +304,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, pendingR
       if (messages[i].type === 'user') return null
     }
     return null
-  }, [messages, pendingUserMessage, streamingMessage, isStreamingMessagePersisted, streamingToolUse, isStreamingToolUsePersisted])
+  }, [messages, pendingUserMessage, streamingMessage, isStreamingMessagePersisted, unpersistedStreamingToolUses])
 
   // Determine which messages could have tool calls that are still running.
   // Only the trailing assistant messages (after the last user message) can have running tools,
@@ -331,7 +337,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, pendingR
     if (scrollRef.current && isScrolledToBottomRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [messages, pendingUserMessage, streamingMessage, streamingToolUse, isCompacting, pendingRequestCount, activeSubagents])
+  }, [messages, pendingUserMessage, streamingMessage, streamingToolUses, isCompacting, pendingRequestCount, activeSubagents])
 
   if (isLoading && !pendingUserMessage) {
     return (
@@ -449,14 +455,39 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, pendingR
         )}
 
         {/* Tool use streaming - keep visible until persisted data arrives */}
-        {streamingToolUse && !isStreamingToolUsePersisted && (
-          <div className="max-w-[80%]">
-            <StreamingToolCallItem
-              name={streamingToolUse.name}
-              partialInput={streamingToolUse.partialInput}
-            />
-          </div>
-        )}
+        {unpersistedStreamingToolUses.map(tool => {
+          if (tool.ready) {
+            let input: Record<string, unknown> = {}
+            try { input = JSON.parse(tool.partialInput) } catch { /* use empty */ }
+            const syntheticToolCall = { id: tool.id, name: tool.name, input }
+            if ((tool.name === 'Task' || tool.name === 'Agent') && sessionId) {
+              return (
+                <SubAgentBlock
+                  key={tool.id}
+                  toolCall={syntheticToolCall}
+                  sessionId={sessionId}
+                  agentSlug={agentSlug}
+                  isSessionActive={isActive}
+                  activeSubagent={activeSubagents?.find(s => s.parentToolId === tool.id) ?? null}
+                  isCompleted={completedSubagents?.has(tool.id) ?? false}
+                />
+              )
+            }
+            return (
+              <div key={tool.id} className="max-w-[80%]">
+                <ToolCallItem toolCall={syntheticToolCall} agentSlug={agentSlug} isSessionActive={isActive} />
+              </div>
+            )
+          }
+          return (
+            <div key={tool.id} className="max-w-[80%]">
+              <StreamingToolCallItem
+                name={tool.name}
+                partialInput={tool.partialInput}
+              />
+            </div>
+          )
+        })}
 
         {/* Deferred delivered files + elapsed time — shown after streaming content */}
         {deferredElapsedMessageId && turnDeliveredFiles.has(deferredElapsedMessageId) && (

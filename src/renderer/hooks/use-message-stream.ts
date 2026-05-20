@@ -67,7 +67,12 @@ export interface SubagentInfo {
   agentId: string | null
   streamingMessage: string | null
   streamingToolUse: { id: string; name: string; partialInput: string } | null
-  progressSummary: string | null // AI-generated progress summary from agentProgressSummaries
+  progressSummary: string | null
+  subagentType: string | null
+  description: string | null
+  usage: { total_tokens: number; tool_uses: number; duration_ms: number } | null
+  lastToolName: string | null
+  resultText?: string | null
 }
 
 interface ApiRetryInfo {
@@ -81,7 +86,7 @@ interface StreamState {
   isActive: boolean // True from user message until query result
   isStreaming: boolean // True while actively receiving tokens
   streamingMessage: string | null
-  streamingToolUse: { id: string; name: string; partialInput: string } | null
+  streamingToolUses: Array<{ id: string; name: string; partialInput: string; ready?: boolean }>
   pendingSecretRequests: SecretRequest[]
   pendingConnectedAccountRequests: ConnectedAccountRequest[]
   pendingQuestionRequests: QuestionRequest[]
@@ -122,7 +127,7 @@ const EMPTY_STREAM_STATE: StreamState = {
   isActive: false,
   isStreaming: false,
   streamingMessage: null,
-  streamingToolUse: null,
+  streamingToolUses: [],
   pendingSecretRequests: [],
   pendingConnectedAccountRequests: [],
   pendingQuestionRequests: [],
@@ -203,7 +208,7 @@ function getOrCreateEventSource(
           isActive: data.isActive ?? false,
           isStreaming: false,
           streamingMessage: null,
-          streamingToolUse: null,
+          streamingToolUses: [],
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
@@ -247,7 +252,7 @@ function getOrCreateEventSource(
           isActive: true,
           isStreaming: current?.isStreaming ?? false,
           streamingMessage: current?.streamingMessage ?? null,
-          streamingToolUse: current?.streamingToolUse ?? null,
+          streamingToolUses: current?.streamingToolUses ?? [],
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
@@ -276,14 +281,14 @@ function getOrCreateEventSource(
         // Session became idle - query completed or interrupted
         // Keep streamingMessage so it stays visible until persisted data arrives
         // (isStreamingMessagePersisted in MessageList handles deduplication)
-        // Clear streamingToolUse - if the tool was persisted, ToolCallItem renders it;
-        // if it wasn't (interrupted mid-stream), it should disappear.
+        // Clear streamingToolUses - if tools were persisted, ToolCallItem renders them;
+        // if they weren't (interrupted mid-stream), they should disappear.
         if (data.sessionId && data.sessionId !== sessionId) return
         streamStates.set(sessionId, {
           isActive: false,
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
-          streamingToolUse: null,
+          streamingToolUses: [],
           pendingSecretRequests: [],
           pendingConnectedAccountRequests: [],
           pendingQuestionRequests: [],
@@ -322,7 +327,7 @@ function getOrCreateEventSource(
           isActive: false,
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
-          streamingToolUse: null,
+          streamingToolUses: [],
           pendingSecretRequests: [],
           pendingConnectedAccountRequests: [],
           pendingQuestionRequests: [],
@@ -354,16 +359,16 @@ function getOrCreateEventSource(
         if (Array.isArray(data.slashCommands)) {
           sessionSlashCommands.set(sessionId, data.slashCommands)
         }
-        // If there was a streaming tool use, trigger a refetch so the persisted
-        // version is available before we clear the streaming state.
-        if (current?.streamingToolUse) {
+        // If there were streaming tool uses, trigger a refetch so the persisted
+        // versions are available before we clear the streaming state.
+        if (current?.streamingToolUses?.length) {
           queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         }
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
           isStreaming: true,
           streamingMessage: '',
-          streamingToolUse: null,
+          streamingToolUses: [],
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
@@ -392,7 +397,7 @@ function getOrCreateEventSource(
           isActive: current?.isActive ?? false,
           isStreaming: true,
           streamingMessage: (current?.streamingMessage || '') + data.text,
-          streamingToolUse: null,
+          streamingToolUses: current?.streamingToolUses ?? [],
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
@@ -427,15 +432,17 @@ function getOrCreateEventSource(
         }
       }
       else if (data.type === 'tool_use_start' || data.type === 'tool_use_streaming') {
+        const newTool = { id: data.toolId, name: data.toolName, partialInput: data.partialInput ?? '' }
+        const existing = current?.streamingToolUses ?? []
+        const idx = existing.findIndex(t => t.id === newTool.id)
+        const updatedTools = idx >= 0
+          ? existing.map((t, i) => i === idx ? newTool : t)
+          : [...existing, newTool]
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
           isStreaming: true,
           streamingMessage: current?.streamingMessage ?? null,
-          streamingToolUse: {
-            id: data.toolId,
-            name: data.toolName,
-            partialInput: data.partialInput ?? '',
-          },
+          streamingToolUses: updatedTools,
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
@@ -460,41 +467,21 @@ function getOrCreateEventSource(
         })
       }
       else if (data.type === 'tool_use_ready') {
-        // Tool is ready to execute - keep streamingToolUse visible until persisted
-        streamStates.set(sessionId, {
-          isActive: current?.isActive ?? false,
-          isStreaming: true,
-          streamingMessage: current?.streamingMessage ?? null,
-          streamingToolUse: current?.streamingToolUse ?? null,
-          pendingSecretRequests: current?.pendingSecretRequests ?? [],
-          pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
-          pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
-          pendingFileRequests: current?.pendingFileRequests ?? [],
-          pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
-          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
-          pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
-          pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
-          error: current?.error ?? null,
-          apiErrorCode: current?.apiErrorCode ?? null,
-          browserActive: current?.browserActive ?? false,
-          computerUseApp: current?.computerUseApp ?? null,
-          computerUseAppIcon: current?.computerUseAppIcon ?? null,
-          activeStartTime: current?.activeStartTime ?? null,
-          isCompacting: current?.isCompacting ?? false,
-          contextUsage: current?.contextUsage ?? null,
-          activeSubagents: current?.activeSubagents ?? [],
-          completedSubagents: current?.completedSubagents ?? null,
-          typingUser: current?.typingUser ?? null,
-          peerUserMessage: current?.peerUserMessage ?? null,
-          apiRetry: current?.apiRetry ?? null,
-        })
+        if (current) {
+          const tools = current.streamingToolUses
+          const idx = tools.findIndex(t => t.id === data.toolId)
+          if (idx >= 0) {
+            const updated = tools.map((t, i) => i === idx ? { ...t, ready: true } : t)
+            streamStates.set(sessionId, { ...current, streamingToolUses: updated })
+          }
+        }
       }
       else if (data.type === 'stream_end') {
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
-          streamingToolUse: null,
+          streamingToolUses: current?.streamingToolUses ?? [],
           pendingSecretRequests: current?.pendingSecretRequests ?? [],
           pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
           pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
@@ -543,11 +530,6 @@ function getOrCreateEventSource(
         }
       }
       else if (data.type === 'messages_updated') {
-        // Don't clear peerUserMessage here — the render dedup in MessageList
-        // hides it once the fetched messages include the matching text.
-        // Server signals that a message has been persisted to JSONL.
-        // Refetch so that persisted data is available before stream_start
-        // clears the streaming tool use state (prevents tool call flicker).
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
       }
       else if (data.type === 'tool_call' || data.type === 'tool_result') {
@@ -785,6 +767,27 @@ function getOrCreateEventSource(
           queryClient.invalidateQueries({ queryKey: ['webhook-triggers', triggerAgentSlug] })
         }
       }
+      else if (data.type === 'subagent_started') {
+        // task_started fired — immediately register agentId, type, and description
+        if (current) {
+          const existing = current.activeSubagents.find(s => s.parentToolId === data.parentToolId)
+          const updated: SubagentInfo = {
+            parentToolId: data.parentToolId,
+            agentId: data.agentId ?? existing?.agentId ?? null,
+            streamingMessage: existing?.streamingMessage ?? null,
+            streamingToolUse: existing?.streamingToolUse ?? null,
+            progressSummary: existing?.progressSummary ?? null,
+            subagentType: data.subagentType ?? existing?.subagentType ?? null,
+            description: data.description ?? existing?.description ?? null,
+            usage: existing?.usage ?? null,
+            lastToolName: existing?.lastToolName ?? null,
+          }
+          streamStates.set(sessionId, {
+            ...current,
+            activeSubagents: upsertSubagent(current.activeSubagents, updated),
+          })
+        }
+      }
       else if (data.type === 'subagent_updated') {
         // Subagent message persisted or agentId discovered — refetch persisted messages.
         // Preserve existing streaming state; SubAgentBlock's isStreamingMessagePersisted
@@ -797,6 +800,10 @@ function getOrCreateEventSource(
             streamingMessage: existing?.streamingMessage ?? null,
             streamingToolUse: existing?.streamingToolUse ?? null,
             progressSummary: existing?.progressSummary ?? null,
+            subagentType: existing?.subagentType ?? null,
+            description: existing?.description ?? null,
+            usage: existing?.usage ?? null,
+            lastToolName: existing?.lastToolName ?? null,
           }
           streamStates.set(sessionId, {
             ...current,
@@ -806,17 +813,29 @@ function getOrCreateEventSource(
         }
       }
       else if (data.type === 'subagent_completed') {
-        // Subagent finished — keep streaming data visible (for summary text) until persisted data arrives.
-        // Update agentId if provided, and mark as completed so status logic shows "completed".
+        // Subagent finished — update streaming message with resultText if provided
+        // (shows the exit summary immediately without waiting for refetch).
         if (current) {
           const existing = current.activeSubagents.find(s => s.parentToolId === data.parentToolId)
           const newCompleted = new Set(current.completedSubagents)
           if (data.parentToolId) {
             newCompleted.add(data.parentToolId)
           }
-          const updatedSubagents = existing
-            ? upsertSubagent(current.activeSubagents, { ...existing, agentId: data.agentId ?? existing.agentId })
-            : current.activeSubagents
+          const updatedEntry: SubagentInfo = {
+            ...(existing ?? {
+              parentToolId: data.parentToolId,
+              streamingMessage: null,
+              streamingToolUse: null,
+              progressSummary: null,
+              subagentType: null,
+              description: null,
+              usage: null,
+              lastToolName: null,
+            }),
+            agentId: data.agentId ?? existing?.agentId ?? null,
+            resultText: data.resultText ?? null,
+          }
+          const updatedSubagents = upsertSubagent(current.activeSubagents, updatedEntry)
           streamStates.set(sessionId, {
             ...current,
             activeSubagents: updatedSubagents,
@@ -836,6 +855,10 @@ function getOrCreateEventSource(
             streamingMessage: '',
             streamingToolUse: null,
             progressSummary: existing?.progressSummary ?? null,
+            subagentType: existing?.subagentType ?? null,
+            description: existing?.description ?? null,
+            usage: existing?.usage ?? null,
+            lastToolName: existing?.lastToolName ?? null,
           }
           streamStates.set(sessionId, {
             ...current,
@@ -852,6 +875,10 @@ function getOrCreateEventSource(
             streamingMessage: (existing?.streamingMessage || '') + data.text,
             streamingToolUse: existing?.streamingToolUse ?? null,
             progressSummary: existing?.progressSummary ?? null,
+            subagentType: existing?.subagentType ?? null,
+            description: existing?.description ?? null,
+            usage: existing?.usage ?? null,
+            lastToolName: existing?.lastToolName ?? null,
           }
           streamStates.set(sessionId, {
             ...current,
@@ -872,6 +899,10 @@ function getOrCreateEventSource(
               partialInput: data.partialInput ?? '',
             },
             progressSummary: existing?.progressSummary ?? null,
+            subagentType: existing?.subagentType ?? null,
+            description: existing?.description ?? null,
+            usage: existing?.usage ?? null,
+            lastToolName: existing?.lastToolName ?? null,
           }
           streamStates.set(sessionId, {
             ...current,
@@ -880,7 +911,6 @@ function getOrCreateEventSource(
         }
       }
       else if (data.type === 'subagent_progress') {
-        // AI-generated progress summary for a running subagent
         if (current) {
           const existing = current.activeSubagents.find(s => s.parentToolId === data.parentToolId)
           const updated: SubagentInfo = {
@@ -888,7 +918,11 @@ function getOrCreateEventSource(
             agentId: existing?.agentId ?? null,
             streamingMessage: existing?.streamingMessage ?? null,
             streamingToolUse: existing?.streamingToolUse ?? null,
-            progressSummary: data.summary ?? null,
+            progressSummary: data.summary ?? existing?.progressSummary ?? null,
+            subagentType: data.subagentType ?? existing?.subagentType ?? null,
+            description: existing?.description ?? null, // keep original from task_started
+            usage: data.usage ?? existing?.usage ?? null,
+            lastToolName: data.lastToolName ?? existing?.lastToolName ?? null,
           }
           streamStates.set(sessionId, {
             ...current,
@@ -908,7 +942,7 @@ function getOrCreateEventSource(
             isActive: false,
             isStreaming: false,
             streamingMessage: null,
-            streamingToolUse: null,
+            streamingToolUses: [],
             error: null,
             apiErrorCode: null,
             activeStartTime: null,
@@ -937,7 +971,7 @@ function getOrCreateEventSource(
         ...current,
         isStreaming: false,
         streamingMessage: null,
-        streamingToolUse: null,
+        streamingToolUses: [],
       })
     }
     streamListeners.get(sessionId)?.forEach((listener) => listener())

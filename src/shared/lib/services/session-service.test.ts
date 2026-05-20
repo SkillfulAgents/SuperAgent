@@ -14,6 +14,8 @@ import {
   getSession,
   getSessionMessages,
   deleteSession,
+  deleteSessionsBatch,
+  readSessionMetadata,
   updateSessionName,
   sessionExists,
   registerSession,
@@ -476,6 +478,63 @@ describe('session-service', () => {
         '519f8756-a16e-41ff-99de-9fe599dedae5'
       )
       expect(metadata).toBeNull()
+    })
+  })
+
+  describe('deleteSessionsBatch', () => {
+    it('returns empty array when given no session IDs', async () => {
+      const result = await deleteSessionsBatch('test-agent', [])
+      expect(result).toEqual([])
+    })
+
+    it('deletes multiple JSONL files and returns their IDs', async () => {
+      await createSessionFile('test-agent', 'session-1', SAMPLE_JSONL_ENTRIES)
+      await createSessionFile('test-agent', 'session-2', SAMPLE_JSONL_ENTRIES)
+      await createSessionFile('test-agent', 'session-3', SAMPLE_JSONL_ENTRIES)
+
+      const result = await deleteSessionsBatch('test-agent', [
+        'session-1',
+        'session-2',
+      ])
+
+      expect(result).toEqual(['session-1', 'session-2'])
+      expect(await sessionExists('test-agent', 'session-1')).toBe(false)
+      expect(await sessionExists('test-agent', 'session-2')).toBe(false)
+      expect(await sessionExists('test-agent', 'session-3')).toBe(true)
+    })
+
+    it('removes metadata entries for deleted sessions', async () => {
+      await createSessionFile('test-agent', 'session-1', SAMPLE_JSONL_ENTRIES)
+      await createSessionFile('test-agent', 'session-2', SAMPLE_JSONL_ENTRIES)
+      await createSessionMetadata('test-agent', {
+        'session-1': { name: 'First', createdAt: '2026-01-01T00:00:00Z' },
+        'session-2': { name: 'Second', createdAt: '2026-01-02T00:00:00Z' },
+        'session-3': { name: 'Third', createdAt: '2026-01-03T00:00:00Z' },
+      })
+
+      await deleteSessionsBatch('test-agent', ['session-1', 'session-2'])
+
+      const metadata = await readSessionMetadata('test-agent')
+      expect(metadata['session-1']).toBeUndefined()
+      expect(metadata['session-2']).toBeUndefined()
+      expect(metadata['session-3']).toBeDefined()
+      expect(metadata['session-3'].name).toBe('Third')
+    })
+
+    it('handles missing JSONL files gracefully (ENOENT)', async () => {
+      await createSessionsDir('test-agent')
+      await createSessionMetadata('test-agent', {
+        'missing-session': {
+          name: 'Gone',
+          createdAt: '2026-01-01T00:00:00Z',
+        },
+      })
+
+      const result = await deleteSessionsBatch('test-agent', ['missing-session'])
+
+      expect(result).toEqual(['missing-session'])
+      const metadata = await readSessionMetadata('test-agent')
+      expect(metadata['missing-session']).toBeUndefined()
     })
   })
 

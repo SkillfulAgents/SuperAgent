@@ -505,7 +505,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       // Wait for container to be healthy
       addErrorBreadcrumb({ category: 'container', message: 'Waiting for container health check', data: { port, containerName } })
-      const healthy = await this.waitForHealthy(60000)
+      const healthy = await this.waitForHealthy(60000, port)
       if (!healthy) {
         // Grab logs to help diagnose the failure
         const logs = await this.getLogs(30)
@@ -658,19 +658,26 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
   }
 
-  async waitForHealthy(timeoutMs: number = 30000): Promise<boolean> {
+  async waitForHealthy(timeoutMs: number = 30000, knownPort?: number): Promise<boolean> {
     const startTime = Date.now()
-    const pollInterval = 1000
+    const pollInterval = 250
+    // Only check container exit status every ~2s to avoid spawning docker inspect on every tick
+    const exitCheckInterval = 2000
+    let lastExitCheck = 0
 
     while (Date.now() - startTime < timeoutMs) {
-      if (await this.isHealthy()) {
+      if (await this.isHealthy(knownPort)) {
         return true
       }
 
-      // If container has already exited, fail immediately instead of polling until timeout
-      const info = await this.getInfo()
-      if (info.status !== 'running') {
-        return false
+      // Periodically check if the container has exited so we can fail fast
+      const now = Date.now()
+      if (now - lastExitCheck >= exitCheckInterval) {
+        lastExitCheck = now
+        const info = await this.getInfo()
+        if (info.status !== 'running') {
+          return false
+        }
       }
 
       await new Promise((resolve) => setTimeout(resolve, pollInterval))
@@ -679,13 +686,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return false
   }
 
-  async isHealthy(): Promise<boolean> {
-    const info = await this.getInfo()
-    if (info.status !== 'running' || !info.port) {
-      return false
-    }
+  async isHealthy(knownPort?: number): Promise<boolean> {
+    const port = knownPort ?? (await this.getInfo()).port
+    if (!port) return false
     try {
-      const response = await fetch(`http://127.0.0.1:${info.port}/health`)
+      const response = await fetch(`http://127.0.0.1:${port}/health`)
       return response.ok
     } catch {
       return false
@@ -1092,9 +1097,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    * The caller must clean up the file after the container starts.
    */
   protected buildEnvFile(additionalEnvVars?: Record<string, string>): { flag: string; cleanup: () => void } {
+    const settings = getSettings()
     const envVars: Record<string, string | undefined> = {
       ...getActiveLlmProvider().getContainerEnvVars(),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
+      ENABLE_TOOL_SEARCH: settings.enableToolSearch !== false ? 'true' : 'false',
       ...this.config.envVars,
       ...additionalEnvVars,
     }

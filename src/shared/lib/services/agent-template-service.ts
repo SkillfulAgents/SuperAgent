@@ -9,7 +9,12 @@ import crypto from 'crypto'
 import path from 'path'
 import fs from 'fs'
 import archiver from 'archiver'
-import AdmZip from 'adm-zip'
+import {
+  openZipFromBuffer,
+  detectZipPrefix,
+  type ZipEntryMeta,
+  type ZipReader,
+} from '@shared/lib/utils/zip'
 import {
   getAgentWorkspaceDir,
   getAgentClaudeMdPath,
@@ -56,7 +61,8 @@ import { pruneInstalledTemplateIfInvalid } from './skillset-reconcile'
 // Constants
 // ============================================================================
 
-const MAX_UNCOMPRESSED_SIZE = 200 * 1024 * 1024 // 200MB
+const MAX_UNCOMPRESSED_SIZE = 500 * 1024 * 1024 // 500MB
+export const MAX_COMPRESSED_SIZE = 500 * 1024 * 1024 // 500MB
 const MAX_FILE_COUNT = 2000
 
 /** Files/dirs excluded from templates (matched by name at any level) */
@@ -69,6 +75,7 @@ const TEMPLATE_EXCLUDE = new Set([
   '.superagent-sessions.json',
   '.skillset-agent-metadata.json',
   'bookmarks.json',
+  'agent-preferences.json',
 ])
 
 /** File extensions excluded from templates at any level */
@@ -324,43 +331,6 @@ export async function exportAgentFull(agentSlug: string): Promise<Buffer> {
 }
 
 // ============================================================================
-// ZIP Helpers
-// ============================================================================
-
-/**
- * Detect a common wrapper directory prefix in ZIP entries.
- * Many ZIP tools (macOS Finder, etc.) wrap all files in a top-level directory.
- * Returns the prefix to strip (e.g., "Legal Agent-template/") or empty string.
- * Also filters out __MACOSX resource fork entries.
- */
-function detectZipPrefix(entries: AdmZip.IZipEntry[]): string {
-  // Filter out macOS resource fork entries and directories
-  const fileEntries = entries.filter(
-    (e) => !e.isDirectory && !e.entryName.startsWith('__MACOSX/')
-  )
-
-  if (fileEntries.length === 0) return ''
-
-  // Check if all files share a common first path segment
-  const firstSegments = new Set<string>()
-  for (const entry of fileEntries) {
-    const slashIdx = entry.entryName.indexOf('/')
-    if (slashIdx === -1) {
-      // File at root level - no common prefix
-      return ''
-    }
-    firstSegments.add(entry.entryName.substring(0, slashIdx + 1))
-  }
-
-  // If all files share exactly one common prefix directory, use it
-  if (firstSegments.size === 1) {
-    return firstSegments.values().next().value!
-  }
-
-  return ''
-}
-
-// ============================================================================
 // ZIP Validation
 // ============================================================================
 
@@ -374,70 +344,79 @@ export interface TemplateValidationResult {
 }
 
 /**
+ * Validate ZIP entry metadata without extracting file contents.
+ * Checks file count, declared uncompressed size, and path traversal.
+ */
+function validateEntries(
+  entries: ZipEntryMeta[],
+  mode: 'template' | 'full',
+): Omit<TemplateValidationResult, 'agentName'> {
+  const realEntries = entries.filter((e) => {
+    if (e.fileName.startsWith('__MACOSX/')) return false
+    if (mode === 'template') {
+      const parts = e.fileName.split('/')
+      if (parts.some((p) => TEMPLATE_EXCLUDE.has(p))) return false
+      if (!e.isDirectory && TEMPLATE_EXCLUDE_EXTENSIONS.has(path.extname(e.fileName))) return false
+    }
+    return true
+  })
+
+  if (realEntries.length > MAX_FILE_COUNT) {
+    return { valid: false, error: `Too many files (${realEntries.length}, max ${MAX_FILE_COUNT})`, fileCount: realEntries.length, stripPrefix: '' }
+  }
+
+  let totalSize = 0
+  for (const entry of realEntries) {
+    totalSize += entry.uncompressedSize
+    if (totalSize > MAX_UNCOMPRESSED_SIZE) {
+      return { valid: false, error: `Template too large (exceeds ${MAX_UNCOMPRESSED_SIZE / 1024 / 1024}MB)`, fileCount: realEntries.length, stripPrefix: '' }
+    }
+  }
+
+  for (const entry of realEntries) {
+    if (entry.fileName.split('/').includes('..') || path.isAbsolute(entry.fileName)) {
+      return { valid: false, error: `Invalid path in template: ${entry.fileName}`, fileCount: realEntries.length, stripPrefix: '' }
+    }
+  }
+
+  const stripPrefix = detectZipPrefix(entries)
+
+  const claudeMdEntry = realEntries.find((e) => {
+    const name = stripPrefix ? e.fileName.replace(stripPrefix, '') : e.fileName
+    const normalized = name.replace(/^\.\//, '')
+    return normalized === 'CLAUDE.md'
+  })
+  if (!claudeMdEntry) {
+    return { valid: false, error: 'CLAUDE.md not found in template', fileCount: realEntries.length, stripPrefix }
+  }
+
+  return { valid: true, fileCount: realEntries.length, stripPrefix }
+}
+
+/**
  * Validate a ZIP buffer as an agent template.
  * Handles ZIPs with or without a wrapper directory (e.g., from macOS Finder).
  * In 'full' mode, only __MACOSX entries are filtered — all other entries count
  * toward size/count limits and are checked for path traversal.
  */
-export function validateAgentTemplate(zipBuffer: Buffer, mode: 'template' | 'full' = 'template'): TemplateValidationResult {
+export async function validateAgentTemplate(zipBuffer: Buffer, mode: 'template' | 'full' = 'template'): Promise<TemplateValidationResult> {
+  let reader: ZipReader | undefined
   try {
-    const zip = new AdmZip(zipBuffer)
-    const entries = zip.getEntries()
+    reader = await openZipFromBuffer(zipBuffer)
 
-    // Filter out macOS resource fork entries; in template mode also filter excluded files
-    const realEntries = entries.filter((e) => {
-      if (e.entryName.startsWith('__MACOSX/')) return false
-      if (mode === 'template') {
-        const parts = e.entryName.split('/')
-        if (parts.some((p) => TEMPLATE_EXCLUDE.has(p))) return false
-        if (!e.isDirectory && TEMPLATE_EXCLUDE_EXTENSIONS.has(path.extname(e.entryName))) return false
-      }
-      return true
-    })
+    const result = validateEntries(reader.entries, mode)
+    if (!result.valid) return { ...result, agentName: undefined }
 
-    // Check file count
-    if (realEntries.length > MAX_FILE_COUNT) {
-      return { valid: false, error: `Too many files (${realEntries.length}, max ${MAX_FILE_COUNT})`, fileCount: realEntries.length, stripPrefix: '' }
-    }
+    const claudeMdFileName = reader.entries.find((e) => {
+      const name = result.stripPrefix ? e.fileName.replace(result.stripPrefix, '') : e.fileName
+      return name.replace(/^\.\//, '') === 'CLAUDE.md'
+    })!.fileName
 
-    // Check total uncompressed size
-    let totalSize = 0
-    for (const entry of realEntries) {
-      totalSize += entry.header.size
-      if (totalSize > MAX_UNCOMPRESSED_SIZE) {
-        return { valid: false, error: `Template too large (exceeds ${MAX_UNCOMPRESSED_SIZE / 1024 / 1024}MB)`, fileCount: realEntries.length, stripPrefix: '' }
-      }
-    }
-
-    // Path traversal check
-    for (const entry of realEntries) {
-      const name = entry.entryName
-      if (name.includes('..') || path.isAbsolute(name)) {
-        return { valid: false, error: `Invalid path in template: ${name}`, fileCount: realEntries.length, stripPrefix: '' }
-      }
-    }
-
-    // Detect wrapper directory prefix
-    const stripPrefix = detectZipPrefix(entries)
-
-    // Check CLAUDE.md exists (with or without prefix)
-    const claudeMdEntry = realEntries.find(
-      (e) => {
-        const name = stripPrefix ? e.entryName.replace(stripPrefix, '') : e.entryName
-        const normalized = name.replace(/^\.\//, '')
-        return normalized === 'CLAUDE.md'
-      }
-    )
-    if (!claudeMdEntry) {
-      return { valid: false, error: 'CLAUDE.md not found in template', fileCount: realEntries.length, stripPrefix }
-    }
-
-    // Parse name from frontmatter
-    const claudeMdContent = claudeMdEntry.getData().toString('utf-8')
-    const { frontmatter } = parseMarkdownWithFrontmatter<AgentFrontmatter>(claudeMdContent)
+    const claudeMdBuf = await reader.readEntry(claudeMdFileName)
+    const { frontmatter } = parseMarkdownWithFrontmatter<AgentFrontmatter>(claudeMdBuf.toString('utf-8'))
     const agentName = frontmatter.name || undefined
 
-    return { valid: true, agentName, fileCount: realEntries.length, stripPrefix }
+    return { valid: true, agentName, fileCount: result.fileCount, stripPrefix: result.stripPrefix }
   } catch (error) {
     return {
       valid: false,
@@ -445,6 +424,8 @@ export function validateAgentTemplate(zipBuffer: Buffer, mode: 'template' | 'ful
       fileCount: 0,
       stripPrefix: '',
     }
+  } finally {
+    reader?.close()
   }
 }
 
@@ -461,72 +442,78 @@ export async function importAgentFromTemplate(
   nameOverride?: string,
   mode: 'template' | 'full' = 'template',
 ): Promise<ApiAgent> {
-  const validation = validateAgentTemplate(zipBuffer, mode)
-  if (!validation.valid) {
-    throw new Error(validation.error || 'Invalid template')
-  }
-
-  const zip = new AdmZip(zipBuffer)
-  const entries = zip.getEntries()
-
-  // If name override is provided, we need to update the CLAUDE.md frontmatter
-  const effectiveName = nameOverride?.trim() || validation.agentName
-
-  // Create the agent from workspace first to get a slug
-  // We need a temp approach: extract to a temp dir, then use createAgentFromExistingWorkspace
-  const agent = await createAgentFromExistingWorkspace(effectiveName || 'Imported Agent')
-  const workspaceDir = getAgentWorkspaceDir(agent.slug)
-
-  // Extract files to the workspace, skipping secrets and macOS junk
-  const stripPrefix = validation.stripPrefix
-  for (const entry of entries) {
-    if (entry.isDirectory) continue
-    if (entry.entryName.startsWith('__MACOSX/')) continue
-
-    // Strip wrapper directory prefix and normalize
-    let entryName = stripPrefix
-      ? entry.entryName.replace(stripPrefix, '')
-      : entry.entryName
-    entryName = entryName.replace(/^\.\//, '')
-
-    if (!entryName) continue
-
-    if (mode === 'template') {
-      // Skip excluded directories (node_modules, __pycache__, etc.) and extensions (.pyc)
-      const entryParts = entry.entryName.split('/')
-      if (entryParts.some((p) => TEMPLATE_EXCLUDE.has(p))) continue
-      if (TEMPLATE_EXCLUDE_EXTENSIONS.has(path.extname(entry.entryName))) continue
-
-      // Security: skip secrets and excluded files even if present
-      const baseName = path.basename(entryName)
-      if (baseName === '.env' || baseName === 'session-metadata.json') continue
+  const reader = await openZipFromBuffer(zipBuffer)
+  try {
+    const validation = validateEntries(reader.entries, mode)
+    if (!validation.valid) {
+      throw new Error(validation.error || 'Invalid template')
     }
 
-    // Path traversal protection
-    const destPath = path.resolve(workspaceDir, entryName)
-    if (!destPath.startsWith(workspaceDir)) continue
+    // Read CLAUDE.md to extract agent name
+    const claudeMdFileName = reader.entries.find((e) => {
+      const name = validation.stripPrefix ? e.fileName.replace(validation.stripPrefix, '') : e.fileName
+      return name.replace(/^\.\//, '') === 'CLAUDE.md'
+    })!.fileName
+    const claudeMdBuf = await reader.readEntry(claudeMdFileName)
+    const { frontmatter } = parseMarkdownWithFrontmatter<AgentFrontmatter>(claudeMdBuf.toString('utf-8'))
+    const agentName = frontmatter.name || undefined
 
-    await ensureDirectory(path.dirname(destPath))
-    await fs.promises.writeFile(destPath, entry.getData())
-  }
+    const effectiveName = nameOverride?.trim() || agentName
 
-  // If name override was specified, update the CLAUDE.md
-  if (nameOverride?.trim()) {
-    const claudeMdPath = getAgentClaudeMdPath(agent.slug)
-    let content = await readFileOrNull(claudeMdPath)
-    if (content) {
-      // Replace name in frontmatter
-      content = content.replace(
-        /^(---\s*\n[\s\S]*?)(name:\s*).+$/m,
-        `$1$2${nameOverride.trim()}`
+    const agent = await createAgentFromExistingWorkspace(effectiveName || 'Imported Agent')
+    const workspaceDir = getAgentWorkspaceDir(agent.slug)
+
+    const stripPrefix = validation.stripPrefix
+    let totalExtracted = 0
+    for (const entry of reader.entries) {
+      if (entry.isDirectory) continue
+      if (entry.fileName.startsWith('__MACOSX/')) continue
+
+      let entryName = stripPrefix
+        ? entry.fileName.replace(stripPrefix, '')
+        : entry.fileName
+      entryName = entryName.replace(/^\.\//, '')
+
+      if (!entryName) continue
+
+      if (mode === 'template') {
+        const entryParts = entry.fileName.split('/')
+        if (entryParts.some((p) => TEMPLATE_EXCLUDE.has(p))) continue
+        if (TEMPLATE_EXCLUDE_EXTENSIONS.has(path.extname(entry.fileName))) continue
+
+        const baseName = path.basename(entryName)
+        if (baseName === '.env' || baseName === 'session-metadata.json') continue
+      }
+
+      const destPath = path.resolve(workspaceDir, entryName)
+      if (!destPath.startsWith(workspaceDir)) continue
+
+      await ensureDirectory(path.dirname(destPath))
+      const bytesWritten = await reader.extractEntry(
+        entry.fileName,
+        destPath,
+        MAX_UNCOMPRESSED_SIZE - totalExtracted,
       )
-      await fs.promises.writeFile(claudeMdPath, content, 'utf-8')
+      totalExtracted += bytesWritten
     }
-  }
 
-  // Re-read the agent to get updated info
-  const result = await getAgentWithStatus(agent.slug)
-  return result || agent
+    if (nameOverride?.trim()) {
+      const claudeMdPath = getAgentClaudeMdPath(agent.slug)
+      let content = await readFileOrNull(claudeMdPath)
+      if (content) {
+        content = content.replace(
+          /^(---\s*\n[\s\S]*?)(name:\s*).+$/m,
+          `$1$2${nameOverride.trim()}`
+        )
+        await fs.promises.writeFile(claudeMdPath, content, 'utf-8')
+      }
+    }
+
+    const result = await getAgentWithStatus(agent.slug)
+    return result || agent
+  } finally {
+    reader.close()
+  }
 }
 
 // ============================================================================
@@ -563,12 +550,13 @@ export async function installAgentFromSkillset(
   await copyDirectoryFiltered(agentDirInRepo, workspaceDir)
 
   // The template's CLAUDE.md overwrites the one createAgentFromExistingWorkspace
-  // wrote, so patch the frontmatter name to the user's chosen name.
+  // wrote, so patch the frontmatter name and createdAt to the install time.
   const claudeMdPath = getAgentClaudeMdPath(agent.slug)
   const claudeMdContent = await readFileOrNull(claudeMdPath)
   if (claudeMdContent) {
     const { frontmatter, body } = parseMarkdownWithFrontmatter<AgentFrontmatter>(claudeMdContent)
     frontmatter.name = agentName
+    frontmatter.createdAt = agent.createdAt.toISOString()
     await fs.promises.writeFile(claudeMdPath, serializeMarkdownWithFrontmatter(frontmatter, body), 'utf-8')
   }
 

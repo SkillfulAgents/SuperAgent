@@ -70,9 +70,8 @@ export interface AppPreferences {
   showMenuBarIcon?: boolean
   notifications?: NotificationSettings
   autoSleepTimeoutMinutes?: number
+  autoDeleteInactiveDays?: number
   setupCompleted?: boolean
-  /** @deprecated Use hostBrowserProvider instead */
-  useHostBrowser?: boolean
   hostBrowserProvider?: HostBrowserProviderId
   chromeProfileId?: string
   chromeHeadless?: boolean
@@ -184,6 +183,8 @@ export interface AppSettings {
   analyticsTargets?: AnalyticsTarget[]
   shareErrorReports?: boolean
   platformAuth?: PlatformAuthSettings
+  /** Anthropic SDK tool search — defaults on; passed as `ENABLE_TOOL_SEARCH` to the container. */
+  enableToolSearch?: boolean
 }
 
 // API key source types
@@ -252,6 +253,7 @@ export interface GlobalSettingsResponse {
   shareAnalytics: boolean
   analyticsTargets?: AnalyticsTarget[]
   shareErrorReports: boolean
+  enableToolSearch: boolean
 }
 
 /**
@@ -290,6 +292,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     agentModel: 'claude-opus-4-7',
     browserModel: 'claude-sonnet-4-6',
   },
+  enableToolSearch: true,
   skillsets: [DEFAULT_PUBLIC_SKILLSET],
 }
 
@@ -318,18 +321,6 @@ export function loadSettings(): AppSettings {
         if (savedTag === 'main' || /^\d+\.\d+\.\d+/.test(savedTag!)) {
           agentImage = getDefaultAgentImage()
         }
-      }
-
-      // Migrate useHostBrowser → hostBrowserProvider. Delete the deprecated
-      // field so the migration doesn't re-fire on every load and clobber a
-      // later user choice of "Container (built-in)" (which leaves
-      // hostBrowserProvider undefined).
-      // TODO legacy migration - delete soon
-      if (loaded.app?.useHostBrowser && !loaded.app?.hostBrowserProvider) {
-        loaded.app.hostBrowserProvider = 'chrome'
-      }
-      if (loaded.app && 'useHostBrowser' in loaded.app) {
-        delete loaded.app.useHostBrowser
       }
 
       // Merge with defaults to ensure all fields exist
@@ -374,6 +365,7 @@ export function loadSettings(): AppSettings {
         analyticsTargets: loaded.analyticsTargets,
         shareErrorReports: loaded.shareErrorReports,
         platformAuth: loaded.platformAuth,
+        enableToolSearch: loaded.enableToolSearch ?? DEFAULT_SETTINGS.enableToolSearch,
       }
     }
   } catch (error) {

@@ -1,4 +1,5 @@
 {
+  "ignorePatterns": ["src/api/llm-sdk-bundle.ts"],
   "env": {
     "browser": true,
     "es2021": true,

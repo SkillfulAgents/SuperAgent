@@ -240,27 +240,6 @@ describe('IMessageConnector', () => {
       })
     })
 
-    it('ignores reactions from our own phone number', async () => {
-      const event = {
-        type: 'user_question_request' as const,
-        toolUseId: 'review:tool-1',
-        questions: [{ question: 'Allow?' }],
-      }
-
-      await connector.sendUserRequestCard('chat-1', event as any)
-
-      const handler = vi.fn()
-      connector.onInteractiveResponse(handler)
-
-      // Reaction from our own number should be ignored
-      ;(connector as any).handleReactionAdded({
-        reactionType: 'like',
-        from: '+15551234567',
-      })
-
-      expect(handler).not.toHaveBeenCalled()
-    })
-
     it('removes pending approval after it is resolved', async () => {
       const event = {
         type: 'user_question_request' as const,

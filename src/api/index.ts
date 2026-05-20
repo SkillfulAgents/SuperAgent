@@ -20,6 +20,10 @@ import userSettingsRouter from './routes/user-settings'
 import policies from './routes/policies'
 import runtimeStatusRouter from './routes/runtime-status'
 import sttRouter from './routes/stt'
+import llmRouter from './routes/llm'
+import { getPolyfillJs } from './speech-recognition-polyfill'
+import { getLlmPolyfillJs } from './llm-polyfill'
+import { ANTHROPIC_SDK_BUNDLE } from './llm-sdk-bundle'
 import adminUsersRouter from './routes/admin-users'
 import debugRouter from './routes/debug'
 import platformAuth from './routes/platform-auth'
@@ -138,6 +142,26 @@ if (isAuthMode()) {
   })
 }
 
+// Public static assets (no auth)
+app.get('/api/stt/speech-recognition-polyfill.js', (c) => {
+  return c.body(getPolyfillJs(), 200, {
+    'Content-Type': 'application/javascript; charset=utf-8',
+    'Cache-Control': 'public, max-age=3600',
+  })
+})
+app.get('/api/llm/anthropic-polyfill.js', (c) => {
+  return c.body(getLlmPolyfillJs(), 200, {
+    'Content-Type': 'application/javascript; charset=utf-8',
+    'Cache-Control': 'public, max-age=3600',
+  })
+})
+app.get('/api/llm/anthropic-sdk.js', (c) => {
+  return c.body(ANTHROPIC_SDK_BUNDLE, 200, {
+    'Content-Type': 'application/javascript; charset=utf-8',
+    'Cache-Control': 'public, max-age=86400',
+  })
+})
+
 // Mount route handlers
 app.route('/api/agents', agents)
 app.route('/api/x-agent', xAgent)
@@ -161,6 +185,7 @@ app.route('/api/runtime-status', runtimeStatusRouter)
 app.route('/api/admin/users', adminUsersRouter)
 app.route('/api/platform-auth', platformAuth)
 app.route('/api/stt', sttRouter)
+app.route('/api/llm', llmRouter)
 app.route('/api/debug', debugRouter)
 
 // Global error handler

@@ -2,7 +2,7 @@ export interface MockStreamState {
   isActive: boolean
   isStreaming: boolean
   streamingMessage: string | null
-  streamingToolUse: { id: string; name: string; partialInput: string } | null
+  streamingToolUses: Array<{ id: string; name: string; partialInput: string; ready?: boolean }>
   pendingSecretRequests: Array<{ toolUseId: string; secretName: string; reason?: string }>
   pendingConnectedAccountRequests: Array<{ toolUseId: string; toolkit: string; reason?: string }>
   pendingQuestionRequests: Array<{
@@ -32,7 +32,7 @@ export const DEFAULT_STREAM_STATE: MockStreamState = {
   isActive: false,
   isStreaming: false,
   streamingMessage: null,
-  streamingToolUse: null,
+  streamingToolUses: [],
   pendingSecretRequests: [],
   pendingConnectedAccountRequests: [],
   pendingQuestionRequests: [],

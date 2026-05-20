@@ -1139,6 +1139,15 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       })
     }
 
+    // Dashboard artifact HTML — serves a minimal page for E2E testing of polyfill injection
+    if (fetchPath.match(/^\/artifacts\/[^/]+\/?$/) || fetchPath.match(/^\/artifacts\/[^/]+\/index\.html$/)) {
+      const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Mock Dashboard</title></head><body><h1>Mock Dashboard</h1><script>window.__DASHBOARD_LOADED__ = true;</script></body></html>`
+      return new Response(html, {
+        status: 200,
+        headers: { 'Content-Type': 'text/html; charset=utf-8' },
+      })
+    }
+
     // Handle input resolve/reject — decrement pending count and complete session when all done
     const resolveMatch = fetchPath.match(/^\/inputs\/[^/]+\/(resolve|reject)$/)
     if (resolveMatch) {
@@ -1195,11 +1204,11 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   // Health checks
 
-  async waitForHealthy(_timeoutMs?: number): Promise<boolean> {
+  async waitForHealthy(_timeoutMs?: number, _knownPort?: number): Promise<boolean> {
     return this.running
   }
 
-  async isHealthy(): Promise<boolean> {
+  async isHealthy(_knownPort?: number): Promise<boolean> {
     return this.running
   }
 

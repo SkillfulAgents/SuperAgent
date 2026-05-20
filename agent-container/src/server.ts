@@ -13,6 +13,7 @@ import * as dns from 'dns';
 import { inputManager } from './input-manager';
 import { dashboardManager } from './dashboard-manager';
 import { tabManager } from './tab-manager';
+import { runBrowserUpload } from './browser-upload';
 
 import { getEditingCommands } from './cdp-editing-commands';
 
@@ -556,7 +557,7 @@ const browserState: BrowserState = new Proxy({} as BrowserState, {
 
 const execFileAsync = promisify(execFile);
 
-import { buildRunCommandArgs } from './browser-command-args';
+import { buildRunCommandArgs, splitCommandArgs } from './browser-command-args';
 
 // Ensure Chrome download preferences are set in the browser profile directory.
 // Merges with existing preferences to avoid overwriting other settings.
@@ -1272,6 +1273,30 @@ app.post('/browser/hover', async (c) => {
   }
 });
 
+// POST /browser/upload - Upload a local file into an <input type="file">
+app.post('/browser/upload', async (c) => {
+  try {
+    const rawBody = await c.req.json().catch(() => ({}));
+    const result = await runBrowserUpload(rawBody, {
+      validateSession: validateBrowserSession,
+      isBrowserActive: () => browserState.active,
+      getConnectionUrl: () => browserState.cdpUrl || getCdpHttpEndpoint(),
+      getActiveTargetUrl: async () => (await findActivePageTarget())?.url ?? null,
+      urlsMatch: (left, right) => tabManager.urlsMatch(left, right),
+    });
+
+    if (!result.success) {
+      return c.json(result.body, result.status);
+    }
+
+    notifyBrowserAction();
+    return c.json(result.body);
+  } catch (error: any) {
+    console.error('[Browser] Error uploading file:', error);
+    return c.json({ error: error.message || 'Failed to upload file' }, 500);
+  }
+});
+
 // POST /browser/run - Generic catch-all for any agent-browser command
 app.post('/browser/run', async (c) => {
   try {
@@ -1288,6 +1313,16 @@ app.post('/browser/run', async (c) => {
 
     if (!browserState.active) {
       return c.json({ error: 'Browser is not active' }, 400);
+    }
+
+    // The agent-browser CLI `upload` command does not work reliably in this
+    // environment — refuse it and steer the model to `browser_upload`, which
+    // routes through the buffer-based path with size verification.
+    if (splitCommandArgs(body.command)[0] === 'upload') {
+      return c.json({
+        error: 'Use the `browser_upload(filePath, selector)` MCP tool for file uploads instead of `browser_run("upload …")`.',
+        success: false,
+      }, 400);
     }
 
     const commandArgs = buildRunCommandArgs(body.command);

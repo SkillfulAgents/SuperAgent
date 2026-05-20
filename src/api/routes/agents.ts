@@ -4,6 +4,8 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
+import { getPolyfillJs } from '../speech-recognition-polyfill'
+import { getLlmPolyfillJs } from '../llm-polyfill'
 import { Authenticated, AgentRead, AgentUser, AgentAdmin } from '../middleware/auth'
 import {
   listAgentsWithStatus,
@@ -82,6 +84,7 @@ import {
   exportAgentTemplate,
   exportAgentFull,
   importAgentFromTemplate,
+  MAX_COMPRESSED_SIZE,
   installAgentFromSkillset,
   updateAgentFromSkillset,
   getAgentTemplateStatus,
@@ -106,6 +109,8 @@ import { resolveTargetApp } from '@shared/lib/computer-use/types'
 import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
+import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { cleanupAgentData } from '@shared/lib/services/agent-cleanup-service'
 import * as fs from 'fs'
 import { Readable } from 'stream'
 import pLimit from 'p-limit'
@@ -146,9 +151,10 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
   return Promise.all(
     agents.map((agent) => limit(async () => {
       // Only FS operations remain per-agent (parallelized)
-      const [sessionSummary, artifacts] = await Promise.all([
+      const [sessionSummary, artifacts, agentPrefs] = await Promise.all([
         getSessionSummary(agent.slug),
         listArtifactsFromFilesystem(agent.slug),
+        readAgentPreferences(agent.slug),
       ])
 
       const unreadSessionIds = unreadByAgent.get(agent.slug) ?? new Set<string>()
@@ -220,6 +226,7 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
           name: a.name || a.slug,
           ...(a.hasScreenshot ? { hasScreenshot: true } : {}),
         })),
+        autoDeleteInactiveDays: agentPrefs.autoDeleteInactiveDays,
       }
     }))
   )
@@ -253,7 +260,7 @@ export async function resolveInterruptedSubagents(
 
   if (unresolvedTaskCalls.length === 0) return
 
-  // Scan the subagents directory for available files
+  // Scan the subagents directory for .meta.json files which carry toolUseId
   const sessionsDir = getAgentSessionsDir(agentSlug)
   const subagentsDir = path.join(sessionsDir, sessionId, 'subagents')
   let files: string[]
@@ -263,27 +270,28 @@ export async function resolveInterruptedSubagents(
     return // No subagents directory
   }
 
-  // Get unmatched subagent files sorted by mtime (creation order)
-  const unmatchedFiles: { id: string; mtime: number }[] = []
+  // Build toolUseId → agentId map from .meta.json files (deterministic, no FIFO)
+  const toolUseToAgentId = new Map<string, string>()
   for (const file of files) {
-    if (!file.startsWith('agent-') || !file.endsWith('.jsonl')) continue
-    const id = file.replace('agent-', '').replace('.jsonl', '')
+    if (!file.endsWith('.meta.json')) continue
+    const id = file.replace('agent-', '').replace('.meta.json', '')
     if (resolvedAgentIds.has(id)) continue
     try {
-      const stat = await fs.promises.stat(path.join(subagentsDir, file))
-      unmatchedFiles.push({ id, mtime: stat.mtimeMs })
+      const raw = await fs.promises.readFile(path.join(subagentsDir, file), 'utf8')
+      const meta = JSON.parse(raw) as { toolUseId?: string }
+      if (meta.toolUseId) {
+        toolUseToAgentId.set(meta.toolUseId, id)
+      }
     } catch {
       // skip unreadable files
     }
   }
 
-  unmatchedFiles.sort((a, b) => a.mtime - b.mtime)
-
-  // Match unresolved Task calls to unmatched subagent files in order
-  for (let i = 0; i < unresolvedTaskCalls.length && i < unmatchedFiles.length; i++) {
-    unresolvedTaskCalls[i].subagent = {
-      agentId: unmatchedFiles[i].id,
-      status: 'cancelled',
+  // Match unresolved Task calls by toolUseId (deterministic)
+  for (const tc of unresolvedTaskCalls) {
+    const agentId = toolUseToAgentId.get(tc.id)
+    if (agentId) {
+      tc.subagent = { agentId, status: 'cancelled' }
     }
   }
 }
@@ -386,6 +394,10 @@ async function handleChunkedImport(c: Context, formData: FormData, chunk: File) 
 }
 
 async function processImport(c: Context, zipBuffer: Buffer, formData: FormData) {
+  if (zipBuffer.length > MAX_COMPRESSED_SIZE) {
+    return c.json({ error: `File too large (${(zipBuffer.length / 1024 / 1024).toFixed(1)}MB, max ${MAX_COMPRESSED_SIZE / 1024 / 1024}MB)` }, 413)
+  }
+
   const nameOverride = formData.get('name') as string | null
   const mode = formData.get('mode') as string | null
   const importMode = mode === 'full' ? 'full' : 'template'
@@ -720,19 +732,65 @@ agents.delete('/:id', AgentAdmin(), async (c) => {
       console.error('Failed to revoke proxy token:', error)
     }
 
-    // Clean up ACL entries and message author records
-    await db.delete(agentAcl).where(eq(agentAcl.agentSlug, slug))
-    if (isAuthMode()) {
-      await db.delete(messageAuthor).where(eq(messageAuthor.agentSlug, slug))
-    }
-
     // Clean up x-agent invoke policies referencing this agent (caller or target)
     await deletePoliciesForAgent(slug)
+
+    // Clean up all peripheral data (triggers, integrations, tasks, ACLs, etc.)
+    await cleanupAgentData(slug)
 
     return c.body(null, 204)
   } catch (error) {
     console.error('Failed to delete agent:', error)
     return c.json({ error: 'Failed to delete agent' }, 500)
+  }
+})
+
+// ============================================================
+// Agent Preferences endpoints
+// ============================================================
+
+// GET /api/agents/:id/preferences - Get agent preferences
+agents.get('/:id/preferences', AgentRead(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    if (!(await agentExists(slug))) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+    const prefs = await readAgentPreferences(slug)
+    return c.json(prefs)
+  } catch (error) {
+    console.error('Failed to get agent preferences:', error)
+    return c.json({ error: 'Failed to get agent preferences' }, 500)
+  }
+})
+
+// PUT /api/agents/:id/preferences - Update agent preferences
+agents.put('/:id/preferences', AgentAdmin(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    if (!(await agentExists(slug))) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+
+    const body = await c.req.json()
+
+    if ('autoDeleteInactiveDays' in body) {
+      const val = body.autoDeleteInactiveDays
+      if (val !== null && val !== undefined) {
+        if (typeof val !== 'number' || !Number.isInteger(val) || val <= 0) {
+          return c.json(
+            { error: 'autoDeleteInactiveDays must be a positive integer or null' },
+            400
+          )
+        }
+      }
+    }
+
+    const merged = await updateAgentPreferences(slug, body)
+    return c.json(merged)
+  } catch (error) {
+    console.error('Failed to update agent preferences:', error)
+    return c.json({ error: 'Failed to update agent preferences' }, 500)
   }
 })
 
@@ -1043,6 +1101,13 @@ agents.post('/:id/stop', AgentUser(), async (c) => {
     console.error('Failed to stop agent:', error)
     return c.json({ error: 'Failed to stop agent' }, 500)
   }
+})
+
+// POST /api/agents/:id/keep-alive - Prevent auto-sleep (e.g. dashboard is open)
+agents.post('/:id/keep-alive', AgentRead(), async (c) => {
+  const slug = c.req.param('id')
+  containerManager.keepAlive(slug)
+  return c.json({ ok: true })
 })
 
 // POST /api/agents/:id/open-directory - Get workspace path, optionally open in system file manager
@@ -4041,6 +4106,7 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
         const iframe = document.createElement('iframe');
         iframe.src = dashboardUrl;
         iframe.sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups';
+        iframe.allow = 'microphone; camera';
         document.body.appendChild(iframe);
       } catch (err) {
         statusEl.textContent = err.message;
@@ -4108,6 +4174,22 @@ async function proxyArtifactRequest(c: any) {
   }
 
   const response = await client.fetch(containerPath, init)
+
+  const contentType = response.headers.get('content-type') || ''
+  if (contentType.includes('text/html')) {
+    let html = await response.text()
+    const tags = `<script>${getPolyfillJs()}${getLlmPolyfillJs()}</script>`
+    const headMatch = html.match(/<head(\s[^>]*)?>/i)
+    if (headMatch) {
+      const pos = headMatch.index! + headMatch[0].length
+      html = html.slice(0, pos) + tags + html.slice(pos)
+    } else {
+      html = tags + html
+    }
+    const headers = new Headers(response.headers)
+    headers.delete('content-length')
+    return new Response(html, { status: response.status, headers })
+  }
 
   return new Response(response.body, {
     status: response.status,

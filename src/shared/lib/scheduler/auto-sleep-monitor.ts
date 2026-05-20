@@ -94,9 +94,12 @@ class AutoSleepMonitor {
           // the previous sleep and would cause immediate re-sleep.
           const containerStartTime =
             containerManager.getContainerStartTime(agentId) ?? 0
+          const lastKeepAlive =
+            containerManager.getLastKeepAlive(agentId) ?? 0
 
           const lastActivity = Math.max(
             containerStartTime,
+            lastKeepAlive,
             ...sessions.map((s) => s.lastActivityAt.getTime())
           )
 

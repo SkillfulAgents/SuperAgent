@@ -22,7 +22,7 @@ export function useArtifacts(agentSlug: string | null) {
     refetchInterval: (query) => {
       const data = query.state.data
       const hasStarting = data?.some((a) => a.status === 'starting')
-      return hasStarting ? 2_000 : 60_000
+      return hasStarting ? 1_000 : 60_000
     },
   })
 }

@@ -26,10 +26,10 @@ const mockStreamState = {
   isActive: false,
   isStreaming: false,
   streamingMessage: null as string | null,
-  streamingToolUse: null as { id: string; name: string; partialInput: string } | null,
+  streamingToolUses: [] as Array<{ id: string; name: string; partialInput: string }>,
   isCompacting: false,
-  activeSubagents: new Map(),
-  completedSubagents: new Map(),
+  activeSubagents: [] as any[],
+  completedSubagents: null as Set<string> | null,
   typingUser: null as { id: string; name?: string } | null,
   peerUserMessage: null as { content: string; sender: { id: string; name?: string; email?: string } } | null,
 }
@@ -114,10 +114,10 @@ describe('MessageList', () => {
       isActive: false,
       isStreaming: false,
       streamingMessage: null,
-      streamingToolUse: null,
+      streamingToolUses: [],
       isCompacting: false,
-      activeSubagents: new Map(),
-      completedSubagents: new Map(),
+      activeSubagents: [],
+      completedSubagents: null,
       typingUser: null,
       peerUserMessage: null,
     })
@@ -203,11 +203,11 @@ describe('MessageList', () => {
     mockMessagesData.data = [
       createUserMessage({ content: { text: 'Hello' } }),
     ]
-    mockStreamState.streamingToolUse = {
+    mockStreamState.streamingToolUses = [{
       id: 'tc-streaming',
       name: 'WebSearch',
       partialInput: '{"query": "test"}',
-    }
+    }]
     mockStreamState.isStreaming = true
 
     renderWithProviders(
@@ -224,11 +224,11 @@ describe('MessageList', () => {
         toolCalls: [createToolCall({ id: 'tc-1', name: 'WebSearch' })],
       }),
     ]
-    mockStreamState.streamingToolUse = {
+    mockStreamState.streamingToolUses = [{
       id: 'tc-1', // Same ID = persisted
       name: 'WebSearch',
       partialInput: '{"query": "test"}',
-    }
+    }]
 
     renderWithProviders(
       <MessageList sessionId="s-1" agentSlug="agent-1" />
@@ -1054,6 +1054,109 @@ describe('MessageList', () => {
       // Only one instance — from fetched messages, not the optimistic peer copy
       const matches = screen.getAllByText('Hello from peer')
       expect(matches).toHaveLength(1)
+    })
+  })
+
+  describe('parallel streaming tool uses', () => {
+    it('renders multiple StreamingToolCallItem for multiple streaming tools', () => {
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Hello' } }),
+      ]
+      mockStreamState.streamingToolUses = [
+        { id: 'tc-A', name: 'Bash', partialInput: '{"command":"ls"}' },
+        { id: 'tc-B', name: 'Read', partialInput: '{"file":"x.ts"}' },
+      ]
+      mockStreamState.isStreaming = true
+
+      renderWithProviders(
+        <MessageList sessionId="s-1" agentSlug="agent-1" />
+      )
+
+      const streamingItems = screen.getAllByTestId('streaming-tool-call')
+      expect(streamingItems).toHaveLength(2)
+      expect(streamingItems[0]).toHaveTextContent('Bash')
+      expect(streamingItems[1]).toHaveTextContent('Read')
+    })
+
+    it('renders ready tool as ToolCallItem instead of StreamingToolCallItem', () => {
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Hello' } }),
+      ]
+      mockStreamState.streamingToolUses = [
+        { id: 'tc-ready', name: 'WebSearch', partialInput: '{"query":"test"}', ready: true },
+      ] as any
+      mockStreamState.isStreaming = true
+
+      renderWithProviders(
+        <MessageList sessionId="s-1" agentSlug="agent-1" />
+      )
+
+      // Ready tool should render as ToolCallItem, not StreamingToolCallItem
+      expect(screen.queryByTestId('streaming-tool-call')).not.toBeInTheDocument()
+      expect(screen.getByTestId('tool-call-WebSearch')).toBeInTheDocument()
+    })
+
+    it('renders ready Task tool as SubAgentBlock', () => {
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Hello' } }),
+      ]
+      mockStreamState.isActive = true
+      mockStreamState.streamingToolUses = [
+        { id: 'tc-task', name: 'Task', partialInput: '{"subagent_type":"Explore"}', ready: true },
+      ] as any
+      mockStreamState.isStreaming = true
+
+      renderWithProviders(
+        <MessageList sessionId="s-1" agentSlug="agent-1" />
+      )
+
+      // Ready Task tool should render as SubAgentBlock
+      expect(screen.queryByTestId('streaming-tool-call')).not.toBeInTheDocument()
+      expect(screen.getByTestId('subagent-block')).toBeInTheDocument()
+    })
+
+    it('renders mix of ready and non-ready tools correctly', () => {
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Hello' } }),
+      ]
+      mockStreamState.streamingToolUses = [
+        { id: 'tc-1', name: 'Bash', partialInput: '{"cmd":"ls"}', ready: true },
+        { id: 'tc-2', name: 'Read', partialInput: '' },
+      ] as any
+      mockStreamState.isStreaming = true
+
+      renderWithProviders(
+        <MessageList sessionId="s-1" agentSlug="agent-1" />
+      )
+
+      // tc-1 (ready) renders as ToolCallItem
+      expect(screen.getByTestId('tool-call-Bash')).toBeInTheDocument()
+      // tc-2 (not ready) renders as StreamingToolCallItem
+      expect(screen.getByTestId('streaming-tool-call')).toBeInTheDocument()
+    })
+
+    it('filters out streaming tools already persisted in messages', () => {
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Hello' } }),
+        createAssistantMessage({
+          content: { text: '' },
+          toolCalls: [createToolCall({ id: 'tc-persisted', name: 'Bash' })],
+        }),
+      ]
+      mockStreamState.streamingToolUses = [
+        { id: 'tc-persisted', name: 'Bash', partialInput: '{"cmd":"ls"}' },
+        { id: 'tc-new', name: 'Read', partialInput: '' },
+      ]
+      mockStreamState.isStreaming = true
+
+      renderWithProviders(
+        <MessageList sessionId="s-1" agentSlug="agent-1" />
+      )
+
+      // Only tc-new should render as streaming (tc-persisted is already in messages)
+      const streamingItems = screen.getAllByTestId('streaming-tool-call')
+      expect(streamingItems).toHaveLength(1)
+      expect(streamingItems[0]).toHaveTextContent('Read')
     })
   })
 

@@ -496,7 +496,18 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
               onSelectWebhook={(webhookId: string) => setView({ kind: 'webhook', id: webhookId })}
             />
             <HomeConnections agentSlug={agent.slug} />
-            <HomeSkills agentSlug={agent.slug} />
+            <HomeSkills agentSlug={agent.slug} onRunSkill={(skillPath) => {
+              const text = `/${skillPath} `
+              composer.setMessage(text)
+              composerTextareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+              setTimeout(() => {
+                const el = composerTextareaRef.current
+                if (el) {
+                  el.focus()
+                  el.selectionStart = el.selectionEnd = text.length
+                }
+              }, 0)
+            }} />
             <HomeVolumes agentSlug={agent.slug} />
             <HomeExtras agentSlug={agent.slug} onOpenSettings={onOpenSettings} />
           </div>

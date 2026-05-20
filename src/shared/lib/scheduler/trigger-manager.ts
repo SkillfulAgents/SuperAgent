@@ -12,7 +12,8 @@ import { containerManager } from '@shared/lib/container/container-manager'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
-import { runWithOptionalUser } from '@shared/lib/platform-attribution'
+import { runWithOptionalUser, decodeOrgIdFromToken } from '@shared/lib/platform-attribution'
+import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { db } from '@shared/lib/db'
 import { connectedAccounts } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
@@ -120,10 +121,16 @@ class TriggerManager {
     this.isProcessing = true
 
     try {
-      // Poll once per distinct trigger owner; first realtime config wins
-      // (other members are picked up on the next pollAndProcess()).
-      const memberIds = getDistinctPlatformMemberIdsForActiveTriggers()
-      if (memberIds.length === 0) return
+      // Poll once per distinct trigger owner; first realtime config wins.
+      // Opaque-key mode has no authAccount rows, so fall back to a placeholder
+      // (buildBearer ignores it). Org JWT mode returns early to avoid a bogus
+      // `${token}::local` bearer.
+      let memberIds = getDistinctPlatformMemberIdsForActiveTriggers()
+      if (memberIds.length === 0) {
+        const token = getPlatformAccessToken()
+        if (!token || decodeOrgIdFromToken(token)) return
+        memberIds = ['local']
+      }
 
       for (const memberId of memberIds) {
         try {
@@ -319,7 +326,7 @@ class TriggerManager {
 
     // Notification
     notificationManager
-      .triggerWebhookSessionStarted(sessionId, trigger.agentSlug, trigger.name || undefined)
+      .triggerWebhookSessionStarted(sessionId, trigger.agentSlug, trigger.id, trigger.name || undefined)
       .catch((err) => {
         console.error('[TriggerManager] Failed to trigger notification:', err)
       })

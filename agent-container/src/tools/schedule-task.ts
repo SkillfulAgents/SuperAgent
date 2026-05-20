@@ -47,7 +47,7 @@ For recurring tasks, use cron syntax (5 fields: minute hour day-of-month month d
 The prompt you provide will be sent to the agent as a new conversation at the scheduled time.
 The task will be executed in a new session, and the agent will have full access to tools and capabilities.
 
-Note: One-time tasks ('at') will execute once and complete. Recurring tasks ('cron') will continue executing on schedule until cancelled.`,
+Note: One-time tasks ('at') will execute once and complete. Recurring tasks ('cron') will continue executing on schedule indefinitely until cancelled — there is no expiration or time limit.`,
   {
     scheduleType: z
       .enum(['at', 'cron'])

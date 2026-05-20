@@ -289,6 +289,30 @@ describe('loadSettings', () => {
       expect(result.agentLimits).toEqual(limits)
     })
 
+    it('preserves app.autoDeleteInactiveDays', () => {
+      mockSettingsFile(JSON.stringify({ app: { autoDeleteInactiveDays: 30 } }))
+
+      const result = loadSettings()
+
+      expect(result.app?.autoDeleteInactiveDays).toBe(30)
+    })
+
+    it('preserves app.autoDeleteInactiveDays = 0 (disabled)', () => {
+      mockSettingsFile(JSON.stringify({ app: { autoDeleteInactiveDays: 0 } }))
+
+      const result = loadSettings()
+
+      expect(result.app?.autoDeleteInactiveDays).toBe(0)
+    })
+
+    it('leaves autoDeleteInactiveDays undefined when not set', () => {
+      mockSettingsFile(JSON.stringify({}))
+
+      const result = loadSettings()
+
+      expect(result.app?.autoDeleteInactiveDays).toBeUndefined()
+    })
+
     it('preserves customEnvVars as-is', () => {
       const envVars = { MY_VAR: 'hello', ANOTHER: 'world' }
       mockSettingsFile(JSON.stringify({ customEnvVars: envVars }))
@@ -452,72 +476,6 @@ describe('loadSettings', () => {
       const result = loadSettings()
 
       expect(result.container.agentImage).toBe(`${REGISTRY}:42abc`)
-    })
-  })
-
-  // --------------------------------------------------------------------------
-  // useHostBrowser -> hostBrowserProvider migration
-  // --------------------------------------------------------------------------
-
-  describe('useHostBrowser to hostBrowserProvider migration', () => {
-    it('migrates useHostBrowser=true to hostBrowserProvider=chrome', () => {
-      mockSettingsFile(
-        JSON.stringify({
-          app: { useHostBrowser: true },
-        })
-      )
-
-      const result = loadSettings()
-
-      expect(result.app?.hostBrowserProvider).toBe('chrome')
-    })
-
-    it('does NOT migrate when useHostBrowser is false', () => {
-      mockSettingsFile(
-        JSON.stringify({
-          app: { useHostBrowser: false },
-        })
-      )
-
-      const result = loadSettings()
-
-      expect(result.app?.hostBrowserProvider).toBeUndefined()
-    })
-
-    it('does NOT overwrite existing hostBrowserProvider', () => {
-      mockSettingsFile(
-        JSON.stringify({
-          app: { useHostBrowser: true, hostBrowserProvider: 'browserbase' },
-        })
-      )
-
-      const result = loadSettings()
-
-      expect(result.app?.hostBrowserProvider).toBe('browserbase')
-    })
-
-    it('does NOT set hostBrowserProvider when useHostBrowser is absent', () => {
-      mockSettingsFile(
-        JSON.stringify({
-          app: { showMenuBarIcon: false },
-        })
-      )
-
-      const result = loadSettings()
-
-      expect(result.app?.hostBrowserProvider).toBeUndefined()
-    })
-
-    it('strips useHostBrowser after migrating so it cannot re-fire', () => {
-      mockSettingsFile(
-        JSON.stringify({
-          app: { useHostBrowser: true },
-        })
-      )
-
-      const result = loadSettings()
-
-      expect(result.app).not.toHaveProperty('useHostBrowser')
     })
   })
 

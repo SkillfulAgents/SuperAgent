@@ -105,6 +105,10 @@ describe('SubAgentBlock', () => {
           streamingMessage: null,
           streamingToolUse: null,
           progressSummary: null,
+          subagentType: null,
+          description: null,
+          usage: null,
+          lastToolName: null,
         }}
       />
     )
@@ -161,6 +165,10 @@ describe('SubAgentBlock', () => {
           streamingMessage: null,
           streamingToolUse: null,
           progressSummary: null,
+          subagentType: null,
+          description: null,
+          usage: null,
+          lastToolName: null,
         }}
       />
     )
@@ -190,6 +198,10 @@ describe('SubAgentBlock', () => {
           streamingMessage: 'Found some interesting files...',
           streamingToolUse: null,
           progressSummary: null,
+          subagentType: null,
+          description: null,
+          usage: null,
+          lastToolName: null,
         }}
       />
     )
@@ -222,6 +234,10 @@ describe('SubAgentBlock', () => {
             partialInput: '{"pattern": "config"}',
           },
           progressSummary: null,
+          subagentType: null,
+          description: null,
+          usage: null,
+          lastToolName: null,
         }}
       />
     )
@@ -247,5 +263,41 @@ describe('SubAgentBlock', () => {
 
     // Should not be spinning (not running)
     expect(screen.getByText('Explore')).toBeInTheDocument()
+  })
+
+  it('shows resultText from activeSubagent when toolCall.result is not yet available', async () => {
+    const user = userEvent.setup()
+    const tc = createToolCall({
+      name: 'Task',
+      input: { subagent_type: 'Explore', description: 'Searching' },
+      result: undefined,
+    })
+
+    render(
+      <SubAgentBlock
+        toolCall={tc}
+        sessionId="s-1"
+        agentSlug="agent-1"
+        isSessionActive
+        isCompleted
+        activeSubagent={{
+          parentToolId: tc.id,
+          agentId: 'sub-1',
+          streamingMessage: null,
+          streamingToolUse: null,
+          progressSummary: null,
+          subagentType: null,
+          description: null,
+          usage: null,
+          lastToolName: null,
+          resultText: 'Found 3 config files in the workspace.',
+        }}
+      />
+    )
+
+    // isCompleted → status = 'completed', auto-collapsed — expand to see result
+    await user.click(screen.getByText('Explore'))
+
+    expect(screen.getByText('Found 3 config files in the workspace.')).toBeInTheDocument()
   })
 })

@@ -8,7 +8,7 @@ const mockStreamState = {
   isActive: false,
   isStreaming: false,
   streamingMessage: null,
-  streamingToolUse: null,
+  streamingToolUses: [],
   pendingSecretRequests: [] as any[],
   pendingConnectedAccountRequests: [] as any[],
   pendingQuestionRequests: [] as any[],

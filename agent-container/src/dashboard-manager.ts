@@ -136,8 +136,8 @@ class DashboardManager {
       // Open log stream early so install errors are captured
       info.logStream = fs.createWriteStream(logPath, { flags: 'a' })
 
-      // Run bun install first
-      await this.runBunInstall(dashboardDir, info.logStream)
+      // Run bun install only if node_modules is missing or package.json is newer than it
+      await this.runBunInstallIfNeeded(dashboardDir, info.logStream)
 
       // Start the dashboard server
       const proc = spawn('bun', ['run', 'start'], {
@@ -199,6 +199,22 @@ class DashboardManager {
     }
 
     return info
+  }
+
+  private async runBunInstallIfNeeded(dir: string, logStream?: fs.WriteStream): Promise<void> {
+    const nodeModules = path.join(dir, 'node_modules')
+    const pkgJson = path.join(dir, 'package.json')
+    try {
+      const nmStat = fs.statSync(nodeModules)
+      const pkgStat = fs.statSync(pkgJson)
+      if (nmStat.isDirectory() && nmStat.mtimeMs >= pkgStat.mtimeMs) {
+        logStream?.write('[DashboardManager] node_modules up-to-date, skipping bun install\n')
+        return
+      }
+    } catch {
+      // node_modules doesn't exist or stat failed — need install
+    }
+    return this.runBunInstall(dir, logStream)
   }
 
   private async runBunInstall(dir: string, logStream?: fs.WriteStream): Promise<void> {
