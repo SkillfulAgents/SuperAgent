@@ -3,7 +3,7 @@ import fs from 'fs'
 import { ensureDirectory } from '@shared/lib/utils/file-storage'
 import { openZipFromBuffer, detectZipPrefix } from '@shared/lib/utils/zip'
 import { validateSafeCloneUrl } from '@shared/lib/utils/url-safety'
-import { withRetry } from '@shared/lib/utils/retry'
+import { withRetry, NonRetryableError } from '@shared/lib/utils/retry'
 import {
   BaseSkillsetProvider,
   type SkillsetPublishInput,
@@ -95,18 +95,24 @@ async function downloadAndExtract(
       redirect: 'follow',
     })
     if (!response.ok) {
+      // 4xx from GitHub are deterministic — don't waste retry delays.
       if (response.status === 404) {
-        throw new Error(
+        throw new NonRetryableError(
           `Repository not found: ${originalUrl}\n` +
           'Make sure the repository exists and is public.',
         )
       }
       if (response.status === 403) {
-        throw new Error(
+        throw new NonRetryableError(
           'GitHub API rate limit exceeded. Please try again later.',
         )
       }
-      throw new Error(`Failed to download skillset: ${response.status} ${response.statusText}`)
+      if (response.status >= 500) {
+        throw new Error(`Failed to download skillset: ${response.status} ${response.statusText}`)
+      }
+      throw new NonRetryableError(
+        `Failed to download skillset: ${response.status} ${response.statusText}`,
+      )
     }
     return Buffer.from(await response.arrayBuffer())
   }, 3, 1000)

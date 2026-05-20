@@ -4,9 +4,15 @@ import os from 'os'
 import path from 'path'
 import * as tar from 'tar'
 
-vi.mock('@shared/lib/utils/retry', () => ({
-  withRetry: async (fn: () => Promise<unknown>) => fn(),
-}))
+vi.mock('@shared/lib/utils/retry', async () => {
+  const actual = await vi.importActual<typeof import('@shared/lib/utils/retry')>(
+    '@shared/lib/utils/retry',
+  )
+  return {
+    ...actual,
+    withRetry: async (fn: () => Promise<unknown>) => fn(),
+  }
+})
 
 const mockGetPlatformProxyBaseUrl = vi.fn()
 const mockGetPlatformAccessToken = vi.fn()
@@ -25,6 +31,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
   captureException: vi.fn(),
 }))
 
+import { NonRetryableError } from '@shared/lib/utils/retry'
 import {
   PlatformSkillsetProvider,
   setPlatformGitAvailabilityForTesting,
@@ -206,18 +213,24 @@ describe('PlatformSkillsetProvider archive cache (no-git path)', () => {
     ).rejects.toThrow(/Platform not connected/)
   })
 
-  it('populateCache maps 404 to a friendly error', async () => {
+  it('populateCache maps 404 to a NonRetryableError so withRetry skips backoff', async () => {
     mockArchiveFetch(Buffer.alloc(0), 404)
     await expect(
       provider.populateCache(path.join(tmpDir, 'cache'), makeRef()),
     ).rejects.toThrow(/Platform skillset not found: acme-skillset/)
+    await expect(
+      provider.populateCache(path.join(tmpDir, 'cache2'), makeRef()),
+    ).rejects.toBeInstanceOf(NonRetryableError)
   })
 
-  it('populateCache maps 401/403 to a reconnect message', async () => {
+  it('populateCache maps 401/403 to a NonRetryableError reconnect message', async () => {
     mockArchiveFetch(Buffer.alloc(0), 401)
     await expect(
       provider.populateCache(path.join(tmpDir, 'cache'), makeRef()),
     ).rejects.toThrow(/Not authorized.*Reconnect to platform/)
+    await expect(
+      provider.populateCache(path.join(tmpDir, 'cache2'), makeRef()),
+    ).rejects.toBeInstanceOf(NonRetryableError)
   })
 
   it('populateCache maps 5xx to a transient server-error message', async () => {
@@ -235,6 +248,26 @@ describe('PlatformSkillsetProvider archive cache (no-git path)', () => {
       provider.populateCache(path.join(tmpDir, 'cache'), makeRef()),
     ).rejects.toThrow(/Unsafe clone URL host/)
     expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('populateCache drops __MACOSX entries silently', async () => {
+    const srcDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'tar-macosx-'))
+    await fs.promises.mkdir(path.join(srcDir, '__MACOSX'), { recursive: true })
+    await fs.promises.writeFile(path.join(srcDir, '__MACOSX/._junk'), 'rsrc')
+    await fs.promises.writeFile(path.join(srcDir, 'index.json'), '{}')
+    const chunks: Buffer[] = []
+    const stream = tar.c({ gzip: true, cwd: srcDir }, ['__MACOSX', 'index.json'])
+    for await (const chunk of stream) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    }
+    await fs.promises.rm(srcDir, { recursive: true, force: true })
+
+    mockArchiveFetch(Buffer.concat(chunks))
+    const destDir = path.join(tmpDir, 'cache')
+
+    await expect(provider.populateCache(destDir, makeRef())).resolves.toBeUndefined()
+    expect(fs.existsSync(path.join(destDir, '__MACOSX'))).toBe(false)
+    expect(fs.existsSync(path.join(destDir, 'index.json'))).toBe(true)
   })
 
   it('populateCache rejects tar entries with path traversal', async () => {

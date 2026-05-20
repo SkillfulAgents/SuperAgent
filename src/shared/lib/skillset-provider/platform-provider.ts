@@ -15,7 +15,7 @@ import type {
 } from '@shared/lib/types/skillset'
 import { ensureDirectory } from '@shared/lib/utils/file-storage'
 import { validateSafeCloneUrl } from '@shared/lib/utils/url-safety'
-import { withRetry } from '@shared/lib/utils/retry'
+import { withRetry, NonRetryableError } from '@shared/lib/utils/retry'
 import { captureException } from '@shared/lib/error-reporting'
 import {
   BaseSkillsetProvider,
@@ -201,11 +201,12 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
         redirect: 'follow',
       })
       if (!response.ok) {
+        // 4xx are deterministic — don't burn 3s of retry waits on them.
         if (response.status === 404) {
-          throw new Error(`Platform skillset not found: ${skillsetName}`)
+          throw new NonRetryableError(`Platform skillset not found: ${skillsetName}`)
         }
         if (response.status === 401 || response.status === 403) {
-          throw new Error(
+          throw new NonRetryableError(
             `Not authorized to download platform skillset "${skillsetName}". ` +
             'Reconnect to platform and try again.',
           )
@@ -216,7 +217,7 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
             `(${response.status}). Please try again in a moment.`,
           )
         }
-        throw new Error(
+        throw new NonRetryableError(
           `Failed to download platform skillset: ${response.status} ${response.statusText}`,
         )
       }
@@ -236,6 +237,9 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
           if (!entryPath) return false
           if (entryPath.includes('..')) return false
           if (path.isAbsolute(entryPath)) return false
+          // Strip macOS resource-fork noise if it ever shows up upstream;
+          // matches the public-provider behavior for symmetry.
+          if (entryPath.startsWith('__MACOSX/')) return false
           return true
         },
       }),
