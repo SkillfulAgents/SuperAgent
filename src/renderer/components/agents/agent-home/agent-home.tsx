@@ -22,6 +22,7 @@ import { HomeTriggers } from './home-triggers'
 import { HomeSkills } from './home-skills'
 import { HomeExtras } from './home-extras'
 import { HomeConnections } from './home-connections'
+import { HomeChatIntegrations } from './home-chat-integrations'
 import { HomeVolumes } from './home-volumes'
 import { HomeBookmarks } from './home-bookmarks'
 import { useUpdateAgent, useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
@@ -481,6 +482,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
         {/* Right Column — Triggers + Connections + Skills + Volumes */}
         {showRightColumn && (
           <div className="space-y-3">
+            <HomeChatIntegrations agentSlug={agent.slug} />
             <HomeTriggers
               agentSlug={agent.slug}
               scheduledTasks={scheduledTasks}
