@@ -33,29 +33,6 @@ import { getRequiredPermissionLevel, resolveTargetApp, type ComputerUsePermissio
 import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
 import { SubagentCapture } from './subagent-capture'
 import * as path from 'path'
-import { promises as fsPromises, readdirSync } from 'fs'
-
-// Seed completedSubagentIds with every agent-*.jsonl already on disk for this
-// session. Called when StreamingState is (re)created so the FIFO live-discovery
-// in discoverSubagentIds() can't match a new subagent to a stale file from a
-// prior run of the same session (the root cause of the "subagent B shows
-// subagent A's history" bug across app restarts).
-export function seedKnownSubagentIds(agentSlug: string | undefined, sessionId: string): Set<string> {
-  const seeded = new Set<string>()
-  if (!agentSlug) return seeded
-  try {
-    const subagentsDir = path.join(getAgentSessionsDir(agentSlug), sessionId, 'subagents')
-    for (const file of readdirSync(subagentsDir)) {
-      if (file.startsWith('agent-') && file.endsWith('.jsonl')) {
-        seeded.add(file.slice('agent-'.length, -'.jsonl'.length))
-      }
-    }
-  } catch {
-    // Directory missing / unreadable — nothing to seed, which is fine.
-  }
-  return seeded
-}
-
 // Per-subagent streaming state (supports multiple concurrent background agents)
 interface SubagentStreamingState {
   agentId: string | null
@@ -168,7 +145,7 @@ class MessagePersister {
       agentSlug,
       lastContextWindow: 200_000,
       lastAssistantUsage: null,
-      completedSubagentIds: seedKnownSubagentIds(agentSlug, sessionId),
+      completedSubagentIds: new Set(),
       activeSubagents: new Map(),
       slashCommands: [],
       isAwaitingInput: priorIsAwaitingInput,
@@ -497,7 +474,7 @@ class MessagePersister {
         agentSlug,
         lastContextWindow: 200_000,
         lastAssistantUsage: null,
-        completedSubagentIds: seedKnownSubagentIds(agentSlug, sessionId),
+        completedSubagentIds: new Set(),
         activeSubagents: new Map(),
         slashCommands: [],
         isAwaitingInput: false,
@@ -609,7 +586,6 @@ class MessagePersister {
         }
         // Clear currentText since the message is now persisted
         state.currentText = ''
-        // Broadcast refresh event so frontend can refetch
         this.broadcastToSSE(sessionId, { type: 'messages_updated' })
         // Broadcast context usage from the assistant message's usage field
         const assistantUsage = content.message?.usage
@@ -653,7 +629,17 @@ class MessagePersister {
                 // Background agents get an immediate "async_launched" tool_result that is NOT
                 // the real completion — their actual completion comes via sidechain 'result'.
                 if (!sub.isBackground) {
-                  this.handleSubagentCompletion(sessionId, state, block.tool_use_id)
+                  // Extract result text to include in the completion broadcast
+                  let resultText: string | undefined
+                  if (typeof block.content === 'string') {
+                    resultText = block.content
+                  } else if (Array.isArray(block.content)) {
+                    resultText = block.content
+                      .filter((p: { type?: string }) => p?.type === 'text')
+                      .map((p: { text?: string }) => p.text || '')
+                      .join('')
+                  }
+                  this.broadcastSubagentCompleted(sessionId, state, block.tool_use_id, resultText)
                 }
               }
             }
@@ -725,12 +711,44 @@ class MessagePersister {
             delayMs: content.delay_ms,
             errorStatus: content.error_status,
           })
+        } else if (content.subtype === 'task_started') {
+          // Subagent started — set agentId deterministically from task_id (SDK 0.3.142+
+          // guarantees task_id === subagent session ID === JSONL filename).
+          const toolUseId = content.tool_use_id as string | undefined
+          const agentId = content.task_id as string | undefined
+          if (toolUseId) {
+            const existing = state.activeSubagents.get(toolUseId)
+            if (existing) {
+              if (agentId) existing.agentId = agentId
+            } else {
+              state.activeSubagents.set(toolUseId, {
+                agentId: agentId ?? null,
+                currentText: '',
+                currentToolUse: null,
+                currentToolInput: '',
+                isBackground: false,
+              })
+            }
+            this.broadcastToSSE(sessionId, {
+              type: 'subagent_started',
+              parentToolId: toolUseId,
+              taskId: agentId,
+              agentId: agentId,
+              subagentType: content.subagent_type,
+              description: content.description,
+            })
+          }
         } else if (content.subtype === 'task_progress') {
-          // Subagent progress summary (from agentProgressSummaries option)
+          // Subagent progress with usage stats (description intentionally omitted —
+          // task_progress.description can change to reflect current action, but the
+          // header should keep the original task description from task_started)
           this.broadcastToSSE(sessionId, {
             type: 'subagent_progress',
-            parentToolId: content.parent_tool_use_id,
+            parentToolId: content.tool_use_id,
             summary: content.summary,
+            subagentType: content.subagent_type,
+            usage: content.usage,
+            lastToolName: content.last_tool_name,
           })
         } else if (content.subtype === 'memory_recall') {
           // Memory recall — agent is reading memory files
@@ -900,15 +918,15 @@ class MessagePersister {
       state.activeSubagents.set(parentToolId, sub)
     }
 
-    // Try to extract agentId directly from the message (available on complete user/assistant messages)
+    // Extract agentId from the message if available (belt-and-suspenders with task_started)
     const messageAgentId = content.agentId as string | undefined
-    if (messageAgentId && messageAgentId !== sub.agentId) {
+    if (messageAgentId && !sub.agentId) {
       sub.agentId = messageAgentId
-    }
-
-    // Fallback: discover agentIds from the subagent JSONL files using FIFO matching
-    if (!sub.agentId && state.agentSlug) {
-      this.discoverSubagentIds(sessionId, state).catch(() => {})
+      this.broadcastToSSE(sessionId, {
+        type: 'subagent_updated',
+        parentToolId,
+        agentId: sub.agentId,
+      })
     }
 
     // Route stream events to the subagent stream handler for real-time streaming
@@ -924,7 +942,7 @@ class MessagePersister {
 
     // Sidechain 'result' means the background subagent has finished execution
     if (content.type === 'result') {
-      this.handleSubagentCompletion(sessionId, state, parentToolId)
+      this.broadcastSubagentCompleted(sessionId, state, parentToolId)
       return
     }
 
@@ -932,13 +950,38 @@ class MessagePersister {
     // Complete messages have been persisted to the subagent JSONL by the SDK,
     // so the frontend can refetch them via the API endpoint.
     if (content.type === 'user' || content.type === 'assistant') {
-      // Clear streaming text since it's now persisted
       if (content.type === 'assistant') {
-        sub.currentText = ''
-        // Subagent messages arrive as complete messages (not stream events),
-        // so detect browser input requests from the finished tool_use blocks.
         const messageContent = content.message?.content
         if (Array.isArray(messageContent)) {
+          // Extract text from the complete message and broadcast as streaming delta
+          // so the frontend shows it immediately (subagent messages often arrive as
+          // complete messages without preceding stream_event deltas).
+          const newText = messageContent
+            .filter((b: { type: string }) => b.type === 'text')
+            .map((b: { text?: string }) => b.text || '')
+            .join('')
+          if (newText && newText !== sub.currentText) {
+            const delta = newText.startsWith(sub.currentText)
+              ? newText.slice(sub.currentText.length)
+              : newText
+            if (delta) {
+              if (!newText.startsWith(sub.currentText)) {
+                this.broadcastToSSE(sessionId, {
+                  type: 'subagent_stream_start',
+                  parentToolId,
+                  agentId: sub.agentId,
+                })
+              }
+              this.broadcastToSSE(sessionId, {
+                type: 'subagent_stream_delta',
+                parentToolId,
+                agentId: sub.agentId,
+                text: delta,
+              })
+            }
+          }
+          sub.currentText = newText
+
           for (const block of messageContent) {
             if (block.type === 'tool_use' && block.name === 'mcp__user-input__request_browser_input') {
               this.handleBrowserInputRequestTool(
@@ -976,77 +1019,7 @@ class MessagePersister {
     }
   }
 
-  // Discover agentIds for all active subagents using FIFO matching.
-  // The SDK executes tool calls in order, so the first registered parentToolId
-  // corresponds to the oldest subagent JSONL file (by modification time).
-  private async discoverSubagentIds(sessionId: string, state: StreamingState): Promise<void> {
-    if (!state.agentSlug) return
-
-    // Collect parentToolIds needing agentIds (Map preserves insertion order = registration order)
-    const needingIds: string[] = []
-    for (const [parentToolId, sub] of state.activeSubagents) {
-      if (!sub.agentId) needingIds.push(parentToolId)
-    }
-    if (needingIds.length === 0) return
-
-    try {
-      const sessionsDir = getAgentSessionsDir(state.agentSlug)
-      const subagentsDir = path.join(sessionsDir, sessionId, 'subagents')
-      const files = await fsPromises.readdir(subagentsDir)
-
-      // Collect known IDs (completed or already assigned)
-      const knownIds = new Set(state.completedSubagentIds)
-      for (const [, s] of state.activeSubagents) {
-        if (s.agentId) knownIds.add(s.agentId)
-      }
-
-      // Find unclaimed files and sort by modification time (oldest first = created first)
-      const unclaimed: { id: string; mtimeMs: number }[] = []
-      for (const file of files) {
-        if (file.startsWith('agent-') && file.endsWith('.jsonl')) {
-          const id = file.replace('agent-', '').replace('.jsonl', '')
-          if (!knownIds.has(id)) {
-            try {
-              const fileStat = await fsPromises.stat(path.join(subagentsDir, file))
-              unclaimed.push({ id, mtimeMs: fileStat.mtimeMs })
-            } catch { /* file may have been removed */ }
-          }
-        }
-      }
-      unclaimed.sort((a, b) => a.mtimeMs - b.mtimeMs)
-
-      // FIFO: match oldest unclaimed file → first registered parentToolId, etc.
-      const count = Math.min(needingIds.length, unclaimed.length)
-      for (let i = 0; i < count; i++) {
-        const parentToolId = needingIds[i]
-        const sub = state.activeSubagents.get(parentToolId)
-        if (sub && !sub.agentId) {
-          sub.agentId = unclaimed[i].id
-          this.broadcastToSSE(sessionId, {
-            type: 'subagent_updated',
-            parentToolId,
-            agentId: sub.agentId,
-          })
-        }
-      }
-    } catch {
-      // Directory doesn't exist yet — will retry on next sidechain message
-    }
-  }
-
-  // Handle subagent completion — broadcast and clear state for a specific parent tool
-  private handleSubagentCompletion(sessionId: string, state: StreamingState, parentToolId: string): void {
-    const sub = state.activeSubagents.get(parentToolId)
-    // If we never discovered the agentId, try one final time before broadcasting
-    if (sub && !sub.agentId && state.agentSlug) {
-      this.discoverSubagentIds(sessionId, state)
-        .finally(() => this.broadcastSubagentCompleted(sessionId, state, parentToolId))
-    } else {
-      this.broadcastSubagentCompleted(sessionId, state, parentToolId)
-    }
-  }
-
-  private broadcastSubagentCompleted(sessionId: string, state: StreamingState, parentToolId: string): void {
+  private broadcastSubagentCompleted(sessionId: string, state: StreamingState, parentToolId: string, resultText?: string): void {
     const sub = state.activeSubagents.get(parentToolId)
     // Broadcast a final subagent_updated so the frontend refetches subagent messages
     this.broadcastToSSE(sessionId, {
@@ -1058,6 +1031,7 @@ class MessagePersister {
       type: 'subagent_completed',
       parentToolId,
       agentId: sub?.agentId ?? null,
+      ...(resultText && { resultText }),
     })
     // Track completed subagent ID so it won't be re-discovered
     if (sub?.agentId) {

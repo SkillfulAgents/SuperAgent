@@ -25,6 +25,7 @@ import { HomeConnections } from './home-connections'
 import { HomeChatIntegrations } from './home-chat-integrations'
 import { HomeVolumes } from './home-volumes'
 import { HomeBookmarks } from './home-bookmarks'
+import { DashboardCard } from '@renderer/components/home/dashboard-card'
 import { useUpdateAgent, useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { AgentCreationAids, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
 import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
@@ -482,6 +483,13 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
         {/* Right Column — Triggers + Connections + Skills + Volumes */}
         {showRightColumn && (
           <div className="space-y-3">
+            {(Array.isArray(agent.dashboards) ? agent.dashboards : []).map((d) => (
+              <DashboardCard
+                key={d.slug}
+                dashboard={d}
+                agentSlug={agent.slug}
+              />
+            ))}
             <HomeTriggers
               agentSlug={agent.slug}
               scheduledTasks={scheduledTasks}

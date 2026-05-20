@@ -10,7 +10,7 @@ vi.mock('@renderer/lib/env', () => ({
 }))
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
-  useMessageStream: () => ({ pendingBrowserInputRequests: [], streamingToolUse: null }),
+  useMessageStream: () => ({ pendingBrowserInputRequests: [], streamingToolUses: [] }),
   clearBrowserActive: vi.fn(),
 }))
 

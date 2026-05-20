@@ -27,6 +27,8 @@ import {
   proxyExecute,
   getAccountDisplayName,
   initiateConnection,
+  getOrCreateAuthConfig,
+  listAuthConfigs,
   ComposioApiError,
   ComposioRedactedTokenError,
 } from './client'
@@ -821,5 +823,173 @@ describe('initiateConnection', () => {
     await expect(
       initiateConnection('ac_x', 'cb://done', 'user-1')
     ).rejects.toThrow()
+  })
+})
+
+describe('listAuthConfigs', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetEffectiveComposioApiKey.mockReturnValue('test-api-key')
+  })
+
+  it('omits query params when no toolkitSlug is given (backwards compatible)', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ items: [] }),
+    })
+
+    await listAuthConfigs()
+
+    const url = mockFetch.mock.calls[0][0] as string
+    expect(url).toMatch(/\/auth_configs$/)
+    expect(url).not.toContain('toolkit_slug')
+  })
+
+  it('passes toolkit_slug + limit when slug is given', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ items: [] }),
+    })
+
+    await listAuthConfigs('gmail')
+
+    const url = mockFetch.mock.calls[0][0] as string
+    expect(url).toContain('toolkit_slug=gmail')
+    expect(url).toContain('limit=100')
+  })
+
+  it('url-encodes the slug', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ items: [] }),
+    })
+
+    await listAuthConfigs('weird/slug with space')
+
+    const url = mockFetch.mock.calls[0][0] as string
+    expect(url).toContain('toolkit_slug=weird%2Fslug%20with%20space')
+  })
+})
+
+describe('getOrCreateAuthConfig', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetEffectiveComposioApiKey.mockReturnValue('test-api-key')
+  })
+
+  function mockListResponse(items: Array<{
+    id: string
+    auth_scheme?: string
+    is_composio_managed?: boolean
+    status?: 'ENABLED' | 'DISABLED'
+    created_at?: string
+    toolkit?: { slug: string }
+  }>) {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        items: items.map((i) => ({
+          id: i.id,
+          auth_scheme: i.auth_scheme ?? 'OAUTH2',
+          is_composio_managed: i.is_composio_managed ?? true,
+          status: i.status ?? 'ENABLED',
+          created_at: i.created_at ?? '2026-05-01T00:00:00Z',
+          toolkit: i.toolkit ?? { slug: 'gmail' },
+        })),
+      }),
+    })
+  }
+
+  function mockCreateResponse(authConfigId: string, slug = 'gmail') {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        toolkit: { slug },
+        auth_config: {
+          id: authConfigId,
+          auth_scheme: 'OAUTH2',
+          is_composio_managed: true,
+        },
+      }),
+    })
+  }
+
+  it('queries Composio with the toolkit_slug filter, not a bare list', async () => {
+    mockListResponse([{ id: 'ac_existing' }])
+
+    await getOrCreateAuthConfig('gmail')
+
+    const url = mockFetch.mock.calls[0][0] as string
+    expect(url).toContain('toolkit_slug=gmail')
+    expect(url).toContain('limit=100')
+  })
+
+  it('reuses an existing ENABLED auth config without POSTing', async () => {
+    mockListResponse([
+      {
+        id: 'ac_existing',
+        status: 'ENABLED',
+        created_at: '2026-05-01T00:00:00Z',
+      },
+    ])
+
+    const result = await getOrCreateAuthConfig('gmail')
+
+    expect(result.id).toBe('ac_existing')
+    expect(mockFetch).toHaveBeenCalledTimes(1) // GET only, no POST
+  })
+
+  it('picks the most recent ENABLED config when multiple exist (the dedup case)', async () => {
+    mockListResponse([
+      { id: 'ac_older', created_at: '2026-03-31T00:00:00Z' },
+      { id: 'ac_newest', created_at: '2026-05-18T00:00:00Z' },
+      { id: 'ac_middle', created_at: '2026-04-23T00:00:00Z' },
+    ])
+
+    const result = await getOrCreateAuthConfig('gmail')
+
+    expect(result.id).toBe('ac_newest')
+    expect(mockFetch).toHaveBeenCalledTimes(1) // GET only
+  })
+
+  it('skips DISABLED configs and reuses the newest ENABLED one', async () => {
+    mockListResponse([
+      { id: 'ac_disabled_newest', status: 'DISABLED', created_at: '2026-05-18T00:00:00Z' },
+      { id: 'ac_enabled_older', status: 'ENABLED', created_at: '2026-05-09T00:00:00Z' },
+    ])
+
+    const result = await getOrCreateAuthConfig('gmail')
+
+    expect(result.id).toBe('ac_enabled_older')
+    expect(mockFetch).toHaveBeenCalledTimes(1) // GET only
+  })
+
+  it('POSTs a new auth config when no ENABLED config exists for the toolkit', async () => {
+    mockListResponse([
+      { id: 'ac_disabled', status: 'DISABLED' },
+    ])
+    mockCreateResponse('ac_new', 'gmail')
+
+    const result = await getOrCreateAuthConfig('gmail')
+
+    expect(result.id).toBe('ac_new')
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+    const postCall = mockFetch.mock.calls[1]
+    expect((postCall[1] as { method: string }).method).toBe('POST')
+    const body = JSON.parse((postCall[1] as { body: string }).body)
+    expect(body).toEqual({
+      toolkit: { slug: 'gmail' },
+      auth_config: { type: 'use_composio_managed_auth' },
+    })
+  })
+
+  it('POSTs a new auth config when the list is empty', async () => {
+    mockListResponse([])
+    mockCreateResponse('ac_first', 'gmail')
+
+    const result = await getOrCreateAuthConfig('gmail')
+
+    expect(result.id).toBe('ac_first')
+    expect(mockFetch).toHaveBeenCalledTimes(2)
   })
 })

@@ -4,14 +4,21 @@ import os from 'os'
 import path from 'path'
 import { createZipBuffer } from '@shared/lib/utils/zip'
 
-vi.mock('@shared/lib/utils/retry', () => ({
-  withRetry: async (fn: () => Promise<unknown>) => fn(),
-}))
+vi.mock('@shared/lib/utils/retry', async () => {
+  const actual = await vi.importActual<typeof import('@shared/lib/utils/retry')>(
+    '@shared/lib/utils/retry',
+  )
+  return {
+    ...actual,
+    withRetry: async (fn: () => Promise<unknown>) => fn(),
+  }
+})
 
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: vi.fn(),
 }))
 
+import { NonRetryableError } from '@shared/lib/utils/retry'
 import { PublicSkillsetProvider } from './public-provider'
 
 const provider = new PublicSkillsetProvider()
@@ -209,28 +216,40 @@ describe('PublicSkillsetProvider.populateCache', () => {
     expect(fs.existsSync(evilPath)).toBe(false)
   })
 
-  it('throws on 404 with descriptive message', async () => {
+  it('throws NonRetryableError on 404 so withRetry skips backoff', async () => {
     mockFetchError(404)
     const destDir = path.join(tmpDir, 'cache')
     await expect(
       provider.populateCache(destDir, makeRef('https://github.com/Org/missing-repo')),
     ).rejects.toThrow(/Repository not found.*missing-repo/)
+    mockFetchError(404)
+    await expect(
+      provider.populateCache(path.join(tmpDir, 'cache2'), makeRef('https://github.com/Org/missing-repo')),
+    ).rejects.toBeInstanceOf(NonRetryableError)
   })
 
-  it('throws on 403 with rate limit message', async () => {
+  it('throws NonRetryableError on 403 with rate limit message', async () => {
     mockFetchError(403)
     const destDir = path.join(tmpDir, 'cache')
     await expect(
       provider.populateCache(destDir, makeRef('https://github.com/Org/repo')),
     ).rejects.toThrow(/rate limit/)
+    mockFetchError(403)
+    await expect(
+      provider.populateCache(path.join(tmpDir, 'cache2'), makeRef('https://github.com/Org/repo')),
+    ).rejects.toBeInstanceOf(NonRetryableError)
   })
 
-  it('throws on other HTTP errors with status', async () => {
+  it('5xx stays retryable (plain Error, not NonRetryableError)', async () => {
     mockFetchError(500, 'Internal Server Error')
     const destDir = path.join(tmpDir, 'cache')
     await expect(
       provider.populateCache(destDir, makeRef('https://github.com/Org/repo')),
     ).rejects.toThrow(/500.*Internal Server Error/)
+    mockFetchError(500, 'Internal Server Error')
+    await expect(
+      provider.populateCache(path.join(tmpDir, 'cache2'), makeRef('https://github.com/Org/repo')),
+    ).rejects.not.toBeInstanceOf(NonRetryableError)
   })
 
   it('handles ZIP with no common prefix (flat layout)', async () => {

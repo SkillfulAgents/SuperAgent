@@ -15,17 +15,12 @@ import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Button } from '@renderer/components/ui/button'
 import { useSidebar } from '@renderer/components/ui/sidebar'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
-import { useImagePalette } from '@renderer/hooks/use-image-palette'
-import {
-  pickDashboardSwatch,
-  buildGradient,
-  deriveForegroundColor,
-} from './dashboard-card-colors'
-import { isElectron, getPlatform, getApiBaseUrl } from '@renderer/lib/env'
+import { DashboardCard } from './dashboard-card'
+import { isElectron, getPlatform } from '@renderer/lib/env'
 import { Plus, Bot, Loader2, Clock, CalendarClock, SquareMousePointer, Search } from 'lucide-react'
 import { useSearch } from '@renderer/context/search-context'
 import { AreaChart, Area, ResponsiveContainer, Tooltip } from 'recharts'
-import type { ApiAgent, ApiAgentDashboard } from '@shared/lib/types/api'
+import type { ApiAgent } from '@shared/lib/types/api'
 import type { DailyUsageEntry } from '@shared/lib/types/usage'
 import { useRenderTracker } from '@renderer/lib/perf'
 
@@ -296,81 +291,6 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
   )
 }
 
-function DashboardCard({
-  dashboard,
-  agentSlug,
-}: {
-  dashboard: ApiAgentDashboard
-  agentSlug: string
-}) {
-  const { setAgent } = useSelection()
-
-  const handleClick = () => {
-    setAgent(agentSlug, { kind: 'dashboard', slug: dashboard.slug })
-  }
-
-  // Prefix with getApiBaseUrl() so the <img> resolves to the dynamic Electron
-  // API port (and to same-origin in web mode). Bare `/api/...` would resolve
-  // against the renderer's origin and 404.
-  const screenshotUrl = dashboard.hasScreenshot
-    ? `${getApiBaseUrl()}/api/agents/${encodeURIComponent(agentSlug)}/artifacts/${encodeURIComponent(dashboard.slug)}/screenshot.png`
-    : null
-
-  const { status: paletteStatus, palette } = useImagePalette(screenshotUrl)
-  const swatch = palette ? pickDashboardSwatch(palette) : null
-
-  // Hold off on rendering the overlay while we're still extracting colours —
-  // otherwise the first paint uses theme defaults and flashes when the palette
-  // resolves. Once we're ready (or failed), render with whatever we have.
-  const overlayReady = !screenshotUrl || paletteStatus !== 'loading'
-
-  return (
-    // Outer div holds the grid's layout slot at a fixed 96px — the button
-    // inside grows via absolute positioning on hover, overlaying rows below
-    // rather than pushing them. z-index sits on the outer div (not the
-    // animating button) with an asymmetric transition: it snaps to 20 on
-    // mouseenter but waits 420ms on mouseleave, so the card stays above
-    // sibling rows for the full duration of the shrink-back animation.
-    <div className="relative h-24 group z-0 hover:z-20 [transition:z-index_0s_420ms] hover:[transition:z-index_0s]">
-      <button
-        onClick={handleClick}
-        className="absolute inset-x-0 top-0 h-24 group-hover:h-40 group-hover:scale-x-[1.04] group-hover:shadow-lg rounded-lg border bg-card hover:border-accent-foreground/20 text-left overflow-hidden origin-top [transition:transform_150ms_ease-out,height_300ms_cubic-bezier(0.2,0.8,0.2,1)_120ms,box-shadow_250ms_ease-out,border-color_200ms_ease-out]"
-      >
-        {screenshotUrl ? (
-          <img
-            src={screenshotUrl}
-            alt=""
-            className="absolute inset-0 h-full w-full object-cover object-top"
-            loading="lazy"
-            draggable={false}
-          />
-        ) : (
-          <div className="absolute inset-0 flex items-center justify-center bg-muted/40">
-            <SquareMousePointer className="h-8 w-8 text-muted-foreground/50" />
-          </div>
-        )}
-        {overlayReady && (
-          <>
-            <div
-              className="absolute inset-0"
-              style={{ background: buildGradient(swatch) }}
-            />
-            <div
-              className="relative z-10 flex h-full flex-col justify-end p-3"
-              style={swatch ? { color: deriveForegroundColor(swatch) } : undefined}
-            >
-              <div className="flex items-center gap-1.5 min-w-0">
-                <SquareMousePointer className="h-3.5 w-3.5 shrink-0 opacity-70" />
-                <span className="font-medium text-sm truncate">{dashboard.name}</span>
-              </div>
-            </div>
-          </>
-        )}
-      </button>
-    </div>
-  )
-}
-
 export function HomePage() {
   useRenderTracker('HomePage')
   const { data: agents, isLoading: agentsLoading } = useAgents()
@@ -437,7 +357,7 @@ export function HomePage() {
             ) : hasAgents ? (
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                 {orderedAgents.flatMap((agent) => {
-                  const dashboards = agent.dashboards ?? []
+                  const dashboards = Array.isArray(agent.dashboards) ? agent.dashboards : []
                   const cells = [
                     <AgentCard key={agent.slug} agent={agent} dailyUsage={usageData?.daily} />,
                   ]
@@ -447,6 +367,7 @@ export function HomePage() {
                         key={`${agent.slug}::dashboard::${d.slug}`}
                         dashboard={d}
                         agentSlug={agent.slug}
+                        variant="overlay"
                       />
                     )
                   }
