@@ -13,7 +13,7 @@ import {
   type WebhookTrigger,
   type NewWebhookTrigger,
 } from '@shared/lib/db/schema'
-import { eq, and, inArray, sql, count, desc } from 'drizzle-orm'
+import { eq, and, inArray, isNotNull, sql, count, desc } from 'drizzle-orm'
 import { trackServerEvent } from '../analytics/server-analytics'
 import { deleteComposioTrigger } from '@shared/lib/composio/triggers'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
@@ -39,10 +39,7 @@ export function getDistinctPlatformMemberIdsForActiveTriggers(): string[] {
       ownerUserId: connectedAccounts.userId,
     })
     .from(webhookTriggers)
-    .leftJoin(
-      connectedAccounts,
-      eq(connectedAccounts.id, webhookTriggers.connectedAccountId),
-    )
+    .leftJoin(connectedAccounts, eq(connectedAccounts.id, webhookTriggers.connectedAccountId))
     .where(inArray(webhookTriggers.status, ['active', 'paused']))
     .all()
 
@@ -54,6 +51,21 @@ export function getDistinctPlatformMemberIdsForActiveTriggers(): string[] {
     if (memberId) ids.add(memberId)
   }
   return [...ids]
+}
+
+// Active composio trigger IDs registered on this host (no per-member filter — the access key / acting member is the auth boundary at the proxy).
+export function getActiveComposioTriggerIds(): string[] {
+  return db
+    .select({ composioTriggerId: webhookTriggers.composioTriggerId })
+    .from(webhookTriggers)
+    .where(
+      and(
+        eq(webhookTriggers.status, 'active'),
+        isNotNull(webhookTriggers.composioTriggerId),
+      ),
+    )
+    .all()
+    .map((r) => r.composioTriggerId!)
 }
 
 export type { WebhookTrigger, NewWebhookTrigger }
