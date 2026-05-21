@@ -255,7 +255,6 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
             <VoiceAgent
               config={voiceAgentConfig}
               onResult={handleVoiceAgentResult}
-              onClose={closeVoiceAgent}
               layout="split"
             />
           )}
