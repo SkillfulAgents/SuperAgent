@@ -103,9 +103,11 @@ export function ScriptRunRequestItem({
 
   return (
     <RequestItemShell
-      title="Script Execution Request"
-      icon={<Terminal />}
+      title={explanation}
+      subtitle="Review carefully before allowing. This script will run on your actual computer with your user permissions."
       theme="orange"
+      sessionId={sessionId}
+      agentSlug={agentSlug}
       waitingText="Waiting for approval"
       error={error}
       data-testid={isCompleted ? 'script-run-request-completed' : 'script-run-request'}
@@ -131,24 +133,16 @@ export function ScriptRunRequestItem({
         readOnly
           ? {
               extraContent: (
-                <div className="mt-8 flex flex-wrap items-center gap-2">
+                <div className="mt-3 flex flex-wrap items-center gap-2">
                   <span className="inline-flex h-7 items-center rounded-md bg-muted px-2.5 text-xs font-medium text-foreground/80">
                     {SCRIPT_TYPE_LABELS[scriptType] || scriptType}
                   </span>
                 </div>
               ),
-              description: (
-                <p className="mt-4 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{explanation}</p>
-              ),
             }
           : false
       }
     >
-      <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{explanation}</p>
-      <p className="mt-2 text-xs text-muted-foreground">
-        Review carefully before allowing. This script will run on your actual computer with your user permissions.
-      </p>
-
       <div className="pt-4">
         <div className="overflow-hidden rounded-md border border-border bg-white dark:bg-background">
           <pre className="overflow-x-auto whitespace-pre-wrap break-all p-2 text-xs font-mono text-foreground/75">
@@ -176,7 +170,7 @@ export function ScriptRunRequestItem({
           <Button
             onClick={() => handleApprove('once')}
             loading={status === 'submitting'}
-            size="sm"
+            size="xs"
             className="min-w-28 rounded-r-none border-r-0 bg-orange-600 text-white hover:bg-orange-700"
             data-testid="script-run-once-btn"
           >
@@ -186,7 +180,7 @@ export function ScriptRunRequestItem({
             <PopoverTrigger asChild>
               <Button
                 disabled={status === 'submitting'}
-                size="sm"
+                size="xs"
                 className="rounded-l-none border-l border-l-orange-500 bg-orange-600 px-1.5 text-white hover:bg-orange-700"
                 data-testid="script-run-timed-btn-chevron"
               >
@@ -200,7 +194,7 @@ export function ScriptRunRequestItem({
                   handleApprove('timed')
                 }}
                 variant="ghost"
-                size="sm"
+                size="xs"
                 className="w-full justify-start text-foreground hover:bg-muted"
                 data-testid="script-run-timed-btn"
               >
@@ -212,7 +206,7 @@ export function ScriptRunRequestItem({
                   handleApprove('always')
                 }}
                 variant="ghost"
-                size="sm"
+                size="xs"
                 className="w-full justify-start text-foreground hover:bg-muted"
                 data-testid="script-run-always-btn"
               >

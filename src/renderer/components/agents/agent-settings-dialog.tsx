@@ -1,20 +1,14 @@
 
 import * as React from 'react'
-import { Settings, FileText, KeyRound, Sparkles, Link2, ScrollText, Plug, Users, HardDrive, MessageCircle } from 'lucide-react'
+import { Settings, KeyRound, Users, Network } from 'lucide-react'
 import { useUser } from '@renderer/context/user-context'
 import { Button } from '@renderer/components/ui/button'
 import { SettingsDialog, SettingsDialogTab } from '@renderer/components/ui/settings-dialog'
 import { useUpdateAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { GeneralTab } from './settings/general-tab'
-import { SystemPromptTab } from './settings/system-prompt-tab'
 import { SecretsTab } from './settings/secrets-tab'
-import { SkillsTab } from './settings/skills-tab'
-import { ConnectedAccountsTab } from './settings/connected-accounts-tab'
-import { RemoteMcpsTab } from './settings/remote-mcps-tab'
-import { AuditLogTab } from './settings/audit-log-tab'
 import { AccessTab } from './settings/access-tab'
-import { VolumesTab } from './settings/volumes-tab'
-import { ChatIntegrationsTab } from './settings/chat-integrations-tab'
+import { XAgentPoliciesTab } from './settings/x-agent-policies-tab'
 
 interface AgentSettingsDialogProps {
   agent: ApiAgent
@@ -30,7 +24,6 @@ export function AgentSettingsDialog({
   initialTab,
 }: AgentSettingsDialogProps) {
   const [name, setName] = React.useState(agent.name)
-  const [instructions, setInstructions] = React.useState(agent.instructions || '')
   const updateAgent = useUpdateAgent()
   const { isAuthMode, canAdminAgent, rolesReady } = useUser()
   const isOwner = canAdminAgent(agent.slug)
@@ -39,20 +32,18 @@ export function AgentSettingsDialog({
   React.useEffect(() => {
     if (open) {
       setName(agent.name)
-      setInstructions(agent.instructions || '')
     }
-  }, [open, agent.name, agent.instructions])
+  }, [open, agent.name])
 
   const handleSave = async () => {
     await updateAgent.mutateAsync({
       slug: agent.slug,
       name: name.trim() || agent.name,
-      instructions: instructions.trim() || undefined,
     })
     onOpenChange(false)
   }
 
-  const hasChanges = name !== agent.name || instructions !== (agent.instructions || '')
+  const hasChanges = name !== agent.name
 
   const saveFooter = (
     <div className="flex items-center justify-end gap-2 border-t p-4">
@@ -97,34 +88,11 @@ export function AgentSettingsDialog({
           onDialogClose={() => onOpenChange(false)}
         />
       </SettingsDialogTab>
-      <SettingsDialogTab id="system-prompt" label="System Prompt" icon={<FileText className="h-4 w-4" />} footer={saveFooter}>
-        <SystemPromptTab
-          systemPrompt={instructions}
-          onSystemPromptChange={setInstructions}
-        />
-      </SettingsDialogTab>
       <SettingsDialogTab id="secrets" label="Secrets" icon={<KeyRound className="h-4 w-4" />}>
         <SecretsTab agentSlug={agent.slug} isOpen={open} />
       </SettingsDialogTab>
-      <SettingsDialogTab id="skills" label="Skills" icon={<Sparkles className="h-4 w-4" />}>
-        <SkillsTab agentSlug={agent.slug} />
-      </SettingsDialogTab>
-      {!!window.electronAPI && (
-        <SettingsDialogTab id="volumes" label="Volumes" icon={<HardDrive className="h-4 w-4" />}>
-          <VolumesTab agentSlug={agent.slug} />
-        </SettingsDialogTab>
-      )}
-      <SettingsDialogTab id="connected-accounts" label="Accounts" icon={<Link2 className="h-4 w-4" />}>
-        <ConnectedAccountsTab agentSlug={agent.slug} />
-      </SettingsDialogTab>
-      <SettingsDialogTab id="chat-integrations" label="Chat" icon={<MessageCircle className="h-4 w-4" />}>
-        <ChatIntegrationsTab agentSlug={agent.slug} />
-      </SettingsDialogTab>
-      <SettingsDialogTab id="remote-mcps" label="MCPs" icon={<Plug className="h-4 w-4" />}>
-        <RemoteMcpsTab agentSlug={agent.slug} onClose={() => onOpenChange(false)} />
-      </SettingsDialogTab>
-      <SettingsDialogTab id="audit-log" label="API Log" icon={<ScrollText className="h-4 w-4" />}>
-        <AuditLogTab agentSlug={agent.slug} />
+      <SettingsDialogTab id="x-agent-policies" label="Agents" icon={<Network className="h-4 w-4" />}>
+        <XAgentPoliciesTab agentSlug={agent.slug} />
       </SettingsDialogTab>
       {isAuthMode && (
         <SettingsDialogTab id="access" label="Access" icon={<Users className="h-4 w-4" />}>

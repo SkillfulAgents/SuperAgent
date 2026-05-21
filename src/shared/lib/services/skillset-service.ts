@@ -491,6 +491,11 @@ async function isGitRepo(dir: string): Promise<boolean> {
   return directoryExists(path.join(dir, '.git'))
 }
 
+export async function isCacheReady(dir: string, provider?: SkillProvider): Promise<boolean> {
+  const p = getSkillsetProvider(provider)
+  return p.usesGitCache ? isGitRepo(dir) : p.isCacheReady(dir)
+}
+
 /**
  * Recover original file content from git history by finding the commit
  * whose version of the file matches the expected hash.
@@ -531,14 +536,17 @@ async function getOriginalFromGitHistory(
 // Skillset Cache Management
 // ============================================================================
 
-/**
- * Ensure a skillset repo is cached locally. Clones if not present.
- * Returns the path to the cached repo.
- */
-export async function ensureGitInstalled(): Promise<void> {
+export async function isGitAvailable(): Promise<boolean> {
   try {
     await execFileAsync('git', ['--version'], { timeout: 5000 })
+    return true
   } catch {
+    return false
+  }
+}
+
+export async function ensureGitInstalled(): Promise<void> {
+  if (!(await isGitAvailable())) {
     throw new Error(
       'Git is not installed. Install it from https://git-scm.com/install/mac'
     )
@@ -549,9 +557,8 @@ export async function ensureSkillsetCached(ref: SkillsetRef): Promise<string> {
   const hostingProvider = getSkillsetProvider(ref.provider)
   const repoDir = getSkillsetRepoDir(hostingProvider.getEffectiveRepoId(ref))
 
-  if (await isGitRepo(repoDir)) return repoDir
+  if (await isCacheReady(repoDir, ref.provider)) return repoDir
 
-  await ensureGitInstalled()
   await ensureDirectory(getSkillsetCacheDir())
 
   const parentDir = path.dirname(repoDir)
@@ -563,6 +570,12 @@ export async function ensureSkillsetCached(ref: SkillsetRef): Promise<string> {
     await fs.promises.rm(repoDir, { recursive: true, force: true })
   }
 
+  if (!hostingProvider.usesGitCache) {
+    await hostingProvider.populateCache(repoDir, ref)
+    return repoDir
+  }
+
+  await ensureGitInstalled()
   const cloneUrl = await hostingProvider.resolveCloneUrl(ref.skillsetUrl, ref)
   await gitClone(cloneUrl, repoDir)
   return repoDir
@@ -614,9 +627,14 @@ export async function refreshSkillset(ref: SkillsetRef): Promise<SkillsetIndex> 
   const hostingProvider = getSkillsetProvider(ref.provider)
   const repoDir = getSkillsetRepoDir(hostingProvider.getEffectiveRepoId(ref))
 
+  if (!hostingProvider.usesGitCache) {
+    await hostingProvider.refreshCache(repoDir, ref)
+    return readIndexJson(repoDir)
+  }
+
   if (await isGitRepo(repoDir)) {
-    // Always re-resolve the clone URL and update the origin. For platform,
-    // the URL embeds a short-lived token — we need to freshen it every refresh.
+    // Re-resolve the clone URL and update the origin before pulling.
+    // For platform, the URL embeds a short-lived token that needs refreshing.
     // For github, set-url is a cheap no-op when unchanged.
     const freshUrl = await hostingProvider.resolveCloneUrl(ref.skillsetUrl, ref)
     await execFileAsync('git', ['remote', 'set-url', 'origin', freshUrl], {
@@ -637,7 +655,7 @@ export async function getSkillsetIndex(
   ref: Pick<SkillsetRef, 'skillsetId' | 'provider' | 'providerData'>,
 ): Promise<SkillsetIndex | null> {
   const repoDir = getSkillsetRepoDirForRef(ref)
-  if (!await isGitRepo(repoDir)) return null
+  if (!await isCacheReady(repoDir, ref.provider)) return null
 
   try {
     return await readIndexJson(repoDir)
@@ -668,7 +686,7 @@ export async function installSkillFromSkillset(
   skillVersion: string,
 ): Promise<{ requiredEnvVars?: Array<{ name: string; description: string }> }> {
   const repoDir = getSkillsetRepoDirForRef(skillsetRef)
-  if (!(await isGitRepo(repoDir))) {
+  if (!(await isCacheReady(repoDir, skillsetRef.provider))) {
     await ensureSkillsetCached(skillsetRef)
   }
 
@@ -1582,7 +1600,7 @@ export async function publishSkillToSkillset(
   const skillsetRef = toSkillsetRefFromConfig(skillsetConfig)
 
   const repoDir = getSkillsetRepoDirForRef(skillsetRef)
-  if (!(await isGitRepo(repoDir))) {
+  if (!(await isCacheReady(repoDir, skillsetRef.provider))) {
     await ensureSkillsetCached(skillsetRef)
   }
 

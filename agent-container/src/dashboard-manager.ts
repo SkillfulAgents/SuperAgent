@@ -1,6 +1,9 @@
 import { spawn, ChildProcess } from 'child_process'
 import * as fs from 'fs'
 import * as path from 'path'
+import { captureDashboardScreenshot, type ScreenshotResult } from './dashboard-screenshot'
+
+const SCREENSHOT_FILENAME = 'screenshot.png'
 
 export const ARTIFACTS_DIR = '/workspace/artifacts'
 const DASHBOARD_BASE_PORT = 5000
@@ -48,7 +51,14 @@ class DashboardManager {
         const pkgPath = path.join(ARTIFACTS_DIR, entry.name, 'package.json')
         try {
           await fs.promises.access(pkgPath)
-          await this.startDashboard(entry.name)
+          const info = await this.startDashboard(entry.name)
+          // Fire-and-forget screenshot refresh on boot. No agent is waiting,
+          // so we don't block the scan loop.
+          if (info.status === 'running') {
+            this.captureScreenshot(entry.name).catch((err) => {
+              console.warn(`[DashboardManager] Boot screenshot failed for ${entry.name}:`, err)
+            })
+          }
         } catch {
           // No package.json, skip
         }
@@ -56,6 +66,20 @@ class DashboardManager {
     } catch (error) {
       console.error('[DashboardManager] Error scanning artifacts:', error)
     }
+  }
+
+  /**
+   * Capture a screenshot of a running dashboard and write it to
+   * <artifactDir>/screenshot.png. Best-effort — returns the result so callers
+   * can decide what to do, but never throws.
+   */
+  async captureScreenshot(slug: string): Promise<ScreenshotResult> {
+    const info = this.dashboards.get(slug)
+    if (!info || info.status !== 'running') {
+      return { ok: false, reason: `Dashboard ${slug} is not running` }
+    }
+    const outPath = path.join(ARTIFACTS_DIR, slug, SCREENSHOT_FILENAME)
+    return captureDashboardScreenshot(`http://localhost:${info.port}/`, outPath)
   }
 
   private readPackageJson(slug: string): { name: string; description: string } {
@@ -112,8 +136,8 @@ class DashboardManager {
       // Open log stream early so install errors are captured
       info.logStream = fs.createWriteStream(logPath, { flags: 'a' })
 
-      // Run bun install first
-      await this.runBunInstall(dashboardDir, info.logStream)
+      // Run bun install only if node_modules is missing or package.json is newer than it
+      await this.runBunInstallIfNeeded(dashboardDir, info.logStream)
 
       // Start the dashboard server
       const proc = spawn('bun', ['run', 'start'], {
@@ -175,6 +199,22 @@ class DashboardManager {
     }
 
     return info
+  }
+
+  private async runBunInstallIfNeeded(dir: string, logStream?: fs.WriteStream): Promise<void> {
+    const nodeModules = path.join(dir, 'node_modules')
+    const pkgJson = path.join(dir, 'package.json')
+    try {
+      const nmStat = fs.statSync(nodeModules)
+      const pkgStat = fs.statSync(pkgJson)
+      if (nmStat.isDirectory() && nmStat.mtimeMs >= pkgStat.mtimeMs) {
+        logStream?.write('[DashboardManager] node_modules up-to-date, skipping bun install\n')
+        return
+      }
+    } catch {
+      // node_modules doesn't exist or stat failed — need install
+    }
+    return this.runBunInstall(dir, logStream)
   }
 
   private async runBunInstall(dir: string, logStream?: fs.WriteStream): Promise<void> {

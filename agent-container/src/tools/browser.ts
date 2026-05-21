@@ -394,6 +394,41 @@ export const browserHoverTool = tool(
   }
 )
 
+export const browserUploadTool = tool(
+  'browser_upload',
+  `Upload a local file into a web page <input type="file"> using Playwright setInputFiles.
+
+Use this instead of browser_run("upload ..."). The agent-browser upload command is known to create zero-byte uploads on some sites.
+
+The selector must target the actual file input element, such as input[type="file"] or input.dz-hidden-input. Hidden file inputs are supported.`,
+  {
+    filePath: z.string().describe('Path to the local file to upload, usually under /workspace/uploads/...'),
+    selector: z
+      .string()
+      .optional()
+      .default('input[type="file"]')
+      .describe('CSS selector for the target <input type="file"> element. Defaults to input[type="file"].'),
+  },
+  async (args) => {
+    const result = await browserFetch('upload', {
+      filePath: args.filePath,
+      selector: args.selector,
+    })
+    if (!result.success) return errorResult(result.error!)
+
+    const data = result.data as Record<string, any>
+    const file = data.file as { name?: string; size?: number } | undefined
+    let text = file?.name
+      ? `Uploaded ${file.name} (${file.size ?? 'unknown'} bytes) to ${args.selector}.`
+      : `Uploaded file to ${args.selector}.`
+    text += getTabWarning()
+
+    return {
+      content: [{ type: 'text' as const, text }],
+    }
+  }
+)
+
 export const browserRunTool = tool(
   'browser_run',
   `Run any agent-browser CLI command. Use this for advanced browser operations not covered by the dedicated tools.
@@ -408,7 +443,6 @@ Available commands:
 - check/uncheck <ref> — Toggle checkbox
 - scrollintoview <ref> — Scroll element into view
 - drag <srcRef> <tgtRef> — Drag and drop
-- upload <ref> <files> — Upload files
 - eval <js> — Run JavaScript
 - get text/html/value/attr/title/url/count/box <ref> — Get element info
 - is visible/enabled/checked <ref> — Check element state
@@ -515,6 +549,7 @@ export const browserTools = [
   browserScreenshotTool,
   browserSelectTool,
   browserHoverTool,
+  browserUploadTool,
   browserRunTool,
   browserGetStateTool,
 ]

@@ -74,7 +74,6 @@ describe('RemoteMcpRequestItem', () => {
 
   it('renders pending state with server name and reason', async () => {
     renderWithProviders(<RemoteMcpRequestItem {...defaultProps} />)
-    expect(screen.getByText('MCP Access Request')).toBeInTheDocument()
     expect(screen.getByText('Need weather data tools')).toBeInTheDocument()
   })
 

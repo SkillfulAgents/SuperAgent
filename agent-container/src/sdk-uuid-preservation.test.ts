@@ -18,7 +18,6 @@ import * as path from 'path'
 import { fileURLToPath } from 'url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const CLI_PATH = path.resolve(__dirname, '../node_modules/@anthropic-ai/claude-agent-sdk/cli.js')
 
 // Load .env.test.local if it exists (gitignored, for local dev)
 const envFile = path.resolve(__dirname, '../.env.test.local')
@@ -72,8 +71,6 @@ describe('SDK uuid preservation', () => {
         abortController,
         maxTurns: 1,
         model: 'claude-haiku-4-5-20251001',
-        executable: 'node',
-        pathToClaudeCodeExecutable: CLI_PATH,
         env: (() => {
           // Clone env and remove markers that prevent launching CC inside CC
           const env: Record<string, string | undefined> = { ...process.env, ANTHROPIC_API_KEY: API_KEY! }
@@ -95,8 +92,9 @@ describe('SDK uuid preservation', () => {
           sessionId = msg.session_id as string
         }
       }
-    } catch {
-      // Query may throw on abort or completion — expected
+    } catch (e) {
+      // SDK may throw on abort, completion, or auth errors — log so failures are diagnosable.
+      console.error('SDK query threw during test:', e)
     }
 
     // Fallback: find session ID from JSONL files on disk

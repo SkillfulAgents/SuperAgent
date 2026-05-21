@@ -53,6 +53,29 @@ export class DeepgramSttProvider extends BaseSttProvider {
     return this.mintEphemeralToken(apiKey)
   }
 
+  override supportsTranscription(): boolean {
+    return true
+  }
+
+  override async transcribeAudio(apiKey: string, audioBuffer: Buffer, mimeType: string): Promise<string> {
+    const res = await fetch('https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true', {
+      method: 'POST',
+      headers: {
+        Authorization: `Token ${apiKey}`,
+        'Content-Type': mimeType,
+      },
+      body: new Uint8Array(audioBuffer),
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`Deepgram transcription failed (${res.status}): ${text}`)
+    }
+    const data = await res.json() as {
+      results?: { channels?: Array<{ alternatives?: Array<{ transcript?: string }> }> }
+    }
+    return data.results?.channels?.[0]?.alternatives?.[0]?.transcript || ''
+  }
+
   async mintEphemeralToken(apiKey: string): Promise<string> {
     const res = await fetch('https://api.deepgram.com/v1/auth/grant', {
       method: 'POST',

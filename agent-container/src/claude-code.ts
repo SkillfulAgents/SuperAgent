@@ -4,7 +4,7 @@ import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { EffortLevel } from './types';
-import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer } from './mcp-server';
+import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer, createAgentsMcpServer } from './mcp-server';
 import { browserTools } from './tools/browser';
 import { computerUseTools } from './tools/computer-use';
 import { fileHooks, resolveToolFilePath } from './file-hooks';
@@ -28,23 +28,26 @@ import { sanitizeMcpName } from './sanitize-mcp-name';
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in src/renderer/components/messages/message-list.tsx
 const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] ';
 
-// Load platform system prompt from file
-const PLATFORM_SYSTEM_PROMPT = fs.readFileSync(
-  path.join(__dirname, 'system-prompt.md'),
-  'utf-8'
-);
+// Defaults for `${VAR}` placeholders in prompt files. Mirror values the host
+// (base-container-client.ts) sets, so out-of-host runs render sensibly.
+const PROMPT_ENV_DEFAULTS: Record<string, string> = {
+  CLAUDE_CONFIG_DIR: '/workspace/.claude',
+};
 
-// Load web-browser subagent prompt from file
-const WEB_BROWSER_AGENT_PROMPT = fs.readFileSync(
-  path.join(__dirname, 'web-browser-agent-prompt.md'),
-  'utf-8'
-);
+function interpolateEnv(template: string): string {
+  return template.replace(/\$\{(\w+)\}/g, (match, name) => {
+    return process.env[name] || PROMPT_ENV_DEFAULTS[name] || match;
+  });
+}
 
-// Load computer-use subagent prompt from file
-const COMPUTER_USE_AGENT_PROMPT = fs.readFileSync(
-  path.join(__dirname, 'computer-use-agent-prompt.md'),
-  'utf-8'
-);
+function loadPrompt(filename: string): string {
+  return interpolateEnv(fs.readFileSync(path.join(__dirname, filename), 'utf-8'));
+}
+
+const SYSTEM_PROMPT = loadPrompt('system-prompt.md');
+const WEB_BROWSER_AGENT_PROMPT = loadPrompt('web-browser-agent-prompt.md');
+const COMPUTER_USE_AGENT_PROMPT = loadPrompt('computer-use-agent-prompt.md');
+const DASHBOARD_BUILDER_AGENT_PROMPT = loadPrompt('dashboard-builder-agent-prompt.md');
 
 interface RemoteMcpConfig {
   id: string;
@@ -90,17 +93,16 @@ function parseConnectedAccounts(): Map<string, Array<{ name: string; id: string 
 }
 
 /**
- * Generates the system prompt to append to the Claude Code preset.
- * Includes platform-specific instructions and available environment variables.
+ * Generates the full system prompt from the SuperAgent prompt plus dynamic
+ * sections (connected accounts, env vars, user instructions).
  */
-function generateSystemPromptAppend(
+function generateSystemPrompt(
   availableEnvVars?: string[],
   userSystemPrompt?: string
-): string | undefined {
+): string {
   const sections: string[] = [];
 
-  // Platform instructions
-  sections.push(PLATFORM_SYSTEM_PROMPT);
+  sections.push(SYSTEM_PROMPT);
 
   // Parse connected accounts metadata
   const connectedAccounts = parseConnectedAccounts();
@@ -194,10 +196,6 @@ You can access these using standard environment variable methods (e.g., \`proces
     sections.push(`## Agent-Specific Instructions
 
 ${userSystemPrompt.trim()}`);
-  }
-
-  if (sections.length === 0) {
-    return undefined;
   }
 
   return sections.join('\n\n');
@@ -298,7 +296,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private sessionId: string;
   private workingDirectory: string;
   private claudeSessionId: string | null;
-  private systemPromptAppend: string | undefined;
+  private systemPrompt: string;
   private model: string | undefined;
   private browserModel: string | undefined;
   private maxOutputTokens: number | undefined;
@@ -309,6 +307,8 @@ export class ClaudeCodeProcess extends EventEmitter {
   private effort: EffortLevel | undefined;
   private isReady: boolean = false;
   private isProcessing: boolean = false;
+  private userMessageCount: number = 0;
+  private isResumedSession: boolean;
   public slashCommands: { name: string; description: string; argumentHint: string }[] = [];
 
   constructor(options: ClaudeCodeProcessOptions) {
@@ -316,6 +316,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.sessionId = options.sessionId;
     this.workingDirectory = options.workingDirectory;
     this.claudeSessionId = options.claudeSessionId || null;
+    this.isResumedSession = !!options.claudeSessionId;
     this.model = toModelAlias(options.model) || options.model;
     this.browserModel = toModelAlias(options.browserModel);
     this.maxOutputTokens = options.maxOutputTokens;
@@ -324,7 +325,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.maxBudgetUsd = options.maxBudgetUsd;
     this.customEnvVars = options.customEnvVars;
     this.effort = options.effort;
-    this.systemPromptAppend = generateSystemPromptAppend(
+    this.systemPrompt = generateSystemPrompt(
       options.availableEnvVars,
       options.userSystemPrompt
     );
@@ -406,21 +407,31 @@ export class ClaudeCodeProcess extends EventEmitter {
         agentProgressSummaries: true,
         settingSources: ['user', 'project'],
         allowedTools: ['Skill', 'Task', 'Agent', ...remoteMcpToolPatterns],
+        disallowedTools: [
+          'TaskOutput', 'Monitor',
+          'CronCreate', 'CronDelete', 'CronList',
+          'ScheduleWakeup', 'RemoteTrigger', 'PushNotification',
+          'EnterWorktree', 'ExitWorktree',
+        ],
         ...(this.maxThinkingTokens && { maxThinkingTokens: this.maxThinkingTokens }),
         ...(this.maxTurns && { maxTurns: this.maxTurns }),
         ...(this.maxBudgetUsd && { maxBudgetUsd: this.maxBudgetUsd }),
         ...(this.effort && { effort: this.effort }),
-        ...((this.customEnvVars || this.maxOutputTokens) && {
-          env: {
-            ...this.customEnvVars,
-            // Explicit maxOutputTokens setting takes precedence over custom env var
-            ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
-          },
-        }),
+        env: {
+          // Agent SDK 0.2.113+ replaces process.env with options.env instead of
+          // overlaying it, so we must spread process.env explicitly or the Claude
+          // subprocess loses PATH, HOME, ANTHROPIC_API_KEY, connected-account env
+          // vars, and anything else set on the container.
+          ...process.env,
+          ...this.customEnvVars,
+          // Explicit maxOutputTokens setting takes precedence over custom env var
+          ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
+        },
         mcpServers: {
           'user-input': createUserInputMcpServer(),
           'browser': createBrowserMcpServer(),
           'dashboards': createDashboardsMcpServer(),
+          'agents': createAgentsMcpServer(() => this.sessionId),
           ...(['darwin', 'win32'].includes(process.env.HOST_PLATFORM || '') ? { 'computer-use': createComputerUseMcpServer() } : {}),
           ...remoteMcpConfigs,
         },
@@ -432,10 +443,27 @@ export class ClaudeCodeProcess extends EventEmitter {
               ...mcpToolNames('browser', browserTools),
               'WebSearch',
               'Read',
+              'mcp__user-input__request_file',
               'mcp__user-input__request_browser_input',
             ],
             prompt: WEB_BROWSER_AGENT_PROMPT,
             maxTurns: 500,
+          },
+          'dashboard-builder': {
+            description: 'Dashboard building specialist. Delegate any task that involves creating, editing, or debugging dashboards (artifacts) — designing layouts, writing HTML/CSS/JS or React code, adding charts, connecting to data sources, fixing visual issues, or iterating on dashboard design. This agent uses Opus and handles the full build cycle: scaffolding, coding, starting, and verifying via screenshots.',
+            model: 'opus' as const,
+            tools: [
+              'mcp__dashboards__create_dashboard',
+              'mcp__dashboards__start_dashboard',
+              'mcp__dashboards__list_dashboards',
+              'mcp__dashboards__get_dashboard_logs',
+              'Read',
+              'Write',
+              'Edit',
+              'Bash',
+            ],
+            prompt: DASHBOARD_BUILDER_AGENT_PROMPT,
+            maxTurns: 200,
           },
           ...(['darwin', 'win32'].includes(process.env.HOST_PLATFORM || '') ? {
             'computer-use': {
@@ -534,6 +562,24 @@ export class ClaudeCodeProcess extends EventEmitter {
               ],
             },
             {
+              matcher: 'mcp__agents__create_agent',
+              hooks: [
+                async () => {
+                  if (this.userMessageCount <= 1 && !this.isResumedSession) {
+                    return {
+                      hookSpecificOutput: {
+                        hookEventName: 'PreToolUse' as const,
+                        permissionDecision: 'deny' as const,
+                        permissionDecisionReason:
+                          'This is the first message in the session. When users say "create an agent to..." they almost always mean they want YOU (the current agent) to to be this agent. Please re-read the user\'s message — they are likely asking you to build this agent in your current workspace - not as a seperate one. Only create a new agent if the user explicitly and unambiguously asks to set up a separate, reusable agent definition.',
+                      },
+                    };
+                  }
+                  return {};
+                },
+              ],
+            },
+            {
               matcher: 'Write',
               hooks: [
                 async (input) => {
@@ -602,16 +648,7 @@ export class ClaudeCodeProcess extends EventEmitter {
             },
           ],
         },
-        systemPrompt: this.systemPromptAppend
-          ? {
-              type: 'preset',
-              preset: 'claude_code',
-              append: this.systemPromptAppend,
-            }
-          : {
-              type: 'preset',
-              preset: 'claude_code',
-            },
+        systemPrompt: this.systemPrompt,
       },
     });
   }
@@ -737,25 +774,52 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
   }
 
-  async sendMessage(content: string, uuid?: UUID, effort?: EffortLevel): Promise<void> {
+  async sendMessage(content: string, uuid?: UUID, options?: { effort?: EffortLevel; model?: string }): Promise<void> {
+    const effort = options?.effort;
+    const model = options?.model;
+
     // Treat undefined stored effort as 'high' so pre-existing sessions (created before
     // this feature) don't trigger a spurious restart on their first post-upgrade message.
     const currentEffort: EffortLevel = this.effort ?? 'high';
     const effortChanged = effort !== undefined && effort !== currentEffort;
 
+    // For model: compare on the SDK alias so two pinned versions of the same family
+    // (e.g. opus-4-6 vs opus-4-7) don't trigger a spurious switch.
+    const incomingModelAlias = toModelAlias(model);
+    const modelChanged = model !== undefined && incomingModelAlias !== this.model;
+
     if (effortChanged) {
       this.effort = effort;
     }
+    if (modelChanged) {
+      this.model = incomingModelAlias || model;
+    }
 
     if (!this.messageQueue || !this.isReady) {
-      // Cold session — first init will pick up the (possibly new) effort value.
+      // Cold session — first init will pick up the (possibly new) effort/model values.
       console.log(`[Session ${this.sessionId}] Session not running, restarting...`);
       await this.restart();
     } else if (effortChanged) {
-      // Warm session with a changed effort — interrupt so createQuery() re-runs with the new level.
-      // Context is preserved via resume (claudeSessionId).
-      console.log(`[Session ${this.sessionId}] Effort change: ${currentEffort} -> ${effort}, restarting query`);
+      // Effort can only be set at query creation time — the SDK has no setEffort
+      // facility — so any effort change forces an interrupt + re-query. The new
+      // model (if also changed) is picked up by the same restart.
+      const reasons: string[] = [`effort ${currentEffort} -> ${effort}`];
+      if (modelChanged) reasons.push(`model -> ${this.model}`);
+      console.log(`[Session ${this.sessionId}] Restarting query (${reasons.join(', ')})`);
       await this.interrupt();
+    } else if (modelChanged && this.queryInstance) {
+      // Model-only change — use the SDK's dynamic setModel() so the running query
+      // is reused and only subsequent turns are served by the new model. No
+      // interrupt, no resume replay.
+      console.log(`[Session ${this.sessionId}] Switching model dynamically -> ${this.model}`);
+      try {
+        await this.queryInstance.setModel(this.model);
+      } catch (err) {
+        // setModel can fail (e.g. transport not in streaming mode). Fall back to
+        // the conservative restart path so the new model still takes effect.
+        console.warn(`[Session ${this.sessionId}] setModel failed, falling back to restart:`, err);
+        await this.interrupt();
+      }
     }
 
     // Create SDK user message format
@@ -775,7 +839,10 @@ export class ClaudeCodeProcess extends EventEmitter {
       ...(uuid ? { uuid } : {}),
     };
 
-    console.log(`[Session ${this.sessionId}] Sending message:`, content.substring(0, 100));
+    if (!content.startsWith(SYSTEM_MESSAGE_PREFIX)) {
+      this.userMessageCount++;
+    }
+    console.log(`[Session ${this.sessionId}] Sending message (userMessageCount=${this.userMessageCount}):`, content.substring(0, 100));
     this.messageQueue!.push(message);
   }
 

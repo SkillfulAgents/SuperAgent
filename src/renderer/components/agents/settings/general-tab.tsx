@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Button } from '@renderer/components/ui/button'
+import { AgentAutoDeleteSelect } from '@renderer/components/settings/auto-delete-select'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -15,6 +16,8 @@ import {
   AlertDialogTrigger,
 } from '@renderer/components/ui/alert-dialog'
 import { useDeleteAgent } from '@renderer/hooks/use-agents'
+import { useAgentPreferences, useUpdateAgentPreferences } from '@renderer/hooks/use-agent-preferences'
+import { useSettings } from '@renderer/hooks/use-settings'
 import { useSelection } from '@renderer/context/selection-context'
 import {
   useForceSyncAgentTemplate,
@@ -44,6 +47,9 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
   const [publishDialogOpen, setPublishDialogOpen] = useState(false)
   const [forceSyncDialogOpen, setForceSyncDialogOpen] = useState(false)
   const deleteAgent = useDeleteAgent()
+  const { data: agentPrefs } = useAgentPreferences(agentSlug)
+  const updatePrefs = useUpdateAgentPreferences(agentSlug)
+  const { data: settings } = useSettings()
   const { handleAgentDeleted } = useSelection()
   const { data: templateStatus } = useAgentTemplateStatus(agentSlug)
   const refreshTemplateStatus = useRefreshAgentTemplateStatus()
@@ -137,7 +143,7 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
                   )}
                   Force Sync
                 </Button>
-                {!templateStatus.openPrUrl && (
+                {!templateStatus.openPrUrl && publishMode !== 'none' && (
                   <Button
                     size="sm"
                     variant="outline"
@@ -216,6 +222,23 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
             </Button>
           )}
         </div>
+      </div>
+
+      {/* Session Auto-Delete */}
+      <div className="space-y-2">
+        <div className="space-y-0.5">
+          <Label>Session Auto-Delete</Label>
+          <p className="text-xs text-muted-foreground">
+            Override the app-wide default for this agent. Starred sessions are preserved.
+          </p>
+        </div>
+        <AgentAutoDeleteSelect
+          value={agentPrefs?.autoDeleteInactiveDays}
+          appDefault={settings?.app?.autoDeleteInactiveDays}
+          onChange={(days) => {
+            updatePrefs.mutate({ autoDeleteInactiveDays: days })
+          }}
+        />
       </div>
 
       {/* Danger Zone */}

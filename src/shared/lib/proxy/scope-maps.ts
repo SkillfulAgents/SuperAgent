@@ -254,6 +254,19 @@ export const SCOPE_MAPS: Record<string, ProviderScopeMap> = {
       { method: "POST", pathPattern: "/v1/documents/*:batchUpdate", sufficientScopes: ["documents", "drive", "drive.file"], description: "Applies one or more updates to the document. Each request is validated before being applied. If any request is not valid, then the entire request will fail and nothing will be applied. Some requests have replies to give you some information about how they are applied. Other requests do not need to return information; these each return an empty reply. The order of replies matches that of the requests. For example, suppose you call batchUpdate with four updates, and only the third one returns information. The response would have two empty replies, the reply to the third request, and another empty reply, in that order. Because other users may be editing the document, the document might not exactly reflect your changes: your changes may be altered with respect to collaborator changes. If there are no collaborators, the document should reflect your changes. In any case, the updates in your request are guaranteed to be applied together atomically." },
     ],
   },
+  "googleslides": {
+    provider: "googleslides",
+    apiHost: "slides.googleapis.com",
+    basePath: "",
+    allScopes: ["drive", "drive.file", "drive.readonly", "presentations", "presentations.readonly"],
+    scopeMap: [
+      { method: "POST", pathPattern: "/v1/presentations", sufficientScopes: ["drive", "drive.file", "presentations"], description: "Creates a blank presentation using the title given in the request. If a presentationId is provided, it is used as the ID of the new presentation. Otherwise, a new ID is generated. Other fields in the request, including any provided content, are ignored. Returns the created presentation." },
+      { method: "GET", pathPattern: "/v1/presentations/*", sufficientScopes: ["drive", "drive.file", "drive.readonly", "presentations", "presentations.readonly"], description: "Gets the latest version of the specified presentation." },
+      { method: "POST", pathPattern: "/v1/presentations/*:batchUpdate", sufficientScopes: ["drive", "drive.file", "presentations"], description: "Applies one or more updates to the presentation. Each request is validated before being applied. If any request is not valid, then the entire request will fail and nothing will be applied. Some requests have replies to give you some information about how they are applied. Other requests do not need to return information; these each return an empty reply. The order of replies matches that of the requests. Because other users may be editing the presentation, the presentation might not exactly reflect your changes: your changes may be altered with respect to collaborator changes. If there are no collaborators, the presentation should reflect your changes. In any case, the updates in your request are guaranteed to be applied together atomically." },
+      { method: "GET", pathPattern: "/v1/presentations/*/pages/*", sufficientScopes: ["drive", "drive.file", "drive.readonly", "presentations", "presentations.readonly"], description: "Gets the latest version of the specified page in the presentation." },
+      { method: "GET", pathPattern: "/v1/presentations/*/pages/*/thumbnail", sufficientScopes: ["drive", "drive.file", "drive.readonly", "presentations", "presentations.readonly"], description: "Generates a thumbnail of the latest version of the specified page in the presentation and returns a URL to the thumbnail image. This request counts as an [expensive read request](https://developers.google.com/workspace/slides/limits) for quota purposes." },
+    ],
+  },
   "googlemeet": {
     provider: "googlemeet",
     apiHost: "meet.googleapis.com",

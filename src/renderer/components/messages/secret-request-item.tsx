@@ -105,16 +105,11 @@ export function SecretRequestItem({
       })()
     : null
 
-  // Build read-only config
+  // Build read-only config — title now carries the primary text; just show the secret name pill.
   const readOnlyConfig = readOnly
     ? {
-        description: reason ? (
-          <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">
-            {formatSecretReason(secretName, reason)}
-          </p>
-        ) : undefined,
         extraContent: (
-          <code className="mt-6 inline-flex h-7 items-center rounded-md bg-muted px-2.5 font-mono text-xs font-medium text-foreground/80">
+          <code className="mt-3 inline-flex h-7 items-center rounded-md bg-muted px-2.5 font-mono text-xs font-medium text-foreground/80">
             {secretName}
           </code>
         ),
@@ -123,9 +118,11 @@ export function SecretRequestItem({
 
   return (
     <RequestItemShell
-      title="Secret Request"
-      icon={<Key />}
+      title={formatSecretReason(secretName, reason ?? '')}
+      subtitle="Your secret will be stored securely and available for future sessions."
       theme="orange"
+      sessionId={sessionId}
+      agentSlug={agentSlug}
       completed={completedConfig}
       readOnly={readOnlyConfig}
       waitingText="Waiting for response"
@@ -134,16 +131,6 @@ export function SecretRequestItem({
       data-status={isCompleted ? status : undefined}
       data-secret-name={!isCompleted && !readOnly ? secretName : undefined}
     >
-      {/* Description */}
-      {reason && (
-        <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">
-          {formatSecretReason(secretName, reason)}
-        </p>
-      )}
-      <p className="mt-2 text-xs text-muted-foreground">
-        Your secret will be stored securely and available for future sessions.
-      </p>
-
       {/* Input */}
       <div className="pt-3">
         <div className="flex items-start gap-2">
@@ -190,7 +177,7 @@ export function SecretRequestItem({
                 onClick={handleFetchForMe}
                 disabled={status === 'submitting'}
                 variant="outline"
-                size="sm"
+                size="xs"
                 className="border-border text-muted-foreground hover:bg-muted hover:text-foreground"
               >
                 <span>Fetch secret for me</span>
@@ -216,7 +203,7 @@ export function SecretRequestItem({
             onClick={handleProvide}
             loading={status === 'submitting'}
             disabled={!value.trim()}
-            size="sm"
+            size="xs"
             className="min-w-24 bg-orange-600 hover:bg-orange-700 text-white"
             data-testid="secret-provide-btn"
           >

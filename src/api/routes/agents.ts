@@ -4,6 +4,8 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
+import { getPolyfillJs } from '../speech-recognition-polyfill'
+import { getLlmPolyfillJs } from '../llm-polyfill'
 import { Authenticated, AgentRead, AgentUser, AgentAdmin } from '../middleware/auth'
 import {
   listAgentsWithStatus,
@@ -15,13 +17,7 @@ import {
   agentExists,
 } from '@shared/lib/services/agent-service'
 import { containerManager } from '@shared/lib/container/container-manager'
-import { EFFORT_LEVELS, type EffortLevel } from '@shared/lib/container/types'
-
-const effortSchema = z.enum(EFFORT_LEVELS).optional()
-
-function parseEffort(raw: unknown): EffortLevel | undefined {
-  return effortSchema.safeParse(raw).data
-}
+import { parseRuntimeOptions } from '@shared/lib/container/runtime-options'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { listChatIntegrations, listChatIntegrationsByAgents } from '@shared/lib/services/chat-integration-service'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
@@ -77,11 +73,18 @@ import {
 import { type ArtifactInfo, listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
 import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
+import {
+  deletePoliciesForAgent,
+  listPoliciesForCaller,
+  replacePoliciesForCaller,
+  replacePoliciesForCallerInputSchema,
+} from '@shared/lib/services/x-agent-policy-service'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import {
   exportAgentTemplate,
   exportAgentFull,
   importAgentFromTemplate,
+  MAX_COMPRESSED_SIZE,
   installAgentFromSkillset,
   updateAgentFromSkillset,
   getAgentTemplateStatus,
@@ -96,6 +99,7 @@ import {
   collectAgentRequiredEnvVars,
 } from '@shared/lib/services/agent-template-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
+import type { SkillsetConfig } from '@shared/lib/types/skillset'
 import { withRetry } from '@shared/lib/utils/retry'
 import { transformMessages, type TransformedMessage, type TransformedItem } from '@shared/lib/utils/message-transform'
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
@@ -105,6 +109,8 @@ import { resolveTargetApp } from '@shared/lib/computer-use/types'
 import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
+import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { cleanupAgentData } from '@shared/lib/services/agent-cleanup-service'
 import * as fs from 'fs'
 import { Readable } from 'stream'
 import pLimit from 'p-limit'
@@ -115,7 +121,7 @@ function getConfiguredSkillsets() {
   return getSettings().skillsets || []
 }
 
-function toSkillsetRef(config: { id: string; url: string; name: string; provider?: 'github' | 'platform'; providerData?: Record<string, unknown> }) {
+function toSkillsetRef(config: Pick<SkillsetConfig, 'id' | 'url' | 'name' | 'provider' | 'providerData'>) {
   const provider = getSkillsetProvider(config.provider)
   return {
     skillsetId: config.id,
@@ -145,15 +151,20 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
   return Promise.all(
     agents.map((agent) => limit(async () => {
       // Only FS operations remain per-agent (parallelized)
-      const [sessionSummary, artifacts] = await Promise.all([
+      const [sessionSummary, artifacts, agentPrefs] = await Promise.all([
         getSessionSummary(agent.slug),
         listArtifactsFromFilesystem(agent.slug),
+        readAgentPreferences(agent.slug),
       ])
 
       const unreadSessionIds = unreadByAgent.get(agent.slug) ?? new Set<string>()
       const pendingTasks = tasksByAgent.get(agent.slug) ?? []
 
-      // Compute session flags from in-memory state (no I/O needed)
+      // Compute session flags from in-memory state (no I/O needed).
+      // `unreadByAgent` is already filtered to user-actionable notification types
+      // (session_complete / session_waiting); session_complete on automated sessions
+      // is suppressed at creation time, so any unread that lands here is one the
+      // user genuinely needs to see.
       let hasActiveSessions = false
       let hasSessionsAwaitingInput = false
       let hasUnreadNotifications = false
@@ -210,6 +221,12 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
         dashboardCount: artifacts.length,
         dashboardNames: artifacts.map((a) => a.name || a.slug),
         dashboardSlugs: artifacts.map((a) => a.slug),
+        dashboards: artifacts.map((a) => ({
+          slug: a.slug,
+          name: a.name || a.slug,
+          ...(a.hasScreenshot ? { hasScreenshot: true } : {}),
+        })),
+        autoDeleteInactiveDays: agentPrefs.autoDeleteInactiveDays,
       }
     }))
   )
@@ -243,7 +260,7 @@ export async function resolveInterruptedSubagents(
 
   if (unresolvedTaskCalls.length === 0) return
 
-  // Scan the subagents directory for available files
+  // Scan the subagents directory for .meta.json files which carry toolUseId
   const sessionsDir = getAgentSessionsDir(agentSlug)
   const subagentsDir = path.join(sessionsDir, sessionId, 'subagents')
   let files: string[]
@@ -253,27 +270,28 @@ export async function resolveInterruptedSubagents(
     return // No subagents directory
   }
 
-  // Get unmatched subagent files sorted by mtime (creation order)
-  const unmatchedFiles: { id: string; mtime: number }[] = []
+  // Build toolUseId → agentId map from .meta.json files (deterministic, no FIFO)
+  const toolUseToAgentId = new Map<string, string>()
   for (const file of files) {
-    if (!file.startsWith('agent-') || !file.endsWith('.jsonl')) continue
-    const id = file.replace('agent-', '').replace('.jsonl', '')
+    if (!file.endsWith('.meta.json')) continue
+    const id = file.replace('agent-', '').replace('.meta.json', '')
     if (resolvedAgentIds.has(id)) continue
     try {
-      const stat = await fs.promises.stat(path.join(subagentsDir, file))
-      unmatchedFiles.push({ id, mtime: stat.mtimeMs })
+      const raw = await fs.promises.readFile(path.join(subagentsDir, file), 'utf8')
+      const meta = JSON.parse(raw) as { toolUseId?: string }
+      if (meta.toolUseId) {
+        toolUseToAgentId.set(meta.toolUseId, id)
+      }
     } catch {
       // skip unreadable files
     }
   }
 
-  unmatchedFiles.sort((a, b) => a.mtime - b.mtime)
-
-  // Match unresolved Task calls to unmatched subagent files in order
-  for (let i = 0; i < unresolvedTaskCalls.length && i < unmatchedFiles.length; i++) {
-    unresolvedTaskCalls[i].subagent = {
-      agentId: unmatchedFiles[i].id,
-      status: 'cancelled',
+  // Match unresolved Task calls by toolUseId (deterministic)
+  for (const tc of unresolvedTaskCalls) {
+    const agentId = toolUseToAgentId.get(tc.id)
+    if (agentId) {
+      tc.subagent = { agentId, status: 'cancelled' }
     }
   }
 }
@@ -376,6 +394,10 @@ async function handleChunkedImport(c: Context, formData: FormData, chunk: File) 
 }
 
 async function processImport(c: Context, zipBuffer: Buffer, formData: FormData) {
+  if (zipBuffer.length > MAX_COMPRESSED_SIZE) {
+    return c.json({ error: `File too large (${(zipBuffer.length / 1024 / 1024).toFixed(1)}MB, max ${MAX_COMPRESSED_SIZE / 1024 / 1024}MB)` }, 413)
+  }
+
   const nameOverride = formData.get('name') as string | null
   const mode = formData.get('mode') as string | null
   const importMode = mode === 'full' ? 'full' : 'template'
@@ -479,6 +501,48 @@ agents.get('/my-roles', async (c) => {
   } catch (error) {
     console.error('Failed to fetch agent roles:', error)
     return c.json({ error: 'Failed to fetch agent roles' }, 500)
+  }
+})
+
+// POST /api/agents/generate-name - Generate an agent name from a prompt using a lightweight LLM
+// Collection-level route: keep this before the /:id/* agent-existence middleware.
+// TODO: Migrate remaining route handlers to use zValidator for consistent request validation
+const generateNameBodySchema = z.object({
+  prompt: z.string().min(1, 'Prompt is required'),
+})
+
+agents.post('/generate-name', zValidator('json', generateNameBodySchema), async (c) => {
+  try {
+    const { prompt } = c.req.valid('json')
+    const truncatedPrompt = prompt.trim().substring(0, 10_000)
+
+    const anthropic = getLlmClient()
+    const response = await withRetry(() =>
+      anthropic.messages.create({
+        model: getSummarizerModel(),
+        max_tokens: 50,
+        messages: [
+          {
+            role: 'user',
+            content: `Generate a short, descriptive agent name (2-4 words max) based on what the user wants the agent to do. The user's description is:
+
+"${truncatedPrompt}"
+
+Respond with ONLY the agent name, nothing else. No quotes, no explanation.`,
+          },
+        ],
+      })
+    )
+
+    const name = extractTextFromLlmResponse(response)?.trim()
+    if (!name) {
+      return c.json({ error: 'Failed to generate name' }, 500)
+    }
+
+    return c.json({ name })
+  } catch (error) {
+    console.error('Failed to generate agent name:', error)
+    return c.json({ error: 'Failed to generate name' }, 500)
   }
 })
 
@@ -607,47 +671,6 @@ agents.post('/', async (c) => {
   }
 })
 
-// POST /api/agents/generate-name - Generate an agent name from a prompt using a lightweight LLM
-// TODO: Migrate remaining route handlers to use zValidator for consistent request validation
-const generateNameBodySchema = z.object({
-  prompt: z.string().min(1, 'Prompt is required'),
-})
-
-agents.post('/generate-name', zValidator('json', generateNameBodySchema), async (c) => {
-  try {
-    const { prompt } = c.req.valid('json')
-    const truncatedPrompt = prompt.trim().substring(0, 10_000)
-
-    const anthropic = getLlmClient()
-    const response = await withRetry(() =>
-      anthropic.messages.create({
-        model: getSummarizerModel(),
-        max_tokens: 50,
-        messages: [
-          {
-            role: 'user',
-            content: `Generate a short, descriptive agent name (2-4 words max) based on what the user wants the agent to do. The user's description is:
-
-"${truncatedPrompt}"
-
-Respond with ONLY the agent name, nothing else. No quotes, no explanation.`,
-          },
-        ],
-      })
-    )
-
-    const name = extractTextFromLlmResponse(response)?.trim()
-    if (!name) {
-      return c.json({ error: 'Failed to generate name' }, 500)
-    }
-
-    return c.json({ name })
-  } catch (error) {
-    console.error('Failed to generate agent name:', error)
-    return c.json({ error: 'Failed to generate name' }, 500)
-  }
-})
-
 // GET /api/agents/:id - Get a single agent
 agents.get('/:id', AgentRead(), async (c) => {
   try {
@@ -658,7 +681,8 @@ agents.get('/:id', AgentRead(), async (c) => {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
-    return c.json(agent)
+    const [enriched] = await enrichAgentsWithSummary([agent])
+    return c.json(enriched)
   } catch (error) {
     console.error('Failed to fetch agent:', error)
     return c.json({ error: 'Failed to fetch agent' }, 500)
@@ -708,16 +732,65 @@ agents.delete('/:id', AgentAdmin(), async (c) => {
       console.error('Failed to revoke proxy token:', error)
     }
 
-    // Clean up ACL entries and message author records
-    await db.delete(agentAcl).where(eq(agentAcl.agentSlug, slug))
-    if (isAuthMode()) {
-      await db.delete(messageAuthor).where(eq(messageAuthor.agentSlug, slug))
-    }
+    // Clean up x-agent invoke policies referencing this agent (caller or target)
+    await deletePoliciesForAgent(slug)
+
+    // Clean up all peripheral data (triggers, integrations, tasks, ACLs, etc.)
+    await cleanupAgentData(slug)
 
     return c.body(null, 204)
   } catch (error) {
     console.error('Failed to delete agent:', error)
     return c.json({ error: 'Failed to delete agent' }, 500)
+  }
+})
+
+// ============================================================
+// Agent Preferences endpoints
+// ============================================================
+
+// GET /api/agents/:id/preferences - Get agent preferences
+agents.get('/:id/preferences', AgentRead(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    if (!(await agentExists(slug))) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+    const prefs = await readAgentPreferences(slug)
+    return c.json(prefs)
+  } catch (error) {
+    console.error('Failed to get agent preferences:', error)
+    return c.json({ error: 'Failed to get agent preferences' }, 500)
+  }
+})
+
+// PUT /api/agents/:id/preferences - Update agent preferences
+agents.put('/:id/preferences', AgentAdmin(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    if (!(await agentExists(slug))) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+
+    const body = await c.req.json()
+
+    if ('autoDeleteInactiveDays' in body) {
+      const val = body.autoDeleteInactiveDays
+      if (val !== null && val !== undefined) {
+        if (typeof val !== 'number' || !Number.isInteger(val) || val <= 0) {
+          return c.json(
+            { error: 'autoDeleteInactiveDays must be a positive integer or null' },
+            400
+          )
+        }
+      }
+    }
+
+    const merged = await updateAgentPreferences(slug, body)
+    return c.json(merged)
+  } catch (error) {
+    console.error('Failed to update agent preferences:', error)
+    return c.json({ error: 'Failed to update agent preferences' }, 500)
   }
 })
 
@@ -1030,6 +1103,13 @@ agents.post('/:id/stop', AgentUser(), async (c) => {
   }
 })
 
+// POST /api/agents/:id/keep-alive - Prevent auto-sleep (e.g. dashboard is open)
+agents.post('/:id/keep-alive', AgentRead(), async (c) => {
+  const slug = c.req.param('id')
+  containerManager.keepAlive(slug)
+  return c.json({ ok: true })
+})
+
 // POST /api/agents/:id/open-directory - Get workspace path, optionally open in system file manager
 const OpenDirectoryBody = z.object({ open: z.boolean().optional() })
 
@@ -1094,13 +1174,13 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
   try {
     const slug = c.req.param('id')
     const body = await c.req.json()
-    const { message, effort } = body
+    const { message } = body
 
     if (!message?.trim()) {
       return c.json({ error: 'Message is required' }, 400)
     }
 
-    const parsedEffort = parseEffort(effort)
+    const runtimeOptions = parseRuntimeOptions(body)
 
     const agent = await getAgent(slug)
     if (!agent) {
@@ -1119,11 +1199,13 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       initialMessageUuid = randomUUID()
     }
 
+    const sessionModel = runtimeOptions.model ?? getEffectiveModels().agentModel
+
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: message.trim(),
       initialMessageUuid,
-      model: getEffectiveModels().agentModel,
+      model: sessionModel,
       browserModel: getEffectiveModels().browserModel,
       maxOutputTokens: agentLimits.maxOutputTokens,
       maxThinkingTokens: agentLimits.maxThinkingTokens,
@@ -1131,7 +1213,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       maxBudgetUsd: agentLimits.maxBudgetUsd,
       customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
       maxBrowserTabs: getSettings().app?.maxBrowserTabs,
-      effort: parsedEffort,
+      effort: runtimeOptions.effort,
     })
     const sessionId = containerSession.id
 
@@ -1147,8 +1229,16 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     }
 
     await registerSession(slug, sessionId, 'New Session')
-    if (parsedEffort) {
-      updateSessionMetadata(slug, sessionId, { effort: parsedEffort }).catch(console.error)
+    // Persist only what the user explicitly chose. The server-side fallback is
+    // applied at session creation but should not masquerade as a user choice in
+    // metadata — otherwise a later change to the global default wouldn't be
+    // reflected when the composer reloads.
+    const initialMetadata: Parameters<typeof updateSessionMetadata>[2] = {}
+    if (runtimeOptions.effort) initialMetadata.effort = runtimeOptions.effort
+    if (runtimeOptions.model) initialMetadata.model = runtimeOptions.model
+    if (isAuthMode()) initialMetadata.createdByUserId = getCurrentUserId(c)
+    if (Object.keys(initialMetadata).length > 0) {
+      updateSessionMetadata(slug, sessionId, initialMetadata).catch(console.error)
     }
     await messagePersister.subscribeToSession(sessionId, client, sessionId, slug)
     // Store slash commands from container's init event (captured during session creation)
@@ -1327,13 +1417,13 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     const agentSlug = c.req.param('id')
     const sessionId = c.req.param('sessionId')
     const body = await c.req.json()
-    const { content, effort } = body
+    const { content } = body
 
     if (!content?.trim()) {
       return c.json({ error: 'Content is required' }, 400)
     }
 
-    const parsedEffort = parseEffort(effort)
+    const runtimeOptions = parseRuntimeOptions(body)
 
     const agent = await getAgent(agentSlug)
     if (!agent) {
@@ -1379,9 +1469,12 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       })
     }
 
-    await client.sendMessage(sessionId, content.trim(), messageUuid, parsedEffort)
-    if (parsedEffort) {
-      updateSessionMetadata(agentSlug, sessionId, { effort: parsedEffort }).catch(console.error)
+    await client.sendMessage(sessionId, content.trim(), messageUuid, runtimeOptions)
+    const updates: Parameters<typeof updateSessionMetadata>[2] = {}
+    if (runtimeOptions.effort) updates.effort = runtimeOptions.effort
+    if (runtimeOptions.model) updates.model = runtimeOptions.model
+    if (Object.keys(updates).length > 0) {
+      updateSessionMetadata(agentSlug, sessionId, updates).catch(console.error)
     }
 
     return c.json({ success: true }, 201)
@@ -1436,6 +1529,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       webhookTriggerId: metadata?.webhookTriggerId,
       webhookTriggerName: metadata?.webhookTriggerName,
       effort: metadata?.effort,
+      model: metadata?.model,
     })
   } catch (error) {
     console.error('Failed to fetch session:', error)
@@ -1611,6 +1705,7 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     if (info.status !== 'running') {
       console.log(`[Agents] Container not running for ${agentSlug}, marking session ${sessionId} as interrupted locally`)
       await messagePersister.markSessionInterrupted(sessionId)
+      reviewManager.denyAllForAgent(agentSlug)
       return c.json({ success: true, note: 'Container not running, session marked inactive' })
     }
 
@@ -1624,6 +1719,7 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     }
 
     await messagePersister.markSessionInterrupted(sessionId)
+    reviewManager.denyAllForAgent(agentSlug)
 
     return c.json({ success: true })
   } catch (error) {
@@ -1631,7 +1727,9 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     // Even on error, try to mark session as interrupted to fix UI state
     try {
       const sessionId = c.req.param('sessionId')
+      const agentSlugFallback = c.req.param('id')
       await messagePersister.markSessionInterrupted(sessionId)
+      reviewManager.denyAllForAgent(agentSlugFallback)
       return c.json({ success: true, note: 'Error during interrupt, but session marked inactive' })
     } catch {
       return c.json({ error: 'Failed to interrupt session' }, 500)
@@ -3888,6 +3986,44 @@ agents.patch('/:id/artifacts/:artifactSlug', AgentAdmin(), async (c) => {
   }
 })
 
+// GET /api/agents/:id/artifacts/:artifactSlug/screenshot.png - Serve the
+// auto-captured dashboard thumbnail directly from the host filesystem. Works
+// regardless of whether the container is running. Must be registered before
+// the catch-all artifact proxy below.
+agents.get('/:id/artifacts/:artifactSlug/screenshot.png', AgentRead(), async (c) => {
+  const agentSlug = c.req.param('id')
+  const artifactSlug = c.req.param('artifactSlug')
+
+  const workspaceDir = getAgentWorkspaceDir(agentSlug)
+  const artifactsDir = path.join(workspaceDir, 'artifacts')
+  const screenshotPath = path.join(artifactsDir, artifactSlug, 'screenshot.png')
+  // Belt-and-suspenders path traversal guard: slug cannot escape artifactsDir.
+  const resolved = path.resolve(screenshotPath)
+  if (!resolved.startsWith(path.resolve(artifactsDir) + path.sep)) {
+    return c.json({ error: 'Invalid artifact slug' }, 400)
+  }
+
+  try {
+    const buf = await fs.promises.readFile(screenshotPath)
+    // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins
+    const body = new Uint8Array(buf)
+    return new Response(body, {
+      status: 200,
+      headers: {
+        'content-type': 'image/png',
+        // Screenshots are overwritten on every restart, so cache briefly.
+        'cache-control': 'public, max-age=60, must-revalidate',
+      },
+    })
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') {
+      return c.json({ error: 'No screenshot available' }, 404)
+    }
+    console.error('Failed to read dashboard screenshot:', error)
+    return c.json({ error: 'Failed to read screenshot' }, 500)
+  }
+})
+
 // GET /api/agents/:id/artifacts/:artifactSlug/view - Standalone dashboard wrapper
 // Serves a self-contained HTML page that handles agent lifecycle (auto-start, wait, then load dashboard)
 agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
@@ -3970,6 +4106,7 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
         const iframe = document.createElement('iframe');
         iframe.src = dashboardUrl;
         iframe.sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups';
+        iframe.allow = 'microphone; camera';
         document.body.appendChild(iframe);
       } catch (err) {
         statusEl.textContent = err.message;
@@ -4037,6 +4174,22 @@ async function proxyArtifactRequest(c: any) {
   }
 
   const response = await client.fetch(containerPath, init)
+
+  const contentType = response.headers.get('content-type') || ''
+  if (contentType.includes('text/html')) {
+    let html = await response.text()
+    const tags = `<script>${getPolyfillJs()}${getLlmPolyfillJs()}</script>`
+    const headMatch = html.match(/<head(\s[^>]*)?>/i)
+    if (headMatch) {
+      const pos = headMatch.index! + headMatch[0].length
+      html = html.slice(0, pos) + tags + html.slice(pos)
+    } else {
+      html = tags + html
+    }
+    const headers = new Headers(response.headers)
+    headers.delete('content-length')
+    return new Response(html, { status: response.status, headers })
+  }
 
   return new Response(response.body, {
     status: response.status,
@@ -4160,6 +4313,7 @@ agents.get('/:id/proxy-reviews', AgentRead(), async (c) => {
 
 // POST /api/agents/:id/proxy-review/:reviewId - Submit a review decision
 agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
+  const slug = c.req.param('id')
   const reviewId = c.req.param('reviewId')
   const body = await c.req.json<{ decision: 'allow' | 'deny' }>()
 
@@ -4167,7 +4321,10 @@ agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
     return c.json({ error: 'Invalid decision. Must be "allow" or "deny".' }, 400)
   }
 
-  const success = reviewManager.submitDecision(reviewId, body.decision)
+  // Pass slug so submitDecision rejects cross-agent attempts. AgentUser()
+  // verifies the URL agent only — without this, a user with role on agent A
+  // could resolve agent B's review by sending B's reviewId to A's URL.
+  const success = reviewManager.submitDecision(reviewId, body.decision, slug)
   if (!success) {
     return c.json({ error: 'Review not found or already resolved' }, 404)
   }
@@ -4183,7 +4340,9 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
     decision: 'allow' | 'deny'
     scope: string
     accountId: string
-    reviewType?: 'mcp' | 'api'
+    reviewType?: 'mcp' | 'api' | 'xagent'
+    // For xagent: { operation: 'list' | 'read' | 'invoke', targetSlug?: string }
+    xAgent?: { operation: 'list' | 'read' | 'invoke'; targetSlug: string | null }
   }>()
 
   if (!body.decision || !['allow', 'deny'].includes(body.decision)) {
@@ -4193,10 +4352,20 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   const policyDecision = body.decision === 'allow' ? 'allow' : 'block'
   const now = new Date()
 
-  if (body.reviewType === 'mcp') {
-    // MCP tool review — save to mcpToolPolicies
-    // accountId is actually the mcpId for MCP reviews
-    try {
+  // Persist the policy FIRST. The review is only resolved after the write commits,
+  // so any concurrent /invoke (or other gated call) that runs after this point
+  // will see the new policy on its eval and not create a duplicate review.
+  // If the write fails, surface the error instead of silently degrading to "Allow Once" —
+  // the user thinks they enabled "always" and would otherwise have no idea it didn't stick.
+  try {
+    if (body.reviewType === 'xagent' && body.xAgent) {
+      // X-Agent review — save to xAgentPolicies. The "caller" is the agent the
+      // review is attached to (slug), not the target.
+      const { setPolicy: setAgentPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+      await setAgentPolicy(slug, body.xAgent.operation, body.xAgent.targetSlug, policyDecision)
+    } else if (body.reviewType === 'mcp') {
+      // MCP tool review — save to mcpToolPolicies
+      // accountId is actually the mcpId for MCP reviews
       await db.insert(mcpToolPolicies).values({
         id: randomUUID(),
         mcpId: body.accountId,
@@ -4208,25 +4377,21 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
         target: [mcpToolPolicies.mcpId, mcpToolPolicies.toolName],
         set: { decision: policyDecision, updatedAt: now },
       })
-    } catch (err) {
-      console.warn('Failed to save MCP tool policy:', err)
-    }
-  } else {
-    // API scope review — save to apiScopePolicies
-    // Verify account ownership before saving policy
-    if (body.accountId && isAuthMode()) {
-      const userId = getCurrentUserId(c)
-      const [acct] = await db
-        .select({ userId: connectedAccounts.userId })
-        .from(connectedAccounts)
-        .where(eq(connectedAccounts.id, body.accountId))
-        .limit(1)
-      if (acct && acct.userId !== userId) {
-        return c.json({ error: 'Forbidden: you do not own this account' }, 403)
+    } else {
+      // API scope review — save to apiScopePolicies
+      // Verify account ownership before saving policy
+      if (body.accountId && isAuthMode()) {
+        const userId = getCurrentUserId(c)
+        const [acct] = await db
+          .select({ userId: connectedAccounts.userId })
+          .from(connectedAccounts)
+          .where(eq(connectedAccounts.id, body.accountId))
+          .limit(1)
+        if (acct && acct.userId !== userId) {
+          return c.json({ error: 'Forbidden: you do not own this account' }, 403)
+        }
       }
-    }
 
-    try {
       await db.insert(apiScopePolicies).values({
         id: randomUUID(),
         accountId: body.accountId,
@@ -4238,17 +4403,99 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
         target: [apiScopePolicies.accountId, apiScopePolicies.scope],
         set: { decision: policyDecision, updatedAt: now },
       })
-    } catch (err) {
-      console.warn('Failed to save scope policy (account may not exist):', err)
     }
+  } catch (err) {
+    console.error('Failed to save policy on always-allow:', err)
+    return c.json(
+      { error: `Failed to save policy: ${err instanceof Error ? err.message : 'unknown error'}` },
+      500,
+    )
   }
 
-  // Submit decision for this review
-  reviewManager.submitDecision(reviewId, body.decision)
-
-  // Resolve all pending reviews for this agent that match the scope
+  // Submit decision for this review (and any others matching the same scope).
+  // Pass slug so submitDecision rejects cross-agent attempts (see B1).
+  reviewManager.submitDecision(reviewId, body.decision, slug)
   reviewManager.resolveMatchingPending(slug, body.scope, body.decision)
 
+  // For x-agent "always allow for all agents" (targetSlug=null on read/invoke),
+  // the per-scope match above only resolves prompts for the same exact target.
+  // Sweep every pending review of the same operation so sibling prompts
+  // (e.g. an in-flight read:bob when the user just allowed read:* globally)
+  // also resolve immediately instead of timing out.
+  if (body.reviewType === 'xagent' && body.xAgent && body.xAgent.targetSlug === null) {
+    reviewManager.resolveMatchingXAgentByOperation(slug, body.xAgent.operation, body.decision)
+  }
+
+  return c.json({ ok: true })
+})
+
+// =============================================================================
+// X-Agent invoke policies (per-agent remembered cross-agent permissions)
+// =============================================================================
+
+// GET /api/agents/:id/x-agent-policies - List policies where this agent is the caller
+agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
+  const slug = c.req.param('id')
+  const rows = listPoliciesForCaller(slug)
+  // Enrich with target agent display name (best-effort; null target means "list" op)
+  const targetSlugs = Array.from(
+    new Set(rows.map((r) => r.targetAgentSlug).filter((s): s is string => s !== null)),
+  )
+
+  // In auth mode, hide policies whose target the viewer can't see — otherwise
+  // the policy editor leaks workspace topology (target slugs the user has no ACL on).
+  // null targets ('list' policy) are always visible.
+  let visibleTargets: Set<string> | null = null
+  if (isAuthMode()) {
+    const userId = getCurrentUserId(c)
+    const aclRows = await db
+      .select({ agentSlug: agentAcl.agentSlug })
+      .from(agentAcl)
+      .where(eq(agentAcl.userId, userId))
+    visibleTargets = new Set(aclRows.map((r) => r.agentSlug))
+  }
+
+  const nameMap = new Map<string, string>()
+  for (const targetSlug of targetSlugs) {
+    if (visibleTargets && !visibleTargets.has(targetSlug)) continue
+    const target = await getAgent(targetSlug)
+    if (target) nameMap.set(targetSlug, target.frontmatter.name)
+  }
+  return c.json({
+    policies: rows
+      .filter((r) => r.targetAgentSlug === null || !visibleTargets || visibleTargets.has(r.targetAgentSlug))
+      .map((r) => ({
+        id: r.id,
+        operation: r.operation,
+        targetAgentSlug: r.targetAgentSlug,
+        targetAgentName: r.targetAgentSlug ? nameMap.get(r.targetAgentSlug) ?? null : null,
+        decision: r.decision,
+        updatedAt: r.updatedAt,
+      })),
+  })
+})
+
+// PUT /api/agents/:id/x-agent-policies - Replace all policies for this caller (batch)
+agents.put('/:id/x-agent-policies', AgentAdmin(), async (c) => {
+  const slug = c.req.param('id')
+  // AgentAdmin checks role but not existence (and is a no-op in non-auth mode);
+  // assert here so a typo'd slug doesn't write phantom rows that nothing references.
+  const callerAgent = await getAgent(slug)
+  if (!callerAgent) {
+    return c.json({ error: 'Agent not found' }, 404)
+  }
+  const body = await c.req.json()
+  const parsed = replacePoliciesForCallerInputSchema.safeParse(body)
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid policies payload', details: parsed.error.format() }, 400)
+  }
+  // Don't let an agent set a policy targeting itself — meaningless and would create a confusing row
+  for (const p of parsed.data.policies) {
+    if (p.targetSlug === slug) {
+      return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
+    }
+  }
+  replacePoliciesForCaller(slug, parsed.data.policies)
   return c.json({ ok: true })
 })
 

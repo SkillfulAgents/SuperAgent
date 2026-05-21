@@ -9,6 +9,7 @@ import { containerManager } from '@shared/lib/container/container-manager'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
+import { runWithOptionalUser } from '@shared/lib/platform-attribution'
 import {
   getDueTasks,
   markTaskExecuted,
@@ -16,6 +17,7 @@ import {
   updateNextExecution,
 } from '@shared/lib/services/scheduled-task-service'
 import type { ScheduledTask } from '@shared/lib/services/scheduled-task-service'
+import type { EffortLevel } from '@shared/lib/container/types'
 import { getNextCronTime } from '@shared/lib/services/schedule-parser'
 import {
   registerSession,
@@ -138,6 +140,11 @@ class TaskScheduler {
    * Execute a single scheduled task.
    */
   private async executeTask(task: ScheduledTask): Promise<void> {
+    // Attribute to task creator (baked into ANTHROPIC token on cold start).
+    return runWithOptionalUser(task.createdByUserId, () => this.executeTaskInner(task))
+  }
+
+  private async executeTaskInner(task: ScheduledTask): Promise<void> {
     console.log(
       `[TaskScheduler] Executing task ${task.id} for agent ${task.agentSlug}`
     )
@@ -158,12 +165,15 @@ class TaskScheduler {
     const availableEnvVars = await getSecretEnvVars(task.agentSlug)
 
     // Create a new session with the scheduled prompt
+    const models = getEffectiveModels()
     const containerSession = await client.createSession({
       availableEnvVars:
         availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: task.prompt,
-      model: getEffectiveModels().agentModel,
-      browserModel: getEffectiveModels().browserModel,
+      model: task.model || models.agentModel,
+      browserModel: models.browserModel,
+      metadata: { isAutomated: true },
+      ...(task.effort ? { effort: task.effort as EffortLevel } : {}),
     })
 
     const sessionId = containerSession.id
@@ -196,6 +206,7 @@ class TaskScheduler {
     notificationManager.triggerScheduledSessionStarted(
       sessionId,
       task.agentSlug,
+      task.id,
       task.name || undefined
     ).catch((err) => {
       console.error('[TaskScheduler] Failed to trigger scheduled notification:', err)

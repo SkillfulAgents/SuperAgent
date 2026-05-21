@@ -12,6 +12,7 @@ import { requestSecretRenderer } from './request-secret'
 import { requestConnectedAccountRenderer } from './request-connected-account'
 import { scheduleTaskRenderer } from './schedule-task'
 import { deliverFileRenderer } from './deliver-file'
+import { deliverSessionRenderer } from './deliver-session'
 import { requestFileRenderer } from './request-file'
 import { requestRemoteMcpRenderer } from './request-remote-mcp'
 import { requestScriptRunRenderer } from './request-script-run'
@@ -36,6 +37,13 @@ import {
   listDashboardsRenderer,
   getDashboardLogsRenderer,
 } from './dashboard-tools'
+import {
+  listAgentsRenderer,
+  createAgentRenderer,
+  invokeAgentRenderer,
+  getAgentSessionsRenderer,
+  getAgentSessionTranscriptRenderer,
+} from './x-agent-tools'
 
 export type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps, CollapsedContentProps } from './types'
 
@@ -71,6 +79,7 @@ const toolRenderers: Record<string, ToolRenderer> = {
   'mcp__user-input__request_connected_account': requestConnectedAccountRenderer,
   'mcp__user-input__schedule_task': scheduleTaskRenderer,
   'mcp__user-input__deliver_file': deliverFileRenderer,
+  'mcp__user-input__deliver_session': deliverSessionRenderer,
   'mcp__user-input__request_file': requestFileRenderer,
   'mcp__user-input__request_remote_mcp': requestRemoteMcpRenderer,
   'mcp__user-input__request_script_run': requestScriptRunRenderer,
@@ -94,6 +103,13 @@ const toolRenderers: Record<string, ToolRenderer> = {
   'mcp__dashboards__start_dashboard': startDashboardRenderer,
   'mcp__dashboards__list_dashboards': listDashboardsRenderer,
   'mcp__dashboards__get_dashboard_logs': getDashboardLogsRenderer,
+
+  // MCP tools - x-agent (cross-agent work)
+  'mcp__agents__list_agents': listAgentsRenderer,
+  'mcp__agents__create_agent': createAgentRenderer,
+  'mcp__agents__invoke_agent': invokeAgentRenderer,
+  'mcp__agents__get_agent_sessions': getAgentSessionsRenderer,
+  'mcp__agents__get_agent_session_transcript': getAgentSessionTranscriptRenderer,
 }
 
 /**

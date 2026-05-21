@@ -6,6 +6,7 @@ import {
   SelectValue,
 } from '@renderer/components/ui/select'
 import { Label } from '@renderer/components/ui/label'
+import { Switch } from '@renderer/components/ui/switch'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { AlertTriangle } from 'lucide-react'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
@@ -118,7 +119,7 @@ export function LlmTab() {
       <div className="pt-4 border-t space-y-4">
         <h3 className="text-sm font-medium">Models</h3>
         <div className="space-y-2">
-          <Label htmlFor="agent-model">Agent Model</Label>
+          <Label htmlFor="agent-model">Default Model</Label>
           <Select
             value={settings?.models?.agentModel ?? modelOptions[0]?.value ?? ''}
             onValueChange={(value) => {
@@ -138,7 +139,7 @@ export function LlmTab() {
             </SelectContent>
           </Select>
           <p className="text-xs text-muted-foreground">
-            Model used for agent sessions
+            Used for new sessions when no per-message model is selected.
           </p>
         </div>
         <div className="space-y-2">
@@ -164,6 +165,27 @@ export function LlmTab() {
           <p className="text-xs text-muted-foreground">
             Model used for session name generation and API key validation
           </p>
+        </div>
+      </div>
+
+      {/* Advanced Section */}
+      <div className="pt-4 border-t space-y-4">
+        <h3 className="text-sm font-medium">Advanced</h3>
+        <div className="flex items-center justify-between">
+          <div className="space-y-0.5 pr-4">
+            <Label htmlFor="enable-tool-search">Tool search</Label>
+            <p className="text-xs text-muted-foreground">
+              Load tool definitions on demand via a meta-tool instead of upfront. Saves ~15-20K context tokens per turn for SuperAgent&apos;s ~60+ tool surface. Turn off only when debugging tool-loading behavior. Requires Sonnet 4+ or Opus 4+; ignored on Haiku.
+            </p>
+          </div>
+          <Switch
+            id="enable-tool-search"
+            checked={settings?.enableToolSearch !== false}
+            onCheckedChange={(checked: boolean) => {
+              updateSettings.mutate({ enableToolSearch: checked })
+            }}
+            disabled={isLoading}
+          />
         </div>
       </div>
     </div>

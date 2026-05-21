@@ -13,6 +13,7 @@ import * as dns from 'dns';
 import { inputManager } from './input-manager';
 import { dashboardManager } from './dashboard-manager';
 import { tabManager } from './tab-manager';
+import { runBrowserUpload } from './browser-upload';
 
 import { getEditingCommands } from './cdp-editing-commands';
 
@@ -141,7 +142,10 @@ app.post('/sessions/:id/messages', async (c) => {
     const body = await c.req.json<SendMessageRequest>();
     const content = typeof body.content === 'string' ? body.content : JSON.stringify(body.content);
 
-    await sessionManager.sendMessage(sessionId, content, body.uuid, body.effort);
+    await sessionManager.sendMessage(sessionId, content, body.uuid, {
+      effort: body.effort,
+      model: body.model,
+    });
 
     return c.json({ success: true }, 201);
   } catch (error: any) {
@@ -534,18 +538,26 @@ app.all('/artifacts/:slug', async (c) => {
 // Browser automation endpoints (agent-browser tool proxy)
 // ============================================================
 
-interface BrowserState {
-  active: boolean;
-  sessionId: string | null;
-  cdpUrl: string | null;
-}
+import {
+  type BrowserState,
+  getBrowserState as _getBrowserState,
+  setBrowserState as _setBrowserState,
+  validateBrowserSession,
+  releaseBrowserLock,
+} from './browser-state';
 
-let browserState: BrowserState = { active: false, sessionId: null, cdpUrl: null };
+// Proxy object so existing code can read `browserState.active` etc. without changes.
+// Writes must go through _setBrowserState() to keep the canonical module state in sync.
+const browserState: BrowserState = new Proxy({} as BrowserState, {
+  get(_target, prop) {
+    return (_getBrowserState() as any)[prop];
+  },
+});
 
 
 const execFileAsync = promisify(execFile);
 
-import { buildRunCommandArgs } from './browser-command-args';
+import { buildRunCommandArgs, splitCommandArgs } from './browser-command-args';
 
 // Ensure Chrome download preferences are set in the browser profile directory.
 // Merges with existing preferences to avoid overwriting other settings.
@@ -792,17 +804,11 @@ function broadcastBrowserEvent(active: boolean): void {
   });
 }
 
-// Validate that the requesting session owns the browser (or browser is not active)
-function validateBrowserSession(requestSessionId: string): string | null {
-  if (browserState.active && browserState.sessionId !== requestSessionId) {
-    return `Browser is owned by session ${browserState.sessionId}`;
-  }
-  return null;
-}
+// validateBrowserSession is imported from ./browser-state
 
 // GET /browser/status - Check if browser is running
 app.get('/browser/status', (c) => {
-  return c.json(browserState);
+  return c.json(_getBrowserState());
 });
 
 
@@ -868,7 +874,7 @@ app.post('/browser/open', async (c) => {
       }
     }
 
-    browserState = { active: true, sessionId: body.sessionId, cdpUrl: cdpUrl || null };
+    _setBrowserState({ active: true, sessionId: body.sessionId, cdpUrl: cdpUrl || null });
     tabManager.resetTabCount();
     broadcastBrowserEvent(true);
 
@@ -901,7 +907,7 @@ app.post('/browser/close', async (c) => {
 
     cleanupCdpScreencast();
     broadcastBrowserEvent(false);
-    browserState = { active: false, sessionId: null, cdpUrl: null };
+    _setBrowserState({ active: false, sessionId: null, cdpUrl: null });
     tabManager.resetTabCount();
 
     return c.json({ success: true });
@@ -911,13 +917,36 @@ app.post('/browser/close', async (c) => {
   }
 });
 
+// POST /browser/release - Release browser lock without closing the browser.
+// Used by automated sessions (cron/webhook) on exit so the next session can acquire
+// the browser without destroying the Chrome process or cookies.
+app.post('/browser/release', async (c) => {
+  try {
+    const body = await c.req.json<{ sessionId: string }>();
+
+    if (!body.sessionId) {
+      return c.json({ error: 'sessionId is required' }, 400);
+    }
+
+    const released = releaseBrowserLock(body.sessionId);
+    if (released) {
+      broadcastBrowserEvent(false);
+      console.log(`[Browser] Lock released by session ${body.sessionId} (browser still running)`);
+    }
+    return c.json({ success: true, released });
+  } catch (error: any) {
+    console.error('[Browser] Error releasing browser lock:', error);
+    return c.json({ error: error.message || 'Failed to release browser lock' }, 500);
+  }
+});
+
 // POST /browser/notify-closed - Host browser was closed externally, clean up state
 app.post('/browser/notify-closed', (c) => {
   if (browserState.active) {
     cleanupAgentBrowserDaemon();
     cleanupCdpScreencast();
     broadcastBrowserEvent(false);
-    browserState = { active: false, sessionId: null, cdpUrl: null };
+    _setBrowserState({ active: false, sessionId: null, cdpUrl: null });
     tabManager.resetTabCount();
     console.log('[Browser] Browser closed externally, state cleaned up');
   }
@@ -1244,6 +1273,30 @@ app.post('/browser/hover', async (c) => {
   }
 });
 
+// POST /browser/upload - Upload a local file into an <input type="file">
+app.post('/browser/upload', async (c) => {
+  try {
+    const rawBody = await c.req.json().catch(() => ({}));
+    const result = await runBrowserUpload(rawBody, {
+      validateSession: validateBrowserSession,
+      isBrowserActive: () => browserState.active,
+      getConnectionUrl: () => browserState.cdpUrl || getCdpHttpEndpoint(),
+      getActiveTargetUrl: async () => (await findActivePageTarget())?.url ?? null,
+      urlsMatch: (left, right) => tabManager.urlsMatch(left, right),
+    });
+
+    if (!result.success) {
+      return c.json(result.body, result.status);
+    }
+
+    notifyBrowserAction();
+    return c.json(result.body);
+  } catch (error: any) {
+    console.error('[Browser] Error uploading file:', error);
+    return c.json({ error: error.message || 'Failed to upload file' }, 500);
+  }
+});
+
 // POST /browser/run - Generic catch-all for any agent-browser command
 app.post('/browser/run', async (c) => {
   try {
@@ -1260,6 +1313,16 @@ app.post('/browser/run', async (c) => {
 
     if (!browserState.active) {
       return c.json({ error: 'Browser is not active' }, 400);
+    }
+
+    // The agent-browser CLI `upload` command does not work reliably in this
+    // environment — refuse it and steer the model to `browser_upload`, which
+    // routes through the buffer-based path with size verification.
+    if (splitCommandArgs(body.command)[0] === 'upload') {
+      return c.json({
+        error: 'Use the `browser_upload(filePath, selector)` MCP tool for file uploads instead of `browser_run("upload …")`.',
+        success: false,
+      }, 400);
     }
 
     const commandArgs = buildRunCommandArgs(body.command);
@@ -1401,7 +1464,10 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
       const payload = JSON.parse(data.toString());
       const content = typeof payload.content === 'string' ? payload.content : JSON.stringify(payload.content);
 
-      await sessionManager.sendMessage(sessionId, content, payload.uuid, payload.effort);
+      await sessionManager.sendMessage(sessionId, content, payload.uuid, {
+        effort: payload.effort,
+        model: payload.model,
+      });
     } catch (error: any) {
       console.error('Error handling WebSocket message:', error);
       ws.send(JSON.stringify({
@@ -2090,7 +2156,7 @@ async function gracefulShutdown(signal: string) {
     try {
       await execBrowser(['close'], browserState.cdpUrl || undefined);
       await stopHostBrowserIfNeeded();
-      browserState = { active: false, sessionId: null, cdpUrl: null };
+      _setBrowserState({ active: false, sessionId: null, cdpUrl: null });
     } catch (error) {
       console.error('Error closing browser:', error);
     }

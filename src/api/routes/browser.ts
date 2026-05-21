@@ -24,6 +24,9 @@ browser.post('/launch-host-browser', IsAgent(), async (c) => {
     if (settings.app?.chromeProfileId) {
       options.chromeProfileId = settings.app.chromeProfileId
     }
+    if (settings.app?.chromeHeadless) {
+      options.chromeHeadless = 'true'
+    }
 
     const connectionInfo = await provider.launch(agentId, options, agentId)
     return c.json(connectionInfo)

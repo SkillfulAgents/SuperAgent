@@ -310,6 +310,55 @@ describe('ReviewManager', () => {
     }
   })
 
+  // Security: a user with `user` role on agent A must not be able to resolve
+  // agent B's review by guessing/leaking B's reviewId. submitDecision must
+  // refuse to mutate the review when the caller's expected agent doesn't
+  // match the review's stored agent.
+  it('SECURITY: submitDecision rejects when expectedAgentSlug does not match review agent', async () => {
+    const promise = manager.requestReview({
+      agentSlug: 'agent-victim',
+      accountId: 'acc-1',
+      toolkit: 'gmail',
+      method: 'GET',
+      targetPath: '/path',
+      matchedScopes: ['gmail.readonly'],
+      scopeDescriptions: {},
+    })
+
+    const pending = manager.getPendingReviewsForAgent('agent-victim')
+    const reviewId = pending[0].id
+
+    // Attacker has role only on agent-attacker, calls
+    // POST /api/agents/agent-attacker/proxy-review/<victim's reviewId>
+    const success = manager.submitDecision(reviewId, 'allow', 'agent-attacker')
+    expect(success).toBe(false)
+
+    // Victim's review is still pending — not resolved
+    expect(manager.getPendingReviewsForAgent('agent-victim').length).toBe(1)
+
+    // Legit owner still resolves cleanly
+    expect(manager.submitDecision(reviewId, 'deny', 'agent-victim')).toBe(true)
+    expect(await promise).toBe('deny')
+  })
+
+  // Security: same shape for the omitted-arg call path. We keep the optional
+  // arg backwards-compatible for internal callers (resolveMatchingPending
+  // already filters by agentSlug), but any HTTP-facing caller must pass it.
+  it('SECURITY: submitDecision still works when expectedAgentSlug is omitted (internal callers)', async () => {
+    const promise = manager.requestReview({
+      agentSlug: 'agent-1',
+      accountId: 'acc-1',
+      toolkit: 'gmail',
+      method: 'GET',
+      targetPath: '/path',
+      matchedScopes: [],
+      scopeDescriptions: {},
+    })
+    const reviewId = manager.getPendingReviewsForAgent('agent-1')[0].id
+    expect(manager.submitDecision(reviewId, 'allow')).toBe(true)
+    expect(await promise).toBe('allow')
+  })
+
   it('double submitDecision for same id: second returns false', async () => {
     const promise = manager.requestReview({
       agentSlug: 'agent-1',
@@ -445,6 +494,34 @@ describe('ReviewManager', () => {
       const result = generateReviewDisplayText('gmail', 'GET', '/api/endpoint', {})
       expect(result).toBe('Allow GET request to Gmail?')
     })
+
+    it('prefers endpoint description over scope description', () => {
+      // The headline must describe the immediate action, not the broad scope
+      // grant — otherwise approving a profile read would surface "Read,
+      // compose, send, and permanently delete all your email" as the headline.
+      const result = generateReviewDisplayText(
+        'gmail',
+        'GET',
+        '/gmail/v1/users/me/profile',
+        {
+          'gmail.readonly': 'View your email messages and settings',
+          'gmail.full': 'Read, compose, send, and permanently delete all your email',
+        },
+        "Gets the current user's Gmail profile.",
+      )
+      expect(result).toBe("Allow gets the current user's Gmail profile.?")
+    })
+
+    it('falls back to scope description when endpointDescription is undefined', () => {
+      const result = generateReviewDisplayText(
+        'gmail',
+        'GET',
+        '/path',
+        { 'gmail.readonly': 'Read your email' },
+        undefined,
+      )
+      expect(result).toBe('Allow read your email?')
+    })
   })
 
   it('abort after submitDecision is a no-op (review already resolved)', async () => {
@@ -470,5 +547,83 @@ describe('ReviewManager', () => {
     controller.abort()
     expect(manager.getPendingReviewsForAgent('agent-1').length).toBe(0)
     expect(mockBroadcastReview).not.toHaveBeenCalled()
+  })
+
+  describe('requestXAgentReview', () => {
+    it('broadcasts xAgent payload + scope=invoke:target for invoke ops', async () => {
+      const promise = manager.requestXAgentReview('caller', 'target', 'Target Agent', 'invoke', 'hello there')
+
+      expect(mockBroadcastReview).toHaveBeenCalledWith(
+        'caller',
+        expect.objectContaining({
+          type: 'proxy_review_request',
+          toolkit: 'agents',
+          method: 'invoke',
+          targetPath: 'agents:invoke:target',
+          matchedScopes: ['invoke:target'],
+          xAgent: {
+            targetAgentSlug: 'target',
+            targetAgentName: 'Target Agent',
+            operation: 'invoke',
+            preview: 'hello there',
+          },
+        }),
+      )
+
+      const pending = manager.getPendingReviewsForAgent('caller')
+      expect(pending).toHaveLength(1)
+      expect(pending[0].xAgent?.operation).toBe('invoke')
+      expect(pending[0].accountId).toBe('target')
+
+      manager.submitDecision(pending[0].id, 'allow')
+      const result = await promise
+      expect(result).toBe('allow')
+    })
+
+    it('uses scope=list for list operations (no per-target row)', () => {
+      // Swallow rejection — afterEach calls rejectAll which rejects unresolved reviews
+      manager.requestXAgentReview('caller', '', 'all agents', 'list').catch(() => {})
+      expect(mockBroadcastReview).toHaveBeenCalledWith(
+        'caller',
+        expect.objectContaining({
+          method: 'list',
+          matchedScopes: ['list'],
+          xAgent: expect.objectContaining({ operation: 'list' }),
+        }),
+      )
+    })
+
+    it('uses scope=create for create operations', () => {
+      manager.requestXAgentReview('caller', '', 'New Helper', 'create', 'New Helper').catch(() => {})
+      expect(mockBroadcastReview).toHaveBeenCalledWith(
+        'caller',
+        expect.objectContaining({
+          method: 'create',
+          matchedScopes: ['create'],
+          xAgent: expect.objectContaining({ operation: 'create', preview: 'New Helper' }),
+        }),
+      )
+    })
+
+    it('deny resolves with "deny"', async () => {
+      const promise = manager.requestXAgentReview('caller', 'target', 'Target', 'read')
+      const pending = manager.getPendingReviewsForAgent('caller')
+      manager.submitDecision(pending[0].id, 'deny')
+      expect(await promise).toBe('deny')
+    })
+
+    it('non-x-agent reviews do NOT carry xAgent in the broadcast', () => {
+      manager.requestReview({
+        agentSlug: 'agent-1',
+        accountId: 'acc-1',
+        toolkit: 'gmail',
+        method: 'GET',
+        targetPath: '/v1/messages',
+        matchedScopes: ['readonly'],
+        scopeDescriptions: {},
+      }).catch(() => {})
+      const call = mockBroadcastReview.mock.calls[0]
+      expect(call[1]).not.toHaveProperty('xAgent')
+    })
   })
 })

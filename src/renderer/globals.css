@@ -29,7 +29,7 @@
     --chart-3: 197 37% 24%;
     --chart-4: 43 74% 66%;
     --chart-5: 27 87% 67%;
-    --sidebar-background: 0 0% 98%;
+    --sidebar-background: 0 0% 95%;
     --sidebar-foreground: 240 5.3% 26.1%;
     --sidebar-primary: 240 5.9% 10%;
     --sidebar-primary-foreground: 0 0% 98%;
@@ -40,37 +40,37 @@
   }
 
   .dark {
-    --background: 0 0% 3.9%;
+    --background: 0 0% 10%;
     --foreground: 0 0% 98%;
-    --card: 0 0% 3.9%;
+    --card: 0 0% 13%;
     --card-foreground: 0 0% 98%;
-    --popover: 0 0% 3.9%;
+    --popover: 0 0% 15%;
     --popover-foreground: 0 0% 98%;
     --primary: 0 0% 98%;
     --primary-foreground: 0 0% 9%;
-    --secondary: 0 0% 14.9%;
+    --secondary: 0 0% 19%;
     --secondary-foreground: 0 0% 98%;
-    --muted: 0 0% 14.9%;
+    --muted: 0 0% 19%;
     --muted-foreground: 0 0% 63.9%;
-    --accent: 0 0% 14.9%;
+    --accent: 0 0% 19%;
     --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 30.6%;
+    --destructive: 0 75% 55%;
     --destructive-foreground: 0 0% 98%;
-    --border: 0 0% 14.9%;
-    --input: 0 0% 14.9%;
+    --border: 0 0% 19%;
+    --input: 0 0% 19%;
     --ring: 0 0% 83.1%;
     --chart-1: 220 70% 50%;
     --chart-2: 160 60% 45%;
     --chart-3: 30 80% 55%;
     --chart-4: 280 65% 60%;
     --chart-5: 340 75% 55%;
-    --sidebar-background: 240 5.9% 10%;
+    --sidebar-background: 0 0% 13%;
     --sidebar-foreground: 240 4.8% 95.9%;
     --sidebar-primary: 224.3 76.3% 48%;
     --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent: 0 0% 19%;
     --sidebar-accent-foreground: 240 4.8% 95.9%;
-    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-border: 0 0% 19%;
     --sidebar-ring: 217.2 91.2% 59.8%;
   }
 }
@@ -132,6 +132,22 @@
   background: transparent !important;
 }
 
+/* Inset sidebar variant adds bg-sidebar to the SidebarProvider wrapper, which would
+   mask the vibrancy layer — force it transparent so blur shows through the gutters. */
+.electron-vibrancy .group\/sidebar-wrapper {
+  background: transparent !important;
+}
+
+/* Windows acrylic alone is too low-contrast against the app's palette, so lay a light
+   tint over the entire vibrancy surface (rail + inset gutters). The opaque inset panel
+   covers the tint over the main content area, so only the translucent regions see it. */
+.electron-vibrancy-win body {
+  background: rgba(255, 255, 255, 0.4) !important;
+}
+.electron-vibrancy-win.dark body {
+  background: rgba(0, 0, 0, 0.4) !important;
+}
+
 /* Semi-transparent hover/active states so vibrancy remains visible */
 .electron-vibrancy [data-sidebar="sidebar"] [data-sidebar="menu-button"]:hover,
 .electron-vibrancy [data-sidebar="sidebar"] [data-sidebar="menu-button"]:active,
@@ -151,18 +167,6 @@
 .electron-vibrancy.dark [data-sidebar="sidebar"] [data-sidebar="menu-sub-button"][data-active="true"],
 .electron-vibrancy.dark [data-sidebar="sidebar"] [data-sidebar="group-action"]:hover {
   background: rgba(255, 255, 255, 0.1) !important;
-}
-
-/* Windows acrylic: tinted sidebar background for consistent contrast */
-.electron-vibrancy-win [data-sidebar="sidebar"] {
-  background: rgba(255, 255, 255, 0.4) !important;
-}
-.electron-vibrancy-win.dark [data-sidebar="sidebar"] {
-  background: rgba(0, 0, 0, 0.4) !important;
-}
-/* Windows reduces acrylic to opaque tint when fullscreen/maximized, so remove our extra tint */
-.electron-win-fullscreen [data-sidebar="sidebar"] {
-  background: transparent !important;
 }
 
 /* Hide all sidebar borders with vibrancy - grey lines on translucent look bad */
@@ -192,10 +196,11 @@
   -webkit-app-region: no-drag;
 }
 
-/* Windows: pad right side of main content headers to avoid overlapping with titleBarOverlay controls */
+/* Windows: pad right side of main content headers to avoid overlapping with the custom
+   window controls (144px wide at right-2, so 152px total reserved). */
 .electron-vibrancy-win main > div > header,
 .electron-vibrancy-win main > header {
-  padding-right: 140px;
+  padding-right: 152px;
 }
 
 /* Delivered file pill hover animation */
@@ -327,3 +332,4 @@
   background-color: rgb(249 115 22); /* orange-500 */
   color: black;
 }
+

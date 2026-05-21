@@ -1,3 +1,6 @@
+# Base image is glibc-based. If this ever changes to a musl distro (e.g. Alpine),
+# the Agent SDK native-binary cleanup step below must flip: delete the `-glibc`
+# variant instead of the `-musl` one, or the Claude subprocess will fail to spawn.
 FROM ubuntu:22.04
 
 # Prevent interactive prompts during installation
@@ -48,11 +51,6 @@ RUN apt-get update && apt-get install -y \
 # Install UV (Universal Virtualenv)
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# Install Claude Code CLI (native binary, pinned version)
-RUN curl -fsSL https://claude.ai/install.sh | bash -s 2.1.111 && \
-    cp /root/.local/bin/claude /usr/local/bin/claude && \
-    chmod 755 /usr/local/bin/claude
-
 # Install TypeScript and ts-node globally
 RUN npm install -g typescript ts-node
 
@@ -73,21 +71,32 @@ RUN apt-get update && apt-get install -y \
     libxshmfence1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install agent-browser (native Rust binary since v0.20.0) and download Chromium.
-# Chrome for Testing only provides x86_64 Linux builds, so on ARM64 (e.g. Apple
-# Silicon dev) we fall back to Playwright's Chromium which supports both arches.
-# agent-browser auto-discovers Playwright's Chromium via find_playwright_chromium().
+# Install agent-browser (native Rust binary since v0.20.0) and Playwright's
+# Chromium. Both the agent-browser runtime (via find_playwright_chromium) and
+# our dashboard screenshot code (via playwright-core) share a single Chromium
+# install under PLAYWRIGHT_BROWSERS_PATH.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 RUN npm install -g agent-browser@0.25.3 && \
-    if agent-browser install 2>/dev/null; then \
-      true; \
-    else \
-      npx playwright install chromium && \
-      chmod -R o+rx /opt/playwright-browsers && \
-      for d in /opt/playwright-browsers/chromium-*/chrome-linux; do \
-        [ -d "$d" ] && [ ! -d "${d}64" ] && ln -s "$d" "${d}64"; \
-      done; \
-    fi
+    npx playwright install chromium && \
+    chmod -R o+rx /opt/playwright-browsers
+
+# Create a stable symlink to whatever chromium binary got installed, so our
+# runtime code can point at a fixed path rather than globbing. Playwright's
+# layout (chrome-linux vs chrome-linux64 vs chrome-headless-shell-linux64) has
+# shifted between versions, so we use find to locate the binary regardless.
+# Prefer headless_shell (smaller); fall back to full chrome. Build fails loudly
+# if neither is present.
+RUN bin=$(find /opt/playwright-browsers -type f -name headless_shell -perm -u+x 2>/dev/null | head -n 1); \
+    if [ -z "$bin" ]; then \
+      bin=$(find /opt/playwright-browsers -type f -name chrome -perm -u+x 2>/dev/null | head -n 1); \
+    fi; \
+    if [ -z "$bin" ]; then \
+      echo "No chromium binary found under /opt/playwright-browsers" >&2; \
+      ls -laR /opt/playwright-browsers >&2; \
+      exit 1; \
+    fi; \
+    ln -sf "$bin" /opt/playwright-browsers/chromium-current; \
+    echo "Linked /opt/playwright-browsers/chromium-current -> $bin"
 
 # Create workspace directory
 RUN mkdir -p /workspace
@@ -96,8 +105,33 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies
+# Install dependencies. The Agent SDK ships per-platform native Claude Code
+# binaries as optional dependencies; npm picks the matching one for this arch
+# (e.g. @anthropic-ai/claude-agent-sdk-linux-arm64/claude).
 RUN npm install
+
+# Drop the musl variant if npm installed it alongside the glibc one. Our base
+# image is glibc-based Ubuntu (see note at top of file), but npm sometimes
+# ignores the package's `libc` field and installs both. The SDK's resolver
+# prefers the musl binary when present, which then fails at runtime with
+# "binary not found" (the kernel can't load it because ld-musl-<arch>.so isn't
+# on the image). If the base image ever switches to musl (Alpine), invert this:
+# delete the non-musl variants instead.
+RUN rm -rf /app/node_modules/@anthropic-ai/claude-agent-sdk-linux-*-musl
+
+# Expose the SDK-bundled claude binary on PATH so shell invocations
+# (`claude -p ...`) inside the container still work. Find-based resolution
+# keeps this portable across platforms — the matching optional dep name
+# varies by os/arch.
+RUN bin=$(find /app/node_modules/@anthropic-ai -maxdepth 2 -type d -name 'claude-agent-sdk-*' 2>/dev/null | head -n 1)/claude; \
+    if [ -x "$bin" ]; then \
+      ln -sf "$bin" /usr/local/bin/claude; \
+      echo "Symlinked /usr/local/bin/claude -> $bin"; \
+    else \
+      echo "No SDK-bundled claude binary found under /app/node_modules/@anthropic-ai/" >&2; \
+      ls -la /app/node_modules/@anthropic-ai/ >&2; \
+      exit 1; \
+    fi
 
 # Copy source code
 COPY tsconfig.json ./
@@ -105,6 +139,13 @@ COPY src ./src
 
 # Build TypeScript
 RUN npm run build
+
+# Functional smoke test: the bash step above confirms a binary exists under
+# /opt/playwright-browsers and is marked executable. This step additionally
+# invokes the runtime resolver (catching drift between the TS CHROMIUM_PATH
+# and the symlink above) and runs `--version` on the resolved binary to
+# catch a non-functional install (corrupt file, missing shared libs, etc.).
+RUN node dist/scripts/assert-chromium-available.js
 
 # Create non-root user for running Claude Code
 RUN useradd -m -s /bin/bash claude && \
@@ -130,13 +171,21 @@ EXPOSE 3000
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOME=/home/claude
+ENV CLAUDE_CODE_ATTRIBUTION_HEADER=0
 ENV AGENT_BROWSER_STREAM_PORT=9223
+# Point agent-browser at the chromium binary installed under PLAYWRIGHT_BROWSERS_PATH.
+# agent-browser's built-in discovery only finds Playwright's chromium at the old
+# chrome-linux64/chrome subpath — newer playwright-core installs to chrome-linux/chrome
+# (and chromium_headless_shell-*/chrome-linux/headless_shell), so its search misses.
+# Rather than fighting the layout with symlinks (brittle across playwright versions),
+# we point agent-browser at the stable chromium-current symlink the Dockerfile sets up.
+ENV AGENT_BROWSER_EXECUTABLE_PATH=/opt/playwright-browsers/chromium-current
 ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-dev-shm-usage,--disable-blink-features=AutomationControlled,--disable-features=AutomationControlled,--disable-infobars,--disable-background-timer-throttling,--disable-popup-blocking,--disable-backgrounding-occluded-windows,--disable-renderer-backgrounding,--disable-component-update"
 ENV AGENT_BROWSER_USER_AGENT="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 ENV AGENT_BROWSER_PROFILE=/workspace/.browser-profile
 ENV DISABLE_AUTOUPDATER=1
-# Disable automatic MCP tool deferral until tested — re-enable with 'auto:10' or 'true'
-ENV ENABLE_TOOL_SEARCH=false
+# Default to on; the host overrides at `docker run` from LLM settings.
+ENV ENABLE_TOOL_SEARCH=true
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

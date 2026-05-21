@@ -108,11 +108,13 @@ vi.mock('@shared/lib/utils/cn', () => ({
   },
 }))
 
-const mockSelectAgent = vi.fn()
-const mockSelectSession = vi.fn()
-const mockSelectDashboard = vi.fn()
+const mockSetAgent = vi.fn()
 vi.mock('@renderer/context/selection-context', () => ({
-  useSelection: () => ({ selectAgent: mockSelectAgent, selectSession: mockSelectSession, selectDashboard: mockSelectDashboard, selectedAgent: null }),
+  useSelection: () => ({ setAgent: mockSetAgent, view: { kind: 'home' }, selectedAgentSlug: null }),
+}))
+
+vi.mock('@renderer/context/search-context', () => ({
+  useSearch: () => ({ open: false, openSearch: vi.fn(), closeSearch: vi.fn() }),
 }))
 
 vi.mock('@renderer/hooks/use-sessions', () => ({
@@ -126,10 +128,6 @@ vi.mock('@renderer/hooks/use-agents', () => ({
 
 vi.mock('@renderer/hooks/use-user-settings', () => ({
   useUserSettings: () => ({ data: null }),
-}))
-
-vi.mock('@renderer/hooks/use-agent-templates', () => ({
-  useDiscoverableAgents: () => ({ data: [] }),
 }))
 
 vi.mock('@renderer/hooks/use-usage', () => ({
@@ -149,13 +147,13 @@ vi.mock('@renderer/components/agents/agent-status', () => ({
   getAgentActivityStatus: () => 'sleeping',
 }))
 
-vi.mock('@renderer/context/dialog-context', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@renderer/context/dialog-context')>()
-  return {
-    ...actual,
-    useDialogs: () => ({ openCreateAgent: vi.fn() }),
-  }
-})
+vi.mock('@renderer/hooks/use-create-untitled-agent', () => ({
+  useCreateUntitledAgent: () => ({
+    createUntitledAgent: vi.fn(),
+    isPending: false,
+  }),
+  UNTITLED_AGENT_NAME: 'Untitled',
+}))
 
 vi.mock('@renderer/components/ui/sidebar', () => ({
   SidebarTrigger: () => <button>sidebar</button>,
@@ -175,6 +173,7 @@ vi.mock('@renderer/hooks/use-fullscreen', () => ({
 vi.mock('@renderer/lib/env', () => ({
   isElectron: () => false,
   getPlatform: () => 'web',
+  getApiBaseUrl: () => '',
 }))
 
 // Import after mocks
@@ -195,6 +194,7 @@ function makeAgent(overrides = {}) {
     nextScheduledTaskAt: null as Date | null,
     dashboardCount: 0,
     dashboardNames: [] as string[],
+    dashboards: [] as Array<{ slug: string; name: string; hasScreenshot?: boolean }>,
     ...overrides,
   }
 }
@@ -266,35 +266,57 @@ describe('HomePage AgentCard', () => {
     expect(screen.queryByText(/task/)).not.toBeInTheDocument()
   })
 
-  it('renders dashboard chips for 1-2 dashboards', () => {
+  it('renders a dashboard card per dashboard alongside the agent card', () => {
     mockAgentsData.mockReturnValue({
-      data: [makeAgent({ dashboardCount: 2, dashboardNames: ['Sales', 'Metrics'] })],
+      data: [makeAgent({
+        dashboardCount: 2,
+        dashboardNames: ['Sales', 'Metrics'],
+        dashboards: [
+          { slug: 'sales', name: 'Sales' },
+          { slug: 'metrics', name: 'Metrics', hasScreenshot: true },
+        ],
+      })],
       isLoading: false,
     })
     renderWithProviders(<HomePage />)
-    expect(screen.getByText('Sales')).toBeInTheDocument()
-    expect(screen.getByText('Metrics')).toBeInTheDocument()
+    const cards = document.querySelectorAll('[class*="h-24"]')
+    expect(cards.length).toBeGreaterThanOrEqual(2)
   })
 
-  it('renders "N dashboards" dropdown trigger for 3+ dashboards', () => {
+  it('renders a screenshot img when hasScreenshot is true', () => {
     mockAgentsData.mockReturnValue({
-      data: [makeAgent({ dashboardCount: 4, dashboardNames: ['A', 'B', 'C', 'D'] })],
+      data: [makeAgent({
+        dashboardCount: 1,
+        dashboards: [{ slug: 'sales', name: 'Sales', hasScreenshot: true }],
+      })],
       isLoading: false,
     })
     renderWithProviders(<HomePage />)
-    expect(screen.getByText('4 dashboards')).toBeInTheDocument()
-    // Popover content should list all names
-    expect(screen.getByText('A')).toBeInTheDocument()
-    expect(screen.getByText('D')).toBeInTheDocument()
+    const img = document.querySelector('img[src*="/artifacts/sales/screenshot.png"]')
+    expect(img).toBeTruthy()
   })
 
-  it('does not render dashboards section when count is 0', () => {
+  it('shows a placeholder icon when a dashboard has no screenshot', () => {
     mockAgentsData.mockReturnValue({
-      data: [makeAgent({ dashboardCount: 0, dashboardNames: [] })],
+      data: [makeAgent({
+        dashboardCount: 1,
+        dashboards: [{ slug: 'sales', name: 'Sales' }],
+      })],
       isLoading: false,
     })
     renderWithProviders(<HomePage />)
-    expect(screen.queryByText(/dashboard/i)).not.toBeInTheDocument()
+    const img = document.querySelector('img[src*="/screenshot.png"]')
+    expect(img).toBeNull()
+  })
+
+  it('renders no dashboard cards when count is 0', () => {
+    mockAgentsData.mockReturnValue({
+      data: [makeAgent({ dashboardCount: 0, dashboards: [] })],
+      isLoading: false,
+    })
+    renderWithProviders(<HomePage />)
+    // Only the agent card should be present — no dashboard screenshot img.
+    expect(document.querySelector('img[src*="/screenshot.png"]')).toBeNull()
   })
 
   it('shows empty state when no agents exist', () => {
@@ -314,6 +336,7 @@ describe('HomePage AgentCard', () => {
         nextScheduledTaskAt: new Date('2026-03-26T13:00:00Z'),
         dashboardCount: 1,
         dashboardNames: ['Overview'],
+        dashboards: [{ slug: 'overview', name: 'Overview' }],
       })],
       isLoading: false,
     })
@@ -321,7 +344,6 @@ describe('HomePage AgentCard', () => {
     expect(screen.getByText('1h ago')).toBeInTheDocument()
     expect(screen.getByText('2 tasks')).toBeInTheDocument()
     expect(screen.getByText(/in 1h/)).toBeInTheDocument()
-    expect(screen.getByText('Overview')).toBeInTheDocument()
   })
 
   it('passes pre-aggregated status to AgentStatus', () => {

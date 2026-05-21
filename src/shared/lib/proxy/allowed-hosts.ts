@@ -8,6 +8,7 @@ export const TOOLKIT_ALLOWED_HOSTS: Record<string, string[]> = {
   googledrive: ['www.googleapis.com'],
   googlesheets: ['sheets.googleapis.com', 'www.googleapis.com'],
   googledocs: ['docs.googleapis.com', 'www.googleapis.com'],
+  googleslides: ['slides.googleapis.com', 'www.googleapis.com'],
   googlemeet: ['meet.googleapis.com', 'www.googleapis.com'],
   googletasks: ['tasks.googleapis.com', 'www.googleapis.com'],
   youtube: ['www.googleapis.com', 'youtube.googleapis.com'],

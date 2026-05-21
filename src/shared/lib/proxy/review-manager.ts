@@ -1,5 +1,7 @@
 import crypto from 'crypto'
 import { broadcastReview } from './review-broadcast'
+import { messagePersister } from '@shared/lib/container/message-persister'
+import { notificationManager } from '@shared/lib/notifications/notification-manager'
 
 const REVIEW_TIMEOUT_MS = 5 * 60 * 1000 // 5 minutes
 
@@ -11,6 +13,21 @@ export interface ReviewDetails {
   targetPath: string
   matchedScopes: string[]
   scopeDescriptions: Record<string, string>
+  /**
+   * Description of the matched API endpoint (what the current call does).
+   * Preferred over scopeDescriptions when generating the prompt headline.
+   */
+  endpointDescription?: string
+  // Optional: x-agent review fields.
+  // When present, the UI renders a dedicated "Agent X wants to use Agent Y" prompt
+  // with a read/invoke level selector. targetAgentSlug is the other agent being acted on.
+  xAgent?: {
+    targetAgentSlug: string
+    targetAgentName: string
+    operation: 'list' | 'read' | 'invoke' | 'create'
+    // For 'invoke': the prompt being sent. For 'create': the proposed name.
+    preview?: string
+  }
 }
 
 /**
@@ -39,23 +56,29 @@ export function humanizeActionName(name: string): string {
 
 /**
  * Generate a human-readable display text for a proxy review request.
- * Uses scope descriptions when available, otherwise builds from the
- * structured fields — with special handling for MCP tool call paths.
+ *
+ * Priority:
+ *  1. The matched endpoint description (describes the specific call)
+ *  2. The first scope description (fallback when endpoint is uncurated)
+ *  3. A generic "Allow <method> request to <Toolkit>?" string
+ *
+ * Note: do NOT default to scope descriptions for the headline. Scope-level
+ * text describes the broad permission (e.g. "Read, compose, send, and
+ * permanently delete all your email") and is alarming when the user is
+ * actually approving a narrow call (e.g. read profile).
  */
 export function generateReviewDisplayText(
   toolkit: string,
   method: string,
   targetPath: string,
-  scopeDescriptions: Record<string, string>
+  scopeDescriptions: Record<string, string>,
+  endpointDescription?: string,
 ): string {
-  // Use the first scope description if available — it's usually the best
-  // human-readable summary of what the request does.
-  const descriptions = Object.values(scopeDescriptions)
-  if (descriptions.length > 0) {
-    const desc = descriptions[0]
-    if (desc.endsWith('?')) return desc
+  const candidate = endpointDescription || Object.values(scopeDescriptions)[0]
+  if (candidate) {
+    if (candidate.endsWith('?')) return candidate
     // Strip leading "allow" (case-insensitive) to avoid "Allow allow..."
-    const stripped = desc.replace(/^allow\s+/i, '')
+    const stripped = candidate.replace(/^allow\s+/i, '')
     return `Allow ${stripped.charAt(0).toLowerCase()}${stripped.slice(1)}?`
   }
 
@@ -117,7 +140,8 @@ export class ReviewManager {
         details.toolkit,
         details.method,
         details.targetPath,
-        details.scopeDescriptions
+        details.scopeDescriptions,
+        details.endpointDescription,
       )
 
       // Broadcast review request to agent's active sessions
@@ -131,13 +155,47 @@ export class ReviewManager {
         matchedScopes: details.matchedScopes,
         scopeDescriptions: details.scopeDescriptions,
         displayText,
+        ...(details.xAgent ? { xAgent: details.xAgent } : {}),
       })
+
+      // Fire ONE OS notification per review, attributed to the first active
+      // session of this agent. The proxy call is agent-scoped (no sessionId
+      // in the request), so we pick an active session — same attribution
+      // heuristic the sidebar uses for its orange dot (agents.ts:
+      // isActive && hasAgentLevelReviews). Do NOT gate on hasActiveViewers
+      // here: an open SSE connection ≠ actively looking at the screen
+      // (the user can have the session open and be alt-tabbed away). The
+      // renderer-side gate (isAppActive && isViewingNotificationSession)
+      // is the only one that knows about real OS focus.
+      const targetSessionId = messagePersister.getActiveSessionIdsForAgent(details.agentSlug)[0]
+      if (targetSessionId) {
+        const kind = details.xAgent ? 'agent_action' : 'api_request'
+        notificationManager
+          .triggerSessionApiReviewWaiting(targetSessionId, details.agentSlug, id, displayText, undefined, kind)
+          .catch((err) => {
+            console.error('[ReviewManager] Failed to trigger API review notification:', err)
+          })
+      }
     })
   }
 
-  submitDecision(id: string, decision: 'allow' | 'deny'): boolean {
+  /**
+   * Resolve a pending review.
+   *
+   * `expectedAgentSlug` MUST be passed when the call originates from an
+   * HTTP route — it guards against a user with role on agent A submitting
+   * a decision for agent B's review by sending B's reviewId to A's URL.
+   * Internal callers (e.g. `resolveMatchingPending`, which already filters
+   * by agentSlug itself) may omit it.
+   */
+  submitDecision(id: string, decision: 'allow' | 'deny', expectedAgentSlug?: string): boolean {
     const review = this.pending.get(id)
     if (!review) return false
+    if (expectedAgentSlug !== undefined && review.details.agentSlug !== expectedAgentSlug) {
+      // Don't leak existence of the review to an unauthorized caller —
+      // return the same `false` shape as "review not found".
+      return false
+    }
 
     clearTimeout(review.timer)
     this.pending.delete(id)
@@ -176,6 +234,35 @@ export class ReviewManager {
     }
   }
 
+  /**
+   * Resolve every pending x-agent review for `agentSlug` whose operation matches.
+   * Used when the user picks "always allow for all agents" — the saved policy has
+   * targetSlug=null, so the per-target scope match in resolveMatchingPending
+   * wouldn't catch sibling pending prompts (e.g. read:bob while saving global read).
+   */
+  resolveMatchingXAgentByOperation(
+    agentSlug: string,
+    operation: 'list' | 'read' | 'invoke' | 'create',
+    decision: 'allow' | 'deny',
+  ): void {
+    for (const [id, review] of this.pending) {
+      if (
+        review.details.agentSlug === agentSlug &&
+        review.details.xAgent?.operation === operation
+      ) {
+        clearTimeout(review.timer)
+        this.pending.delete(id)
+        review.resolve(decision)
+
+        broadcastReview(agentSlug, {
+          type: 'proxy_review_resolved',
+          reviewId: id,
+          decision,
+        })
+      }
+    }
+  }
+
   getPendingReviewsForAgent(
     agentSlug: string
   ): Array<{ id: string; displayText: string } & ReviewDetails> {
@@ -186,12 +273,76 @@ export class ReviewManager {
           review.details.toolkit,
           review.details.method,
           review.details.targetPath,
-          review.details.scopeDescriptions
+          review.details.scopeDescriptions,
+          review.details.endpointDescription,
         )
         results.push({ id: review.id, displayText, ...review.details })
       }
     }
     return results
+  }
+
+  /**
+   * Convenience helper for x-agent reviews. Wraps requestReview with a stable
+   * scopeDescriptions/displayText that the dedicated UI renderer keys off.
+   */
+  requestXAgentReview(
+    callerAgentSlug: string,
+    targetAgentSlug: string,
+    targetAgentName: string,
+    operation: 'list' | 'read' | 'invoke' | 'create',
+    preview?: string,
+    signal?: AbortSignal,
+  ): Promise<'allow' | 'deny'> {
+    const scope =
+      operation === 'list'
+        ? 'list'
+        : operation === 'create'
+          ? 'create'
+          : `${operation}:${targetAgentSlug}`
+    const description =
+      operation === 'create'
+        ? `Allow agent to create a new agent named "${targetAgentName}"?`
+        : operation === 'list'
+          ? `Allow agent to list other agents in this workspace?`
+          : operation === 'invoke'
+            ? `Allow agent to send a message to "${targetAgentName}"?`
+            : `Allow agent to read sessions of "${targetAgentName}"?`
+
+    return this.requestReview(
+      {
+        agentSlug: callerAgentSlug,
+        // Reuse fields semantically — accountId carries target slug for "always allow X" routing
+        accountId: targetAgentSlug,
+        toolkit: 'agents',
+        method: operation,
+        targetPath: `agents:${operation}:${targetAgentSlug}`,
+        matchedScopes: [scope],
+        scopeDescriptions: { [scope]: description },
+        xAgent: {
+          targetAgentSlug,
+          targetAgentName,
+          operation,
+          preview,
+        },
+      },
+      signal,
+    )
+  }
+
+  denyAllForAgent(agentSlug: string): void {
+    for (const [id, review] of this.pending) {
+      if (review.details.agentSlug !== agentSlug) continue
+      clearTimeout(review.timer)
+      this.pending.delete(id)
+      review.resolve('deny')
+
+      broadcastReview(agentSlug, {
+        type: 'proxy_review_resolved',
+        reviewId: id,
+        decision: 'deny',
+      })
+    }
   }
 
   rejectAll(): void {

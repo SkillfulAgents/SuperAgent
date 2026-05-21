@@ -32,7 +32,7 @@ vi.mock('@renderer/lib/os-notifications', () => ({
 }))
 
 vi.mock('@renderer/context/selection-context', () => ({
-  useSelection: () => ({ selectedSessionId: null }),
+  useSelection: vi.fn(() => ({ view: { kind: 'home' }, setAgent: vi.fn() })),
 }))
 
 vi.mock('@renderer/context/user-context', () => ({
@@ -172,6 +172,79 @@ describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
       }
     )
     expect(proxyReviewCalls.length).toBe(1)
+  })
+
+  // SECURITY: focus-aware gate — when an actionable session_waiting fires
+  // while the window is visible-but-unfocused (jsdom: hasFocus() === false),
+  // the OS notification should still fire because the user is effectively
+  // "away". This guards the regression caught in review (S4): pre-fix the
+  // gate looked only at visibilityState which doesn't flip on alt-tab.
+  it('session_waiting fires OS notification when window is unfocused', async () => {
+    const { showOSNotification } = await import('@renderer/lib/os-notifications')
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    const es = getLatestEventSource()
+    simulateSSEMessage(es, {
+      type: 'os_notification',
+      notificationType: 'session_waiting',
+      sessionId: 'sess-1',
+      agentSlug: 'my-agent',
+      title: 'Action Required',
+      body: 'Need approval',
+    })
+
+    expect(showOSNotification).toHaveBeenCalled()
+  })
+
+  // For chattier types (chat-integration, session-complete) we keep the
+  // visibility-only gate to avoid spam for users with side-panel windows.
+  // When unfocused-but-visible, those types should NOT fire if the user is
+  // viewing the same session.
+  it('session_chat_integration suppressed when visible+viewing-session even if unfocused', async () => {
+    const { showOSNotification } = await import('@renderer/lib/os-notifications')
+    vi.mocked(showOSNotification).mockClear()
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+
+    // selection mock returns view.kind=home, so isViewingNotificationSession is false
+    // for ANY session — to make this test meaningful we need to assert that the
+    // visibility-only gate is what's used. Switch view to the same session.
+    const { useSelection } = await import('@renderer/context/selection-context')
+    vi.mocked(useSelection).mockReturnValue({
+      view: { kind: 'session', id: 'sess-1' },
+      setAgent: vi.fn(),
+    } as unknown as ReturnType<typeof useSelection>)
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    const es = getLatestEventSource()
+    simulateSSEMessage(es, {
+      type: 'os_notification',
+      notificationType: 'session_chat_integration',
+      sessionId: 'sess-1',
+      agentSlug: 'my-agent',
+      title: 'Chat Integration Connected',
+      body: 'Slack',
+    })
+
+    expect(showOSNotification).not.toHaveBeenCalled()
   })
 
   it('also invalidates sessions query (for sidebar awaiting_input indicator)', () => {

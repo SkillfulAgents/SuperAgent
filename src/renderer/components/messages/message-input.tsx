@@ -1,21 +1,19 @@
-
-import { Button } from '@renderer/components/ui/button'
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { useSendMessage, useUploadFile, useUploadFolder, useInterruptSession } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
-import { ArrowUp, Loader2, StopCircle, WifiOff } from 'lucide-react'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
+import { WifiOff } from 'lucide-react'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
+import { ComposerActionButton } from './composer-action-button'
 import { SlashCommandMenu } from './slash-command-menu'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from './chat-composer-box'
-import { EffortSelector } from './effort-selector'
+import { ComposerOptions, useComposerOptions } from './composer-options'
 import { useRenderTracker } from '@renderer/lib/perf'
 import type { EffortLevel } from '@shared/lib/container/types'
 
@@ -23,32 +21,20 @@ interface MessageInputProps {
   sessionId: string
   agentSlug: string
   onMessageSent?: (content: string) => void
-  initialDraft?: string
-  onDraftChange?: (draft: string) => void
-  /** Draft text injected from outside (e.g., voice feedback). Consumed on receipt. */
-  externalDraft?: string | null
-  onExternalDraftConsumed?: () => void
   /** Effort level last used on this session; seeds the composer selector. Defaults to 'high' when absent. */
   initialEffort?: EffortLevel
+  /** Model last used on this session; seeds the composer selector. Defaults to provider's agent default. */
+  initialModel?: string
 }
 
-export function MessageInput({ sessionId, agentSlug, onMessageSent, initialDraft, onDraftChange, externalDraft, onExternalDraftConsumed, initialEffort }: MessageInputProps) {
+export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffort, initialModel }: MessageInputProps) {
   useRenderTracker('MessageInput')
   const { canUseAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
   const lastTypingNotification = useRef(0)
   const [slashMenuOpen, setSlashMenuOpen] = useState(false)
   const [slashMenuIndex, setSlashMenuIndex] = useState(0)
-  const [effort, setEffort] = useState<EffortLevel>(initialEffort ?? 'high')
-  // If session data loads after this component mounts, seed effort from it once.
-  // After the first seed, user edits via setEffort take precedence.
-  const effortSeededRef = useRef(initialEffort !== undefined)
-  useEffect(() => {
-    if (!effortSeededRef.current && initialEffort !== undefined) {
-      setEffort(initialEffort)
-      effortSeededRef.current = true
-    }
-  }, [initialEffort])
+  const composerOptions = useComposerOptions({ initialEffort, initialModel })
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const sendMessage = useSendMessage()
   const uploadFile = useUploadFile()
@@ -70,22 +56,13 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialDraft
       [uploadFolder, sessionId, agentSlug]
     ),
     onSubmit: useCallback(async (content: string) => {
-      onDraftChange?.('')
       onMessageSent?.(content)
-      await sendMessage.mutateAsync({ sessionId, agentSlug, content, effort })
+      await sendMessage.mutateAsync({ sessionId, agentSlug, content, ...composerOptions.toRuntimeOptions() })
       track('message_sent')
-    }, [onDraftChange, onMessageSent, sendMessage, sessionId, agentSlug, track, effort]),
+    }, [onMessageSent, sendMessage, sessionId, agentSlug, track, composerOptions]),
     submitDisabled: sendMessage.isPending || isActive || isOffline,
-    initialMessage: initialDraft,
+    draftKey: `session:${sessionId}`,
   })
-
-  // Consume external draft when injected (e.g., from voice feedback)
-  useEffect(() => {
-    if (externalDraft) {
-      composer.setMessage(externalDraft)
-      onExternalDraftConsumed?.()
-    }
-  }, [externalDraft, composer, onExternalDraftConsumed])
 
   // Extract the slash command prefix being typed (e.g. "co" from "/co")
   const slashFilter = useMemo(() => {
@@ -116,7 +93,6 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialDraft
   const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value
     composer.setMessage(value)
-    onDraftChange?.(value)
 
     // Open slash menu when input is "/" followed by optional non-space chars (still typing command)
     if (/^\/\S*$/.test(value) && slashCommands.length > 0) {
@@ -139,7 +115,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialDraft
         }).catch(() => {})
       }
     }
-  }, [composer, onDraftChange, slashCommands.length, isAuthMode, agentSlug, sessionId])
+  }, [composer, slashCommands.length, isAuthMode, agentSlug, sessionId])
 
   const handleInterrupt = async () => {
     if (interruptSession.isPending) return
@@ -149,15 +125,6 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialDraft
       console.error('Failed to interrupt session:', error)
     }
   }
-
-  // Auto-resize textarea
-  useEffect(() => {
-    const textarea = textareaRef.current
-    if (textarea) {
-      textarea.style.height = 'auto'
-      textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`
-    }
-  }, [composer.message])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Slash command menu keyboard navigation
@@ -243,65 +210,23 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialDraft
               onRecentFileAttach={(file) => composer.addFiles([{ file }])}
               disabled={isDisabled}
             />
-            <EffortSelector
-              value={effort}
-              onChange={setEffort}
-              disabled={isDisabled}
-            />
+            <ComposerOptions state={composerOptions} disabled={isDisabled} />
           </>
         )}
         rightActions={(
           <>
-            {isActive && (
-              <Button
-                type="button"
-                variant="destructive"
-                className="h-[34px] px-3"
-                onClick={handleInterrupt}
-                disabled={interruptSession.isPending}
-                data-testid="stop-button"
-              >
-                {interruptSession.isPending ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <>
-                    <StopCircle className="mr-2 h-4 w-4" />
-                    Stop
-                  </>
-                )}
-              </Button>
-            )}
             <VoiceInputButton
               voiceInput={composer.voiceInput}
               message={composer.message}
               disabled={isDisabled}
             />
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span>
-                    <Button
-                      type="submit"
-                      size="icon"
-                      className="h-[34px] w-[34px]"
-                      disabled={!composer.canSubmit || sendMessage.isPending}
-                      data-testid="send-button"
-                    >
-                      {sendMessage.isPending || composer.isUploading ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <ArrowUp className="h-4 w-4" />
-                      )}
-                    </Button>
-                  </span>
-                </TooltipTrigger>
-                {isActive && (
-                  <TooltipContent>
-                    <p>Wait for the agent to finish</p>
-                  </TooltipContent>
-                )}
-              </Tooltip>
-            </TooltipProvider>
+            <ComposerActionButton
+              isActive={isActive}
+              canSubmit={composer.canSubmit}
+              isSending={sendMessage.isPending || composer.isUploading}
+              isInterrupting={interruptSession.isPending}
+              onInterrupt={handleInterrupt}
+            />
           </>
         )}
         footer={(

@@ -13,13 +13,17 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 type MockQueryCall = { options: Record<string, unknown> }
 const calls: MockQueryCall[] = []
+const setModelCalls: (string | undefined)[] = []
 
 // Stub the SDK before importing ClaudeCodeProcess.
 vi.mock('@anthropic-ai/claude-agent-sdk', () => {
   // Returns an async iterator that never yields until aborted — good enough to
   // model a running session for the purposes of this test.
   function makeQuery(_args: { prompt: unknown; options: Record<string, unknown> }) {
-    const iter: AsyncIterableIterator<never> & { interrupt: () => Promise<void> } = {
+    const iter: AsyncIterableIterator<never> & {
+      interrupt: () => Promise<void>
+      setModel: (model?: string) => Promise<void>
+    } = {
       [Symbol.asyncIterator]() {
         return this
       },
@@ -35,6 +39,10 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         return Promise.reject(err)
       },
       interrupt() {
+        return Promise.resolve()
+      },
+      setModel(model?: string) {
+        setModelCalls.push(model)
         return Promise.resolve()
       },
     }
@@ -55,6 +63,7 @@ vi.mock('./mcp-server', () => ({
   createBrowserMcpServer: () => ({}),
   createComputerUseMcpServer: () => ({}),
   createDashboardsMcpServer: () => ({}),
+  createAgentsMcpServer: (_getCallerSessionId: () => string) => ({}),
 }))
 
 vi.mock('./tools/browser', () => ({
@@ -101,7 +110,7 @@ describe('ClaudeCodeProcess effort handling', () => {
     expect(calls[0].options.effort).toBe('high')
 
     // Send a message with a DIFFERENT effort level — should trigger interrupt+restart.
-    await process.sendMessage('hello', undefined, 'low')
+    await process.sendMessage('hello', undefined, { effort: 'low' })
 
     // interrupt() is async but process.sendMessage awaits it; after it returns,
     // createQuery has been called again with the new effort.
@@ -119,7 +128,7 @@ describe('ClaudeCodeProcess effort handling', () => {
     await process.start()
     expect(calls).toHaveLength(1)
 
-    await process.sendMessage('hello', undefined, 'high')
+    await process.sendMessage('hello', undefined, { effort: 'high' })
 
     // Same effort → no restart → still one call.
     expect(calls).toHaveLength(1)
@@ -140,12 +149,106 @@ describe('ClaudeCodeProcess effort handling', () => {
 
     // User sends first post-upgrade message with effort='high' (UI default).
     // Because stored effort is undefined we treat it as 'high' — no restart expected.
-    await process.sendMessage('hello', undefined, 'high')
+    await process.sendMessage('hello', undefined, { effort: 'high' })
     expect(calls).toHaveLength(1)
 
     // But a non-'high' level should restart.
-    await process.sendMessage('hello again', undefined, 'low')
+    await process.sendMessage('hello again', undefined, { effort: 'low' })
     expect(calls).toHaveLength(2)
     expect(calls[1].options.effort).toBe('low')
+  })
+})
+
+describe('ClaudeCodeProcess model handling', () => {
+  beforeEach(() => {
+    calls.length = 0
+    setModelCalls.length = 0
+  })
+
+  it('switches model dynamically via setModel without rebuilding the query', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-model-1',
+      workingDirectory: '/tmp',
+      model: 'claude-sonnet-4-6',
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+    // Constructor maps full IDs to SDK aliases.
+    expect(calls[0].options.model).toBe('sonnet')
+
+    // Switching to Opus mid-session should call setModel on the running query —
+    // no interrupt, no second query() call.
+    await process.sendMessage('hello', undefined, { model: 'claude-opus-4-7' })
+
+    expect(calls).toHaveLength(1)
+    expect(setModelCalls).toEqual(['opus'])
+  })
+
+  it('does not call setModel when the same model family is passed', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-model-2',
+      workingDirectory: '/tmp',
+      model: 'claude-opus-4-7',
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+
+    // Same family alias — no restart, no setModel.
+    await process.sendMessage('hello', undefined, { model: 'claude-opus-4-7' })
+    expect(calls).toHaveLength(1)
+    expect(setModelCalls).toHaveLength(0)
+
+    // Same alias but different pinned version maps to same alias 'opus'.
+    await process.sendMessage('hello again', undefined, { model: 'claude-opus-4-6' })
+    expect(calls).toHaveLength(1)
+    expect(setModelCalls).toHaveLength(0)
+  })
+
+  it('combined effort + model change restarts the query exactly once with both new values', { timeout: 15000 }, async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-model-3',
+      workingDirectory: '/tmp',
+      effort: 'high',
+      model: 'claude-sonnet-4-6',
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+    expect(calls[0].options.effort).toBe('high')
+    expect(calls[0].options.model).toBe('sonnet')
+
+    // Effort can only change via re-query, so the model rides along on that
+    // restart rather than calling setModel separately.
+    await process.sendMessage('hi', undefined, { effort: 'low', model: 'claude-haiku-4-5' })
+
+    expect(calls).toHaveLength(2)
+    expect(calls[1].options.effort).toBe('low')
+    expect(calls[1].options.model).toBe('haiku')
+    expect(setModelCalls).toHaveLength(0)
+  })
+
+  it('falls back to interrupt+restart when setModel throws', { timeout: 15000 }, async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-model-4',
+      workingDirectory: '/tmp',
+      model: 'claude-sonnet-4-6',
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+
+    // Force the next setModel call to fail.
+    const failOnce = vi.fn().mockRejectedValueOnce(new Error('not in streaming mode'))
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(process as any).queryInstance.setModel = failOnce
+
+    await process.sendMessage('hello', undefined, { model: 'claude-opus-4-7' })
+
+    expect(failOnce).toHaveBeenCalledWith('opus')
+    // Restart happened after the failure.
+    expect(calls).toHaveLength(2)
+    expect(calls[1].options.model).toBe('opus')
   })
 })

@@ -1,4 +1,5 @@
 import { ProxyReviewRequestItem } from '@renderer/components/messages/proxy-review-request-item'
+import { XAgentReviewRequestItem } from '@renderer/components/messages/x-agent-review-request-item'
 import { usePendingProxyReviews } from '@renderer/hooks/use-proxy-reviews'
 
 interface PendingAgentReviewsProps {
@@ -26,25 +27,40 @@ export function PendingAgentReviews({ agentSlug, readOnly, onReviewResolved }: P
 
   return (
     <div className="space-y-2">
-      {reviews.map((review) => (
-        <ProxyReviewRequestItem
-          key={review.id}
-          reviewId={review.id}
-          accountId={review.accountId}
-          toolkit={review.toolkit}
-          method={review.method}
-          targetPath={review.targetPath}
-          matchedScopes={review.matchedScopes}
-          scopeDescriptions={review.scopeDescriptions}
-          displayText={review.displayText}
-          agentSlug={agentSlug}
-          readOnly={readOnly}
-          onComplete={() => {
-            refetch()
-            onReviewResolved?.()
-          }}
-        />
-      ))}
+      {reviews.map((review) => {
+        const onComplete = () => {
+          refetch()
+          onReviewResolved?.()
+        }
+        if (review.xAgent) {
+          return (
+            <XAgentReviewRequestItem
+              key={review.id}
+              reviewId={review.id}
+              agentSlug={agentSlug}
+              xAgent={review.xAgent}
+              readOnly={readOnly}
+              onComplete={onComplete}
+            />
+          )
+        }
+        return (
+          <ProxyReviewRequestItem
+            key={review.id}
+            reviewId={review.id}
+            accountId={review.accountId}
+            toolkit={review.toolkit}
+            method={review.method}
+            targetPath={review.targetPath}
+            matchedScopes={review.matchedScopes}
+            scopeDescriptions={review.scopeDescriptions}
+            displayText={review.displayText}
+            agentSlug={agentSlug}
+            readOnly={readOnly}
+            onComplete={onComplete}
+          />
+        )
+      })}
     </div>
   )
 }

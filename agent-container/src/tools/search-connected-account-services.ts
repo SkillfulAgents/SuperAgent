@@ -22,6 +22,7 @@ const SERVICES: ServiceInfo[] = [
   { slug: 'googledrive', displayName: 'Google Drive', category: 'Google Workspace', description: 'Google cloud storage' },
   { slug: 'googlesheets', displayName: 'Google Sheets', category: 'Google Workspace', description: 'Google spreadsheets' },
   { slug: 'googledocs', displayName: 'Google Docs', category: 'Google Workspace', description: 'Google documents' },
+  { slug: 'googleslides', displayName: 'Google Slides', category: 'Google Workspace', description: 'Google presentations' },
   { slug: 'googlemeet', displayName: 'Google Meet', category: 'Google Workspace', description: 'Google video conferencing' },
   { slug: 'googletasks', displayName: 'Google Tasks', category: 'Google Workspace', description: 'Google task management' },
   { slug: 'youtube', displayName: 'YouTube', category: 'Google Workspace', description: 'Video platform' },

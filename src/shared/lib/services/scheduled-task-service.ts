@@ -25,7 +25,10 @@ export interface CreateScheduledTaskParams {
   prompt: string
   name?: string
   createdBySessionId?: string
+  createdByUserId?: string
   timezone?: string
+  model?: string
+  effort?: string
 }
 
 export interface UpdateNextExecutionParams {
@@ -68,7 +71,10 @@ export async function createScheduledTask(
     executionCount: 0,
     createdAt: new Date(),
     createdBySessionId: params.createdBySessionId,
+    createdByUserId: params.createdByUserId,
     timezone: params.timezone || null,
+    model: params.model || null,
+    effort: params.effort || null,
   }
 
   await db.insert(scheduledTasks).values(newTask)
@@ -110,7 +116,8 @@ export async function listScheduledTasks(agentSlug: string): Promise<ScheduledTa
 }
 
 /**
- * List pending scheduled tasks for an agent
+ * List pending and paused scheduled tasks for an agent (i.e. everything still
+ * on the schedule, whether actively firing or temporarily paused).
  */
 export async function listPendingScheduledTasks(agentSlug: string): Promise<ScheduledTask[]> {
   return db
@@ -119,14 +126,14 @@ export async function listPendingScheduledTasks(agentSlug: string): Promise<Sche
     .where(
       and(
         eq(scheduledTasks.agentSlug, agentSlug),
-        eq(scheduledTasks.status, 'pending')
+        inArray(scheduledTasks.status, ['pending', 'paused'])
       )
     )
 }
 
 /**
- * Batch version: list pending scheduled tasks for multiple agents in a single query.
- * Returns a Map from agentSlug to array of pending ScheduledTask.
+ * Batch version: list pending and paused scheduled tasks for multiple agents in a single query.
+ * Returns a Map from agentSlug to array of ScheduledTask.
  */
 export async function listPendingScheduledTasksByAgents(agentSlugs: string[]): Promise<Map<string, ScheduledTask[]>> {
   if (agentSlugs.length === 0) return new Map()
@@ -136,7 +143,7 @@ export async function listPendingScheduledTasksByAgents(agentSlugs: string[]): P
     .from(scheduledTasks)
     .where(and(
       inArray(scheduledTasks.agentSlug, agentSlugs),
-      eq(scheduledTasks.status, 'pending')
+      inArray(scheduledTasks.status, ['pending', 'paused'])
     ))
 
   const result = new Map<string, ScheduledTask[]>()
@@ -197,9 +204,53 @@ export async function cancelScheduledTask(taskId: string): Promise<boolean> {
     .where(
       and(
         eq(scheduledTasks.id, taskId),
-        eq(scheduledTasks.status, 'pending')
+        inArray(scheduledTasks.status, ['pending', 'paused'])
       )
     )
+
+  return (result.changes ?? 0) > 0
+}
+
+/**
+ * Pause a recurring scheduled task. Paused tasks are not executed by the
+ * scheduler. Resuming recomputes `nextExecutionAt` from the cron expression.
+ */
+export async function pauseScheduledTask(taskId: string): Promise<boolean> {
+  const result = await db
+    .update(scheduledTasks)
+    .set({
+      status: 'paused',
+      pausedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(scheduledTasks.id, taskId),
+        eq(scheduledTasks.status, 'pending'),
+        eq(scheduledTasks.scheduleType, 'cron')
+      )
+    )
+
+  return (result.changes ?? 0) > 0
+}
+
+/**
+ * Resume a paused scheduled task. `nextExecutionAt` is recomputed from the
+ * cron expression so missed executions are skipped.
+ */
+export async function resumeScheduledTask(taskId: string): Promise<boolean> {
+  const task = await getScheduledTask(taskId)
+  if (!task || task.status !== 'paused' || task.scheduleType !== 'cron') return false
+
+  const nextExecutionAt = getNextCronTime(task.scheduleExpression, task.timezone || undefined)
+
+  const result = await db
+    .update(scheduledTasks)
+    .set({
+      status: 'pending',
+      nextExecutionAt,
+      pausedAt: null,
+    })
+    .where(eq(scheduledTasks.id, taskId))
 
   return (result.changes ?? 0) > 0
 }
@@ -290,7 +341,7 @@ export async function resetScheduledTask(taskId: string): Promise<boolean> {
  */
 export async function updateTaskTimezone(taskId: string, timezone: string): Promise<boolean> {
   const task = await getScheduledTask(taskId)
-  if (!task || task.status !== 'pending') return false
+  if (!task || (task.status !== 'pending' && task.status !== 'paused')) return false
 
   const tz = timezone || undefined
   let nextExecutionAt: Date
@@ -311,6 +362,25 @@ export async function updateTaskTimezone(taskId: string, timezone: string): Prom
 // ============================================================================
 // Delete Operations
 // ============================================================================
+
+/**
+ * Update a scheduled task's prompt (the instructions executed when the task runs).
+ * Allowed for pending or paused tasks.
+ */
+export async function updateTaskPrompt(
+  taskId: string,
+  prompt: string,
+): Promise<boolean> {
+  const task = await getScheduledTask(taskId)
+  if (!task || (task.status !== 'pending' && task.status !== 'paused')) return false
+
+  const result = await db
+    .update(scheduledTasks)
+    .set({ prompt })
+    .where(eq(scheduledTasks.id, taskId))
+
+  return (result.changes ?? 0) > 0
+}
 
 /**
  * Update a recurring task's schedule expression and recalculate next execution time.
@@ -351,6 +421,29 @@ export async function recordManualExecution(
       executionCount: task.executionCount + 1,
     })
     .where(eq(scheduledTasks.id, taskId))
+}
+
+/**
+ * Update a task's runtime options (model and/or effort).
+ * Pass null to clear a field back to the global default.
+ */
+export async function updateTaskRuntimeOptions(
+  taskId: string,
+  options: { model?: string | null; effort?: string | null },
+): Promise<boolean> {
+  const task = await getScheduledTask(taskId)
+  if (!task || (task.status !== 'pending' && task.status !== 'paused')) return false
+
+  const updates: Record<string, string | null> = {}
+  if ('model' in options) updates.model = options.model ?? null
+  if ('effort' in options) updates.effort = options.effort ?? null
+
+  const result = await db
+    .update(scheduledTasks)
+    .set(updates)
+    .where(eq(scheduledTasks.id, taskId))
+
+  return (result.changes ?? 0) > 0
 }
 
 /**

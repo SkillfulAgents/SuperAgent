@@ -94,9 +94,12 @@ class AutoSleepMonitor {
           // the previous sleep and would cause immediate re-sleep.
           const containerStartTime =
             containerManager.getContainerStartTime(agentId) ?? 0
+          const lastKeepAlive =
+            containerManager.getLastKeepAlive(agentId) ?? 0
 
           const lastActivity = Math.max(
             containerStartTime,
+            lastKeepAlive,
             ...sessions.map((s) => s.lastActivityAt.getTime())
           )
 
@@ -105,7 +108,10 @@ class AutoSleepMonitor {
               `[AutoSleepMonitor] Agent ${agentId} idle for >${timeoutMinutes}m, stopping...`
             )
 
-            await containerManager.stopContainer(agentId)
+            await containerManager.stopContainer(agentId, {
+              stopTimeoutMs: 60_000,
+              killTimeoutMs: 30_000,
+            })
           }
         } catch (error) {
           console.error(

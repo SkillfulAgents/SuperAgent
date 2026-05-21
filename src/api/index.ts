@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import agents from './routes/agents'
+import xAgent from './routes/x-agent'
 import connectedAccounts from './routes/connected-accounts'
 import settings from './routes/settings'
 import providers from './routes/providers'
@@ -19,6 +20,10 @@ import userSettingsRouter from './routes/user-settings'
 import policies from './routes/policies'
 import runtimeStatusRouter from './routes/runtime-status'
 import sttRouter from './routes/stt'
+import llmRouter from './routes/llm'
+import { getPolyfillJs } from './speech-recognition-polyfill'
+import { getLlmPolyfillJs } from './llm-polyfill'
+import { ANTHROPIC_SDK_BUNDLE } from './llm-sdk-bundle'
 import adminUsersRouter from './routes/admin-users'
 import debugRouter from './routes/debug'
 import platformAuth from './routes/platform-auth'
@@ -28,6 +33,7 @@ import { sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { user as userTable } from '@shared/lib/db/schema'
 import { authEnforcementMiddleware, getAuthSettings } from './middleware/auth-enforcement'
+import { getPublicAuthProviders } from '@shared/lib/auth/provider-config'
 import { LocalModeAuth } from './middleware/local-mode-auth'
 
 const app = new Hono()
@@ -112,6 +118,7 @@ if (isAuthMode()) {
 if (isAuthMode()) {
   app.get('/api/auth-config', (c) => {
     const authSettings = getAuthSettings()
+    const publicProviders = getPublicAuthProviders()
 
     // Check if any users exist (first-user signup bypass)
     let hasUsers = true
@@ -126,6 +133,7 @@ if (isAuthMode()) {
       signupMode: authSettings.signupMode,
       allowLocalAuth: authSettings.allowLocalAuth,
       allowSocialAuth: authSettings.allowSocialAuth,
+      providers: publicProviders,
       passwordMinLength: authSettings.passwordMinLength,
       passwordRequireComplexity: authSettings.passwordRequireComplexity,
       requireAdminApproval: authSettings.requireAdminApproval,
@@ -134,8 +142,29 @@ if (isAuthMode()) {
   })
 }
 
+// Public static assets (no auth)
+app.get('/api/stt/speech-recognition-polyfill.js', (c) => {
+  return c.body(getPolyfillJs(), 200, {
+    'Content-Type': 'application/javascript; charset=utf-8',
+    'Cache-Control': 'public, max-age=3600',
+  })
+})
+app.get('/api/llm/anthropic-polyfill.js', (c) => {
+  return c.body(getLlmPolyfillJs(), 200, {
+    'Content-Type': 'application/javascript; charset=utf-8',
+    'Cache-Control': 'public, max-age=3600',
+  })
+})
+app.get('/api/llm/anthropic-sdk.js', (c) => {
+  return c.body(ANTHROPIC_SDK_BUNDLE, 200, {
+    'Content-Type': 'application/javascript; charset=utf-8',
+    'Cache-Control': 'public, max-age=86400',
+  })
+})
+
 // Mount route handlers
 app.route('/api/agents', agents)
+app.route('/api/x-agent', xAgent)
 app.route('/api/connected-accounts', connectedAccounts)
 app.route('/api/settings', settings)
 app.route('/api/providers', providers)
@@ -156,6 +185,7 @@ app.route('/api/runtime-status', runtimeStatusRouter)
 app.route('/api/admin/users', adminUsersRouter)
 app.route('/api/platform-auth', platformAuth)
 app.route('/api/stt', sttRouter)
+app.route('/api/llm', llmRouter)
 app.route('/api/debug', debugRouter)
 
 // Global error handler

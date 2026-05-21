@@ -3,6 +3,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { downloadBlob } from '@renderer/lib/download'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
+import { useSkillsets } from '@renderer/hooks/use-skillsets'
 import type { ApiAgent, ApiDiscoverableAgent, ApiItemStatus } from '@shared/lib/types/api'
 
 // Alias preserves the prior export name for downstream consumers while we
@@ -21,9 +22,12 @@ let refreshPromise: Promise<void> | null = null
  */
 export function useDiscoverableAgents() {
   const queryClient = useQueryClient()
+  const { data: skillsets } = useSkillsets()
+  const hasSkillsets = !!(skillsets && skillsets.length > 0)
 
   return useQuery<ApiDiscoverableAgent[]>({
     queryKey: ['discoverable-agents'],
+    enabled: hasSkillsets,
     queryFn: async () => {
       const res = await apiFetch('/api/agents/discoverable-agents')
       if (!res.ok) throw new Error('Failed to fetch discoverable agents')
@@ -99,14 +103,13 @@ export function useImportAgentTemplate() {
   return useMutation<
     ApiAgent & { hasOnboarding?: boolean; requiredEnvVars?: Array<{ name: string; description: string }> },
     Error,
-    { file: File; nameOverride?: string; mode?: 'template' | 'full'; onProgress?: (p: ImportProgress) => void }
+    { file: File; mode?: 'template' | 'full'; onProgress?: (p: ImportProgress) => void }
   >({
-    mutationFn: async ({ file, nameOverride, mode, onProgress }) => {
+    mutationFn: async ({ file, mode, onProgress }) => {
       if (file.size <= CHUNK_SIZE) {
         // Small file — single request (existing behavior)
         const formData = new FormData()
         formData.append('file', file)
-        if (nameOverride) formData.append('name', nameOverride)
         if (mode) formData.append('mode', mode)
 
         onProgress?.({ phase: 'uploading', percent: 100 })
@@ -137,7 +140,6 @@ export function useImportAgentTemplate() {
         formData.append('chunkIndex', String(i))
         formData.append('totalChunks', String(totalChunks))
         formData.append('mode', mode || 'template')
-        if (nameOverride) formData.append('name', nameOverride)
 
         onProgress?.({ phase: 'uploading', percent: (i / totalChunks) * 100 })
 

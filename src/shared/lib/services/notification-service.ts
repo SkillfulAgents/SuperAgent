@@ -81,7 +81,7 @@ export async function createNotification(
  * List notifications, ordered by creation time (newest first).
  * When userId is provided, only returns notifications for agents the user has access to.
  */
-export async function listNotifications(limit: number = 50, userId?: string): Promise<Notification[]> {
+export async function listNotifications(limit: number = 50, userId?: string, offset: number = 0): Promise<Notification[]> {
   if (userId) {
     const slugs = await getAccessibleAgentSlugs(userId)
     if (slugs.length === 0) return []
@@ -91,13 +91,39 @@ export async function listNotifications(limit: number = 50, userId?: string): Pr
       .where(inArray(notifications.agentSlug, slugs))
       .orderBy(desc(notifications.createdAt))
       .limit(limit)
+      .offset(offset)
   }
   return db
     .select()
     .from(notifications)
     .orderBy(desc(notifications.createdAt))
     .limit(limit)
+    .offset(offset)
 }
+
+export async function countNotifications(userId?: string): Promise<number> {
+  if (userId) {
+    const slugs = await getAccessibleAgentSlugs(userId)
+    if (slugs.length === 0) return 0
+    const result = await db
+      .select({ count: count() })
+      .from(notifications)
+      .where(inArray(notifications.agentSlug, slugs))
+    return result[0]?.count ?? 0
+  }
+  const result = await db
+    .select({ count: count() })
+    .from(notifications)
+  return result[0]?.count ?? 0
+}
+
+/**
+ * Notification types that drive any unread dot or count in the UI.
+ * Lifecycle events (`session_scheduled`, `session_chat_integration`,
+ * `session_webhook`) live in the popover history but do not contribute
+ * to badges — the user didn't take an action that requires their attention.
+ */
+export const USER_ACTIONABLE_NOTIFICATION_TYPES = ['session_complete', 'session_waiting'] as const
 
 /**
  * Get session IDs that have unread notifications for a given agent.
@@ -107,6 +133,7 @@ export async function getSessionIdsWithUnreadNotifications(agentSlug: string, us
   const conditions = [
     eq(notifications.agentSlug, agentSlug),
     eq(notifications.isRead, false),
+    inArray(notifications.type, [...USER_ACTIONABLE_NOTIFICATION_TYPES]),
   ]
 
   if (userId) {
@@ -134,7 +161,8 @@ export async function getUnreadNotificationsByAgents(agentSlugs: string[]): Prom
     .from(notifications)
     .where(and(
       inArray(notifications.agentSlug, agentSlugs),
-      eq(notifications.isRead, false)
+      eq(notifications.isRead, false),
+      inArray(notifications.type, [...USER_ACTIONABLE_NOTIFICATION_TYPES]),
     ))
 
   const result = new Map<string, Set<string>>()
@@ -174,19 +202,20 @@ export async function listUnreadNotifications(limit: number = 50, userId?: strin
  * When userId is provided, only counts notifications for agents the user has access to.
  */
 export async function getUnreadCount(userId?: string): Promise<number> {
+  const actionable = inArray(notifications.type, [...USER_ACTIONABLE_NOTIFICATION_TYPES])
   if (userId) {
     const slugs = await getAccessibleAgentSlugs(userId)
     if (slugs.length === 0) return 0
     const result = await db
       .select({ count: count() })
       .from(notifications)
-      .where(and(eq(notifications.isRead, false), inArray(notifications.agentSlug, slugs)))
+      .where(and(eq(notifications.isRead, false), inArray(notifications.agentSlug, slugs), actionable))
     return result[0]?.count ?? 0
   }
   const result = await db
     .select({ count: count() })
     .from(notifications)
-    .where(eq(notifications.isRead, false))
+    .where(and(eq(notifications.isRead, false), actionable))
 
   return result[0]?.count ?? 0
 }

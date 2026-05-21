@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events'
+import { randomUUID } from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
 import type {
@@ -8,12 +9,38 @@ import type {
   ContainerSession,
   ContainerStats,
   CreateSessionOptions,
-  EffortLevel,
   StartOptions,
+  StopOptions,
   StreamMessage,
 } from './types'
+import type { RuntimeOptions } from './runtime-options'
 import { getSessionJsonlPath } from '../utils/file-storage'
 import { reviewManager } from '../proxy/review-manager'
+import { db } from '../db'
+import { connectedAccounts } from '../db/schema'
+
+export const MOCK_ACCOUNT_ID = 'mock-account-id'
+
+// E2E mock scenarios reference a fake connected account by id. The
+// /proxy-review/.../always endpoint persists an apiScopePolicies row whose
+// account_id has a FK on connected_accounts; without this seed the insert
+// fails and the route returns 500, breaking the "always allow" test.
+let mockAccountSeeded = false
+async function seedMockConnectedAccount(): Promise<void> {
+  if (mockAccountSeeded) return
+  const now = new Date()
+  await db.insert(connectedAccounts).values({
+    id: MOCK_ACCOUNT_ID,
+    composioConnectionId: MOCK_ACCOUNT_ID,
+    toolkitSlug: 'slack',
+    displayName: 'Mock Account',
+    status: 'active',
+    userId: null,
+    createdAt: now,
+    updatedAt: now,
+  }).onConflictDoNothing()
+  mockAccountSeeded = true
+}
 
 /**
  * Mock scenario interface for simulating different response patterns
@@ -533,10 +560,11 @@ export class ProxyReviewScenario implements MockScenario {
     // Now trigger the proxy review via ReviewManager
     const capturedDelay = delay
     setTimeout(async () => {
+      await seedMockConnectedAccount()
       // Fire-and-forget — the promise resolves when the user decides
       reviewManager.requestReview({
         agentSlug,
-        accountId: 'mock-account-id',
+        accountId: MOCK_ACCOUNT_ID,
         toolkit: this.toolkit,
         method: this.method,
         targetPath: this.targetPath,
@@ -560,6 +588,90 @@ export class ProxyReviewScenario implements MockScenario {
         })
       }).catch(() => {
         // Timeout or rejection — complete the session anyway
+        client.emitStreamMessage(sessionId, {
+          type: 'result',
+          content: { type: 'result', subtype: 'success' },
+        })
+      })
+    }, capturedDelay)
+  }
+}
+
+export class XAgentReviewScenario implements MockScenario {
+  constructor(
+    private targetAgentSlug: string,
+    private targetAgentName: string,
+    private operation: 'list' | 'read' | 'invoke' | 'create',
+  ) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    const agentSlug = client.getAgentId()
+    let delay = 10
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_start' } },
+      })
+    }, delay)
+    delay += 10
+
+    const text = `Requesting x-agent ${this.operation} on ${this.targetAgentName}`
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
+      })
+    }, delay)
+    delay += 10
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } },
+      })
+    }, delay)
+    delay += 10
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+      })
+    }, delay)
+    delay += 10
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_stop' } },
+      })
+    }, delay)
+    delay += 20
+
+    const capturedDelay = delay
+    setTimeout(() => {
+      reviewManager.requestXAgentReview(
+        agentSlug,
+        this.targetAgentSlug,
+        this.targetAgentName,
+        this.operation,
+      ).then((decision) => {
+        client.writeJsonlEntry(sessionId, {
+          type: 'user',
+          message: { content: userMessage },
+          timestamp: new Date().toISOString(),
+        })
+        client.writeJsonlEntry(sessionId, {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: `X-agent ${this.operation} ${decision === 'allow' ? 'approved' : 'denied'} by user.` }] },
+          timestamp: new Date().toISOString(),
+        })
+        client.emitStreamMessage(sessionId, {
+          type: 'result',
+          content: { type: 'result', subtype: 'success' },
+        })
+      }).catch(() => {
         client.emitStreamMessage(sessionId, {
           type: 'result',
           content: { type: 'result', subtype: 'success' },
@@ -624,6 +736,85 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         },
       },
     ])],
+    // Note: scenarios are matched by substring in insertion order, so
+    // longer/more-specific triggers must come first to avoid being shadowed
+    // by shorter prefixes.
+    ['ask multi parallel', new UserInputRequestScenario([
+      {
+        name: 'mcp__user-input__request_secret',
+        input: { secretName: 'DATABASE_URL', reason: 'Connection string for the database' },
+      },
+      {
+        name: 'AskUserQuestion',
+        input: {
+          questions: [
+            {
+              question: 'Which database should we use?',
+              header: 'Database',
+              options: [
+                { label: 'PostgreSQL', description: 'Reliable relational database' },
+                { label: 'MongoDB', description: 'Flexible document store' },
+              ],
+              multiSelect: false,
+            },
+            {
+              question: 'Which cloud provider do you prefer?',
+              header: 'Cloud',
+              options: [
+                { label: 'AWS', description: 'Amazon Web Services' },
+                { label: 'GCP', description: 'Google Cloud Platform' },
+              ],
+              multiSelect: false,
+            },
+            {
+              question: 'Preferred language?',
+              header: 'Language',
+              options: [
+                { label: 'TypeScript', description: 'Typed JavaScript' },
+                { label: 'Go', description: 'Compiled' },
+              ],
+              multiSelect: false,
+            },
+          ],
+        },
+      },
+    ])],
+    ['ask multi', new UserInputRequestScenario([
+      {
+        name: 'AskUserQuestion',
+        input: {
+          questions: [
+            {
+              question: 'Which database should we use?',
+              header: 'Database',
+              options: [
+                { label: 'PostgreSQL', description: 'Reliable relational database' },
+                { label: 'MongoDB', description: 'Flexible document store' },
+              ],
+              multiSelect: false,
+            },
+            {
+              question: 'Which cloud provider do you prefer?',
+              header: 'Cloud',
+              options: [
+                { label: 'AWS', description: 'Amazon Web Services' },
+                { label: 'GCP', description: 'Google Cloud Platform' },
+              ],
+              multiSelect: false,
+            },
+            {
+              question: 'Preferred language?',
+              header: 'Language',
+              options: [
+                { label: 'TypeScript', description: 'Typed JavaScript' },
+                { label: 'Go', description: 'Compiled' },
+              ],
+              multiSelect: false,
+            },
+          ],
+        },
+      },
+    ])],
     ['ask script', new UserInputRequestScenario([
       {
         name: 'mcp__user-input__request_script_run',
@@ -664,6 +855,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       ['chat:write'],
       { 'chat:write': 'Send a message to a channel' }
     )],
+    // X-agent review scenario for E2E tests
+    ['x-agent review', new XAgentReviewScenario('helper-bot', 'Helper Bot', 'list')],
     // Tool rendering scenarios for E2E tests
     ['read file', new ToolUseScenario(
       'Read',
@@ -730,6 +923,56 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     'This is a mock response from the E2E test container.'
   )
 
+  // Test recorders — capture composer options sent with each call so E2E specs
+  // can assert on them. Cleared via resetCallRecords().
+  static lastSendMessageCall: {
+    sessionId: string
+    content: string
+    effort?: string
+    model?: string
+  } | null = null
+  static sendMessageCalls: Array<{
+    sessionId: string
+    content: string
+    effort?: string
+    model?: string
+  }> = []
+  static lastCreateSessionCall: {
+    effort?: string
+    model?: string
+    initialMessage?: string
+  } | null = null
+  static createSessionCalls: Array<{
+    effort?: string
+    model?: string
+    initialMessage?: string
+  }> = []
+
+  static resetCallRecords(): void {
+    MockContainerClient.lastSendMessageCall = null
+    MockContainerClient.sendMessageCalls = []
+    MockContainerClient.lastCreateSessionCall = null
+    MockContainerClient.createSessionCalls = []
+  }
+
+  /**
+   * Append a record to a per-data-dir JSONL file for E2E test inspection.
+   * Tests read this file with `fs` to assert the runtime options the renderer
+   * sent through the full API path. No-op outside E2E mode.
+   */
+  private writeMockRecord(record: Record<string, unknown>): void {
+    if (process.env.E2E_MOCK !== 'true') return
+    try {
+      const dir = process.env.SUPERAGENT_DATA_DIR
+      if (!dir) return
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+      const file = path.join(dir, '.e2e-mock-recorder.jsonl')
+      fs.appendFileSync(file, JSON.stringify(record) + '\n')
+    } catch {
+      // Recording is best-effort — don't break the mock if the FS write fails.
+    }
+  }
+
   private config: ContainerConfig
   private running: boolean = false
   private activeBrowserSessionId: string | null = null
@@ -770,6 +1013,11 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true })
       }
+
+      // Ensure uuid/parentUuid/sessionId so entries conform to JsonlMessageEntry
+      if (!entry.uuid) entry.uuid = randomUUID()
+      if (!('parentUuid' in entry)) entry.parentUuid = null
+      if (!entry.sessionId) entry.sessionId = apiSessionId
 
       // Append the entry as a JSON line
       fs.appendFileSync(jsonlPath, JSON.stringify(entry) + '\n')
@@ -831,7 +1079,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     console.log(`[MockContainerClient] Started mock container for agent ${this.config.agentId}`)
   }
 
-  async stop(): Promise<{ forceStopUsed: boolean }> {
+  async stop(_options?: StopOptions): Promise<{ forceStopUsed: boolean }> {
     if (this.activeBrowserSessionId && cleanupBrowserSessionFn) {
       cleanupBrowserSessionFn(this.activeBrowserSessionId)
       this.activeBrowserSessionId = null
@@ -891,6 +1139,15 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       })
     }
 
+    // Dashboard artifact HTML — serves a minimal page for E2E testing of polyfill injection
+    if (fetchPath.match(/^\/artifacts\/[^/]+\/?$/) || fetchPath.match(/^\/artifacts\/[^/]+\/index\.html$/)) {
+      const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Mock Dashboard</title></head><body><h1>Mock Dashboard</h1><script>window.__DASHBOARD_LOADED__ = true;</script></body></html>`
+      return new Response(html, {
+        status: 200,
+        headers: { 'Content-Type': 'text/html; charset=utf-8' },
+      })
+    }
+
     // Handle input resolve/reject — decrement pending count and complete session when all done
     const resolveMatch = fetchPath.match(/^\/inputs\/[^/]+\/(resolve|reject)$/)
     if (resolveMatch) {
@@ -947,17 +1204,43 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   // Health checks
 
-  async waitForHealthy(_timeoutMs?: number): Promise<boolean> {
+  async waitForHealthy(_timeoutMs?: number, _knownPort?: number): Promise<boolean> {
     return this.running
   }
 
-  async isHealthy(): Promise<boolean> {
+  async isHealthy(_knownPort?: number): Promise<boolean> {
     return this.running
   }
 
   // Session management
 
   async createSession(options: CreateSessionOptions): Promise<ContainerSession> {
+    // Record for E2E test assertions
+    MockContainerClient.lastCreateSessionCall = {
+      effort: options.effort,
+      model: options.model,
+      initialMessage: options.initialMessage,
+    }
+    MockContainerClient.createSessionCalls.push({
+      effort: options.effort,
+      model: options.model,
+      initialMessage: options.initialMessage,
+    })
+    this.writeMockRecord({
+      type: 'createSession',
+      agentSlug: this.config.agentId,
+      effort: options.effort,
+      model: options.model,
+      initialMessage: options.initialMessage,
+      timestamp: new Date().toISOString(),
+    })
+
+    // Simulate container startup latency for onboarding sessions so the
+    // "Setting up your agent…" modal is visible long enough for E2E assertions.
+    if (options.initialMessage?.includes('agent-onboarding')) {
+      await new Promise((r) => setTimeout(r, 2000))
+    }
+
     const sessionId = `session_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
     const now = new Date().toISOString()
 
@@ -1026,7 +1309,29 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   // Message operations
 
-  async sendMessage(sessionId: string, content: string, _uuid?: string, _effort?: EffortLevel): Promise<void> {
+  async sendMessage(sessionId: string, content: string, _uuid?: string, options?: RuntimeOptions): Promise<void> {
+    // Record for E2E test assertions
+    MockContainerClient.lastSendMessageCall = {
+      sessionId,
+      content,
+      effort: options?.effort,
+      model: options?.model,
+    }
+    MockContainerClient.sendMessageCalls.push({
+      sessionId,
+      content,
+      effort: options?.effort,
+      model: options?.model,
+    })
+    this.writeMockRecord({
+      type: 'sendMessage',
+      agentSlug: this.config.agentId,
+      sessionId,
+      content,
+      effort: options?.effort,
+      model: options?.model,
+      timestamp: new Date().toISOString(),
+    })
     const session = this.sessions.get(sessionId)
     if (!session) {
       throw new Error(`Session ${sessionId} not found`)

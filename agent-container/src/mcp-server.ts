@@ -19,6 +19,7 @@ import {
   cancelTriggerTool,
 } from './tools/webhook-triggers'
 import { deliverFileTool } from './tools/deliver-file'
+import { deliverSessionTool } from './tools/deliver-session'
 import { requestFileTool } from './tools/request-file'
 import { requestBrowserInputTool } from './tools/request-browser-input'
 import { requestScriptRunTool } from './tools/request-script-run'
@@ -28,6 +29,11 @@ import { createDashboardTool } from './tools/create-dashboard'
 import { startDashboardTool } from './tools/start-dashboard'
 import { listDashboardsTool } from './tools/list-dashboards'
 import { getDashboardLogsTool } from './tools/get-dashboard-logs'
+import { listAgentsTool } from './tools/agents/list-agents'
+import { createAgentTool } from './tools/agents/create-agent'
+import { makeInvokeAgentTool } from './tools/agents/invoke-agent'
+import { getSessionsTool } from './tools/agents/get-sessions'
+import { getSessionTranscriptTool } from './tools/agents/get-session-transcript'
 
 /**
  * Factory functions for MCP servers.
@@ -49,7 +55,7 @@ export function createUserInputMcpServer() {
     tools: [
       requestSecretTool, requestConnectedAccountTool, searchConnectedAccountServicesTool,
       requestRemoteMcpTool, searchRemoteMcpServicesTool, scheduleTaskTool,
-      deliverFileTool, requestFileTool, requestBrowserInputTool,
+      deliverFileTool, deliverSessionTool, requestFileTool, requestBrowserInputTool,
       ...(includeScriptRun ? [requestScriptRunTool] : []),
       ...(includeWebhookTriggers ? [getAvailableTriggersTool, listTriggersTool, setupTriggerTool, cancelTriggerTool] : []),
     ],
@@ -77,5 +83,25 @@ export function createDashboardsMcpServer() {
     name: 'dashboards',
     version: '1.0.0',
     tools: [createDashboardTool, startDashboardTool, listDashboardsTool, getDashboardLogsTool],
+  })
+}
+
+/**
+ * @param getCallerSessionId - getter that returns the current Claude session ID
+ *   at tool-invocation time. Used by invoke_agent to identify which session is
+ *   calling so the host can enforce per-session policies (e.g. preventing an
+ *   already-invoked session from invoking further agents).
+ */
+export function createAgentsMcpServer(getCallerSessionId: () => string) {
+  return createSdkMcpServer({
+    name: 'agents',
+    version: '1.0.0',
+    tools: [
+      listAgentsTool,
+      createAgentTool,
+      makeInvokeAgentTool(getCallerSessionId),
+      getSessionsTool,
+      getSessionTranscriptTool,
+    ],
   })
 }

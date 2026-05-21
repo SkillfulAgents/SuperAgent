@@ -488,9 +488,11 @@ await this.slackApp.start()
 
 ### 5.4 Required Scopes
 
-Bot Token Scopes: `chat:write`, `app_mentions:read`, `channels:read`, `im:history`, `im:read`, `im:write`, `files:read`, `files:write`, `reactions:write`
+Bot Token Scopes: `chat:write`, `users:read`, `im:history`, `im:read`, `im:write`, `channels:history`, `channels:read`, `groups:history`, `groups:read`, `mpim:history`, `mpim:read`, `files:read`, `files:write`, `reactions:write`
 
-Event Subscriptions: `message.im` (DMs to bot), `app_mention` (optional)
+Event Subscriptions: `message.im` (DMs), `message.channels` (public channels), `message.groups` (private channels), `message.mpim` (group DMs)
+
+Without the `*:history` scopes and matching `message.*` event subscriptions, Bolt's `app.message()` handler stays silent for that conversation type — adding the bot to a channel will appear to succeed on Slack's side but the bot never sees the messages.
 
 ### 5.5 Streaming Strategy
 

@@ -5,6 +5,7 @@
  */
 
 import type { ChatIntegration, ChatIntegrationSession } from '@shared/lib/db/schema'
+import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 
@@ -106,7 +107,7 @@ export function useCreateChatIntegration() {
   return useMutation({
     mutationFn: async (params: {
       agentSlug: string
-      provider: 'telegram' | 'slack'
+      provider: ChatProvider
       name?: string
       config: Record<string, unknown>
       showToolCalls?: boolean
@@ -216,7 +217,7 @@ export function useClearChatSession() {
 export function useTestChatIntegrationCredentials() {
   return useMutation({
     mutationFn: async (params: {
-      provider: 'telegram' | 'slack'
+      provider: ChatProvider
       config: Record<string, unknown>
     }) => {
       const res = await apiFetch('/api/chat-integrations/test-credentials', {
@@ -228,7 +229,7 @@ export function useTestChatIntegrationCredentials() {
       if (!res.ok) {
         throw new Error((data as { error: string }).error || 'Invalid credentials')
       }
-      return data as { valid: boolean; botName?: string; botUsername?: string; team?: string; user?: string }
+      return data as { valid: boolean; botName?: string; botUsername?: string; team?: string; user?: string; phoneNumber?: string; token?: string }
     },
   })
 }

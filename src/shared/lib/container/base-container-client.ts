@@ -13,10 +13,11 @@ import type {
   ContainerSession,
   ContainerStats,
   CreateSessionOptions,
-  EffortLevel,
   StartOptions,
+  StopOptions,
   StreamMessage,
 } from './types'
+import type { RuntimeOptions } from './runtime-options'
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { getSettings } from '@shared/lib/config/settings'
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
@@ -504,7 +505,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       // Wait for container to be healthy
       addErrorBreadcrumb({ category: 'container', message: 'Waiting for container health check', data: { port, containerName } })
-      const healthy = await this.waitForHealthy(60000)
+      const healthy = await this.waitForHealthy(60000, port)
       if (!healthy) {
         // Grab logs to help diagnose the failure
         const logs = await this.getLogs(30)
@@ -545,15 +546,21 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
   }
 
-  async stop(): Promise<{ forceStopUsed: boolean }> {
+  async stop(options?: StopOptions): Promise<{ forceStopUsed: boolean }> {
     let forceStopUsed = false
+    const stopTimeoutMs = options?.stopTimeoutMs ?? 10_000
+    const killTimeoutMs = options?.killTimeoutMs ?? 5_000
 
     try {
       // Terminate all WebSocket connections immediately (no graceful close handshake)
       // to avoid ECONNRESET errors when the container is stopped
       for (const ws of this.wsConnections.values()) {
         ws.removeAllListeners()
-        ws.terminate()
+        try {
+          ws.terminate()
+        } catch {
+          // ws.terminate() throws if the socket is still in CONNECTING state
+        }
       }
       this.wsConnections.clear()
 
@@ -567,7 +574,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       const stopped = await Promise.race([
         execWithPathSilent(`${runner} stop -t 5 ${containerName}`).then(() => true),
-        new Promise<false>((resolve) => setTimeout(() => resolve(false), 10000)),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), stopTimeoutMs)),
       ])
 
       if (!stopped) {
@@ -575,7 +582,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         addErrorBreadcrumb({ category: 'container', message: 'Graceful stop timed out, escalating to kill', data: { containerName, agentId: this.config.agentId } })
         const killed = await Promise.race([
           execWithPathSilent(`${runner} kill ${containerName}`).then(() => true),
-          new Promise<false>((resolve) => setTimeout(() => resolve(false), 5000)),
+          new Promise<false>((resolve) => setTimeout(() => resolve(false), killTimeoutMs)),
         ])
 
         if (!killed) {
@@ -617,7 +624,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // to avoid ECONNRESET errors when the container is stopped
       for (const ws of this.wsConnections.values()) {
         ws.removeAllListeners()
-        ws.terminate()
+        try {
+          ws.terminate()
+        } catch {
+          // ws.terminate() throws if the socket is still in CONNECTING state
+        }
       }
       this.wsConnections.clear()
 
@@ -647,19 +658,26 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
   }
 
-  async waitForHealthy(timeoutMs: number = 30000): Promise<boolean> {
+  async waitForHealthy(timeoutMs: number = 30000, knownPort?: number): Promise<boolean> {
     const startTime = Date.now()
-    const pollInterval = 1000
+    const pollInterval = 250
+    // Only check container exit status every ~2s to avoid spawning docker inspect on every tick
+    const exitCheckInterval = 2000
+    let lastExitCheck = 0
 
     while (Date.now() - startTime < timeoutMs) {
-      if (await this.isHealthy()) {
+      if (await this.isHealthy(knownPort)) {
         return true
       }
 
-      // If container has already exited, fail immediately instead of polling until timeout
-      const info = await this.getInfo()
-      if (info.status !== 'running') {
-        return false
+      // Periodically check if the container has exited so we can fail fast
+      const now = Date.now()
+      if (now - lastExitCheck >= exitCheckInterval) {
+        lastExitCheck = now
+        const info = await this.getInfo()
+        if (info.status !== 'running') {
+          return false
+        }
       }
 
       await new Promise((resolve) => setTimeout(resolve, pollInterval))
@@ -668,13 +686,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return false
   }
 
-  async isHealthy(): Promise<boolean> {
-    const info = await this.getInfo()
-    if (info.status !== 'running' || !info.port) {
-      return false
-    }
+  async isHealthy(knownPort?: number): Promise<boolean> {
+    const port = knownPort ?? (await this.getInfo()).port
+    if (!port) return false
     try {
-      const response = await fetch(`http://127.0.0.1:${info.port}/health`)
+      const response = await fetch(`http://127.0.0.1:${port}/health`)
       return response.ok
     } catch {
       return false
@@ -835,9 +851,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return response.ok
   }
 
-  async sendMessage(sessionId: string, content: string, uuid?: string, effort?: EffortLevel): Promise<void> {
+  async sendMessage(sessionId: string, content: string, uuid?: string, options?: RuntimeOptions): Promise<void> {
     const port = await this.getPortOrThrow()
     const timeoutMs = 30000 // 30 second timeout
+    const effort = options?.effort
+    const model = options?.model
 
     try {
       const controller = new AbortController()
@@ -848,7 +866,12 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content, ...(uuid ? { uuid } : {}), ...(effort ? { effort } : {}) }),
+          body: JSON.stringify({
+            content,
+            ...(uuid ? { uuid } : {}),
+            ...(effort ? { effort } : {}),
+            ...(model ? { model } : {}),
+          }),
           signal: controller.signal,
         }
       )
@@ -1074,9 +1097,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    * The caller must clean up the file after the container starts.
    */
   protected buildEnvFile(additionalEnvVars?: Record<string, string>): { flag: string; cleanup: () => void } {
+    const settings = getSettings()
     const envVars: Record<string, string | undefined> = {
       ...getActiveLlmProvider().getContainerEnvVars(),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
+      ENABLE_TOOL_SEARCH: settings.enableToolSearch !== false ? 'true' : 'false',
       ...this.config.envVars,
       ...additionalEnvVars,
     }

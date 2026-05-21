@@ -117,9 +117,11 @@ export function isToolResultOnlyMessage(entry: JsonlMessageEntry): boolean {
 export function isTaskNotificationMessage(entry: JsonlMessageEntry): boolean {
   if (entry.type !== 'user') return false
 
+  if (entry.origin?.kind === 'task-notification') return true
+
+  // TODO deprecate 2026-08-01: XML fallback for JSONL files written before SDK 0.3.144 added the origin field
   const content = entry.message.content
   if (typeof content !== 'string') return false
-
   return content.trimStart().startsWith('<task-notification>')
 }
 

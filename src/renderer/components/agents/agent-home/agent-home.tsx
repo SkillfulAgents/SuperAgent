@@ -2,29 +2,40 @@
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { ArrowUp, Loader2, Eye, Settings2, Maximize2, Minimize2, Search, ArrowUpDown } from 'lucide-react'
-import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import { ArrowUp, Loader2, Eye, Settings2, Maximize2, Minimize2, Search, Check } from 'lucide-react'
 import { useCreateSession, useSessions } from '@renderer/hooks/use-sessions'
 import { useScheduledTasks } from '@renderer/hooks/use-scheduled-tasks'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { RelatedSessions, type SortOrder } from '@renderer/components/sessions/related-sessions'
+import { SortPopover } from '@renderer/components/sessions/sort-popover'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { useSelection } from '@renderer/context/selection-context'
 import { useUser } from '@renderer/context/user-context'
+import { toast } from 'sonner'
 import { apiFetch } from '@renderer/lib/api'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
-import { EffortSelector } from '@renderer/components/messages/effort-selector'
-import type { EffortLevel } from '@shared/lib/container/types'
-import { HomeCrons } from './home-crons'
+import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
+import { HomeTriggers } from './home-triggers'
 import { HomeSkills } from './home-skills'
 import { HomeExtras } from './home-extras'
 import { HomeConnections } from './home-connections'
+import { HomeChatIntegrations } from './home-chat-integrations'
 import { HomeVolumes } from './home-volumes'
 import { HomeBookmarks } from './home-bookmarks'
-import type { ApiAgent } from '@renderer/hooks/use-agents'
+import { DashboardCard } from '@renderer/components/home/dashboard-card'
+import { useUpdateAgent, useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
+import { AgentCreationAids, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
+import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
+import {
+  useTypewriterPlaceholder,
+  DEFAULT_AGENT_PROMPT_EXAMPLES,
+  DISABLED as TYPEWRITER_DISABLED,
+} from '@renderer/hooks/use-typewriter-placeholder'
+import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
+import { useRenameUntitledAgent } from '@renderer/hooks/use-rename-untitled-agent'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { formatDistanceToNow } from 'date-fns'
 
@@ -36,7 +47,8 @@ interface AgentHomeProps {
 
 export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHomeProps) {
   useRenderTracker('AgentHome')
-  const { selectScheduledTask, consumePendingDraft } = useSelection()
+  const { setView, setAgent, consumePendingDraft } = useSelection()
+  const startOnboardingSession = useStartOnboardingSession()
   const { canUseAgent, canAdminAgent } = useUser()
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)
@@ -44,12 +56,57 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false)
   const [sessionSearch, setSessionSearch] = useState('')
   const [sessionSort, setSessionSort] = useState<SortOrder>('newest')
-  const [sortPopoverOpen, setSortPopoverOpen] = useState(false)
-  const [effort, setEffort] = useState<EffortLevel>('high')
-  const sessionSearchRef = useRef<HTMLInputElement>(null)
-  const createSession = useCreateSession()
-
   const { data: sessionsData } = useSessions(agent.slug)
+  // First-session Opus default: when the session list has finished loading
+  // and is empty, the brand-new agent's first session should default to Opus
+  // regardless of the user's "Default Model" setting. Passed as a preferred
+  // family — the user can still pick a different model in the dropdown.
+  const isFirstSession = Array.isArray(sessionsData) && sessionsData.length === 0
+  const composerOptions = useComposerOptions(
+    isFirstSession ? { preferredFamily: 'opus' } : {}
+  )
+  const sessionSearchRef = useRef<HTMLInputElement>(null)
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
+  // Tracks an explicit user collapse so the auto-expand effect doesn't fight it.
+  // Reset when the message clears (e.g. after submit).
+  const userCollapsedRef = useRef(false)
+  const createSession = useCreateSession()
+  const updateAgent = useUpdateAgent()
+  const deleteAgent = useDeleteAgent()
+  const renameUntitledAgent = useRenameUntitledAgent()
+  // Tracks whether a name has already been assigned (e.g. by the voice agent)
+  // so the post-submit deriveAgentName fallback doesn't clobber it.
+  const nameAssignedRef = useRef(false)
+  const [isEditingName, setIsEditingName] = useState(false)
+  const [editedName, setEditedName] = useState(agent.name)
+
+  const handleStartRename = () => {
+    setEditedName(agent.name)
+    setIsEditingName(true)
+  }
+
+  const handleCancelRename = () => {
+    setIsEditingName(false)
+    setEditedName(agent.name)
+  }
+
+  const handleSaveRename = async () => {
+    const trimmed = editedName.trim()
+    if (!trimmed || trimmed === agent.name) {
+      handleCancelRename()
+      return
+    }
+    try {
+      await updateAgent.mutateAsync({ slug: agent.slug, name: trimmed })
+      setIsEditingName(false)
+    } catch (error) {
+      console.error('Failed to rename agent:', error)
+      toast.error('Failed to rename agent', {
+        description: error instanceof Error ? error.message : 'Please try again.',
+      })
+    }
+  }
+
   const sessions = useMemo(() => {
     if (!Array.isArray(sessionsData)) return []
     return sessionsData.map((s) => ({
@@ -96,15 +153,24 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
       return res.json() as Promise<{ path: string }>
     }, [agent.slug]),
     onSubmit: useCallback(async (content: string) => {
+      const shouldRename =
+        agent.name === UNTITLED_AGENT_NAME && sessions.length === 0 && !nameAssignedRef.current
       const session = await createSession.mutateAsync({
         agentSlug: agent.slug,
         message: content,
-        effort,
+        ...composerOptions.toRuntimeOptions(),
       })
       onSessionCreated(session.id, content)
-    }, [createSession, agent.slug, onSessionCreated, effort]),
+      // Fire rename after the session is created + navigated — the mutation
+      // survives AgentHome unmounting since the queryClient is app-scoped.
+      if (shouldRename) {
+        nameAssignedRef.current = true
+        renameUntitledAgent.mutate({ slug: agent.slug, prompt: content })
+      }
+    }, [createSession, agent.slug, agent.name, onSessionCreated, composerOptions, sessions.length, renameUntitledAgent]),
     submitDisabled: createSession.isPending || !isRuntimeReady,
     keepMessageUntilComplete: true,
+    draftKey: `agent:${agent.slug}`,
   })
 
   // Consume any pending draft from voice agent flow
@@ -116,10 +182,18 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   // eslint-disable-next-line react-hooks/exhaustive-deps -- only run on mount
   }, [])
 
-  // Auto-expand when message gets long (5+ lines)
+  // Reset the manual-collapse flag once the message clears.
   useEffect(() => {
-    const lineCount = composer.message.split('\n').length
-    if (lineCount >= 5 && !isExpanded) {
+    if (composer.message.trim() === '') userCollapsedRef.current = false
+  }, [composer.message])
+
+  // Auto-flip to expanded when the textarea content overflows its max-height
+  // (CSS-driven 6-line cap). field-sizing handles the actual sizing — this only
+  // decides whether to switch into the full-view layout.
+  useEffect(() => {
+    const el = composerTextareaRef.current
+    if (!el || isExpanded || userCollapsedRef.current) return
+    if (el.scrollHeight > el.clientHeight) {
       setIsExpanded(true)
     }
   }, [composer.message, isExpanded])
@@ -133,6 +207,38 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
 
   const isDisabled = createSession.isPending || composer.isUploading || !isRuntimeReady
 
+  const isFreshUntitled = agent.name === UNTITLED_AGENT_NAME && sessions.length === 0
+  const typewriterPlaceholder = useTypewriterPlaceholder(
+    isFreshUntitled ? DEFAULT_AGENT_PROMPT_EXAMPLES : TYPEWRITER_DISABLED,
+  )
+  const composerPlaceholder = isFreshUntitled
+    ? typewriterPlaceholder
+    : 'How can I help? Press cmd+enter to send'
+
+  const handleVoiceResult = useCallback(
+    ({ name, prompt }: { name: string; prompt: string }) => {
+      if (prompt) composer.setMessage(prompt)
+      if (name && agent.name === UNTITLED_AGENT_NAME) {
+        nameAssignedRef.current = true
+        updateAgent.mutate({ slug: agent.slug, name })
+      }
+    },
+    [composer, agent.name, agent.slug, updateAgent],
+  )
+
+  const handleImportComplete = useCallback(
+    async ({ agent: imported, hasOnboarding }: ImportResult) => {
+      setAgent(imported.slug)
+      if (agent.name === UNTITLED_AGENT_NAME && sessions.length === 0 && agent.slug !== imported.slug) {
+        deleteAgent.mutate(agent.slug)
+      }
+      if (hasOnboarding) {
+        await startOnboardingSession(imported.slug)
+      }
+    },
+    [setAgent, agent.slug, agent.name, sessions.length, deleteAgent, startOnboardingSession],
+  )
+
   const formatDate = useCallback(
     (dateStr: string) => formatDistanceToNow(new Date(dateStr), { addSuffix: true }),
     [],
@@ -141,13 +247,62 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const showRightColumn = isOwner
 
   return (
-    <div className="flex-1 flex flex-col overflow-y-auto px-10 py-10 bg-sidebar">
+    <div className="flex-1 flex flex-col overflow-y-auto px-10 py-10 bg-background">
       <div className={`grid gap-10 items-start ${showRightColumn ? 'grid-cols-1 xl:grid-cols-[1fr_minmax(320px,400px)] w-full max-w-6xl mx-auto' : 'max-w-2xl mx-auto'}`}>
         {/* Left Column — Chat composer + Sessions */}
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
-          <div className="flex items-center justify-between">
-            <h1 className="text-xl font-semibold">{agent.name}</h1>
-            <Button type="button" size="icon" variant="ghost" className="h-8 w-8" onClick={() => onOpenSettings?.()} aria-label="Agent settings" data-testid="agent-settings-button">
+          <div className="flex items-center justify-between gap-2">
+            {isEditingName && isOwner ? (
+              <div className="flex items-center gap-2 flex-1 min-w-0">
+                <Input
+                  value={editedName}
+                  onChange={(e) => setEditedName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      handleSaveRename()
+                    } else if (e.key === 'Escape') {
+                      e.preventDefault()
+                      handleCancelRename()
+                    }
+                  }}
+                  autoFocus
+                  disabled={updateAgent.isPending}
+                  className="h-9 text-xl font-semibold"
+                  data-testid="agent-name-input"
+                />
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="h-8 w-8 shrink-0"
+                  onClick={handleSaveRename}
+                  disabled={updateAgent.isPending}
+                  aria-label="Save name"
+                  data-testid="agent-name-save"
+                >
+                  {updateAgent.isPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Check className="h-4 w-4" />
+                  )}
+                </Button>
+              </div>
+            ) : isOwner ? (
+              <button
+                type="button"
+                className="text-xl font-semibold truncate text-left cursor-pointer hover:opacity-80"
+                onClick={handleStartRename}
+                data-testid="agent-name"
+              >
+                {agent.name}
+              </button>
+            ) : (
+              <h1 className="text-xl font-semibold truncate" data-testid="agent-name">
+                {agent.name}
+              </h1>
+            )}
+            <Button type="button" size="icon" variant="ghost" className="h-8 w-8 shrink-0" onClick={() => onOpenSettings?.()} aria-label="Agent settings" data-testid="agent-settings-button">
               <Settings2 className="h-4 w-4" />
             </Button>
           </div>
@@ -184,18 +339,19 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                 {...composer.dragHandlers}
               >
                 <ChatComposerBox
+                  textareaRef={composerTextareaRef}
                   attachments={composer.attachments}
                   onRemoveAttachment={composer.removeAttachment}
                   value={composer.message}
                   onChange={(e) => composer.setMessage(e.target.value)}
                   onKeyDown={handleKeyDown}
                   onPaste={composer.handlePaste}
-                  placeholder="How can I help? Press cmd+enter to send"
+                  placeholder={composerPlaceholder}
                   disabled={isDisabled}
                   rows={2}
                   autoFocus
                   dataTestId="home-message-input"
-                  textareaClassName={`transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh]' : 'min-h-[60px]'}`}
+                  textareaClassName={`transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh] max-h-[50vh]' : 'min-h-[60px] max-h-[120px]'}`}
                   leftActions={(
                     <>
                       <AttachmentPicker
@@ -204,11 +360,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                         onRecentFileAttach={(file) => composer.addFiles([{ file }])}
                         disabled={isDisabled}
                       />
-                      <EffortSelector
-                        value={effort}
-                        onChange={setEffort}
-                        disabled={isDisabled}
-                      />
+                      <ComposerOptions state={composerOptions} disabled={isDisabled} />
                     </>
                   )}
                   topRightActions={(
@@ -217,7 +369,12 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                       size="icon"
                       variant="ghost"
                       className="h-6 w-6 text-muted-foreground/50 hover:text-foreground"
-                      onClick={() => setIsExpanded((v) => !v)}
+                      onClick={() => setIsExpanded((v) => {
+                        // If user is collapsing, remember it so the auto-expand
+                        // effect doesn't immediately re-flip a still-overflowing message.
+                        userCollapsedRef.current = v
+                        return !v
+                      })}
                       aria-label={isExpanded ? 'Shrink input' : 'Expand input'}
                     >
                       {isExpanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
@@ -226,20 +383,38 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                   rightActions={(
                     <>
                       <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} />
-                      <Button
-                        type="submit"
-                        size="icon"
-                        className="h-[34px] w-[34px]"
-                        disabled={!composer.canSubmit}
-                        data-testid="home-send-button"
-                        aria-label="Send message"
-                      >
-                        {isDisabled ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <ArrowUp className="h-4 w-4" />
-                        )}
-                      </Button>
+                      {isFreshUntitled ? (
+                        <Button
+                          type="submit"
+                          size="sm"
+                          disabled={!composer.canSubmit}
+                          data-testid="home-send-button"
+                        >
+                          {isDisabled ? (
+                            <>
+                              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                              Creating...
+                            </>
+                          ) : (
+                            'Create Agent'
+                          )}
+                        </Button>
+                      ) : (
+                        <Button
+                          type="submit"
+                          size="icon"
+                          className="h-[34px] w-[34px]"
+                          disabled={!composer.canSubmit}
+                          data-testid="home-send-button"
+                          aria-label="Send message"
+                        >
+                          {isDisabled ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <ArrowUp className="h-4 w-4" />
+                          )}
+                        </Button>
+                      )}
                     </>
                   )}
                   footer={(
@@ -251,88 +426,90 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
               {/* Bookmarks */}
               <HomeBookmarks agentSlug={agent.slug} isOwner={isOwner} />
 
-              {/* Sessions list */}
-              <div className="pt-2">
-                <div className="flex items-center gap-2">
-                  <h2 className="text-sm font-medium text-muted-foreground flex-1">Sessions</h2>
-                  <Popover open={sortPopoverOpen} onOpenChange={setSortPopoverOpen}>
-                    <PopoverTrigger asChild>
-                      <Button type="button" size="icon" variant="ghost" className="h-6 w-6 shrink-0" aria-label="Sort sessions">
-                        <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground" />
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent align="end" className="w-40 p-1">
-                      <button
-                        className={`flex w-full items-center rounded-sm px-2 py-1.5 text-xs transition-colors ${sessionSort === 'newest' ? 'bg-muted font-medium' : 'hover:bg-muted'}`}
-                        onClick={() => { setSessionSort('newest'); setSortPopoverOpen(false) }}
-                      >
-                        Newest first
-                      </button>
-                      <button
-                        className={`flex w-full items-center rounded-sm px-2 py-1.5 text-xs transition-colors ${sessionSort === 'oldest' ? 'bg-muted font-medium' : 'hover:bg-muted'}`}
-                        onClick={() => { setSessionSort('oldest'); setSortPopoverOpen(false) }}
-                      >
-                        Oldest first
-                      </button>
-                    </PopoverContent>
-                  </Popover>
-                  <Button
-                    type="button"
-                    size="icon"
-                    variant="ghost"
-                    className="h-6 w-6 shrink-0"
-                    onClick={() => {
-                      const next = !sessionSearchOpen
-                      setSessionSearchOpen(next)
-                      if (!next) setSessionSearch('')
-                      else setTimeout(() => sessionSearchRef.current?.focus(), 0)
-                    }}
-                    aria-label="Search sessions"
-                  >
-                    <Search className="h-3.5 w-3.5 text-muted-foreground" />
-                  </Button>
-                  {sessionSearchOpen && (
-                    <Input
-                      ref={sessionSearchRef}
-                      value={sessionSearch}
-                      onChange={(e) => setSessionSearch(e.target.value)}
-                      placeholder="Filter sessions..."
-                      className="h-6 text-xs flex-1"
-                    />
-                  )}
-                </div>
-                <div className="border-b mt-2" />
+              {/* Sessions list / creation aids */}
+              <div className={sessions.length > 0 ? 'pt-2' : '-mt-5'}>
                 {sessions.length > 0 ? (
-                  <RelatedSessions
-                    sessions={sessions}
-                    agentSlug={agent.slug}
-                    formatDate={formatDate}
-                    showIcon={false}
-                    showHeader={false}
-                    searchQuery={sessionSearch}
-                    sortOrder={sessionSort}
-                  />
+                  <>
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-sm font-medium text-muted-foreground flex-1">Sessions</h2>
+                      <SortPopover value={sessionSort} onChange={setSessionSort} ariaLabel="Sort sessions" />
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="h-6 w-6 shrink-0"
+                        onClick={() => {
+                          const next = !sessionSearchOpen
+                          setSessionSearchOpen(next)
+                          if (!next) setSessionSearch('')
+                          else setTimeout(() => sessionSearchRef.current?.focus(), 0)
+                        }}
+                        aria-label="Search sessions"
+                      >
+                        <Search className="h-3.5 w-3.5 text-muted-foreground" />
+                      </Button>
+                      {sessionSearchOpen && (
+                        <Input
+                          ref={sessionSearchRef}
+                          value={sessionSearch}
+                          onChange={(e) => setSessionSearch(e.target.value)}
+                          placeholder="Filter sessions..."
+                          className="h-6 text-xs flex-1"
+                        />
+                      )}
+                    </div>
+                    <div className="border-b mt-2" />
+                    <RelatedSessions
+                      sessions={sessions}
+                      agentSlug={agent.slug}
+                      formatDate={formatDate}
+                      showIcon={false}
+                      showHeader={false}
+                      searchQuery={sessionSearch}
+                      sortOrder={sessionSort}
+                    />
+                  </>
                 ) : (
-                  <div className="rounded-lg border border-dashed p-4 mt-3">
-                    <p className="text-xs text-muted-foreground">No sessions yet. Send a message to start one.</p>
-                  </div>
+                  <AgentCreationAids
+                    onVoiceResult={handleVoiceResult}
+                    onImportComplete={handleImportComplete}
+                  />
                 )}
               </div>
             </>
           )}
         </div>
 
-        {/* Right Column — Crons + Connections + Skills + Volumes */}
+        {/* Right Column — Triggers + Connections + Skills + Volumes */}
         {showRightColumn && (
           <div className="space-y-3">
-            <HomeCrons
+            {(Array.isArray(agent.dashboards) ? agent.dashboards : []).map((d) => (
+              <DashboardCard
+                key={d.slug}
+                dashboard={d}
+                agentSlug={agent.slug}
+              />
+            ))}
+            <HomeTriggers
               agentSlug={agent.slug}
               scheduledTasks={scheduledTasks}
-              formatDate={formatDate}
-              onSelectTask={selectScheduledTask}
+              onSelectTask={(taskId: string) => setView({ kind: 'task', id: taskId })}
+              onSelectWebhook={(webhookId: string) => setView({ kind: 'webhook', id: webhookId })}
             />
-            <HomeConnections agentSlug={agent.slug} onOpenSettings={onOpenSettings} />
-            <HomeSkills agentSlug={agent.slug} />
+            <HomeConnections agentSlug={agent.slug} />
+            <HomeSkills agentSlug={agent.slug} onRunSkill={(skillPath) => {
+              const text = `/${skillPath} `
+              composer.setMessage(text)
+              composerTextareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+              setTimeout(() => {
+                const el = composerTextareaRef.current
+                if (el) {
+                  el.focus()
+                  el.selectionStart = el.selectionEnd = text.length
+                }
+              }, 0)
+            }} />
+            <HomeChatIntegrations agentSlug={agent.slug} />
             <HomeVolumes agentSlug={agent.slug} />
             <HomeExtras agentSlug={agent.slug} onOpenSettings={onOpenSettings} />
           </div>

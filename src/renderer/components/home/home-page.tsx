@@ -3,24 +3,24 @@ import { useMemo } from 'react'
 import { useAgents } from '@renderer/hooks/use-agents'
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
-import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
 import { useUsageData } from '@renderer/hooks/use-usage'
 import { useSessions } from '@renderer/hooks/use-sessions'
 import { useSelection } from '@renderer/context/selection-context'
-import { AgentStatus, getAgentActivityStatus } from '@renderer/components/agents/agent-status'
+import { AgentStatus } from '@renderer/components/agents/agent-status'
+import { getAgentActivityStatus } from '@shared/lib/types/agent-activity-status'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
-import { useDialogs } from '@renderer/context/dialog-context'
+import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Button } from '@renderer/components/ui/button'
 import { useSidebar } from '@renderer/components/ui/sidebar'
-import { Popover, PopoverTrigger, PopoverContent } from '@renderer/components/ui/popover'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
+import { DashboardCard } from './dashboard-card'
 import { isElectron, getPlatform } from '@renderer/lib/env'
-import { Plus, Bot, Download, Loader2, Clock, CalendarClock, LayoutDashboard } from 'lucide-react'
+import { Plus, Bot, Loader2, Clock, CalendarClock, SquareMousePointer, Search } from 'lucide-react'
+import { useSearch } from '@renderer/context/search-context'
 import { AreaChart, Area, ResponsiveContainer, Tooltip } from 'recharts'
 import type { ApiAgent } from '@shared/lib/types/api'
-import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
 import type { DailyUsageEntry } from '@shared/lib/types/usage'
 import { useRenderTracker } from '@renderer/lib/perf'
 
@@ -131,11 +131,10 @@ function StatusTab({ status, hasActiveSessions, hasSessionsAwaitingInput }: {
 
 function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyUsageEntry[] }) {
   useRenderTracker('AgentCard')
-  const { selectAgent, selectSession } = useSelection()
+  const { setAgent } = useSelection()
   const lastWorked = formatRelativeTime(agent.lastActivityAt)
   const nextRun = formatRelativeTime(agent.nextScheduledTaskAt)
   const dashboardCount = agent.dashboardCount ?? 0
-  const dashboardNames = agent.dashboardNames ?? []
   const scheduledTaskCount = agent.scheduledTaskCount ?? 0
   const sparkData = useAgentUsageSpark(agent.slug, dailyUsage)
   const totalTokens = sparkData?.reduce((sum, d) => sum + d.tokens, 0) ?? 0
@@ -172,7 +171,7 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
     <div className="flex flex-col">
       <AgentContextMenu agent={agent}>
         <button
-          onClick={() => selectAgent(agent.slug)}
+          onClick={() => setAgent(agent.slug)}
           className="relative text-left p-4 rounded-lg border bg-card hover:border-accent-foreground/20 transition-colors flex flex-col gap-3 z-10 h-24 overflow-hidden"
         >
           {/* Spark chart background */}
@@ -216,9 +215,12 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
                 </span>
               )}
 
-              {/* Dashboards */}
+              {/* Dashboard count (each dashboard also gets its own card below) */}
               {dashboardCount > 0 && (
-                <DashboardChips names={dashboardNames} slugs={agent.dashboardSlugs ?? []} agentSlug={agent.slug} />
+                <span className="flex items-center gap-1">
+                  <SquareMousePointer className="h-3 w-3" />
+                  {dashboardCount} dashboard{dashboardCount !== 1 ? 's' : ''}
+                </span>
               )}
 
               {/* Usage tokens */}
@@ -239,10 +241,10 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
         const hasUnread = !session.isActive && !session.isAwaitingInput && session.hasUnreadNotifications
 
         const colors = isAwaiting
-          ? 'bg-orange-50 border-orange-200 dark:bg-orange-950/30 dark:border-orange-800'
+          ? 'bg-orange-50 border-orange-200 dark:bg-orange-900 dark:border-orange-800'
           : isWorking
-          ? 'bg-green-50 border-green-200 dark:bg-green-950/30 dark:border-green-800'
-          : 'bg-blue-50 border-blue-200 dark:bg-blue-950/30 dark:border-blue-800'
+          ? 'bg-green-50 border-green-200 dark:bg-green-900 dark:border-green-800'
+          : 'bg-blue-50 border-blue-200 dark:bg-blue-950 dark:border-blue-800'
 
         return (
           <div
@@ -251,7 +253,7 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
             style={{ marginTop: -6, zIndex: visibleSessions.length + 1 - i }}
           >
             <button
-              onClick={() => { selectAgent(agent.slug); selectSession(session.id) }}
+              onClick={() => setAgent(agent.slug, { kind: 'session', id: session.id })}
               className={`w-full flex items-center gap-2 px-3 py-1.5 pt-3 text-left text-xs border rounded-b-lg transition-colors hover:brightness-95 ${colors}`}
             >
               {isAwaiting ? (
@@ -277,8 +279,8 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
           style={{ marginTop: -6, zIndex: 0 }}
         >
           <button
-            onClick={() => selectAgent(agent.slug)}
-            className="w-full flex items-center gap-2 px-3 py-1.5 pt-3 text-left text-xs border rounded-b-lg transition-colors hover:brightness-95 bg-blue-50 border-blue-200 dark:bg-blue-950/30 dark:border-blue-800"
+            onClick={() => setAgent(agent.slug)}
+            className="w-full flex items-center gap-2 px-3 py-1.5 pt-3 text-left text-xs border rounded-b-lg transition-colors hover:brightness-95 bg-blue-50 border-blue-200 dark:bg-blue-950 dark:border-blue-800"
           >
             <span className="h-2 w-2 shrink-0 rounded-full bg-blue-500" />
             <span className="font-medium">{collapsedUnreadCount} more notification{collapsedUnreadCount !== 1 ? 's' : ''}</span>
@@ -289,101 +291,23 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
   )
 }
 
-function DashboardChips({ names, slugs, agentSlug }: { names: string[]; slugs: string[]; agentSlug: string }) {
-  const { selectAgent, selectDashboard } = useSelection()
-
-  const handleClick = (e: React.MouseEvent, slug: string) => {
-    e.stopPropagation()
-    e.preventDefault()
-    selectAgent(agentSlug)
-    selectDashboard(slug)
-  }
-
-  if (names.length <= 2) {
-    return (
-      <span className="flex items-center gap-1">
-        {names.map((name, i) => (
-          <span
-            key={slugs[i] ?? name}
-            role="button"
-            tabIndex={0}
-            onClick={(e) => handleClick(e, slugs[i])}
-            onKeyDown={(e) => { if (e.key === 'Enter') handleClick(e as unknown as React.MouseEvent, slugs[i]) }}
-            className="inline-flex items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-2xs font-medium hover:bg-muted-foreground/20 cursor-pointer"
-          >
-            <LayoutDashboard className="h-2.5 w-2.5" />
-            {name}
-          </span>
-        ))}
-      </span>
-    )
-  }
-
-  return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className="flex items-center gap-1 hover:text-foreground transition-colors cursor-pointer text-xs text-muted-foreground"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <LayoutDashboard className="h-3 w-3" />
-          {names.length} dashboards
-        </button>
-      </PopoverTrigger>
-      <PopoverContent className="w-48 p-2" align="start" onClick={(e) => e.stopPropagation()}>
-        <div className="flex flex-col gap-0.5">
-          {names.map((name, i) => (
-            <button
-              key={slugs[i] ?? name}
-              onClick={(e) => handleClick(e, slugs[i])}
-              className="text-left text-xs px-2 py-1 rounded hover:bg-muted"
-            >
-              {name}
-            </button>
-          ))}
-        </div>
-      </PopoverContent>
-    </Popover>
-  )
-}
-
-function TemplateCard({ template, onClick }: { template: ApiDiscoverableAgent; onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      className="text-left p-4 rounded-lg border border-dashed bg-card hover:bg-accent/50 transition-colors flex flex-col gap-2"
-    >
-      <div className="flex items-center gap-2">
-        <Download className="h-4 w-4 text-muted-foreground shrink-0" />
-        <span className="font-medium truncate">{template.name}</span>
-        <span className="text-xs text-muted-foreground shrink-0">v{template.version}</span>
-      </div>
-      {template.description && (
-        <p className="text-xs text-muted-foreground line-clamp-2">{template.description}</p>
-      )}
-      <p className="text-xs text-muted-foreground/70">{template.skillsetName}</p>
-    </button>
-  )
-}
-
 export function HomePage() {
   useRenderTracker('HomePage')
   const { data: agents, isLoading: agentsLoading } = useAgents()
   const { data: userSettings } = useUserSettings()
-  const { data: discoverableAgents } = useDiscoverableAgents()
   const { data: usageData } = useUsageData(7)
   const orderedAgents = useMemo(
     () => applyAgentOrder(agents ?? [], userSettings?.agentOrder),
     [agents, userSettings?.agentOrder]
   )
-  const { openCreateAgent } = useDialogs()
+  const { createUntitledAgent, isPending: isCreatingAgent } = useCreateUntitledAgent()
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && sidebarState === 'collapsed' && !isFullScreen
 
   const hasAgents = orderedAgents.length > 0
-  const hasTemplates = discoverableAgents && discoverableAgents.length > 0
+  const { openSearch } = useSearch()
+  const isMac = getPlatform() === 'darwin'
 
   return (
     <div className="h-full flex flex-col">
@@ -393,6 +317,20 @@ export function HomePage() {
         <SidebarTrigger
           className={`app-no-drag ${needsTrafficLightPadding ? 'ml-16' : '-ml-1'}`}
         />
+        <div className="flex-1 flex justify-center">
+          <button
+            type="button"
+            onClick={openSearch}
+            className="flex items-center gap-2 w-full max-w-md h-7 rounded-md border bg-muted/30 hover:bg-muted/60 transition-colors px-3 text-xs text-muted-foreground app-no-drag"
+            data-testid="header-search-trigger"
+          >
+            <Search className="h-3.5 w-3.5 shrink-0" />
+            <span className="flex-1 text-left truncate">Search agents and sessions...</span>
+            <kbd className="shrink-0 font-mono text-[11px] text-muted-foreground/70">
+              {isMac ? '⌘K' : 'Ctrl+K'}
+            </kbd>
+          </button>
+        </div>
       </header>
 
       <div className="flex-1 overflow-y-auto p-6">
@@ -403,8 +341,9 @@ export function HomePage() {
               <h2 className="text-lg font-semibold">Your Agents</h2>
               <Button
                 size="sm"
-                onClick={() => openCreateAgent()}
+                onClick={() => { void createUntitledAgent() }}
                 className="app-no-drag"
+                disabled={isCreatingAgent}
               >
                 <Plus className="h-4 w-4 mr-1" />
                 New Agent
@@ -417,15 +356,29 @@ export function HomePage() {
               </div>
             ) : hasAgents ? (
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                {orderedAgents.map((agent) => (
-                  <AgentCard key={agent.slug} agent={agent} dailyUsage={usageData?.daily} />
-                ))}
+                {orderedAgents.flatMap((agent) => {
+                  const dashboards = Array.isArray(agent.dashboards) ? agent.dashboards : []
+                  const cells = [
+                    <AgentCard key={agent.slug} agent={agent} dailyUsage={usageData?.daily} />,
+                  ]
+                  for (const d of dashboards) {
+                    cells.push(
+                      <DashboardCard
+                        key={`${agent.slug}::dashboard::${d.slug}`}
+                        dashboard={d}
+                        agentSlug={agent.slug}
+                        variant="overlay"
+                      />
+                    )
+                  }
+                  return cells
+                })}
               </div>
             ) : (
               <div className="text-center py-12 border rounded-lg bg-muted/30">
                 <Bot className="h-10 w-10 mx-auto text-muted-foreground mb-3" />
                 <p className="text-muted-foreground mb-4">No agents yet</p>
-                <Button onClick={() => openCreateAgent()}>
+                <Button onClick={() => { void createUntitledAgent() }} disabled={isCreatingAgent}>
                   <Plus className="h-4 w-4 mr-1" />
                   Create your first agent
                 </Button>
@@ -433,21 +386,6 @@ export function HomePage() {
             )}
           </section>
 
-          {/* Templates Section */}
-          {hasTemplates && (
-            <section>
-              <h2 className="text-lg font-semibold mb-4">Agent Templates</h2>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                {discoverableAgents.map((template) => (
-                  <TemplateCard
-                    key={`${template.skillsetId}::${template.path}`}
-                    template={template}
-                    onClick={() => openCreateAgent(template)}
-                  />
-                ))}
-              </div>
-            </section>
-          )}
         </div>
       </div>
     </div>

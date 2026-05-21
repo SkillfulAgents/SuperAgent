@@ -16,7 +16,7 @@ import {
 } from '@shared/lib/services/chat-integration-service'
 import { listChatIntegrationSessions, archiveChatIntegrationSession, getChatIntegrationSessionById, deleteChatIntegrationSessionsByIntegration } from '@shared/lib/services/chat-integration-session-service'
 import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
-import { validateChatIntegrationConfig } from '@shared/lib/chat-integrations/config-schema'
+import { validateChatIntegrationConfig, CHAT_PROVIDERS, IMESSAGE_GATEWAY_URL, imessageSetupSchema, type ChatProvider } from '@shared/lib/chat-integrations/config-schema'
 import { Authenticated, AgentUser, EntityAgentRole } from '../middleware/auth'
 import { captureException } from '@shared/lib/error-reporting'
 
@@ -58,6 +58,7 @@ chatIntegrationsRouter.post('/test-credentials', Authenticated(), async (c) => {
     }
 
     // Validate by attempting a lightweight API call
+    // TODO: we should move these to be part of the integration class, not hardcoded here in the route handler. This breaks abstracting provider-specific logic out of the route layer and makes it harder to maintain as we add more providers.
     if (provider === 'telegram') {
       const botToken = config.botToken
       if (!botToken) {
@@ -121,8 +122,38 @@ chatIntegrationsRouter.post('/:id', AgentUser(), async (c) => {
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
     }
 
-    if (!['telegram', 'slack'].includes(provider)) {
-      return c.json({ error: 'Invalid provider. Must be "telegram" or "slack"' }, 400)
+    if (!CHAT_PROVIDERS.includes(provider)) {
+      return c.json({ error: `Invalid provider. Must be one of: ${CHAT_PROVIDERS.join(', ')}` }, 400)
+    }
+
+    // For iMessage: if config has a code instead of token, exchange it first
+    // TODO this shoud live in the integration class, not here in the route handler. This breaks abstracting provider-specific logic out of the route layer and makes it harder to maintain as we add more providers.
+    if (provider === 'imessage' && config.code && !config.token) {
+      const parsed = imessageSetupSchema.safeParse({ phoneNumber: config.phoneNumber, code: config.code })
+      if (!parsed.success) {
+        return c.json({ error: parsed.error.issues[0]?.message || 'Invalid phone number or code' }, 400)
+      }
+      const exchangeRes = await fetch(`${IMESSAGE_GATEWAY_URL}/auth/exchange`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: config.phoneNumber, code: config.code }),
+      })
+      if (exchangeRes.status === 401) {
+        return c.json({ error: 'Invalid or expired code' }, 400)
+      }
+      if (exchangeRes.status === 429) {
+        return c.json({ error: 'Too many attempts, try again later' }, 400)
+      }
+      if (!exchangeRes.ok) {
+        return c.json({ error: `Code exchange failed (${exchangeRes.status})` }, 400)
+      }
+      const { token } = await exchangeRes.json() as { token: string }
+      if (!token) {
+        return c.json({ error: 'No token returned from gateway' }, 400)
+      }
+      config.token = token
+      config.gatewayUrl = IMESSAGE_GATEWAY_URL
+      delete config.code
     }
 
     // Validate config against Zod schema
@@ -199,7 +230,7 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
       const integration = c.get('chatIntegration' as never) as Awaited<ReturnType<typeof getChatIntegration>>
       if (integration) {
         try {
-          validateChatIntegrationConfig(integration.provider as 'telegram' | 'slack', config)
+          validateChatIntegrationConfig(integration.provider as ChatProvider, config)
         } catch (err) {
           const message = err instanceof Error ? err.message : 'Invalid config'
           return c.json({ error: `Invalid config: ${message}` }, 400)

@@ -55,6 +55,14 @@ jobs:
         run: npm ci
         working-directory: agent-container
 
+      # The SDK's optional deps include both glibc and musl Linux binaries with
+      # no libc constraint, so npm installs both on a glibc runner. The SDK's
+      # resolver prefers the musl one and then spawn fails with ENOENT (kernel
+      # can't load it). Match the Dockerfile workaround.
+      - name: Drop musl variant of Claude Code native binary
+        run: rm -rf node_modules/@anthropic-ai/claude-agent-sdk-linux-*-musl
+        working-directory: agent-container
+
       - name: Run typecheck
         run: npx tsc --noEmit
         working-directory: agent-container

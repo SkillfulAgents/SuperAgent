@@ -5,7 +5,6 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import {
   Loader2,
   Plus,
-  Plug,
 } from 'lucide-react'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { COMMON_MCP_SERVERS } from '@shared/lib/mcp/common-servers'
@@ -508,20 +507,16 @@ export function RemoteMcpRequestItem({
       }
     : null
 
-  // Build read-only config
-  const readOnlyConfig = readOnly
-    ? {
-        description: reason ? (
-          <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{reason}</p>
-        ) : undefined,
-      }
-    : false as const
+  // Build read-only config — primary text now lives in the title.
+  const readOnlyConfig = readOnly ? {} : false as const
 
   return (
     <RequestItemShell
-      title="MCP Access Request"
-      icon={<Plug className="h-4 w-4" />}
+      title={reason || `Connect MCP server: ${name || url}`}
+      subtitle="The MCP server will be connected to this agent."
       theme="blue"
+      sessionId={sessionId}
+      agentSlug={agentSlug}
       completed={completedConfig}
       readOnly={readOnlyConfig}
       waitingText="Waiting for response"
@@ -529,14 +524,7 @@ export function RemoteMcpRequestItem({
       data-testid={isCompleted ? 'remote-mcp-request-completed' : 'remote-mcp-request'}
       data-status={isCompleted ? status : undefined}
     >
-      {reason && (
-        <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{reason}</p>
-      )}
-      <p className="mt-1 text-xs text-muted-foreground">
-        The MCP server will be connected to this agent.
-      </p>
-
-      <div className="mt-5">
+      <div className="mt-3">
         {status === 'oauth_pending' ? (
           <div className="flex items-center gap-3 rounded-[12px] border border-border bg-white px-4 py-3 dark:bg-background">
             <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
@@ -583,7 +571,7 @@ export function RemoteMcpRequestItem({
               <Button
                 type="button"
                 variant="ghost"
-                size="sm"
+                size="xs"
                 onClick={handleConnectAnother}
                 loading={status === 'registering'}
                 disabled={status !== 'pending'}
@@ -603,7 +591,7 @@ export function RemoteMcpRequestItem({
               <Button
                 type="button"
                 variant="ghost"
-                size="sm"
+                size="xs"
                 onClick={handleConnectAnother}
                 loading={status === 'registering'}
                 disabled={status !== 'pending'}
@@ -617,7 +605,7 @@ export function RemoteMcpRequestItem({
         ) : (
           <div className="space-y-2">
             <div className="flex items-center gap-3 rounded-[12px] border border-border bg-white px-4 py-3 dark:bg-background">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-zinc-200">
                 <McpSourceIcon slug={connectCardSlug} />
               </div>
             <div className="min-w-0 flex-1">
@@ -629,7 +617,7 @@ export function RemoteMcpRequestItem({
               </p>
             </div>
             <Button
-              size="sm"
+              size="xs"
               onClick={handleRegisterNew}
               loading={status === 'registering'}
               disabled={status !== 'pending'}
@@ -655,56 +643,52 @@ export function RemoteMcpRequestItem({
 
       {/* Action buttons */}
       {!selectedServer && !matchingServer && status !== 'oauth_pending' ? (
-        <div className="mt-6 space-y-2">
+        <RequestItemActions>
+          <DeclineButton
+            onDecline={handleDecline}
+            disabled={status !== 'pending' && status !== 'registering'}
+            label="Deny"
+            showIcon={false}
+            className="border-border text-foreground hover:bg-muted"
+          />
+        </RequestItemActions>
+      ) : null}
+
+      {selectedServer ? (
+        <div className="flex items-end justify-between gap-3">
+          <div className="min-w-0 self-end pt-4">
+            {status !== 'oauth_pending' ? (
+              <McpServicePicker
+                open={isMcpPickerOpen}
+                onOpenChange={setIsMcpPickerOpen}
+                options={pickerServiceOptions}
+                selectedServiceKey={selectedServiceKey}
+                onSelect={(_serviceKey, serverId) => {
+                  setSelectedMcpIds(new Set([serverId]))
+                }}
+                disabled={status !== 'pending'}
+              />
+            ) : null}
+          </div>
           <RequestItemActions>
             <DeclineButton
               onDecline={handleDecline}
-              disabled={status !== 'pending' && status !== 'registering'}
+              disabled={status !== 'pending' && status !== 'oauth_pending'}
               label="Deny"
               showIcon={false}
               className="border-border text-foreground hover:bg-muted"
             />
+
+            <Button
+              onClick={handleProvide}
+              loading={status === 'submitting'}
+              disabled={selectedMcpIdsForProvide.length === 0 || status !== 'pending'}
+              size="xs"
+              className="bg-blue-600 hover:bg-blue-700 text-white"
+            >
+              Allow Access{selectedMcpIdsForProvide.length > 1 ? ` (${selectedMcpIdsForProvide.length})` : ''}
+            </Button>
           </RequestItemActions>
-        </div>
-      ) : null}
-
-      {selectedServer ? (
-        <div className="mt-6">
-          <div className="flex items-end justify-between gap-3">
-            <div className="min-w-0 self-end">
-              {status !== 'oauth_pending' ? (
-                <McpServicePicker
-                  open={isMcpPickerOpen}
-                  onOpenChange={setIsMcpPickerOpen}
-                  options={pickerServiceOptions}
-                  selectedServiceKey={selectedServiceKey}
-                  onSelect={(_serviceKey, serverId) => {
-                    setSelectedMcpIds(new Set([serverId]))
-                  }}
-                  disabled={status !== 'pending'}
-                />
-              ) : null}
-            </div>
-            <RequestItemActions>
-              <DeclineButton
-                onDecline={handleDecline}
-                disabled={status !== 'pending' && status !== 'oauth_pending'}
-                label="Deny"
-                showIcon={false}
-                className="border-border text-foreground hover:bg-muted"
-              />
-
-              <Button
-                onClick={handleProvide}
-                loading={status === 'submitting'}
-                disabled={selectedMcpIdsForProvide.length === 0 || status !== 'pending'}
-                size="sm"
-                className="bg-blue-600 hover:bg-blue-700 text-white"
-              >
-                Allow Access{selectedMcpIdsForProvide.length > 1 ? ` (${selectedMcpIdsForProvide.length})` : ''}
-              </Button>
-            </RequestItemActions>
-          </div>
         </div>
       ) : null}
 

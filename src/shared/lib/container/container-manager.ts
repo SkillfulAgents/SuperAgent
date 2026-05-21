@@ -1,7 +1,9 @@
 import path from 'path'
+import { statfs } from 'node:fs/promises'
+import os from 'os'
 import { createContainerClient, checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, startRunner, refreshRunnerAvailability, clearRunnerAvailabilityCache, reconcileRunnerState, getRunnerDisplayName, getContainerClientClass, getCliCommand, type ContainerRunner } from './client-factory'
 import { ensureLimaReady } from './lima-container-client'
-import type { ContainerClient, ContainerConfig, ContainerInfo, HealthCheckResult, ImagePullProgress, RuntimeReadiness } from './types'
+import type { ContainerClient, ContainerConfig, ContainerInfo, HealthCheckResult, ImagePullProgress, RuntimeReadiness, StopOptions } from './types'
 import { healthMonitor } from './health-monitor'
 import { db } from '@shared/lib/db'
 import { agentConnectedAccounts, connectedAccounts, agentRemoteMcps, remoteMcpServers } from '@shared/lib/db/schema'
@@ -14,7 +16,7 @@ import { copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
 import { messagePersister } from './message-persister'
 import { ungrabAC } from '@shared/lib/computer-use/executor'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
-import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getMountsWithHealth } from '@shared/lib/services/mount-service'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
@@ -31,6 +33,14 @@ const HEALTH_CHECK_INTERVAL_MS = parseInt(
   10
 ) * 1000
 
+/** Minimum free disk space (in bytes) required before pulling an image: 5 GB */
+const MIN_DISK_SPACE_BYTES = 5 * 1024 * 1024 * 1024
+
+async function getAvailableDiskSpace(): Promise<number> {
+  const stats = await statfs(os.homedir())
+  return stats.bavail * stats.bsize
+}
+
 /** Cached container status */
 interface CachedContainerStatus {
   status: 'running' | 'stopped'
@@ -42,6 +52,7 @@ interface CachedContainerStatus {
 class ContainerManager {
   private clients: Map<string, ContainerClient> = new Map()
   private containerStartedAt: Map<string, number> = new Map()
+  private lastKeepAliveAt: Map<string, number> = new Map()
   /** Cached container statuses - avoids repeated docker inspect calls */
   private containerStatuses: Map<string, CachedContainerStatus> = new Map()
   private syncIntervalId: NodeJS.Timeout | null = null
@@ -51,6 +62,8 @@ class ContainerManager {
   private healthWarnings: Map<string, HealthCheckResult[]> = new Map()
   /** Agents currently being stopped — skip health checks, sync, and connection error recovery */
   private stoppingAgents: Set<string> = new Set()
+  /** In-flight ensureRunning promises — deduplicates concurrent start requests */
+  private startingAgents: Map<string, Promise<ContainerClient>> = new Map()
 
   /** Optional callback invoked before a container is stopped (e.g. to close host browser) */
   onBeforeContainerStop: ((agentId: string) => Promise<void>) | null = null
@@ -68,8 +81,8 @@ class ContainerManager {
       const config: ContainerConfig = {
         agentId,
         onConnectionError: () => {
-          // Skip if the agent is being stopped — don't spawn more CLI commands
           if (this.stoppingAgents.has(agentId)) return
+          if (this.startingAgents.has(agentId)) return
 
           // When a connection error is detected, sync status with Docker
           // This handles cases where the container crashed or was stopped externally
@@ -134,10 +147,11 @@ class ContainerManager {
    * Marks the agent as "stopping" so health checks, status sync, and connection
    * error handlers stop spawning CLI commands into a potentially overloaded VM.
    */
-  async stopContainer(agentId: string): Promise<void> {
+  async stopContainer(agentId: string, options?: StopOptions): Promise<void> {
     // Mark as stopping immediately to prevent health checks / sync from spawning
     // more CLI processes into an overloaded VM
     this.stoppingAgents.add(agentId)
+    this.startingAgents.delete(agentId)
 
     let forceStopUsed = false
 
@@ -151,7 +165,7 @@ class ContainerManager {
       }
 
       const client = this.getClient(agentId)
-      const result = await client.stop()
+      const result = await client.stop(options)
       forceStopUsed = result.forceStopUsed
     } finally {
       this.stoppingAgents.delete(agentId)
@@ -225,6 +239,11 @@ class ContainerManager {
     const client = this.getClient(agentId)
     const previousStatus = this.containerStatuses.get(agentId)?.status
     const info = await client.getInfoFromRuntime()
+
+    // Don't update cache while a start is in-flight — Docker may report "running"
+    // before the container's HTTP server is ready (health check hasn't passed yet)
+    if (this.startingAgents.has(agentId)) return info
+
     this.updateCachedStatus(agentId, info.status, info.port)
 
     // Broadcast if status changed (e.g., container was stopped externally)
@@ -419,11 +438,26 @@ class ContainerManager {
   //
   // Parameter is agentId for backwards compatibility, but will be slug after migration
   async ensureRunning(agentId: string): Promise<ContainerClient> {
+    const inflight = this.startingAgents.get(agentId)
+    if (inflight) return inflight
+
     const client = this.getClient(agentId)
-    // Use cached status to avoid unnecessary docker calls
     const cachedInfo = this.getCachedInfo(agentId)
 
     if (cachedInfo.status !== 'running') {
+      const startPromise = this.doStartContainer(agentId, client)
+      this.startingAgents.set(agentId, startPromise)
+      try {
+        await startPromise
+      } finally {
+        this.startingAgents.delete(agentId)
+      }
+    }
+
+    return client
+  }
+
+  private async doStartContainer(agentId: string, client: ContainerClient): Promise<ContainerClient> {
       // Pass proxy config and account metadata (no raw tokens)
       const envVars: Record<string, string> = {}
 
@@ -433,6 +467,10 @@ class ContainerManager {
       const appPort = getAppPort()
       envVars['PROXY_BASE_URL'] = `http://${hostUrl}:${appPort}/api/proxy/${agentId}`
       envVars['PROXY_TOKEN'] = proxyToken
+
+      // X-Agent Work: cross-agent calls. Container POSTs to host with PROXY_TOKEN.
+      envVars['SUPERAGENT_HOST_API_URL'] = `http://${hostUrl}:${appPort}/api`
+      envVars['SUPERAGENT_AGENT_SLUG'] = agentId
 
       // Fetch connected accounts for this agent
       const accountMappings = await db
@@ -522,6 +560,8 @@ class ContainerManager {
         Object.assign(envVars, settings.customEnvVars)
       }
 
+      envVars['CLAUDE_CODE_ATTRIBUTION_HEADER'] = '0'
+
       // Load mounts and build volume flags for healthy ones
       const mountsWithHealth = getMountsWithHealth(agentId)
       const healthyMounts = mountsWithHealth.filter((m) => m.health === 'ok')
@@ -543,8 +583,10 @@ class ContainerManager {
       // Start container (user secrets are in .env file in workspace)
       await client.start({ envVars, additionalVolumes })
 
-      // Sync status from Docker to get the actual port
-      const info = await this.syncAgentStatus(agentId)
+      // Get actual port from runtime and update cache directly
+      // (can't use syncAgentStatus here — it's guarded against updates during startup)
+      const info = await client.getInfoFromRuntime()
+      this.updateCachedStatus(agentId, info.status, info.port)
 
       // Record start time so auto-sleep monitor doesn't immediately
       // sleep the container based on stale session activity timestamps
@@ -556,7 +598,6 @@ class ContainerManager {
         agentSlug: agentId,
         status: info.status,
       })
-    }
 
     return client
   }
@@ -566,13 +607,24 @@ class ContainerManager {
     return this.containerStartedAt.get(agentId)
   }
 
+  // Record a keep-alive ping (e.g. from an open dashboard) to prevent auto-sleep
+  keepAlive(agentId: string): void {
+    this.lastKeepAliveAt.set(agentId, Date.now())
+  }
+
+  getLastKeepAlive(agentId: string): number | undefined {
+    return this.lastKeepAliveAt.get(agentId)
+  }
+
   // Remove a client from the cache
   removeClient(agentId: string): void {
     this.clients.delete(agentId)
     this.containerStartedAt.delete(agentId)
+    this.lastKeepAliveAt.delete(agentId)
     this.containerStatuses.delete(agentId)
     this.healthWarnings.delete(agentId)
     this.stoppingAgents.delete(agentId)
+    this.startingAgents.delete(agentId)
   }
 
   // Clear all cached clients (e.g., when container runner setting changes).
@@ -580,9 +632,11 @@ class ContainerManager {
   clearClients(): void {
     this.clients.clear()
     this.containerStartedAt.clear()
+    this.lastKeepAliveAt.clear()
     this.containerStatuses.clear()
     this.healthWarnings.clear()
     this.stoppingAgents.clear()
+    this.startingAgents.clear()
   }
 
   // Stop all containers (with per-container timeout to prevent blocking shutdown)
@@ -610,6 +664,7 @@ class ContainerManager {
     }
     this.clients.clear()
     this.containerStartedAt.clear()
+    this.lastKeepAliveAt.clear()
     this.containerStatuses.clear()
     this.healthWarnings.clear()
     this.stoppingAgents.clear()
@@ -629,6 +684,7 @@ class ContainerManager {
     }
     this.clients.clear()
     this.containerStartedAt.clear()
+    this.lastKeepAliveAt.clear()
     this.containerStatuses.clear()
     this.healthWarnings.clear()
   }
@@ -818,7 +874,29 @@ class ContainerManager {
       return
     }
 
-    // Step 3: Build or pull the image
+    // Step 3: Pre-flight disk space check
+    try {
+      const availableBytes = await getAvailableDiskSpace()
+      if (availableBytes < MIN_DISK_SPACE_BYTES) {
+        const availableGB = (availableBytes / (1024 * 1024 * 1024)).toFixed(1)
+        const requiredGB = (MIN_DISK_SPACE_BYTES / (1024 * 1024 * 1024)).toFixed(0)
+        captureMessage('Insufficient disk space for image pull', {
+          level: 'info',
+          tags: { component: 'runtime', operation: 'disk-space-check' },
+          extra: { availableGB: parseFloat(availableGB), requiredGB: parseInt(requiredGB), runner: effectiveRunner },
+        })
+        this.setReadiness({
+          status: 'ERROR',
+          message: `Insufficient disk space: ${availableGB} GB available, at least ${requiredGB} GB required to download the agent image. Free up disk space and try again.`,
+          pullProgress: null,
+        })
+        return
+      }
+    } catch (err) {
+      console.warn('[ContainerManager] Disk space check failed, proceeding anyway:', err)
+    }
+
+    // Step 4: Build or pull the image
     // In dev mode (agent-container directory exists), build locally.
     // In production (no build context), pull from registry.
     const shouldBuild = canBuildImage()

@@ -37,6 +37,14 @@ export interface ApiAgent {
   dashboardCount?: number
   dashboardNames?: string[]
   dashboardSlugs?: string[]
+  dashboards?: ApiAgentDashboard[]
+  autoDeleteInactiveDays?: number
+}
+
+export interface ApiAgentDashboard {
+  slug: string
+  name: string
+  hasScreenshot?: boolean
 }
 
 /**
@@ -92,6 +100,8 @@ export interface ApiSession {
   webhookTriggerName?: string
   // Last effort level used on this session (seeds the composer selector)
   effort?: EffortLevel
+  // Last model used on this session (seeds the composer selector)
+  model?: string
 }
 
 // ============================================================================
@@ -264,10 +274,11 @@ export interface ApiSkillsetConfig {
   skillCount: number
   agentCount: number
   addedAt: string
-  provider?: 'github' | 'platform'
+  provider?: 'github' | 'platform' | 'public'
   badgeLabel?: string
   showUrl: boolean
-  publishMode: 'pull_request' | 'hosted_submit'
+  publishMode: 'pull_request' | 'hosted_submit' | 'none'
+  error?: string
 }
 
 // ============================================================================
@@ -284,7 +295,7 @@ export interface ApiScheduledTask {
   scheduleExpression: string
   prompt: string
   name: string | null
-  status: 'pending' | 'executed' | 'cancelled' | 'failed'
+  status: 'pending' | 'paused' | 'executed' | 'cancelled' | 'failed'
   nextExecutionAt: Date
   lastExecutedAt: Date | null
   isRecurring: boolean
@@ -292,8 +303,11 @@ export interface ApiScheduledTask {
   lastSessionId: string | null
   createdBySessionId: string | null
   timezone: string | null
+  model: string | null
+  effort: string | null
   createdAt: Date
   cancelledAt: Date | null
+  pausedAt: Date | null
 }
 
 // ============================================================================
@@ -305,7 +319,7 @@ export interface ApiScheduledTask {
  */
 export interface ApiNotification {
   id: string
-  type: 'session_complete' | 'session_waiting' | 'session_scheduled'
+  type: 'session_complete' | 'session_waiting' | 'session_scheduled' | 'session_webhook' | 'session_chat_integration'
   sessionId: string
   agentSlug: string
   title: string

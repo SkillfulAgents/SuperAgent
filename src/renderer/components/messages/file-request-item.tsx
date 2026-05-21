@@ -119,22 +119,13 @@ export function FileRequestItem({
 
   const isCompleted = status === 'uploaded' || status === 'declined'
 
-  const descriptionContent = (
-    <>
-      <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">{description}</p>
-      {fileTypes && (
-        <p className="mt-2 text-xs text-muted-foreground">
-          Accepted file types: {fileTypes}
-        </p>
-      )}
-    </>
-  )
-
   return (
     <RequestItemShell
-      title="File Request"
-      icon={<FileIcon />}
+      title={description}
+      subtitle={fileTypes ? `Accepted file types: ${fileTypes}` : undefined}
       theme="blue"
+      sessionId={sessionId}
+      agentSlug={agentSlug}
       waitingText="Waiting for response"
       completed={
         isCompleted
@@ -153,17 +144,11 @@ export function FileRequestItem({
             }
           : null
       }
-      readOnly={
-        readOnly
-          ? { description: descriptionContent }
-          : false
-      }
+      readOnly={readOnly ? {} : false}
       error={error}
       data-testid={isCompleted ? 'file-request-completed' : 'file-request'}
       data-status={isCompleted ? status : undefined}
     >
-      {descriptionContent}
-
       <div className="pt-3">
         {/* Drop zone / file picker */}
         <div
@@ -173,7 +158,7 @@ export function FileRequestItem({
               ? 'border-blue-400 dark:border-blue-500 bg-blue-100 dark:bg-blue-900'
               : selectedFile
                 ? 'border-blue-300 dark:border-blue-700 bg-blue-50 dark:bg-blue-950/50'
-                : 'border-border bg-white dark:bg-blue-950/30 hover:border-border'
+                : 'border-border bg-white dark:bg-blue-500/10 hover:border-border'
           )}
           role="button"
           tabIndex={0}
@@ -247,7 +232,7 @@ export function FileRequestItem({
           onClick={handleUpload}
           loading={status === 'submitting'}
           disabled={!selectedFile || status === 'submitting'}
-          size="sm"
+          size="xs"
           className="min-w-28 bg-blue-600 text-white hover:bg-blue-700"
         >
           Upload file

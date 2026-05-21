@@ -81,6 +81,7 @@ describe('isHostAllowed', () => {
       'googledrive',
       'googlesheets',
       'googledocs',
+      'googleslides',
       'googlemeet',
       'googletasks',
       'youtube',

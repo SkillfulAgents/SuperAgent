@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { createElement } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { DraftsProvider, useDraft } from '@renderer/context/drafts-context'
 
 // --- Mocks ---
 
@@ -72,7 +73,11 @@ function createWrapper() {
     defaultOptions: { queries: { retry: false } },
   })
   function Wrapper({ children }: { children: React.ReactNode }) {
-    return createElement(QueryClientProvider, { client: queryClient }, children)
+    return createElement(
+      QueryClientProvider,
+      { client: queryClient },
+      createElement(DraftsProvider, null, children),
+    )
   }
   return Wrapper
 }
@@ -517,5 +522,86 @@ describe('useMessageComposer', () => {
     expect(result.current.handleFileSelect).toBe(mockAttachments.handleFileSelect)
     expect(result.current.handleFolderSelect).toBe(mockAttachments.handleFolderSelect)
     expect(result.current.dragHandlers).toBe(mockAttachments.dragHandlers)
+  })
+
+  // --- Draft persistence via DraftsContext ---
+
+  describe('draft persistence (draftKey)', () => {
+    it('writes changes to the store under the given key', () => {
+      const wrapper = createWrapper()
+      const { result } = renderHook(
+        () => ({
+          composer: useMessageComposer({ ...defaultOptions(), draftKey: 'session:abc' }),
+          draft: useDraft<string>('session:abc'),
+        }),
+        { wrapper },
+      )
+      act(() => result.current.composer.setMessage('hi there'))
+      expect(result.current.draft[0]).toBe('hi there')
+    })
+
+    it('clears the stored draft when the message becomes empty', () => {
+      const wrapper = createWrapper()
+      const { result } = renderHook(
+        () => ({
+          composer: useMessageComposer({ ...defaultOptions(), draftKey: 'session:abc' }),
+          draft: useDraft<string>('session:abc'),
+        }),
+        { wrapper },
+      )
+      act(() => result.current.composer.setMessage('hi'))
+      expect(result.current.draft[0]).toBe('hi')
+      act(() => result.current.composer.setMessage(''))
+      expect(result.current.draft[0]).toBeUndefined()
+    })
+
+    it('reflects external writes to the same key into the composer message', () => {
+      const wrapper = createWrapper()
+      const { result } = renderHook(
+        () => ({
+          composer: useMessageComposer({ ...defaultOptions(), draftKey: 'session:xyz' }),
+          draft: useDraft<string>('session:xyz'),
+        }),
+        { wrapper },
+      )
+      expect(result.current.composer.message).toBe('')
+      // Simulate an outside caller (e.g. voice feedback) writing to the same key.
+      act(() => result.current.draft[1]('injected from outside'))
+      expect(result.current.composer.message).toBe('injected from outside')
+    })
+
+    it('does not touch the store when no draftKey is provided', () => {
+      const wrapper = createWrapper()
+      const { result } = renderHook(
+        () => ({
+          composer: useMessageComposer(defaultOptions()),
+          draft: useDraft<string>('session:abc'),
+        }),
+        { wrapper },
+      )
+      // Seed the store via the draft hook (sharing the provider with the composer).
+      act(() => result.current.draft[1]('preexisting'))
+      // Composer has no draftKey — its setMessage must not overwrite the unrelated key.
+      act(() => result.current.composer.setMessage('local only'))
+      expect(result.current.composer.message).toBe('local only')
+      expect(result.current.draft[0]).toBe('preexisting')
+    })
+
+    it('persists independently across keys', () => {
+      const wrapper = createWrapper()
+      const { result } = renderHook(
+        () => ({
+          a: useMessageComposer({ ...defaultOptions(), draftKey: 'agent:A' }),
+          b: useMessageComposer({ ...defaultOptions(), draftKey: 'agent:B' }),
+          draftA: useDraft<string>('agent:A'),
+          draftB: useDraft<string>('agent:B'),
+        }),
+        { wrapper },
+      )
+      act(() => result.current.a.setMessage('A message'))
+      act(() => result.current.b.setMessage('B message'))
+      expect(result.current.draftA[0]).toBe('A message')
+      expect(result.current.draftB[0]).toBe('B message')
+    })
   })
 })

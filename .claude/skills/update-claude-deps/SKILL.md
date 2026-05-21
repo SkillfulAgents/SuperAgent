@@ -43,6 +43,12 @@ Review the current versions of Claude-related packages and create an upgrade pla
 - `agent-container/Dockerfile` — Claude Code CLI version (native binary install: `bash -s <VERSION>`)
 - `agent-container/package.json` — `@anthropic-ai/claude-agent-sdk` and `@anthropic-ai/sdk`
 - `package.json` (root) — `@anthropic-ai/sdk`
+- `src/api/llm-sdk-bundle.ts` — **Regenerate after upgrading `@anthropic-ai/sdk`**. This is a pre-built browser bundle of the SDK served to dashboard iframes. Regenerate with:
+  ```bash
+  npx esbuild node_modules/@anthropic-ai/sdk/index.mjs --bundle --minify --format=iife --global-name=__AnthropicSDK_ns --platform=browser > /tmp/sdk-bundle.js
+  echo 'window.__AnthropicSDK = __AnthropicSDK_ns.default || __AnthropicSDK_ns.Anthropic;' >> /tmp/sdk-bundle.js
+  ```
+  Then replace the template literal in `src/api/llm-sdk-bundle.ts` with the contents of `/tmp/sdk-bundle.js` (escape any backticks with `\``)
 
 ## Important notes
 

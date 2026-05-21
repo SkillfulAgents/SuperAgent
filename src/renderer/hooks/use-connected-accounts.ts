@@ -117,8 +117,11 @@ export function useDeleteConnectedAccount() {
         throw new Error(error.error || 'Failed to delete account')
       }
     },
-    onSuccess: () => {
+    onSuccess: (_, accountId) => {
       queryClient.invalidateQueries({ queryKey: ['connected-accounts'] })
+      queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts'] })
+      queryClient.removeQueries({ queryKey: ['account-agents', accountId] })
+      queryClient.removeQueries({ queryKey: ['scope-policies', accountId] })
     },
   })
 }
@@ -153,6 +156,34 @@ export function useRenameConnectedAccount() {
 }
 
 /**
+ * Hook to assign connected account(s) to an agent
+ */
+export function useAssignAccountsToAgent() {
+  const queryClient = useQueryClient()
+
+  return useMutation<void, Error, { agentSlug: string; accountIds: string[] }>({
+    mutationFn: async ({ agentSlug, accountIds }) => {
+      const res = await apiFetch(`/api/agents/${agentSlug}/connected-accounts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountIds }),
+      })
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({}))
+        throw new Error(error.error || 'Failed to assign accounts to agent')
+      }
+    },
+    onSuccess: (_, { agentSlug, accountIds }) => {
+      queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts', agentSlug] })
+      queryClient.invalidateQueries({ queryKey: ['connected-accounts'] })
+      for (const id of accountIds) {
+        queryClient.invalidateQueries({ queryKey: ['account-agents', id] })
+      }
+    },
+  })
+}
+
+/**
  * Hook to remove a connected account from an agent
  */
 export function useRemoveAgentConnectedAccount() {
@@ -165,10 +196,26 @@ export function useRemoveAgentConnectedAccount() {
       })
       if (!res.ok) throw new Error('Failed to remove account from agent')
     },
-    onSuccess: (_, { agentSlug }) => {
+    onSuccess: (_, { agentSlug, accountId }) => {
       queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts', agentSlug] })
       queryClient.invalidateQueries({ queryKey: ['connected-accounts'] })
+      queryClient.invalidateQueries({ queryKey: ['account-agents', accountId] })
     },
+  })
+}
+
+/**
+ * Hook to fetch agent slugs that have a connected account mapped
+ */
+export function useAccountAgents(accountId: string) {
+  return useQuery<{ agentSlugs: string[] }>({
+    queryKey: ['account-agents', accountId],
+    queryFn: async () => {
+      const res = await apiFetch(`/api/connected-accounts/${accountId}/agents`)
+      if (!res.ok) throw new Error('Failed to fetch account agents')
+      return res.json()
+    },
+    enabled: !!accountId,
   })
 }
 

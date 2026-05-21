@@ -9,7 +9,6 @@ const mockAll = vi.fn()
 const mockWhere = vi.fn()
 const mockDbFrom = vi.fn()
 const mockInsertValues = vi.fn()
-const mockOnConflictDoUpdate = vi.fn()
 
 const mockDeleteWhere = vi.fn()
 const mockDeleteRun = vi.fn()

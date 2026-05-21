@@ -145,6 +145,12 @@ export function SkillsetsTab() {
                     {ss.url}
                   </p>
                 )}
+                {ss.error && (
+                  <div className="flex items-start gap-1.5 mt-1.5">
+                    <AlertTriangle className="h-3 w-3 mt-0.5 text-destructive shrink-0" />
+                    <p className="text-xs text-destructive line-clamp-2">{ss.error}</p>
+                  </div>
+                )}
               </div>
               <div className="flex gap-1 shrink-0">
                 <Button

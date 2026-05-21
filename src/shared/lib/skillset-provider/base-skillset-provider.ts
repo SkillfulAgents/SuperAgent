@@ -1,3 +1,5 @@
+import path from 'path'
+import { directoryExists } from '@shared/lib/utils/file-storage'
 import type {
   InstalledAgentMetadata,
   InstalledSkillMetadata,
@@ -6,7 +8,7 @@ import type {
   SkillsetProviderData,
 } from '@shared/lib/types/skillset'
 
-export type SkillsetPublishMode = 'pull_request' | 'hosted_submit'
+export type SkillsetPublishMode = 'pull_request' | 'hosted_submit' | 'none'
 
 export type SkillsetHostedUpdateType = 'skill' | 'agent'
 
@@ -75,6 +77,7 @@ export abstract class BaseSkillsetProvider {
 
   readonly supportsSuggestions: boolean = true
   readonly supportsRemoteSync: boolean = false
+  readonly usesGitCache: boolean = true
 
   normalizeProviderData(source?: { providerData?: SkillsetProviderData } | null): SkillsetProviderData | undefined {
     return source?.providerData
@@ -98,6 +101,18 @@ export abstract class BaseSkillsetProvider {
 
   getDisplayInfo(): SkillsetDisplayInfo {
     return { showUrl: true }
+  }
+
+  async isCacheReady(cacheDir: string): Promise<boolean> {
+    return directoryExists(path.join(cacheDir, '.git'))
+  }
+
+  async populateCache(_cacheDir: string, _ref: SkillsetProviderRef): Promise<void> {
+    throw new Error(`${this.name} provider does not implement populateCache`)
+  }
+
+  async refreshCache(_cacheDir: string, _ref: SkillsetProviderRef): Promise<void> {
+    throw new Error(`${this.name} provider does not implement refreshCache`)
   }
 
   async resolveCloneUrl(url: string, _options?: SkillsetProviderRef): Promise<string> {

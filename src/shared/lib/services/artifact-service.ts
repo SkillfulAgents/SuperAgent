@@ -2,12 +2,15 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 
+const ARTIFACT_SCREENSHOT_FILENAME = 'screenshot.png'
+
 export interface ArtifactInfo {
   slug: string
   name: string
   description: string
   status: 'running' | 'stopped' | 'crashed' | 'starting'
   port: number
+  hasScreenshot?: boolean
 }
 
 /**
@@ -36,19 +39,38 @@ export async function listArtifactsFromFilesystem(
     try {
       const pkgContent = await fs.promises.readFile(pkgPath, 'utf-8')
       const pkg = JSON.parse(pkgContent)
-      dashboards.push({
+      const screenshotPath = path.join(
+        artifactsDir,
+        entry.name,
+        ARTIFACT_SCREENSHOT_FILENAME
+      )
+      const hasScreenshot = await fileExists(screenshotPath)
+      const info: ArtifactInfo = {
         slug: entry.name,
         name: pkg.name || entry.name,
         description: pkg.description || '',
         status: 'stopped',
         port: 0,
-      })
+      }
+      // Only include hasScreenshot when true — keeps the API shape minimal
+      // and avoids spurious `hasScreenshot: false` fields in common responses.
+      if (hasScreenshot) info.hasScreenshot = true
+      dashboards.push(info)
     } catch {
       // No valid package.json, skip
     }
   }
 
   return dashboards
+}
+
+async function fileExists(p: string): Promise<boolean> {
+  try {
+    await fs.promises.access(p, fs.constants.R_OK)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /**

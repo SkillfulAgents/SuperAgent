@@ -12,12 +12,19 @@ import { containerManager } from '@shared/lib/container/container-manager'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
+import { runWithOptionalUser, decodeOrgIdFromToken } from '@shared/lib/platform-attribution'
+import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import { db } from '@shared/lib/db'
+import { connectedAccounts } from '@shared/lib/db/schema'
+import { eq } from 'drizzle-orm'
 import {
+  getDistinctPlatformMemberIdsForActiveTriggers,
   getWebhookTriggersByComposioId,
   markTriggerFired,
   markTriggerFailed,
 } from '@shared/lib/services/webhook-trigger-service'
 import type { WebhookTrigger } from '@shared/lib/services/webhook-trigger-service'
+import type { EffortLevel } from '@shared/lib/container/types'
 import {
   registerSession,
   updateSessionMetadata,
@@ -30,6 +37,16 @@ import {
 } from '@shared/lib/services/webhook-events-client'
 import type { WebhookEvent } from '@shared/lib/services/webhook-events-client'
 import { SupabaseRealtimeClient } from '@shared/lib/services/supabase-realtime-client'
+
+function resolveConnectedAccountOwner(connectedAccountId: string): string | null {
+  const rows = db
+    .select({ userId: connectedAccounts.userId })
+    .from(connectedAccounts)
+    .where(eq(connectedAccounts.id, connectedAccountId))
+    .limit(1)
+    .all()
+  return rows[0]?.userId ?? null
+}
 
 function composeTriggerPrompt(trigger: WebhookTrigger, events: WebhookEvent[]): string {
   const payloads =
@@ -95,32 +112,52 @@ class TriggerManager {
     return this.isRunning
   }
 
-  private async pollAndProcess(): Promise<void> {
+  isRealtimeActive(): boolean {
+    return this.realtimeClient?.isActive() ?? false
+  }
+
+  async pollAndProcess(): Promise<void> {
     if (this.isProcessing) return
     this.isProcessing = true
 
     try {
-      const result = await pollAndClaimEvents()
-
-      // Process claimed events
-      if (result.events.length > 0) {
-        console.log(`[TriggerManager] Processing ${result.events.length} event(s)`)
-        await this.processEvents(result.events)
+      // Poll once per distinct trigger owner; first realtime config wins.
+      // Opaque-key mode has no authAccount rows, so fall back to a placeholder
+      // (buildBearer ignores it). Org JWT mode returns early to avoid a bogus
+      // `${token}::local` bearer.
+      let memberIds = getDistinctPlatformMemberIdsForActiveTriggers()
+      if (memberIds.length === 0) {
+        const token = getPlatformAccessToken()
+        if (!token || decodeOrgIdFromToken(token)) return
+        memberIds = ['local']
       }
 
-      // Set up Realtime subscription if we got connection info
-      if (result.realtime && !this.realtimeClient?.isActive()) {
-        await this.subscribeToRealtime(result.realtime)
+      for (const memberId of memberIds) {
+        try {
+          const result = await pollAndClaimEvents(memberId)
+
+          if (result.events.length > 0) {
+            console.log(
+              `[TriggerManager] Processing ${result.events.length} event(s) for member ${memberId}`,
+            )
+            await this.processEvents(result.events, memberId)
+          }
+
+          if (result.realtime && !this.realtimeClient?.isActive()) {
+            await this.subscribeToRealtime(result.realtime, memberId)
+          }
+        } catch (error) {
+          console.error(`[TriggerManager] Poll failed for member ${memberId}:`, error)
+        }
       }
-    } catch (error) {
-      console.error('[TriggerManager] Poll failed:', error)
     } finally {
       this.isProcessing = false
     }
   }
 
   private async subscribeToRealtime(
-    config: { url: string; apikey: string; jwt: string; channel: string }
+    config: { url: string; apikey: string; jwt: string; channel: string },
+    memberId: string,
   ): Promise<void> {
     if (this.realtimeClient) {
       this.realtimeClient.disconnect()
@@ -142,16 +179,15 @@ class TriggerManager {
         },
       )
 
-      // Refresh JWT every 50 minutes (token lasts 1 hour)
+      // Refresh JWT every 50 minutes (token lasts 1 hour).
       this.jwtRefreshInterval = setInterval(async () => {
         try {
-          const freshResult = await pollAndClaimEvents()
+          const freshResult = await pollAndClaimEvents(memberId)
           if (freshResult.realtime?.jwt && this.realtimeClient) {
             await this.realtimeClient.updateToken(freshResult.realtime.jwt)
           }
-          // Also process any events that came in during the refresh
           if (freshResult.events.length > 0) {
-            await this.processEvents(freshResult.events)
+            await this.processEvents(freshResult.events, memberId)
           }
         } catch (error) {
           console.error('[TriggerManager] JWT refresh failed:', error)
@@ -164,7 +200,7 @@ class TriggerManager {
     }
   }
 
-  private async processEvents(events: WebhookEvent[]): Promise<void> {
+  private async processEvents(events: WebhookEvent[], memberId: string): Promise<void> {
     // Group events by composio_trigger_id for batching
     const grouped = new Map<string, WebhookEvent[]>()
     for (const event of events) {
@@ -179,21 +215,22 @@ class TriggerManager {
 
     for (const [composioTriggerId, groupedEvents] of grouped) {
       try {
-        await this.processEventGroup(composioTriggerId, groupedEvents)
+        await this.processEventGroup(composioTriggerId, groupedEvents, memberId)
       } catch (error) {
         console.error(
           `[TriggerManager] Failed to process events for trigger ${composioTriggerId}:`,
           error
         )
         // Ack events anyway to prevent them from piling up
-        await acknowledgeEvents(groupedEvents.map((e) => e.id)).catch(console.error)
+        await acknowledgeEvents(groupedEvents.map((e) => e.id), memberId).catch(console.error)
       }
     }
   }
 
   private async processEventGroup(
     composioTriggerId: string,
-    events: WebhookEvent[]
+    events: WebhookEvent[],
+    memberId: string,
   ): Promise<void> {
     // Look up ALL local triggers sharing this Composio trigger ID
     const triggers = await getWebhookTriggersByComposioId(composioTriggerId)
@@ -203,7 +240,7 @@ class TriggerManager {
       console.warn(
         `[TriggerManager] No active local triggers for composio ID ${composioTriggerId}, acking events`
       )
-      await acknowledgeEvents(events.map((e) => e.id))
+      await acknowledgeEvents(events.map((e) => e.id), memberId)
       return
     }
 
@@ -220,10 +257,19 @@ class TriggerManager {
     }
 
     // Ack events after all triggers have been processed
-    await acknowledgeEvents(events.map((e) => e.id))
+    await acknowledgeEvents(events.map((e) => e.id), memberId)
   }
 
   private async spawnSessionForTrigger(
+    trigger: WebhookTrigger,
+    events: WebhookEvent[]
+  ): Promise<void> {
+    // Attribute to trigger creator; fall back to the connected_account owner.
+    const ownerUserId = trigger.createdByUserId ?? resolveConnectedAccountOwner(trigger.connectedAccountId)
+    return runWithOptionalUser(ownerUserId, () => this.spawnSessionInner(trigger, events))
+  }
+
+  private async spawnSessionInner(
     trigger: WebhookTrigger,
     events: WebhookEvent[]
   ): Promise<void> {
@@ -243,11 +289,14 @@ class TriggerManager {
     const client = await containerManager.ensureRunning(trigger.agentSlug)
     const availableEnvVars = await getSecretEnvVars(trigger.agentSlug)
 
+    const models = getEffectiveModels()
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: prompt,
-      model: getEffectiveModels().agentModel,
-      browserModel: getEffectiveModels().browserModel,
+      model: trigger.model || models.agentModel,
+      browserModel: models.browserModel,
+      metadata: { isAutomated: true },
+      ...(trigger.effort ? { effort: trigger.effort as EffortLevel } : {}),
     })
 
     const sessionId = containerSession.id
@@ -277,7 +326,7 @@ class TriggerManager {
 
     // Notification
     notificationManager
-      .triggerWebhookSessionStarted(sessionId, trigger.agentSlug, trigger.name || undefined)
+      .triggerWebhookSessionStarted(sessionId, trigger.agentSlug, trigger.id, trigger.name || undefined)
       .catch((err) => {
         console.error('[TriggerManager] Failed to trigger notification:', err)
       })

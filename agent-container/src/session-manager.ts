@@ -5,6 +5,7 @@ import { ClaudeCodeProcess } from './claude-code';
 import { SessionPersistence } from './session-persistence';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
+import { releaseBrowserLock } from './browser-state';
 
 interface SessionData {
   session: Session;
@@ -257,6 +258,12 @@ export class SessionManager extends EventEmitter {
     const sessionData = this.sessions.get(sessionId);
     if (!sessionData) return false;
 
+    // Release browser lock if this session owns it
+    const released = releaseBrowserLock(sessionId);
+    if (released) {
+      console.log(`[Session ${sessionId}] Released browser lock (session deleted)`);
+    }
+
     // Stop the process
     await sessionData.process.stop();
 
@@ -273,7 +280,12 @@ export class SessionManager extends EventEmitter {
     return true;
   }
 
-  async sendMessage(sessionId: string, content: string, uuid?: UUID, effort?: EffortLevel): Promise<void> {
+  async sendMessage(
+    sessionId: string,
+    content: string,
+    uuid?: UUID,
+    options?: { effort?: EffortLevel; model?: string }
+  ): Promise<void> {
     let sessionData = this.sessions.get(sessionId);
 
     // Try to resume if not in memory
@@ -288,13 +300,16 @@ export class SessionManager extends EventEmitter {
     sessionData.session.lastActivity = new Date();
     this.persistence.updateLastActivity(sessionId);
 
-    // Persist effort change so resume after eviction uses the latest level
-    if (effort !== undefined) {
-      this.persistence.updateEffort(sessionId, effort);
+    // Persist runtime-options changes so resume after eviction uses the latest values
+    if (options?.effort !== undefined) {
+      this.persistence.updateEffort(sessionId, options.effort);
+    }
+    if (options?.model !== undefined) {
+      this.persistence.updateModel(sessionId, options.model);
     }
 
     // Send to Claude Code process (messages are stored via handleMessage)
-    await sessionData.process.sendMessage(content, uuid, effort);
+    await sessionData.process.sendMessage(content, uuid, options);
   }
 
   getMessages(sessionId: string): SDKMessage[] {
@@ -337,6 +352,17 @@ export class SessionManager extends EventEmitter {
 
     // Store the message
     sessionData.messages.push(message);
+
+    // Release browser lock when an automated session's turn completes.
+    // The SDK query keeps the for-await loop alive waiting for the next user
+    // message, so the 'exit' event never fires for idle sessions. Releasing
+    // on 'result' ensures the lock is freed as soon as the model finishes.
+    if (message.type === 'result' && sessionData.session.metadata?.isAutomated) {
+      const released = releaseBrowserLock(sessionId);
+      if (released) {
+        console.log(`[Session ${sessionId}] Released browser lock (automated session turn completed)`);
+      }
+    }
 
     // Notify all subscribers
     sessionData.subscribers.forEach((callback) => {

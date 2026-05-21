@@ -20,6 +20,7 @@ import { requestSecretDef } from './request-secret'
 import { requestConnectedAccountDef } from './request-connected-account'
 import { scheduleTaskDef } from './schedule-task'
 import { deliverFileDef } from './deliver-file'
+import { deliverSessionDef } from './deliver-session'
 import { requestFileDef } from './request-file'
 import { requestRemoteMcpDef } from './request-remote-mcp'
 import { requestScriptRunDef } from './request-script-run'
@@ -44,6 +45,13 @@ import {
   listDashboardsDef,
   getDashboardLogsDef,
 } from './dashboard-tools'
+import {
+  listAgentsDef,
+  createAgentDef,
+  invokeAgentDef,
+  getAgentSessionsDef,
+  getAgentSessionTranscriptDef,
+} from './x-agent-tools'
 
 const definitions: Record<string, ToolDefinition> = {
   // Agent tools
@@ -73,6 +81,7 @@ const definitions: Record<string, ToolDefinition> = {
   'mcp__user-input__request_connected_account': requestConnectedAccountDef,
   'mcp__user-input__schedule_task': scheduleTaskDef,
   'mcp__user-input__deliver_file': deliverFileDef,
+  'mcp__user-input__deliver_session': deliverSessionDef,
   'mcp__user-input__request_file': requestFileDef,
   'mcp__user-input__request_remote_mcp': requestRemoteMcpDef,
   'mcp__user-input__request_script_run': requestScriptRunDef,
@@ -97,6 +106,13 @@ const definitions: Record<string, ToolDefinition> = {
   'mcp__dashboards__start_dashboard': startDashboardDef,
   'mcp__dashboards__list_dashboards': listDashboardsDef,
   'mcp__dashboards__get_dashboard_logs': getDashboardLogsDef,
+
+  // MCP tools - x-agent (cross-agent work)
+  'mcp__agents__list_agents': listAgentsDef,
+  'mcp__agents__create_agent': createAgentDef,
+  'mcp__agents__invoke_agent': invokeAgentDef,
+  'mcp__agents__get_agent_sessions': getAgentSessionsDef,
+  'mcp__agents__get_agent_session_transcript': getAgentSessionTranscriptDef,
 }
 
 export function getToolDefinition(toolName: string): ToolDefinition | undefined {

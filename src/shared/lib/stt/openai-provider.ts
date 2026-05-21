@@ -1,5 +1,20 @@
 import { BaseSttProvider } from './stt-provider'
 
+const MIME_TO_EXT: Record<string, string> = {
+  'audio/mpeg': 'mp3',
+  'audio/mp4': 'm4a',
+  'audio/x-m4a': 'm4a',
+  'audio/mp4a-latm': 'm4a',
+  'audio/aac': 'aac',
+  'audio/ogg': 'ogg',
+  'audio/wav': 'wav',
+  'audio/x-wav': 'wav',
+  'audio/webm': 'webm',
+  'audio/flac': 'flac',
+  'audio/x-caf': 'caf',
+  'audio/amr': 'amr',
+}
+
 export class OpenaiSttProvider extends BaseSttProvider {
   readonly id = 'openai' as const
   readonly name = 'OpenAI'
@@ -36,6 +51,30 @@ export class OpenaiSttProvider extends BaseSttProvider {
 
   override async mintVoiceAgentToken(apiKey: string): Promise<string> {
     return this.mintClientSecret(apiKey, { session: { type: 'realtime' } })
+  }
+
+  override supportsTranscription(): boolean {
+    return true
+  }
+
+  override async transcribeAudio(apiKey: string, audioBuffer: Buffer, mimeType: string): Promise<string> {
+    const ext = MIME_TO_EXT[mimeType] || 'wav'
+    const blob = new Blob([new Uint8Array(audioBuffer)], { type: mimeType })
+    const formData = new FormData()
+    formData.append('file', blob, `audio.${ext}`)
+    formData.append('model', 'whisper-1')
+
+    const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: formData,
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`OpenAI transcription failed (${res.status}): ${text}`)
+    }
+    const data = await res.json() as { text: string }
+    return data.text
   }
 
   private async mintClientSecret(apiKey: string, body: Record<string, unknown>): Promise<string> {

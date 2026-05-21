@@ -147,7 +147,7 @@ export function GettingStartedWizard({ onClose }: GettingStartedWizardProps) {
       <div className={`relative flex flex-col h-svh transition-[width] duration-500 ease-in-out ${isAgentStep ? 'w-full' : 'w-full lg:w-1/2'}`}>
         <h1 className="sr-only">Getting Started</h1>
 
-        <div className={`flex flex-1 flex-col justify-center py-10 w-full mx-auto transition-[max-width] duration-500 ${isAgentStep ? 'max-w-[640px]' : 'max-w-[480px]'}`}>
+        <div className={`flex flex-1 min-h-0 flex-col py-10 w-full mx-auto transition-[max-width] duration-500 justify-center ${isAgentStep ? 'max-w-[640px]' : 'max-w-[480px]'}`}>
           <div className="w-full">
 
           {/* Step content */}

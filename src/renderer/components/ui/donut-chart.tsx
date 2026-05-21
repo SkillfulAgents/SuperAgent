@@ -41,8 +41,9 @@ export function DonutChart({
       ? 'text-yellow-600 dark:text-yellow-400'
       : 'text-muted-foreground'
 
-  const buttonSize = size === 'sm' ? 'h-6 w-6' : 'h-9 w-9'
-  const svgSize = size === 'sm' ? 'h-5 w-5' : 'h-8 w-8'
+  const buttonSize = size === 'sm' ? 'h-4 w-4' : 'h-9 w-9'
+  const svgSize = size === 'sm' ? 'h-3 w-3' : 'h-8 w-8'
+  const strokeWidth = size === 'sm' ? 3 : 2.5
 
   const chart = (
     <div
@@ -52,13 +53,13 @@ export function DonutChart({
         <circle
           cx="14" cy="14" r={RADIUS}
           fill="none"
-          strokeWidth="2.5"
+          strokeWidth={strokeWidth}
           className="stroke-muted"
         />
         <circle
           cx="14" cy="14" r={RADIUS}
           fill="none"
-          strokeWidth="2.5"
+          strokeWidth={strokeWidth}
           strokeDasharray={CIRCUMFERENCE}
           strokeDashoffset={CIRCUMFERENCE * (1 - clamped / 100)}
           strokeLinecap="round"

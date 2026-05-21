@@ -11,6 +11,12 @@ export interface PendingReview {
   matchedScopes: string[]
   scopeDescriptions: Record<string, string>
   displayText?: string
+  xAgent?: {
+    targetAgentSlug: string
+    targetAgentName: string
+    operation: 'list' | 'read' | 'invoke' | 'create'
+    preview?: string
+  }
 }
 
 export function usePendingProxyReviews(agentSlug: string) {

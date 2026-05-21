@@ -15,7 +15,7 @@ const OUTPUT_DIR = path.resolve(__dirname, '../src/renderer/public/service-icons
 const ALL_SLUGS = [
   // OAuth providers
   'gmail', 'googlecalendar', 'googledrive', 'googlesheets', 'googledocs',
-  'googlemeet', 'googletasks', 'youtube', 'outlook', 'microsoft_teams',
+  'googleslides', 'googlemeet', 'googletasks', 'youtube', 'outlook', 'microsoft_teams',
   'slack', 'discord', 'github', 'gitlab', 'bitbucket', 'sentry', 'datadog',
   'pagerduty', 'notion', 'linear', 'jira', 'confluence', 'asana', 'monday',
   'clickup', 'trello', 'hubspot', 'salesforce', 'pipedrive', 'zendesk',

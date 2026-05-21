@@ -90,6 +90,7 @@ function buildSettingsResponse(
     shareAnalytics: !!appSettings.shareAnalytics,
     analyticsTargets: appSettings.analyticsTargets,
     shareErrorReports: appSettings.shareErrorReports !== false,
+    enableToolSearch: appSettings.enableToolSearch !== false,
   }
 }
 
@@ -134,6 +135,11 @@ settings.put('/', async (c) => {
           409
         )
       }
+    }
+
+    // Validate enableToolSearch if provided
+    if (body.enableToolSearch !== undefined && typeof body.enableToolSearch !== 'boolean') {
+      return c.json({ error: 'enableToolSearch must be a boolean' }, 400)
     }
 
     // Validate runtimeSettings if provided
@@ -181,6 +187,7 @@ settings.put('/', async (c) => {
       voice: body.voice !== undefined ? { ...currentSettings.voice, ...body.voice } : currentSettings.voice,
       shareAnalytics: body.shareAnalytics !== undefined ? body.shareAnalytics : currentSettings.shareAnalytics,
       shareErrorReports: body.shareErrorReports !== undefined ? body.shareErrorReports : currentSettings.shareErrorReports,
+      enableToolSearch: body.enableToolSearch !== undefined ? body.enableToolSearch : currentSettings.enableToolSearch,
       computerUse: body.computerUse !== undefined
         ? { ...currentSettings.computerUse, ...body.computerUse }
         : currentSettings.computerUse,

@@ -5,35 +5,18 @@ import { useIsVoiceAgentConfigured } from '@renderer/hooks/use-voice-input'
 import { VoiceAgentFeedbackDialog } from './voice-agent-feedback-dialog'
 import {
   useMessageStream,
-  removeSecretRequest,
-  removeConnectedAccountRequest,
-  removeRemoteMcpRequest,
-  removeQuestionRequest,
-  removeFileRequest,
-  removeBrowserInputRequest,
-  removeScriptRunRequest,
-  removeComputerUseRequest,
   clearCompacting,
 } from '@renderer/hooks/use-message-stream'
 import { MessageItem } from './message-item'
-import { StreamingToolCallItem } from './tool-call-item'
+import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
+import { SubAgentBlock } from './subagent-block'
 import { CompactBoundaryItem } from './compact-boundary-item'
 import { MemoryRecallItem } from './memory-recall-item'
-import { SecretRequestItem } from './secret-request-item'
-import { ConnectedAccountRequestItem } from './connected-account-request-item'
-import { RemoteMcpRequestItem } from './remote-mcp-request-item'
-import { QuestionRequestItem } from './question-request-item'
-import { FileRequestItem } from './file-request-item'
-import { BrowserInputRequestItem } from './browser-input-request-item'
-import { ScriptRunRequestItem } from './script-run-request-item'
-import { ComputerUseRequestItem } from './computer-use-request-item'
-import { ProxyReviewRequestItem } from './proxy-review-request-item'
-import { PendingRequestStack } from './pending-request-stack'
 import { ArrowDown, Loader2, MessageSquarePlus, WifiOff } from 'lucide-react'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
-import { usePendingProxyReviews } from '@renderer/hooks/use-proxy-reviews'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
+import { useDraft } from '@renderer/context/drafts-context'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { useEffect, useRef, useState, useCallback, useMemo, Fragment } from 'react'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
@@ -52,8 +35,8 @@ interface PendingMessage {
 function DeliveredFiles({ files, agentSlug }: { files: { filePath: string }[]; agentSlug: string }) {
   return (
     <div className="flex flex-wrap gap-1.5 ml-11 -mt-1 pb-1">
-      {files.map((file, idx) => (
-        <FileDownloadPill key={idx} filePath={file.filePath} agentSlug={agentSlug} />
+      {files.map((file) => (
+        <FileDownloadPill key={file.filePath} filePath={file.filePath} agentSlug={agentSlug} />
       ))}
     </div>
   )
@@ -63,22 +46,17 @@ interface MessageListProps {
   sessionId: string
   agentSlug: string
   pendingUserMessage?: PendingMessage | null
+  pendingRequestCount?: number
   onPendingMessageAppeared?: () => void
-  /** Set the draft text in the message input (used by voice feedback) */
-  onSetDraft?: (draft: string) => void
 }
 
-export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendingMessageAppeared, onSetDraft }: MessageListProps) {
+export function MessageList({ sessionId, agentSlug, pendingUserMessage, pendingRequestCount = 0, onPendingMessageAppeared }: MessageListProps) {
   useRenderTracker('MessageList')
   const { data: messages, isLoading } = useMessages(sessionId, agentSlug)
   const deleteMessage = useDeleteMessage()
   const deleteToolCall = useDeleteToolCall()
-  const { canUseAgent, user } = useUser()
-  const isViewOnly = !canUseAgent(agentSlug)
-
-  // Proxy reviews come from a separate API (not the message stream)
-  const { data: proxyReviewsData, refetch: refetchProxyReviews } = usePendingProxyReviews(agentSlug)
-  const pendingProxyReviews = proxyReviewsData?.reviews ?? []
+  const { user } = useUser()
+  const [, setSessionDraft] = useDraft<string>(`session:${sessionId}`)
 
   const handleRemoveMessage = useCallback(
     (messageId: string) => {
@@ -156,329 +134,15 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     isActive,
     streamingMessage,
     isStreaming,
-    streamingToolUse,
+    streamingToolUses,
     isCompacting,
     activeSubagents,
     completedSubagents,
     apiErrorCode,
     typingUser,
     peerUserMessage,
-    pendingSecretRequests: sseSecretRequests,
-    pendingConnectedAccountRequests: sseConnectedAccountRequests,
-    pendingRemoteMcpRequests: sseRemoteMcpRequests,
-    pendingQuestionRequests: sseQuestionRequests,
-    pendingFileRequests: sseFileRequests,
-    pendingBrowserInputRequests: sseBrowserInputRequests,
-    pendingScriptRunRequests: sseScriptRunRequests,
-    pendingComputerUseRequests: sseComputerUseRequests,
-    autoApprovedScriptRunIds,
   } = useMessageStream(sessionId, agentSlug)
   const isOnline = useIsOnline()
-
-  // Derive pending requests from message history (for page refresh recovery)
-  // Tool calls without a result are still pending, but only if there are no
-  // subsequent user messages (which would indicate user has moved past the request)
-  const messagesBasedPendingRequests = useMemo(() => {
-    const secretRequests: { toolUseId: string; secretName: string; reason?: string }[] = []
-    const connectedAccountRequests: { toolUseId: string; toolkit: string; reason?: string }[] = []
-    const questionRequests: {
-      toolUseId: string
-      questions: Array<{
-        question: string
-        header: string
-        options: Array<{ label: string; description: string }>
-        multiSelect: boolean
-      }>
-    }[] = []
-    const fileRequests: { toolUseId: string; description: string; fileTypes?: string }[] = []
-    const remoteMcpRequests: { toolUseId: string; url: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer' }[] = []
-    const browserInputRequests: { toolUseId: string; message: string; requirements: string[] }[] = []
-    const scriptRunRequests: { toolUseId: string; script: string; explanation: string; scriptType: 'applescript' | 'shell' | 'powershell' }[] = []
-
-    if (!messages) return { secretRequests, connectedAccountRequests, questionRequests, fileRequests, remoteMcpRequests, browserInputRequests, scriptRunRequests }
-
-    for (let i = 0; i < messages.length; i++) {
-      const message = messages[i]
-      if (message.type !== 'assistant') continue
-
-      // Skip if there are any user messages after this assistant message
-      // This means the user has moved past this request (e.g., interrupted and sent new message)
-      // Also consider the optimistic pending user message (not yet persisted)
-      const hasSubsequentUserMessage = !!pendingUserMessage || messages.slice(i + 1).some((m) => m.type === 'user')
-      if (hasSubsequentUserMessage) continue
-
-      for (const toolCall of message.toolCalls) {
-        // Skip if already has a result
-        if (toolCall.result !== undefined) continue
-
-        if (toolCall.name === 'mcp__user-input__request_secret') {
-          const input = toolCall.input as { secretName?: string; reason?: string }
-          if (input.secretName) {
-            secretRequests.push({
-              toolUseId: toolCall.id,
-              secretName: input.secretName,
-              reason: input.reason,
-            })
-          }
-        } else if (toolCall.name === 'mcp__user-input__request_connected_account') {
-          const input = toolCall.input as { toolkit?: string; reason?: string }
-          if (input.toolkit) {
-            connectedAccountRequests.push({
-              toolUseId: toolCall.id,
-              toolkit: input.toolkit,
-              reason: input.reason,
-            })
-          }
-        } else if (toolCall.name === 'AskUserQuestion') {
-          const input = toolCall.input as {
-            questions?: Array<{
-              question: string
-              header: string
-              options: Array<{ label: string; description: string }>
-              multiSelect: boolean
-            }>
-          }
-          if (input.questions?.length) {
-            questionRequests.push({
-              toolUseId: toolCall.id,
-              questions: input.questions,
-            })
-          }
-        } else if (toolCall.name === 'mcp__user-input__request_remote_mcp') {
-          const input = toolCall.input as { url?: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer' }
-          if (input.url) {
-            remoteMcpRequests.push({
-              toolUseId: toolCall.id,
-              url: input.url,
-              name: input.name,
-              reason: input.reason,
-              authHint: input.authHint,
-            })
-          }
-        } else if (toolCall.name === 'mcp__user-input__request_file') {
-          const input = toolCall.input as { description?: string; fileTypes?: string }
-          if (input.description) {
-            fileRequests.push({
-              toolUseId: toolCall.id,
-              description: input.description,
-              fileTypes: input.fileTypes,
-            })
-          }
-        } else if (toolCall.name === 'mcp__user-input__request_browser_input') {
-          const input = toolCall.input as { message?: string; requirements?: string[] }
-          if (input.message) {
-            browserInputRequests.push({
-              toolUseId: toolCall.id,
-              message: input.message,
-              requirements: input.requirements || [],
-            })
-          }
-        } else if (toolCall.name === 'mcp__user-input__request_script_run') {
-          const input = toolCall.input as { script?: string; explanation?: string; scriptType?: 'applescript' | 'shell' | 'powershell' }
-          if (input.script && input.scriptType) {
-            scriptRunRequests.push({
-              toolUseId: toolCall.id,
-              script: input.script,
-              explanation: input.explanation || '',
-              scriptType: input.scriptType,
-            })
-          }
-        }
-      }
-    }
-
-    return { secretRequests, connectedAccountRequests, questionRequests, fileRequests, remoteMcpRequests, browserInputRequests, scriptRunRequests }
-  }, [messages, pendingUserMessage])
-
-  // Track toolUseIds the user has already answered, so that the message-based
-  // recovery source doesn't re-surface them before the tool result is persisted.
-  // Cleared when the session goes idle (all tool calls will have results by then).
-  const dismissedRequestIds = useRef(new Set<string>())
-
-  // Clear dismissed set when session becomes idle
-  const prevIsActive = useRef(isActive)
-  if (prevIsActive.current && !isActive) {
-    dismissedRequestIds.current.clear()
-  }
-  prevIsActive.current = isActive
-
-  // Merge SSE-based and message-based pending requests (dedupe by toolUseId)
-  // Only include message-based requests when session is active (for page refresh recovery)
-  // When session is idle, message-based requests represent interrupted/completed work
-  // Filter out dismissed requests so they don't re-surface from the message-based source
-  // before the tool result is persisted (race condition with parallel tool calls).
-  const pendingSecretRequests = useMemo(() => {
-    const seen = new Set<string>()
-    const merged: { toolUseId: string; secretName: string; reason?: string }[] = []
-
-    const messageBased = isActive ? messagesBasedPendingRequests.secretRequests : []
-    for (const req of [...sseSecretRequests, ...messageBased]) {
-      if (!seen.has(req.toolUseId) && !dismissedRequestIds.current.has(req.toolUseId)) {
-        seen.add(req.toolUseId)
-        merged.push(req)
-      }
-    }
-    return merged
-  }, [sseSecretRequests, messagesBasedPendingRequests.secretRequests, isActive])
-
-  const pendingConnectedAccountRequests = useMemo(() => {
-    const seen = new Set<string>()
-    const merged: { toolUseId: string; toolkit: string; reason?: string }[] = []
-
-    const messageBased = isActive ? messagesBasedPendingRequests.connectedAccountRequests : []
-    for (const req of [...sseConnectedAccountRequests, ...messageBased]) {
-      if (!seen.has(req.toolUseId) && !dismissedRequestIds.current.has(req.toolUseId)) {
-        seen.add(req.toolUseId)
-        merged.push(req)
-      }
-    }
-    return merged
-  }, [sseConnectedAccountRequests, messagesBasedPendingRequests.connectedAccountRequests, isActive])
-  // TODO: currently request handling is super duplicative for different types (question, browser, permission) --> need to unify it
-  const pendingQuestionRequests = useMemo(() => {
-    const seen = new Set<string>()
-    const merged: {
-      toolUseId: string
-      questions: Array<{
-        question: string
-        header: string
-        options: Array<{ label: string; description: string }>
-        multiSelect: boolean
-      }>
-    }[] = []
-
-    const messageBased = isActive ? messagesBasedPendingRequests.questionRequests : []
-    for (const req of [...sseQuestionRequests, ...messageBased]) {
-      if (!seen.has(req.toolUseId) && !dismissedRequestIds.current.has(req.toolUseId)) {
-        seen.add(req.toolUseId)
-        merged.push(req)
-      }
-    }
-    return merged
-  }, [sseQuestionRequests, messagesBasedPendingRequests.questionRequests, isActive])
-
-  const pendingFileRequests = useMemo(() => {
-    const seen = new Set<string>()
-    const merged: { toolUseId: string; description: string; fileTypes?: string }[] = []
-
-    const messageBased = isActive ? messagesBasedPendingRequests.fileRequests : []
-    for (const req of [...sseFileRequests, ...messageBased]) {
-      if (!seen.has(req.toolUseId) && !dismissedRequestIds.current.has(req.toolUseId)) {
-        seen.add(req.toolUseId)
-        merged.push(req)
-      }
-    }
-    return merged
-  }, [sseFileRequests, messagesBasedPendingRequests.fileRequests, isActive])
-
-  const pendingRemoteMcpRequests = useMemo(() => {
-    const seen = new Set<string>()
-    const merged: { toolUseId: string; url: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer' }[] = []
-
-    const messageBased = isActive ? messagesBasedPendingRequests.remoteMcpRequests : []
-    for (const req of [...sseRemoteMcpRequests, ...messageBased]) {
-      if (!seen.has(req.toolUseId) && !dismissedRequestIds.current.has(req.toolUseId)) {
-        seen.add(req.toolUseId)
-        merged.push(req)
-      }
-    }
-    return merged
-  }, [sseRemoteMcpRequests, messagesBasedPendingRequests.remoteMcpRequests, isActive])
-
-  const pendingBrowserInputRequests = useMemo(() => {
-    const seen = new Set<string>()
-    const merged: { toolUseId: string; message: string; requirements: string[] }[] = []
-
-    const messageBased = isActive ? messagesBasedPendingRequests.browserInputRequests : []
-    for (const req of [...sseBrowserInputRequests, ...messageBased]) {
-      if (!seen.has(req.toolUseId) && !dismissedRequestIds.current.has(req.toolUseId)) {
-        seen.add(req.toolUseId)
-        merged.push(req)
-      }
-    }
-    return merged
-  }, [sseBrowserInputRequests, messagesBasedPendingRequests.browserInputRequests, isActive])
-
-  const pendingScriptRunRequests = useMemo(() => {
-    const seen = new Set<string>()
-    const merged: { toolUseId: string; script: string; explanation: string; scriptType: 'applescript' | 'shell' | 'powershell' }[] = []
-
-    const messageBased = isActive ? messagesBasedPendingRequests.scriptRunRequests : []
-    for (const req of [...sseScriptRunRequests, ...messageBased]) {
-      // Skip auto-approved tool_uses: server is already executing them, no prompt needed.
-      if (autoApprovedScriptRunIds.has(req.toolUseId)) continue
-      if (!seen.has(req.toolUseId) && !dismissedRequestIds.current.has(req.toolUseId)) {
-        seen.add(req.toolUseId)
-        merged.push(req)
-      }
-    }
-    return merged
-  }, [sseScriptRunRequests, messagesBasedPendingRequests.scriptRunRequests, isActive, autoApprovedScriptRunIds])
-
-  const pendingComputerUseRequests = useMemo(() => {
-    const seen = new Set<string>()
-    const merged: { toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string }[] = []
-
-    for (const req of sseComputerUseRequests) {
-      if (!seen.has(req.toolUseId) && !dismissedRequestIds.current.has(req.toolUseId)) {
-        seen.add(req.toolUseId)
-        merged.push(req)
-      }
-    }
-    return merged
-  }, [sseComputerUseRequests])
-
-  // Track arrival order across all request types so the stack is chronological.
-  // Each toolUseId gets a monotonically increasing sequence number the first
-  // time it appears; the mapping persists across renders via a ref.
-  const arrivalOrder = useRef(new Map<string, number>())
-  const arrivalSeq = useRef(0)
-
-  const allPendingIds = useMemo(() => {
-    const ids: string[] = []
-    for (const arr of [
-      pendingSecretRequests,
-      pendingConnectedAccountRequests,
-      pendingRemoteMcpRequests,
-      pendingQuestionRequests,
-      pendingFileRequests,
-      pendingBrowserInputRequests,
-      pendingScriptRunRequests,
-      pendingComputerUseRequests,
-    ]) {
-      for (const req of arr) {
-        ids.push(req.toolUseId)
-      }
-    }
-    for (const review of pendingProxyReviews) {
-      ids.push(review.id)
-    }
-    return ids
-  }, [
-    pendingSecretRequests, pendingConnectedAccountRequests, pendingRemoteMcpRequests,
-    pendingQuestionRequests, pendingFileRequests, pendingBrowserInputRequests,
-    pendingScriptRunRequests, pendingComputerUseRequests, pendingProxyReviews,
-  ])
-
-  // Assign sequence numbers to new requests; clean up departed ones
-  useMemo(() => {
-    const currentIds = new Set(allPendingIds)
-    for (const id of allPendingIds) {
-      if (!arrivalOrder.current.has(id)) {
-        arrivalOrder.current.set(id, arrivalSeq.current++)
-      }
-    }
-    // Prune entries for requests that are no longer pending
-    for (const id of arrivalOrder.current.keys()) {
-      if (!currentIds.has(id)) {
-        arrivalOrder.current.delete(id)
-      }
-    }
-  }, [allPendingIds])
-
-  const getArrivalOrder = useCallback((toolUseId: string) => {
-    return arrivalOrder.current.get(toolUseId) ?? Infinity
-  }, [])
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const isScrolledToBottomRef = useRef(true)
@@ -518,78 +182,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     }
   }, [isCompacting, boundaryCount, sessionId])
 
-  // Handler to remove a completed secret request
-  const handleSecretRequestComplete = useCallback(
-    (toolUseId: string) => {
-      dismissedRequestIds.current.add(toolUseId)
-      removeSecretRequest(sessionId, toolUseId)
-    },
-    [sessionId]
-  )
-
-  // Handler to remove a completed connected account request
-  const handleConnectedAccountRequestComplete = useCallback(
-    (toolUseId: string) => {
-      dismissedRequestIds.current.add(toolUseId)
-      removeConnectedAccountRequest(sessionId, toolUseId)
-    },
-    [sessionId]
-  )
-
-  // Handler to remove a completed question request
-  const handleQuestionRequestComplete = useCallback(
-    (toolUseId: string) => {
-      dismissedRequestIds.current.add(toolUseId)
-      removeQuestionRequest(sessionId, toolUseId)
-    },
-    [sessionId]
-  )
-
-  // Handler to remove a completed remote MCP request
-  const handleRemoteMcpRequestComplete = useCallback(
-    (toolUseId: string) => {
-      dismissedRequestIds.current.add(toolUseId)
-      removeRemoteMcpRequest(sessionId, toolUseId)
-    },
-    [sessionId]
-  )
-
-  // Handler to remove a completed file request
-  const handleFileRequestComplete = useCallback(
-    (toolUseId: string) => {
-      dismissedRequestIds.current.add(toolUseId)
-      removeFileRequest(sessionId, toolUseId)
-    },
-    [sessionId]
-  )
-
-  // Handler to remove a completed script run request
-  const handleScriptRunRequestComplete = useCallback(
-    (toolUseId: string) => {
-      dismissedRequestIds.current.add(toolUseId)
-      removeScriptRunRequest(sessionId, toolUseId)
-    },
-    [sessionId]
-  )
-
-  // Handler to remove a completed computer use request
-  const handleComputerUseRequestComplete = useCallback(
-    (toolUseId: string) => {
-      dismissedRequestIds.current.add(toolUseId)
-      removeComputerUseRequest(sessionId, toolUseId)
-    },
-    [sessionId]
-  )
-
-  // Handler to remove a completed browser input request
-  const handleBrowserInputRequestComplete = useCallback(
-    (toolUseId: string) => {
-      dismissedRequestIds.current.add(toolUseId)
-      removeBrowserInputRequest(sessionId, toolUseId)
-    },
-    [sessionId]
-  )
-
   // Check if streaming message is already in persisted messages (prevents double-render)
   const isStreamingMessagePersisted = useMemo(() => {
     if (!streamingMessage || !messages?.length) return false
@@ -611,14 +203,19 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     return persistedText.startsWith(streamingText) || streamingText.startsWith(persistedText)
   }, [messages, streamingMessage])
 
-  // Check if streaming tool use is already in persisted messages (prevents double-render)
-  const isStreamingToolUsePersisted = useMemo(() => {
-    if (!streamingToolUse || !messages?.length) return false
-    return messages.some(m =>
-      m.type === 'assistant' &&
-      m.toolCalls.some(tc => tc.id === streamingToolUse.id)
-    )
-  }, [messages, streamingToolUse])
+  // Filter streaming tool uses to only those NOT yet in persisted messages
+  const unpersistedStreamingToolUses = useMemo(() => {
+    if (!streamingToolUses.length || !messages?.length) return streamingToolUses
+    const persistedToolIds = new Set<string>()
+    for (const m of messages) {
+      if (m.type === 'assistant') {
+        for (const tc of (m as ApiMessage).toolCalls) {
+          persistedToolIds.add(tc.id)
+        }
+      }
+    }
+    return streamingToolUses.filter(t => !persistedToolIds.has(t.id))
+  }, [messages, streamingToolUses])
 
   // Compute elapsed time for each completed response turn
   // A turn starts with a user message and ends at the last assistant message before the next user message (or end of messages when idle)
@@ -697,7 +294,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     if (!messages || pendingUserMessage) return null
     const hasUnpersistedStreaming =
       (streamingMessage && !isStreamingMessagePersisted) ||
-      (streamingToolUse && !isStreamingToolUsePersisted)
+      unpersistedStreamingToolUses.length > 0
     if (!hasUnpersistedStreaming) return null
     // Find the last persisted assistant message — that's where the elapsed time would wrongly appear.
     // But if we hit a user message first, the streaming belongs to a NEW turn and we
@@ -707,7 +304,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
       if (messages[i].type === 'user') return null
     }
     return null
-  }, [messages, pendingUserMessage, streamingMessage, isStreamingMessagePersisted, streamingToolUse, isStreamingToolUsePersisted])
+  }, [messages, pendingUserMessage, streamingMessage, isStreamingMessagePersisted, unpersistedStreamingToolUses])
 
   // Determine which messages could have tool calls that are still running.
   // Only the trailing assistant messages (after the last user message) can have running tools,
@@ -740,7 +337,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
     if (scrollRef.current && isScrolledToBottomRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [messages, pendingUserMessage, streamingMessage, streamingToolUse, isCompacting, pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests, pendingFileRequests, pendingRemoteMcpRequests, pendingBrowserInputRequests, pendingScriptRunRequests, sseComputerUseRequests, activeSubagents])
+  }, [messages, pendingUserMessage, streamingMessage, streamingToolUses, isCompacting, pendingRequestCount, activeSubagents])
 
   if (isLoading && !pendingUserMessage) {
     return (
@@ -858,14 +455,39 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
         )}
 
         {/* Tool use streaming - keep visible until persisted data arrives */}
-        {streamingToolUse && !isStreamingToolUsePersisted && (
-          <div className="max-w-[80%]">
-            <StreamingToolCallItem
-              name={streamingToolUse.name}
-              partialInput={streamingToolUse.partialInput}
-            />
-          </div>
-        )}
+        {unpersistedStreamingToolUses.map(tool => {
+          if (tool.ready) {
+            let input: Record<string, unknown> = {}
+            try { input = JSON.parse(tool.partialInput) } catch { /* use empty */ }
+            const syntheticToolCall = { id: tool.id, name: tool.name, input }
+            if ((tool.name === 'Task' || tool.name === 'Agent') && sessionId) {
+              return (
+                <SubAgentBlock
+                  key={tool.id}
+                  toolCall={syntheticToolCall}
+                  sessionId={sessionId}
+                  agentSlug={agentSlug}
+                  isSessionActive={isActive}
+                  activeSubagent={activeSubagents?.find(s => s.parentToolId === tool.id) ?? null}
+                  isCompleted={completedSubagents?.has(tool.id) ?? false}
+                />
+              )
+            }
+            return (
+              <div key={tool.id} className="max-w-[80%]">
+                <ToolCallItem toolCall={syntheticToolCall} agentSlug={agentSlug} isSessionActive={isActive} />
+              </div>
+            )
+          }
+          return (
+            <div key={tool.id} className="max-w-[80%]">
+              <StreamingToolCallItem
+                name={tool.name}
+                partialInput={tool.partialInput}
+              />
+            </div>
+          )
+        })}
 
         {/* Deferred delivered files + elapsed time — shown after streaming content */}
         {deferredElapsedMessageId && turnDeliveredFiles.has(deferredElapsedMessageId) && (
@@ -899,127 +521,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
           <CompactBoundaryItem isCompacting />
         )}
 
-        {/* Pending interactive requests — paginated stack, sorted by arrival order, read-only for viewers */}
-        <PendingRequestStack>
-          {[
-            ...pendingSecretRequests.map((request) => (
-              <SecretRequestItem
-                key={request.toolUseId}
-                toolUseId={request.toolUseId}
-                secretName={request.secretName}
-                reason={request.reason}
-                sessionId={sessionId}
-                agentSlug={agentSlug}
-                readOnly={isViewOnly}
-                onComplete={() => handleSecretRequestComplete(request.toolUseId)}
-              />
-            )),
-            ...pendingConnectedAccountRequests.map((request) => (
-              <ConnectedAccountRequestItem
-                key={request.toolUseId}
-                toolUseId={request.toolUseId}
-                toolkit={request.toolkit}
-                reason={request.reason}
-                sessionId={sessionId}
-                agentSlug={agentSlug}
-                readOnly={isViewOnly}
-                onComplete={() => handleConnectedAccountRequestComplete(request.toolUseId)}
-              />
-            )),
-            ...pendingRemoteMcpRequests.map((request) => (
-              <RemoteMcpRequestItem
-                key={request.toolUseId}
-                toolUseId={request.toolUseId}
-                url={request.url}
-                name={request.name}
-                reason={request.reason}
-                authHint={request.authHint}
-                sessionId={sessionId}
-                agentSlug={agentSlug}
-                readOnly={isViewOnly}
-                onComplete={() => handleRemoteMcpRequestComplete(request.toolUseId)}
-              />
-            )),
-            ...pendingQuestionRequests.map((request) => (
-              <QuestionRequestItem
-                key={request.toolUseId}
-                toolUseId={request.toolUseId}
-                questions={request.questions}
-                sessionId={sessionId}
-                agentSlug={agentSlug}
-                readOnly={isViewOnly}
-                onComplete={() => handleQuestionRequestComplete(request.toolUseId)}
-              />
-            )),
-            ...pendingFileRequests.map((request) => (
-              <FileRequestItem
-                key={request.toolUseId}
-                toolUseId={request.toolUseId}
-                description={request.description}
-                fileTypes={request.fileTypes}
-                sessionId={sessionId}
-                agentSlug={agentSlug}
-                readOnly={isViewOnly}
-                onComplete={() => handleFileRequestComplete(request.toolUseId)}
-              />
-            )),
-            ...pendingBrowserInputRequests.map((request) => (
-              <BrowserInputRequestItem
-                key={request.toolUseId}
-                toolUseId={request.toolUseId}
-                message={request.message}
-                requirements={request.requirements}
-                sessionId={sessionId}
-                agentSlug={agentSlug}
-                readOnly={isViewOnly}
-                onComplete={() => handleBrowserInputRequestComplete(request.toolUseId)}
-              />
-            )),
-            ...pendingScriptRunRequests.map((request) => (
-              <ScriptRunRequestItem
-                key={request.toolUseId}
-                toolUseId={request.toolUseId}
-                script={request.script}
-                explanation={request.explanation}
-                scriptType={request.scriptType}
-                sessionId={sessionId}
-                agentSlug={agentSlug}
-                readOnly={isViewOnly}
-                onComplete={() => handleScriptRunRequestComplete(request.toolUseId)}
-              />
-            )),
-            ...pendingComputerUseRequests.map((request) => (
-              <ComputerUseRequestItem
-                key={request.toolUseId}
-                toolUseId={request.toolUseId}
-                method={request.method}
-                params={request.params}
-                permissionLevel={request.permissionLevel}
-                appName={request.appName}
-                sessionId={sessionId}
-                agentSlug={agentSlug}
-                readOnly={isViewOnly}
-                onComplete={() => handleComputerUseRequestComplete(request.toolUseId)}
-              />
-            )),
-            ...pendingProxyReviews.map((review) => (
-              <ProxyReviewRequestItem
-                key={review.id}
-                reviewId={review.id}
-                accountId={review.accountId}
-                toolkit={review.toolkit}
-                method={review.method}
-                targetPath={review.targetPath}
-                matchedScopes={review.matchedScopes}
-                scopeDescriptions={review.scopeDescriptions}
-                displayText={review.displayText}
-                agentSlug={agentSlug}
-                readOnly={isViewOnly}
-                onComplete={() => refetchProxyReviews()}
-              />
-            )),
-          ].sort((a, b) => getArrivalOrder(a.key as string) - getArrivalOrder(b.key as string))}
-        </PendingRequestStack>
+        {/* Pending interactive requests render in the composer slot — see SessionChatColumn. */}
         </div>
       </div>
       {showScrollToBottom && (
@@ -1038,7 +540,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, onPendin
         onOpenChange={setFeedbackDialogOpen}
         agentInstructions={agentData?.instructions ?? ''}
         messages={plainMessages}
-        onSetDraft={onSetDraft}
+        onSetDraft={setSessionDraft}
       />
     </div>
   )

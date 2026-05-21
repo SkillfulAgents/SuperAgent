@@ -171,9 +171,11 @@ export function ComputerUseRequestItem({
 
   return (
     <RequestItemShell
-      title="Computer Use Request"
-      icon={<Monitor />}
+      title={descriptionText}
+      subtitle="Review carefully before allowing. This will control your actual computer with your user permissions."
       theme="orange"
+      sessionId={sessionId}
+      agentSlug={agentSlug}
       waitingText="Waiting for approval"
       error={error}
       data-testid={isCompleted ? 'computer-use-request-completed' : 'computer-use-request'}
@@ -197,29 +199,10 @@ export function ComputerUseRequestItem({
       }
       readOnly={
         readOnly
-          ? {
-              description: (
-                <>
-                  <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">
-                    {descriptionText}
-                  </p>
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    Review carefully before allowing. This will control your actual computer with your user permissions.
-                  </p>
-                </>
-              ),
-              extraContent: codeBlock,
-            }
+          ? { extraContent: codeBlock }
           : false
       }
     >
-      <p className="mt-6 whitespace-pre-line text-sm font-medium leading-5 text-foreground">
-        {descriptionText}
-      </p>
-      <p className="mt-2 text-xs text-muted-foreground">
-        Review carefully before allowing. This will control your actual computer with your user permissions.
-      </p>
-
       {codeBlock}
 
       <RequestItemActions>
@@ -236,7 +219,7 @@ export function ComputerUseRequestItem({
           <Button
             onClick={() => handleApprove('timed')}
             loading={status === 'submitting'}
-            size="sm"
+            size="xs"
             className="min-w-28 rounded-r-none border-r-0 bg-orange-600 text-white hover:bg-orange-700"
             data-testid="computer-use-allow-timed-btn"
           >
@@ -246,7 +229,7 @@ export function ComputerUseRequestItem({
             <PopoverTrigger asChild>
               <Button
                 disabled={status === 'submitting'}
-                size="sm"
+                size="xs"
                 className="rounded-l-none border-l border-l-orange-500 bg-orange-600 px-1.5 text-white hover:bg-orange-700"
                 data-testid="computer-use-allow-timed-btn-chevron"
               >
@@ -260,7 +243,7 @@ export function ComputerUseRequestItem({
                   handleApprove('once')
                 }}
                 variant="ghost"
-                size="sm"
+                size="xs"
                 className="w-full justify-start text-foreground hover:bg-muted"
                 data-testid="computer-use-allow-once-btn"
               >
@@ -272,7 +255,7 @@ export function ComputerUseRequestItem({
                   handleApprove('always')
                 }}
                 variant="ghost"
-                size="sm"
+                size="xs"
                 className="w-full justify-start text-foreground hover:bg-muted"
                 data-testid="computer-use-allow-always-btn"
               >
@@ -304,7 +287,7 @@ export function ComputerUseRequestItem({
                   <p className="text-xs text-muted-foreground">Required to interact with UI elements</p>
                 </div>
                 {isMac && (
-                  <Button size="sm" variant="outline" onClick={() => openSystemSettings('accessibility')}>
+                  <Button size="xs" variant="outline" onClick={() => openSystemSettings('accessibility')}>
                     <ExternalLink className="h-3.5 w-3.5 mr-1" />
                     Open Settings
                   </Button>
@@ -318,7 +301,7 @@ export function ComputerUseRequestItem({
                   <p className="text-xs text-muted-foreground">Required to capture screen content</p>
                 </div>
                 {isMac && (
-                  <Button size="sm" variant="outline" onClick={() => openSystemSettings('screen_recording')}>
+                  <Button size="xs" variant="outline" onClick={() => openSystemSettings('screen_recording')}>
                     <ExternalLink className="h-3.5 w-3.5 mr-1" />
                     Open Settings
                   </Button>

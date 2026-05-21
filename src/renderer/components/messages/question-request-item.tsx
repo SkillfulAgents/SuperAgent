@@ -1,13 +1,14 @@
 import { apiFetch } from '@renderer/lib/api'
 
 import { useEffect, useRef, useState } from 'react'
-import { HelpCircle, Check, ChevronLeft, ChevronRight } from 'lucide-react'
+import { HelpCircle, Check, ChevronRight } from 'lucide-react'
 import { useRequestHandler } from '@renderer/hooks/use-request-handler'
 import { Button } from '@renderer/components/ui/button'
 import { Textarea } from '@renderer/components/ui/textarea'
 import { DeclineButton } from './decline-button'
 import { RequestItemShell } from './request-item-shell'
 import { RequestItemActions } from './request-item-actions'
+import { useSubPagination } from './pending-request-stack'
 import { cn } from '@shared/lib/utils/cn'
 
 interface Question {
@@ -44,6 +45,14 @@ export function QuestionRequestItem({
   const [otherSelected, setOtherSelected] = useState<Record<number, boolean>>({})
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0)
   const otherTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+
+  // Publish per-question pagination so the stack's header chevrons flatten
+  // across this card's questions plus any other pending-request cards.
+  useSubPagination({
+    count: questions.length,
+    index: currentQuestionIndex,
+    setIndex: setCurrentQuestionIndex,
+  })
 
   const { status, error, submit } = useRequestHandler(onComplete)
 
@@ -182,7 +191,7 @@ export function QuestionRequestItem({
     )
   }
 
-  const titleText = questions.length === 1 ? 'Question' : 'Questions'
+  const titleText = currentQuestion?.question ?? ''
   const titleTextWithCount = questions.length === 1 ? 'Question' : `${questions.length} Questions`
 
   // Build completed config
@@ -203,73 +212,36 @@ export function QuestionRequestItem({
     : null
 
   // Build read-only config
+  // Title already shows the first question; list the remaining ones below if any.
   const readOnlyConfig = readOnly
     ? {
-        description: (
-          <div className="mt-4 space-y-2">
-            {questions.map((q, i) => (
+        description: questions.length > 1 ? (
+          <div className="mt-3 space-y-2">
+            {questions.slice(1).map((q, i) => (
               <p key={i} className="whitespace-pre-line text-sm font-medium leading-5 text-foreground">{q.question}</p>
             ))}
           </div>
-        ),
+        ) : undefined,
       }
     : false as const
-
-  // Pagination controls for headerRight
-  const paginationControls = questions.length > 1 ? (
-    <div className="inline-flex items-center gap-0.5 px-0.5 py-0.5 text-foreground">
-      <button
-        type="button"
-        onClick={() => setCurrentQuestionIndex((i) => Math.max(0, i - 1))}
-        disabled={currentQuestionIndex === 0 || status === 'submitting'}
-        className={cn(
-          'inline-flex h-5 w-5 items-center justify-center rounded transition-colors',
-          currentQuestionIndex === 0 || status === 'submitting'
-            ? 'cursor-not-allowed opacity-40'
-            : 'hover:bg-muted'
-        )}
-      >
-        <ChevronLeft className="h-3.5 w-3.5" />
-      </button>
-      <span className="min-w-10 text-center text-xs font-medium">
-        {currentQuestionIndex + 1} of {questions.length}
-      </span>
-      <button
-        type="button"
-        onClick={() => setCurrentQuestionIndex((i) => Math.min(questions.length - 1, i + 1))}
-        disabled={currentQuestionIndex === questions.length - 1 || status === 'submitting'}
-        className={cn(
-          'inline-flex h-5 w-5 items-center justify-center rounded transition-colors',
-          currentQuestionIndex === questions.length - 1 || status === 'submitting'
-            ? 'cursor-not-allowed opacity-40'
-            : 'hover:bg-muted'
-        )}
-      >
-        <ChevronRight className="h-3.5 w-3.5" />
-      </button>
-    </div>
-  ) : undefined
 
   return (
     <RequestItemShell
       title={titleText}
       icon={<HelpCircle />}
       theme="blue"
+      sessionId={sessionId}
+      agentSlug={agentSlug}
       completed={completedConfig}
       readOnly={readOnlyConfig}
       waitingText="Waiting for response"
-      headerRight={paginationControls}
       error={error}
       data-testid={completedConfig ? 'question-request-completed' : 'question-request'}
       data-status={completedConfig ? status : undefined}
     >
       {currentQuestion && (
-        <div className="mt-6 space-y-4">
-          <div className="px-2 py-1 text-sm font-medium leading-5 text-foreground">
-            {currentQuestion.question}
-          </div>
-
-          <div className="space-y-2.5">
+        <div className="mt-4 space-y-4">
+          <div className="space-y-1.5">
             {currentQuestion.options.map((option, optionIndex) => {
               const isSelected = currentQuestion.multiSelect
                 ? ((selections[currentQuestionIndex] as string[]) || []).includes(option.label)
@@ -282,7 +254,7 @@ export function QuestionRequestItem({
                     'flex items-center gap-2 p-2 rounded-lg border cursor-pointer transition-colors',
                     isSelected
                       ? 'bg-blue-100 dark:bg-blue-900 border-blue-300 dark:border-blue-600'
-                      : 'bg-white dark:bg-blue-950/30 hover:bg-blue-50 dark:hover:bg-blue-900/50'
+                      : 'bg-white dark:bg-blue-500/10 hover:bg-blue-50 dark:hover:bg-blue-900/50'
                   )}
                 >
                   <input
@@ -310,7 +282,7 @@ export function QuestionRequestItem({
                 'flex items-center gap-2 p-2 rounded-lg border cursor-pointer transition-colors',
                 otherSelected[currentQuestionIndex]
                   ? 'bg-blue-100 dark:bg-blue-900 border-blue-300 dark:border-blue-600'
-                  : 'bg-white dark:bg-blue-950/30 hover:bg-blue-50 dark:hover:bg-blue-900/50'
+                  : 'bg-white dark:bg-blue-500/10 hover:bg-blue-50 dark:hover:bg-blue-900/50'
               )}
             >
               <input
@@ -331,7 +303,7 @@ export function QuestionRequestItem({
                   onChange={(e) => handleOtherTextChange(currentQuestionIndex, e.target.value, currentQuestion.multiSelect)}
                   onFocus={() => ensureOtherSelected(currentQuestionIndex, currentQuestion.multiSelect)}
                   disabled={status === 'submitting'}
-                  className="min-h-0 resize-none overflow-hidden bg-white dark:bg-blue-950/30 border-input shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 text-sm"
+                  className="min-h-0 resize-none overflow-hidden bg-white dark:bg-blue-500/10 border-input shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 text-sm"
                   onClick={(e) => {
                     e.stopPropagation()
                     ensureOtherSelected(currentQuestionIndex, currentQuestion.multiSelect)
@@ -358,7 +330,7 @@ export function QuestionRequestItem({
           <Button
             onClick={() => setCurrentQuestionIndex((i) => Math.min(questions.length - 1, i + 1))}
             disabled={!currentQuestionAnswered || status === 'submitting'}
-            size="sm"
+            size="xs"
             className="bg-blue-600 hover:bg-blue-700 text-white"
             data-testid="question-next-btn"
           >
@@ -370,7 +342,7 @@ export function QuestionRequestItem({
             onClick={handleSubmit}
             loading={status === 'submitting'}
             disabled={!areAllQuestionsAnswered()}
-            size="sm"
+            size="xs"
             className="bg-blue-600 hover:bg-blue-700 text-white"
             data-testid="question-submit-btn"
           >

@@ -15,7 +15,12 @@ import {
   markTaskExecuted,
   recordManualExecution,
   updateScheduleExpression,
+  updateTaskPrompt,
+  updateTaskRuntimeOptions,
+  pauseScheduledTask,
+  resumeScheduledTask,
 } from '@shared/lib/services/scheduled-task-service'
+import { promptUpdateSchema } from './trigger-prompt-schema'
 import {
   getSessionsByScheduledTask,
   registerSession,
@@ -26,6 +31,8 @@ import { containerManager } from '@shared/lib/container/container-manager'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { validateCronExpression } from '@shared/lib/services/schedule-parser'
+import { RuntimeOptionsSchema } from '@shared/lib/container/runtime-options'
+import type { EffortLevel } from '@shared/lib/container/types'
 import { withRetry } from '@shared/lib/utils/retry'
 import { Authenticated, EntityAgentRole } from '../middleware/auth'
 
@@ -84,6 +91,44 @@ scheduledTasksRouter.delete('/:taskId', TaskAgentRole('user'), async (c) => {
   }
 })
 
+// POST /api/scheduled-tasks/:taskId/pause - Pause a recurring cron task
+scheduledTasksRouter.post('/:taskId/pause', TaskAgentRole('user'), async (c) => {
+  try {
+    const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
+    if (!task || task.scheduleType !== 'cron') {
+      return c.json({ error: 'Only recurring cron tasks can be paused' }, 400)
+    }
+    const paused = await pauseScheduledTask(task.id)
+    if (!paused) {
+      return c.json({ error: 'Task is not pending' }, 400)
+    }
+    const updated = await getScheduledTask(task.id)
+    return c.json(updated)
+  } catch (error) {
+    console.error('Failed to pause scheduled task:', error)
+    return c.json({ error: 'Failed to pause scheduled task' }, 500)
+  }
+})
+
+// POST /api/scheduled-tasks/:taskId/resume - Resume a paused cron task
+scheduledTasksRouter.post('/:taskId/resume', TaskAgentRole('user'), async (c) => {
+  try {
+    const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
+    if (!task) {
+      return c.json({ error: 'Task not found' }, 404)
+    }
+    const resumed = await resumeScheduledTask(task.id)
+    if (!resumed) {
+      return c.json({ error: 'Task is not paused' }, 400)
+    }
+    const updated = await getScheduledTask(task.id)
+    return c.json(updated)
+  } catch (error) {
+    console.error('Failed to resume scheduled task:', error)
+    return c.json({ error: 'Failed to resume scheduled task' }, 500)
+  }
+})
+
 // POST /api/scheduled-tasks/:taskId/reset - Reset a failed/cancelled task back to pending
 scheduledTasksRouter.post('/:taskId/reset', TaskAgentRole('user'), async (c) => {
   try {
@@ -99,6 +144,29 @@ scheduledTasksRouter.post('/:taskId/reset', TaskAgentRole('user'), async (c) => 
   } catch (error) {
     console.error('Failed to reset scheduled task:', error)
     return c.json({ error: 'Failed to reset scheduled task' }, 500)
+  }
+})
+
+// PATCH /api/scheduled-tasks/:taskId/prompt - Edit the task's instructions
+scheduledTasksRouter.patch('/:taskId/prompt', TaskAgentRole('user'), async (c) => {
+  try {
+    const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
+    const body = await c.req.json().catch(() => ({}))
+    const parsed = promptUpdateSchema.safeParse(body)
+    if (!parsed.success) {
+      return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid prompt' }, 400)
+    }
+
+    const updated = await updateTaskPrompt(task!.id, parsed.data.prompt)
+    if (!updated) {
+      return c.json({ error: 'Task not found or not editable' }, 404)
+    }
+
+    const refreshed = await getScheduledTask(task!.id)
+    return c.json(refreshed)
+  } catch (error) {
+    console.error('Failed to update scheduled task prompt:', error)
+    return c.json({ error: 'Failed to update prompt' }, 500)
   }
 })
 
@@ -132,22 +200,51 @@ scheduledTasksRouter.patch('/:taskId/timezone', TaskAgentRole('user'), async (c)
   }
 })
 
+// PATCH /api/scheduled-tasks/:taskId/runtime-options - Update model and/or effort
+scheduledTasksRouter.patch('/:taskId/runtime-options', TaskAgentRole('user'), async (c) => {
+  try {
+    const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
+    const body = await c.req.json().catch(() => ({}))
+    const parsed = RuntimeOptionsSchema.partial().safeParse(body)
+    if (!parsed.success) {
+      return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid runtime options' }, 400)
+    }
+
+    const updates: { model?: string | null; effort?: string | null } = {}
+    if ('model' in body) updates.model = parsed.data.model ?? null
+    if ('effort' in body) updates.effort = parsed.data.effort ?? null
+
+    const updated = await updateTaskRuntimeOptions(task!.id, updates)
+    if (!updated) {
+      return c.json({ error: 'Task not found or not editable' }, 404)
+    }
+
+    const refreshed = await getScheduledTask(task!.id)
+    return c.json(refreshed)
+  } catch (error) {
+    console.error('Failed to update scheduled task runtime options:', error)
+    return c.json({ error: 'Failed to update runtime options' }, 500)
+  }
+})
+
 // POST /api/scheduled-tasks/:taskId/run-now - Execute a scheduled task immediately
 scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) => {
   try {
     const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
-    if (!task || task.status !== 'pending') {
+    if (!task || (task.status !== 'pending' && task.status !== 'paused')) {
       return c.json({ error: 'Task is not pending' }, 400)
     }
 
     const client = await containerManager.ensureRunning(task.agentSlug)
     const availableEnvVars = await getSecretEnvVars(task.agentSlug)
+    const models = getEffectiveModels()
 
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: task.prompt,
-      model: getEffectiveModels().agentModel,
-      browserModel: getEffectiveModels().browserModel,
+      model: task.model || models.agentModel,
+      browserModel: models.browserModel,
+      ...(task.effort ? { effort: task.effort as EffortLevel } : {}),
     })
 
     const sessionId = containerSession.id

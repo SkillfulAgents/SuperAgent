@@ -8,10 +8,16 @@ import { chatIntegrationManager } from './chat-integrations/chat-integration-man
 import { captureException } from './error-reporting'
 import { isPlatformComposioActive } from './composio/client'
 import { autoSleepMonitor } from './scheduler/auto-sleep-monitor'
+import { sessionAutoDeleteMonitor } from './scheduler/session-auto-delete-monitor'
 import { getActiveProvider, stopAllProviders } from '../../main/host-browser'
 import { listAgents } from './services/agent-service'
 import { isAuthMode } from './auth/mode'
 import { validateAuthModeStartup } from './auth/startup-validation'
+import {
+  decodeOrgIdFromToken,
+  installPlatformFetchInterceptor,
+} from './platform-attribution'
+import { getPlatformAccessToken } from './services/platform-auth-service'
 import { setupBrowserStreamProxy } from '../../main/browser-stream-proxy'
 import { setServerAnalyticsVersion } from './analytics/server-analytics'
 import { APP_VERSION } from './config/version'
@@ -27,6 +33,7 @@ import { getSettings } from './config/settings'
  * - api/index.ts: for non-Electron environments (Vite dev server, standalone web server)
  * - main/index.ts: for Electron, after SUPERAGENT_DATA_DIR is set
  */
+// TODO: this fires a lot of work on startup, which can create a big workload on initial start. We should defer some work and limit concurrency.
 export async function initializeServices() {
   // Initialize error reporting for non-Electron environments (Electron inits in main/index.ts).
   // initErrorReporting is a no-op if already initialized, so this is safe.
@@ -65,6 +72,17 @@ export async function initializeServices() {
   if (isAuthMode()) {
     await validateAuthModeStartup()
   }
+
+  // Install fetch interceptor for org JWTs (opaque keys don't need attribution).
+  try {
+    const platformToken = getPlatformAccessToken()
+    if (platformToken && decodeOrgIdFromToken(platformToken) !== null) {
+      installPlatformFetchInterceptor()
+    }
+  } catch (error) {
+    captureException(error, { tags: { component: 'startup', operation: 'install-fetch-interceptor' } })
+  }
+
   // Initialize container manager with all agents
   const agents = await listAgents()
   const slugs = agents.map((a) => a.slug)
@@ -111,6 +129,11 @@ export async function initializeServices() {
   autoSleepMonitor.start().catch((error) => {
     console.error('Failed to start auto-sleep monitor:', error)
   })
+
+  // Start session auto-delete monitor (deferred — waits before first check)
+  sessionAutoDeleteMonitor.start().catch((error) => {
+    console.error('Failed to start session auto-delete monitor:', error)
+  })
 }
 
 /**
@@ -140,6 +163,7 @@ export async function shutdownServices() {
   taskScheduler.stop()
   triggerManager.stop()
   autoSleepMonitor.stop()
+  sessionAutoDeleteMonitor.stop()
   containerManager.stopStatusSync()
   containerManager.stopHealthMonitor()
   await containerManager.stopAll()

@@ -5,6 +5,7 @@ import { Hono } from 'hono'
 const mockValidateProxyToken = vi.fn()
 const mockIsHostAllowed = vi.fn()
 const mockGetConnectionToken = vi.fn()
+const mockProxyExecute = vi.fn()
 
 vi.mock('@shared/lib/proxy/token-store', () => ({
   validateProxyToken: (...args: unknown[]) => mockValidateProxyToken(...args),
@@ -14,8 +15,30 @@ vi.mock('@shared/lib/proxy/allowed-hosts', () => ({
   isHostAllowed: (...args: unknown[]) => mockIsHostAllowed(...args),
 }))
 
+const composioMocks = vi.hoisted(() => {
+  class MockComposioApiError extends Error {
+    statusCode: number
+    constructor(message: string, statusCode: number) {
+      super(message)
+      this.statusCode = statusCode
+      this.name = 'ComposioApiError'
+    }
+  }
+  class MockComposioRedactedTokenError extends MockComposioApiError {
+    constructor(message: string) {
+      super(message, 403)
+      this.name = 'ComposioRedactedTokenError'
+    }
+  }
+  return { MockComposioApiError, MockComposioRedactedTokenError }
+})
+const MockComposioRedactedTokenError = composioMocks.MockComposioRedactedTokenError
+
 vi.mock('@shared/lib/composio/client', () => ({
   getConnectionToken: (...args: unknown[]) => mockGetConnectionToken(...args),
+  proxyExecute: (...args: unknown[]) => mockProxyExecute(...args),
+  ComposioApiError: composioMocks.MockComposioApiError,
+  ComposioRedactedTokenError: composioMocks.MockComposioRedactedTokenError,
 }))
 
 // Mock DB with chainable query builder
@@ -44,6 +67,11 @@ vi.mock('@shared/lib/db/schema', () => ({
 vi.mock('drizzle-orm', () => ({
   eq: (col: string, val: string) => ({ col, val }),
   and: (...args: unknown[]) => args,
+}))
+
+vi.mock('@shared/lib/platform-attribution', () => ({
+  attribution: { fromResourceCreator: () => null },
+  runWithAttribution: <T,>(_auth: unknown, fn: () => T): T => fn(),
 }))
 
 // Mock policy enforcement
@@ -1151,5 +1179,398 @@ describe('proxy token caching', () => {
 
     // Should have called getConnectionToken again for the new connection
     expect(mockGetConnectionToken).toHaveBeenCalledTimes(2)
+  })
+})
+
+// ===========================================================================
+// Composio proxy fallback (REDACTED token → /tools/execute/proxy)
+// ===========================================================================
+describe('proxy fallback to Composio proxy execute', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.resetModules()
+    mockValidateProxyToken.mockReset()
+    mockIsHostAllowed.mockReset()
+    mockGetConnectionToken.mockReset()
+    mockProxyExecute.mockReset()
+    mockMatchScopes.mockReset()
+    mockResolveApiPolicy.mockReset()
+    mockRequestReview.mockReset()
+    mockDbFrom.mockReset()
+    mockInnerJoin.mockReset()
+    mockWhere.mockReset()
+    mockLimit.mockReset()
+    mockInsertValues.mockReset()
+    mockFetch.mockReset()
+    mockInsertValues.mockResolvedValue(undefined)
+    mockMatchScopes.mockReturnValue({ matched: true, scopes: ['s'], descriptions: {} })
+    mockResolveApiPolicy.mockResolvedValue({
+      decision: 'allow',
+      matchedScopes: ['s'],
+      scopeDescriptions: {},
+      resolvedFrom: 'global_default',
+    })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  async function getFreshApp() {
+    const proxyMod = await import('./proxy')
+    const { Hono: HonoClass } = await import('hono')
+    const app = new HonoClass()
+    app.route('/api/proxy', proxyMod.default)
+    return app
+  }
+
+  function setupRedacted(opts: { composioConnectionId?: string; toolkit?: string } = {}) {
+    const composioConnectionId = opts.composioConnectionId ?? 'comp-redacted-' + Math.random()
+    const toolkit = opts.toolkit ?? 'gmail'
+    mockValidateProxyToken.mockResolvedValue('my-agent')
+    mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
+    mockInnerJoin.mockReturnValue({ where: mockWhere })
+    mockWhere.mockReturnValue({ limit: mockLimit })
+    mockLimit.mockResolvedValue([
+      {
+        account: {
+          id: 'acc-r',
+          toolkitSlug: toolkit,
+          composioConnectionId,
+        },
+      },
+    ])
+    mockIsHostAllowed.mockReturnValue(true)
+    mockGetConnectionToken.mockRejectedValue(
+      new MockComposioRedactedTokenError('Access token is redacted by Composio')
+    )
+    return { composioConnectionId, toolkit }
+  }
+
+  it('routes redacted-token connections through proxyExecute (and does NOT call fetch directly)', async () => {
+    const app = await getFreshApp()
+    setupRedacted()
+    mockProxyExecute.mockResolvedValue({
+      status: 200,
+      data: { login: 'iddogino' },
+      headers: { 'x-ratelimit-remaining': '4999' },
+    })
+
+    const res = await app.request(
+      'http://localhost/api/proxy/my-agent/acc-r/api.github.com/user',
+      { headers: { Authorization: 'Bearer synth_valid' } }
+    )
+
+    expect(res.status).toBe(200)
+    expect(mockProxyExecute).toHaveBeenCalledOnce()
+    expect(mockFetch).not.toHaveBeenCalled()
+
+    const arg = mockProxyExecute.mock.calls[0][0]
+    expect(arg.endpoint).toBe('https://api.github.com/user')
+    expect(arg.method).toBe('GET')
+
+    const body = await res.json()
+    expect(body).toEqual({ login: 'iddogino' })
+    expect(res.headers.get('x-ratelimit-remaining')).toBe('4999')
+    expect(res.headers.get('content-type')).toContain('application/json')
+  })
+
+  it('mode cache: second redacted call does NOT re-call getConnectionToken', async () => {
+    const app = await getFreshApp()
+    setupRedacted({ composioConnectionId: 'comp-cached-redacted' })
+    mockProxyExecute.mockResolvedValue({ status: 200, data: {}, headers: {} })
+
+    await app.request(
+      'http://localhost/api/proxy/my-agent/acc-r/api.github.com/user',
+      { headers: { Authorization: 'Bearer synth_valid' } }
+    )
+    await app.request(
+      'http://localhost/api/proxy/my-agent/acc-r/api.github.com/user',
+      { headers: { Authorization: 'Bearer synth_valid' } }
+    )
+
+    expect(mockGetConnectionToken).toHaveBeenCalledTimes(1)
+    expect(mockProxyExecute).toHaveBeenCalledTimes(2)
+  })
+
+  it('use-proxy mode cache expires after 5 min and re-probes getConnectionToken', async () => {
+    const app = await getFreshApp()
+    setupRedacted({ composioConnectionId: 'comp-redacted-ttl' })
+    mockProxyExecute.mockResolvedValue({ status: 200, data: {}, headers: {} })
+
+    // First call: token throws redacted, mode is cached as use-proxy
+    await app.request(
+      'http://localhost/api/proxy/my-agent/acc-r/api.github.com/user',
+      { headers: { Authorization: 'Bearer synth_valid' } }
+    )
+    expect(mockGetConnectionToken).toHaveBeenCalledTimes(1)
+
+    // Within TTL: still cached, no re-probe
+    vi.advanceTimersByTime(4 * 60 * 1000)
+    await app.request(
+      'http://localhost/api/proxy/my-agent/acc-r/api.github.com/user',
+      { headers: { Authorization: 'Bearer synth_valid' } }
+    )
+    expect(mockGetConnectionToken).toHaveBeenCalledTimes(1)
+
+    // Past 5-min TTL: cache expires, getConnectionToken is probed again.
+    // Simulate the connection being un-redacted in the meantime — it now returns a real token.
+    vi.advanceTimersByTime(2 * 60 * 1000) // total elapsed = 6 min
+    mockGetConnectionToken.mockReset()
+    mockGetConnectionToken.mockResolvedValue({ accessToken: 'real-token-after-fix' })
+    mockFetch.mockResolvedValue(
+      new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } })
+    )
+
+    const res = await app.request(
+      'http://localhost/api/proxy/my-agent/acc-r/api.github.com/user',
+      { headers: { Authorization: 'Bearer synth_valid' } }
+    )
+
+    expect(res.status).toBe(200)
+    expect(mockGetConnectionToken).toHaveBeenCalledTimes(1) // re-probed after TTL
+    // Once un-redacted, traffic flips back to direct fetch, not proxyExecute
+    const proxyCallsAfterReset = mockProxyExecute.mock.calls.length
+    expect(proxyCallsAfterReset).toBe(2) // only the two pre-TTL calls
+    expect(mockFetch).toHaveBeenCalledOnce()
+    expect(mockFetch.mock.calls[0][1].headers.get('Authorization')).toBe(
+      'Bearer real-token-after-fix'
+    )
+  })
+
+  it('JSON-body POST is forwarded as `body` to proxyExecute', async () => {
+    const app = await getFreshApp()
+    setupRedacted()
+    mockProxyExecute.mockResolvedValue({ status: 200, data: { ok: true }, headers: {} })
+
+    const res = await app.request(
+      'http://localhost/api/proxy/my-agent/acc-r/slack.com/api/chat.postMessage',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer synth_valid',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ channel: 'C1', text: 'hi' }),
+      }
+    )
+
+    expect(res.status).toBe(200)
+    const arg = mockProxyExecute.mock.calls[0][0]
+    expect(arg.body).toEqual({ channel: 'C1', text: 'hi' })
+    expect(arg.binaryBody).toBeUndefined()
+  })
+
+  it('binary body (≤4MB) is forwarded as `binary_body` (base64) to proxyExecute', async () => {
+    const app = await getFreshApp()
+    setupRedacted()
+    mockProxyExecute.mockResolvedValue({ status: 201, data: { id: 'file-1' }, headers: {} })
+
+    const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0]) // JPEG magic
+    const res = await app.request(
+      'http://localhost/api/proxy/my-agent/acc-r/api.github.com/upload',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer synth_valid',
+          'Content-Type': 'image/jpeg',
+        },
+        body: bytes,
+      }
+    )
+
+    expect(res.status).toBe(201)
+    const arg = mockProxyExecute.mock.calls[0][0]
+    expect(arg.body).toBeUndefined()
+    expect(arg.binaryBody).toEqual({
+      base64: Buffer.from(bytes).toString('base64'),
+      content_type: 'image/jpeg',
+    })
+  })
+
+  it('form-encoded body returns 415 (unsupported on managed connections)', async () => {
+    const app = await getFreshApp()
+    setupRedacted()
+
+    const res = await app.request(
+      'http://localhost/api/proxy/my-agent/acc-r/slack.com/api/auth.test',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer synth_valid',
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: 'foo=bar',
+      }
+    )
+
+    expect(res.status).toBe(415)
+    expect(mockProxyExecute).not.toHaveBeenCalled()
+    const body = await res.json()
+    expect(body.error).toBe('unsupported_media_type')
+  })
+
+  it('multipart body returns 415', async () => {
+    const app = await getFreshApp()
+    setupRedacted()
+
+    const res = await app.request(
+      'http://localhost/api/proxy/my-agent/acc-r/api.github.com/upload',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer synth_valid',
+          'Content-Type': 'multipart/form-data; boundary=xyz',
+        },
+        body: '--xyz\r\nContent-Disposition: form-data; name="x"\r\n\r\n1\r\n--xyz--\r\n',
+      }
+    )
+
+    expect(res.status).toBe(415)
+    expect(mockProxyExecute).not.toHaveBeenCalled()
+  })
+
+  it('envelope `data` as object → response is JSON', async () => {
+    const app = await getFreshApp()
+    setupRedacted()
+    mockProxyExecute.mockResolvedValue({ status: 200, data: { hello: 'world' }, headers: {} })
+
+    const res = await app.request(
+      'http://localhost/api/proxy/my-agent/acc-r/api.github.com/user',
+      { headers: { Authorization: 'Bearer synth_valid' } }
+    )
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('application/json')
+    expect(await res.json()).toEqual({ hello: 'world' })
+  })
+
+  it('envelope `data` as string → response is text passthrough', async () => {
+    const app = await getFreshApp()
+    setupRedacted()
+    mockProxyExecute.mockResolvedValue({
+      status: 200,
+      data: '<html>hi</html>',
+      headers: {},
+    })
+
+    const res = await app.request(
+      'http://localhost/api/proxy/my-agent/acc-r/api.github.com/some.html',
+      { headers: { Authorization: 'Bearer synth_valid' } }
+    )
+
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('<html>hi</html>')
+  })
+
+  it('binaryData.url → response streams that URL', async () => {
+    const app = await getFreshApp()
+    setupRedacted()
+    mockProxyExecute.mockResolvedValue({
+      status: 200,
+      data: null,
+      headers: {},
+      binaryData: {
+        url: 'https://composio-cdn.example.com/blob/123',
+        content_type: 'application/pdf',
+        size: 4321,
+        expires_at: '2099-01-01T00:00:00Z',
+      },
+    })
+    mockFetch.mockResolvedValue(
+      new Response('PDF-DATA', { status: 200 })
+    )
+
+    const res = await app.request(
+      'http://localhost/api/proxy/my-agent/acc-r/api.github.com/file.pdf',
+      { headers: { Authorization: 'Bearer synth_valid' } }
+    )
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('application/pdf')
+    expect(mockFetch).toHaveBeenCalledOnce()
+    expect(mockFetch.mock.calls[0][0]).toBe('https://composio-cdn.example.com/blob/123')
+    expect(await res.text()).toBe('PDF-DATA')
+  })
+
+  it('upstream non-200 status (envelope status: 404) → response is 404 (not 502)', async () => {
+    const app = await getFreshApp()
+    setupRedacted()
+    mockProxyExecute.mockResolvedValue({
+      status: 404,
+      data: { message: 'Not Found' },
+      headers: {},
+    })
+
+    const res = await app.request(
+      'http://localhost/api/proxy/my-agent/acc-r/api.github.com/missing',
+      { headers: { Authorization: 'Bearer synth_valid' } }
+    )
+
+    expect(res.status).toBe(404)
+    // Audit log records 404, not an error
+    const entry = mockInsertValues.mock.calls[0][0]
+    expect(entry.statusCode).toBe(404)
+    expect(entry.errorMessage).toBeNull()
+  })
+
+  it('Composio call itself throws → 502 + audit-logged error', async () => {
+    const app = await getFreshApp()
+    setupRedacted()
+    mockProxyExecute.mockRejectedValue(new Error('Network down'))
+
+    const res = await app.request(
+      'http://localhost/api/proxy/my-agent/acc-r/api.github.com/user',
+      { headers: { Authorization: 'Bearer synth_valid' } }
+    )
+
+    expect(res.status).toBe(502)
+    const entry = mockInsertValues.mock.calls[0][0]
+    expect(entry.errorMessage).toContain('Proxy request failed')
+  })
+
+  it('forwards client headers via `parameters` (excluding host/auth/cookie)', async () => {
+    const app = await getFreshApp()
+    setupRedacted()
+    mockProxyExecute.mockResolvedValue({ status: 200, data: {}, headers: {} })
+
+    await app.request(
+      'http://localhost/api/proxy/my-agent/acc-r/api.github.com/user',
+      {
+        headers: {
+          Authorization: 'Bearer synth_valid',
+          Accept: 'application/vnd.github+json',
+          Cookie: 'session=secret',
+          'X-Custom': 'yes',
+        },
+      }
+    )
+
+    const arg = mockProxyExecute.mock.calls[0][0]
+    const params = arg.parameters as Array<{ name: string; value: string; type: string }>
+    const names = new Set(params.map((p) => p.name.toLowerCase()))
+    expect(names.has('accept')).toBe(true)
+    expect(names.has('x-custom')).toBe(true)
+    expect(names.has('cookie')).toBe(false)
+    expect(names.has('authorization')).toBe(false)
+    expect(names.has('host')).toBe(false)
+  })
+
+  it('preserves query string in `endpoint` (no duplicate parameters)', async () => {
+    const app = await getFreshApp()
+    setupRedacted()
+    mockProxyExecute.mockResolvedValue({ status: 200, data: {}, headers: {} })
+
+    await app.request(
+      'http://localhost/api/proxy/my-agent/acc-r/api.github.com/search/issues?q=hello&per_page=5',
+      { headers: { Authorization: 'Bearer synth_valid' } }
+    )
+
+    const arg = mockProxyExecute.mock.calls[0][0]
+    expect(arg.endpoint).toBe('https://api.github.com/search/issues?q=hello&per_page=5')
+    if (arg.parameters) {
+      const queryParams = (arg.parameters as Array<{ type: string }>).filter((p) => p.type === 'query')
+      expect(queryParams).toEqual([])
+    }
   })
 })

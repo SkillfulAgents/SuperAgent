@@ -49,6 +49,30 @@ export class PlatformSttProvider extends BaseSttProvider {
     return this.mintEphemeralToken(platformToken)
   }
 
+  override supportsTranscription(): boolean {
+    return true
+  }
+
+  override async transcribeAudio(platformToken: string, audioBuffer: Buffer, mimeType: string): Promise<string> {
+    const base = getPlatformProxyBaseUrl()
+    const res = await fetch(`${base}/v1/deepgram/listen?model=nova-3&smart_format=true`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${platformToken}`,
+        'Content-Type': mimeType,
+      },
+      body: new Uint8Array(audioBuffer),
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`Deepgram transcription via proxy failed (${res.status}): ${text}`)
+    }
+    const data = await res.json() as {
+      results?: { channels?: Array<{ alternatives?: Array<{ transcript?: string }> }> }
+    }
+    return data.results?.channels?.[0]?.alternatives?.[0]?.transcript || ''
+  }
+
   async mintEphemeralToken(platformToken: string): Promise<string> {
     const base = getPlatformProxyBaseUrl()
     const res = await fetch(`${base}/v1/deepgram/auth/grant`, {

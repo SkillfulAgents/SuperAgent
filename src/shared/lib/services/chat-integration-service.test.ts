@@ -106,6 +106,67 @@ describe('chat-integration-service', () => {
       const rows = testDb.select().from(chatIntegrations).all()
       expect(rows).toHaveLength(2)
     })
+
+    it('throws DuplicateBotTokenError when same phone number is registered twice for iMessage', () => {
+      const firstId = createChatIntegration({
+        agentSlug: 'agent-a',
+        provider: 'imessage',
+        config: { gatewayUrl: 'https://gw.example.com', phoneNumber: '+15551234567', token: 'tok123' },
+      })
+
+      expect(() => createChatIntegration({
+        agentSlug: 'agent-b',
+        provider: 'imessage',
+        config: { gatewayUrl: 'https://gw2.example.com', phoneNumber: '+15551234567', token: 'tok456' },
+      })).toThrow(DuplicateBotTokenError)
+
+      try {
+        createChatIntegration({
+          agentSlug: 'agent-b',
+          provider: 'imessage',
+          config: { gatewayUrl: 'https://gw2.example.com', phoneNumber: '+15551234567', token: 'tok456' },
+        })
+      } catch (err) {
+        expect(err).toBeInstanceOf(DuplicateBotTokenError)
+        expect((err as DuplicateBotTokenError).existingIntegrationId).toBe(firstId)
+      }
+
+      // Second insert must not have happened
+      const rows = testDb.select().from(chatIntegrations).all()
+      expect(rows).toHaveLength(1)
+    })
+
+    it('allows the same phone number across different providers', () => {
+      createChatIntegration({
+        agentSlug: 'agent-a',
+        provider: 'imessage',
+        config: { gatewayUrl: 'https://gw.example.com', phoneNumber: '+15551234567', token: 'tok123' },
+      })
+      createChatIntegration({
+        agentSlug: 'agent-a',
+        provider: 'telegram',
+        config: { botToken: '+15551234567' },
+      })
+
+      const rows = testDb.select().from(chatIntegrations).all()
+      expect(rows).toHaveLength(2)
+    })
+
+    it('allows different phone numbers for iMessage', () => {
+      createChatIntegration({
+        agentSlug: 'agent-a',
+        provider: 'imessage',
+        config: { gatewayUrl: 'https://gw.example.com', phoneNumber: '+15551234567', token: 'tok123' },
+      })
+      createChatIntegration({
+        agentSlug: 'agent-a',
+        provider: 'imessage',
+        config: { gatewayUrl: 'https://gw.example.com', phoneNumber: '+15559876543', token: 'tok456' },
+      })
+
+      const rows = testDb.select().from(chatIntegrations).all()
+      expect(rows).toHaveLength(2)
+    })
   })
 
   describe('updateChatIntegration', () => {
@@ -132,6 +193,31 @@ describe('chat-integration-service', () => {
       }
     })
 
+    it('throws DuplicateBotTokenError when PATCHing iMessage config to an already-used phone number', () => {
+      const firstId = createChatIntegration({
+        agentSlug: 'agent-a',
+        provider: 'imessage',
+        config: { gatewayUrl: 'https://gw.example.com', phoneNumber: '+15551234567', token: 'tok123' },
+      })
+      const secondId = createChatIntegration({
+        agentSlug: 'agent-b',
+        provider: 'imessage',
+        config: { gatewayUrl: 'https://gw.example.com', phoneNumber: '+15559876543', token: 'tok456' },
+      })
+
+      expect(() => updateChatIntegration(secondId, {
+        config: { gatewayUrl: 'https://gw.example.com', phoneNumber: '+15551234567', token: 'tok456' },
+      })).toThrow(DuplicateBotTokenError)
+
+      try {
+        updateChatIntegration(secondId, {
+          config: { gatewayUrl: 'https://gw.example.com', phoneNumber: '+15551234567', token: 'tok456' },
+        })
+      } catch (err) {
+        expect((err as DuplicateBotTokenError).existingIntegrationId).toBe(firstId)
+      }
+    })
+
     it('allows updating an integration to keep the same token (self-exclusion)', () => {
       const id = createChatIntegration({
         agentSlug: 'agent-a',
@@ -151,14 +237,18 @@ describe('chat-integration-service', () => {
       token: string
       status: 'active' | 'paused' | 'error' | 'disconnected'
       updatedAt: Date
-      provider?: 'telegram' | 'slack'
+      provider?: 'telegram' | 'slack' | 'imessage'
     }) {
+      const provider = opts.provider ?? 'telegram'
+      const config = provider === 'imessage'
+        ? { gatewayUrl: 'https://gw.example.com', phoneNumber: opts.token, token: 'tok123' }
+        : { botToken: opts.token }
       testDb.insert(chatIntegrations).values({
         id: opts.id,
         agentSlug: 'agent-a',
-        provider: opts.provider ?? 'telegram',
+        provider,
         name: null,
-        config: JSON.stringify({ botToken: opts.token }),
+        config: JSON.stringify(config),
         showToolCalls: false,
         status: opts.status,
         errorMessage: null,
@@ -233,6 +323,15 @@ describe('chat-integration-service', () => {
         (opts as { tags?: { operation?: string } }).tags?.operation === 'parse-config',
       )
       expect(parseCall).toBeDefined()
+    })
+
+    it('deduplicates iMessage rows sharing a phone number', () => {
+      insertRow({ id: 'im-err', token: '+15551234567', status: 'error',  updatedAt: new Date('2026-04-10T00:00:00Z'), provider: 'imessage' })
+      insertRow({ id: 'im-ok',  token: '+15551234567', status: 'active', updatedAt: new Date('2026-04-01T00:00:00Z'), provider: 'imessage' })
+
+      const results = listStartupChatIntegrations()
+      expect(results).toHaveLength(1)
+      expect(results[0].id).toBe('im-ok')
     })
   })
 })

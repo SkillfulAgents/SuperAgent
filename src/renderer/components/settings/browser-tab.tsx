@@ -115,18 +115,20 @@ export function BrowserTab() {
             <SelectItem value={CONTAINER_VALUE}>
               Container (built-in)
             </SelectItem>
-            {providers.map((provider) => (
-              <SelectItem
-                key={provider.id}
-                value={provider.id}
-                disabled={!provider.available && provider.id === 'chrome'}
-              >
-                {provider.name}
-                {!provider.available && provider.id === 'chrome' && provider.reason
-                  ? ` (${provider.reason})`
-                  : ''}
-              </SelectItem>
-            ))}
+            {providers.map((provider) => {
+              const showReason =
+                !provider.available && (provider.id === 'chrome' || provider.id === 'platform')
+              return (
+                <SelectItem
+                  key={provider.id}
+                  value={provider.id}
+                  disabled={showReason}
+                >
+                  {provider.name}
+                  {showReason && provider.reason ? ` (${provider.reason})` : ''}
+                </SelectItem>
+              )
+            })}
           </SelectContent>
         </Select>
         <p className="text-xs text-muted-foreground">
@@ -147,6 +149,27 @@ export function BrowserTab() {
           idPrefix="chrome-profile"
           disabled={isLoading}
         />
+      )}
+
+      {/* Chrome-specific: Headless mode */}
+      {effectiveProvider === 'chrome' && (
+        <div className="flex items-center justify-between">
+          <div className="space-y-0.5">
+            <Label htmlFor="chrome-headless">Headless Mode</Label>
+            <p className="text-xs text-muted-foreground">
+              Run Chrome without a visible window. Prevents Chrome from stealing
+              focus while the agent browses. The browser preview still works normally.
+            </p>
+          </div>
+          <Switch
+            id="chrome-headless"
+            checked={settings?.app?.chromeHeadless ?? false}
+            onCheckedChange={(checked) => {
+              updateSettings.mutate({ app: { chromeHeadless: checked } })
+            }}
+            disabled={isLoading}
+          />
+        </div>
       )}
 
       {/* Browserbase-specific settings */}
@@ -216,6 +239,30 @@ export function BrowserTab() {
               }
             }}
           />
+
+          <BrowserbaseSessionSettings
+            advancedStealth={settings?.app?.browserbaseAdvancedStealth ?? false}
+            stealthOs={settings?.app?.browserbaseStealthOs}
+            proxies={settings?.app?.browserbaseProxies ?? false}
+            proxyCountry={settings?.app?.browserbaseProxyCountry ?? ''}
+            proxyState={settings?.app?.browserbaseProxyState ?? ''}
+            proxyCity={settings?.app?.browserbaseProxyCity ?? ''}
+            disabled={isLoading}
+            onUpdate={(updates) => updateSettings.mutate({ app: updates })}
+          />
+        </>
+      )}
+
+      {/* Platform-managed Browserbase: no credentials needed, just show session settings */}
+      {effectiveProvider === 'platform' && (
+        <>
+          <div className="rounded-lg border p-4 space-y-1 bg-muted/30">
+            <p className="text-sm font-medium">Managed by Platform</p>
+            <p className="text-xs text-muted-foreground">
+              Browser sessions run on Browserbase using your Platform account&apos;s
+              credentials — no API key configuration needed.
+            </p>
+          </div>
 
           <BrowserbaseSessionSettings
             advancedStealth={settings?.app?.browserbaseAdvancedStealth ?? false}

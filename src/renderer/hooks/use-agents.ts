@@ -99,6 +99,14 @@ export function useUpdateAgent() {
   })
 }
 
+// TODO: GROSS time based rechecks
+// Delays (ms) for re-invalidating ['agents'] after an agent starts. The
+// container's scanAndStartAll kicks off dashboard startup + screenshot capture
+// asynchronously after /start returns, so the first invalidation fires before
+// any new screenshot.png lands on disk. These follow-ups pick up the thumbnails
+// as they arrive without leaning on a poll loop.
+const AGENT_START_REINVALIDATE_DELAYS_MS = [5_000, 15_000, 30_000]
+
 export function useStartAgent() {
   const queryClient = useQueryClient()
   const { track } = useAnalyticsTracking()
@@ -116,6 +124,12 @@ export function useStartAgent() {
       track('agent_started')
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['agents', slug] })
+      for (const delay of AGENT_START_REINVALIDATE_DELAYS_MS) {
+        setTimeout(() => {
+          queryClient.invalidateQueries({ queryKey: ['agents'] })
+          queryClient.invalidateQueries({ queryKey: ['agents', slug] })
+        }, delay)
+      }
     },
   })
 }

@@ -1,6 +1,12 @@
+import * as fs from 'fs'
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { dashboardManager } from '../dashboard-manager'
+import { resizeScreenshot } from '../image-utils'
+
+type ToolContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; data: string; mimeType: string }
 
 export const startDashboardTool = tool(
   'start_dashboard',
@@ -16,10 +22,32 @@ The dashboard must exist at /workspace/artifacts/<slug>/ with a valid package.js
 
       let text = `Dashboard "${info.name}" is ${info.status} on port ${info.port}.`
 
+      const content: ToolContentBlock[] = []
+
       if (info.status === 'running') {
         text += '\n\nThe dashboard is accessible to the user through the Superagent UI.'
         text +=
           '\n\nDo NOT use the browser tool to view this dashboard. The browser runs outside the container and cannot access localhost URLs served inside it. The user can already see it through the Superagent UI — use get_dashboard_logs to debug any issues.'
+
+        // Await screenshot so the agent can sanity-check rendering in the same
+        // tool result. Best-effort: if capture fails we still return success.
+        const shot = await dashboardManager.captureScreenshot(args.slug)
+        if (shot.ok) {
+          try {
+            const buf = await fs.promises.readFile(shot.path)
+            const { data, mimeType } = await resizeScreenshot(buf, 'image/png')
+            content.push({
+              type: 'image' as const,
+              data: data.toString('base64'),
+              mimeType,
+            })
+            text += '\n\nA screenshot of the dashboard is included below.'
+          } catch (err: unknown) {
+            text += `\n\n(Screenshot captured but could not be read: ${err instanceof Error ? err.message : String(err)})`
+          }
+        } else {
+          text += `\n\n(Screenshot unavailable: ${shot.reason})`
+        }
       } else if (info.status === 'crashed' || info.status === 'stopped') {
         // Include recent logs so the agent can debug without a separate tool call
         const logs = await dashboardManager.getDashboardLogs(args.slug)
@@ -31,14 +59,9 @@ The dashboard must exist at /workspace/artifacts/<slug>/ with a valid package.js
         }
       }
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text,
-          },
-        ],
-      }
+      // Text block goes first so the agent reads status before the image.
+      content.unshift({ type: 'text' as const, text })
+      return { content }
     } catch (error: any) {
       return {
         content: [

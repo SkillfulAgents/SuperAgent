@@ -14,7 +14,7 @@ import type { ChatClientConnector, IncomingMessage } from './base-connector'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import { getToolDefinition } from '@shared/lib/tool-definitions/registry'
 import { formatToolName } from '@shared/lib/tool-definitions/types'
-import { parseChatIntegrationConfig } from './config-schema'
+import { parseChatIntegrationConfig, type ChatProvider } from './config-schema'
 import { formatProviderName } from './utils'
 import {
   listStartupChatIntegrations,
@@ -31,6 +31,7 @@ import {
 } from '@shared/lib/services/chat-integration-session-service'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { runWithOptionalUser } from '@shared/lib/platform-attribution'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 
 // ── Sentry helpers ─────────────────────────────────────────────────────
@@ -56,6 +57,13 @@ function breadcrumb(message: string, data?: Record<string, unknown>): void {
 
 // ── Constants ───────────────────────────────────────────────────────────
 
+const IMESSAGE_SYSTEM_PROMPT = `This is an iMessage-based conversation. Follow these rules:
+- Keep responses concise and conversational — this is a text message, not a document.
+- Use tools, skills, and capabilities as you normally would.
+- Prefer asking questions directly in natural language rather than using the ask questions tool.
+- You can react to the user's last message by starting your response with a reaction tag. Available reactions: [[reaction:heart]], [[reaction:thumbs_up]], [[reaction:thumbs_down]], [[reaction:haha]], [[reaction:emphasize]], [[reaction:question]]. The tag will be stripped from the message and sent as a tapback reaction. If your entire response is just a reaction tag, only the reaction is sent (no text message).
+- The user may send voice notes which are automatically transcribed.`
+
 const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000
 const HEALTH_CHECK_ERROR_THRESHOLD_MS = 5 * 60 * 1000
 const HEALTH_CHECK_MAX_CONSECUTIVE_FAILURES = 15
@@ -71,6 +79,7 @@ interface IntegrationConnection {
   messageUnsubscribe: (() => void) | null
   interactiveUnsubscribe: (() => void) | null
   errorUnsubscribe: (() => void) | null
+  typingHintUnsubscribe: (() => void) | null
 }
 
 /**
@@ -248,6 +257,7 @@ class ChatIntegrationManager {
       messageUnsubscribe: null,
       interactiveUnsubscribe: null,
       errorUnsubscribe: null,
+      typingHintUnsubscribe: null,
     }
 
     // Subscribe to connector events (integration-level — routes by chatId)
@@ -269,9 +279,18 @@ class ChatIntegrationManager {
       this.emitNotification(integration, 'error', error.message)
     })
 
+    conn.typingHintUnsubscribe = connector.onTypingHint(() => {
+      this.preWarmContainer(integration.agentSlug)
+    })
+
     this.connections.set(integration.id, conn)
 
-    await connector.connect()
+    try {
+      await connector.connect()
+    } catch (err) {
+      await this.removeIntegration(integration.id)
+      throw err
+    }
     this.disconnectedSince.delete(integration.id)
     breadcrumb('Integration connected', { integrationId: integration.id, provider: integration.provider })
     this.emitNotification(integration, 'connected')
@@ -285,7 +304,7 @@ class ChatIntegrationManager {
 
   private async createConnector(integration: ChatIntegration): Promise<ChatClientConnector> {
     const config = parseChatIntegrationConfig(
-      integration.provider as 'telegram' | 'slack',
+      integration.provider as ChatProvider,
       integration.config,
     )
     if (!config) {
@@ -301,6 +320,10 @@ class ChatIntegrationManager {
         const { SlackConnector } = await import('./slack-connector')
         return new SlackConnector(config as import('./slack-connector').SlackConfig)
       }
+      case 'imessage': {
+        const { IMessageConnector } = await import('./imessage-connector')
+        return new IMessageConnector(config as import('./imessage-connector').IMessageConfig)
+      }
       default:
         throw new Error(`Unknown chat integration provider: ${integration.provider}`)
     }
@@ -310,6 +333,7 @@ class ChatIntegrationManager {
     conn.messageUnsubscribe?.()
     conn.interactiveUnsubscribe?.()
     conn.errorUnsubscribe?.()
+    conn.typingHintUnsubscribe?.()
     conn.connector.disconnect().catch((err) => {
       console.error(`[ChatIntegrationManager] Error disconnecting:`, err)
       reportError(err, 'disconnect', { integrationId: conn.integration.id, provider: conn.integration.provider })
@@ -459,11 +483,20 @@ class ChatIntegrationManager {
   // ── Incoming message handling ─────────────────────────────────────
 
   private async handleIncomingMessage(integrationId: string, message: IncomingMessage): Promise<void> {
-    const conn = this.connections.get(integrationId)
-    if (!conn) return
-
     const integration = getChatIntegration(integrationId)
     if (!integration) return
+    return runWithOptionalUser(integration.createdByUserId ?? undefined, () =>
+      this.handleIncomingMessageInner(integrationId, message, integration),
+    )
+  }
+
+  private async handleIncomingMessageInner(
+    integrationId: string,
+    message: IncomingMessage,
+    integration: ChatIntegration,
+  ): Promise<void> {
+    const conn = this.connections.get(integrationId)
+    if (!conn) return
 
     const chatId = message.chatId
     if (!chatId) return
@@ -531,6 +564,7 @@ class ChatIntegrationManager {
           initialMessage: messageText,
           model: getEffectiveModels().agentModel,
           browserModel: getEffectiveModels().browserModel,
+          ...(integration.provider === 'imessage' ? { systemPrompt: IMESSAGE_SYSTEM_PROMPT } : {}),
         })
 
         const sessionId = containerSession.id
@@ -547,6 +581,7 @@ class ChatIntegrationManager {
         await updateSessionMetadata(integration.agentSlug, sessionId, {
           isChatIntegrationSession: true,
           chatIntegrationId: integrationId,
+          ...(integration.createdByUserId ? { createdByUserId: integration.createdByUserId } : {}),
         })
 
         createChatIntegrationSession({
@@ -653,7 +688,18 @@ class ChatIntegrationManager {
   }
 
   private deriveDisplayName(_provider: string, message: IncomingMessage): string | undefined {
-    return deriveDisplayName(message)
+    const baseName = deriveDisplayName(message)
+
+    // Per-thread sessions use composite chatId (channelId|threadTs) — append datetime
+    if (message.chatId.includes('|')) {
+      const d = message.timestamp
+      const date = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+      const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+      const label = `${date}, ${time}`
+      return baseName ? `${baseName} — ${label}` : label
+    }
+
+    return baseName
   }
 
   /**
@@ -664,7 +710,9 @@ class ChatIntegrationManager {
     integration: ChatIntegration,
     message: IncomingMessage,
   ): Promise<{ text: string; failedFiles: string[] }> {
-    const text = message.text || ''
+    // In group/channel contexts, prefix with sender name so the agent can attribute messages.
+    const prefix = message.chatName && message.userName ? `[${message.userName}]: ` : ''
+    const text = prefix + (message.text || '')
 
     if (!message.files || message.files.length === 0) {
       return { text, failedFiles: [] }
@@ -674,6 +722,7 @@ class ChatIntegrationManager {
     const uploadedPaths: string[] = []
     const failedFiles: string[] = []
 
+    let transcribedText = text
     for (const file of message.files) {
       if (!file.url) {
         failedFiles.push(file.name)
@@ -683,6 +732,16 @@ class ChatIntegrationManager {
       try {
         const data = await this.downloadFileBuffer(integration, file.url)
         if (data) {
+          // For iMessage voice notes, try to transcribe audio files
+          if (integration.provider === 'imessage' && file.mimeType?.startsWith('audio/')) {
+            const transcript = await this.tryTranscribeAudio(data, file.mimeType)
+            if (transcript) {
+              transcribedText = (transcribedText ? transcribedText + '\n' : '') + `[Voice note: "${transcript}"]`
+              continue
+            }
+            // Transcription unavailable — fall through to file attachment
+            transcribedText = (transcribedText ? transcribedText + '\n' : '') + '[Voice note — transcription unavailable]'
+          }
           const path = await this.writeToWorkspace(integration.agentSlug, file.name, data)
           uploadedPaths.push(path)
         } else {
@@ -694,14 +753,14 @@ class ChatIntegrationManager {
       }
     }
 
-    return { text: appendAttachedFiles(text, uploadedPaths), failedFiles }
+    return { text: appendAttachedFiles(transcribedText, uploadedPaths), failedFiles }
   }
 
   /** Download a file from the chat platform, returning a Buffer. */
   private async downloadFileBuffer(integration: ChatIntegration, fileUrl: string): Promise<Buffer | null> {
     try {
       const config = parseChatIntegrationConfig(
-        integration.provider as 'telegram' | 'slack',
+        integration.provider as ChatProvider,
         integration.config,
       )
       if (!config) return null
@@ -710,7 +769,7 @@ class ChatIntegrationManager {
         return await this.downloadSlackFile(config.botToken, fileUrl)
       }
 
-      // Telegram: direct URL download (no auth needed, URL contains the bot token)
+      // Telegram & iMessage: direct URL download (no auth needed)
       const response = await fetch(fileUrl)
       if (!response.ok) return null
       const buffer = Buffer.from(await response.arrayBuffer())
@@ -809,6 +868,30 @@ class ChatIntegrationManager {
     await fs.promises.writeFile(fullPath, data)
 
     return `/workspace/uploads/${uploadName}`
+  }
+
+  /** Pre-warm the agent container so it's ready when the user's message arrives. */
+  private preWarmContainer(agentSlug: string): void {
+    import('@shared/lib/container/container-manager').then(({ containerManager }) => {
+      containerManager.ensureRunning(agentSlug).catch(() => {
+        // Best-effort — if it fails, the normal message flow will handle the error
+      })
+    }).catch(() => {})
+  }
+
+  /** Try to transcribe an audio buffer using the configured STT provider. Returns null on failure. */
+  private async tryTranscribeAudio(audioBuffer: Buffer, mimeType: string): Promise<string | null> {
+    try {
+      const { getConfiguredSttProvider } = await import('@shared/lib/stt')
+      const provider = getConfiguredSttProvider()
+      if (!provider || !provider.supportsTranscription()) return null
+      const transcript = await provider.transcribe(audioBuffer, mimeType)
+      return transcript || null
+    } catch (err) {
+      console.error('[ChatIntegrationManager] Audio transcription failed:', err)
+      reportError(err, 'transcribe-audio', {}, 'warning')
+      return null
+    }
   }
 
   // ── Global notification handling (proxy review requests) ─────────

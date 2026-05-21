@@ -132,7 +132,7 @@ export function AgentContextMenu({
           )}
           {isOwner && (
             <ContextMenuItem
-              className="text-destructive focus:text-destructive"
+              className="text-destructive focus:bg-destructive/10 focus:text-destructive"
               onClick={() => setShowDeleteDialog(true)}
               data-testid="delete-agent-item"
             >
@@ -144,7 +144,7 @@ export function AgentContextMenu({
             <>
               <ContextMenuSeparator />
               <ContextMenuItem
-                className="text-destructive focus:text-destructive"
+                className="text-destructive focus:bg-destructive/10 focus:text-destructive"
                 onClick={() => setShowLeaveDialog(true)}
                 data-testid="leave-agent-item"
               >

@@ -1,7 +1,7 @@
 import { Page, expect } from '@playwright/test'
 
 /**
- * Page object for global settings dialog interactions
+ * Page object for global settings page interactions
  */
 export class SettingsPage {
   constructor(private page: Page) {}
@@ -9,7 +9,7 @@ export class SettingsPage {
   /** Open settings via sidebar footer button */
   async open() {
     await this.page.locator('[data-testid="settings-button"]').click()
-    await expect(this.page.locator('[data-testid="global-settings-dialog"]')).toBeVisible()
+    await expect(this.page.locator('[data-testid="global-settings-page"]')).toBeVisible()
   }
 
   /** Navigate to a settings tab */
@@ -32,10 +32,10 @@ export class SettingsPage {
     await expect(this.page.locator(`[data-testid="user-row-${email}"]`)).toBeVisible()
   }
 
-  /** Close the settings dialog */
+  /** Close the settings page via the Back to app nav item */
   async close() {
-    await this.page.keyboard.press('Escape')
-    await expect(this.page.locator('[data-testid="global-settings-dialog"]')).not.toBeVisible()
+    await this.page.locator('[data-testid="settings-back"]').click()
+    await expect(this.page.locator('[data-testid="global-settings-page"]')).not.toBeVisible()
   }
 
   // ── Auth Tab helpers ─────────────────────────────────────────────────

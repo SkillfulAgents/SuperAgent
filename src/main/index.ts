@@ -36,6 +36,7 @@ import { createAppMenu, updateAppMenuWindow, destroyAppMenu } from './app-menu'
 import { getSettings } from '@shared/lib/config/settings'
 import { detectAllProviders } from './host-browser'
 import { registerUpdateHandlers, initAutoUpdater, updateAutoUpdaterWindow } from './auto-updater'
+import { enableKeepAwake, disableKeepAwake, cleanupKeepAwake, restoreKeepAwakeOnStartup } from './keep-awake'
 
 // In dev mode, use a separate data directory to avoid mixing with production data.
 // Setting app.name before getPath('userData') changes the resolved directory.
@@ -70,6 +71,7 @@ import api from '../api'
 import { initializeServices, shutdownServices } from '@shared/lib/startup'
 import { findAvailablePort } from './find-port'
 import { setupServerHandlers } from '@shared/lib/startup'
+import { getUserSettings } from '@shared/lib/services/user-settings-service'
 
 // Set the app name (shows in macOS menu bar instead of "Electron" during dev)
 app.name = 'SuperAgent'
@@ -91,6 +93,106 @@ let notificationEventSource: EventSource | null = null
 let apiReady = false
 const pendingDashboardLinks: { agentSlug: string; dashboardSlug: string }[] = []
 const pendingProtocolUrls: string[] = []
+// Queues for notifications fired while the window was closed. The renderer
+// pulls these on mount via the `flush-pending-notification-events` IPC so no
+// click/action gets lost to the inevitable `webContents.send` race against
+// useEffect mounting the listeners. Capped to bound memory if the user
+// leaves the window closed for a long time and many notifications fire
+// (review S2): on overflow we drop the oldest entry, since stale events
+// for resolved/timed-out reviews would 404 on dispatch anyway.
+const PENDING_NOTIFICATION_QUEUE_MAX = 50
+const pendingNotificationEvents: Array<{
+  type: 'click' | 'action'
+  actionIndex?: number
+  context?: unknown
+}> = []
+const pendingNotificationNavigations: Array<{
+  agentSlug: string
+  sessionId: string | null
+}> = []
+
+function pushPendingNotificationEvent(evt: {
+  type: 'click' | 'action'
+  actionIndex?: number
+  context?: unknown
+}): void {
+  if (pendingNotificationEvents.length >= PENDING_NOTIFICATION_QUEUE_MAX) {
+    pendingNotificationEvents.shift()
+  }
+  pendingNotificationEvents.push(evt)
+}
+
+function pushPendingNavigation(nav: { agentSlug: string; sessionId: string | null }): void {
+  if (pendingNotificationNavigations.length >= PENDING_NOTIFICATION_QUEUE_MAX) {
+    pendingNotificationNavigations.shift()
+  }
+  pendingNotificationNavigations.push(nav)
+}
+
+// Strong references to Notification objects so the JS GC doesn't reap them
+// while macOS is still showing them (e.g. user opens the action dropdown
+// after the banner has been on screen for a couple of seconds). When the
+// JS object is collected, the underlying NSUserNotification listeners
+// detach and macOS routes the action click into the void.
+//
+// macOS doesn't always fire `close` (notifications migrate silently into
+// Notification Center), so we ALSO TTL each entry. We pick a value slightly
+// above the proxy-review timeout (5 min, see review-manager.ts) so an
+// action click at minute 4 still has a live JS Notification to dispatch
+// from — past that the underlying review has timed out anyway and the
+// click would 404. (Review S1.)
+const NOTIFICATION_TTL_MS = 6 * 60 * 1000
+const liveNotifications = new Set<Notification>()
+// Track notifications by reviewId so we can dismiss the OS notification
+// when the underlying review resolves (in-app, by another viewer, or by
+// timeout). Without this, stale "API Request Review" notifications linger
+// in Notification Center and clicking Approve/Deny on them 404s. (Review S8.)
+const reviewNotifications = new Map<string, Notification>()
+function trackLiveNotification(notification: Notification, reviewId?: string): void {
+  liveNotifications.add(notification)
+  if (reviewId) reviewNotifications.set(reviewId, notification)
+  setTimeout(() => {
+    liveNotifications.delete(notification)
+    if (reviewId) reviewNotifications.delete(reviewId)
+  }, NOTIFICATION_TTL_MS).unref()
+}
+function dismissReviewNotification(reviewId: string): void {
+  const n = reviewNotifications.get(reviewId)
+  if (n) {
+    n.close()
+    reviewNotifications.delete(reviewId)
+    liveNotifications.delete(n)
+  }
+}
+
+/**
+ * Local-user equivalent of the renderer's `isNotificationTypeEnabled` check.
+ * Used by the closed-window SSE fallback (the only main-process notification
+ * path; the IPC handler runs after the renderer's gate so it doesn't need
+ * this check itself).
+ */
+function isNotificationTypeAllowedLocally(notificationType: string | undefined): boolean {
+  try {
+    const settings = getUserSettings('local')
+    const n = settings.notifications
+    if (!n.enabled) return false
+    switch (notificationType) {
+      case 'session_complete':
+        return n.sessionComplete !== false
+      case 'session_waiting':
+        return n.sessionWaiting !== false
+      case 'session_scheduled':
+        return n.sessionScheduled !== false
+      default:
+        return true
+    }
+  } catch {
+    // If settings can't be loaded, default to showing the notification —
+    // failing closed would silently drop notifications on a misconfigured
+    // install, which is worse than the spam from failing open.
+    return true
+  }
+}
 
 function openDashboardWindow(agentSlug: string, dashboardSlug: string) {
   const key = `${agentSlug}/${dashboardSlug}`
@@ -189,11 +291,6 @@ function createWindow() {
     ...(process.platform === 'win32' && {
       backgroundMaterial: 'acrylic' as const,
       titleBarStyle: 'hidden' as const,
-      titleBarOverlay: {
-        height: 48,
-        color: '#00000000',
-        symbolColor: '#888888',
-      },
     }),
   })
 
@@ -254,8 +351,9 @@ function createWindow() {
   // Always set the window ref so IPC status events reach the renderer
   updateAutoUpdaterWindow(mainWindow)
 
-  // Initialize the actual updater only in production builds
-  if (!process.env.ELECTRON_RENDERER_URL) {
+  // Initialize the actual updater in production builds, or in dev when the
+  // SUPERAGENT_TEST_UPDATES=1 escape hatch is set (see auto-updater.ts).
+  if (!process.env.ELECTRON_RENDERER_URL || process.env.SUPERAGENT_TEST_UPDATES === '1') {
     initAutoUpdater(mainWindow)
   }
 
@@ -272,12 +370,46 @@ function createWindow() {
     mainWindow?.webContents.send('fullscreen-change', false)
   })
 
+  // Emit maximize state so the custom Windows title-bar controls can toggle their icon
+  mainWindow.on('maximize', () => {
+    mainWindow?.webContents.send('window-maximized-change', true)
+  })
+  mainWindow.on('unmaximize', () => {
+    mainWindow?.webContents.send('window-maximized-change', false)
+  })
+
   processPendingProtocolUrls()
 }
 
 // IPC handler for getting full screen state
 ipcMain.handle('get-fullscreen-state', () => {
   return mainWindow?.isFullScreen() ?? false
+})
+
+// Custom Windows title-bar controls (Windows uses titleBarStyle: 'hidden' without overlay,
+// so we draw our own buttons in the renderer and drive them via these IPCs).
+ipcMain.on('window-minimize', () => {
+  mainWindow?.minimize()
+})
+ipcMain.on('window-toggle-maximize', () => {
+  if (!mainWindow) return
+  if (mainWindow.isMaximized()) mainWindow.unmaximize()
+  else mainWindow.maximize()
+})
+ipcMain.on('window-close', () => {
+  mainWindow?.close()
+})
+ipcMain.handle('get-window-maximized-state', () => {
+  return mainWindow?.isMaximized() ?? false
+})
+
+// Reposition macOS traffic-light buttons to vertically center them in the
+// 48px top bar when the sidebar is collapsed (no sidebar header to align with).
+ipcMain.on('set-sidebar-collapsed', (_event, collapsed: boolean) => {
+  if (process.platform !== 'darwin' || !mainWindow) return
+  const y = collapsed ? 23 : 16
+  const x = collapsed ? 21 : 16
+  mainWindow.setWindowButtonPosition({ x, y })
 })
 
 // IPC handler for getting the API URL (port may vary)
@@ -329,18 +461,78 @@ ipcMain.handle('set-tray-visible', (_event, visible: boolean) => {
   setTrayVisible(visible)
 })
 
-// IPC handler for showing OS notifications
-ipcMain.handle('show-notification', (_event, { title, body }: { title: string; body: string }) => {
-  if (Notification.isSupported()) {
-    const notification = new Notification({ title, body })
-    notification.on('click', () => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.show()
-        mainWindow.focus()
-      }
-    })
-    notification.show()
+// IPC handler for keep-awake (macOS lid-close sleep prevention)
+ipcMain.handle('set-keep-awake', async (_event, enabled: boolean) => {
+  if (enabled) {
+    await enableKeepAwake()
+  } else {
+    await disableKeepAwake()
   }
+})
+
+// IPC handler for showing OS notifications.
+// `actions` and `context` are optional — when present, action buttons are
+// rendered (macOS only via Electron's NotificationAction support; Windows /
+// Linux ignore the array). The renderer receives `notification-action` events
+// for clicks/actions and dispatches based on `context`.
+ipcMain.handle('show-notification', (
+  event,
+  { title, body, actions, context }: {
+    title: string
+    body: string
+    actions?: Array<{ text: string }>
+    context?: unknown
+  },
+) => {
+  if (!Notification.isSupported()) return
+  const notification = new Notification({
+    title,
+    body,
+    ...(actions && actions.length > 0
+      ? { actions: actions.map((a) => ({ type: 'button' as const, text: a.text })) }
+      : {}),
+  })
+  notification.on('click', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show()
+      mainWindow.focus()
+      // If the notification carries agent/session context, navigate there
+      // so the click lands on the conversation that needs attention rather
+      // than dumping the user on the homepage.
+      const ctx = context as { agentSlug?: string; sessionId?: string | null } | undefined
+      if (ctx?.agentSlug) {
+        mainWindow.webContents.send('navigate-to-agent', ctx.agentSlug, ctx.sessionId ?? null)
+      }
+    }
+    event.sender.send('notification-event', { type: 'click', context })
+  })
+  notification.on('action', (_e, index) => {
+    event.sender.send('notification-event', { type: 'action', actionIndex: index, context })
+  })
+  notification.on('close', () => {
+    liveNotifications.delete(notification)
+  })
+  // Track by reviewId if this is a proxy-review notification, so the SSE
+  // 'proxy_review_resolved' handler can dismiss it later.
+  const ctxForTrack = context as { kind?: string; reviewId?: string } | undefined
+  const reviewId =
+    ctxForTrack?.kind === 'proxy_review' && typeof ctxForTrack.reviewId === 'string'
+      ? ctxForTrack.reviewId
+      : undefined
+  trackLiveNotification(notification, reviewId)
+  notification.show()
+})
+
+// Renderer pulls queued click/action events that were captured while the
+// window was closed (notifications shown by the main-process SSE fallback).
+// Returns and clears both queues atomically.
+ipcMain.handle('flush-pending-notification-events', () => {
+  const events = pendingNotificationEvents.splice(0, pendingNotificationEvents.length)
+  const navigations = pendingNotificationNavigations.splice(
+    0,
+    pendingNotificationNavigations.length,
+  )
+  return { events, navigations }
 })
 
 // IPC handler for setting dock badge count (macOS)
@@ -752,7 +944,10 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
     try {
       const callbackUrl = new URL(url)
       const params = {
-        connectionId: callbackUrl.searchParams.get('connectedAccountId'),
+        // Composio's /link flow may use either casing — accept both.
+        connectionId:
+          callbackUrl.searchParams.get('connectedAccountId') ||
+          callbackUrl.searchParams.get('connected_account_id'),
         status: callbackUrl.searchParams.get('status'),
         toolkit: callbackUrl.searchParams.get('toolkit'),
         error: callbackUrl.searchParams.get('error'),
@@ -894,21 +1089,89 @@ function startNotificationListener(): void {
     try {
       const data = JSON.parse(event.data)
 
+      // Dismiss any in-flight OS notification for a resolved review so it
+      // doesn't sit in Notification Center inviting stale Approve/Deny
+      // clicks (review S8). This mirrors the renderer-side query
+      // invalidation and works for dismissal regardless of window state.
+      if (data.type === 'session_awaiting_input' && data.review?.type === 'proxy_review_resolved') {
+        const rid = data.review.reviewId
+        if (typeof rid === 'string') dismissReviewNotification(rid)
+      }
+
       if (data.type === 'os_notification') {
-        // Only show notification if window is closed/destroyed
-        // If window exists, the renderer will handle it
-        if (!mainWindow || mainWindow.isDestroyed()) {
-          if (Notification.isSupported()) {
-            const notification = new Notification({
-              title: data.title,
-              body: data.body,
-            })
-            notification.on('click', () => {
-              // Recreate window and navigate to the session
+        // Only show notification if window is closed/destroyed.
+        // When the window is open the renderer drives this via IPC (with the
+        // shared show-notification handler that supports actions + click
+        // navigation). Here we mirror that behavior so a closed window
+        // doesn't lose action buttons or session-aware click routing.
+        //
+        // Respect the local user's notification settings the same way the
+        // renderer does — without this, users who disabled session_waiting
+        // notifications still get them when the window is closed (review
+        // S10). Note: this is the local user's settings only. In multi-user
+        // auth mode the SSE stream consumed by main isn't user-scoped, so
+        // cross-user filtering happens server-side via getAccessibleAgentSlugs
+        // (notifications.ts) — see review S9.
+        const notificationType = data.notificationType as string | undefined
+        if (
+          (!mainWindow || mainWindow.isDestroyed()) &&
+          isNotificationTypeAllowedLocally(notificationType) &&
+          Notification.isSupported()
+        ) {
+          const actions = data.actions as Array<{ text: string }> | undefined
+          const context = data.actionContext as
+            | { agentSlug?: string; sessionId?: string | null; kind?: string; reviewId?: string }
+            | undefined
+          const notification = new Notification({
+            title: data.title,
+            body: data.body,
+            ...(actions && actions.length > 0
+              ? {
+                  actions: actions.map((a) => ({
+                    type: 'button' as const,
+                    text: a.text,
+                  })),
+                }
+              : {}),
+          })
+          notification.on('click', () => {
+            // Queue navigation so the renderer routes the user to the
+            // right session on mount. Also queue the click event itself
+            // so the dispatcher can mark the DB notification as read —
+            // the renderer's mark-read path keys on context.notificationId.
+            if (context?.agentSlug) {
+              pushPendingNavigation({
+                agentSlug: context.agentSlug,
+                sessionId: context.sessionId ?? null,
+              })
+            }
+            pushPendingNotificationEvent({ type: 'click', context })
+            if (!mainWindow || mainWindow.isDestroyed()) {
               app.emit('activate')
+            } else {
+              mainWindow.show()
+              mainWindow.focus()
+            }
+          })
+          notification.on('action', (_e, index) => {
+            pushPendingNotificationEvent({
+              type: 'action',
+              actionIndex: index,
+              context,
             })
-            notification.show()
-          }
+            if (!mainWindow || mainWindow.isDestroyed()) {
+              app.emit('activate')
+            }
+          })
+          notification.on('close', () => {
+            liveNotifications.delete(notification)
+          })
+          const reviewId =
+            context?.kind === 'proxy_review' && typeof context.reviewId === 'string'
+              ? context.reviewId
+              : undefined
+          trackLiveNotification(notification, reviewId)
+          notification.show()
         }
       }
 
@@ -994,6 +1257,12 @@ async function startApp() {
   if (settings.app?.showMenuBarIcon !== false) {
     createTray(mainWindow, actualApiPort)
   }
+
+  // Restore keep-awake state from previous session (after window is ready so dialogs display correctly)
+  const userSettings = getUserSettings('local')
+  restoreKeepAwakeOnStartup(userSettings.keepAwakeEnabled).catch((error) => {
+    console.error('Failed to restore keep-awake state:', error)
+  })
 }
 
 startApp()
@@ -1046,6 +1315,9 @@ async function gracefulShutdown() {
   isShuttingDown = true
 
   console.log('Shutting down gracefully...')
+
+  // Restore system sleep settings (best-effort, no sudo prompt)
+  cleanupKeepAwake()
 
   // Stop notification listener
   stopNotificationListener()

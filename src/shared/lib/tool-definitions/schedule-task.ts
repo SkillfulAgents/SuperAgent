@@ -4,6 +4,8 @@ export interface ScheduleTaskInput {
   prompt?: string
   name?: string
   timezone?: string
+  model?: string
+  effort?: string
 }
 
 function parseInput(input: unknown): ScheduleTaskInput {

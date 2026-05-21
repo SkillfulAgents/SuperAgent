@@ -91,19 +91,21 @@ export function AgentSkillCard({ skill, agentSlug }: AgentSkillCardProps) {
                   </>
                 )}
               </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 text-xs"
-                onClick={() => setPrDialogOpen(true)}
-              >
-                <SubmitIcon className="h-3 w-3 mr-1" />
-                {getReviewActionLabel(publishMode)}
-              </Button>
+              {publishMode !== 'none' && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  onClick={() => setPrDialogOpen(true)}
+                >
+                  <SubmitIcon className="h-3 w-3 mr-1" />
+                  {getReviewActionLabel(publishMode)}
+                </Button>
+              )}
             </>
           )}
           {/* Hidden-org platform skills are shown as local, but must not be re-published from this org. */}
-          {skill.status.type === 'local' && skill.status.publishable !== false && (
+          {skill.status.type === 'local' && skill.status.publishable !== false && publishMode !== 'none' && (
             <Button
               size="icon"
               variant="ghost"

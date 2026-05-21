@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { renderWithProviders as render } from '@renderer/test/test-utils'
 import { FileRequestItem } from './file-request-item'
 
 const mockApiFetch = vi.fn()
@@ -25,7 +26,6 @@ describe('FileRequestItem', () => {
 
   it('renders pending state with description and file type hint', () => {
     render(<FileRequestItem {...defaultProps} />)
-    expect(screen.getByText('File Request')).toBeInTheDocument()
     expect(screen.getByText('Please upload a CSV file with user data')).toBeInTheDocument()
     expect(screen.getByText(/Accepted file types:.*\.csv,\.xlsx/)).toBeInTheDocument()
   })

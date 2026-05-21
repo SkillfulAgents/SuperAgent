@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { getAgentActivityStatus, AgentStatus } from './agent-status'
+import { AgentStatus } from './agent-status'
+import { getAgentActivityStatus } from '@shared/lib/types/agent-activity-status'
 
 // Mock cn utility
 vi.mock('@shared/lib/utils/cn', () => ({

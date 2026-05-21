@@ -6,11 +6,55 @@
  */
 
 import { db } from '@shared/lib/db'
-import { webhookTriggers, type WebhookTrigger, type NewWebhookTrigger } from '@shared/lib/db/schema'
-import { eq, and, inArray, sql, count } from 'drizzle-orm'
+import {
+  webhookTriggers,
+  connectedAccounts,
+  authAccount,
+  type WebhookTrigger,
+  type NewWebhookTrigger,
+} from '@shared/lib/db/schema'
+import { eq, and, inArray, sql, count, desc } from 'drizzle-orm'
 import { trackServerEvent } from '../analytics/server-analytics'
 import { deleteComposioTrigger } from '@shared/lib/composio/triggers'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
+
+const PLATFORM_PROVIDER_ID = 'platform'
+
+function lookupPlatformMemberId(userId: string): string | null {
+  const rows = db
+    .select({ accountId: authAccount.accountId })
+    .from(authAccount)
+    .where(and(eq(authAccount.userId, userId), eq(authAccount.providerId, PLATFORM_PROVIDER_ID)))
+    .orderBy(desc(authAccount.updatedAt))
+    .limit(1)
+    .all()
+  return rows[0]?.accountId ?? null
+}
+
+/** Distinct member IDs of active/paused trigger owners; used by TriggerManager to poll per-member. */
+export function getDistinctPlatformMemberIdsForActiveTriggers(): string[] {
+  const rows = db
+    .select({
+      createdByUserId: webhookTriggers.createdByUserId,
+      ownerUserId: connectedAccounts.userId,
+    })
+    .from(webhookTriggers)
+    .leftJoin(
+      connectedAccounts,
+      eq(connectedAccounts.id, webhookTriggers.connectedAccountId),
+    )
+    .where(inArray(webhookTriggers.status, ['active', 'paused']))
+    .all()
+
+  const ids = new Set<string>()
+  for (const row of rows) {
+    const userId = row.createdByUserId ?? row.ownerUserId
+    if (!userId) continue
+    const memberId = lookupPlatformMemberId(userId)
+    if (memberId) ids.add(memberId)
+  }
+  return [...ids]
+}
 
 export type { WebhookTrigger, NewWebhookTrigger }
 
@@ -28,6 +72,8 @@ export interface CreateWebhookTriggerParams {
   name?: string
   createdBySessionId?: string
   createdByUserId?: string
+  model?: string
+  effort?: string
 }
 
 // ============================================================================
@@ -50,6 +96,8 @@ export async function createWebhookTrigger(params: CreateWebhookTriggerParams): 
     fireCount: 0,
     createdBySessionId: params.createdBySessionId ?? null,
     createdByUserId: params.createdByUserId ?? null,
+    model: params.model ?? null,
+    effort: params.effort ?? null,
     createdAt: new Date(),
   }
 
@@ -58,6 +106,14 @@ export async function createWebhookTrigger(params: CreateWebhookTriggerParams): 
   trackServerEvent('webhook_trigger_created', {
     triggerType: params.triggerType,
     agentSlug: params.agentSlug,
+  })
+
+  // Cold-start fix: a host that booted with 0 active triggers never
+  // subscribed Realtime. Lazy import avoids the circular dep.
+  void import('@shared/lib/scheduler/trigger-manager').then(({ triggerManager }) => {
+    if (!triggerManager.isRealtimeActive()) {
+      void triggerManager.pollAndProcess()
+    }
   })
 
   return id
@@ -93,6 +149,10 @@ export async function getWebhookTriggersByComposioId(composioTriggerId: string):
     )
 }
 
+/**
+ * Count triggers that retain the upstream Composio subscription (active OR paused).
+ * Paused triggers must keep the subscription alive so events still arrive after resume.
+ */
 export async function countActiveTriggersForComposioId(composioTriggerId: string): Promise<number> {
   const [result] = await db
     .select({ value: count() })
@@ -100,7 +160,7 @@ export async function countActiveTriggersForComposioId(composioTriggerId: string
     .where(
       and(
         eq(webhookTriggers.composioTriggerId, composioTriggerId),
-        eq(webhookTriggers.status, 'active')
+        inArray(webhookTriggers.status, ['active', 'paused'])
       )
     )
   return result.value
@@ -109,7 +169,7 @@ export async function countActiveTriggersForComposioId(composioTriggerId: string
 // TODO: In multi-tenant (auth) mode, callers must pass accountIds to scope results.
 // Without accountIds, this returns counts across ALL accounts (fine for single-user mode).
 export async function countActiveTriggersPerAccount(accountIds?: string[]): Promise<Record<string, number>> {
-  const conditions = [eq(webhookTriggers.status, 'active')]
+  const conditions = [inArray(webhookTriggers.status, ['active', 'paused'])]
   if (accountIds && accountIds.length > 0) {
     conditions.push(inArray(webhookTriggers.connectedAccountId, accountIds))
   }
@@ -148,6 +208,10 @@ export async function listCancelledWebhookTriggers(agentSlug: string): Promise<W
     )
 }
 
+/**
+ * List active and paused webhook triggers for an agent (i.e. everything still
+ * subscribed, whether actively firing or temporarily paused).
+ */
 export async function listActiveWebhookTriggers(agentSlug?: string): Promise<WebhookTrigger[]> {
   if (agentSlug) {
     return db
@@ -156,16 +220,19 @@ export async function listActiveWebhookTriggers(agentSlug?: string): Promise<Web
       .where(
         and(
           eq(webhookTriggers.agentSlug, agentSlug),
-          eq(webhookTriggers.status, 'active')
+          inArray(webhookTriggers.status, ['active', 'paused'])
         )
       )
   }
   return db
     .select()
     .from(webhookTriggers)
-    .where(eq(webhookTriggers.status, 'active'))
+    .where(inArray(webhookTriggers.status, ['active', 'paused']))
 }
 
+/**
+ * Batch version: list active and paused webhook triggers for multiple agents.
+ */
 export async function listActiveWebhookTriggersByAgents(
   agentSlugs: string[]
 ): Promise<Map<string, WebhookTrigger[]>> {
@@ -177,7 +244,7 @@ export async function listActiveWebhookTriggersByAgents(
     .where(
       and(
         inArray(webhookTriggers.agentSlug, agentSlugs),
-        eq(webhookTriggers.status, 'active')
+        inArray(webhookTriggers.status, ['active', 'paused'])
       )
     )
 
@@ -204,7 +271,49 @@ export async function cancelWebhookTrigger(triggerId: string): Promise<boolean> 
     .where(
       and(
         eq(webhookTriggers.id, triggerId),
+        inArray(webhookTriggers.status, ['active', 'paused'])
+      )
+    )
+
+  return (result.changes ?? 0) > 0
+}
+
+/**
+ * Pause a webhook trigger. Events matching its Composio subscription will be
+ * acked and discarded instead of firing the agent. The upstream Composio
+ * subscription is left intact so events still arrive after resume.
+ */
+export async function pauseWebhookTrigger(triggerId: string): Promise<boolean> {
+  const result = await db
+    .update(webhookTriggers)
+    .set({
+      status: 'paused',
+      pausedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(webhookTriggers.id, triggerId),
         eq(webhookTriggers.status, 'active')
+      )
+    )
+
+  return (result.changes ?? 0) > 0
+}
+
+/**
+ * Resume a paused webhook trigger. New events will fire the agent again.
+ */
+export async function resumeWebhookTrigger(triggerId: string): Promise<boolean> {
+  const result = await db
+    .update(webhookTriggers)
+    .set({
+      status: 'active',
+      pausedAt: null,
+    })
+    .where(
+      and(
+        eq(webhookTriggers.id, triggerId),
+        eq(webhookTriggers.status, 'paused')
       )
     )
 
@@ -266,4 +375,46 @@ export async function updateComposioTriggerId(
     .update(webhookTriggers)
     .set({ composioTriggerId })
     .where(eq(webhookTriggers.id, triggerId))
+}
+
+/**
+ * Update a webhook trigger's prompt (the instructions sent when the trigger fires).
+ * Allowed in any non-cancelled state.
+ */
+export async function updateWebhookTriggerPrompt(
+  triggerId: string,
+  prompt: string,
+): Promise<boolean> {
+  const trigger = await getWebhookTrigger(triggerId)
+  if (!trigger || trigger.status === 'cancelled') return false
+
+  const result = await db
+    .update(webhookTriggers)
+    .set({ prompt })
+    .where(eq(webhookTriggers.id, triggerId))
+
+  return (result.changes ?? 0) > 0
+}
+
+/**
+ * Update a webhook trigger's runtime options (model and/or effort).
+ * Pass null to clear a field back to the global default.
+ */
+export async function updateWebhookTriggerRuntimeOptions(
+  triggerId: string,
+  options: { model?: string | null; effort?: string | null },
+): Promise<boolean> {
+  const trigger = await getWebhookTrigger(triggerId)
+  if (!trigger || trigger.status === 'cancelled') return false
+
+  const updates: Record<string, string | null> = {}
+  if ('model' in options) updates.model = options.model ?? null
+  if ('effort' in options) updates.effort = options.effort ?? null
+
+  const result = await db
+    .update(webhookTriggers)
+    .set(updates)
+    .where(eq(webhookTriggers.id, triggerId))
+
+  return (result.changes ?? 0) > 0
 }

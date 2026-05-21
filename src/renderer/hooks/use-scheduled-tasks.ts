@@ -75,6 +75,54 @@ export function useUpdateScheduledTaskTimezone() {
 }
 
 /**
+ * Pause a recurring cron task
+ */
+export function usePauseScheduledTask() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ taskId }: { taskId: string; agentSlug: string }) => {
+      const res = await apiFetch(`/api/scheduled-tasks/${taskId}/pause`, {
+        method: 'POST',
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.error || 'Failed to pause scheduled task')
+      }
+      return res.json() as Promise<ApiScheduledTask>
+    },
+    onSuccess: (data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['scheduled-task', variables.taskId] })
+      queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', variables.agentSlug] })
+    },
+  })
+}
+
+/**
+ * Resume a paused cron task
+ */
+export function useResumeScheduledTask() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ taskId }: { taskId: string; agentSlug: string }) => {
+      const res = await apiFetch(`/api/scheduled-tasks/${taskId}/resume`, {
+        method: 'POST',
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.error || 'Failed to resume scheduled task')
+      }
+      return res.json() as Promise<ApiScheduledTask>
+    },
+    onSuccess: (data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['scheduled-task', variables.taskId] })
+      queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', variables.agentSlug] })
+    },
+  })
+}
+
+/**
  * Run a scheduled task immediately
  */
 export function useRunScheduledTaskNow() {
@@ -128,6 +176,61 @@ export function useParseSchedule() {
         throw new Error(err.error || 'Failed to parse schedule')
       }
       return res.json() as Promise<{ expression: string }>
+    },
+  })
+}
+
+/**
+ * Update a scheduled task's prompt
+ */
+export function useUpdateScheduledTaskPrompt() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ taskId, prompt }: { taskId: string; agentSlug: string; prompt: string }) => {
+      const res = await apiFetch(`/api/scheduled-tasks/${taskId}/prompt`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.error || 'Failed to update prompt')
+      }
+      return res.json() as Promise<ApiScheduledTask>
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['scheduled-task', data.id] })
+      queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', data.agentSlug] })
+    },
+  })
+}
+
+/**
+ * Update a scheduled task's runtime options (model and/or effort)
+ */
+export function useUpdateScheduledTaskRuntimeOptions() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ taskId, model, effort }: { taskId: string; agentSlug: string; model?: string | null; effort?: string | null }) => {
+      const body: Record<string, string | null> = {}
+      if (model !== undefined) body.model = model
+      if (effort !== undefined) body.effort = effort
+      const res = await apiFetch(`/api/scheduled-tasks/${taskId}/runtime-options`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.error || 'Failed to update runtime options')
+      }
+      return res.json() as Promise<ApiScheduledTask>
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['scheduled-task', data.id] })
+      queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', data.agentSlug] })
     },
   })
 }

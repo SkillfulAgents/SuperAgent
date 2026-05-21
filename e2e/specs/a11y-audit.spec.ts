@@ -38,9 +38,9 @@ test.describe('Accessibility Audit', () => {
     await agentPage.deleteAgent()
   })
 
-  test('global settings dialog has no critical a11y violations', async ({ page }) => {
+  test('global settings page has no critical a11y violations', async ({ page }) => {
     await page.locator('[data-testid="settings-button"]').click()
-    await expect(page.locator('[data-testid="global-settings-dialog"]')).toBeVisible()
+    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
 
     const results = await new AxeBuilder({ page })
       .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
@@ -68,15 +68,16 @@ test.describe('Accessibility Audit', () => {
     await agentPage.deleteAgent()
   })
 
-  test('create agent screen has no critical a11y violations', async ({ page }) => {
-    await page.locator('[data-testid="create-agent-button"]').click()
-    await expect(page.locator('[data-testid="create-agent-screen"]')).toBeVisible()
+  test('new agent landing has no critical a11y violations', async ({ page }) => {
+    await page.locator('[data-testid="new-agent-button"]').click()
+    // The new flow lands directly on the AgentHome for a fresh Untitled agent.
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
 
     const results = await new AxeBuilder({ page })
       .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
       .analyze()
 
-    logViolations('Create Agent Screen', results.violations)
+    logViolations('New Agent Landing', results.violations)
     expect(results.violations.filter(v => v.impact === 'critical')).toEqual([])
   })
 })

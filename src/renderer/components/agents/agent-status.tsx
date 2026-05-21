@@ -1,9 +1,8 @@
-import { Moon, Circle } from 'lucide-react'
+import { Moon, CircleDashed } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import type { ContainerStatus } from '@shared/lib/container/types'
+import { type AgentActivityStatus, getAgentActivityStatus } from '@shared/lib/types/agent-activity-status'
 import { WorkingDots, AwaitingDot } from './status-indicators'
-
-export type AgentActivityStatus = 'sleeping' | 'idle' | 'working' | 'awaiting_input'
 
 const statusLabels: Record<AgentActivityStatus, string> = {
   sleeping: 'sleeping',
@@ -22,21 +21,9 @@ interface AgentStatusProps {
   className?: string
 }
 
-export function getAgentActivityStatus(
-  containerStatus: ContainerStatus,
-  hasActiveSessions: boolean,
-  hasSessionsAwaitingInput: boolean = false
-): AgentActivityStatus {
-  if (containerStatus === 'stopped') return 'sleeping'
-  if (hasSessionsAwaitingInput) return 'awaiting_input'
-  if (hasActiveSessions) return 'working'
-  return 'idle'
-}
-
 export function AgentStatus({ status, hasActiveSessions = false, hasSessionsAwaitingInput = false, size = 'default', iconOnly = false, workingDotClassName, className }: AgentStatusProps) {
   const activityStatus = getAgentActivityStatus(status, hasActiveSessions, hasSessionsAwaitingInput)
   const isSmall = size === 'sm'
-  const iconSize = isSmall ? 'h-2.5 w-2.5' : 'h-3 w-3'
 
   return (
     <div
@@ -52,13 +39,13 @@ export function AgentStatus({ status, hasActiveSessions = false, hasSessionsAwai
       title={iconOnly ? statusLabels[activityStatus] : undefined}
     >
       {activityStatus === 'sleeping' ? (
-        <Moon className={cn(iconSize, 'text-muted-foreground')} />
+        <Moon className="h-2.5 w-2.5 text-muted-foreground/70" />
       ) : activityStatus === 'awaiting_input' ? (
-        <AwaitingDot size={size} />
+        <AwaitingDot />
       ) : activityStatus === 'working' ? (
         <WorkingDots dotClassName={workingDotClassName} />
       ) : (
-        <Circle className={cn(iconSize, 'text-muted-foreground')} />
+        <CircleDashed className="h-2.5 w-2.5 text-muted-foreground" />
       )}
       {!iconOnly && (
         <span

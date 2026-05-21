@@ -68,4 +68,26 @@ export abstract class BaseSttProvider {
     const token = await this.mintVoiceAgentToken(apiKey)
     return { provider: this.id, token }
   }
+
+  /** Whether this provider supports batch audio file transcription. */
+  supportsTranscription(): boolean {
+    return false
+  }
+
+  /** Transcribe an audio buffer to text. Override in providers that support it. */
+  async transcribeAudio(_apiKey: string, _audioBuffer: Buffer, _mimeType: string): Promise<string> {
+    throw new Error(`Batch transcription not supported by ${this.name}`)
+  }
+
+  /** Convenience: resolve the effective key and transcribe an audio buffer. */
+  async transcribe(audioBuffer: Buffer, mimeType: string): Promise<string> {
+    if (!this.supportsTranscription()) {
+      throw new Error(`Batch transcription not supported by ${this.name}`)
+    }
+    const apiKey = this.getEffectiveApiKey()
+    if (!apiKey) {
+      throw new Error(`No API key configured for ${this.name}. Add one in Settings > Voice.`)
+    }
+    return this.transcribeAudio(apiKey, audioBuffer, mimeType)
+  }
 }

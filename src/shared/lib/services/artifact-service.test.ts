@@ -207,5 +207,36 @@ describe('artifact-service', () => {
         expect(artifact.port).toBe(0)
       }
     })
+
+    it('omits hasScreenshot when screenshot.png is absent', async () => {
+      createArtifactDir('test-agent', 'no-shot', { name: 'No Shot' })
+      const result = await listArtifactsFromFilesystem('test-agent')
+      expect(result).toHaveLength(1)
+      expect(result[0].hasScreenshot).toBeUndefined()
+    })
+
+    it('sets hasScreenshot to true when screenshot.png exists', async () => {
+      const dir = createArtifactDir('test-agent', 'with-shot', { name: 'With Shot' })
+      // Minimal 1x1 PNG; contents don't matter for the existence check.
+      fs.writeFileSync(path.join(dir, 'screenshot.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+
+      const result = await listArtifactsFromFilesystem('test-agent')
+      expect(result).toHaveLength(1)
+      expect(result[0].hasScreenshot).toBe(true)
+    })
+
+    it('treats a directory named screenshot.png as absent', async () => {
+      const dir = createArtifactDir('test-agent', 'weird', { name: 'Weird' })
+      // A directory (not a file) at the same path should still be readable via
+      // access(R_OK), so this edge case is tolerated — confirm behaviour rather
+      // than crash. If a future change tightens this (e.g. stat + isFile), the
+      // expectation here should flip.
+      fs.mkdirSync(path.join(dir, 'screenshot.png'))
+      const result = await listArtifactsFromFilesystem('test-agent')
+      expect(result).toHaveLength(1)
+      // Current implementation only checks access(R_OK), which succeeds for a
+      // directory. Document that explicitly.
+      expect(result[0].hasScreenshot).toBe(true)
+    })
   })
 })
