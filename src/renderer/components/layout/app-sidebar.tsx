@@ -53,7 +53,6 @@ import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { useUser } from '@renderer/context/user-context'
 import { useUpdateStatus } from '@renderer/context/update-status-context'
-import { NotificationsPopoverContent } from '@renderer/components/notifications/notifications-popover'
 import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import {
@@ -662,28 +661,24 @@ if (__RENDER_TRACKING__) {
 function NotificationsMenuButton() {
   const { data: countData } = useUnreadNotificationCount()
   const unreadCount = countData?.count ?? 0
-  const [open, setOpen] = useState(false)
+  const { view, setView } = useSelection()
+  const isActive = view.kind === 'notifications'
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <SidebarMenuButton data-testid="notifications-button">
-          <Bell className="h-4 w-4" />
-          <span>Notifications</span>
-          {unreadCount > 0 && (
-            <span className="ml-auto h-1.5 w-1.5 rounded-full bg-blue-500" aria-label={`${unreadCount} unread`} />
-          )}
-        </SidebarMenuButton>
-      </PopoverTrigger>
-      <PopoverContent
-        className="w-80 p-0"
-        align="start"
-        side="right"
-        sideOffset={8}
-      >
-        <NotificationsPopoverContent onNavigate={() => setOpen(false)} />
-      </PopoverContent>
-    </Popover>
+    <SidebarMenuButton
+      data-testid="notifications-button"
+      isActive={isActive}
+      onClick={() => setView({ kind: 'notifications' })}
+    >
+      <Bell className="h-4 w-4" />
+      <span>Notifications</span>
+      {unreadCount > 0 && (
+        <span
+          className="ml-auto h-1.5 w-1.5 rounded-full bg-blue-500"
+          aria-label={`${unreadCount} unread`}
+        />
+      )}
+    </SidebarMenuButton>
   )
 }
 

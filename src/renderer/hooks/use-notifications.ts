@@ -5,18 +5,23 @@ import type { ApiNotification } from '@shared/lib/types/api'
 // Re-export for convenience
 export type { ApiNotification }
 
+export interface PaginatedNotifications {
+  items: ApiNotification[]
+  total: number
+}
+
 /**
- * Fetch recent notifications
+ * Fetch a page of notifications (server-side pagination).
  */
-export function useNotifications(limit: number = 50) {
-  return useQuery<ApiNotification[]>({
-    queryKey: ['notifications', limit],
+export function useNotifications(limit: number, offset: number = 0) {
+  return useQuery<PaginatedNotifications>({
+    queryKey: ['notifications', limit, offset],
     queryFn: async () => {
-      const res = await apiFetch(`/api/notifications?limit=${limit}`)
+      const res = await apiFetch(`/api/notifications?limit=${limit}&offset=${offset}`)
       if (!res.ok) throw new Error('Failed to fetch notifications')
       return res.json()
     },
-    refetchInterval: 30000, // Poll every 30s as backup
+    refetchInterval: 30000,
   })
 }
 
