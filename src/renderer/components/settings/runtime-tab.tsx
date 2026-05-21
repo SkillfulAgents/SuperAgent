@@ -100,6 +100,7 @@ export function RuntimeTab() {
   const [newEnvName, setNewEnvName] = useState('')
   const [newEnvValue, setNewEnvValue] = useState('')
   const [customEnvError, setCustomEnvError] = useState<string | null>(null)
+  const [dialogEnvError, setDialogEnvError] = useState<string | null>(null)
 
   // Local form state — runtime-specific settings (keyed by field key)
   const [runtimeSettingsForm, setRuntimeSettingsForm] = useState<Record<string, string>>({})
@@ -179,7 +180,9 @@ export function RuntimeTab() {
       setAgentImage(settings.container.agentImage)
       setCpuLimit(settings.container.resourceLimits.cpu.toString())
       setMemoryLimit(settings.container.resourceLimits.memory)
-      setCustomEnvVarsDraft(settings.customEnvVars ?? {})
+      if (!updateSettings.isPending) {
+        setCustomEnvVarsDraft(settings.customEnvVars ?? {})
+      }
       setHasChanges(false)
       setAutoSleepMinutes(null)
     }
@@ -260,11 +263,11 @@ export function RuntimeTab() {
   const handleAddCustomEnvVar = async () => {
     const envName = normalizeEnvVarName(newEnvName)
     if (!envName) {
-      setCustomEnvError('Environment variable name is required.')
+      setDialogEnvError('Environment variable name is required.')
       return
     }
     if (envName in customEnvVarsDraft) {
-      setCustomEnvError('That environment variable already exists.')
+      setDialogEnvError('That environment variable already exists.')
       return
     }
 
@@ -828,12 +831,17 @@ export function RuntimeTab() {
               <Input
                 value={value}
                 className="font-mono text-sm flex-[3]"
+                maxLength={4096}
                 onChange={(e) => {
                   setCustomEnvVarsDraft((prev) => ({ ...prev, [key]: e.target.value }))
                 }}
-                onBlur={async (e) => {
-                  const updated = { ...customEnvVarsDraft, [key]: e.target.value }
-                  await persistCustomEnvVars(updated)
+                onBlur={(e) => {
+                  const val = e.target.value
+                  setCustomEnvVarsDraft((prev) => {
+                    const updated = { ...prev, [key]: val }
+                    persistCustomEnvVars(updated)
+                    return updated
+                  })
                 }}
                 disabled={isLoading || updateSettings.isPending}
               />
@@ -876,7 +884,7 @@ export function RuntimeTab() {
           if (!open) {
             setNewEnvName('')
             setNewEnvValue('')
-            setCustomEnvError(null)
+            setDialogEnvError(null)
           }
         }}
       >
@@ -888,49 +896,54 @@ export function RuntimeTab() {
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="custom-env-name">Variable Name</Label>
-              <Input
-                id="custom-env-name"
-                value={newEnvName}
-                onChange={(e) => setNewEnvName(e.target.value)}
-                placeholder="CLAUDE_CODE_MAX_OUTPUT_TOKENS"
-                className="font-mono text-sm"
-                autoFocus
-              />
+          <form onSubmit={(e) => { e.preventDefault(); handleAddCustomEnvVar() }}>
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="custom-env-name">Variable Name</Label>
+                <Input
+                  id="custom-env-name"
+                  value={newEnvName}
+                  onChange={(e) => { setNewEnvName(e.target.value); setDialogEnvError(null) }}
+                  placeholder="CLAUDE_CODE_MAX_OUTPUT_TOKENS"
+                  className="font-mono text-sm"
+                  maxLength={256}
+                  autoFocus
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="custom-env-value">Value</Label>
+                <Input
+                  id="custom-env-value"
+                  value={newEnvValue}
+                  onChange={(e) => setNewEnvValue(e.target.value)}
+                  placeholder="32000"
+                  className="font-mono text-sm"
+                  maxLength={4096}
+                />
+              </div>
+
+              {dialogEnvError && (
+                <p className="text-xs text-destructive">{dialogEnvError}</p>
+              )}
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="custom-env-value">Value</Label>
-              <Input
-                id="custom-env-value"
-                value={newEnvValue}
-                onChange={(e) => setNewEnvValue(e.target.value)}
-                placeholder="32000"
-                className="font-mono text-sm"
-              />
-            </div>
-
-            {customEnvError && (
-              <p className="text-xs text-destructive">{customEnvError}</p>
-            )}
-          </div>
-
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setIsAddEnvDialogOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleAddCustomEnvVar}
-              disabled={isLoading || updateSettings.isPending}
-            >
-              Add Variable
-            </Button>
-          </DialogFooter>
+            <DialogFooter className="mt-4">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsAddEnvDialogOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={isLoading || updateSettings.isPending}
+              >
+                Add Variable
+              </Button>
+            </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
 
