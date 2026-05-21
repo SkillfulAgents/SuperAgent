@@ -102,6 +102,16 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       setModelState(fallbackModel)
     }
   }, [model, fallbackModel])
+  // When preferredFamily arrives late (e.g. after async session list loads in
+  // AgentHome), override the settings-based default — but not if the user has
+  // already made an explicit pick.
+  const prevPreferredRef = useRef(preferredFamily)
+  useEffect(() => {
+    if (preferredFamily && preferredFamily !== prevPreferredRef.current && !modelSeededRef.current) {
+      setModelState(preferredFamily)
+    }
+    prevPreferredRef.current = preferredFamily
+  }, [preferredFamily])
   const setModel = useCallback((m: string) => {
     modelSeededRef.current = true
     setModelState(m)
