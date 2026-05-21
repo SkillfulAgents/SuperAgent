@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { MessageCircle, MoreVertical, Pause, Trash2, Plus, Pencil } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
+import { Label } from '@renderer/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Switch } from '@renderer/components/ui/switch'
 import {
@@ -40,6 +41,44 @@ const PROVIDER_TILES: Array<{ slug: ChatProvider; label: string; icon: React.Rea
   { slug: 'slack', label: 'Slack', icon: null },
   { slug: 'imessage', label: 'iMessage', icon: <MessageCircle className="h-4 w-4 text-[#007AFF]" fill="#007AFF" stroke="none" /> },
 ]
+
+function SessionTimeoutInput({ value, onCommit, disabled, id }: {
+  value: number | null
+  onCommit: (hours: number | null) => void
+  disabled?: boolean
+  id: string
+}) {
+  const [local, setLocal] = useState(value != null && value > 0 ? String(value) : '')
+
+  const commit = () => {
+    const parsed = parseInt(local, 10)
+    const next = parsed > 0 ? parsed : null
+    if (next !== value) onCommit(next)
+  }
+
+  return (
+    <div className="px-2 py-1.5">
+      <Label htmlFor={id} className="text-xs font-normal">
+        New session after
+        <span className="ml-1 font-normal text-muted-foreground/70">hours, blank = never</span>
+      </Label>
+      <Input
+        id={id}
+        type="number"
+        min="1"
+        step="1"
+        className="mt-1 h-7 text-xs shadow-none"
+        placeholder="Never"
+        value={local}
+        onClick={(e) => e.stopPropagation()}
+        onChange={(e) => { e.stopPropagation(); setLocal(e.target.value) }}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === 'Enter') commit() }}
+        disabled={disabled}
+      />
+    </div>
+  )
+}
 
 function ToggleRow({ label, checked, onCheckedChange, disabled, ariaLabel }: {
   label: string
@@ -158,6 +197,12 @@ export function HomeChatIntegrations({ agentSlug }: HomeChatIntegrationsProps) {
                         onCheckedChange={(checked) =>
                           updateIntegration.mutate({ id: integration.id, showToolCalls: checked })
                         }
+                      />
+                      <SessionTimeoutInput
+                        id={`timeout-${integration.id}`}
+                        value={integration.sessionTimeout ?? null}
+                        onCommit={(hours) => updateIntegration.mutate({ id: integration.id, sessionTimeout: hours })}
+                        disabled={updateIntegration.isPending}
                       />
                       {integration.provider === 'slack' && (() => {
                         const config = parseChatIntegrationConfig('slack', integration.config) as SlackConfig | null

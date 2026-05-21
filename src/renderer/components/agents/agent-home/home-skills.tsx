@@ -15,10 +15,11 @@ import type { ApiSkillWithStatus } from '@shared/lib/types/api'
 
 interface HomeSkillsProps {
   agentSlug: string
+  className?: string
   onRunSkill?: (skillName: string) => void
 }
 
-export function HomeSkills({ agentSlug, onRunSkill }: HomeSkillsProps) {
+export function HomeSkills({ agentSlug, className, onRunSkill }: HomeSkillsProps) {
   const [browseOpen, setBrowseOpen] = useState(false)
 
   const { data: skillsData } = useAgentSkills(agentSlug)
@@ -32,7 +33,7 @@ export function HomeSkills({ agentSlug, onRunSkill }: HomeSkillsProps) {
   const hasDiscoverable = discoverableSkills.length > 0
 
   return (
-    <HomeCollapsible title="Skills">
+    <HomeCollapsible title="Skills" className={className}>
       {skills.length === 0 ? (
         <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
           <p className="text-xs font-medium text-foreground">No skills yet</p>

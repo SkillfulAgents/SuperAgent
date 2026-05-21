@@ -405,6 +405,7 @@ export const chatIntegrations = sqliteTable('chat_integrations', {
 
   // Behavior settings
   showToolCalls: integer('show_tool_calls', { mode: 'boolean' }).notNull().default(false),
+  sessionTimeout: integer('session_timeout'), // Hours; null/0 = single persistent session
 
   // Status
   status: text('status', { enum: ['active', 'paused', 'error', 'disconnected'] })

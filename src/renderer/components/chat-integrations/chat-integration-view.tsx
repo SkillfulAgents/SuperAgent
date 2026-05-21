@@ -19,6 +19,7 @@ import {
   useChatIntegrationSessions,
   useClearChatSession,
 } from '@renderer/hooks/use-chat-integrations'
+import { formatSessionTimestamp } from '@shared/lib/chat-integrations/utils'
 import { useSelection } from '@renderer/context/selection-context'
 import { useUser } from '@renderer/context/user-context'
 import {
@@ -210,11 +211,16 @@ export function ChatIntegrationView({ integrationId, agentSlug }: ChatIntegratio
                       aria-label="Select chat session"
                       className="bg-transparent border rounded px-1.5 py-0.5 text-xs text-muted-foreground cursor-pointer"
                     >
-                      {sessions.map((s) => (
-                        <option key={s.id} value={s.sessionId}>
-                          {s.displayName || `Chat ${s.externalChatId.slice(-6)}`}{s.archivedAt ? ' (archived)' : ''}
-                        </option>
-                      ))}
+                      {sessions.map((s) => {
+                        const label = s.displayName || `Chat ${s.externalChatId.slice(-6)}`
+                        const ts = s.createdAt ? formatSessionTimestamp(new Date(s.createdAt)) : ''
+                        const suffix = s.archivedAt ? ' (archived)' : ''
+                        return (
+                          <option key={s.id} value={s.sessionId}>
+                            {label}{ts ? ` — ${ts}` : ''}{suffix}
+                          </option>
+                        )
+                      })}
                     </select>
                     <span className="text-muted-foreground/70">
                       {isArchived ? '— archived session' : `— controlled from ${providerName}`}

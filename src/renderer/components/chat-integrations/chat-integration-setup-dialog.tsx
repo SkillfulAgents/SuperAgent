@@ -210,6 +210,7 @@ function SetupForm({
   const [formData, setFormData] = useState<Record<string, string>>({})
   const [integrationName, setIntegrationName] = useState('')
   const [showToolCalls, setShowToolCalls] = useState(false)
+  const [sessionTimeout, setSessionTimeout] = useState('')
   const [onlyMentioned, setOnlyMentioned] = useState(false)
   const [answerInThread, setAnswerInThread] = useState(false)
   const [newSessionPerThread, setNewSessionPerThread] = useState(false)
@@ -265,12 +266,14 @@ function SetupForm({
       if (provider === 'imessage') {
         config.gatewayUrl = 'https://imsgw.com'
       }
+      const parsedTimeout = parseInt(sessionTimeout, 10)
       await createIntegration.mutateAsync({
         agentSlug,
         provider,
         name: integrationName.trim() || undefined,
         config,
         showToolCalls,
+        sessionTimeout: parsedTimeout > 0 ? parsedTimeout : null,
       })
       onClose()
     } catch {
@@ -420,6 +423,23 @@ function SetupForm({
                 id="setup-show-tool-calls"
                 checked={showToolCalls}
                 onCheckedChange={setShowToolCalls}
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="setup-session-timeout" className="text-xs font-normal">
+                New session after
+                <span className="ml-1 font-normal text-muted-foreground/70">hours, blank = never</span>
+              </Label>
+              <Input
+                id="setup-session-timeout"
+                type="number"
+                min="1"
+                step="1"
+                value={sessionTimeout}
+                onChange={(e) => setSessionTimeout(e.target.value)}
+                placeholder="Never (single session)"
+                className="mt-1 shadow-none bg-background"
               />
             </div>
 

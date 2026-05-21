@@ -46,7 +46,12 @@ export function useCreateAgent() {
       if (!res.ok) throw new Error('Failed to create agent')
       return res.json() as Promise<ApiAgent>
     },
-    onSuccess: () => {
+    onSuccess: (agent) => {
+      // Seed the per-slug cache so consumers reading useAgent(slug) right
+      // after navigation (e.g. AgentHome via MainContent) render synchronously
+      // instead of flashing through an undefined state while the list query
+      // refetches.
+      queryClient.setQueryData(['agents', agent.slug], agent)
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
     },

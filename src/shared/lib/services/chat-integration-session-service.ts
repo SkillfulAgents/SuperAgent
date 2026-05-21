@@ -83,6 +83,15 @@ export function updateChatIntegrationSessionName(id: string, displayName: string
   return result.changes > 0
 }
 
+/** Bump updatedAt to record last activity (used by session timeout). */
+export function touchChatIntegrationSession(id: string): boolean {
+  const result = db.update(chatIntegrationSessions)
+    .set({ updatedAt: new Date() })
+    .where(eq(chatIntegrationSessions.id, id))
+    .run()
+  return result.changes > 0
+}
+
 // ── Archive ────────────────────────────────────────────────────────────
 
 export function archiveChatIntegrationSession(id: string): boolean {

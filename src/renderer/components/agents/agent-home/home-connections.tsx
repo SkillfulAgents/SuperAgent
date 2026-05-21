@@ -15,6 +15,7 @@ import { FeaturedServicesStack } from '@renderer/components/connections/featured
 
 interface HomeConnectionsProps {
   agentSlug: string
+  className?: string
 }
 
 interface ConnectionRow {
@@ -32,7 +33,7 @@ interface ConnectionRow {
   mcpErrorMessage?: string | null
 }
 
-export function HomeConnections({ agentSlug }: HomeConnectionsProps) {
+export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) {
   const { data: accountsData } = useAgentConnectedAccounts(agentSlug)
   const { data: mcpsData } = useAgentRemoteMcps(agentSlug)
   const { setView } = useSelection()
@@ -78,7 +79,7 @@ export function HomeConnections({ agentSlug }: HomeConnectionsProps) {
   }, [accountsData, mcpsData])
 
   return (
-    <HomeCollapsible title="Connections">
+    <HomeCollapsible title="Connections" className={className}>
       {connections.length > 0 ? (
         <div className="mt-2 divide-y divide-border/50">
           {connections.map((conn) => (

@@ -1,5 +1,6 @@
 
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react'
+import { cn } from '@shared/lib/utils/cn'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { ArrowUp, Loader2, Eye, Settings2, Maximize2, Minimize2, Search, Check } from 'lucide-react'
@@ -39,6 +40,8 @@ import { useRenameUntitledAgent } from '@renderer/hooks/use-rename-untitled-agen
 import { useRenderTracker } from '@renderer/lib/perf'
 import { formatDistanceToNow } from 'date-fns'
 
+const INTRO_ANIMATION_MS = 2200
+
 interface AgentHomeProps {
   agent: ApiAgent
   onSessionCreated: (sessionId: string, initialMessage: string) => void
@@ -47,7 +50,22 @@ interface AgentHomeProps {
 
 export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHomeProps) {
   useRenderTracker('AgentHome')
-  const { setView, setAgent, consumePendingDraft } = useSelection()
+  const { setView, setAgent, consumePendingDraft, justCreatedSlug, setJustCreatedSlug } = useSelection()
+  const [introStagger] = useState(() => {
+    if (justCreatedSlug !== agent.slug) return false
+    return !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  })
+  const [introPlaying, setIntroPlaying] = useState(!introStagger)
+  useEffect(() => {
+    if (!introStagger) return
+    const t = setTimeout(() => setIntroPlaying(true), 1000)
+    return () => clearTimeout(t)
+  }, [introStagger])
+  useEffect(() => {
+    if (!introStagger) return
+    const t = setTimeout(() => setJustCreatedSlug(null), INTRO_ANIMATION_MS)
+    return () => clearTimeout(t)
+  }, [introStagger, setJustCreatedSlug])
   const startOnboardingSession = useStartOnboardingSession()
   const { canUseAgent, canAdminAgent } = useUser()
   const isViewOnly = !canUseAgent(agent.slug)
@@ -247,11 +265,25 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const showRightColumn = isOwner
 
   return (
-    <div className="flex-1 flex flex-col overflow-y-auto px-10 py-10 bg-background">
+    <div
+      className={cn(
+        'flex-1 flex flex-col overflow-y-auto px-10 py-10 bg-background',
+        introStagger && 'agent-home-intro relative',
+        introPlaying && 'intro-play'
+      )}
+    >
+      {introStagger && !introPlaying && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-background">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Creating
+          </div>
+        </div>
+      )}
       <div className={`grid gap-10 items-start ${showRightColumn ? 'grid-cols-1 xl:grid-cols-[1fr_minmax(320px,400px)] w-full max-w-6xl mx-auto' : 'max-w-2xl mx-auto'}`}>
         {/* Left Column — Chat composer + Sessions */}
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center justify-between gap-2 intro-step intro-step-1">
             {isEditingName && isOwner ? (
               <div className="flex items-center gap-2 flex-1 min-w-0">
                 <Input
@@ -335,7 +367,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
               />
               <form
                 onSubmit={composer.handleSubmit}
-                className={composer.isDragOver ? 'rounded-2xl ring-2 ring-primary ring-inset' : ''}
+                className={cn('intro-step intro-step-2', composer.isDragOver && 'rounded-2xl ring-2 ring-primary ring-inset')}
                 {...composer.dragHandlers}
               >
                 <ChatComposerBox
@@ -423,11 +455,12 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                 />
               </form>
 
+              <div className="space-y-6 intro-step intro-step-3">
               {/* Bookmarks */}
               <HomeBookmarks agentSlug={agent.slug} isOwner={isOwner} />
 
               {/* Sessions list / creation aids */}
-              <div className={sessions.length > 0 ? 'pt-2' : '-mt-5'}>
+              <div className={sessions.length > 0 ? 'pt-2' : ''}>
                 {sessions.length > 0 ? (
                   <>
                     <div className="flex items-center gap-2">
@@ -476,6 +509,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                   />
                 )}
               </div>
+              </div>
             </>
           )}
         </div>
@@ -491,13 +525,14 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
               />
             ))}
             <HomeTriggers
+              className="intro-step intro-step-4"
               agentSlug={agent.slug}
               scheduledTasks={scheduledTasks}
               onSelectTask={(taskId: string) => setView({ kind: 'task', id: taskId })}
               onSelectWebhook={(webhookId: string) => setView({ kind: 'webhook', id: webhookId })}
             />
-            <HomeConnections agentSlug={agent.slug} />
-            <HomeSkills agentSlug={agent.slug} onRunSkill={(skillPath) => {
+            <HomeConnections className="intro-step intro-step-5" agentSlug={agent.slug} />
+            <HomeSkills className="intro-step intro-step-6" agentSlug={agent.slug} onRunSkill={(skillPath) => {
               const text = `/${skillPath} `
               composer.setMessage(text)
               composerTextareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
@@ -510,8 +545,8 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
               }, 0)
             }} />
             <HomeChatIntegrations agentSlug={agent.slug} />
-            <HomeVolumes agentSlug={agent.slug} />
-            <HomeExtras agentSlug={agent.slug} onOpenSettings={onOpenSettings} />
+            <HomeVolumes className="intro-step intro-step-7" agentSlug={agent.slug} />
+            <HomeExtras className="intro-step intro-step-8" agentSlug={agent.slug} onOpenSettings={onOpenSettings} />
           </div>
         )}
       </div>

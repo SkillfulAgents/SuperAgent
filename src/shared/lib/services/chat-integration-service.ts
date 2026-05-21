@@ -29,6 +29,7 @@ export interface CreateChatIntegrationParams {
   name?: string
   config: Record<string, unknown>
   showToolCalls?: boolean
+  sessionTimeout?: number | null
   createdByUserId?: string
 }
 
@@ -36,9 +37,9 @@ export interface UpdateChatIntegrationParams {
   name?: string
   config?: Record<string, unknown>
   showToolCalls?: boolean
+  sessionTimeout?: number | null
   status?: 'active' | 'paused' | 'error' | 'disconnected'
   errorMessage?: string | null
-
 }
 
 // ── Create ──────────────────────────────────────────────────────────────
@@ -62,6 +63,7 @@ export function createChatIntegration(params: CreateChatIntegrationParams): stri
     name: params.name ?? null,
     config: JSON.stringify(params.config),
     showToolCalls: params.showToolCalls ?? false,
+    sessionTimeout: params.sessionTimeout ?? null,
     createdByUserId: params.createdByUserId ?? null,
     createdAt: now,
     updatedAt: now,
@@ -224,6 +226,7 @@ export function updateChatIntegration(id: string, params: UpdateChatIntegrationP
   if (params.name !== undefined) updates.name = params.name
   if (params.config !== undefined) updates.config = JSON.stringify(params.config)
   if (params.showToolCalls !== undefined) updates.showToolCalls = params.showToolCalls
+  if (params.sessionTimeout !== undefined) updates.sessionTimeout = params.sessionTimeout
   if (params.status !== undefined) updates.status = params.status
   if (params.errorMessage !== undefined) updates.errorMessage = params.errorMessage
 

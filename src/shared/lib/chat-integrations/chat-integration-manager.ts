@@ -15,7 +15,7 @@ import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import { getToolDefinition } from '@shared/lib/tool-definitions/registry'
 import { formatToolName } from '@shared/lib/tool-definitions/types'
 import { parseChatIntegrationConfig, type ChatProvider } from './config-schema'
-import { formatProviderName } from './utils'
+import { formatProviderName, formatSessionTimestamp } from './utils'
 import {
   listStartupChatIntegrations,
   getChatIntegration,
@@ -27,6 +27,7 @@ import {
   createChatIntegrationSession,
   updateChatIntegrationSessionName,
   archiveChatIntegrationSession,
+  touchChatIntegrationSession,
   listChatIntegrationSessions,
 } from '@shared/lib/services/chat-integration-session-service'
 import type { ChatIntegration } from '@shared/lib/db/schema'
@@ -117,6 +118,7 @@ class ChatIntegrationManager {
   private disconnectedSince: Map<string, number> = new Map()
   private consecutiveFailures: Map<string, number> = new Map()
   private messageQueues: Map<string, Promise<void>> = new Map()
+  private lastSessionTouch: Map<string, number> = new Map()
 
   // ── Lifecycle ───────────────────────────────────────────────────────
 
@@ -534,6 +536,13 @@ class ChatIntegrationManager {
     // Look up existing session for this chat
     let chatSession = getChatIntegrationSession(integrationId, chatId)
 
+    // Rotate session if it exceeded the configured timeout
+    if (chatSession && shouldRotateSession(chatSession, integration.sessionTimeout)) {
+      breadcrumb('Session timed out, rotating', { integrationId, chatId, sessionId: chatSession.sessionId, timeoutHours: integration.sessionTimeout })
+      this.teardownManagedSession(integrationId, chatId, { archive: chatSession.id })
+      chatSession = null
+    }
+
     if (!chatSession) {
       // New chat — create a new agent session
       try {
@@ -572,9 +581,12 @@ class ChatIntegrationManager {
 
         const displayName = this.deriveDisplayName(integration.provider, message)
 
-        const sessionName = displayName
-          ? `${integration.name || integration.provider} — ${displayName}`
-          : integration.name || `${integration.provider} chat`
+        const sessionName = buildSessionName(
+          integration.name,
+          integration.provider,
+          displayName,
+          integration.sessionTimeout,
+        )
 
         await registerSession(integration.agentSlug, sessionId, sessionName)
 
@@ -636,6 +648,12 @@ class ChatIntegrationManager {
 
       await client.sendMessage(sessionId, messageText)
       messagePersister.markSessionActive(sessionId, integration.agentSlug)
+      const now = Date.now()
+      const lastTouch = this.lastSessionTouch.get(chatSession.id) ?? 0
+      if (now - lastTouch > 60_000) {
+        try { touchChatIntegrationSession(chatSession.id) } catch { /* best-effort */ }
+        this.lastSessionTouch.set(chatSession.id, now)
+      }
     } catch (err) {
       console.error(`[ChatIntegrationManager] Failed to send message for ${integrationId}/${sessionId}:`, err)
       reportError(err, 'send-message', { integrationId, sessionId, provider: integration.provider, chatId })
@@ -648,6 +666,17 @@ class ChatIntegrationManager {
     managed?.connector.showTypingIndicator(chatId).catch(() => {})
   }
 
+  private teardownManagedSession(integrationId: string, chatId: string, opts?: { archive?: string }): void {
+    const key = this.getChatSessionKey(integrationId, chatId)
+    const managed = this.chatSessions.get(key)
+    managed?.sseUnsubscribe?.()
+    this.chatSessions.delete(key)
+    if (opts?.archive) {
+      this.lastSessionTouch.delete(opts.archive)
+      try { archiveChatIntegrationSession(opts.archive) } catch { /* best-effort */ }
+    }
+  }
+
   private async clearChatSession(
     integrationId: string,
     chatId: string,
@@ -656,11 +685,7 @@ class ChatIntegrationManager {
     try {
       const chatSession = getChatIntegrationSession(integrationId, chatId)
       if (chatSession) {
-        const key = this.getChatSessionKey(integrationId, chatId)
-        const managed = this.chatSessions.get(key)
-        managed?.sseUnsubscribe?.()
-        this.chatSessions.delete(key)
-        try { archiveChatIntegrationSession(chatSession.id) } catch { /* best-effort */ }
+        this.teardownManagedSession(integrationId, chatId, { archive: chatSession.id })
       }
     } catch (err) {
       console.error('[ChatIntegrationManager] Error during session clear:', err)
@@ -674,9 +699,7 @@ class ChatIntegrationManager {
 
   /** Clear a chat session by its DB row ID (called from API route). */
   clearChatSessionById(sessionId: string): void {
-    // Find and clean up the managed session
     for (const [key, managed] of this.chatSessions) {
-      // Look up the DB mapping to check if this managed session matches
       const [integrationId, chatId] = key.split(':')
       const chatSession = getChatIntegrationSession(integrationId, chatId)
       if (chatSession?.id === sessionId) {
@@ -1305,6 +1328,38 @@ export function deriveDisplayName(message: Pick<IncomingMessage, 'chatName' | 'u
 /** Check if a display name looks like the raw-ID fallback (e.g. "User U08G59..."). */
 export function isDisplayNameFallback(name: string | null | undefined): boolean {
   return !name || name.startsWith('User ')
+}
+
+export { formatSessionTimestamp } from './utils'
+
+/** Decide whether a chat session should be rotated based on the configured timeout. */
+export function shouldRotateSession(
+  session: { updatedAt: Date | null; createdAt: Date },
+  timeoutHours: number | null | undefined,
+  now: Date = new Date(),
+): boolean {
+  if (!timeoutHours || timeoutHours <= 0) return false
+  const lastActivity = session.updatedAt?.getTime?.() ?? session.createdAt.getTime()
+  const timeoutMs = timeoutHours * 60 * 60 * 1000
+  return now.getTime() - lastActivity > timeoutMs
+}
+
+/** Build the session name, appending a timestamp when session rotation is enabled. */
+export function buildSessionName(
+  integrationName: string | null,
+  provider: string,
+  displayName: string | undefined,
+  timeoutHours: number | null | undefined,
+  now: Date = new Date(),
+): string {
+  const baseName = displayName
+    ? `${integrationName || provider} — ${displayName}`
+    : integrationName || `${provider} chat`
+
+  if (timeoutHours && timeoutHours > 0) {
+    return `${baseName} — ${formatSessionTimestamp(now)}`
+  }
+  return baseName
 }
 
 // ── Singleton (globalThis for HMR persistence) ─────────────────────────

@@ -23,6 +23,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
 
 import {
   createChatIntegration,
+  getChatIntegration,
   updateChatIntegration,
   listStartupChatIntegrations,
   DuplicateBotTokenError,
@@ -332,6 +333,52 @@ describe('chat-integration-service', () => {
       const results = listStartupChatIntegrations()
       expect(results).toHaveLength(1)
       expect(results[0].id).toBe('im-ok')
+    })
+  })
+
+  describe('sessionTimeout', () => {
+    it('stores sessionTimeout on create', () => {
+      const id = createChatIntegration({
+        agentSlug: 'agent-a',
+        provider: 'telegram',
+        config: { botToken: 'token-timeout' },
+        sessionTimeout: 4,
+      })
+      const row = getChatIntegration(id)
+      expect(row?.sessionTimeout).toBe(4)
+    })
+
+    it('defaults sessionTimeout to null when not provided', () => {
+      const id = createChatIntegration({
+        agentSlug: 'agent-a',
+        provider: 'telegram',
+        config: { botToken: 'token-no-timeout' },
+      })
+      const row = getChatIntegration(id)
+      expect(row?.sessionTimeout).toBeNull()
+    })
+
+    it('updates sessionTimeout via updateChatIntegration', () => {
+      const id = createChatIntegration({
+        agentSlug: 'agent-a',
+        provider: 'telegram',
+        config: { botToken: 'token-update-timeout' },
+      })
+      updateChatIntegration(id, { sessionTimeout: 12 })
+      expect(getChatIntegration(id)?.sessionTimeout).toBe(12)
+    })
+
+    it('clears sessionTimeout by setting to null', () => {
+      const id = createChatIntegration({
+        agentSlug: 'agent-a',
+        provider: 'telegram',
+        config: { botToken: 'token-clear-timeout' },
+        sessionTimeout: 6,
+      })
+      expect(getChatIntegration(id)?.sessionTimeout).toBe(6)
+
+      updateChatIntegration(id, { sessionTimeout: null })
+      expect(getChatIntegration(id)?.sessionTimeout).toBeNull()
     })
   })
 })

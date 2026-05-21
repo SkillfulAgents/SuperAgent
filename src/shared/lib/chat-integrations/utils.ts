@@ -8,6 +8,17 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   imessage: 'iMessage',
 }
 
+/** Format a Date as a human-readable timestamp for session names (e.g. "May 20, 2:30 PM"). */
+export function formatSessionTimestamp(date: Date): string {
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  })
+}
+
 /** Format a provider slug for display (e.g. "telegram" → "Telegram", "imessage" → "iMessage"). */
 export function formatProviderName(provider: string): string {
   return PROVIDER_DISPLAY_NAMES[provider] ?? provider.charAt(0).toUpperCase() + provider.slice(1)

@@ -116,7 +116,7 @@ chatIntegrationsRouter.post('/:id', AgentUser(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const body = await c.req.json()
-    const { provider, name, config, showToolCalls } = body
+    const { provider, name, config, showToolCalls, sessionTimeout } = body
 
     if (!provider || !config) {
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
@@ -176,6 +176,7 @@ chatIntegrationsRouter.post('/:id', AgentUser(), async (c) => {
         name,
         config,
         showToolCalls: showToolCalls ?? false,
+        sessionTimeout: sessionTimeout ?? null,
         createdByUserId,
       })
     } catch (err) {
@@ -223,7 +224,7 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
   try {
     const id = c.req.param('integrationId')
     const body = await c.req.json()
-    const { name, config, showToolCalls, status } = body
+    const { name, config, showToolCalls, sessionTimeout, status } = body
 
     // Validate config if provided
     if (config !== undefined) {
@@ -243,6 +244,7 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
     if (name !== undefined) updates.name = name
     if (config !== undefined) updates.config = config
     if (showToolCalls !== undefined) updates.showToolCalls = showToolCalls
+    if (sessionTimeout !== undefined) updates.sessionTimeout = sessionTimeout
 
     if (Object.keys(updates).length > 0) {
       updateChatIntegration(id, updates)
