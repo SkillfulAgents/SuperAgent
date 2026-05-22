@@ -17,6 +17,7 @@ import {
 } from '@renderer/components/ui/table'
 import { useAuditLog, useAuditLogFilters } from '@renderer/hooks/use-audit-log'
 import { useUser } from '@renderer/context/user-context'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { Loader2, ChevronLeft, ChevronRight } from 'lucide-react'
 
 const PAGE_SIZE = 25
@@ -162,7 +163,20 @@ export function AuditLogTab() {
                 </TableCell>
                 {isAuthMode && (
                   <TableCell className="text-xs truncate max-w-[120px]">
-                    {entry.userId ? (userMap.get(entry.userId)?.name ?? entry.userId) : '-'}
+                    {entry.userId ? (() => {
+                      const u = userMap.get(entry.userId!)
+                      return u ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="cursor-default">{u.name}</span>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <div className="text-xs">{u.email}</div>
+                            <div className="text-2xs text-muted-foreground font-mono">{u.id}</div>
+                          </TooltipContent>
+                        </Tooltip>
+                      ) : entry.userId
+                    })() : '-'}
                   </TableCell>
                 )}
                 <TableCell>
