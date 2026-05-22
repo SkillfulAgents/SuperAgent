@@ -103,10 +103,29 @@ const config: Config = {
 					opacity: '1',
 				},
 			},
+			'dot-matrix-sweep': {
+				// Per-cell pulse: cells use animation-delay to stagger into a
+				// diagonal wavefront across the grid.
+				'0%, 60%, 100%': { opacity: '0.12' },
+				'15%': { opacity: '1' },
+			},
+			'dot-matrix-pulse': {
+				// Whole-grid breathing for idle.
+				'0%, 100%': { opacity: '0.2' },
+				'50%': { opacity: '0.85' },
+			},
+			'dot-matrix-blink': {
+				// Cursor-style blink for needs-input.
+				'0%, 45%': { opacity: '1' },
+				'55%, 100%': { opacity: '0.18' },
+			},
 		},
 		animation: {
 			'cobalt-glow': 'cobalt-glow 4s ease-in-out infinite',
 			'dot-wave': 'dot-wave 2s ease-in-out infinite',
+			'dot-matrix-sweep': 'dot-matrix-sweep 1.4s ease-in-out infinite',
+			'dot-matrix-pulse': 'dot-matrix-pulse 2.6s ease-in-out infinite',
+			'dot-matrix-blink': 'dot-matrix-blink 1.1s steps(1,end) infinite',
 		}
 	}
   },

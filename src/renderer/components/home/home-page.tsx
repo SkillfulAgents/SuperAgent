@@ -112,7 +112,7 @@ function UsageSparkBackground({ data, agentSlug }: { data: { date: string; token
 const statusTabBg = {
   sleeping: 'bg-muted',
   idle: 'bg-muted',
-  working: 'bg-green-100 dark:bg-green-900/40',
+  working: 'bg-muted',
   awaiting_input: 'bg-orange-100 dark:bg-orange-900/40',
 } as const
 
@@ -243,7 +243,7 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
         const colors = isAwaiting
           ? 'bg-orange-50 border-orange-200 dark:bg-orange-900 dark:border-orange-800'
           : isWorking
-          ? 'bg-green-50 border-green-200 dark:bg-green-900 dark:border-green-800'
+          ? 'bg-muted border-border'
           : 'bg-blue-50 border-blue-200 dark:bg-blue-950 dark:border-blue-800'
 
         return (
