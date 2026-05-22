@@ -1,6 +1,5 @@
 import { MessageList } from '@renderer/components/messages/message-list'
 import { MessageInput } from '@renderer/components/messages/message-input'
-import { AgentActivityIndicator } from '@renderer/components/messages/agent-activity-indicator'
 import { PendingRequestStack } from '@renderer/components/messages/pending-request-stack'
 import { renderPendingRequest, type RenderContext } from '@renderer/components/messages/pending-request-renderer'
 import { usePendingRequests } from '@renderer/components/messages/use-pending-requests'
@@ -57,7 +56,6 @@ export function SessionChatColumn({
         onPendingMessageAppeared={onPendingMessageAppeared}
       />
       <div className="bg-background max-w-[740px] mx-auto w-full">
-        <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
         {pendingRequestCount > 0 ? (
           <div className="px-4 pb-4" data-testid="pending-request-slot">
             <PendingRequestStack>

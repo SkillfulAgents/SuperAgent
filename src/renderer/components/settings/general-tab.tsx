@@ -67,6 +67,24 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
         </p>
       </div>
 
+      {/* Dot-matrix indicators */}
+      <div className="flex items-center justify-between">
+        <div className="space-y-0.5">
+          <Label htmlFor="dot-matrix-indicators">Dot-matrix status indicators</Label>
+          <p className="text-xs text-muted-foreground">
+            Use a small animated dot matrix in place of the classic status dot for idle, working, and needs-input states.
+          </p>
+        </div>
+        <Switch
+          id="dot-matrix-indicators"
+          checked={userSettings?.dotMatrixIndicators === true}
+          onCheckedChange={(checked: boolean) => {
+            updateUserSettings.mutate({ dotMatrixIndicators: checked })
+          }}
+          disabled={isUserSettingsLoading}
+        />
+      </div>
+
       {/* Timezone */}
       <div className="space-y-2">
         <Label>Timezone</Label>

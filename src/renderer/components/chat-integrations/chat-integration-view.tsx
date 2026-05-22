@@ -9,7 +9,6 @@ import { useState } from 'react'
 import { MessageCircle, MoreVertical, Loader2, ExternalLink, RotateCcw, AlertTriangle } from 'lucide-react'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { MessageList } from '@renderer/components/messages/message-list'
-import { AgentActivityIndicator } from '@renderer/components/messages/agent-activity-indicator'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
@@ -249,7 +248,6 @@ export function ChatIntegrationView({ integrationId, agentSlug }: ChatIntegratio
                 agentSlug={agentSlug}
               />
               <div className="bg-background">
-                <AgentActivityIndicator sessionId={activeSessionId} agentSlug={agentSlug} />
                 <div className="px-4 py-3 border-t">
                   <div className="flex items-center gap-2 rounded-md border border-dashed bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
                     <MessageCircle className="h-4 w-4 shrink-0" />
