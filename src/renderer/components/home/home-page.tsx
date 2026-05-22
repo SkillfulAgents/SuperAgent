@@ -1,14 +1,15 @@
 
 import { useMemo } from 'react'
-import { useAgents } from '@renderer/hooks/use-agents'
+import { useAgents, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
 import { useUsageData } from '@renderer/hooks/use-usage'
 import { useSessions } from '@renderer/hooks/use-sessions'
 import { useSelection } from '@renderer/context/selection-context'
-import { AgentStatus } from '@renderer/components/agents/agent-status'
+import { DotMatrix, type DotMatrixPattern } from '@renderer/components/agents/dot-matrix'
+import { UptimeBars, type UptimeRun, type UptimeRunStatus } from '@renderer/components/agents/uptime-bars'
 import { getAgentActivityStatus } from '@shared/lib/types/agent-activity-status'
-import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
+import { WorkingDots, AwaitingDot, UnreadDot } from '@renderer/components/agents/status-indicators'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
@@ -17,9 +18,11 @@ import { useSidebar } from '@renderer/components/ui/sidebar'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import { DashboardCard } from './dashboard-card'
 import { isElectron, getPlatform } from '@renderer/lib/env'
-import { Plus, Bot, Loader2, Clock, CalendarClock, SquareMousePointer, Search } from 'lucide-react'
+import { Plus, Bot, Loader2, Clock, CalendarClock, SquareMousePointer, Search, Power, Square } from 'lucide-react'
 import { useSearch } from '@renderer/context/search-context'
-import { AreaChart, Area, ResponsiveContainer, Tooltip } from 'recharts'
+import { BarChart, Bar } from 'recharts'
+import { ChartContainer, ChartTooltip, type ChartConfig } from '@renderer/components/ui/chart'
+import { cn } from '@shared/lib/utils/cn'
 import type { ApiAgent } from '@shared/lib/types/api'
 import type { DailyUsageEntry } from '@shared/lib/types/usage'
 import { useRenderTracker } from '@renderer/lib/perf'
@@ -43,15 +46,50 @@ export function formatRelativeTime(date: Date | string | null | undefined): stri
   return isFuture ? `in ${months}mo` : `${months}mo ago`
 }
 
-/** Extract per-agent daily cost from the global usage data */
+// MOCK: generate fake daily token usage when real data is empty.
+// Deterministic from slug so a given agent's chart is stable across renders.
+function mockSparkData(agentSlug: string, days: number) {
+  const points: { date: string; tokens: number }[] = []
+  const now = Date.now()
+  let seed = hashSlug(agentSlug)
+  // xorshift32 for pseudo-random per-day values.
+  const next = () => {
+    seed ^= seed << 13
+    seed ^= seed >>> 17
+    seed ^= seed << 5
+    return (seed >>> 0) / 0xffffffff
+  }
+  // Each agent has a baseline activity level so chart heights vary card-to-card.
+  const baseline = 30_000 + next() * 250_000
+  const burstChance = 0.15 + next() * 0.2
+  const idleChance = 0.18 + next() * 0.15
+  for (let i = days - 1; i >= 0; i--) {
+    const date = new Date(now - i * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+    const roll = next()
+    let tokens = 0
+    if (roll < idleChance) {
+      tokens = 0
+    } else if (roll < idleChance + burstChance) {
+      tokens = Math.round(baseline * (1.5 + next() * 2))
+    } else {
+      tokens = Math.round(baseline * (0.2 + next() * 0.9))
+    }
+    points.push({ date, tokens })
+  }
+  return points
+}
+
+/** Extract per-agent daily cost from the global usage data, falling back to
+ *  mock data when there's no real usage to show. */
 function useAgentUsageSpark(agentSlug: string, dailyUsage: DailyUsageEntry[] | undefined) {
   return useMemo(() => {
-    if (!dailyUsage?.length) return null
+    const days = dailyUsage?.length ?? 60
+    if (!dailyUsage?.length) return mockSparkData(agentSlug, days)
     const points = dailyUsage.map((day) => {
       const agentEntry = day.byAgent.find((a) => a.agentSlug === agentSlug)
       return { date: day.date, tokens: agentEntry?.totalTokens ?? 0 }
     })
-    if (points.every((p) => p.tokens === 0)) return null
+    if (points.every((p) => p.tokens === 0)) return mockSparkData(agentSlug, days)
     return points
   }, [agentSlug, dailyUsage])
 }
@@ -62,70 +100,230 @@ function formatTokenCount(tokens: number): string {
   return String(tokens)
 }
 
-function UsageSparkBackground({ data, agentSlug }: { data: { date: string; tokens: number }[]; agentSlug: string }) {
-  // Unique gradient IDs per agent to avoid SVG ID collisions
-  const fillId = `sparkFill-${agentSlug}`
+const sparkChartConfig = {
+  tokens: { label: 'Tokens', color: 'hsl(var(--primary))' },
+} satisfies ChartConfig
+
+const CHART_HEIGHT_PX = 24
+
+function UsageSparkBackground({ data }: { data: { date: string; tokens: number }[]; agentSlug: string }) {
+  // Days with usage render the real bar; days with zero render a 2px floor
+  // placeholder in a lighter color. Either-or, never stacked together.
+  const maxTokens = data.reduce((m, d) => Math.max(m, d.tokens), 0)
+  const floorValue = maxTokens > 0 ? (maxTokens * 2) / CHART_HEIGHT_PX : 1
+  const series = data.map((d) => ({
+    date: d.date,
+    tokens: d.tokens,
+    bar: d.tokens > 0 ? d.tokens : 0,
+    floor: d.tokens === 0 ? floorValue : 0,
+  }))
   return (
-    <div
-      className="absolute bottom-0 left-1/3 -right-px -bottom-px h-[60%]"
-      style={{ maskImage: 'linear-gradient(to right, transparent 0%, black 30%)', WebkitMaskImage: 'linear-gradient(to right, transparent 0%, black 30%)' }}
+    <ChartContainer
+      config={sparkChartConfig}
+      // Strip `aspect-video` so the chart fills the row's height instead of
+      // forcing 16:9.
+      className="!aspect-auto h-full w-full"
+      style={{ height: CHART_HEIGHT_PX }}
     >
-      <ResponsiveContainer width="100%" height="100%">
-      <AreaChart
-        data={data}
+      <BarChart
+        data={series}
         margin={{ top: 0, right: 0, bottom: 0, left: 0 }}
+        barCategoryGap={1}
       >
-        <defs>
-          <linearGradient id={fillId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.15} />
-            <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0.02} />
-          </linearGradient>
-        </defs>
-        <Tooltip
+        <ChartTooltip
           cursor={false}
           content={({ active, payload }) => {
-            if (!active || !payload?.[0]) return null
+            if (!active || !payload?.length) return null
             const d = payload[0].payload as { date: string; tokens: number }
             return (
-              <div className="rounded border bg-popover px-2 py-1 text-xs shadow-sm">
-                <span className="text-muted-foreground">{d.date}</span>{' '}
-                <span className="font-medium">{formatTokenCount(d.tokens)} tokens</span>
+              <div className="rounded-lg border border-border/50 bg-background px-2.5 py-1.5 text-xs shadow-xl">
+                <div className="font-medium">{d.date}</div>
+                <div className="text-muted-foreground tabular-nums">
+                  {formatTokenCount(d.tokens)} tokens
+                </div>
               </div>
             )
           }}
         />
-        <Area
-          type="monotone"
-          dataKey="tokens"
-          stroke="hsl(var(--primary))"
-          strokeWidth={1}
-          strokeOpacity={0.3}
-          fill={`url(#${fillId})`}
+        {/* Either the real bar OR the 2px floor renders per day — never both.
+            Same stackId so they occupy the same x-slot at the same baseline. */}
+        <Bar
+          dataKey="floor"
+          stackId="usage"
+          fill="var(--color-tokens)"
+          fillOpacity={0.2}
           isAnimationActive={false}
         />
-      </AreaChart>
-      </ResponsiveContainer>
-    </div>
+        <Bar
+          dataKey="bar"
+          stackId="usage"
+          fill="var(--color-tokens)"
+          isAnimationActive={false}
+        />
+      </BarChart>
+    </ChartContainer>
   )
 }
 
-const statusTabBg = {
-  sleeping: 'bg-muted',
-  idle: 'bg-muted',
-  working: 'bg-muted',
-  awaiting_input: 'bg-orange-100 dark:bg-orange-900/40',
-} as const
+const AGENT_CARD_MATRIX: Record<
+  ReturnType<typeof getAgentActivityStatus>,
+  { pattern: DotMatrixPattern; dotClassName: string }
+> = {
+  sleeping: { pattern: 'pulse', dotClassName: 'bg-muted-foreground/40' },
+  idle: { pattern: 'pulse', dotClassName: 'bg-muted-foreground' },
+  working: { pattern: 'march', dotClassName: 'bg-foreground' },
+  awaiting_input: { pattern: 'blink', dotClassName: 'bg-orange-500' },
+}
 
-function StatusTab({ status, hasActiveSessions, hasSessionsAwaitingInput }: {
+// Idle gets per-agent variation so the homepage doesn't pulse in unison.
+// Each agent slug deterministically maps to a pattern, slow-down factor, and
+// phase offset, giving cards distinct but stable "personalities."
+const IDLE_PATTERNS: DotMatrixPattern[] = ['pulse', 'sweep', 'scatter']
+
+function hashSlug(s: string): number {
+  let h = 2166136261
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = (h * 16777619) >>> 0
+  }
+  return h
+}
+
+// ---- MOCK: per-trigger uptime bars ---------------------------------------
+// Pure visual placeholder while we figure out the real trigger/runs wiring.
+// Each agent gets 1–3 fake triggers, deterministic from its slug.
+const MOCK_LABELS = ['Daily digest', 'Inbox sweep', 'Refresh metrics', 'Weekly review', 'Backup sync', 'Pulse check']
+const UPTIME_BAR_COUNT = 14
+
+function mockUptimeRows(slug: string): { id: string; label: string; runs: UptimeRun[] }[] {
+  const h = hashSlug(slug)
+  const rowCount = 1 + (h % 3) // 1..3 triggers per agent
+  const rows: { id: string; label: string; runs: UptimeRun[] }[] = []
+  const now = Date.now()
+  for (let r = 0; r < rowCount; r++) {
+    const rowSeed = (h ^ ((r + 1) * 2654435761)) >>> 0
+    const label = MOCK_LABELS[(rowSeed >>> 8) % MOCK_LABELS.length]
+    const runs: UptimeRun[] = []
+    for (let i = 0; i < UPTIME_BAR_COUNT; i++) {
+      const bit = (rowSeed >>> i) & 0x1f
+      let status: UptimeRunStatus
+      if (bit < 22) status = 'success'
+      else if (bit < 26) status = 'awaiting'
+      else if (bit < 28) status = 'failed'
+      else status = 'empty'
+      // Bars read left→right oldest→newest; rightmost is most recent.
+      const ageDays = UPTIME_BAR_COUNT - 1 - i
+      runs.push({
+        status,
+        sessionId: status === 'empty' ? undefined : `mock-${slug}-${r}-${i}`,
+        startedAt: status === 'empty' ? undefined : new Date(now - ageDays * 24 * 60 * 60 * 1000),
+      })
+    }
+    rows.push({ id: `${slug}-mock-${r}`, label, runs })
+  }
+  return rows
+}
+// --------------------------------------------------------------------------
+
+function idleVariation(slug: string) {
+  const h = hashSlug(slug)
+  const pattern = IDLE_PATTERNS[h % IDLE_PATTERNS.length]
+  // Slow factor: 2.2..3.6× the base period — roughly 5–9s loops.
+  const slowFactor = 2.2 + ((h >>> 4) % 100) / 100 * 1.4
+  // Phase offset: 0..1 of the period, so cards desync.
+  const phaseOffset = ((h >>> 12) % 100) / 100
+  return { pattern, speedMultiplier: slowFactor, phaseOffset }
+}
+
+function AgentCardPowerButton({ agent }: { agent: ApiAgent }) {
+  const startAgent = useStartAgent()
+  const stopAgent = useStopAgent()
+  const isRunning = agent.status === 'running'
+  const isPending = isRunning ? stopAgent.isPending : startAgent.isPending
+
+  const activate = (e: React.SyntheticEvent) => {
+    e.stopPropagation()
+    if (isPending) return
+    if (isRunning) {
+      stopAgent.mutate(agent.slug)
+    } else {
+      startAgent.mutate(agent.slug)
+    }
+  }
+
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      aria-label={isRunning ? 'Stop agent' : 'Wake up agent'}
+      title={isRunning ? 'Stop agent' : 'Wake up agent'}
+      onClick={activate}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          activate(e)
+        }
+      }}
+      className={cn(
+        'absolute top-2 right-2 z-20',
+        'inline-flex items-center justify-center shrink-0',
+        'h-6 w-6 rounded-md border bg-card text-muted-foreground',
+        'transition-colors cursor-pointer',
+        'hover:border-accent-foreground/30 hover:text-foreground',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        isPending && 'opacity-60 pointer-events-none'
+      )}
+    >
+      {isPending ? (
+        <Loader2 className="h-3 w-3 animate-spin" />
+      ) : isRunning ? (
+        <Square className="h-3 w-3 fill-current" />
+      ) : (
+        <Power className="h-3 w-3" />
+      )}
+    </span>
+  )
+}
+
+function AgentCardMatrix({
+  slug,
+  status,
+  hasActiveSessions,
+  hasSessionsAwaitingInput,
+}: {
+  slug: string
   status: 'running' | 'stopped'
   hasActiveSessions: boolean
   hasSessionsAwaitingInput: boolean
 }) {
   const activityStatus = getAgentActivityStatus(status, hasActiveSessions, hasSessionsAwaitingInput)
+  const cfg = AGENT_CARD_MATRIX[activityStatus]
+  // Idle gets pattern variation + slow factor. Sleeping always pulses but slower
+  // still and with a per-agent phase offset so cards don't breathe in lockstep.
+  let pattern = cfg.pattern
+  let speedMultiplier = 1
+  let phaseOffset = 0
+  if (activityStatus === 'idle') {
+    const v = idleVariation(slug)
+    pattern = v.pattern
+    speedMultiplier = v.speedMultiplier
+    phaseOffset = v.phaseOffset
+  } else if (activityStatus === 'sleeping') {
+    const h = hashSlug(slug)
+    speedMultiplier = 1.5 + ((h >>> 4) % 100) / 100 * 0.8 // 1.5–2.3× → ~4–6s loops
+    phaseOffset = ((h >>> 12) % 100) / 100
+  }
   return (
-    <div className={`absolute top-0 right-4 z-20 rounded-b-md px-2.5 py-1 ${statusTabBg[activityStatus]}`}>
-      <AgentStatus status={status} hasActiveSessions={hasActiveSessions} hasSessionsAwaitingInput={hasSessionsAwaitingInput} size="sm" workingDotClassName="bg-foreground" />
-    </div>
+    <DotMatrix
+      pattern={pattern}
+      size={5}
+      cellPx={4}
+      dotPx={2}
+      dotClassName={cfg.dotClassName}
+      ariaLabel={activityStatus}
+      speedMultiplier={speedMultiplier}
+      phaseOffset={phaseOffset}
+    />
   )
 }
 
@@ -172,29 +370,48 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
       <AgentContextMenu agent={agent}>
         <button
           onClick={() => setAgent(agent.slug)}
-          className="relative text-left p-4 rounded-lg border bg-card hover:border-accent-foreground/20 transition-colors flex flex-col gap-3 z-10 h-24 overflow-hidden"
+          className="relative text-left p-4 rounded-lg border bg-card hover:border-accent-foreground/20 transition-colors flex flex-col gap-3 z-10 overflow-hidden"
         >
-          {/* Spark chart background */}
-          {sparkData && <UsageSparkBackground data={sparkData} agentSlug={agent.slug} />}
-
-          {/* Status tab dropping from top-right */}
-          <StatusTab
-            status={agent.status}
-            hasActiveSessions={agent.hasActiveSessions ?? false}
-            hasSessionsAwaitingInput={agent.hasSessionsAwaitingInput ?? false}
-          />
-
-          {/* Content sits above the chart */}
-          <div className="relative z-10 flex flex-col gap-3 flex-1 justify-between">
-            {/* Header: name */}
-            <div className="flex items-center gap-2 min-w-0 pr-20">
-              <span className="font-medium truncate">{agent.name}</span>
+          <AgentCardPowerButton agent={agent} />
+          <div className="flex flex-col gap-3 flex-1">
+            {/* Header: matrix + name */}
+            <div className="flex items-center gap-3 min-w-0">
+              <AgentCardMatrix
+                slug={agent.slug}
+                status={agent.status}
+                hasActiveSessions={agent.hasActiveSessions ?? false}
+                hasSessionsAwaitingInput={agent.hasSessionsAwaitingInput ?? false}
+              />
+              <span className="text-sm font-normal truncate">{agent.name}</span>
             </div>
 
             {/* Description */}
             {agent.description && (
               <p className="text-xs text-muted-foreground line-clamp-2">{agent.description}</p>
             )}
+
+            {/* Token usage bar chart */}
+            {sparkData && (
+              <div className="w-full">
+                <UsageSparkBackground data={sparkData} agentSlug={agent.slug} />
+              </div>
+            )}
+
+            {/* MOCK: per-trigger uptime bars (not wired yet) */}
+            <div className="flex flex-col gap-1">
+              {mockUptimeRows(agent.slug).map((row) => (
+                <UptimeBars
+                  key={row.id}
+                  runs={row.runs}
+                  label={row.label}
+                  onRunClick={(run) => {
+                    if (run.sessionId) {
+                      setAgent(agent.slug, { kind: 'session', id: run.sessionId })
+                    }
+                  }}
+                />
+              ))}
+            </div>
 
             {/* Details row */}
             <div className="flex items-center gap-3 flex-wrap text-xs text-muted-foreground">
@@ -226,7 +443,7 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
               {/* Usage tokens */}
               {sparkData && (
                 <span className="flex items-center gap-1">
-                  {formatTokenCount(totalTokens)} tokens/7d
+                  {formatTokenCount(totalTokens)} tokens/60d
                 </span>
               )}
             </div>
@@ -257,11 +474,11 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
               className={`w-full flex items-center gap-2 px-3 py-1.5 pt-3 text-left text-xs border rounded-b-lg transition-colors hover:brightness-95 ${colors}`}
             >
               {isAwaiting ? (
-                <AwaitingDot />
+                <AwaitingDot classic />
               ) : isWorking ? (
-                <WorkingDots dotClassName="bg-foreground" />
+                <WorkingDots dotClassName="bg-foreground" classic />
               ) : hasUnread ? (
-                <span className="h-2 w-2 shrink-0 rounded-full bg-blue-500" />
+                <UnreadDot classic />
               ) : null}
               <span className="truncate font-medium">{session.name}</span>
               <span className="ml-auto shrink-0 text-muted-foreground">
@@ -282,7 +499,7 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
             onClick={() => setAgent(agent.slug)}
             className="w-full flex items-center gap-2 px-3 py-1.5 pt-3 text-left text-xs border rounded-b-lg transition-colors hover:brightness-95 bg-blue-50 border-blue-200 dark:bg-blue-950 dark:border-blue-800"
           >
-            <span className="h-2 w-2 shrink-0 rounded-full bg-blue-500" />
+            <UnreadDot classic />
             <span className="font-medium">{collapsedUnreadCount} more notification{collapsedUnreadCount !== 1 ? 's' : ''}</span>
           </button>
         </div>
@@ -295,7 +512,7 @@ export function HomePage() {
   useRenderTracker('HomePage')
   const { data: agents, isLoading: agentsLoading } = useAgents()
   const { data: userSettings } = useUserSettings()
-  const { data: usageData } = useUsageData(7)
+  const { data: usageData } = useUsageData(60)
   const orderedAgents = useMemo(
     () => applyAgentOrder(agents ?? [], userSettings?.agentOrder),
     [agents, userSettings?.agentOrder]
