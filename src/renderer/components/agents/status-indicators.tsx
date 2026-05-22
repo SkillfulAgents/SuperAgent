@@ -1,14 +1,23 @@
 import { useDotMatrixIndicators } from '@renderer/hooks/use-dot-matrix-indicators'
 import { DotMatrix } from './dot-matrix'
 
-export function WorkingDots({ dotClassName = 'bg-green-500' }: { dotClassName?: string } = {}) {
+/**
+ * `classic` forces the legacy single-dot / 3-dot-wave render even when the
+ * user has the dot-matrix preference turned on. Session-level indicators pass
+ * this so the matrix stays reserved for agent-level expression.
+ */
+interface ClassicProp {
+  classic?: boolean
+}
+
+export function WorkingDots({ dotClassName = 'bg-green-500', classic = false }: { dotClassName?: string } & ClassicProp = {}) {
   const dotMatrix = useDotMatrixIndicators()
-  if (dotMatrix) {
+  if (dotMatrix && !classic) {
     return (
       <DotMatrix
-        pattern="sweep"
+        pattern="march"
         size={3}
-        cellPx={3}
+        cellPx={4}
         dotPx={2}
         dotClassName="bg-foreground"
         ariaLabel="working"
@@ -24,14 +33,14 @@ export function WorkingDots({ dotClassName = 'bg-green-500' }: { dotClassName?: 
   )
 }
 
-export function AwaitingDot() {
+export function AwaitingDot({ classic = false }: ClassicProp = {}) {
   const dotMatrix = useDotMatrixIndicators()
-  if (dotMatrix) {
+  if (dotMatrix && !classic) {
     return (
       <DotMatrix
         pattern="blink"
         size={3}
-        cellPx={3}
+        cellPx={4}
         dotPx={2}
         dotClassName="bg-orange-500"
         ariaLabel="needs input"
@@ -50,6 +59,29 @@ export function AwaitingDot() {
 }
 
 /**
+ * Unread-notifications indicator. Classic = 6px blue dot;
+ * dot-matrix mode = 3×3 blue pulse (matching the idle animation).
+ */
+export function UnreadDot({ classic = false }: ClassicProp = {}) {
+  const dotMatrix = useDotMatrixIndicators()
+  if (dotMatrix && !classic) {
+    return (
+      <DotMatrix
+        pattern="pulse"
+        size={3}
+        cellPx={4}
+        dotPx={2}
+        dotClassName="bg-blue-500"
+        ariaLabel="unread notifications"
+      />
+    )
+  }
+  return (
+    <span className="h-1.5 w-1.5 rounded-full bg-blue-500 shrink-0" role="img" aria-label="unread notifications" />
+  )
+}
+
+/**
  * Idle indicator — only renders when the dot-matrix preference is on; callers
  * keep their classic icon (e.g. CircleDashed) for the default case.
  */
@@ -58,7 +90,7 @@ export function IdleDots() {
     <DotMatrix
       pattern="pulse"
       size={3}
-      cellPx={3}
+      cellPx={4}
       dotPx={2}
       dotClassName="bg-muted-foreground"
       ariaLabel="idle"

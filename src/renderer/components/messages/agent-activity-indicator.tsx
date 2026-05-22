@@ -181,24 +181,20 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
   // Show error if present
   if (error) {
     const isProviderError = apiErrorCode != null && PROVIDER_ERROR_CODES.has(apiErrorCode)
-    return (
-      <div className="mx-auto mb-2 w-full max-w-[740px] px-4">
-        {billingUrl ? (
-          <InsufficientBalanceCard billingUrl={billingUrl} data-testid="insufficient-balance-card" />
-        ) : isProviderError ? (
-          <ProviderErrorCard message={error} data-testid="provider-error-card" />
-        ) : (
-          <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-3 select-text" data-testid="error-card">
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-destructive" />
-              <span className="text-sm font-medium text-destructive">Error</span>
-            </div>
-            <p className="mt-1 text-sm text-destructive/90">{error}</p>
-            <p className="mt-2 text-xs text-muted-foreground">
-              Send another message to retry.
-            </p>
-          </div>
-        )}
+    return billingUrl ? (
+      <InsufficientBalanceCard billingUrl={billingUrl} data-testid="insufficient-balance-card" />
+    ) : isProviderError ? (
+      <ProviderErrorCard message={error} data-testid="provider-error-card" />
+    ) : (
+      <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-3 select-text" data-testid="error-card">
+        <div className="flex items-center gap-2">
+          <AlertTriangle className="h-4 w-4 text-destructive" />
+          <span className="text-sm font-medium text-destructive">Error</span>
+        </div>
+        <p className="mt-1 text-sm text-destructive/90">{error}</p>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Send another message to retry.
+        </p>
       </div>
     )
   }
@@ -219,8 +215,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
           : (activeItem?.activeForm || 'Working...')
 
   return (
-    <div className="mx-auto mb-2 w-full max-w-[740px] px-4">
-      <div className="rounded-lg border bg-muted/50 p-3" data-testid="activity-indicator">
+    <div className="pt-4" data-testid="activity-indicator">
         {/* Header with pulsing indicator */}
         <div className="flex items-center gap-2">
           {dotMatrix ? (
@@ -398,7 +393,6 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
             </ul>
           )
         })()}
-      </div>
     </div>
   )
 }

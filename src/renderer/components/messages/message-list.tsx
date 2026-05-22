@@ -13,6 +13,7 @@ import { SubAgentBlock } from './subagent-block'
 import { CompactBoundaryItem } from './compact-boundary-item'
 import { MemoryRecallItem } from './memory-recall-item'
 import { MessageErrorBoundary } from './message-error-boundary'
+import { AgentActivityIndicator } from './agent-activity-indicator'
 import { ArrowDown, FileX2, Loader2, MessageSquarePlus, WifiOff } from 'lucide-react'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { useIsOnline } from '@renderer/context/connectivity-context'
@@ -636,6 +637,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, pendingR
         )}
 
         {/* Pending interactive requests render in the composer slot — see SessionChatColumn. */}
+
+        {/* Working / awaiting / error indicator, appended to the thread tail. */}
+        <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
         </div>
       </div>
       {showScrollToBottom && (
