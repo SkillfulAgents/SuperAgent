@@ -2,9 +2,11 @@
 import { useMessages } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
+import { useDotMatrixIndicators } from '@renderer/hooks/use-dot-matrix-indicators'
 import { apiFetch } from '@renderer/lib/api'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 import { InsufficientBalanceCard, usePlatformBillingUrl } from './insufficient-balance-card'
+import { DotMatrix } from '@renderer/components/agents/dot-matrix'
 import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
 import { cn } from '@shared/lib/utils'
 import { AlertTriangle, Monitor, X } from 'lucide-react'
@@ -29,6 +31,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     apiRetry, computerUseApp, computerUseAppIcon, backgroundTasks,
     isThinking, thinkingText,
   } = useMessageStream(sessionId, agentSlug)
+  const dotMatrix = useDotMatrixIndicators()
 
   const [revoking, setRevoking] = useState(false)
   const [revokeError, setRevokeError] = useState(false)
@@ -220,16 +223,27 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
       <div className="rounded-lg border bg-muted/50 p-3" data-testid="activity-indicator">
         {/* Header with pulsing indicator */}
         <div className="flex items-center gap-2">
-          <span className="relative flex h-3 w-3">
-            <span className={cn(
-              "animate-ping absolute inline-flex h-full w-full rounded-full opacity-75",
-              (isAwaitingInput || apiRetry) ? "bg-orange-500" : "bg-primary"
-            )}></span>
-            <span className={cn(
-              "relative inline-flex rounded-full h-3 w-3",
-              (isAwaitingInput || apiRetry) ? "bg-orange-500" : "bg-primary"
-            )}></span>
-          </span>
+          {dotMatrix ? (
+            <DotMatrix
+              pattern={(isAwaitingInput || apiRetry) ? 'blink' : 'sweep'}
+              size={5}
+              cellPx={3}
+              dotPx={2}
+              dotClassName={(isAwaitingInput || apiRetry) ? 'bg-orange-500' : 'bg-primary'}
+              ariaLabel={(isAwaitingInput || apiRetry) ? 'needs input' : 'working'}
+            />
+          ) : (
+            <span className="relative flex h-3 w-3">
+              <span className={cn(
+                "animate-ping absolute inline-flex h-full w-full rounded-full opacity-75",
+                (isAwaitingInput || apiRetry) ? "bg-orange-500" : "bg-primary"
+              )}></span>
+              <span className={cn(
+                "relative inline-flex rounded-full h-3 w-3",
+                (isAwaitingInput || apiRetry) ? "bg-orange-500" : "bg-primary"
+              )}></span>
+            </span>
+          )}
           <span className="text-sm font-medium">{statusText}</span>
           {isThinking && thinkingTokens > 0 && (
             <span className="text-xs text-muted-foreground tabular-nums">~{thinkingTokens.toLocaleString()} tokens</span>
