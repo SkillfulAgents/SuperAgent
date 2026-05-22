@@ -17,7 +17,12 @@ import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Separator } from '@renderer/components/ui/separator'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
-import { Power, Square, ChevronLeft, Clock, Loader2, AlertCircle, AlertTriangle, X, CalendarClock, Zap } from 'lucide-react'
+import { Power, Square, ChevronLeft, Clock, Loader2, AlertTriangle, X, CalendarClock, Zap } from 'lucide-react'
+import {
+  PullingImageChatToast,
+  AgentStartErrorChatToast,
+  ChatTopToastSlot,
+} from '@renderer/components/runtime/runtime-status-banners'
 import { Button } from '@renderer/components/ui/button'
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useAgent, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
@@ -337,36 +342,24 @@ export function MainContent() {
       </>
     }>
 
-      {/* Image pull progress indicator */}
-      {isPulling && readiness?.pullProgress && (
-        <div className="shrink-0 border-b bg-muted/30 px-4 py-2">
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Loader2 className="h-3 w-3 animate-spin" />
-            <span>Pulling agent image... {readiness.pullProgress.status}</span>
-            {readiness.pullProgress.percent != null && (
-              <span>({readiness.pullProgress.percent}%)</span>
-            )}
-          </div>
-          {readiness.pullProgress.percent != null && (
-            <div className="mt-1 h-1 w-full bg-muted rounded-full overflow-hidden">
-              <div
-                className="h-full bg-primary transition-all duration-300"
-                style={{ width: `${readiness.pullProgress.percent}%` }}
-              />
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Start error banner */}
-      {startAgent.isError && (
-        <div className="shrink-0 border-b bg-destructive/10 px-4 py-2">
-          <div className="flex items-center gap-2 text-xs text-destructive select-text">
-            <AlertCircle className="h-3 w-3 shrink-0" />
-            <span>Failed to start agent: {startAgent.error.message}</span>
-          </div>
-        </div>
-      )}
+      {/* Floating chat-top toasts — absolute-positioned over the chat content
+          (ContentShell's children wrapper is `relative`). Pulling progress takes
+          priority over the start-error toast if both ever overlap in time. */}
+      {isPulling && readiness?.pullProgress ? (
+        <ChatTopToastSlot>
+          <PullingImageChatToast
+            status={readiness.pullProgress.status}
+            percent={readiness.pullProgress.percent}
+          />
+        </ChatTopToastSlot>
+      ) : startAgent.isError ? (
+        <ChatTopToastSlot>
+          <AgentStartErrorChatToast
+            error={startAgent.error.message}
+            onDismiss={() => startAgent.reset()}
+          />
+        </ChatTopToastSlot>
+      ) : null}
 
       {/* Health warning banner */}
       {agent?.healthWarnings?.map((warning) => (
@@ -537,7 +530,9 @@ function ContentShell({
         <Separator orientation="vertical" className="h-5 hidden md:block" />
         {headerContent}
       </header>
-      {children}
+      {/* `relative` so floating chat-top toasts (ChatTopToastSlot) can absolute-position
+          within the chat area without escaping into the header or sidebar. */}
+      <div className="relative flex-1 flex flex-col min-h-0">{children}</div>
     </div>
   )
 }
