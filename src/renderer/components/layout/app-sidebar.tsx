@@ -1,5 +1,5 @@
 
-import { Bell, ChevronDown, ChevronRight, Plus, Search, Settings, AlertTriangle, LayoutGrid, Loader2, SquareMousePointer, WifiOff, LogOut, User, Users, Compass } from 'lucide-react'
+import { Bell, ChevronDown, ChevronRight, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, User, Users, Compass } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
@@ -30,6 +30,13 @@ import {
   SidebarRail,
 } from '@renderer/components/ui/sidebar'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
+import {
+  OfflineSidebarBanner,
+  RuntimeUnavailableSidebarBanner,
+  RuntimeCheckingSidebarBanner,
+  RuntimePullingSidebarBanner,
+  SidebarBannerStack,
+} from '@renderer/components/runtime/runtime-status-banners'
 import { useAgents, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useSessions, type ApiSession } from '@renderer/hooks/use-sessions'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
@@ -851,6 +858,30 @@ export function AppSidebar() {
       <ErrorBoundary compact>
         <SidebarContent className="overflow-visible">
           <SidebarGroup className="shrink-0 p-0">
+            {/* Status banners — render above the wordmark so they sit at the
+                top of the sidebar, separated from the agents list below. The
+                SidebarBannerStack wrapper owns horizontal padding, inter-banner
+                gap, and trailing space before the wordmark; render it only when
+                at least one banner is visible to avoid a stray padded div. */}
+            {(!isOnline || isRuntimeUnavailable || isChecking || isPullingOrBuilding) && (
+              <SidebarBannerStack>
+                {!isOnline && <OfflineSidebarBanner />}
+                {isRuntimeUnavailable && (
+                  <RuntimeUnavailableSidebarBanner
+                    message={readiness?.message}
+                    onOpenSettings={() => openSettings('runtime')}
+                  />
+                )}
+                {isChecking && <RuntimeCheckingSidebarBanner message={readiness?.message} />}
+                {isPullingOrBuilding && (
+                  <RuntimePullingSidebarBanner
+                    message={readiness?.message}
+                    percent={readiness?.pullProgress?.percent}
+                  />
+                )}
+              </SidebarBannerStack>
+            )}
+
             {/*
               When the header bar is present its 48px sit above the wordmark
               (small `-4px` pull-up tightens the gap). When it's collapsed the
@@ -896,60 +927,6 @@ export function AppSidebar() {
                 </Tooltip>
               </TooltipProvider>
             </div>
-
-            {/* Status banners — render under the wordmark so they sit inside the
-                sidebar's content area rather than pushing the wordmark down. */}
-            {!isOnline && (
-              <div className="px-2 pb-2">
-                <Alert variant="destructive" className="py-2 [&>svg]:top-2.5">
-                  <WifiOff className="h-4 w-4" />
-                  <AlertDescription className="text-xs">
-                    No internet connection. Some features may be unavailable.
-                  </AlertDescription>
-                </Alert>
-              </div>
-            )}
-
-            {isRuntimeUnavailable && (
-              <div className="px-2 pb-2">
-                <Alert
-                  variant="destructive"
-                  className="py-2 [&>svg]:top-2.5 cursor-pointer hover:bg-destructive/20 transition-colors"
-                  onClick={() => openSettings('runtime')}
-                >
-                  <AlertTriangle className="h-4 w-4" />
-                  <AlertDescription className="text-xs">
-                    {readiness?.message || 'Container runtime not available.'}{' '}
-                    <span className="underline">Open settings</span>
-                  </AlertDescription>
-                </Alert>
-              </div>
-            )}
-
-            {isChecking && (
-              <div className="px-2 pb-2">
-                <Alert className="py-2 [&>svg]:top-2.5">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  <AlertDescription className="text-xs">
-                    {readiness?.message || 'Starting runtime...'}
-                  </AlertDescription>
-                </Alert>
-              </div>
-            )}
-
-            {isPullingOrBuilding && (
-              <div className="px-2 pb-2">
-                <Alert className="py-2 [&>svg]:top-2.5">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  <AlertDescription className="text-xs">
-                    {readiness?.message || 'Preparing agent image...'}
-                    {readiness?.pullProgress?.percent != null && (
-                      <span className="ml-1">({readiness.pullProgress.percent}%)</span>
-                    )}
-                  </AlertDescription>
-                </Alert>
-              </div>
-            )}
 
             <ApiKeyWarning onOpenSettings={() => openSettings('llm')} />
             <SidebarGroupContent>
