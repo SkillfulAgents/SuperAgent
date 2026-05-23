@@ -284,7 +284,7 @@ export class SessionManager extends EventEmitter {
     sessionId: string,
     content: string,
     uuid?: UUID,
-    options?: { effort?: EffortLevel; model?: string }
+    options?: { effort?: EffortLevel; model?: string; shouldQuery?: boolean }
   ): Promise<void> {
     let sessionData = this.sessions.get(sessionId);
 

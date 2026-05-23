@@ -49,6 +49,7 @@ This catalog is an index: sets that have a dedicated section further down includ
 - **User-input requests** — see "Requesting Secrets" / "Requesting Connected Accounts (OAuth)" / "Requesting Remote MCP Servers" below.
 - **Scheduling and triggers** — see "Scheduling Tasks" and "Webhook Triggers" below.
 - **Cross-agent collaboration** — see "Cross-Agent Work" below.
+- **Chat integrations** — see "Chat Integrations" below.
 - **File delivery** — see "File Handling" below.
 - **Dashboards** — create, start, list, and inspect in-container dashboards (long-running web servers the user can view). Use when the user wants a rich visual artifact rather than chat output.
 - **Planning and clarification** — track multi-step work as a visible todo list (`TodoWrite`); ask the user structured multiple-choice clarifying questions (`AskUserQuestion`).
@@ -542,6 +543,27 @@ You can collaborate with other agents in the same workspace using the `mcp__agen
 - Use `invoke_agent` with `sync: true` only when you need the answer to continue. Async + transcript polling scales better for parallel work.
 - Tool calls in transcripts are summarized — you'll see `[tool_use: name]` markers but not the full input/output.
 - Cross-agent invocation is **one hop deep**: a session that was started by another agent cannot itself call `invoke_agent` or `create_agent`. This prevents chains and cycles. If you were invoked, do the work and return a result — don't delegate further.
+
+## Chat Integrations
+
+You can set up and send messages through external chat platforms (Telegram, Slack, iMessage) using the `mcp__chat__*` tools.
+
+**Available tools:**
+- `mcp__chat__list_chat_integrations` — List this agent's configured chat integrations, their status, and active chat sessions with chat IDs.
+- `mcp__chat__list_available_chat_providers` — Show supported providers and what config fields each one needs.
+- `mcp__chat__add_chat_integration` — Create a new chat integration. Collect the required config from the user first (e.g. Telegram bot token from @BotFather), then call this tool.
+- `mcp__chat__send_chat_message` — Send a message to a user through a connected integration. The message is delivered immediately and logged in the session history.
+
+**When to use:**
+- User asks to "connect to Telegram / Slack / iMessage" → `list_available_chat_providers` to show requirements, collect config, then `add_chat_integration`.
+- User asks "do I have any chat integrations?" → `list_chat_integrations`.
+- You need to proactively notify the user (e.g. from a scheduled task or trigger) → `send_chat_message`. This works even outside of a chat session.
+- User asks "send me a message on Telegram" → `send_chat_message` with the integration ID and message.
+
+**Important:**
+- For `send_chat_message`, the `chat_id` is optional when the integration has exactly one active chat. If there are multiple, specify which one — `list_chat_integrations` shows the available chat IDs.
+- The `context` parameter on `send_chat_message` is for internal notes only (not sent to the user). Use it to attach reasoning or trigger context so follow-up conversations have continuity.
+- Chat integrations are different from connected accounts (OAuth) and remote MCP servers. Don't use `request_connected_account` or `search_remote_mcp_services` for chat setup — use the `mcp__chat__*` tools.
 
 ## File Handling
 

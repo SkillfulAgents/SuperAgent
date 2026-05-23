@@ -52,6 +52,12 @@ import {
   getAgentSessionsDef,
   getAgentSessionTranscriptDef,
 } from './x-agent-tools'
+import {
+  listAvailableChatProvidersDef,
+  listChatIntegrationsDef,
+  addChatIntegrationDef,
+  sendChatMessageDef,
+} from './chat-tools'
 
 const definitions: Record<string, ToolDefinition> = {
   // Agent tools
@@ -113,6 +119,12 @@ const definitions: Record<string, ToolDefinition> = {
   'mcp__agents__invoke_agent': invokeAgentDef,
   'mcp__agents__get_agent_sessions': getAgentSessionsDef,
   'mcp__agents__get_agent_session_transcript': getAgentSessionTranscriptDef,
+
+  // MCP tools - chat integrations
+  'mcp__chat__list_available_chat_providers': listAvailableChatProvidersDef,
+  'mcp__chat__list_chat_integrations': listChatIntegrationsDef,
+  'mcp__chat__add_chat_integration': addChatIntegrationDef,
+  'mcp__chat__send_chat_message': sendChatMessageDef,
 }
 
 export function getToolDefinition(toolName: string): ToolDefinition | undefined {

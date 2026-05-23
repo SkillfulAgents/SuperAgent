@@ -29,6 +29,8 @@ import {
   archiveChatIntegrationSession,
   touchChatIntegrationSession,
   listChatIntegrationSessions,
+  resolveActiveSession,
+  getLastDisplayName,
 } from '@shared/lib/services/chat-integration-session-service'
 import type { EffortLevel } from '@shared/lib/container/types'
 import type { ChatIntegration } from '@shared/lib/db/schema'
@@ -195,6 +197,26 @@ class ChatIntegrationManager {
 
   // ── Public API ──────────────────────────────────────────────────────
 
+  async reconnectAll(): Promise<void> {
+    if (!this.isRunning) return
+    console.log('[ChatIntegrationManager] Reconnecting all integrations (system resume)')
+
+    const entries = [...this.connections.entries()]
+    for (const [id, conn] of entries) {
+      try {
+        const integration = getChatIntegration(id)
+        if (!integration || integration.status === 'paused') continue
+        await this.removeIntegration(id)
+        await this.connectIntegration(integration)
+        this.disconnectedSince.delete(id)
+        this.consecutiveFailures.delete(id)
+      } catch (err) {
+        console.error(`[ChatIntegrationManager] Resume reconnect failed for ${id}:`, err)
+        reportError(err, 'resume-reconnect', { integrationId: id, provider: conn.integration.provider })
+      }
+    }
+  }
+
   async addIntegration(id: string): Promise<void> {
     const integration = getChatIntegration(id)
     if (!integration) throw new Error(`Chat integration ${id} not found`)
@@ -218,6 +240,55 @@ class ChatIntegrationManager {
     this.disconnectedSince.delete(id)
     this.consecutiveFailures.delete(id)
     this.messageQueues.delete(id)
+  }
+
+  /**
+   * Ensure a chat integration session exists for the given (integrationId, chatId).
+   * If an active session already exists (and hasn't timed out), returns its sessionId.
+   * Otherwise creates a lightweight session (no container, no agent response) and
+   * returns the new sessionId.
+   *
+   * Used by outbound sends so they can log messages into the session JSONL.
+   */
+  async ensureSession(integrationId: string, chatId: string): Promise<string> {
+    const integration = getChatIntegration(integrationId)
+    if (!integration) throw new Error(`Chat integration ${integrationId} not found`)
+
+    const existing = resolveActiveSession(
+      integrationId, chatId, integration.sessionTimeout,
+      (archivedId) => {
+        this.teardownManagedSession(integrationId, chatId)
+        this.lastSessionTouch.delete(archivedId)
+      },
+    )
+    if (existing) return existing.sessionId
+
+    const { registerSession, updateSessionMetadata } = await import('@shared/lib/services/session-service')
+
+    const displayName = getLastDisplayName(integrationId, chatId)
+    const sessionId = crypto.randomUUID()
+    const sessionName = buildSessionName(
+      integration.name,
+      integration.provider,
+      displayName,
+      integration.sessionTimeout,
+    )
+
+    await registerSession(integration.agentSlug, sessionId, sessionName)
+    await updateSessionMetadata(integration.agentSlug, sessionId, {
+      isChatIntegrationSession: true,
+      chatIntegrationId: integrationId,
+      ...(integration.createdByUserId ? { createdByUserId: integration.createdByUserId } : {}),
+    })
+
+    createChatIntegrationSession({
+      integrationId,
+      externalChatId: chatId,
+      sessionId,
+      displayName,
+    })
+
+    return sessionId
   }
 
   async pauseIntegration(id: string): Promise<void> {
@@ -534,15 +605,15 @@ class ChatIntegrationManager {
       return
     }
 
-    // Look up existing session for this chat
-    let chatSession = getChatIntegrationSession(integrationId, chatId)
-
-    // Rotate session if it exceeded the configured timeout
-    if (chatSession && shouldRotateSession(chatSession, integration.sessionTimeout)) {
-      breadcrumb('Session timed out, rotating', { integrationId, chatId, sessionId: chatSession.sessionId, timeoutHours: integration.sessionTimeout })
-      this.teardownManagedSession(integrationId, chatId, { archive: chatSession.id })
-      chatSession = null
-    }
+    // Look up existing session, rotating if timed out
+    let chatSession = resolveActiveSession(
+      integrationId, chatId, integration.sessionTimeout,
+      (archivedId) => {
+        breadcrumb('Session timed out, rotating', { integrationId, chatId, timeoutHours: integration.sessionTimeout })
+        this.teardownManagedSession(integrationId, chatId)
+        this.lastSessionTouch.delete(archivedId)
+      },
+    )
 
     if (!chatSession) {
       // New chat — create a new agent session
@@ -633,6 +704,9 @@ class ChatIntegrationManager {
         await messagePersister.subscribeToSession(sessionId, client, sessionId, integration.agentSlug)
       }
 
+      // Ensure SSE → chat forwarding is active (may have been torn down by reconnect)
+      this.subscribeChatSession(integrationId, chatId, sessionId)
+
       const { text: messageText, failedFiles } = await this.buildMessageContent(integration, message)
 
       if (failedFiles.length > 0 && !messageText.trim()) {
@@ -665,8 +739,8 @@ class ChatIntegrationManager {
     }
 
     // Show typing indicator
-    const managed = this.getOrCreateChatSession(integrationId, chatId)
-    managed?.connector.showTypingIndicator(chatId).catch(() => {})
+    this.chatSessions.get(this.getChatSessionKey(integrationId, chatId))
+      ?.connector.showTypingIndicator(chatId).catch(() => {})
   }
 
   private teardownManagedSession(integrationId: string, chatId: string, opts?: { archive?: string }): void {
@@ -737,7 +811,7 @@ class ChatIntegrationManager {
     message: IncomingMessage,
   ): Promise<{ text: string; failedFiles: string[] }> {
     // In group/channel contexts, prefix with sender name so the agent can attribute messages.
-    const prefix = message.chatName && message.userName ? `[${message.userName}]: ` : ''
+    const prefix = message.chatName && message.userName ? `\\[${message.userName}]: ` : ''
     const text = prefix + (message.text || '')
 
     if (!message.files || message.files.length === 0) {

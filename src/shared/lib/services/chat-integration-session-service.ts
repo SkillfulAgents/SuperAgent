@@ -4,7 +4,7 @@
  * Each integration can have multiple chat sessions (e.g. multiple users DMing the same Slack bot).
  */
 
-import { eq, and, isNull } from 'drizzle-orm'
+import { eq, and, isNull, desc } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { chatIntegrationSessions } from '@shared/lib/db/schema'
 import type { ChatIntegrationSession, NewChatIntegrationSession } from '@shared/lib/db/schema'
@@ -13,7 +13,7 @@ export type { ChatIntegrationSession, NewChatIntegrationSession }
 
 // ── Read ────────────────────────────────────────────────────────────────
 
-/** Get the active (non-archived) session for a chat. Used for message routing. */
+/** Get the most recently active (non-archived) session for a chat. Used for message routing. */
 export function getChatIntegrationSession(
   integrationId: string,
   externalChatId: string,
@@ -24,6 +24,8 @@ export function getChatIntegrationSession(
       eq(chatIntegrationSessions.externalChatId, externalChatId),
       isNull(chatIntegrationSessions.archivedAt),
     ))
+    .orderBy(desc(chatIntegrationSessions.updatedAt), desc(chatIntegrationSessions.createdAt))
+    .limit(1)
     .all()
   return results[0] || null
 }
@@ -90,6 +92,56 @@ export function touchChatIntegrationSession(id: string): boolean {
     .where(eq(chatIntegrationSessions.id, id))
     .run()
   return result.changes > 0
+}
+
+// ── Session Resolution ────────────────────────────────────────────────
+
+/**
+ * Look up the active session for a chat and rotate if it exceeded the timeout.
+ * Returns the active session, or null if there is none (or it was rotated).
+ *
+ * When a session is rotated, it is archived and the returned null signals
+ * the caller to create a new session. The archived session's ID is returned
+ * via `onArchive` so the caller can do additional cleanup (e.g. SSE teardown).
+ */
+export function resolveActiveSession(
+  integrationId: string,
+  chatId: string,
+  timeoutHours: number | null | undefined,
+  onArchive?: (archivedSessionId: string) => void,
+): ChatIntegrationSession | null {
+  const session = getChatIntegrationSession(integrationId, chatId)
+  if (!session) return null
+
+  if (isSessionTimedOut(session, timeoutHours)) {
+    onArchive?.(session.id)
+    archiveChatIntegrationSession(session.id)
+    return null
+  }
+
+  return session
+}
+
+function isSessionTimedOut(
+  session: { updatedAt: Date | null; createdAt: Date },
+  timeoutHours: number | null | undefined,
+): boolean {
+  if (!timeoutHours || timeoutHours <= 0) return false
+  const lastActivity = session.updatedAt?.getTime?.() ?? session.createdAt.getTime()
+  const timeoutMs = timeoutHours * 60 * 60 * 1000
+  return Date.now() - lastActivity > timeoutMs
+}
+
+/**
+ * Derive display name for a new session from the most recent session for this chat.
+ * Falls back to undefined if no prior sessions exist.
+ */
+export function getLastDisplayName(integrationId: string, chatId: string): string | undefined {
+  const allSessions = listChatIntegrationSessions(integrationId)
+  return allSessions
+    .filter((s) => s.externalChatId === chatId && s.displayName)
+    .sort((a, b) => (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0))[0]
+    ?.displayName ?? undefined
 }
 
 // ── Archive ────────────────────────────────────────────────────────────

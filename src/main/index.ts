@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItem, nativeImage, nativeTheme, session, shell, Notification } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItem, nativeImage, nativeTheme, powerMonitor, session, shell, Notification } from 'electron'
 import { execFileSync, exec } from 'child_process'
 import path from 'path'
 import fs from 'fs'
@@ -71,6 +71,7 @@ import api from '../api'
 import { initializeServices, shutdownServices } from '@shared/lib/startup'
 import { findAvailablePort } from './find-port'
 import { setupServerHandlers } from '@shared/lib/startup'
+import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 
 // Set the app name (shows in macOS menu bar instead of "Electron" during dev)
@@ -1227,6 +1228,13 @@ async function startApp() {
     // Initialize all background services
     initializeServices().catch((error) => {
       console.error('Failed to initialize services:', error)
+    })
+
+    // Reconnect chat integrations after system sleep
+    powerMonitor.on('resume', () => {
+      chatIntegrationManager.reconnectAll().catch((err) => {
+        console.error('Failed to reconnect chat integrations after resume:', err)
+      })
     })
 
     // Start listening for notifications (for when window is closed)

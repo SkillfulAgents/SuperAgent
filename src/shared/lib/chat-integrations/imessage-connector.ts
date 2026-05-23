@@ -72,6 +72,11 @@ export class IMessageConnector extends ChatClientConnector {
   private static readonly MAX_RECONNECT_DELAY_MS = 60_000
   private static readonly BASE_RECONNECT_DELAY_MS = 1_000
 
+  private pingInterval: ReturnType<typeof setInterval> | null = null
+  private pongReceived = true
+  private static readonly PING_INTERVAL_MS = 30_000
+  private static readonly PONG_TIMEOUT_MS = 10_000
+
   private lastReceivedMessageId: string | null = null
   private lastChatId: string | null = null
   private pendingApprovals: Map<string, PendingApproval> = new Map()
@@ -118,6 +123,10 @@ export class IMessageConnector extends ChatClientConnector {
         this.send({ type: 'ready' })
       })
 
+      this.ws.on('pong', () => {
+        this.pongReceived = true
+      })
+
       this.ws.on('message', (raw) => {
         try {
           const event = JSON.parse(raw.toString())
@@ -126,6 +135,7 @@ export class IMessageConnector extends ChatClientConnector {
             clearTimeout(timeout)
             this._connected = true
             this.reconnectAttempts = 0
+            this.startPingLoop()
             console.log(`[IMessageConnector] Connected (${event.data?.queuedCount ?? 0} queued events)`)
             resolve()
           }
@@ -167,6 +177,8 @@ export class IMessageConnector extends ChatClientConnector {
   async disconnect(): Promise<void> {
     this.disconnecting = true
     this._connected = false
+
+    this.stopPingLoop()
 
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
@@ -645,9 +657,34 @@ export class IMessageConnector extends ChatClientConnector {
     return `msg-${Date.now()}`
   }
 
+  private startPingLoop(): void {
+    this.stopPingLoop()
+    this.pongReceived = true
+    this.pingInterval = setInterval(() => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
+
+      if (!this.pongReceived) {
+        console.log('[IMessageConnector] Pong timeout — closing stale connection')
+        this.ws.terminate()
+        return
+      }
+
+      this.pongReceived = false
+      this.ws.ping()
+    }, IMessageConnector.PING_INTERVAL_MS)
+  }
+
+  private stopPingLoop(): void {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval)
+      this.pingInterval = null
+    }
+  }
+
   private scheduleReconnect(): void {
     if (this.disconnecting) return
 
+    this.stopPingLoop()
     this.reconnectAttempts++
     const delay = Math.min(
       IMessageConnector.BASE_RECONNECT_DELAY_MS * Math.pow(2, this.reconnectAttempts - 1),
@@ -661,6 +698,7 @@ export class IMessageConnector extends ChatClientConnector {
         console.error('[IMessageConnector] Reconnect failed:', err)
         captureException(err, { tags: { component: 'chat-integration', operation: 'imessage-reconnect' } })
         this.emitError(err instanceof Error ? err : new Error(String(err)))
+        this.scheduleReconnect()
       })
     }, delay)
   }
