@@ -45,6 +45,12 @@ import {
   getAgentSessionTranscriptRenderer,
 } from './x-agent-tools'
 import {
+  listChatProvidersRenderer,
+  listChatIntegrationsRenderer,
+  addChatIntegrationRenderer,
+  sendChatMessageRenderer,
+} from './chat-tools'
+import {
   taskCreateRenderer,
   taskUpdateRenderer,
   taskListRenderer,
@@ -118,6 +124,12 @@ const toolRenderers: Record<string, ToolRenderer> = {
   'mcp__agents__invoke_agent': invokeAgentRenderer,
   'mcp__agents__get_agent_sessions': getAgentSessionsRenderer,
   'mcp__agents__get_agent_session_transcript': getAgentSessionTranscriptRenderer,
+
+  // MCP tools - chat integrations
+  'mcp__chat__list_available_chat_providers': listChatProvidersRenderer,
+  'mcp__chat__list_chat_integrations': listChatIntegrationsRenderer,
+  'mcp__chat__add_chat_integration': addChatIntegrationRenderer,
+  'mcp__chat__send_chat_message': sendChatMessageRenderer,
 }
 
 /**
