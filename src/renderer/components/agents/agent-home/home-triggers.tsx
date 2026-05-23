@@ -35,7 +35,7 @@ import {
   type WebhookTrigger,
 } from '@renderer/hooks/use-webhook-triggers'
 import { useHumanizedCron } from '@renderer/hooks/use-humanized-cron'
-import { formatRelativeTime } from '@renderer/components/home/home-page'
+import { formatDistanceToNow } from 'date-fns'
 import { HomeCollapsible } from './home-collapsible'
 import type { ApiScheduledTask } from '@shared/lib/types/api'
 
@@ -348,7 +348,7 @@ function CronRow({
         task.nextExecutionAt && !isPaused ? (
           <span className="shrink-0">
             <span className="text-muted-foreground">next run </span>
-            {formatRelativeTime(task.nextExecutionAt)}
+            {formatDistanceToNow(new Date(task.nextExecutionAt), { addSuffix: true })}
           </span>
         ) : null
       }
@@ -393,10 +393,10 @@ function WebhookRow({
       subtitleLeft={<span className="truncate lowercase">webhook · {trigger.triggerType}</span>}
       subtitleRight={
         <span className="shrink-0">
-          {formatRelativeTime(trigger.lastFiredAt) ? (
+          {trigger.lastFiredAt ? (
             <>
               <span className="text-muted-foreground">last run </span>
-              {formatRelativeTime(trigger.lastFiredAt)}
+              {formatDistanceToNow(new Date(trigger.lastFiredAt), { addSuffix: true })}
             </>
           ) : (
             'No runs yet'
