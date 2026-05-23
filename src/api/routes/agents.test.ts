@@ -246,6 +246,9 @@ vi.mock('@shared/lib/services/skillset-service', () => ({
   getSkillPublishInfo: vi.fn(),
   publishSkillToSkillset: vi.fn(),
   refreshAgentSkills: vi.fn(),
+  exportSkill: vi.fn(),
+  importSkillFromZip: vi.fn(),
+  SKILL_MAX_COMPRESSED_SIZE: 100 * 1024 * 1024,
 }))
 
 vi.mock('@shared/lib/services/artifact-service', () => ({
@@ -355,6 +358,10 @@ import {
   hasOnboardingSkill,
   collectAgentRequiredEnvVars,
 } from '@shared/lib/services/agent-template-service'
+import {
+  exportSkill,
+  importSkillFromZip,
+} from '@shared/lib/services/skillset-service'
 import { getAgent, listAgentsWithStatus } from '@shared/lib/services/agent-service'
 import { listSessions, getSessionMessagesWithCompact, getSessionSummary } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks, listPendingScheduledTasksByAgents } from '@shared/lib/services/scheduled-task-service'
@@ -2708,5 +2715,111 @@ describe('POST /api/agents/:id/keep-alive', () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ ok: true })
     expect(mockKeepAlive).toHaveBeenCalledWith('my-agent')
+  })
+})
+
+// ============================================================================
+// Skill ZIP Export / Import Tests
+// ============================================================================
+
+describe('POST /api/agents/:id/skills/:dir/export', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+  })
+
+  it('returns zip binary with correct headers', async () => {
+    const fakeZip = Buffer.from('PK\x03\x04fake-zip-content')
+    vi.mocked(exportSkill).mockResolvedValue(fakeZip)
+
+    const res = await app.request('http://localhost/api/agents/my-agent/skills/my-skill/export', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Type')).toBe('application/zip')
+    expect(res.headers.get('Content-Disposition')).toContain('my-skill.zip')
+    expect(exportSkill).toHaveBeenCalledWith('my-agent', 'my-skill')
+  })
+
+  it('returns 500 when service throws', async () => {
+    vi.mocked(exportSkill).mockRejectedValue(new Error('Skill directory not found'))
+
+    const res = await app.request('http://localhost/api/agents/my-agent/skills/bad-skill/export', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(500)
+    const body = await res.json()
+    expect(body.error).toBe('Skill directory not found')
+  })
+})
+
+describe('POST /api/agents/:id/skills/import-zip', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+  })
+
+  it('returns 201 with skill info on success', async () => {
+    vi.mocked(importSkillFromZip).mockResolvedValue({
+      skillDir: 'imported-skill',
+      skillName: 'Imported Skill',
+    })
+
+    const form = new FormData()
+    form.append('file', new File(['zip-data'], 'skill.zip', { type: 'application/zip' }))
+
+    const res = await postFormData(app, '/api/agents/my-agent/skills/import-zip', form)
+    expect(res.status).toBe(201)
+
+    const body = await res.json()
+    expect(body.skillDir).toBe('imported-skill')
+    expect(body.skillName).toBe('Imported Skill')
+    expect(importSkillFromZip).toHaveBeenCalledWith('my-agent', expect.any(Buffer))
+  })
+
+  it('returns required env vars when present', async () => {
+    vi.mocked(importSkillFromZip).mockResolvedValue({
+      skillDir: 'env-skill',
+      skillName: 'Env Skill',
+      requiredEnvVars: [{ name: 'API_KEY', description: 'Key' }],
+    })
+
+    const form = new FormData()
+    form.append('file', new File(['zip-data'], 'skill.zip', { type: 'application/zip' }))
+
+    const res = await postFormData(app, '/api/agents/my-agent/skills/import-zip', form)
+    expect(res.status).toBe(201)
+
+    const body = await res.json()
+    expect(body.requiredEnvVars).toEqual([{ name: 'API_KEY', description: 'Key' }])
+  })
+
+  it('returns 400 when no file provided', async () => {
+    const form = new FormData()
+
+    const res = await postFormData(app, '/api/agents/my-agent/skills/import-zip', form)
+    expect(res.status).toBe(400)
+
+    const body = await res.json()
+    expect(body.error).toBe('No file provided')
+  })
+
+  it('returns 500 when service throws', async () => {
+    vi.mocked(importSkillFromZip).mockRejectedValue(new Error('SKILL.md not found in package'))
+
+    const form = new FormData()
+    form.append('file', new File(['zip-data'], 'skill.zip', { type: 'application/zip' }))
+
+    const res = await postFormData(app, '/api/agents/my-agent/skills/import-zip', form)
+    expect(res.status).toBe(500)
+
+    const body = await res.json()
+    expect(body.error).toBe('SKILL.md not found in package')
   })
 })

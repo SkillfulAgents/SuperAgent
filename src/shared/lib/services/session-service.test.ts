@@ -27,6 +27,7 @@ import {
   removeMessage,
   removeToolCall,
   getSessionsByScheduledTask,
+  getSessionsByWebhookTrigger,
 } from './session-service'
 
 describe('session-service', () => {
@@ -304,6 +305,56 @@ describe('session-service', () => {
       const filtered = await listSessions('test-agent', { excludeAutomated: true })
       expect(filtered.length).toBe(1)
       expect(filtered[0].name).toBe('Manual Pending')
+    })
+
+    it('includes promoted automated sessions when excludeAutomated is set', async () => {
+      await createSessionFile('test-agent', 'manual-session', SAMPLE_JSONL_ENTRIES)
+      await createSessionFile('test-agent', 'promoted-session', SAMPLE_JSONL_ENTRIES)
+      await createSessionFile('test-agent', 'still-automated', SAMPLE_JSONL_ENTRIES)
+      await createSessionMetadata('test-agent', {
+        'manual-session': { name: 'Manual' },
+        'promoted-session': {
+          name: 'Promoted',
+          isScheduledExecution: true,
+          scheduledTaskId: 'task-1',
+          promotedToInteractive: true,
+        },
+        'still-automated': {
+          name: 'Still Automated',
+          isScheduledExecution: true,
+          scheduledTaskId: 'task-2',
+        },
+      })
+
+      const filtered = await listSessions('test-agent', { excludeAutomated: true })
+      expect(filtered.length).toBe(2)
+      const names = filtered.map(s => s.name)
+      expect(names).toContain('Manual')
+      expect(names).toContain('Promoted')
+      expect(names).not.toContain('Still Automated')
+    })
+
+    it('includes promoted metadata-only sessions (no JSONL) when excludeAutomated is set', async () => {
+      await createSessionsDir('test-agent')
+      await createSessionMetadata('test-agent', {
+        'promoted-pending': {
+          name: 'Promoted Pending',
+          createdAt: '2026-01-24T10:00:00.000Z',
+          isWebhookExecution: true,
+          webhookTriggerId: 'trigger-1',
+          promotedToInteractive: true,
+        },
+        'automated-pending': {
+          name: 'Automated Pending',
+          createdAt: '2026-01-24T11:00:00.000Z',
+          isWebhookExecution: true,
+          webhookTriggerId: 'trigger-2',
+        },
+      })
+
+      const filtered = await listSessions('test-agent', { excludeAutomated: true })
+      expect(filtered.length).toBe(1)
+      expect(filtered[0].name).toBe('Promoted Pending')
     })
 
     it('sorts sessions by last activity (newest first)', async () => {
@@ -2094,6 +2145,46 @@ describe('session-service', () => {
 
       const sessions = await getSessionsByScheduledTask('test-agent', 'task-abc')
       expect(sessions).toEqual([])
+    })
+
+    it('still returns promoted sessions (promotion does not remove from trigger page)', async () => {
+      await createSessionFile('test-agent', 'sess-1', SAMPLE_JSONL_ENTRIES)
+      await createSessionMetadata('test-agent', {
+        'sess-1': {
+          name: 'Promoted Run',
+          createdAt: '2026-01-24T01:00:00.000Z',
+          scheduledTaskId: 'task-abc',
+          isScheduledExecution: true,
+          promotedToInteractive: true,
+        },
+      })
+
+      const sessions = await getSessionsByScheduledTask('test-agent', 'task-abc')
+      expect(sessions.length).toBe(1)
+      expect(sessions[0].id).toBe('sess-1')
+    })
+  })
+
+  // ============================================================================
+  // getSessionsByWebhookTrigger Tests
+  // ============================================================================
+
+  describe('getSessionsByWebhookTrigger', () => {
+    it('still returns promoted sessions (promotion does not remove from trigger page)', async () => {
+      await createSessionFile('test-agent', 'sess-1', SAMPLE_JSONL_ENTRIES)
+      await createSessionMetadata('test-agent', {
+        'sess-1': {
+          name: 'Promoted Webhook Run',
+          createdAt: '2026-01-24T01:00:00.000Z',
+          webhookTriggerId: 'trigger-abc',
+          isWebhookExecution: true,
+          promotedToInteractive: true,
+        },
+      })
+
+      const sessions = await getSessionsByWebhookTrigger('test-agent', 'trigger-abc')
+      expect(sessions.length).toBe(1)
+      expect(sessions[0].id).toBe('sess-1')
     })
   })
 })

@@ -105,6 +105,7 @@ vi.mock('./container-manager', () => ({
 
 // Import after mocks are set up
 import { messagePersister } from './message-persister'
+import { getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 
 // Helper to create a mock ContainerClient
 function createMockClient(): ContainerClient & {
@@ -2040,6 +2041,154 @@ describe('MessagePersister', () => {
 
     it('returns false for unknown session IDs', () => {
       expect(messagePersister.isSessionAwaitingInput('nonexistent-session')).toBe(false)
+    })
+  })
+
+  // ============================================================================
+  // Automated session promotion
+  // ============================================================================
+
+  describe('automated session promotion', () => {
+    function collectGlobalEvents(): { events: any[]; cleanup: () => void } {
+      const events: any[] = []
+      const cleanup = messagePersister.addGlobalNotificationClient((data) => {
+        events.push(data)
+      })
+      return { events, cleanup }
+    }
+
+    function simulateToolUse(toolName: string, toolId: string, input: Record<string, unknown>) {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: toolId, name: toolName },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_stop' },
+      })
+    }
+
+    it('promotes a scheduled session when user input is requested', async () => {
+      vi.mocked(getSessionMetadata).mockResolvedValueOnce({
+        isScheduledExecution: true,
+        scheduledTaskId: 'task-1',
+      })
+
+      simulateToolUse('AskUserQuestion', 'tool-1', {
+        questions: [{ question: 'Pick?', header: 'Q', options: [], multiSelect: false }],
+      })
+
+      // Let the async promotion complete
+      await vi.waitFor(() => {
+        expect(updateSessionMetadata).toHaveBeenCalledWith(
+          AGENT_SLUG,
+          SESSION_ID,
+          { promotedToInteractive: true },
+        )
+      })
+    })
+
+    it('promotes a webhook session when user input is requested', async () => {
+      vi.mocked(getSessionMetadata).mockResolvedValueOnce({
+        isWebhookExecution: true,
+        webhookTriggerId: 'trigger-1',
+      })
+
+      simulateToolUse('mcp__user-input__request_secret', 'tool-1', {
+        secretName: 'API_KEY',
+        reason: 'Need it',
+      })
+
+      await vi.waitFor(() => {
+        expect(updateSessionMetadata).toHaveBeenCalledWith(
+          AGENT_SLUG,
+          SESSION_ID,
+          { promotedToInteractive: true },
+        )
+      })
+    })
+
+    it('promotes a chat integration session when user input is requested', async () => {
+      vi.mocked(getSessionMetadata).mockResolvedValueOnce({
+        isChatIntegrationSession: true,
+        chatIntegrationId: 'chat-1',
+      })
+
+      simulateToolUse('mcp__user-input__request_file', 'tool-1', {
+        description: 'Upload a file',
+      })
+
+      await vi.waitFor(() => {
+        expect(updateSessionMetadata).toHaveBeenCalledWith(
+          AGENT_SLUG,
+          SESSION_ID,
+          { promotedToInteractive: true },
+        )
+      })
+    })
+
+    it('does not promote a regular (non-automated) session', async () => {
+      vi.mocked(getSessionMetadata).mockResolvedValueOnce({
+        name: 'Regular session',
+      })
+
+      simulateToolUse('AskUserQuestion', 'tool-1', {
+        questions: [{ question: 'Pick?', header: 'Q', options: [], multiSelect: false }],
+      })
+
+      // Give the async code a chance to run
+      await new Promise((r) => setTimeout(r, 50))
+
+      expect(updateSessionMetadata).not.toHaveBeenCalled()
+    })
+
+    it('does not double-promote an already promoted session', async () => {
+      vi.mocked(getSessionMetadata).mockResolvedValueOnce({
+        isScheduledExecution: true,
+        scheduledTaskId: 'task-1',
+        promotedToInteractive: true,
+      })
+
+      simulateToolUse('AskUserQuestion', 'tool-1', {
+        questions: [{ question: 'Pick?', header: 'Q', options: [], multiSelect: false }],
+      })
+
+      await new Promise((r) => setTimeout(r, 50))
+
+      expect(updateSessionMetadata).not.toHaveBeenCalled()
+    })
+
+    it('re-broadcasts session_awaiting_input after promotion so sidebar refetches', async () => {
+      vi.mocked(getSessionMetadata).mockResolvedValueOnce({
+        isScheduledExecution: true,
+        scheduledTaskId: 'task-1',
+      })
+
+      const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
+
+      simulateToolUse('AskUserQuestion', 'tool-1', {
+        questions: [{ question: 'Pick?', header: 'Q', options: [], multiSelect: false }],
+      })
+
+      await vi.waitFor(() => {
+        expect(updateSessionMetadata).toHaveBeenCalled()
+      })
+
+      const awaitingEvents = globalEvents.filter(e => e.type === 'session_awaiting_input')
+      // First broadcast is immediate (before promotion), second is after metadata update
+      expect(awaitingEvents.length).toBeGreaterThanOrEqual(2)
+
+      globalCleanup()
     })
   })
 

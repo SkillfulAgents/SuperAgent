@@ -13,6 +13,7 @@ export const RuntimeOptionsSchema = z
   .object({
     effort: z.enum(EFFORT_LEVELS).optional(),
     model: z.string().optional(),
+    shouldQuery: z.boolean().optional(),
   })
   .strict()
 
@@ -33,6 +34,10 @@ export function parseRuntimeOptions(raw: unknown): RuntimeOptions {
 
   if (typeof obj.model === 'string' && obj.model.length > 0) {
     result.model = obj.model
+  }
+
+  if (typeof obj.shouldQuery === 'boolean') {
+    result.shouldQuery = obj.shouldQuery
   }
 
   return result

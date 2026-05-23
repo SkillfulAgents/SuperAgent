@@ -856,6 +856,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const timeoutMs = 30000 // 30 second timeout
     const effort = options?.effort
     const model = options?.model
+    const shouldQuery = options?.shouldQuery
 
     try {
       const controller = new AbortController()
@@ -871,6 +872,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
             ...(uuid ? { uuid } : {}),
             ...(effort ? { effort } : {}),
             ...(model ? { model } : {}),
+            ...(shouldQuery !== undefined ? { shouldQuery } : {}),
           }),
           signal: controller.signal,
         }

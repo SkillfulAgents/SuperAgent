@@ -1340,6 +1340,17 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     // Update last activity
     session.lastActivity = new Date().toISOString()
 
+    // shouldQuery: false — append to transcript without triggering a response
+    if (options?.shouldQuery === false) {
+      this.sessionMessages.get(sessionId)?.push({
+        role: 'user',
+        content,
+        timestamp: new Date().toISOString(),
+        shouldQuery: false,
+      })
+      return
+    }
+
     // Store user message
     const userMessage = {
       role: 'user',

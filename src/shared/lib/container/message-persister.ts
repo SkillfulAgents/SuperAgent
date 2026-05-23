@@ -518,7 +518,34 @@ class MessagePersister {
         sessionId,
         agentSlug: state.agentSlug,
       })
+      if (state.agentSlug) {
+        this.promoteAutomatedSession(sessionId, state.agentSlug).catch((err) => {
+          console.error('[MessagePersister] Failed to promote automated session:', err)
+        })
+      }
     }
+  }
+
+  // Promote an automated session (cron/webhook/chat) to a regular session so it
+  // appears in the sidebar and receives completion notifications.
+  private async promoteAutomatedSession(sessionId: string, agentSlug: string): Promise<void> {
+    const meta = await getSessionMetadata(agentSlug, sessionId)
+    if (!meta) return
+    if (meta.promotedToInteractive) return
+    if (!meta.isScheduledExecution && !meta.isWebhookExecution && !meta.isChatIntegrationSession) return
+
+    await updateSessionMetadata(agentSlug, sessionId, {
+      promotedToInteractive: true,
+    })
+
+    console.log(`[MessagePersister] Promoted automated session ${sessionId} to interactive (agent: ${agentSlug})`)
+
+    // Re-broadcast so the sidebar refetches sessions now that the metadata is updated
+    this.broadcastGlobal({
+      type: 'session_awaiting_input',
+      sessionId,
+      agentSlug,
+    })
   }
 
   // Broadcast an arbitrary event to all SSE clients for a session (public)

@@ -145,6 +145,7 @@ app.post('/sessions/:id/messages', async (c) => {
     await sessionManager.sendMessage(sessionId, content, body.uuid, {
       effort: body.effort,
       model: body.model,
+      shouldQuery: body.shouldQuery,
     });
 
     return c.json({ success: true }, 201);

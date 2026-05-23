@@ -91,6 +91,9 @@ export interface SessionMetadata {
   // Chat integration fields - present when session was created from an external chat
   isChatIntegrationSession?: boolean
   chatIntegrationId?: string
+  // Set when an automated session is promoted to interactive (e.g. agent asked a user question).
+  // The original automation flags above are preserved for provenance.
+  promotedToInteractive?: boolean
   // Context window usage from the last completed turn
   lastUsage?: SessionUsage
   // Available slash commands from the agent SDK

@@ -132,7 +132,10 @@ class NotificationManager {
     agentName?: string
   ): Promise<void> {
     const meta = await getSessionMetadata(agentSlug, sessionId)
-    if (meta?.isScheduledExecution || meta?.isWebhookExecution || meta?.isChatIntegrationSession) {
+    if (
+      !meta?.promotedToInteractive &&
+      (meta?.isScheduledExecution || meta?.isWebhookExecution || meta?.isChatIntegrationSession)
+    ) {
       return
     }
     const displayName = agentName || await this.getAgentDisplayName(agentSlug)

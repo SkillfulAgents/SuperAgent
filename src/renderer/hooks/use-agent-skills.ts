@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { apiFetch } from '@renderer/lib/api'
+import { downloadBlob } from '@renderer/lib/download'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ApiSkillWithStatus, ApiDiscoverableSkill } from '@shared/lib/types/api'
 
@@ -236,6 +237,50 @@ export function usePublishSkill() {
     onSuccess: (_, vars) => {
       queryClient.invalidateQueries({ queryKey: ['agent-skills', vars.agentSlug] })
       queryClient.invalidateQueries({ queryKey: ['discoverable-skills', vars.agentSlug] })
+    },
+  })
+}
+
+export function useExportSkill() {
+  return useMutation<void, Error, { agentSlug: string; skillDir: string; skillName: string }>({
+    mutationFn: async ({ agentSlug, skillDir, skillName }) => {
+      const res = await apiFetch(
+        `/api/agents/${encodeURIComponent(agentSlug)}/skills/${encodeURIComponent(skillDir)}/export`,
+        { method: 'POST' },
+      )
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || 'Failed to export skill')
+      }
+      await downloadBlob(res, `${skillName || skillDir}.zip`)
+    },
+  })
+}
+
+export function useImportSkillZip() {
+  const queryClient = useQueryClient()
+
+  return useMutation<
+    { skillDir: string; skillName: string; requiredEnvVars?: Array<{ name: string; description: string }> },
+    Error,
+    { agentSlug: string; file: File }
+  >({
+    mutationFn: async ({ agentSlug, file }) => {
+      const formData = new FormData()
+      formData.append('file', file)
+
+      const res = await apiFetch(
+        `/api/agents/${encodeURIComponent(agentSlug)}/skills/import-zip`,
+        { method: 'POST', body: formData },
+      )
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || 'Failed to import skill')
+      }
+      return res.json()
+    },
+    onSuccess: (_, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['agent-skills', vars.agentSlug] })
     },
   })
 }

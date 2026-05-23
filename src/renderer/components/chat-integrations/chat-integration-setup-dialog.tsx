@@ -13,7 +13,6 @@ import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Switch } from '@renderer/components/ui/switch'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import {
   Dialog,
   DialogContent,
@@ -75,35 +74,20 @@ const IMESSAGE_SETUP_NUMBER_RAW = '+12053967934'
 const IMESSAGE_SETUP_NUMBER_DISPLAY = '+1 (205) 396-7934'
 
 function PhoneNumberCopyButton() {
-  const [copied, setCopied] = useState(false)
-  const [hovered, setHovered] = useState(false)
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(IMESSAGE_SETUP_NUMBER_RAW)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    } catch {
-      // Ignore clipboard failures (e.g. permissions); tooltip stays in default state
-    }
-  }
+  const smsUrl = `sms:${IMESSAGE_SETUP_NUMBER_RAW}&body=${encodeURIComponent('/setup')}`
   return (
-    <TooltipProvider delayDuration={150}>
-      <Tooltip open={hovered || copied}>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            onClick={handleCopy}
-            onMouseEnter={() => setHovered(true)}
-            onMouseLeave={() => setHovered(false)}
-            className="underline text-primary hover:text-primary/80 whitespace-nowrap cursor-pointer"
-            aria-label={`Copy ${IMESSAGE_SETUP_NUMBER_DISPLAY} to clipboard`}
-          >
-            {IMESSAGE_SETUP_NUMBER_DISPLAY}
-          </button>
-        </TooltipTrigger>
-        <TooltipContent>{copied ? 'Copied!' : 'Click to copy'}</TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <a
+      href={smsUrl}
+      onClick={(e) => {
+        if (window.electronAPI) {
+          e.preventDefault()
+          window.electronAPI.openExternal(smsUrl)
+        }
+      }}
+      className="underline text-primary hover:text-primary/80 whitespace-nowrap"
+    >
+      {IMESSAGE_SETUP_NUMBER_DISPLAY}
+    </a>
   )
 }
 

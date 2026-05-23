@@ -1672,4 +1672,191 @@ export async function publishSkillToSkillset(
   return { prUrl: result.prUrl, successMessage: result.successMessage }
 }
 
+// ============================================================================
+// ZIP Export / Import
+// ============================================================================
+
+const SKILL_MAX_UNCOMPRESSED_SIZE = 100 * 1024 * 1024 // 100MB
+export const SKILL_MAX_COMPRESSED_SIZE = 100 * 1024 * 1024 // 100MB
+const SKILL_MAX_FILE_COUNT = 500
+
+/**
+ * Export a single skill directory as a ZIP buffer.
+ */
+export async function exportSkill(agentSlug: string, skillDirName: string): Promise<Buffer> {
+  sanitizeDirName(skillDirName)
+  const skillDir = path.join(getAgentSkillsDir(agentSlug), skillDirName)
+
+  if (!(await directoryExists(skillDir))) {
+    throw new Error('Skill directory not found')
+  }
+
+  const skillMdPath = path.join(skillDir, 'SKILL.md')
+  const skillContent = await readFileOrNull(skillMdPath)
+  if (!skillContent) {
+    throw new Error('SKILL.md not found in skill directory')
+  }
+
+  const packageFiles = await readSkillPackageFiles(skillDir)
+  const files: Record<string, string> = {}
+  for (const f of packageFiles) {
+    files[f.relativePath] = f.content
+  }
+
+  const { createZipBuffer } = await import('@shared/lib/utils/zip')
+  return createZipBuffer(files)
+}
+
+export interface SkillValidationResult {
+  valid: boolean
+  error?: string
+  skillName?: string
+  fileCount: number
+  stripPrefix: string
+}
+
+/**
+ * Validate a ZIP buffer as a skill package.
+ * Checks for SKILL.md, file count, size limits, and path traversal.
+ */
+export async function validateSkillZip(zipBuffer: Buffer): Promise<SkillValidationResult> {
+  const { openZipFromBuffer, detectZipPrefix } = await import('@shared/lib/utils/zip')
+  let reader: Awaited<ReturnType<typeof openZipFromBuffer>> | undefined
+  try {
+    reader = await openZipFromBuffer(zipBuffer)
+
+    const realEntries = reader.entries.filter((e) => !e.fileName.startsWith('__MACOSX/'))
+
+    if (realEntries.length > SKILL_MAX_FILE_COUNT) {
+      return { valid: false, error: `Too many files (${realEntries.length}, max ${SKILL_MAX_FILE_COUNT})`, fileCount: realEntries.length, stripPrefix: '' }
+    }
+
+    let totalSize = 0
+    for (const entry of realEntries) {
+      totalSize += entry.uncompressedSize
+      if (totalSize > SKILL_MAX_UNCOMPRESSED_SIZE) {
+        return { valid: false, error: `Skill package too large (exceeds ${SKILL_MAX_UNCOMPRESSED_SIZE / 1024 / 1024}MB)`, fileCount: realEntries.length, stripPrefix: '' }
+      }
+    }
+
+    for (const entry of realEntries) {
+      if (entry.fileName.split('/').includes('..') || path.isAbsolute(entry.fileName)) {
+        return { valid: false, error: `Invalid path in package: ${entry.fileName}`, fileCount: realEntries.length, stripPrefix: '' }
+      }
+    }
+
+    const stripPrefix = detectZipPrefix(reader.entries)
+
+    const skillMdEntry = realEntries.find((e) => {
+      const name = stripPrefix ? e.fileName.replace(stripPrefix, '') : e.fileName
+      const normalized = name.replace(/^\.\//, '')
+      return normalized === 'SKILL.md'
+    })
+    if (!skillMdEntry) {
+      return { valid: false, error: 'SKILL.md not found in package', fileCount: realEntries.length, stripPrefix }
+    }
+
+    const skillMdBuf = await reader.readEntry(skillMdEntry.fileName)
+    const frontmatter = parseSkillFrontmatter(skillMdBuf.toString('utf-8'))
+    const skillName = frontmatter.name || undefined
+
+    return { valid: true, skillName, fileCount: realEntries.length, stripPrefix }
+  } catch (error) {
+    return {
+      valid: false,
+      error: error instanceof Error ? error.message : 'Failed to read ZIP file',
+      fileCount: 0,
+      stripPrefix: '',
+    }
+  } finally {
+    reader?.close()
+  }
+}
+
+/**
+ * Import a skill from a ZIP buffer into an agent's workspace.
+ * Validates the ZIP upfront (file count, size, path traversal, SKILL.md presence)
+ * then extracts into `.claude/skills/<dir>`.
+ */
+export async function importSkillFromZip(
+  agentSlug: string,
+  zipBuffer: Buffer,
+): Promise<{ skillDir: string; skillName: string; requiredEnvVars?: Array<{ name: string; description: string }> }> {
+  const validation = await validateSkillZip(zipBuffer)
+  if (!validation.valid) {
+    throw new Error(validation.error || 'Invalid skill package')
+  }
+
+  const { openZipFromBuffer } = await import('@shared/lib/utils/zip')
+  const reader = await openZipFromBuffer(zipBuffer)
+  try {
+    const { stripPrefix } = validation
+
+    // Read SKILL.md to get skill name and env vars
+    const realEntries = reader.entries.filter((e) => !e.fileName.startsWith('__MACOSX/'))
+    const skillMdEntry = realEntries.find((e) => {
+      const name = stripPrefix ? e.fileName.replace(stripPrefix, '') : e.fileName
+      return name.replace(/^\.\//, '') === 'SKILL.md'
+    })!
+    const skillMdBuf = await reader.readEntry(skillMdEntry.fileName)
+    const skillMdContent = skillMdBuf.toString('utf-8')
+    const frontmatter = parseSkillFrontmatter(skillMdContent)
+    const skillName = frontmatter.name || 'imported-skill'
+
+    // Derive a safe directory name from the skill name
+    const baseDirName = skillName
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'imported-skill'
+
+    // Ensure unique directory name
+    const skillsDir = getAgentSkillsDir(agentSlug)
+    await ensureDirectory(skillsDir)
+    let dirName = baseDirName
+    let suffix = 1
+    while (await directoryExists(path.join(skillsDir, dirName))) {
+      dirName = `${baseDirName}-${suffix}`
+      suffix++
+    }
+
+    const destDir = path.join(skillsDir, dirName)
+    await ensureDirectory(destDir)
+
+    let totalExtracted = 0
+    for (const entry of reader.entries) {
+      if (entry.isDirectory) continue
+      if (entry.fileName.startsWith('__MACOSX/')) continue
+
+      let entryName = stripPrefix
+        ? entry.fileName.replace(stripPrefix, '')
+        : entry.fileName
+      entryName = entryName.replace(/^\.\//, '')
+
+      if (!entryName) continue
+
+      const baseName = path.basename(entryName)
+      if (baseName === '.skillset-metadata.json' || baseName === '.skillset-original.md') continue
+
+      const destPath = path.resolve(destDir, entryName)
+      if (!destPath.startsWith(destDir)) continue
+
+      await ensureDirectory(path.dirname(destPath))
+      const bytesWritten = await reader.extractEntry(
+        entry.fileName,
+        destPath,
+        SKILL_MAX_UNCOMPRESSED_SIZE - totalExtracted,
+      )
+      totalExtracted += bytesWritten
+    }
+
+    return {
+      skillDir: dirName,
+      skillName: frontmatter.name || getDisplayName(dirName),
+      requiredEnvVars: frontmatter.required_env_vars,
+    }
+  } finally {
+    reader.close()
+  }
+}
+
 export { copyDirectoryFiltered as copyDirectory } from '@shared/lib/utils/file-storage'

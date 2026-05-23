@@ -238,6 +238,7 @@ export async function listSessions(
 
   const isAutomated = (sessionId: string) => {
     const meta = metadata[sessionId]
+    if (meta?.promotedToInteractive) return false
     return meta?.isScheduledExecution || meta?.isWebhookExecution || meta?.isChatIntegrationSession
   }
 

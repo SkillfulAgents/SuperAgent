@@ -91,6 +91,42 @@ describe('triggerSessionComplete — automated-session gating', () => {
     await notificationManager.triggerSessionComplete('sess-1', 'agent-x')
     expect(mockCreateNotification).not.toHaveBeenCalled()
   })
+
+  it('creates notification for a promoted scheduled session', async () => {
+    mockGetSessionMetadata.mockResolvedValue({
+      isScheduledExecution: true,
+      scheduledTaskId: 'task-1',
+      promotedToInteractive: true,
+    })
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x')
+    expect(mockCreateNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'session_complete', sessionId: 'sess-1' })
+    )
+  })
+
+  it('creates notification for a promoted webhook session', async () => {
+    mockGetSessionMetadata.mockResolvedValue({
+      isWebhookExecution: true,
+      webhookTriggerId: 'trigger-1',
+      promotedToInteractive: true,
+    })
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x')
+    expect(mockCreateNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'session_complete', sessionId: 'sess-1' })
+    )
+  })
+
+  it('creates notification for a promoted chat-integration session', async () => {
+    mockGetSessionMetadata.mockResolvedValue({
+      isChatIntegrationSession: true,
+      chatIntegrationId: 'chat-1',
+      promotedToInteractive: true,
+    })
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x')
+    expect(mockCreateNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'session_complete', sessionId: 'sess-1' })
+    )
+  })
 })
 
 describe('triggerSessionWaitingInput — NOT gated by automated-session flag', () => {

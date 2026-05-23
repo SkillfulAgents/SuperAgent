@@ -7,6 +7,7 @@ import { useSubagentMessages } from '@renderer/hooks/use-messages'
 import { parseToolResult } from '@renderer/lib/parse-tool-result'
 import type { ApiToolCall, ApiMessage } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
+import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -20,14 +21,6 @@ interface SubAgentBlockProps {
 }
 
 type SubagentStatus = 'running' | 'completed' | 'error' | 'cancelled'
-
-function formatDuration(ms: number): string {
-  const seconds = Math.floor(ms / 1000)
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  const remainingSeconds = seconds % 60
-  return `${minutes}m ${remainingSeconds}s`
-}
 
 function formatTokens(tokens: number): string {
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
@@ -296,7 +289,7 @@ export function SubAgentBlock({
           {/* Stats footer — show live usage while running, final stats when completed */}
           {stats && status !== 'running' && (
             <div className="mt-2 text-xs text-muted-foreground italic">
-              {stats.totalDurationMs != null && formatDuration(stats.totalDurationMs)}
+              {stats.totalDurationMs != null && formatElapsed(stats.totalDurationMs)}
               {stats.totalTokens != null && (
                 <>{stats.totalDurationMs != null && ' · '}{formatTokens(stats.totalTokens)} tokens</>
               )}
@@ -307,7 +300,7 @@ export function SubAgentBlock({
           )}
           {isRunning && isActiveSubagent && activeSubagent?.usage && (
             <div className="mt-2 text-xs text-muted-foreground italic">
-              {formatDuration(activeSubagent.usage.duration_ms)}
+              {formatElapsed(activeSubagent.usage.duration_ms)}
               {' · '}{formatTokens(activeSubagent.usage.total_tokens)} tokens
               {' · '}{activeSubagent.usage.tool_uses} tool call{activeSubagent.usage.tool_uses !== 1 ? 's' : ''}
               {activeSubagent.lastToolName && (

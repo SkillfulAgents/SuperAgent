@@ -34,6 +34,12 @@ import { createAgentTool } from './tools/agents/create-agent'
 import { makeInvokeAgentTool } from './tools/agents/invoke-agent'
 import { getSessionsTool } from './tools/agents/get-sessions'
 import { getSessionTranscriptTool } from './tools/agents/get-session-transcript'
+import { listAvailableChatProvidersTool } from './tools/chat/list-available-chat-providers'
+import { listChatIntegrationsTool } from './tools/chat/list-chat-integrations'
+import { addChatIntegrationTool } from './tools/chat/add-chat-integration'
+import { sendChatMessageTool } from './tools/chat/send-chat-message'
+
+// TODO: refactor - every MCP should be exported from its own file instead of having one giant factory with conditional logic for which tools to include. This will make it easier to maintain and add new MCPs in the future without modifying existing code.
 
 /**
  * Factory functions for MCP servers.
@@ -102,6 +108,19 @@ export function createAgentsMcpServer(getCallerSessionId: () => string) {
       makeInvokeAgentTool(getCallerSessionId),
       getSessionsTool,
       getSessionTranscriptTool,
+    ],
+  })
+}
+
+export function createChatMcpServer() {
+  return createSdkMcpServer({
+    name: 'chat',
+    version: '1.0.0',
+    tools: [
+      listAvailableChatProvidersTool,
+      listChatIntegrationsTool,
+      addChatIntegrationTool,
+      sendChatMessageTool,
     ],
   })
 }

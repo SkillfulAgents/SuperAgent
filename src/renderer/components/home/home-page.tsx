@@ -22,26 +22,8 @@ import { useSearch } from '@renderer/context/search-context'
 import { AreaChart, Area, ResponsiveContainer, Tooltip } from 'recharts'
 import type { ApiAgent } from '@shared/lib/types/api'
 import type { DailyUsageEntry } from '@shared/lib/types/usage'
+import { formatDistanceToNow } from 'date-fns'
 import { useRenderTracker } from '@renderer/lib/perf'
-
-export function formatRelativeTime(date: Date | string | null | undefined): string | null {
-  if (!date) return null
-  const now = Date.now()
-  const then = new Date(date).getTime()
-  const diffMs = now - then
-  const absDiff = Math.abs(diffMs)
-  const isFuture = diffMs < 0
-
-  if (absDiff < 60_000) return 'just now'
-  const mins = Math.floor(absDiff / 60_000)
-  if (mins < 60) return isFuture ? `in ${mins}m` : `${mins}m ago`
-  const hours = Math.floor(mins / 60)
-  if (hours < 24) return isFuture ? `in ${hours}h` : `${hours}h ago`
-  const days = Math.floor(hours / 24)
-  if (days < 30) return isFuture ? `in ${days}d` : `${days}d ago`
-  const months = Math.floor(days / 30)
-  return isFuture ? `in ${months}mo` : `${months}mo ago`
-}
 
 /** Extract per-agent daily cost from the global usage data */
 function useAgentUsageSpark(agentSlug: string, dailyUsage: DailyUsageEntry[] | undefined) {
@@ -132,8 +114,8 @@ function StatusTab({ status, hasActiveSessions, hasSessionsAwaitingInput }: {
 function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyUsageEntry[] }) {
   useRenderTracker('AgentCard')
   const { setAgent } = useSelection()
-  const lastWorked = formatRelativeTime(agent.lastActivityAt)
-  const nextRun = formatRelativeTime(agent.nextScheduledTaskAt)
+  const lastWorked = agent.lastActivityAt ? formatDistanceToNow(new Date(agent.lastActivityAt), { addSuffix: true }) : null
+  const nextRun = agent.nextScheduledTaskAt ? formatDistanceToNow(new Date(agent.nextScheduledTaskAt), { addSuffix: true }) : null
   const dashboardCount = agent.dashboardCount ?? 0
   const scheduledTaskCount = agent.scheduledTaskCount ?? 0
   const sparkData = useAgentUsageSpark(agent.slug, dailyUsage)

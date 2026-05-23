@@ -4,7 +4,7 @@ import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { EffortLevel } from './types';
-import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer, createAgentsMcpServer } from './mcp-server';
+import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer, createAgentsMcpServer, createChatMcpServer } from './mcp-server';
 import { browserTools } from './tools/browser';
 import { computerUseTools } from './tools/computer-use';
 import { fileHooks, resolveToolFilePath } from './file-hooks';
@@ -432,6 +432,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           'browser': createBrowserMcpServer(),
           'dashboards': createDashboardsMcpServer(),
           'agents': createAgentsMcpServer(() => this.sessionId),
+          'chat': createChatMcpServer(),
           ...(['darwin', 'win32'].includes(process.env.HOST_PLATFORM || '') ? { 'computer-use': createComputerUseMcpServer() } : {}),
           ...remoteMcpConfigs,
         },
@@ -774,7 +775,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
   }
 
-  async sendMessage(content: string, uuid?: UUID, options?: { effort?: EffortLevel; model?: string }): Promise<void> {
+  async sendMessage(content: string, uuid?: UUID, options?: { effort?: EffortLevel; model?: string; shouldQuery?: boolean }): Promise<void> {
     const effort = options?.effort;
     const model = options?.model;
 
@@ -823,6 +824,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
 
     // Create SDK user message format
+    const shouldQuery = options?.shouldQuery;
     const message: SDKUserMessage = {
       type: 'user',
       session_id: this.claudeSessionId || this.sessionId,
@@ -837,6 +839,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       },
       parent_tool_use_id: null,
       ...(uuid ? { uuid } : {}),
+      ...(shouldQuery !== undefined ? { shouldQuery } : {}),
     };
 
     if (!content.startsWith(SYSTEM_MESSAGE_PREFIX)) {
