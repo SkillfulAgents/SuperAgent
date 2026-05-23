@@ -69,6 +69,9 @@ import {
   getSkillPublishInfo,
   publishSkillToSkillset,
   refreshAgentSkills,
+  exportSkill,
+  importSkillFromZip,
+  SKILL_MAX_COMPRESSED_SIZE,
 } from '@shared/lib/services/skillset-service'
 import { type ArtifactInfo, listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
 import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
@@ -3425,6 +3428,57 @@ agents.post('/:id/skills/refresh', AgentUser(), async (c) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to refresh skills'
     console.error('Failed to refresh skills:', error)
+    return c.json({ error: message }, 500)
+  }
+})
+
+// POST /api/agents/:id/skills/:dir/export - Export a skill as ZIP download
+agents.post('/:id/skills/:dir/export', AgentAdmin(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const dir = c.req.param('dir')
+    const zipBuffer = await exportSkill(agentSlug, dir)
+
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${dir}`, action: 'exported', details: { type: 'zip' } })
+    return new Response(new Uint8Array(zipBuffer), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/zip',
+        'Content-Disposition': `attachment; filename="${dir}.zip"`,
+        'Content-Length': zipBuffer.byteLength.toString(),
+      },
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to export skill'
+    console.error('Failed to export skill:', error)
+    return c.json({ error: message }, 500)
+  }
+})
+
+// POST /api/agents/:id/skills/import-zip - Import a skill from uploaded ZIP
+agents.post('/:id/skills/import-zip', AgentAdmin(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const formData = await c.req.formData()
+    const file = formData.get('file') as File | null
+
+    if (!file) {
+      return c.json({ error: 'No file provided' }, 400)
+    }
+
+    const arrayBuffer = await file.arrayBuffer()
+    const zipBuffer = Buffer.from(arrayBuffer)
+
+    if (zipBuffer.length > SKILL_MAX_COMPRESSED_SIZE) {
+      return c.json({ error: `File too large (${(zipBuffer.length / 1024 / 1024).toFixed(1)}MB, max ${SKILL_MAX_COMPRESSED_SIZE / 1024 / 1024}MB)` }, 413)
+    }
+
+    const result = await importSkillFromZip(agentSlug, zipBuffer)
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${result.skillDir}`, action: 'created', details: { skillName: result.skillName, source: 'zip-import' } })
+    return c.json(result, 201)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to import skill'
+    console.error('Failed to import skill:', error)
     return c.json({ error: message }, 500)
   }
 })

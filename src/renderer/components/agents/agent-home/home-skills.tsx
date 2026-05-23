@@ -1,14 +1,25 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef, useCallback } from 'react'
+import { toast } from 'sonner'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
-import { MoreVertical, FileCode, CloudUpload, GitPullRequest, Send, RefreshCw, Loader2, Plus, Play } from 'lucide-react'
+import { MoreVertical, FileCode, CloudUpload, GitPullRequest, Send, RefreshCw, Loader2, Plus, Play, Upload, Download, FileArchive } from 'lucide-react'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@renderer/components/ui/dialog'
 import { StatusBadge } from '../status-badge'
 import { SkillFilesDialog } from '../skill-files-dialog'
 import { SkillPublishDialog } from '../skill-publish-dialog'
 import { SkillPRDialog } from '../skill-pr-dialog'
+import { SkillInstallDialog } from '../skill-install-dialog'
 import { HomeCollapsible } from './home-collapsible'
 import { HomeSkillsBrowseDialog } from './home-skills-browse-dialog'
-import { useAgentSkills, useDiscoverableSkills, useUpdateSkill } from '@renderer/hooks/use-agent-skills'
+import { apiFetch } from '@renderer/lib/api'
+import { useAgentSkills, useDiscoverableSkills, useUpdateSkill, useExportSkill, useImportSkillZip } from '@renderer/hooks/use-agent-skills'
 import { useSkillsetPublishMode } from '@renderer/hooks/use-skillsets'
 import { getReviewActionLabel, isPullRequestPublishMode } from '@renderer/lib/skillset-publish-ui'
 import type { ApiSkillWithStatus } from '@shared/lib/types/api'
@@ -21,6 +32,7 @@ interface HomeSkillsProps {
 
 export function HomeSkills({ agentSlug, className, onRunSkill }: HomeSkillsProps) {
   const [browseOpen, setBrowseOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
 
   const { data: skillsData } = useAgentSkills(agentSlug)
   const skills = Array.isArray(skillsData) ? skillsData : []
@@ -47,8 +59,18 @@ export function HomeSkills({ agentSlug, className, onRunSkill }: HomeSkillsProps
         </div>
       )}
 
-      {hasDiscoverable && (
-        <div className="flex justify-end mt-3 px-4 pb-1">
+      <div className="flex justify-end mt-3 px-4 pb-1 gap-1">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => setImportOpen(true)}
+          data-testid="import-skill-button"
+        >
+          <Download className="h-3.5 w-3.5" />
+          Import
+        </Button>
+        {hasDiscoverable && (
           <Button
             type="button"
             variant="ghost"
@@ -59,14 +81,19 @@ export function HomeSkills({ agentSlug, className, onRunSkill }: HomeSkillsProps
             <Plus />
             Add Skill
           </Button>
-        </div>
-      )}
+        )}
+      </div>
 
       <HomeSkillsBrowseDialog
         open={browseOpen}
         onOpenChange={setBrowseOpen}
         agentSlug={agentSlug}
         discoverableSkills={discoverableSkills}
+      />
+      <SkillImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        agentSlug={agentSlug}
       />
     </HomeCollapsible>
   )
@@ -77,6 +104,7 @@ function SkillRow({ skill, agentSlug, onRunSkill }: { skill: ApiSkillWithStatus;
   const [publishOpen, setPublishOpen] = useState(false)
   const [reviewOpen, setReviewOpen] = useState(false)
   const updateSkill = useUpdateSkill()
+  const exportSkill = useExportSkill()
   const publishMode = useSkillsetPublishMode(skill.status.skillsetId)
   const ReviewIcon = isPullRequestPublishMode(publishMode) ? GitPullRequest : Send
   const actionLabel = getReviewActionLabel(publishMode)
@@ -124,6 +152,24 @@ function SkillRow({ skill, agentSlug, onRunSkill }: { skill: ApiSkillWithStatus;
               >
                 <FileCode className="h-3.5 w-3.5" />
                 View Files
+              </button>
+              <button
+                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                disabled={exportSkill.isPending}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  exportSkill.mutate(
+                    { agentSlug, skillDir: skill.path, skillName: skill.name ?? skill.path },
+                    { onError: (err) => toast.error('Export failed', { description: err.message }) },
+                  )
+                }}
+              >
+                {exportSkill.isPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Upload className="h-3.5 w-3.5" />
+                )}
+                Export Skill
               </button>
               {skill.status.type === 'local' && skill.status.publishable !== false && publishMode !== 'none' && (
                 <button
@@ -184,6 +230,186 @@ function SkillRow({ skill, agentSlug, onRunSkill }: { skill: ApiSkillWithStatus;
         skillDir={skill.path}
         publishMode={publishMode}
       />
+    </>
+  )
+}
+
+function SkillImportDialog({ open, onOpenChange, agentSlug }: { open: boolean; onOpenChange: (open: boolean) => void; agentSlug: string }) {
+  const [importFile, setImportFile] = useState<File | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const importSkill = useImportSkillZip()
+  const [secretsPrompt, setSecretsPrompt] = useState<{
+    requiredEnvVars: Array<{ name: string; description: string }>
+    skillDir: string
+  } | null>(null)
+
+  const acceptFile = useCallback((file: File | null | undefined) => {
+    if (!file) return
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+      toast.error('Only .zip files are supported')
+      return
+    }
+    setImportFile(file)
+  }, [])
+
+  const resetImport = useCallback(() => {
+    setImportFile(null)
+    importSkill.reset()
+  }, [importSkill])
+
+  const closeDialog = useCallback(() => {
+    onOpenChange(false)
+    resetImport()
+  }, [onOpenChange, resetImport])
+
+  const handleImport = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!importFile) return
+
+    try {
+      const result = await importSkill.mutateAsync({ agentSlug, file: importFile })
+
+      if (result.requiredEnvVars && result.requiredEnvVars.length > 0) {
+        setSecretsPrompt({ requiredEnvVars: result.requiredEnvVars, skillDir: result.skillDir })
+        return
+      }
+
+      closeDialog()
+      toast.success(`Imported skill "${result.skillName}"`)
+    } catch {
+      // Error is shown by the mutation's error state
+    }
+  }, [importFile, importSkill, agentSlug, closeDialog])
+
+  const handleFileDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    acceptFile(e.dataTransfer.files[0])
+  }
+
+  return (
+    <>
+      <Dialog open={open && !secretsPrompt} onOpenChange={(o) => { if (!o) closeDialog() }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="font-medium">Import a Skill</DialogTitle>
+            <DialogDescription className="sr-only">
+              Upload a .zip file to import a skill.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleImport}>
+            <div className="py-4 space-y-4">
+              <div
+                className={`border border-dashed rounded-lg p-6 text-center transition-colors bg-muted/50 ${
+                  importSkill.isPending ? 'opacity-50 pointer-events-none' : 'cursor-pointer'
+                }`}
+                role="button"
+                tabIndex={0}
+                onClick={() => !importSkill.isPending && fileInputRef.current?.click()}
+                onKeyDown={(e) => {
+                  if ((e.key === 'Enter' || e.key === ' ') && !importSkill.isPending) {
+                    e.preventDefault()
+                    fileInputRef.current?.click()
+                  }
+                }}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={importSkill.isPending ? undefined : handleFileDrop}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".zip"
+                  className="hidden"
+                  disabled={importSkill.isPending}
+                  onChange={(e) => {
+                    acceptFile(e.target.files?.[0])
+                    e.target.value = ''
+                  }}
+                />
+                {importFile ? (
+                  <div className="flex items-center justify-center gap-2">
+                    <FileArchive className="h-5 w-5 text-primary" />
+                    <span className="text-sm font-medium">{importFile.name}</span>
+                    {!importSkill.isPending && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 text-xs"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setImportFile(null)
+                        }}
+                      >
+                        Remove
+                      </Button>
+                    )}
+                  </div>
+                ) : (
+                  <>
+                    <Download className="h-5 w-5 mx-auto text-muted-foreground mb-2" />
+                    <p className="text-sm text-muted-foreground">
+                      Drop a .zip skill file here<br />
+                      or click to browse
+                    </p>
+                  </>
+                )}
+              </div>
+
+              {importSkill.error && (
+                <p className="text-sm text-destructive">{importSkill.error.message}</p>
+              )}
+            </div>
+
+            <DialogFooter className="mt-4">
+              <Button type="button" variant="outline" onClick={closeDialog} disabled={importSkill.isPending}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={!importFile || importSkill.isPending}>
+                {importSkill.isPending ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Importing...
+                  </>
+                ) : (
+                  'Import'
+                )}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {secretsPrompt && (
+        <SkillInstallDialog
+          open={!!secretsPrompt}
+          onOpenChange={(o) => {
+            if (!o) {
+              setSecretsPrompt(null)
+              closeDialog()
+            }
+          }}
+          skillName="imported skill"
+          requiredEnvVars={secretsPrompt.requiredEnvVars}
+          onInstall={async (envVars) => {
+            for (const [key, value] of Object.entries(envVars)) {
+              if (value && typeof value === 'string') {
+                try {
+                  await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/secrets`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ key, value }),
+                  })
+                } catch (error) {
+                  console.error(`Failed to save secret ${key}:`, error)
+                }
+              }
+            }
+            setSecretsPrompt(null)
+            closeDialog()
+            toast.success('Skill imported successfully')
+          }}
+        />
+      )}
     </>
   )
 }
