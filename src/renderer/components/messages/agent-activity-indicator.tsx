@@ -30,6 +30,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
 
   const [revoking, setRevoking] = useState(false)
   const [revokeError, setRevokeError] = useState(false)
+  const [showAllTodos, setShowAllTodos] = useState(false)
   const handleRevokeComputerUse = useCallback(async () => {
     setRevoking(true)
     setRevokeError(false)
@@ -122,33 +123,68 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     return null
   }
 
-  // Find the most recent TodoWrite tool call
+  // Build todo list from TaskCreate/TaskUpdate or fall back to TodoWrite
   let todos: Todo[] | null = null
   let activeItem: Todo | null = null
 
   if (messages) {
-    // Iterate through messages in reverse to find the most recent TodoWrite
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const message = messages[i]
+    // Try TaskCreate/TaskUpdate first (newer SDK format)
+    const taskMap = new Map<string, Todo>()
+    let taskCounter = 0
+
+    for (const message of messages) {
       if (message.type === 'compact_boundary' || message.type === 'memory_recall') continue
-      // Use the toolCalls array from the API message
-      const toolCalls = message.toolCalls || []
-      for (let j = toolCalls.length - 1; j >= 0; j--) {
-        const toolCall = toolCalls[j]
-        if (toolCall.name === 'TodoWrite') {
-          try {
-            const input = toolCall.input as { todos?: Todo[] }
-            if (input?.todos && Array.isArray(input.todos)) {
-              todos = input.todos
-              activeItem = todos.find((t) => t.status === 'in_progress') || null
-              break
+      for (const tc of message.toolCalls || []) {
+        if (tc.name === 'TaskCreate') {
+          taskCounter++
+          const input = tc.input as { subject?: string; activeForm?: string }
+          if (input?.subject) {
+            taskMap.set(String(taskCounter), {
+              content: input.subject,
+              status: 'pending',
+              activeForm: input.activeForm || input.subject,
+            })
+          }
+        } else if (tc.name === 'TaskUpdate') {
+          const input = tc.input as { taskId?: string; status?: string }
+          if (input?.taskId && taskMap.has(input.taskId)) {
+            const task = taskMap.get(input.taskId)!
+            if (input.status === 'completed' || input.status === 'in_progress' || input.status === 'pending') {
+              task.status = input.status
             }
-          } catch {
-            // Invalid input format, skip
           }
         }
       }
-      if (todos) break
+    }
+
+    if (taskMap.size > 0) {
+      todos = Array.from(taskMap.values())
+      activeItem = todos.find((t) => t.status === 'in_progress') || null
+    }
+
+    // Fall back to TodoWrite (older SDK format)
+    if (!todos) {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const message = messages[i]
+        if (message.type === 'compact_boundary' || message.type === 'memory_recall') continue
+        const toolCalls = message.toolCalls || []
+        for (let j = toolCalls.length - 1; j >= 0; j--) {
+          const toolCall = toolCalls[j]
+          if (toolCall.name === 'TodoWrite') {
+            try {
+              const input = toolCall.input as { todos?: Todo[] }
+              if (input?.todos && Array.isArray(input.todos)) {
+                todos = input.todos
+                activeItem = todos.find((t) => t.status === 'in_progress') || null
+                break
+              }
+            } catch {
+              // Invalid input format, skip
+            }
+          }
+        }
+        if (todos) break
+      }
     }
   }
 
@@ -239,27 +275,77 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
         )}
 
         {/* Todo list if available and at least one item is not completed */}
-        {todos && todos.length > 0 && todos.some((t) => t.status !== 'completed') && (
-          <ul className="mt-2 space-y-1 text-sm">
-            {todos.map((todo, index) => (
-              <li
-                key={index}
-                className={cn(
-                  'flex items-center gap-2',
-                  todo.status === 'completed' && 'text-muted-foreground line-through',
-                  todo.status === 'in_progress' && 'font-semibold'
-                )}
-              >
-                <span className="text-xs">
-                  {todo.status === 'completed' && '✓'}
-                  {todo.status === 'in_progress' && '→'}
-                  {todo.status === 'pending' && '○'}
-                </span>
-                {todo.content}
-              </li>
-            ))}
-          </ul>
-        )}
+        {todos && todos.length > 0 && todos.some((t) => t.status !== 'completed') && (() => {
+          const MAX_VISIBLE = 5
+          const needsTruncation = todos.length > MAX_VISIBLE && !showAllTodos
+
+          const notDone = todos.filter(t => t.status !== 'completed')
+          const doneReversed = todos.filter(t => t.status === 'completed').reverse()
+
+          let visibleTodos: Todo[]
+          let hiddenTodos: Todo[]
+
+          if (!needsTruncation) {
+            visibleTodos = [...notDone, ...doneReversed]
+            hiddenTodos = []
+          } else {
+            const visibleNotDone = notDone.slice(0, MAX_VISIBLE)
+            const remainingSlots = MAX_VISIBLE - visibleNotDone.length
+            const visibleDone = doneReversed.slice(0, remainingSlots)
+            visibleTodos = [...visibleNotDone, ...visibleDone]
+            const visibleSet = new Set(visibleTodos)
+            hiddenTodos = todos.filter(t => !visibleSet.has(t))
+          }
+
+          const hiddenPending = hiddenTodos.filter(t => t.status !== 'completed').length
+          const hiddenDone = hiddenTodos.filter(t => t.status === 'completed').length
+
+          return (
+            <ul className="mt-2 space-y-1 text-sm">
+              {hiddenTodos.length > 0 && (
+                <li>
+                  <button
+                    onClick={() => setShowAllTodos(true)}
+                    className="text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                  >
+                    {hiddenTodos.length} more{': '}
+                    {[
+                      hiddenPending > 0 && `${hiddenPending} pending`,
+                      hiddenDone > 0 && `${hiddenDone} done`,
+                    ].filter(Boolean).join(', ')}
+                  </button>
+                </li>
+              )}
+              {showAllTodos && todos.length > MAX_VISIBLE && (
+                <li>
+                  <button
+                    onClick={() => setShowAllTodos(false)}
+                    className="text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                  >
+                    Show fewer
+                  </button>
+                </li>
+              )}
+              {visibleTodos.map((todo, index) => (
+                <li
+                  key={index}
+                  className={cn(
+                    'flex items-center gap-2',
+                    todo.status === 'completed' && 'text-muted-foreground line-through',
+                    todo.status === 'in_progress' && 'font-semibold'
+                  )}
+                >
+                  <span className="text-xs">
+                    {todo.status === 'completed' && '✓'}
+                    {todo.status === 'in_progress' && '→'}
+                    {todo.status === 'pending' && '○'}
+                  </span>
+                  {todo.content}
+                </li>
+              ))}
+            </ul>
+          )
+        })()}
       </div>
     </div>
   )

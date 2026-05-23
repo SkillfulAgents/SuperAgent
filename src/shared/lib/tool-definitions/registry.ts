@@ -53,6 +53,11 @@ import {
   getAgentSessionTranscriptDef,
 } from './x-agent-tools'
 import {
+  taskCreateDef,
+  taskUpdateDef,
+  taskListDef,
+} from './task-management'
+import {
   listAvailableChatProvidersDef,
   listChatIntegrationsDef,
   addChatIntegrationDef,
@@ -78,6 +83,9 @@ const definitions: Record<string, ToolDefinition> = {
 
   // Task management
   TodoWrite: todoWriteDef,
+  TaskCreate: taskCreateDef,
+  TaskUpdate: taskUpdateDef,
+  TaskList: taskListDef,
 
   // User interaction
   AskUserQuestion: askUserQuestionDef,

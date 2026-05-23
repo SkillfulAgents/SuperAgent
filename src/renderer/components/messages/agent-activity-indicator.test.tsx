@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, act } from '@testing-library/react'
 import { AgentActivityIndicator } from './agent-activity-indicator'
 
 // Mock useMessageStream
@@ -324,5 +324,243 @@ describe('AgentActivityIndicator', () => {
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
     expect(screen.queryByText('Setting things up')).not.toBeInTheDocument()
+  })
+
+  // --- TaskCreate / TaskUpdate support ---
+
+  it('builds todo list from TaskCreate tool calls', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockMessages.push({
+      id: 'msg-1',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [
+        {
+          id: 'tc-1',
+          name: 'TaskCreate',
+          input: { subject: 'Set up database', activeForm: 'Setting up database' },
+          result: 'Task #1 created successfully: Set up database',
+        },
+        {
+          id: 'tc-2',
+          name: 'TaskCreate',
+          input: { subject: 'Write API routes', activeForm: 'Writing API routes' },
+          result: 'Task #2 created successfully: Write API routes',
+        },
+        {
+          id: 'tc-3',
+          name: 'TaskCreate',
+          input: { subject: 'Add tests', activeForm: 'Adding tests' },
+          result: 'Task #3 created successfully: Add tests',
+        },
+      ],
+      createdAt: new Date(),
+    })
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+    expect(screen.getByText('Set up database')).toBeInTheDocument()
+    expect(screen.getByText('Write API routes')).toBeInTheDocument()
+    expect(screen.getByText('Add tests')).toBeInTheDocument()
+    expect(screen.getAllByText('○')).toHaveLength(3)
+  })
+
+  it('applies TaskUpdate status changes to task list', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockMessages.push(
+      {
+        id: 'msg-1',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [
+          {
+            id: 'tc-1',
+            name: 'TaskCreate',
+            input: { subject: 'Set up database', activeForm: 'Setting up database' },
+            result: 'Task #1 created successfully',
+          },
+          {
+            id: 'tc-2',
+            name: 'TaskCreate',
+            input: { subject: 'Write API routes', activeForm: 'Writing API routes' },
+            result: 'Task #2 created successfully',
+          },
+        ],
+        createdAt: new Date(),
+      },
+      {
+        id: 'msg-2',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [
+          {
+            id: 'tc-3',
+            name: 'TaskUpdate',
+            input: { taskId: '1', status: 'completed' },
+            result: 'Updated task #1 status',
+          },
+          {
+            id: 'tc-4',
+            name: 'TaskUpdate',
+            input: { taskId: '2', status: 'in_progress' },
+            result: 'Updated task #2 status',
+          },
+        ],
+        createdAt: new Date(),
+      },
+    )
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+    // Task 1 completed, task 2 in progress
+    expect(screen.getByText('✓')).toBeInTheDocument()
+    expect(screen.getByText('→')).toBeInTheDocument()
+    // Shows activeForm of in_progress task as status text
+    expect(screen.getByText('Writing API routes')).toBeInTheDocument()
+  })
+
+  it('hides task list when all TaskCreate tasks are completed', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockMessages.push({
+      id: 'msg-1',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [
+        {
+          id: 'tc-1',
+          name: 'TaskCreate',
+          input: { subject: 'Task A', activeForm: 'Doing A' },
+          result: 'Task #1 created successfully',
+        },
+        {
+          id: 'tc-2',
+          name: 'TaskUpdate',
+          input: { taskId: '1', status: 'completed' },
+          result: 'Updated task #1 status',
+        },
+      ],
+      createdAt: new Date(),
+    })
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+    expect(screen.getByText('Working...')).toBeInTheDocument()
+    expect(screen.queryByText('Task A')).not.toBeInTheDocument()
+  })
+
+  it('truncates to 5 visible tasks, prioritizing not-done', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockMessages.push({
+      id: 'msg-1',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [
+        // 7 tasks: 3 completed, 4 pending
+        ...[1, 2, 3, 4, 5, 6, 7].map((n) => ({
+          id: `tc-create-${n}`,
+          name: 'TaskCreate',
+          input: { subject: `Task ${n}` },
+          result: `Task #${n} created successfully`,
+        })),
+        ...[1, 2, 3].map((n) => ({
+          id: `tc-update-${n}`,
+          name: 'TaskUpdate',
+          input: { taskId: String(n), status: 'completed' },
+          result: `Updated task #${n} status`,
+        })),
+      ],
+      createdAt: new Date(),
+    })
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+    // All 4 pending tasks should be visible
+    expect(screen.getByText('Task 4')).toBeInTheDocument()
+    expect(screen.getByText('Task 5')).toBeInTheDocument()
+    expect(screen.getByText('Task 6')).toBeInTheDocument()
+    expect(screen.getByText('Task 7')).toBeInTheDocument()
+    // 1 completed task fills the remaining slot (Task 3 is newest completed)
+    expect(screen.getByText('Task 3')).toBeInTheDocument()
+    // The other 2 completed tasks are hidden
+    expect(screen.queryByText('Task 1')).not.toBeInTheDocument()
+    expect(screen.queryByText('Task 2')).not.toBeInTheDocument()
+    // Shows the overflow indicator
+    expect(screen.getByText(/2 more.*2 done/)).toBeInTheDocument()
+  })
+
+  it('shows all tasks when toggle is clicked', async () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockMessages.push({
+      id: 'msg-1',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [
+        ...[1, 2, 3, 4, 5, 6].map((n) => ({
+          id: `tc-create-${n}`,
+          name: 'TaskCreate',
+          input: { subject: `Task ${n}` },
+          result: `Task #${n} created successfully`,
+        })),
+      ],
+      createdAt: new Date(),
+    })
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+    // 1 task hidden
+    expect(screen.queryByText('Task 6')).not.toBeInTheDocument()
+    expect(screen.getByText(/1 more.*1 pending/)).toBeInTheDocument()
+
+    // Click toggle
+    act(() => { screen.getByText(/1 more/).click() })
+
+    // All tasks now visible
+    expect(screen.getByText('Task 6')).toBeInTheDocument()
+    expect(screen.queryByText(/1 more/)).not.toBeInTheDocument()
+    // "Show fewer" button appears
+    expect(screen.getByText('Show fewer')).toBeInTheDocument()
+  })
+
+  it('prefers TaskCreate/TaskUpdate over TodoWrite when both exist', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockMessages.push(
+      {
+        id: 'msg-1',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'tc-1',
+          name: 'TodoWrite',
+          input: {
+            todos: [{ content: 'Old todo item', status: 'in_progress', activeForm: 'Old active form' }],
+          },
+          result: 'ok',
+        }],
+        createdAt: new Date(),
+      },
+      {
+        id: 'msg-2',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'tc-2',
+          name: 'TaskCreate',
+          input: { subject: 'New task item', activeForm: 'New active form' },
+          result: 'Task #1 created successfully',
+        }],
+        createdAt: new Date(),
+      },
+    )
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+    expect(screen.getByText('New task item')).toBeInTheDocument()
+    expect(screen.queryByText('Old todo item')).not.toBeInTheDocument()
   })
 })

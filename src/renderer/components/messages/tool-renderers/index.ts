@@ -44,6 +44,11 @@ import {
   getAgentSessionsRenderer,
   getAgentSessionTranscriptRenderer,
 } from './x-agent-tools'
+import {
+  taskCreateRenderer,
+  taskUpdateRenderer,
+  taskListRenderer,
+} from './task-management'
 
 export type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps, CollapsedContentProps } from './types'
 
@@ -70,6 +75,9 @@ const toolRenderers: Record<string, ToolRenderer> = {
 
   // Task management
   TodoWrite: todoWriteRenderer,
+  TaskCreate: taskCreateRenderer,
+  TaskUpdate: taskUpdateRenderer,
+  TaskList: taskListRenderer,
 
   // User interaction
   AskUserQuestion: askUserQuestionRenderer,
