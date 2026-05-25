@@ -70,7 +70,7 @@ async function composioFetch<T>(
 
   let url: string
   if (platformToken) {
-    if (apiVersion !== 'v3') {
+    if (apiVersion !== 'v3' && apiVersion !== 'v3.1') {
       throw new ComposioApiError(
         `Platform Composio mode does not yet support API version ${apiVersion}. Configure a local Composio API key.`,
         501
