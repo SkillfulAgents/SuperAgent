@@ -7,6 +7,7 @@ import { ComposerActionButton } from './composer-action-button'
 describe('ComposerActionButton', () => {
   const baseProps = {
     isActive: false,
+    isWaitingBackground: false,
     canSubmit: true,
     isSending: false,
     isInterrupting: false,
@@ -46,5 +47,24 @@ describe('ComposerActionButton', () => {
   it('disables the stop button while interrupting', () => {
     render(<ComposerActionButton {...baseProps} isActive isInterrupting />)
     expect(screen.getByTestId('stop-button')).toBeDisabled()
+  })
+
+  it('shows both stop and send buttons when waiting for background tasks', () => {
+    render(<ComposerActionButton {...baseProps} isActive isWaitingBackground />)
+    expect(screen.getByTestId('stop-button')).toBeInTheDocument()
+    expect(screen.getByTestId('send-button')).toBeInTheDocument()
+  })
+
+  it('send button is enabled when waiting for background with canSubmit', () => {
+    render(<ComposerActionButton {...baseProps} isActive isWaitingBackground canSubmit />)
+    expect(screen.getByTestId('send-button')).not.toBeDisabled()
+  })
+
+  it('stop button calls onInterrupt when waiting for background', async () => {
+    const onInterrupt = vi.fn()
+    const user = userEvent.setup()
+    render(<ComposerActionButton {...baseProps} isActive isWaitingBackground onInterrupt={onInterrupt} />)
+    await user.click(screen.getByTestId('stop-button'))
+    expect(onInterrupt).toHaveBeenCalledTimes(1)
   })
 })

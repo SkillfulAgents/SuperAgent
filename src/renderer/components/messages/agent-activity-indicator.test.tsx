@@ -24,6 +24,7 @@ const mockStreamState = {
   activeSubagents: [] as any[],
   completedSubagents: null as Set<string> | null,
   slashCommands: [],
+  backgroundTasks: [] as Array<{ taskId: string; startedAt: number }>,
 }
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
@@ -63,6 +64,7 @@ describe('AgentActivityIndicator', () => {
       pendingRemoteMcpRequests: [],
       pendingBrowserInputRequests: [],
       isCompacting: false,
+      backgroundTasks: [],
     })
     mockMessages.length = 0
   })
@@ -562,5 +564,37 @@ describe('AgentActivityIndicator', () => {
 
     expect(screen.getByText('New task item')).toBeInTheDocument()
     expect(screen.queryByText('Old todo item')).not.toBeInTheDocument()
+  })
+
+  it('shows background process count when background tasks are running', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.backgroundTasks = [
+      { taskId: 'bg-1', startedAt: Date.now() - 5000 },
+    ]
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByText('1 background process')).toBeInTheDocument()
+  })
+
+  it('shows plural "processes" for multiple background tasks', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.backgroundTasks = [
+      { taskId: 'bg-1', startedAt: Date.now() - 5000 },
+      { taskId: 'bg-2', startedAt: Date.now() - 3000 },
+    ]
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByText('2 background processes')).toBeInTheDocument()
+  })
+
+  it('does not show background section when no background tasks', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.backgroundTasks = []
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.queryByText(/background process/)).not.toBeInTheDocument()
   })
 })

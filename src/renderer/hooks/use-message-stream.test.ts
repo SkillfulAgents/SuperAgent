@@ -2206,4 +2206,228 @@ describe('useMessageStream', () => {
     const sub = result.current.activeSubagents.find(s => s.parentToolId === 'pt-1')
     expect(sub?.resultText).toBeNull()
   })
+
+  // ============================================================================
+  // Background Bash task events
+  // ============================================================================
+
+  it('tracks background tasks from SSE events', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+
+    expect(result.current.backgroundTasks).toEqual([])
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'background_task_started',
+        taskId: 'bg-1',
+        startedAt: 1000,
+      })
+    })
+
+    expect(result.current.backgroundTasks).toEqual([{ taskId: 'bg-1', startedAt: 1000 }])
+
+    // Add second task
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'background_task_started',
+        taskId: 'bg-2',
+        startedAt: 2000,
+      })
+    })
+
+    expect(result.current.backgroundTasks).toHaveLength(2)
+
+    // Complete first task
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'background_task_completed',
+        taskId: 'bg-1',
+      })
+    })
+
+    expect(result.current.backgroundTasks).toEqual([{ taskId: 'bg-2', startedAt: 2000 }])
+  })
+
+  it('restores background tasks from connected event', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'connected',
+        isActive: true,
+        backgroundTasks: [{ taskId: 'bg-restore', startedAt: 500 }],
+      })
+    })
+
+    expect(result.current.backgroundTasks).toEqual([{ taskId: 'bg-restore', startedAt: 500 }])
+  })
+
+  it('clears background tasks on session_idle', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'background_task_started',
+        taskId: 'bg-1',
+        startedAt: 1000,
+      })
+    })
+
+    expect(result.current.backgroundTasks).toHaveLength(1)
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_idle' })
+    })
+
+    expect(result.current.backgroundTasks).toEqual([])
+  })
+
+  it('preserves background tasks across session_active', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'background_task_started',
+        taskId: 'bg-1',
+        startedAt: 1000,
+      })
+    })
+
+    expect(result.current.backgroundTasks).toHaveLength(1)
+
+    // New turn starts — background tasks should be preserved
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_active' })
+    })
+
+    expect(result.current.backgroundTasks).toEqual([{ taskId: 'bg-1', startedAt: 1000 }])
+  })
+
+  it('sets isWaitingBackground on session_waiting_background event', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+
+    expect(result.current.isWaitingBackground).toBe(false)
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'session_waiting_background',
+        backgroundTaskCount: 1,
+      })
+    })
+
+    expect(result.current.isWaitingBackground).toBe(true)
+    expect(result.current.isActive).toBe(true)
+  })
+
+  it('clears isWaitingBackground on session_active', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_waiting_background' })
+    })
+
+    expect(result.current.isWaitingBackground).toBe(true)
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_active' })
+    })
+
+    expect(result.current.isWaitingBackground).toBe(false)
+  })
+
+  it('clears isWaitingBackground on stream_start (new turn)', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_waiting_background' })
+    })
+
+    expect(result.current.isWaitingBackground).toBe(true)
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'stream_start' })
+    })
+
+    expect(result.current.isWaitingBackground).toBe(false)
+  })
+
+  it('restores isWaitingBackground from connected event with backgroundTasks', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'connected',
+        isActive: true,
+        backgroundTasks: [{ taskId: 'bg-1', startedAt: 500 }],
+      })
+    })
+
+    expect(result.current.isWaitingBackground).toBe(true)
+  })
+
+  it('does not set isWaitingBackground from connected event without backgroundTasks', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+
+    expect(result.current.isWaitingBackground).toBe(false)
+  })
 })

@@ -1648,11 +1648,13 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
           messagePersister.setSlashCommands(sessionId, slashCommands)
         }
       }
+      const backgroundTasks = messagePersister.getActiveBackgroundTasks(sessionId)
       await stream.writeSSE({
         data: JSON.stringify({
           type: 'connected',
           isActive,
           slashCommands: slashCommands.length > 0 ? slashCommands : undefined,
+          backgroundTasks: backgroundTasks.length > 0 ? backgroundTasks : undefined,
         }),
         event: 'message',
       })

@@ -25,7 +25,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     isActive, error, apiErrorCode, activeStartTime, isCompacting, activeSubagents, completedSubagents,
     pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests,
     pendingFileRequests, pendingRemoteMcpRequests, pendingBrowserInputRequests,
-    apiRetry, computerUseApp, computerUseAppIcon,
+    apiRetry, computerUseApp, computerUseAppIcon, backgroundTasks,
   } = useMessageStream(sessionId, agentSlug)
 
   const [revoking, setRevoking] = useState(false)
@@ -274,6 +274,11 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
           </ul>
         )}
 
+        {/* Active background processes */}
+        {backgroundTasks.length > 0 && (
+          <BackgroundTasksSection tasks={backgroundTasks} />
+        )}
+
         {/* Todo list if available and at least one item is not completed */}
         {todos && todos.length > 0 && todos.some((t) => t.status !== 'completed') && (() => {
           const MAX_VISIBLE = 5
@@ -346,6 +351,27 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
             </ul>
           )
         })()}
+      </div>
+    </div>
+  )
+}
+
+function BackgroundTasksSection({ tasks }: { tasks: Array<{ taskId: string; startedAt: number }> }) {
+  const earliest = Math.min(...tasks.map(t => t.startedAt))
+  const elapsed = useElapsedTimer(new Date(earliest))
+  return (
+    <div className="mt-2 text-sm pl-5">
+      <div className="flex items-center gap-2">
+        <span className="relative flex h-2 w-2 shrink-0">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+          <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+        </span>
+        <span className="text-xs text-muted-foreground">
+          {tasks.length} background {tasks.length === 1 ? 'process' : 'processes'}
+        </span>
+        {elapsed && (
+          <span className="text-xs text-muted-foreground tabular-nums">{elapsed}</span>
+        )}
       </div>
     </div>
   )

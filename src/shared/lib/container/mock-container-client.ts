@@ -684,6 +684,231 @@ export class XAgentReviewScenario implements MockScenario {
 }
 
 /**
+ * Background Bash scenario — simulates a Bash tool call with run_in_background: true.
+ * The SDK returns an immediate tool result with backgroundTaskId, the agent finishes
+ * its turn, then after a delay a task-notification arrives and the agent responds.
+ */
+export class BackgroundBashScenario implements MockScenario {
+  constructor(
+    private delayMs: number = 2000,
+    private commandOutput: string = 'done sleeping',
+  ) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    let delay = 10
+    const toolId = `tool_bash_${Date.now()}`
+    const bgTaskId = `bg_${Date.now().toString(36)}`
+
+    // Start assistant message
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_start' } },
+      })
+    }, delay)
+    delay += 10
+
+    // Tool use start: Bash
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: {
+          type: 'stream_event',
+          event: {
+            type: 'content_block_start',
+            content_block: { type: 'tool_use', id: toolId, name: 'Bash' },
+          },
+        },
+      })
+    }, delay)
+    delay += 10
+
+    // Tool input delta
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: {
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            delta: { type: 'input_json_delta', partial_json: JSON.stringify({ command: 'sleep 10 && echo done', run_in_background: true }) },
+          },
+        },
+      })
+    }, delay)
+    delay += 20
+
+    // Tool use stop
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+      })
+    }, delay)
+    delay += 10
+
+    // Tool result with backgroundTaskId
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'user',
+        content: {
+          type: 'user',
+          tool_use_result: { backgroundTaskId: bgTaskId, stdout: '', stderr: '', interrupted: false, isImage: false },
+          message: {
+            content: [{
+              type: 'tool_result',
+              tool_use_id: toolId,
+              content: `Command running in background with ID: ${bgTaskId}. Output is being written to: /tmp/tasks/${bgTaskId}.output.`,
+            }],
+          },
+        },
+      })
+    }, delay)
+    delay += 20
+
+    // Agent streams a text response
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
+      })
+    }, delay)
+    delay += 10
+
+    const responseText = `Started background task ${bgTaskId}.`
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: responseText } } },
+      })
+    }, delay)
+    delay += 10
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+      })
+    }, delay)
+    delay += 10
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_stop' } },
+      })
+    }, delay)
+    delay += 10
+
+    // Write JSONL and emit result (agent turn ends, but bg task is still running)
+    const firstResultDelay = delay
+    setTimeout(() => {
+      client.writeJsonlEntry(sessionId, {
+        type: 'user',
+        message: { content: userMessage },
+        timestamp: new Date().toISOString(),
+      })
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: { content: [
+          { type: 'tool_use', id: toolId, name: 'Bash', input: { command: 'sleep 10 && echo done', run_in_background: true } },
+          { type: 'text', text: responseText },
+        ] },
+        timestamp: new Date().toISOString(),
+      })
+      client.writeJsonlEntry(sessionId, {
+        type: 'user',
+        toolUseResult: { backgroundTaskId: bgTaskId, stdout: '', stderr: '', interrupted: false, isImage: false },
+        message: { content: [{ type: 'tool_result', tool_use_id: toolId, content: `Command running in background with ID: ${bgTaskId}.` }] },
+        timestamp: new Date().toISOString(),
+      })
+
+      client.emitStreamMessage(sessionId, {
+        type: 'result',
+        content: { type: 'result', subtype: 'success' },
+      })
+    }, firstResultDelay)
+
+    // After delay, task-notification arrives (background command finished)
+    // The SDK delivers this as a system message with task_id and status fields.
+    const notificationDelay = firstResultDelay + this.delayMs
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'system',
+        content: {
+          type: 'system',
+          subtype: 'task_completed',
+          task_id: bgTaskId,
+          tool_use_id: toolId,
+          status: 'completed',
+          output_file: `/tmp/tasks/${bgTaskId}.output`,
+          summary: 'Background command completed (exit code 0)',
+          session_id: sessionId,
+        },
+      })
+    }, notificationDelay)
+
+    // Agent processes the notification — reads the output and responds
+    const finalDelay = notificationDelay + 50
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_start' } },
+      })
+    }, finalDelay)
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
+      })
+    }, finalDelay + 10)
+
+    const finalText = `Background command completed. Output: ${this.commandOutput}`
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: finalText } } },
+      })
+    }, finalDelay + 20)
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+      })
+    }, finalDelay + 30)
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_stop' } },
+      })
+    }, finalDelay + 40)
+
+    // Write JSONL and final result
+    setTimeout(() => {
+      client.writeJsonlEntry(sessionId, {
+        type: 'user',
+        origin: { kind: 'task-notification' },
+        message: { content: `<task-notification>\n<task-id>${bgTaskId}</task-id>\n<status>completed</status>\n</task-notification>` },
+        timestamp: new Date().toISOString(),
+      })
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: finalText }] },
+        timestamp: new Date().toISOString(),
+      })
+
+      client.emitStreamMessage(sessionId, {
+        type: 'result',
+        content: { type: 'result', subtype: 'success' },
+      })
+    }, finalDelay + 50)
+  }
+}
+
+/**
  * Mock implementation of ContainerClient for E2E testing.
  * Simulates container behavior without requiring Docker/Podman.
  */
@@ -709,6 +934,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       'file1.txt\nfile2.txt\nfolder/',
       'I found the following files in the current directory.'
     )],
+    // Register a background bash scenario for testing background task tracking
+    ['run background', new BackgroundBashScenario(2000, 'done sleeping')],
     // Register a slow response scenario for cross-session tests
     ['slow response', new DelayedTextResponseScenario(
       'This is a delayed mock response.',
