@@ -2994,4 +2994,245 @@ describe('MessagePersister', () => {
       expect(subscribeSpy).toHaveBeenCalledTimes(1)
     })
   })
+
+  // ============================================================================
+  // Background Bash task tracking
+  // ============================================================================
+
+  describe('background Bash task tracking', () => {
+    it('detects backgroundTaskId from tool_use_result and broadcasts start event', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'abc123' },
+        message: {
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'tool-bash-1',
+            content: 'Command running in background with ID: abc123.',
+          }],
+        },
+      })
+
+      const startEvents = sseEvents.filter(e => e.type === 'background_task_started')
+      expect(startEvents).toHaveLength(1)
+      expect(startEvents[0].taskId).toBe('abc123')
+      expect(startEvents[0].startedAt).toBeTypeOf('number')
+    })
+
+    it('keeps isActive true when result arrives with pending background tasks', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      // Inject a background task
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-1' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running in background' }] },
+      })
+
+      // Agent turn ends
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+      })
+
+      // Session should still be active
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+    })
+
+    it('broadcasts session_waiting_background instead of session_idle when bg tasks pending', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-1' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+      })
+
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+      })
+
+      const waitingEvents = sseEvents.filter(e => e.type === 'session_waiting_background')
+      expect(waitingEvents).toHaveLength(1)
+      expect(waitingEvents[0].backgroundTaskCount).toBe(1)
+
+      // Should NOT have session_idle
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(0)
+    })
+
+    it('clears background task on system task-completion and goes idle', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      // Start background task
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-1' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+      })
+
+      // Agent turn ends (stays active due to bg task)
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+      })
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+
+      sseEvents.length = 0
+
+      // SDK delivers task completion as a system message with task_id and status
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_completed',
+        task_id: 'bg-1',
+        tool_use_id: 'tool-1',
+        status: 'completed',
+        summary: 'Background command completed (exit code 0)',
+      })
+
+      const completedEvents = sseEvents.filter(e => e.type === 'background_task_completed')
+      expect(completedEvents).toHaveLength(1)
+      expect(completedEvents[0].taskId).toBe('bg-1')
+
+      // Now when the next result arrives, session should go idle
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+      })
+
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
+    })
+
+    it('tracks multiple concurrent background tasks', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-1' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+      })
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-2' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-2', content: 'Running' }] },
+      })
+
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)).toHaveLength(2)
+
+      // Complete first task via system message
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_completed',
+        task_id: 'bg-1',
+        status: 'completed',
+      })
+
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)).toHaveLength(1)
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)[0].taskId).toBe('bg-2')
+    })
+
+    it('clears background tasks on session interrupt', async () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-1' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+      })
+
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)).toHaveLength(1)
+
+      await messagePersister.markSessionInterrupted(SESSION_ID)
+
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)).toHaveLength(0)
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+    })
+
+    it('does not duplicate background task on repeated tool_use_result', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      // Same backgroundTaskId twice
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-dup' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+      })
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-dup' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-2', content: 'Running' }] },
+      })
+
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)).toHaveLength(1)
+    })
+
+    it('preserves background tasks across re-subscribe', async () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-persist' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+      })
+
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)).toHaveLength(1)
+
+      // Re-subscribe (simulates reconnection)
+      const newClient = createMockClient()
+      await messagePersister.subscribeToSession(SESSION_ID, newClient, SESSION_ID, AGENT_SLUG)
+
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)).toHaveLength(1)
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+
+      // Clean up the new subscription
+      messagePersister.unsubscribeFromSession(SESSION_ID)
+    })
+
+    it('returns empty array for unknown session', () => {
+      expect(messagePersister.getActiveBackgroundTasks('nonexistent')).toEqual([])
+    })
+
+    it('ignores system messages with task_id that do not match active bg tasks', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-real' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+      })
+
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)).toHaveLength(1)
+
+      // System message with non-matching task_id
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_completed',
+        task_id: 'bg-nonexistent',
+        status: 'completed',
+      })
+
+      // Should NOT have cleared our task
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)).toHaveLength(1)
+    })
+
+    it('also detects snake_case background_task_id', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { background_task_id: 'snake-1' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+      })
+
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)).toHaveLength(1)
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)[0].taskId).toBe('snake-1')
+    })
+  })
 })

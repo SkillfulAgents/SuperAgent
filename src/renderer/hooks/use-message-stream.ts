@@ -109,6 +109,8 @@ interface StreamState {
   typingUser: { id: string; name?: string } | null // User currently typing (auth mode shared agents)
   peerUserMessage: { content: string; sender: { id: string; name?: string; email?: string } } | null // User message from another user
   apiRetry: ApiRetryInfo | null // Non-null while API is retrying a transient error
+  backgroundTasks: Array<{ taskId: string; startedAt: number }> // Active background Bash commands
+  isWaitingBackground: boolean // True when agent turn ended but background tasks are still running
 }
 
 // Upsert a subagent entry in the array by parentToolId (immutable)
@@ -149,6 +151,8 @@ const EMPTY_STREAM_STATE: StreamState = {
   typingUser: null,
   peerUserMessage: null,
   apiRetry: null,
+  backgroundTasks: [],
+  isWaitingBackground: false,
 }
 
 const streamStates = new Map<string, StreamState>()
@@ -230,6 +234,8 @@ function getOrCreateEventSource(
           typingUser: current?.typingUser ?? null,
           peerUserMessage: current?.peerUserMessage ?? null,
           apiRetry: current?.apiRetry ?? null,
+          backgroundTasks: Array.isArray(data.backgroundTasks) ? data.backgroundTasks : (current?.backgroundTasks ?? []),
+          isWaitingBackground: Array.isArray(data.backgroundTasks) && data.backgroundTasks.length > 0,
         })
         // Fetch current browser status to sync state (handles missed events)
         fetch(`${baseUrl}/api/agents/${agentSlug}/browser/status`)
@@ -274,6 +280,8 @@ function getOrCreateEventSource(
           typingUser: null,
           peerUserMessage: current?.peerUserMessage ?? null,
           apiRetry: null,
+          backgroundTasks: current?.backgroundTasks ?? [],
+          isWaitingBackground: false,
         })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
       }
@@ -315,9 +323,17 @@ function getOrCreateEventSource(
           typingUser: null,
           peerUserMessage: current?.peerUserMessage ?? null,
           apiRetry: current?.apiRetry ?? null,
+          backgroundTasks: [],
+          isWaitingBackground: false,
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
+      }
+      // Agent turn ended but background tasks are still running — allow sending messages
+      else if (data.type === 'session_waiting_background') {
+        if (current) {
+          streamStates.set(sessionId, { ...current, isWaitingBackground: true })
+        }
       }
       else if (data.type === 'session_error') {
         // Session encountered an error
@@ -349,9 +365,29 @@ function getOrCreateEventSource(
           typingUser: null,
           peerUserMessage: current?.peerUserMessage ?? null,
           apiRetry: current?.apiRetry ?? null,
+          backgroundTasks: [],
+          isWaitingBackground: false,
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
+      }
+      // Background Bash task events
+      else if (data.type === 'background_task_started') {
+        if (current) {
+          const existing = current.backgroundTasks.filter(t => t.taskId !== data.taskId)
+          streamStates.set(sessionId, {
+            ...current,
+            backgroundTasks: [...existing, { taskId: data.taskId, startedAt: data.startedAt }],
+          })
+        }
+      }
+      else if (data.type === 'background_task_completed') {
+        if (current) {
+          streamStates.set(sessionId, {
+            ...current,
+            backgroundTasks: current.backgroundTasks.filter(t => t.taskId !== data.taskId),
+          })
+        }
       }
       // Streaming events - update streaming state, preserve isActive
       else if (data.type === 'stream_start') {
@@ -390,6 +426,8 @@ function getOrCreateEventSource(
           typingUser: current?.typingUser ?? null,
           peerUserMessage: current?.peerUserMessage ?? null,
           apiRetry: null, // Clear retry state — API call succeeded
+          backgroundTasks: current?.backgroundTasks ?? [],
+          isWaitingBackground: false,
         })
       }
       else if (data.type === 'stream_delta') {
@@ -419,6 +457,8 @@ function getOrCreateEventSource(
           typingUser: current?.typingUser ?? null,
           peerUserMessage: current?.peerUserMessage ?? null,
           apiRetry: current?.apiRetry ?? null,
+          backgroundTasks: current?.backgroundTasks ?? [],
+          isWaitingBackground: current?.isWaitingBackground ?? false,
         })
       }
       else if (data.type === 'stream_api_error') {
@@ -464,6 +504,8 @@ function getOrCreateEventSource(
           typingUser: current?.typingUser ?? null,
           peerUserMessage: current?.peerUserMessage ?? null,
           apiRetry: current?.apiRetry ?? null,
+          backgroundTasks: current?.backgroundTasks ?? [],
+          isWaitingBackground: current?.isWaitingBackground ?? false,
         })
       }
       else if (data.type === 'tool_use_ready') {
@@ -503,6 +545,8 @@ function getOrCreateEventSource(
           typingUser: current?.typingUser ?? null,
           peerUserMessage: current?.peerUserMessage ?? null,
           apiRetry: current?.apiRetry ?? null,
+          backgroundTasks: current?.backgroundTasks ?? [],
+          isWaitingBackground: current?.isWaitingBackground ?? false,
         })
       }
       else if (data.type === 'user_message') {

@@ -63,6 +63,7 @@ interface StreamingState {
   isAwaitingInput: boolean // True when session is waiting for user input (e.g., secret, file, question)
   pendingComputerUseRequests: Map<string, { toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string; agentSlug?: string }> // Pending computer use requests awaiting user approval (keyed by toolUseId)
   lastApiErrorCode: string | null // SDK error code from last assistant message (e.g., 'authentication_failed', 'rate_limit')
+  activeBackgroundTasks: Map<string, { startedAt: number }> // Background Bash commands still running (keyed by task ID)
 }
 
 // Lazy import to break circular dependency: container-manager -> message-persister
@@ -128,6 +129,7 @@ class MessagePersister {
     const prior = this.streamingStates.get(sessionId)
     const priorIsActive = prior?.isActive ?? false
     const priorIsAwaitingInput = prior?.isAwaitingInput ?? false
+    const priorBackgroundTasks = prior?.activeBackgroundTasks ?? new Map()
 
     // Unsubscribe if already subscribed (this also clears state, which is why
     // we captured the flags above)
@@ -151,6 +153,7 @@ class MessagePersister {
       isAwaitingInput: priorIsAwaitingInput,
       pendingComputerUseRequests: new Map(),
       lastApiErrorCode: null,
+      activeBackgroundTasks: priorBackgroundTasks,
     })
 
     // Store container client for reconnection checks
@@ -310,6 +313,15 @@ class MessagePersister {
     }
   }
 
+  getActiveBackgroundTasks(sessionId: string): Array<{ taskId: string; startedAt: number }> {
+    const state = this.streamingStates.get(sessionId)
+    if (!state) return []
+    return Array.from(state.activeBackgroundTasks.entries()).map(([taskId, info]) => ({
+      taskId,
+      startedAt: info.startedAt,
+    }))
+  }
+
   // Check if a session has an active subscription
   isSubscribed(sessionId: string): boolean {
     return this.subscriptions.has(sessionId)
@@ -420,6 +432,7 @@ class MessagePersister {
       state.currentToolUse = null
       state.currentToolInput = ''
       state.activeSubagents.clear()
+      state.activeBackgroundTasks.clear()
     }
 
     // Broadcast to session-specific clients
@@ -480,6 +493,7 @@ class MessagePersister {
         isAwaitingInput: false,
         pendingComputerUseRequests: new Map(),
         lastApiErrorCode: null,
+        activeBackgroundTasks: new Map(),
       }
       this.streamingStates.set(sessionId, state)
       if (this.capture && agentSlug) {
@@ -585,6 +599,18 @@ class MessagePersister {
 
     const content = message.content
 
+    // Detect background task completion from system messages BEFORE the sidechain
+    // filter. The SDK delivers task completions as system events with task_id and
+    // status fields, not as user messages.
+    if (content.type === 'system' && state.activeBackgroundTasks.size > 0) {
+      const taskId = content.task_id as string | undefined
+      if (taskId && content.status && state.activeBackgroundTasks.has(taskId)) {
+        state.activeBackgroundTasks.delete(taskId)
+        this.broadcastToSSE(sessionId, { type: 'background_task_completed', taskId })
+        this.broadcastGlobal({ type: 'background_task_completed', sessionId, agentSlug: state.agentSlug, taskId })
+      }
+    }
+
     // Filter sidechain (subagent) messages — they should not affect main streaming state
     // SDK emitted format uses parent_tool_use_id (non-null for subagent messages)
     if (content.parent_tool_use_id != null) {
@@ -670,6 +696,27 @@ class MessagePersister {
                 }
               }
             }
+          }
+        }
+
+        // Detect background Bash task from tool_use_result metadata
+        {
+          const tur = content.tool_use_result as Record<string, unknown> | undefined
+          const bgId = (tur?.backgroundTaskId ?? tur?.background_task_id) as string | undefined
+          if (bgId && typeof bgId === 'string' && !state.activeBackgroundTasks.has(bgId)) {
+            const startedAt = Date.now()
+            state.activeBackgroundTasks.set(bgId, { startedAt })
+            this.broadcastToSSE(sessionId, {
+              type: 'background_task_started',
+              taskId: bgId,
+              startedAt,
+            })
+            this.broadcastGlobal({
+              type: 'background_task_started',
+              sessionId,
+              agentSlug: state.agentSlug,
+              taskId: bgId,
+            })
           }
         }
 
@@ -787,14 +834,26 @@ class MessagePersister {
         break
 
       case 'result': {
-        // Query completed - session is no longer active
+        // Query completed
         state.isStreaming = false
-        state.isActive = false
         state.isAwaitingInput = false
         state.currentText = ''
 
         // Extract and persist context usage from result event
         this.handleResultUsage(sessionId, state, content)
+
+        // If background tasks are still running, keep the session active so
+        // the UI stays in "working" state and auto-sleep is prevented.
+        if (state.activeBackgroundTasks.size > 0) {
+          this.broadcastToSSE(sessionId, {
+            type: 'session_waiting_background',
+            backgroundTaskCount: state.activeBackgroundTasks.size,
+          })
+          break
+        }
+
+        // No pending background tasks — session is no longer active
+        state.isActive = false
 
         // Check if this is an error result
         if (content.subtype === 'error_during_execution' || content.subtype === 'error') {
@@ -924,6 +983,7 @@ class MessagePersister {
     state.currentToolUse = null
     state.currentToolInput = ''
     state.activeSubagents.clear()
+    state.activeBackgroundTasks.clear()
     this.broadcastToSSE(sessionId, { type: 'session_idle', isActive: false })
     this.broadcastGlobal({
       type: 'session_idle',

@@ -3,6 +3,7 @@ import { Button } from '@renderer/components/ui/button'
 
 interface ComposerActionButtonProps {
   isActive: boolean
+  isWaitingBackground: boolean
   canSubmit: boolean
   isSending: boolean
   isInterrupting: boolean
@@ -11,11 +12,51 @@ interface ComposerActionButtonProps {
 
 export function ComposerActionButton({
   isActive,
+  isWaitingBackground,
   canSubmit,
   isSending,
   isInterrupting,
   onInterrupt,
 }: ComposerActionButtonProps) {
+  if (isWaitingBackground) {
+    return (
+      <div className="flex items-center gap-2">
+        <Button
+          type="button"
+          size="icon"
+          variant="outline"
+          className="h-[34px] w-[34px]"
+          onClick={onInterrupt}
+          disabled={isInterrupting}
+          aria-label="Stop background processes"
+          title="Stop background processes"
+          data-testid="stop-button"
+        >
+          {isInterrupting ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Square className="h-3.5 w-3.5 fill-current" />
+          )}
+        </Button>
+        <Button
+          type="submit"
+          size="icon"
+          className="h-[34px] w-[34px]"
+          disabled={!canSubmit || isSending}
+          aria-label="Send message"
+          title="Send message"
+          data-testid="send-button"
+        >
+          {isSending ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <ArrowUp className="h-4 w-4" />
+          )}
+        </Button>
+      </div>
+    )
+  }
+
   if (isActive) {
     return (
       <Button
