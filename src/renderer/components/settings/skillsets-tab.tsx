@@ -120,8 +120,6 @@ export function SkillsetsTab() {
           skillsets.map((ss) => (
             <div
               key={ss.id}
-              data-testid="skillset-row"
-              data-skillset-id={ss.id}
               className="flex items-start gap-3 p-3 rounded-lg border bg-card"
             >
               <Library className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />

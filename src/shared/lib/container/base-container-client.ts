@@ -238,12 +238,6 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return isConnectionError(err)
   }
 
-  private emitClientError(error: Error): void {
-    if (this.listenerCount('error') > 0) {
-      this.emit('error', error)
-    }
-  }
-
   /**
    * Handle a connection error - notify via callback if configured.
    */
@@ -608,7 +602,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       console.log(`Stopped container ${containerName}`)
     } catch (error: any) {
       console.error('Failed to stop container:', error)
-      this.emitClientError(error)
+      this.emit('error', error)
       throw error
     }
 
@@ -996,7 +990,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         // Only log and emit if this connection is still tracked (not cleaned up by stop())
         if (this.wsConnections.has(sessionId)) {
           console.error(`WebSocket error for session ${sessionId}:`, error)
-          this.emitClientError(error instanceof Error ? error : new Error(String(error)))
+          this.emit('error', error)
         }
         rejectReady(error instanceof Error ? error : new Error(String(error)))
       })
@@ -1020,7 +1014,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
     setupWebSocket().catch((error) => {
       console.error('Failed to set up WebSocket:', error)
-      this.emitClientError(error instanceof Error ? error : new Error(String(error)))
+      this.emit('error', error)
       rejectReady(error instanceof Error ? error : new Error(String(error)))
     })
 
