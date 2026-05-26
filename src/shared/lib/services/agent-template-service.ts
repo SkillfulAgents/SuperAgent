@@ -34,17 +34,14 @@ import {
   getSkillsetIndex,
   getSkillsetRepoDir,
   refreshSkillset,
-  parseSkillFrontmatter,
 } from '@shared/lib/services/skillset-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import { createAgentFromExistingWorkspace, getAgentWithStatus, listAgents } from '@shared/lib/services/agent-service'
-import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import type {
   SkillsetConfig,
   InstalledAgentMetadata,
   AgentTemplateStatus,
   DiscoverableAgent,
-  RequiredEnvVar,
   SkillProvider,
 } from '@shared/lib/types/skillset'
 import type { ApiAgent } from '@shared/lib/types/api'
@@ -702,48 +699,6 @@ export async function hasOnboardingSkill(agentSlug: string): Promise<boolean> {
     return true
   } catch {
     return false
-  }
-}
-
-/**
- * Scan all skills in an agent workspace and collect required_env_vars from SKILL.md frontmatter.
- * De-duplicates by env var name.
- */
-export async function collectAgentRequiredEnvVars(
-  agentSlug: string,
-  options?: { excludeExistingSecrets?: boolean },
-): Promise<RequiredEnvVar[]> {
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
-  const skillsDir = path.join(workspaceDir, '.claude', 'skills')
-
-  try {
-    const entries = await fs.promises.readdir(skillsDir, { withFileTypes: true })
-    const allEnvVars = new Map<string, RequiredEnvVar>()
-
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue
-      const skillMdPath = path.join(skillsDir, entry.name, 'SKILL.md')
-      const content = await readFileOrNull(skillMdPath)
-      if (!content) continue
-
-      const frontmatter = parseSkillFrontmatter(content)
-      if (frontmatter.required_env_vars) {
-        for (const envVar of frontmatter.required_env_vars) {
-          allEnvVars.set(envVar.name, envVar)
-        }
-      }
-    }
-
-    let requiredEnvVars = Array.from(allEnvVars.values())
-
-    if (options?.excludeExistingSecrets) {
-      const existingEnvVars = new Set(await getSecretEnvVars(agentSlug))
-      requiredEnvVars = requiredEnvVars.filter((envVar) => !existingEnvVars.has(envVar.name))
-    }
-
-    return requiredEnvVars
-  } catch {
-    return []
   }
 }
 

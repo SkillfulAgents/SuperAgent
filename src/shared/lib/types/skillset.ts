@@ -71,17 +71,10 @@ export interface InstalledSkillMetadata {
 // SKILL.md Frontmatter Metadata
 // ============================================================================
 
-/** A required environment variable declared in SKILL.md frontmatter */
-export interface RequiredEnvVar {
-  name: string
-  description: string
-}
-
 /** Parsed metadata section from SKILL.md frontmatter */
 export interface SkillFrontmatterMetadata {
   name?: string
   version?: string
-  required_env_vars?: RequiredEnvVar[]
 }
 
 // ============================================================================
@@ -134,7 +127,6 @@ export interface DiscoverableSkill {
   description: string
   version: string
   path: string // path within skillset repo
-  requiredEnvVars?: RequiredEnvVar[]
 }
 
 // ============================================================================

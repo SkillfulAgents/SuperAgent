@@ -58,12 +58,6 @@ const SKILLSET_INDEX = {
       description: 'A plain skill that needs no configuration',
       version: '1.0.0',
     },
-    {
-      name: 'e2e-env-skill',
-      path: 'skills/e2e-env-skill/SKILL.md',
-      description: 'A skill that requires an API key to run',
-      version: '1.0.0',
-    },
   ],
 }
 fs.writeFileSync(
@@ -85,26 +79,6 @@ metadata:
 # E2E Plain Skill
 
 This skill is seeded for end-to-end tests.
-`,
-)
-
-const ENV_SKILL_DIR = path.join(SKILLSET_REPO_DIR, 'skills', 'e2e-env-skill')
-fs.mkdirSync(ENV_SKILL_DIR, { recursive: true })
-fs.writeFileSync(
-  path.join(ENV_SKILL_DIR, 'SKILL.md'),
-  `---
-name: e2e-env-skill
-description: A skill that requires an API key to run
-metadata:
-  version: 1.0.0
-  required_env_vars:
-    - name: E2E_TEST_API_KEY
-      description: Fake API key for E2E tests
----
-
-# E2E Env Skill
-
-This skill requires an environment variable to be configured.
 `,
 )
 

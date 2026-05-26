@@ -248,7 +248,6 @@ export interface ApiDiscoverableSkill {
   description: string
   version: string
   path: string
-  requiredEnvVars?: Array<{ name: string; description: string }>
 }
 
 /**

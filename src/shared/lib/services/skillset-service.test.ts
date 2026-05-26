@@ -1033,25 +1033,6 @@ metadata:
       expect(parseSkillFrontmatter(content).version).toBe('1.2.3')
     })
 
-    it('parses required_env_vars from metadata section', () => {
-      const content = `---
-metadata:
-  version: "1.0.0"
-  required_env_vars:
-    - name: API_KEY
-      description: The API key
-    - name: SECRET
-      description: Auth token
----
-
-# Skill`
-      const result = parseSkillFrontmatter(content)
-      expect(result.required_env_vars).toEqual([
-        { name: 'API_KEY', description: 'The API key' },
-        { name: 'SECRET', description: 'Auth token' },
-      ])
-    })
-
     it('returns empty object for invalid YAML', () => {
       const content = `---
   invalid: yaml: content: [broken
@@ -1071,23 +1052,6 @@ metadata:
       expect(parseSkillFrontmatter(content)).toEqual({})
     })
 
-    it('filters out invalid required_env_vars entries', () => {
-      const content = `---
-metadata:
-  required_env_vars:
-    - name: VALID
-      description: Valid entry
-    - just_a_string
-    - name: ALSO_VALID
-      description: Another valid
----
-
-# Skill`
-      const result = parseSkillFrontmatter(content)
-      expect(result.required_env_vars).toHaveLength(2)
-      expect(result.required_env_vars![0].name).toBe('VALID')
-      expect(result.required_env_vars![1].name).toBe('ALSO_VALID')
-    })
   })
 
   describe('contentHash', () => {
@@ -1350,80 +1314,6 @@ just a string
       expect(parseSkillFrontmatter(content)).toEqual({})
     })
 
-    it('handles metadata with empty required_env_vars array', () => {
-      const content = `---
-metadata:
-  version: "1.0.0"
-  required_env_vars: []
----
-
-# Skill`
-      const result = parseSkillFrontmatter(content)
-      expect(result.version).toBe('1.0.0')
-      expect(result.required_env_vars).toEqual([])
-    })
-
-    it('handles required_env_vars entry with missing description', () => {
-      const content = `---
-metadata:
-  version: "1.0.0"
-  required_env_vars:
-    - name: MY_VAR
----
-
-# Skill`
-      const result = parseSkillFrontmatter(content)
-      expect(result.required_env_vars).toEqual([
-        { name: 'MY_VAR', description: '' },
-      ])
-    })
-
-    it('filters out null entries in required_env_vars', () => {
-      const content = `---
-metadata:
-  required_env_vars:
-    - name: VALID
-      description: Good
-    -
-    - name: ALSO_VALID
-      description: Also good
----
-
-# Skill`
-      const result = parseSkillFrontmatter(content)
-      // The null entry should be filtered out (falsy check)
-      expect(result.required_env_vars).toHaveLength(2)
-    })
-
-    it('filters out entries without name property in required_env_vars', () => {
-      const content = `---
-metadata:
-  required_env_vars:
-    - description: Only description, no name
-    - name: HAS_NAME
-      description: Has both
----
-
-# Skill`
-      const result = parseSkillFrontmatter(content)
-      expect(result.required_env_vars).toHaveLength(1)
-      expect(result.required_env_vars![0].name).toBe('HAS_NAME')
-    })
-
-    it('converts non-string name/description to strings in required_env_vars', () => {
-      const content = `---
-metadata:
-  required_env_vars:
-    - name: 123
-      description: true
----
-
-# Skill`
-      const result = parseSkillFrontmatter(content)
-      expect(result.required_env_vars![0].name).toBe('123')
-      expect(result.required_env_vars![0].description).toBe('true')
-    })
-
     it('does not return version when metadata section exists but has no version key', () => {
       const content = `---
 metadata:
@@ -1479,9 +1369,6 @@ metadata:
   tags:
     - ai
     - automation
-  required_env_vars:
-    - name: API_KEY
-      description: Main API key
 ---
 
 # Complex Skill
@@ -1489,9 +1376,6 @@ Instructions here.`
       const result = parseSkillFrontmatter(content)
       expect(result.name).toBe('Complex Skill')
       expect(result.version).toBe('2.0.0')
-      expect(result.required_env_vars).toEqual([
-        { name: 'API_KEY', description: 'Main API key' },
-      ])
     })
 
     it('handles version: 0 (falsy but defined)', () => {
@@ -1505,20 +1389,6 @@ metadata:
       expect(parseSkillFrontmatter(content).version).toBe('0')
     })
 
-    it('handles required_env_vars that is not an array (e.g. object)', () => {
-      const content = `---
-metadata:
-  version: "1.0.0"
-  required_env_vars:
-    API_KEY: some key
----
-
-# Skill`
-      const result = parseSkillFrontmatter(content)
-      // Array.isArray check fails, so required_env_vars not set
-      expect(result.version).toBe('1.0.0')
-      expect(result.required_env_vars).toBeUndefined()
-    })
   })
 
   // --------------------------------------------------------------------------
@@ -2261,21 +2131,6 @@ metadata:
 Do something useful.
 `
 
-  const SKILL_MD_WITH_ENV = `---
-name: Env Skill
-metadata:
-  version: "1.0.0"
-  required_env_vars:
-    - name: API_KEY
-      description: The API key
-    - name: SECRET
-      description: A secret value
----
-# Env Skill
-
-Needs env vars.
-`
-
   const SKILL_MD_NO_NAME = `---
 metadata:
   version: "1.0.0"
@@ -2449,26 +2304,11 @@ metadata:
 
       expect(result.skillDir).toBe('test-skill')
       expect(result.skillName).toBe('Test Skill')
-      expect(result.requiredEnvVars).toBeUndefined()
 
       // Verify file was extracted
       const skillMdPath = path.join(agentDir, '.claude', 'skills', 'test-skill', 'SKILL.md')
       expect(fs.existsSync(skillMdPath)).toBe(true)
       expect(fs.readFileSync(skillMdPath, 'utf-8')).toBe(MINIMAL_SKILL_MD)
-    })
-
-    it('returns required env vars from frontmatter', async () => {
-      const agentSlug = 'env-agent'
-      fs.mkdirSync(path.join(testDir, 'agents', agentSlug, 'workspace'), { recursive: true })
-
-      const buf = await makeSkillZip({ 'SKILL.md': SKILL_MD_WITH_ENV })
-      const result = await importSkillFromZip(agentSlug, buf)
-
-      expect(result.skillName).toBe('Env Skill')
-      expect(result.requiredEnvVars).toEqual([
-        { name: 'API_KEY', description: 'The API key' },
-        { name: 'SECRET', description: 'A secret value' },
-      ])
     })
 
     it('derives safe directory name from skill name', async () => {
