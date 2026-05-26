@@ -1294,7 +1294,6 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     const agentSlug = c.req.param('id')
     const sessionId = c.req.param('sessionId')
 
-
     const messages = await getSessionMessagesWithCompact(agentSlug, sessionId)
     const filtered = messages.filter((m) => !('isMeta' in m && m.isMeta))
     const transformed = transformMessages(filtered)

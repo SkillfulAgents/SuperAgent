@@ -54,6 +54,7 @@ function toApiAgent(
     createdAt: new Date(agent.frontmatter.createdAt),
     status,
     containerPort,
+    runtime: process.env.REMOTE_RUNTIME === 'kubernetes' || process.env.GAMUT_CLOUD_WORKSPACE_ROOT ? 'cloud' : 'local',
     ...(healthWarnings.length > 0 ? { healthWarnings } : {}),
   }
 }

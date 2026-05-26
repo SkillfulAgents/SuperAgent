@@ -23,6 +23,7 @@ export interface ApiAgent {
   createdAt: Date
   status: 'running' | 'stopped'
   containerPort: number | null
+  runtime?: 'local' | 'cloud'
   healthWarnings?: HealthCheckResult[]
   templateStatus?: ApiAgentTemplateStatus
   // Summary fields (included in list response)

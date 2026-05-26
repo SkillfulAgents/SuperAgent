@@ -194,6 +194,30 @@ function getOrCreateEventSource(
     try {
       const data = JSON.parse(event.data)
       const current = streamStates.get(sessionId)
+      if (import.meta.env.DEV && [
+        'connected',
+        'session_active',
+        'session_idle',
+        'session_error',
+        'stream_start',
+        'stream_delta',
+        'stream_api_error',
+        'session_updated',
+      ].includes(data.type)) {
+        console.log('[MessageStream debug]', {
+          agentSlug,
+          sessionId,
+          type: data.type,
+          dataSessionId: data.sessionId,
+          text: data.text,
+          error: data.error,
+          current: current ? {
+            isActive: current.isActive,
+            isStreaming: current.isStreaming,
+            streamingMessage: current.streamingMessage,
+          } : null,
+        })
+      }
 
       // Only session_active and session_idle events change isActive
       // All other events preserve the current isActive value

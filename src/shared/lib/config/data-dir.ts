@@ -39,6 +39,11 @@ export function getAgentsDataDir(): string {
  * Get the workspace directory for a specific agent.
  */
 export function getAgentWorkspaceDir(agentId: string): string {
+  const cloudWorkspaceRoot = process.env.GAMUT_CLOUD_WORKSPACE_ROOT
+  if (cloudWorkspaceRoot) {
+    return path.join(path.resolve(cloudWorkspaceRoot), agentId)
+  }
+
   return path.join(getAgentsDataDir(), agentId, 'workspace')
 }
 

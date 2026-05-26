@@ -12,7 +12,24 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/messages`)
       if (!res.ok) throw new Error('Failed to fetch messages')
-      return res.json()
+      const data = await res.json()
+      if (import.meta.env.DEV) {
+        console.log('[useMessages debug]', {
+          agentSlug,
+          sessionId,
+          count: Array.isArray(data) ? data.length : null,
+          messages: Array.isArray(data)
+            ? data.map((m) => ({
+              id: m.id,
+              type: m.type,
+              text: m.type === 'user' || m.type === 'assistant'
+                ? (m.content as { text?: string } | undefined)?.text
+                : undefined,
+            }))
+            : data,
+        })
+      }
+      return data
     },
     enabled: !!sessionId && !!agentSlug,
     // Refetch periodically to catch any messages we might have missed

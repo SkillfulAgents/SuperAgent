@@ -158,12 +158,9 @@ function parseSessionInfo(
   // Generate name from first user message if no custom name
   let name = metadata?.name || 'New Session'
   if (!metadata?.name && messages.length > 0) {
-    const firstUserMessage = messages.find(
-      (m) => m.type === 'user' && typeof m.message.content === 'string'
-    )
-    if (firstUserMessage && typeof firstUserMessage.message.content === 'string') {
-      // Use first 50 chars of first message as name
-      const content = firstUserMessage.message.content
+    const firstUserMessage = messages.find((m) => m.type === 'user')
+    const content = firstUserMessage ? getMessageText(firstUserMessage) : ''
+    if (content) {
       name = content.substring(0, 50).trim()
       if (content.length > 50) {
         name += '...'
@@ -179,6 +176,16 @@ function parseSessionInfo(
     lastActivityAt,
     messageCount: messages.length,
   }
+}
+
+function getMessageText(entry: JsonlMessageEntry): string {
+  const content = entry.message.content
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .map((block) => block.type === 'text' ? block.text : '')
+    .join('')
+    .trim()
 }
 
 // ============================================================================
@@ -282,14 +289,24 @@ export async function listSessions(
         continue
       }
 
-      sessions.push({
-        id: sessionId,
-        agentSlug,
-        name: metadata[sessionId]?.name || 'New Session',
-        createdAt: stat.birthtime,
-        lastActivityAt: new Date(stat.mtimeMs),
-        messageCount: 0,
-      })
+      if (process.env.GAMUT_CLOUD_WORKSPACE_ROOT) {
+        const entries = await readJsonlFile<JsonlEntry>(path.join(sessionsDir, `${sessionId}.jsonl`))
+        const parsed = parseSessionInfo(sessionId, agentSlug, entries, metadata[sessionId])
+        sessions.push({
+          ...parsed,
+          createdAt: parsed.createdAt.getTime() > 0 ? parsed.createdAt : new Date(stat.mtimeMs),
+          lastActivityAt: parsed.lastActivityAt.getTime() > 0 ? parsed.lastActivityAt : new Date(stat.mtimeMs),
+        })
+      } else {
+        sessions.push({
+          id: sessionId,
+          agentSlug,
+          name: metadata[sessionId]?.name || 'New Session',
+          createdAt: stat.birthtime,
+          lastActivityAt: new Date(stat.mtimeMs),
+          messageCount: 0,
+        })
+      }
     }
   }
 
@@ -328,12 +345,23 @@ export async function getSession(
   sessionId: string
 ): Promise<SessionInfo | null> {
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  const metadata = await getSessionMetadata(agentSlug, sessionId)
 
   if (!(await fileExists(jsonlPath))) {
+    if (metadata?.createdAt) {
+      const createdAt = new Date(metadata.createdAt)
+      return {
+        id: sessionId,
+        agentSlug,
+        name: metadata.name || 'New Session',
+        createdAt,
+        lastActivityAt: createdAt,
+        messageCount: 0,
+      }
+    }
     return null
   }
 
-  const metadata = await getSessionMetadata(agentSlug, sessionId)
   const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
 
   return parseSessionInfo(sessionId, agentSlug, entries, metadata || undefined)

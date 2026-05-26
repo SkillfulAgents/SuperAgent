@@ -41,6 +41,7 @@ const RUNNER_LABELS: Record<string, string> = {
   podman: 'Podman',
   lima: 'Built-in Runtime',
   wsl2: 'Built-in Runtime',
+  kubernetes: 'Gamut Cloud',
 }
 
 function normalizeEnvVarName(name: string): string {

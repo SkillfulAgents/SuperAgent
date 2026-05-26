@@ -203,6 +203,37 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, pendingR
     return persistedText.startsWith(streamingText) || streamingText.startsWith(persistedText)
   }, [messages, streamingMessage])
 
+  useEffect(() => {
+    if (!import.meta.env.DEV) return
+    console.log('[MessageList debug]', {
+      agentSlug,
+      sessionId,
+      messages: messages?.map((m) => ({
+        id: m.id,
+        type: m.type,
+        text: m.type === 'user' || m.type === 'assistant'
+          ? (m.content as { text?: string } | undefined)?.text
+          : undefined,
+      })),
+      isLoading,
+      isActive,
+      isStreaming,
+      streamingMessage,
+      pendingUserMessage,
+      isStreamingMessagePersisted,
+    })
+  }, [
+    agentSlug,
+    sessionId,
+    messages,
+    isLoading,
+    isActive,
+    isStreaming,
+    streamingMessage,
+    pendingUserMessage,
+    isStreamingMessagePersisted,
+  ])
+
   // Filter streaming tool uses to only those NOT yet in persisted messages
   const unpersistedStreamingToolUses = useMemo(() => {
     if (!streamingToolUses.length || !messages?.length) return streamingToolUses

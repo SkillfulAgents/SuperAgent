@@ -41,6 +41,22 @@ async function getAvailableDiskSpace(): Promise<number> {
   return stats.bavail * stats.bsize
 }
 
+function getHostApiBaseUrl(): string {
+  if (isKubernetesRuntime()) {
+    const publicUrl = process.env.HOST_PUBLIC_URL?.replace(/\/+$/, '')
+    if (!publicUrl) {
+      throw new Error('HOST_PUBLIC_URL is required for Gamut Cloud runtime')
+    }
+    return publicUrl
+  }
+
+  return `http://${getContainerHostUrl()}:${getAppPort()}`
+}
+
+function isKubernetesRuntime(): boolean {
+  return process.env.REMOTE_RUNTIME === 'kubernetes' || getSettings().container.containerRunner === 'kubernetes'
+}
+
 /** Cached container status */
 interface CachedContainerStatus {
   status: 'running' | 'stopped'
@@ -275,7 +291,7 @@ class ContainerManager {
     }
 
     this.isSyncing = true
-    console.log('[ContainerManager] Syncing container statuses with Docker...')
+    console.log('[ContainerManager] Syncing container statuses...')
 
     try {
       const agentIds = Array.from(this.clients.keys())
@@ -463,13 +479,12 @@ class ContainerManager {
 
       // Set up proxy authentication
       const proxyToken = await getOrCreateProxyToken(agentId)
-      const hostUrl = getContainerHostUrl()
-      const appPort = getAppPort()
-      envVars['PROXY_BASE_URL'] = `http://${hostUrl}:${appPort}/api/proxy/${agentId}`
+      const hostApiBaseUrl = getHostApiBaseUrl()
+      envVars['PROXY_BASE_URL'] = `${hostApiBaseUrl}/api/proxy/${agentId}`
       envVars['PROXY_TOKEN'] = proxyToken
 
       // X-Agent Work: cross-agent calls. Container POSTs to host with PROXY_TOKEN.
-      envVars['SUPERAGENT_HOST_API_URL'] = `http://${hostUrl}:${appPort}/api`
+      envVars['SUPERAGENT_HOST_API_URL'] = `${hostApiBaseUrl}/api`
       envVars['SUPERAGENT_AGENT_SLUG'] = agentId
 
       // Fetch connected accounts for this agent
@@ -516,7 +531,7 @@ class ContainerManager {
           return {
             id: mcp.id,
             name: mcp.name,
-            proxyUrl: `http://${hostUrl}:${appPort}/api/mcp-proxy/${agentId}/${mcp.id}`,
+            proxyUrl: `${hostApiBaseUrl}/api/mcp-proxy/${agentId}/${mcp.id}`,
             tools: toolNames,
           }
         })
@@ -529,7 +544,7 @@ class ContainerManager {
       const settings = getSettings()
       if (settings.app?.hostBrowserProvider) {
         envVars['AGENT_BROWSER_USE_HOST'] = '1'
-        envVars['HOST_APP_URL'] = `http://${hostUrl}:${appPort}`
+        envVars['HOST_APP_URL'] = hostApiBaseUrl
         envVars['AGENT_ID'] = agentId
       }
 
@@ -748,6 +763,15 @@ class ContainerManager {
       this.setReadiness({
         status: 'READY',
         message: 'Ready (E2E mock)',
+        pullProgress: null,
+      })
+      return
+    }
+
+    if (isKubernetesRuntime()) {
+      this.setReadiness({
+        status: 'READY',
+        message: 'Ready (Gamut Cloud)',
         pullProgress: null,
       })
       return
