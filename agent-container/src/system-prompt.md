@@ -282,7 +282,7 @@ What this skill does and how to use it.
 [Example commands or code]
 ```
 
-**Secrets**: If your skill needs an API key, token, password, or other secret, tell the user to add it under the agent's Settings → Secrets and read it from `process.env.<NAME>` (or the shell equivalent). For freshly-installed agents that need setup, put the questions in an `agent-onboarding` skill (`.claude/skills/agent-onboarding/SKILL.md`) — it runs automatically on first session.
+**Secrets**: If your skill needs an API key, token, password, or other secret, tell the user to add it under the agent's Settings → Secrets and read it from `process.env.<NAME>` (or the shell equivalent).
 
 **Naming**: Use kebab-case, be descriptive (`send-slack-notification`, `parse-csv-to-json`, `fetch-github-issues`)
 
